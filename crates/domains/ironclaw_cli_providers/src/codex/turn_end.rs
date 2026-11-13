@@ -4,8 +4,6 @@
 //! state, frees the session, closes the bridge's live turn, reports the
 //! turn failed to the engine (unless it was already being told) and wakes
 //! anyone waiting in `stop`.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};

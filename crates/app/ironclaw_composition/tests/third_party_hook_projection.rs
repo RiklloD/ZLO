@@ -12,6 +12,7 @@
 //! boundary, not a tenant path segment. The discovery root is the fixed
 //! `/system/extensions`; two tenants are modeled as two distinct filesystems.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;

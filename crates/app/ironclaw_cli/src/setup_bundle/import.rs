@@ -7,8 +7,6 @@
 //! deleted: with `--replace` its contents move to
 //! `<data folder>.before-import-<timestamp>` first (the installed `bin/`
 //! stays where it is).
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::fs::File;
 use std::io::{Read, Write};

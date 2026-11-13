@@ -28,6 +28,7 @@
 //!    a system author (not a third-party extension) would take when the
 //!    predicate language isn't expressive enough.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use async_trait::async_trait;

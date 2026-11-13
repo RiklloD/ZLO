@@ -2,8 +2,6 @@
 //! when a child's task ends, status, and a user thread's own worktree.
 //! Merge and removal live in `integrate.rs`, folder resolution and the
 //! lifecycle exclusion in `lifecycle.rs`, setup hooks in `hooks.rs`.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

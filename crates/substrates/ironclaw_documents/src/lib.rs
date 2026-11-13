@@ -20,6 +20,7 @@
 //! *new* PDFs from an HTML subset ([`html_to_pdf`]) and leaves existing PDFs
 //! alone.
 
+#![deny(clippy::let_underscore_must_use)]
 mod error;
 mod ooxml;
 

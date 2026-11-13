@@ -1,5 +1,6 @@
 //! Built-in http: request validation, runtime policy, and egress error mapping.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     net::{IpAddr, Ipv4Addr},
     sync::Arc,

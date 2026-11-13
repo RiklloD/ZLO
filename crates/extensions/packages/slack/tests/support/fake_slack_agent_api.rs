@@ -11,8 +11,6 @@
 //! lets a test assert exact request bodies and the provider-side state the
 //! sink claims to have reached. Shapes follow the documented methods
 //! (docs.slack.dev/reference/methods/chat.startStream etc.).
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;

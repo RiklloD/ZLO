@@ -1,8 +1,6 @@
 //! Asking a provider's own CLI for its limits over JSON lines, as t3code does
 //! (`claude -p` control requests, `codex app-server` JSON-RPC). The CLI uses
 //! and refreshes its own login, so no token is read here.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

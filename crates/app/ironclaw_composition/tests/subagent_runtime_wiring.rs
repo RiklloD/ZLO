@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_composition::{RebornRuntimeComponentStatus, reborn_runtime_readiness_snapshot};
 
 #[test]

@@ -93,30 +93,18 @@ dead_code = "warn"
 # sweep.
 unused_must_use = "deny"
 
-[workspace.lints.clippy]
-# `let _ = <must_use>` is the other swallow idiom. Triaged 2026-11-11: each
-# production site in `crates/` now either logs its failure at `debug!` (never
-# `info!`/`warn!` — they corrupt the REPL/TUI), propagates it, or keeps the
-# discard with a stated reason (a send to a possibly-closed channel, a
-# set-once cell, reaping a killed child, temp-file cleanup after the original
-# error is returned).
-#
-# Scope: like every `[workspace.lints]` entry this binds only crates that opt
-# in with `[lints] workspace = true` — since gate-enforcement-finish that is
-# 69 of 71 crates (not ironclaw_assistant / ironclaw_webui), all targets,
-# tests included. The discards were triaged in ironclaw_approvals,
-# ironclaw_attachments, ironclaw_composition, ironclaw_documents,
-# ironclaw_event_log, ironclaw_hooks, ironclaw_host_runtime,
-# ironclaw_identity, ironclaw_notifications, ironclaw_openai_compat,
-# ironclaw_operator and ironclaw_turn_runner: a kept discard there carries a
-# statement-level `#[expect(clippy::let_underscore_must_use, reason = "...")]`,
-# so a stale exemption fails the build. When the wider opt-in landed, 124
-# files elsewhere still held 428 untriaged discards (production sites marked
-# `// silent-ok: <why>`, test sites unmarked); each carries a file-level
-# `#![allow(clippy::let_underscore_must_use)]` under an "untriaged discards"
-# comment. That list only shrinks: triage a file, delete its allow. New files
-# and every other file are denied.
-let_underscore_must_use = "deny"
+# `clippy::let_underscore_must_use` (`let _ = <must_use>`, the other swallow
+# idiom) is deliberately NOT a `[workspace.lints]` entry: those bind every crate
+# that opts in with `[lints] workspace = true` (69 of 71), and the discards were
+# triaged in only 12 of them. Those 12 deny it with a crate-root
+# `#![deny(clippy::let_underscore_must_use)]` in every target root (lib, tests,
+# bins, benches, examples) — Cargo forbids a per-crate `[lints]` table beside
+# `workspace = true`. A kept discard there carries a statement-level
+# `#[expect(clippy::let_underscore_must_use, reason = "...")]`, so a stale
+# exemption fails the build. The crate list lives in one place,
+# `crates/app/ironclaw_architecture_tests/tests/reborn_let_underscore_scope.rs`,
+# which fails if a target root drops the deny. Every other crate is unenforced;
+# the untriaged backlog is tracked in `docs/internal/lint-backlog.md`.
 
 [package]
 # Tier B (see docs/internal/plans/2026-07-02-reborn-internal-module-refactor.md §8):

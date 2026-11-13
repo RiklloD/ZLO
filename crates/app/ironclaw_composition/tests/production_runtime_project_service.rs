@@ -16,6 +16,7 @@
 //! not starve the lib unit tests' hard `RunTimeout` budgets, and is gated on
 //! `libsql` because the production-runtime path requires the libSQL substrate.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 use std::time::Duration;
 

@@ -16,6 +16,7 @@
 //! integration test binaries cannot share helpers across files without a
 //! support module or re-export. The duplication is intentional and small.
 
+#![deny(clippy::let_underscore_must_use)]
 mod support;
 
 use std::sync::Arc;

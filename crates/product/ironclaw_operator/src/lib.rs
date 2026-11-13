@@ -1,5 +1,6 @@
 //! Host/operator control-plane services for Reborn.
 
+#![deny(clippy::let_underscore_must_use)]
 pub mod config_reload;
 pub mod llm_admin;
 pub mod metrics;

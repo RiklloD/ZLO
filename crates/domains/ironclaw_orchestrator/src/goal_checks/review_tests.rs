@@ -2,8 +2,6 @@
 //! Stop and turn admission, atomic follow-ups, fail-closed folders, and the
 //! concurrency bound. The runner here holds every run until the test
 //! releases it, and counts runs that were cancelled (dropped) mid-flight.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

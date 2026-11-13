@@ -19,6 +19,7 @@
 //! Gated on `memory-mem0`: the provider it swaps in is compiled only under that
 //! feature, so this proof runs with `--features memory-mem0` (the feature-off
 //! build carries no mem0 code to swap).
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "memory-mem0")]
 
 use std::sync::Arc;

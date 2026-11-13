@@ -22,6 +22,7 @@
 //! should be revisited rather than deleted. Until then, composition refuses to build a policy
 //! requesting `UserSandbox` without a port, which the second assertion pins.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::runtime_policy::ProcessBackendKind;
 use ironclaw_host_runtime::builtin_first_party_package_for_process_backend;
 

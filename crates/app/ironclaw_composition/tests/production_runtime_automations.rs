@@ -11,6 +11,7 @@
 //! Gated on `libsql` because the production-runtime path under test requires
 //! the libsql substrate.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 use std::time::Duration;
 

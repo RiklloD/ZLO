@@ -10,6 +10,7 @@
 //! the contract suite. Serialized behind a process-global lock because
 //! they share fixed keys against one table.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 use std::time::Duration;
 

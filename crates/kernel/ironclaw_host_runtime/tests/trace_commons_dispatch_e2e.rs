@@ -11,6 +11,7 @@
 //! (passed into `execution_context_with_network`) so onboarding state written
 //! by one test cannot bleed into another running concurrently.
 
+#![deny(clippy::let_underscore_must_use)]
 #[path = "support/trace_commons_dispatch.rs"]
 mod tc_support;
 

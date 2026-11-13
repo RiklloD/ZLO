@@ -1,4 +1,5 @@
 // arch-exempt: large_file, mechanical lease-store test repoint to CapabilityLeaseStore<InMemoryBackend> helper (arch-simplification §4.3), no new test logic, plan #6168
+#![deny(clippy::let_underscore_must_use)]
 mod support;
 
 use support::host_runtime_harness::*;

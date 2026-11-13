@@ -1,5 +1,6 @@
 //! Built-in shell capability and its process-port delegation.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{Arc, LazyLock};
 
 use ironclaw_host_api::result_meta::FailureKind;

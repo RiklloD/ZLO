@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

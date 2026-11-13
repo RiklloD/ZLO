@@ -46,8 +46,6 @@
 //! encrypted. The precise questions are in
 //! `docs/internal/plans/2026-11-11-secrets-encrypted-backend-question.md`;
 //! until they are answered, keep the inline `encrypt`/`decrypt` calls.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::{collections::HashSet, sync::Arc};
 

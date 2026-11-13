@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 #[path = "support/postgres.rs"]
 mod postgres_support;
 mod support;

@@ -22,6 +22,7 @@
 //! table at the start of each, giving every contract a fresh-empty
 //! backend exactly as the in-memory factory does.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use deadpool_postgres::Pool;

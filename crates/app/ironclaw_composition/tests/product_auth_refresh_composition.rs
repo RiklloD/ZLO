@@ -26,6 +26,7 @@
 //! proves the durable account service was wrapped, regardless of whether the
 //! durable backend is libsql or postgres.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_auth::{
     AuthProductError, AuthProductScope, AuthProviderId, AuthSurface, CredentialAccountId,
     CredentialRefreshRequest,

@@ -1,4 +1,5 @@
 // arch-exempt: large_file, caller-level obligations regression fixture remains co-located with the contract suite, plan #5499
+#![deny(clippy::let_underscore_must_use)]
 mod support;
 
 use support::legacy_capability_fixture_to_v2;

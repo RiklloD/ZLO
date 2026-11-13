@@ -39,6 +39,7 @@
 //! F3 / F4 / F5 (approval / cancel / expire flows) and the pause/gate
 //! blocking outcome live in `budget_approval_e2e.rs`.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 

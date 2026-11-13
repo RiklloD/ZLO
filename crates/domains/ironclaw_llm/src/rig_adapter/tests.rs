@@ -1,8 +1,6 @@
 //! Shared fixtures for the rig bridge unit tests; each themed suite under
 //! `tests/` is a child of this module, so `super::*` reaches both the
 //! adapter items and these helpers.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use super::*;
 use rig::completion::CompletionError;

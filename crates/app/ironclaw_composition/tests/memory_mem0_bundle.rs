@@ -12,6 +12,7 @@
 //! Not gated on `memory-mem0`: the bundle builder is always compiled into
 //! `ironclaw_host_runtime`, and mem0 is an unconditional dev-dependency here.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_extension_contracts::memory::MemoryLifecycleHook;
 use ironclaw_extension_contracts::runtime::ExtensionRuntime;
 use ironclaw_extension_registry::CapabilityVisibility;

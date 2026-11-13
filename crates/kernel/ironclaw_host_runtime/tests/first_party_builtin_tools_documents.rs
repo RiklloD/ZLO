@@ -1,5 +1,6 @@
 //! Built-in document capabilities (#6898 item 3): structured reads, document_edit, html_to_pdf.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::mount::MountPermissions;
 use ironclaw_host_api::result_meta::FailureKind;
 use ironclaw_host_runtime::{

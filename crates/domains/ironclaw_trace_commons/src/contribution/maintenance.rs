@@ -1,7 +1,5 @@
 //! Queue maintenance: compaction, warnings, telemetry accounting, hold
 //! sidecars, path helpers, and quarantine of malformed envelopes.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;

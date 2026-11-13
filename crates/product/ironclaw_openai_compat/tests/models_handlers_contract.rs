@@ -5,6 +5,7 @@
 //! catalog port, and locks the fail-closed (`501`) shape when no catalog is
 //! wired.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use async_trait::async_trait;

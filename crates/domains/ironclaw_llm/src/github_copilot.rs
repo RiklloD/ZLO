@@ -8,8 +8,6 @@
 //! The standard OpenAI rig-core client sends `Authorization: Bearer <token>`
 //! with the raw OAuth token, which gets rejected with "Authorization header
 //! is badly formatted". This provider handles the token exchange transparently.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashSet;
 use std::sync::Arc;

@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 mod support;
 
 use std::{sync::Arc, time::Duration};

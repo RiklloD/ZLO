@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 mod support;
 
 use support::legacy_capability_fixture_to_v2;

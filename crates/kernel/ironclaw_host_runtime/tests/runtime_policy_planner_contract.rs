@@ -19,6 +19,7 @@
 //! `crates/kernel/ironclaw_host_runtime/tests/` so they exercise the
 //! planner's *public* API and survive private-module refactors.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::runtime_policy::{
     DeploymentMode, FilesystemBackendKind, NetworkMode, ProcessBackendKind, RuntimeProfile,
 };

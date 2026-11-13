@@ -12,6 +12,7 @@
 //!   middleware in [`middleware`] wrap the corresponding Reborn loop ports and
 //!   are installed by `ironclaw_turn_runner`'s loop driver host.
 
+#![deny(clippy::let_underscore_must_use)]
 pub mod dispatch;
 pub mod error;
 pub mod evaluator;

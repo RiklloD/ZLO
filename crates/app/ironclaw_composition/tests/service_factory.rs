@@ -2,6 +2,7 @@
 //
 // Decomposition of this suite travels with the composition god-crate shrink
 // (#6168); do not add unrelated cases here.
+#![deny(clippy::let_underscore_must_use)]
 #[path = "support/postgres.rs"]
 mod postgres_support;
 

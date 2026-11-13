@@ -23,6 +23,7 @@
 //!   render is intentionally an upper-layer concern — the host does not bake
 //!   in upper-stack vocabulary (e.g. agent loop / adapter / admin).
 
+#![deny(clippy::let_underscore_must_use)]
 use async_trait::async_trait;
 use ironclaw_host_api::capability_surface::CapabilitySurfacePolicy;
 use ironclaw_host_api::{

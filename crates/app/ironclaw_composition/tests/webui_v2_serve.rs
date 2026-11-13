@@ -9,6 +9,7 @@
 //! service is mocked so the regression target stays the gateway-layer
 //! composition.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

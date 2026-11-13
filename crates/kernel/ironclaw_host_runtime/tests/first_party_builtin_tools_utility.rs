@@ -1,5 +1,6 @@
 //! Built-in echo, plan, time, json, and spawn-subagent capabilities.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::result_meta::FailureKind;
 use ironclaw_host_api::{
     dispatch::DispatchInputIssueCode, mount::MountPermissions, resource::ResourceEstimate,

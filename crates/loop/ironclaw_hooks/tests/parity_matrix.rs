@@ -60,6 +60,7 @@
 // directly under `tests/` are each compiled as their own integration-test
 // binary, but files in a subdirectory are not — so the shared support/scenario/
 // oracle code lives in `tests/parity_matrix/` and is pulled in here explicitly.
+#![deny(clippy::let_underscore_must_use)]
 #[path = "parity_matrix/oracle.rs"]
 mod oracle;
 #[path = "parity_matrix/scripts.rs"]

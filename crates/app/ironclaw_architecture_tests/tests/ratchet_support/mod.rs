@@ -8,8 +8,6 @@
 //! `benches/`). The scanners are line-based, not cfg-aware: a pub-visible
 //! definition in an inline `#[cfg(test)]` module in src IS inventoried — keep
 //! test doubles under `tests/` (or justify an allowlist entry in review).
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 pub(crate) mod impl_census;
 

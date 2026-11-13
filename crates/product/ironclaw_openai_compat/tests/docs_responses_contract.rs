@@ -8,6 +8,7 @@
 //! (e.g. accept `temperature_max`, reject just above it), so editing the
 //! doc's claims without matching code behavior fails, and vice versa.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

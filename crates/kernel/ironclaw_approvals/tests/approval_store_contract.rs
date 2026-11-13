@@ -1,4 +1,5 @@
 // arch-exempt: large_file, mechanical approval store repoint to Filesystem*Store<InMemoryBackend> helpers + cross-tenant coexistence reconciliation (arch-simplification §4.3), plan #6168
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     sync::Arc,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},

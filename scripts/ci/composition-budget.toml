@@ -348,7 +348,10 @@ observed_date = "2026-11-12"
 # feat/config-hot-reload +41, feat/operator-readiness-metrics +234,
 # embeddings-hybrid-memory +424, and +4 for the integration's own
 # let_underscore_must_use expect in embeddings.rs; every other branch +0.
-loc_ceiling = 34410
+# ✎ 2026-11-13 (chore/narrow-let-underscore-lint): +1 -> 34561, the crate-root
+# `#![deny(clippy::let_underscore_must_use)]` in src/lib.rs that replaces the
+# workspace-wide entry (the lint is now scoped to the 12 triaged crates).
+loc_ceiling = 34411
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -359,8 +362,8 @@ loc_tolerance = 150
 loc_nudge_slack = 200
 # Informational — observed when this file was last updated. Not consulted for
 # the pass/fail decision.
-loc_observed = 34560
-loc_observed_date = "2026-11-12"
+loc_observed = 34561
+loc_observed_date = "2026-11-13"
 
 # --- Dispatch (Arc<dyn>) ratchet ------------------------------------------
 # A companion metric for the "reduce traits & dispatch" goal (issue #6168 / the

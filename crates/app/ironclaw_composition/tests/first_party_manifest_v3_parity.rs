@@ -15,6 +15,7 @@
 //! credential's setup from the vendor recipe's scope ceiling, which equals
 //! v2's surface-level union — the connect-time behavior users see today.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_extension_registry::{
     CapabilitySurfaceDeclV2, ExtensionManifestRecord, ExtensionRuntimeV2, MANIFEST_SCHEMA_VERSION,
     MANIFEST_SCHEMA_VERSION_V3, ManifestSource, default_host_api_contract_registry,

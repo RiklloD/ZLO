@@ -14,6 +14,7 @@
 //! have meant pointing it at a fake, which is exactly the fidelity it exists to
 //! have. It travelled whole; no assertion was weakened.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_composition::RuntimeOperatorSecretValueStore;

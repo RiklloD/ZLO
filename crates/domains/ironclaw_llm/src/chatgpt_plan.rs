@@ -11,8 +11,6 @@
 //! This is the default mode of the `openai_codex` provider. The older route
 //! (Codex CLI's client id against `chatgpt.com/backend-api/codex`) stays
 //! reachable only by pointing `OPENAI_CODEX_API_URL` at that backend.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::time::Duration;
 

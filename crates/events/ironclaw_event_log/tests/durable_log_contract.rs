@@ -5,6 +5,7 @@
 //! semantics, stream-key partitioning, redaction guarantees on event
 //! constructors, and best-effort sink delivery.
 
+#![deny(clippy::let_underscore_must_use)]
 use async_trait::async_trait;
 use ironclaw_event_log::{
     AuditSink, DurableAuditLog, DurableAuditSink, DurableEventLog, DurableEventSink, EventCursor,

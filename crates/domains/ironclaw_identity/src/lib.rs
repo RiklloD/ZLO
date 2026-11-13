@@ -43,6 +43,7 @@
 //! adds no dependency and no new layer reach; see the module doc for what
 //! deliberately stayed in `ironclaw_assistant`.
 
+#![deny(clippy::let_underscore_must_use)]
 pub mod environment_access;
 mod identity_store;
 mod key;

@@ -14,6 +14,7 @@
 //! authenticator that validates the bearer). Nothing above the token crypto is
 //! stubbed.
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "test-support")]
 
 use std::path::PathBuf;

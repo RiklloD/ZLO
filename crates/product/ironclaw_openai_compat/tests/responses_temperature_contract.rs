@@ -6,6 +6,7 @@
 //! route-level workflow and assert that `temperature` is validated at the API
 //! boundary and preserved in the submitted product payload.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 mod support;

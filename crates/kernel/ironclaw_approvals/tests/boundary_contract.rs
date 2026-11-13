@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 #[test]
 fn approvals_crate_stays_out_of_runtime_and_host_workflow_crates() {
     let manifest_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");

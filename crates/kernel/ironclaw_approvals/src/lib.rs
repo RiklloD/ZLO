@@ -4,6 +4,7 @@
 //! authorization leases. It does not prompt users, execute capabilities, or
 //! dispatch runtime work.
 
+#![deny(clippy::let_underscore_must_use)]
 mod approval_store;
 mod auto_approve;
 mod capability_permission;

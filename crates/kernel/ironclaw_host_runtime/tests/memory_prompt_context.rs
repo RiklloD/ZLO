@@ -6,6 +6,7 @@
 //! envelope wrapping, and the per-snippet + aggregate model-visible budgets. The
 //! provider only supplies raw scope/path components and raw text.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

@@ -1,7 +1,5 @@
 //! Per-tool sensitive-field redaction: the payload profiles, their rule
 //! tables, and the value sanitizers they apply.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::path::PathBuf;
 use std::sync::LazyLock;

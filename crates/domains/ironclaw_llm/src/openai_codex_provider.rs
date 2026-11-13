@@ -6,8 +6,6 @@
 //! with ChatGPT subscription OAuth tokens.
 //!
 //! This mirrors OpenClaw's Responses API flow translated to Rust.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use async_trait::async_trait;
 use eventsource_stream::Eventsource;

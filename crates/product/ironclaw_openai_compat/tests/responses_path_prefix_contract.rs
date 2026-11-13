@@ -7,6 +7,7 @@
 //! router rather than the retired v1 gateway router, which no longer owns the
 //! Responses API surface.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 mod support;

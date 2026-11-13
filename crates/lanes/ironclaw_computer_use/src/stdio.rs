@@ -2,8 +2,6 @@
 //! JSON-RPC on stdio. Dropping a [`StdioServer`] kills the process, so a
 //! cancelled, timed-out or failed call can never leave a late reply behind
 //! for the next call to read.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::process::Stdio;
 use std::time::Duration;

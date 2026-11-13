@@ -1,4 +1,5 @@
 // arch-exempt: large_file, caller-tier coding-tool suite shares one runtime/mount fixture set, plan #4539
+#![deny(clippy::let_underscore_must_use)]
 use std::{path::Path, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
