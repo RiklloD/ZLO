@@ -198,9 +198,11 @@ Invariants:
   check's id, state and severity. Check summaries and remediation are dropped
   (they are operator prose and may name hosts or paths). A check id outside
   `[a-z0-9_]{1,64}` is replaced with `unrecognized_check`.
-- `Degraded` (dev-only profile, preview storage, a missing worker) is
-  `503`: readiness means production-ready, while `/api/health` stays the
-  liveness answer. Development profiles therefore always answer `503`.
+- Anything but `ready` is `503`: readiness means production-ready, while
+  `/api/health` stays the liveness answer. A dev-only profile rolls up to
+  `blocked` (its `readiness_composition_profile` check is blocking); preview
+  storage or a missing worker rolls up to at least `degraded`. Development
+  profiles therefore always answer `503`.
 - The snapshot is **boot-time configuration readiness**: composition computes
   `RebornReadiness` once while assembling the runtime and never re-evaluates
   it (the `OperatorStatusService` port serves the same snapshot), so the route

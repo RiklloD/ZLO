@@ -126,8 +126,11 @@ re-evaluated; the operator status port (`OperatorStatusService`) serves the
 same snapshot, so re-reading it per request would return identical data. A
 database, provider or worker that fails *after* boot does not flip `/api/ready`
 to `503`. Development profiles (`DevOnly`, and the mounted-volume previews)
-roll up to `degraded` and therefore always answer `503`; an orchestrator should
-gate traffic on this route only for production-validated profiles.
+always answer `503`: the dev-only profile carries a blocking
+`readiness_composition_profile` check, so its roll-up is `blocked` (observed
+on a live `local-dev` serve, 2026-11-13), and preview storage or a missing
+worker rolls up to at least `degraded`. An orchestrator should gate traffic on
+this route only for production-validated profiles.
 
 **Metrics — `GET /api/operator/metrics`.** Bearer-authenticated and
 operator-only, Prometheus text format 0.0.4, rendered through the
