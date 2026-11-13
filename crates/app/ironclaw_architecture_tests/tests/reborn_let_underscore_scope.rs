@@ -23,6 +23,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ratchet_support::{crate_dir, workspace_root};
+use syn::parse::Parser;
+use syn::{AttrStyle, Meta, Token};
 
 /// Crates whose `let _ = <must_use>` discards were triaged (fix/let-underscore-must-use).
 const TRIAGED_CRATES: &[&str] = &[
@@ -43,7 +45,8 @@ const TRIAGED_CRATES: &[&str] = &[
 const DENY_ATTRIBUTE: &str = "#![deny(clippy::let_underscore_must_use)]";
 
 /// Every compilation-target root Cargo would build for the crate: the
-/// auto-discovered layout plus any target an explicit `path = "..."` names.
+/// auto-discovered layout, the build script, and any target an explicit
+/// `path = "..."` (or `[package] build = "..."`) names.
 fn target_roots(crate_dir: &Path) -> BTreeSet<PathBuf> {
     let mut roots = BTreeSet::new();
     for fixed in ["src/lib.rs", "src/main.rs"] {
@@ -77,6 +80,23 @@ fn target_roots(crate_dir: &Path) -> BTreeSet<PathBuf> {
             .and_then(toml::Value::as_str)
             .map(|path| crate_dir.join(path))
     };
+    // Build script: `build = false` disables it, `build = "x.rs"` relocates it,
+    // otherwise Cargo auto-discovers `build.rs`.
+    match manifest
+        .get("package")
+        .and_then(|package| package.get("build"))
+    {
+        Some(toml::Value::Boolean(false)) => {}
+        Some(toml::Value::String(path)) => {
+            roots.insert(crate_dir.join(path));
+        }
+        _ => {
+            let path = crate_dir.join("build.rs");
+            if path.is_file() {
+                roots.insert(path);
+            }
+        }
+    }
     if let Some(path) = manifest.get("lib").and_then(explicit_path) {
         roots.insert(path);
     }
@@ -88,8 +108,35 @@ fn target_roots(crate_dir: &Path) -> BTreeSet<PathBuf> {
     roots
 }
 
+/// True when the file's crate-level (inner) attributes include an
+/// unconditional `deny`/`forbid` naming `clippy::let_underscore_must_use`.
+/// Parsed with `syn`, so text in comments or string literals never counts and
+/// multi-line or multi-lint forms do. `cfg_attr` is conditional and does not
+/// count. A file that does not parse never counts.
 fn carries_deny(source: &str) -> bool {
-    source.lines().any(|line| line.trim() == DENY_ATTRIBUTE)
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    file.attrs
+        .iter()
+        .filter(|attribute| matches!(attribute.style, AttrStyle::Inner(_)))
+        .filter_map(|attribute| match &attribute.meta {
+            Meta::List(list) if list.path.is_ident("deny") || list.path.is_ident("forbid") => {
+                syn::punctuated::Punctuated::<syn::Path, Token![,]>::parse_terminated
+                    .parse2(list.tokens.clone())
+                    .ok()
+            }
+            _ => None,
+        })
+        .flatten()
+        .any(|lint| {
+            let segments: Vec<String> = lint
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect();
+            segments == ["clippy", "let_underscore_must_use"]
+        })
 }
 
 #[test]
@@ -167,6 +214,24 @@ fn deny_detection_ignores_commented_out_attributes() {
     assert!(!carries_deny(
         "#![allow(clippy::let_underscore_must_use)]\n"
     ));
+    // A block comment or a raw string around the deny must not satisfy the gate.
+    assert!(!carries_deny(
+        "/*\n#![deny(clippy::let_underscore_must_use)]\n*/\nfn f() {}\n"
+    ));
+    assert!(!carries_deny(
+        "const S: &str = r#\"\n#![deny(clippy::let_underscore_must_use)]\n\"#;\n"
+    ));
+    // Conditional: only applies under the cfg, so it is not the enforced scope.
+    assert!(!carries_deny(
+        "#![cfg_attr(test, deny(clippy::let_underscore_must_use))]\n"
+    ));
+    // Equivalent unconditional forms do count.
+    assert!(carries_deny(
+        "#![deny(\n    clippy::let_underscore_must_use,\n    unused_must_use\n)]\n"
+    ));
+    assert!(carries_deny(
+        "#![forbid(clippy::let_underscore_must_use)]\n"
+    ));
 }
 
 #[test]
@@ -182,6 +247,7 @@ fn target_root_scan_finds_auto_and_explicit_targets() {
         "benches/b.rs",
         "examples/e.rs",
         "custom/root.rs",
+        "build.rs",
     ] {
         let path = crate_dir.join(file);
         fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
@@ -193,10 +259,30 @@ fn target_root_scan_finds_auto_and_explicit_targets() {
     )
     .expect("write manifest");
     let roots = target_roots(crate_dir);
-    assert_eq!(roots.len(), 7, "{roots:?}");
+    assert_eq!(roots.len(), 8, "{roots:?}");
+    assert!(roots.contains(&crate_dir.join("build.rs")), "{roots:?}");
     assert!(
         roots
             .iter()
             .all(|path| !carries_deny(&fs::read_to_string(path).expect("read")))
     );
+
+    // `[package] build = "..."` relocates the build script; `build = false` drops it.
+    fs::write(crate_dir.join("gen.rs"), "fn main() {}\n").expect("write");
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"x\"\nbuild = \"gen.rs\"\n",
+    )
+    .expect("write manifest");
+    let roots = target_roots(crate_dir);
+    assert!(roots.contains(&crate_dir.join("gen.rs")), "{roots:?}");
+    assert!(!roots.contains(&crate_dir.join("build.rs")), "{roots:?}");
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"x\"\nbuild = false\n",
+    )
+    .expect("write manifest");
+    let roots = target_roots(crate_dir);
+    assert!(!roots.contains(&crate_dir.join("build.rs")), "{roots:?}");
+    assert!(!roots.contains(&crate_dir.join("gen.rs")), "{roots:?}");
 }
