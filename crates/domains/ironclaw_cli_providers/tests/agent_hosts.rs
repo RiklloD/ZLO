@@ -289,9 +289,14 @@ async fn antigravity_catalog_refreshes_a_stale_model_list_without_a_turn() {
     }
     assert_eq!(refreshed, ["gemini-a", "gemini-b"]);
 
-    let log = std::fs::read_to_string(dir.path().join("agy.log")).unwrap();
+    // The list is saved before the close goes out; wait for it.
+    let agy_log = dir.path().join("agy.log");
+    wait_for(|| {
+        std::fs::read_to_string(&agy_log).is_ok_and(|l| l.contains(r#""method":"session/close""#))
+    })
+    .await;
+    let log = std::fs::read_to_string(&agy_log).unwrap();
     assert_eq!(log.matches(r#""method":"session/new""#).count(), 1, "{log}");
-    assert!(log.contains(r#""method":"session/close""#), "{log}");
     assert!(
         !log.contains("session/prompt"),
         "a refresh never prompts: {log}"
@@ -309,6 +314,57 @@ async fn antigravity_catalog_refreshes_a_stale_model_list_without_a_turn() {
             .read_dir()
             .is_ok_and(|mut d| d.next().is_some()),
         "a refresh binds no thread session"
+    );
+}
+
+/// A refresh that fails (expired sign-in, no network) is not retried on every
+/// catalog read: the picker polling must not relaunch the agent each time.
+#[tokio::test]
+async fn antigravity_failed_refresh_backs_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let log = dir.path().join("starts.log");
+    let rt = AntigravityRuntime::new(
+        AntigravityConfig {
+            runtime_id: "antigravity".into(),
+            display_name: "Antigravity".into(),
+            // Starts, then dies before answering `initialize`.
+            executable: script(
+                dir.path(),
+                "agy_acp_server",
+                &format!("#!/bin/sh\necho start >> '{}'\nexit 1\n", log.display()),
+            ),
+            harness: dir.path().join("localharness_external"),
+            profile_dir: dir.path().join("profile"),
+            auth_method: "oauth-personal".into(),
+            auth_timeout: Duration::from_secs(5),
+            work_dir: dir.path().join("work"),
+            state_dir: dir.path().join("state"),
+        },
+        sink(&recorder),
+        None,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("profile/antigravity-acp")).unwrap();
+    std::fs::write(
+        dir.path().join("profile/antigravity-acp/acp_token.json"),
+        "{}",
+    )
+    .unwrap();
+
+    rt.catalog(&scope()).await.unwrap();
+    wait_for(|| log.exists()).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    for _ in 0..5 {
+        let catalog = rt.catalog(&scope()).await.unwrap();
+        assert_eq!(catalog[0].models, ["default"]);
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let starts = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        starts.lines().count(),
+        1,
+        "relaunched after a failure: {starts}"
     );
 }
 

@@ -63,6 +63,10 @@ const CONFIG_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the account's model list is trusted before a catalog read asks
 /// the agent again, so models Google ships reach the picker without a turn.
 const MODELS_TTL_MS: i64 = 60 * 60 * 1000;
+/// After a refresh attempt (failed ones included), wait this long before the
+/// next, so an expired sign-in or no network never relaunches the agent on
+/// every catalog read.
+const REFRESH_RETRY_MS: i64 = 10 * 60 * 1000;
 /// Closing the probe session is housekeeping; never wait long for it.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A prompt runs as long as the agent works on it; Stop ends it sooner.
@@ -153,6 +157,8 @@ pub struct AntigravityRuntime {
     primed: crate::Primed,
     /// Single flight for the background model-list refresh.
     refreshing: Arc<AtomicBool>,
+    /// When the last refresh started (ms), for [`REFRESH_RETRY_MS`].
+    last_refresh: Arc<std::sync::atomic::AtomicI64>,
 }
 
 impl AntigravityRuntime {
@@ -169,6 +175,7 @@ impl AntigravityRuntime {
             active: Arc::new(Mutex::new(HashMap::new())),
             primed: crate::Primed::default(),
             refreshing: Arc::new(AtomicBool::new(false)),
+            last_refresh: Arc::new(std::sync::atomic::AtomicI64::new(i64::MIN)),
         })
     }
 
@@ -783,8 +790,26 @@ async fn save_models(path: &Path, options: &Value) {
         "models": models,
     })
     .to_string();
-    if let Err(error) = tokio::fs::write(path, body).await {
+    // A turn and a refresh may save at once: write a private file and rename
+    // it over the list, so a reader never sees a torn or truncated one.
+    let tmp = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
+    let written = async {
+        tokio::fs::write(&tmp, body).await?;
+        tokio::fs::rename(&tmp, path).await
+    }
+    .await;
+    if let Err(error) = written {
+        let _ = tokio::fs::remove_file(&tmp).await; // silent-ok: best-effort cleanup of our own temp file
         tracing::debug!(%error, "antigravity: model list not saved");
+    }
+}
+
+/// Clears the refresh single-flight flag when the refresh task ends.
+struct RefreshFlag(Arc<AtomicBool>);
+
+impl Drop for RefreshFlag {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -969,17 +994,20 @@ impl TurnRuntime for AntigravityRuntime {
             .await
             .unwrap_or(false); // silent-ok: an unreadable token reads as signed out
         // Signed out, a probe would wait on a browser sign-in nobody opens.
+        let now = now_ms();
         if authenticated
+            && now.saturating_sub(self.last_refresh.load(Ordering::SeqCst)) >= REFRESH_RETRY_MS
             && models_stale(&self.config.models_file()).await
             && !self.refreshing.swap(true, Ordering::SeqCst)
         {
+            self.last_refresh.store(now, Ordering::SeqCst);
             let config = Arc::clone(&self.config);
-            let refreshing = Arc::clone(&self.refreshing);
+            let flag = RefreshFlag(Arc::clone(&self.refreshing));
             tokio::spawn(async move {
+                let _flag = flag; // cleared on every exit, a panic included
                 if let Err(error) = refresh_models(&config).await {
                     tracing::debug!(%error, "antigravity: model list refresh failed");
                 }
-                refreshing.store(false, Ordering::SeqCst);
             });
         }
         Ok(vec![CatalogProvider {
