@@ -340,7 +340,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 |---|---|
 | Lifecycle hooks fire at the expected points and a hook deny blocks the tool without wedging | `hooks.rs` |
 | Turn lifecycle events publish to subscribers; trace capture records them | `tracecap.rs`, `trace_capture.rs` |
-| An operator scraping `/api/operator/metrics` after a tool-call turn sees one completed run (with its duration), the tool call counted by capability id, the model calls, and the provider requests by provider/model — and no tenant, user, or thread id in any label; after an approval-gated turn the user approves, one gate opened and one resolved `approved` — a new bin because no existing scenario composes the metrics registry | `operator_metrics.rs` |
+| An operator scraping `/api/operator/metrics` after a tool-call turn sees one completed run (with its duration), the tool call counted by capability id, a first attempt with invalid arguments counted as a failed invocation with `reason="invalid_input"`, the model calls, and the provider requests by provider/model — and no tenant, user, or thread id in any label; after an approval-gated turn the user approves, one gate opened and one resolved `approved` — a new bin because no existing scenario composes the metrics registry | `operator_metrics.rs` |
 | Instruction-safety context renders into the prompt | `safety.rs` |
 | Scheduled-origin runs carry their origin into persisted state | `triggered_submit.rs` |
 | The test harness's runtime wiring stays field-identical to production's | `wiring_parity.rs` |

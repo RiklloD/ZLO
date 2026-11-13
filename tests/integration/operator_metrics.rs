@@ -102,6 +102,9 @@ async fn a_tool_call_turn_moves_the_operator_scrape_impl() {
         .with_durable_capability_io_builtin_http_tools()
         .with_operator_metrics_for_test(Arc::clone(&metrics))
         .script([
+            // First attempt fails argument validation (no `url`): a
+            // model-visible `invalid_input` failure the model recovers from.
+            RebornScriptedReply::tool_call("builtin.http", json!({})),
             RebornScriptedReply::tool_call("builtin.http", json!({"url": HTTP_TOOL_URL})),
             RebornScriptedReply::text("fetched"),
         ])
@@ -150,9 +153,25 @@ async fn a_tool_call_turn_moves_the_operator_scrape_impl() {
         1,
         "the tool call is counted by capability id:\n{after}"
     );
+    assert_eq!(
+        sample(
+            &after,
+            "ironclaw_capability_invocations_total{capability_id=\"builtin.http\",outcome=\"failed\"}"
+        ),
+        1,
+        "a call that fails argument validation is a failed invocation:\n{after}"
+    );
+    assert_eq!(
+        sample(
+            &after,
+            "ironclaw_capability_failures_total{capability_id=\"builtin.http\",reason=\"invalid_input\"}"
+        ),
+        1,
+        "...counted under the invalid_input reason:\n{after}"
+    );
     assert!(
-        sample(&after, "ironclaw_model_calls_total{outcome=\"completed\"}") >= 2,
-        "a tool turn makes two model calls:\n{after}"
+        sample(&after, "ironclaw_model_calls_total{outcome=\"completed\"}") >= 3,
+        "an invalid call, a retried call and the reply are three model calls:\n{after}"
     );
     let llm_requests: u64 = after
         .lines()
