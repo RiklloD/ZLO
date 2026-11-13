@@ -236,7 +236,10 @@ const WS0_COMPOSITION_SHARE_BP: usize = 653;
 /// `bash scripts/ci/check-composition-budget.sh --print`; the manifest's
 /// `loc_ceiling`/`loc_observed` move with it in the same commit, pending the
 /// owner's sign-off recorded there.
-const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 34_560;
+/// ✎ 34_560 -> 34_561 on 2026-11-13: the crate-root
+/// `#![deny(clippy::let_underscore_must_use)]` in composition's `src/lib.rs`
+/// (lint narrowed from `[workspace.lints]` to the 12 triaged crates).
+const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 34_561;
 
 /// Composition dispatch, from the same `--print` run: "composition dispatch:
 /// 827 Arc<dyn> (governed prod, excl slack/extension_host)".

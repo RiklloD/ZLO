@@ -10,6 +10,7 @@
 //! as actor but has no human present; a subagent child is machinery, not a turn,
 //! and one user turn can spawn many.
 
+#![deny(clippy::let_underscore_must_use)]
 use chrono::Utc;
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
 use ironclaw_host_api::turn::{AcceptedMessageRef, RunProfileId, TurnActor, TurnScope, TurnStatus};

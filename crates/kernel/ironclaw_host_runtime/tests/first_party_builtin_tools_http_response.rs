@@ -1,5 +1,6 @@
 //! Built-in http/http_save: response status, truncation budgets, saved bodies, sanitization.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_authorization::GrantAuthorizer;

@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 #![allow(clippy::disallowed_methods)]
 
 use std::sync::Arc;

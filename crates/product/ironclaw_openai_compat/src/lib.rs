@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 #![forbid(unsafe_code)]
 
 //! Reborn-native OpenAI-compatible API contract surface.

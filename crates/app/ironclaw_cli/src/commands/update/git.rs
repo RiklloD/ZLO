@@ -8,8 +8,6 @@
 //! full hex commit, so nothing here is an option or a revision expression
 //! someone else chose. `GIT_TERMINAL_PROMPT=0` and a batch-mode SSH keep a
 //! fetch from waiting on a prompt nobody sees.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::io::Read;
 use std::path::{Path, PathBuf};

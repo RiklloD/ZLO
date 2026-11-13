@@ -17,6 +17,7 @@
 //! to. This is the same production code executed in composition; no
 //! functionality is skipped.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use chrono::Utc;

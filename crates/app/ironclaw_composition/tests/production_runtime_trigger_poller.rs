@@ -41,6 +41,7 @@
 //! Uses the libSQL production substrate; database backends always compile, so
 //! the test is active with the rest of the crate's integration tests.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

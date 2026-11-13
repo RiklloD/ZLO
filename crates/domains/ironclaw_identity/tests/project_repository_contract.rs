@@ -11,6 +11,7 @@
 //! is about its **public** seam, and `ironclaw_assistant`'s gating service is
 //! the caller that consumes it that way.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use chrono::Utc;

@@ -11,6 +11,7 @@
 //! the scanned roots; `webui_v2_serve.rs` in this same crate already binds
 //! a loopback listener here for the same reason.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_config::{RebornBootConfig, RebornHome, RebornProfile};
 use ironclaw_llm::ProviderProtocol;
 use ironclaw_operator::{ProviderRepo, RebornProviderAdmin};

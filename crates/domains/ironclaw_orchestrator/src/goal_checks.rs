@@ -25,8 +25,6 @@
 //! and shutdown cancel the run (the process group dies with it); Stop and a
 //! turn put it back to `pending`, and runs a previous process left `running`
 //! run again on boot. At most [`MAX_CONCURRENT_GOAL_CHECKS`] run at once.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;

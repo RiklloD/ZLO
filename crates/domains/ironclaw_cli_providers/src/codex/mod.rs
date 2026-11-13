@@ -20,8 +20,6 @@
 //! state (`live.rs`). Review and compaction are `thread_action`s
 //! (`actions.rs`); idle threads compact like Claude CLI threads do
 //! (`compact.rs`).
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 mod actions;
 mod admission;

@@ -12,8 +12,6 @@
 //! terminal, where closing the window or dropping the SSH session must still
 //! stop it. [`should_reload_on_sighup`] makes that call from whether stdin is
 //! a terminal.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::sync::Arc;
 

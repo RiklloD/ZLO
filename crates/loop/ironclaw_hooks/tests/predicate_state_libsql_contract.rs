@@ -38,6 +38,7 @@
 //! `predicate_state::contract` functions we call directly here instead of
 //! through the `predicate_backend_contract_test!` macro.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::future::Future;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;

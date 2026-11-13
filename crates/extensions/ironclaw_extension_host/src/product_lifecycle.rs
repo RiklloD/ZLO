@@ -1,6 +1,4 @@
 // arch-exempt: large_file, shared extension removal convergence and compatibility tests, plan #6329
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Weak},

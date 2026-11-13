@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use axum::body::Body;
 use http::Request;
 use http_body_util::BodyExt;

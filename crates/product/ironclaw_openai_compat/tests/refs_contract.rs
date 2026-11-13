@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, UserId};
 use ironclaw_openai_compat::{
     OpenAiChatCompletionId, OpenAiCompatActorScope, OpenAiCompatBindInternalRefs,

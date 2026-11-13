@@ -1,5 +1,6 @@
 //! Built-in coding tools: permissions, listing limits, apply_patch, and write_file guards.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::mount::MountPermissions;
 use ironclaw_host_api::result_meta::FailureKind;
 use ironclaw_host_runtime::{

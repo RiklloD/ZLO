@@ -33,8 +33,6 @@
 //! stripped **before** `#[cfg(test)]` blocks (the reverse order swallows
 //! production code — see the ordering guard below), every I/O error fatal, and
 //! non-vacuity asserted so a broken walk can never read as a clean tree.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

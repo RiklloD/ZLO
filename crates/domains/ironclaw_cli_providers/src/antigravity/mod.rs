@@ -17,8 +17,6 @@
 //! `session/request_permission` goes through [`crate::permissions::decide`]:
 //! an IronClaw approval in the thread when the host has a bridge, a denial
 //! otherwise.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 mod fold;
 

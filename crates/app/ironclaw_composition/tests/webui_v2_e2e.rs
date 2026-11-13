@@ -14,6 +14,7 @@
 //! endpoints — works end-to-end without anything mocked above the LLM
 //! boundary.
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "test-support")]
 
 use std::path::{Path, PathBuf};

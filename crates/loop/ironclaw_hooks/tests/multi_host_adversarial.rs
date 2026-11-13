@@ -30,6 +30,7 @@
 //! 5. Clock-skew — two hosts pass different `DateTime<Utc>`; window follows the
 //!    caller-supplied clock basis (both durable backends chose caller `now`).
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "integration")]
 // Test-binary-internal cluster/host helpers: `pub` inside a `tests/` integration
 // binary is equivalent to `pub(crate)` (nothing links this crate downstream), so

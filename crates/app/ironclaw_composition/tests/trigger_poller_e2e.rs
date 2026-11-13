@@ -5,6 +5,7 @@
 //! spawned background task (a) mutates the record and (b) causes the LLM
 //! gateway to receive a request whose content includes the trigger prompt.
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "test-support")]
 
 use std::collections::BTreeMap;

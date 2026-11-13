@@ -7,8 +7,6 @@
 //!   confirmed, reconciled on reopen) that this runtime does not keep.
 //! - **Compact** (`thread/compact/start`), now or when the thread idles
 //!   (`compact.rs`). One visible "Context compacted." row marks it.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::path::Path;
 use std::time::Duration;

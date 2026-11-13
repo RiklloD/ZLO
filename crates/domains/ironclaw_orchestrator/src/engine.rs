@@ -8,8 +8,6 @@
 //! handoffs, continuations): the thread must be idle and not held, checked
 //! under the dispatch lock that Stop also takes, so an automatic turn can
 //! never slip in between a user's Stop and its hold.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

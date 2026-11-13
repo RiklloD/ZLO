@@ -4,8 +4,6 @@
 //! of that module, so `use super::*` reaches both `anthropic_oauth.rs`'s
 //! items and `tests.rs`'s own capture-server helpers
 //! (`capture_one_request`, `captured_json`).
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use super::*;
 

@@ -31,6 +31,7 @@
 //! with an owner other than this PR, so it is recorded here rather than approximated — a test that
 //! seeds disk and asserts success would report production coverage it does not have.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 use std::time::Duration;
 

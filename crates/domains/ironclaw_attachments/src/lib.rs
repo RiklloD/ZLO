@@ -17,6 +17,7 @@
 //! [`ScopedFilesystem`]: ironclaw_filesystem::ScopedFilesystem
 //! [`MountPermissions`]: ironclaw_host_api::mount::MountPermissions
 
+#![deny(clippy::let_underscore_must_use)]
 mod budgets;
 mod inbound;
 mod landing;

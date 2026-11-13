@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_openai_compat::{
     OpenAiChatCompletionChunk, OpenAiChatCompletionId, OpenAiChatCompletionRequest,
     OpenAiChatCompletionResponse, OpenAiChatFinishReason, OpenAiChatMessageRole,

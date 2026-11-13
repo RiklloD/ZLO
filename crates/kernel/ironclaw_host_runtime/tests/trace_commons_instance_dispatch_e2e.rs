@@ -12,6 +12,7 @@
 //! invite) must pass the dispatch enrollment gate and mint under the shared
 //! instance device key with a per-user pseudonymous subject.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{Arc, Mutex};
 
 use ironclaw_host_runtime::{

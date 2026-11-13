@@ -1,6 +1,4 @@
 // arch-exempt: large_file, centralized CLI and Dockerfile smoke contracts, plan #6058
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 use std::io::BufRead;
 use std::{
     io::Write,

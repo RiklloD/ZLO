@@ -1,5 +1,6 @@
 //! Durable, metadata-only user notification Inbox records and storage.
 
+#![deny(clippy::let_underscore_must_use)]
 mod error;
 mod store;
 mod types;

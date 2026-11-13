@@ -2,6 +2,7 @@
 
 // arch-exempt: large_file, caller-level product-auth route regression coverage, plan #5905
 
+#![deny(clippy::let_underscore_must_use)]
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 

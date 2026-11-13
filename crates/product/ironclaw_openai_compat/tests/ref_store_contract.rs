@@ -2,6 +2,7 @@
 // cargo features, and `OpenAiCompatRefStore` holds an `Arc<dyn RootFilesystem>`,
 // so the suite drives it over whichever backend it constructs.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_filesystem::{CasExpectation, Entry, InMemoryBackend, RecordKind, RootFilesystem};

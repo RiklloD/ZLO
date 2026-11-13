@@ -16,8 +16,6 @@
 //! schema validation fail. Callers must handle [`ResourceError::Storage`] the
 //! same way as quota denials: do not start costed or quota-limited work until a
 //! reservation operation succeeds.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 mod cas_snapshot;
 mod event;

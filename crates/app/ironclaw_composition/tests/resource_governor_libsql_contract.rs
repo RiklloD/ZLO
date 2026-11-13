@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::{sync::Arc, time::Duration};
 
 use ironclaw_filesystem::{LibSqlRootFilesystem, RootFilesystem, ScopedFilesystem, SeqNo};

@@ -7,6 +7,7 @@
 //! this slice) and does *not* cover Reborn middleware composition (next
 //! slice). It exists to prove the cross-module shapes fit together.
 
+#![deny(clippy::let_underscore_must_use)]
 use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_hooks::{

@@ -1,5 +1,6 @@
 //! Built-in native memory and profile capabilities.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_event_log::InMemoryAuditSink;

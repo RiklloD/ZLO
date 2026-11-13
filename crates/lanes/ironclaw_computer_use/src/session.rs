@@ -4,8 +4,6 @@
 //! view needs (activity, pointer, the target window, the agent's screenshot)
 //! plus the trace line. Calls on one session are serialised; Stop aborts the
 //! call in flight and kills its process.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;

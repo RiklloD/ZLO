@@ -9,8 +9,6 @@
 //! established, and the "only `main.rs` may exit" rule: this trait's methods
 //! return [`LlmCredentialPromptError::NonInteractive`] rather than calling
 //! `process::exit`.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::io::IsTerminal;
 use std::io::Write as _;

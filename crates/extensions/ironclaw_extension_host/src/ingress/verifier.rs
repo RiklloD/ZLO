@@ -10,8 +10,6 @@
 //! route the verifier tries each within [`MAX_VERIFICATION_CANDIDATES`] and
 //! resolves exactly one — zero verifying is an authentication failure, more
 //! than one is ambiguous (checklist ING-6).
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;

@@ -5,8 +5,6 @@
 //! contract is a single trait that downstream crates implement. The
 //! governor never *requires* a sink; callers wire one if they want UI
 //! chips and audit trails.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use chrono::{DateTime, Utc};
 

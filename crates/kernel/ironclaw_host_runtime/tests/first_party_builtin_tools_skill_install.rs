@@ -1,5 +1,6 @@
 //! Built-in `skill_install`: inline content, bundles, and the URL-fetch path.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use ironclaw_host_api::result_meta::FailureKind;

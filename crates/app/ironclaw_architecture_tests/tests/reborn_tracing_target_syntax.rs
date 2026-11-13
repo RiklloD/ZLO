@@ -16,8 +16,6 @@
 //! not just a sweep. [`tracing_macros_set_the_metadata_target`] is that gate;
 //! [`metadata_target_only_follows_the_colon_form`] pins the language fact the
 //! gate rests on, so the gate cannot outlive its own premise.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 #[allow(dead_code)]
 mod ratchet_support;

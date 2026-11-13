@@ -7,8 +7,6 @@
 //! Providers that fail repeatedly are temporarily placed in cooldown
 //! so subsequent requests skip them, reducing latency when a provider
 //! is known to be down. Cooldown state is lock-free (atomics only).
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::future::Future;

@@ -6,8 +6,6 @@
 //! `[update]` is read from `config.toml` on every call, so `zlo update
 //! enable` (or the enable route) takes effect at once, without a restart —
 //! the detached job reads the same file when it starts.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

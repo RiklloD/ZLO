@@ -1,4 +1,5 @@
 // arch-exempt: large_file, mechanical §4.3 store swap only — test seams repointed from deleted InMemory*Store doubles to the production stores over InMemoryBackend, plan #6168
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

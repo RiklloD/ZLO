@@ -9,6 +9,7 @@
 //! another (the cross-tenant regression `database.md` / `safety-and-sandbox.md`
 //! require).
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_approvals::*;

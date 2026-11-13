@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 

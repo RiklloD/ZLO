@@ -1,5 +1,6 @@
 //! Built-in first-party package, surface, and dispatch-boundary contracts.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_host_api::capability_surface::CapabilitySurfacePolicy;

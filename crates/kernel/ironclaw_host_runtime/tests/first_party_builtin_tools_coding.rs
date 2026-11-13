@@ -1,5 +1,6 @@
 //! Built-in coding tools: read/write/list/glob/grep shapes and sensitive-path guards.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{sync::Arc, thread, time::Duration};
 
 use ironclaw_filesystem::LibSqlRootFilesystem;

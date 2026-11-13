@@ -9,6 +9,7 @@
 //! narrowing is observable), and a shared input/result io double standing in
 //! for production's `StagedCapabilityIo` (one object, both roles).
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;

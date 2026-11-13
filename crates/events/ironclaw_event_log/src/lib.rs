@@ -37,6 +37,7 @@
 //! strings are host-authored and bounded; unsafe non-empty summaries are
 //! collapsed to a fixed safe display marker.
 
+#![deny(clippy::let_underscore_must_use)]
 mod cursor;
 mod error;
 mod in_memory;

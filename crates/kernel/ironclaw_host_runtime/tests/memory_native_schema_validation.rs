@@ -12,6 +12,7 @@
 //! `first_party_tools::resolve_native_memory_input_schema_ref`); these tests
 //! cover the bundled schema artifacts themselves.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::path::PathBuf;
 
 use ironclaw_host_runtime::memory_native_extension::native_memory_manifest;

@@ -44,6 +44,7 @@
 //!    This test exercises the automation-trigger fallback's authorization-denial
 //!    branch end-to-end through the full HTTP stack.
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "test-support")]
 
 use std::sync::Arc;

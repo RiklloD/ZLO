@@ -1,5 +1,6 @@
 //! Built-in `trigger_create`: schema, validation, persistence, and create hooks.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 #[cfg(feature = "test-support")]

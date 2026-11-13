@@ -1,6 +1,4 @@
 //! Community-profile validation and the profile PUT/DELETE wire contract.
-// untriaged discards: predate the workspace-wide deny (Cargo.toml [workspace.lints.clippy]).
-#![allow(clippy::let_underscore_must_use)]
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
