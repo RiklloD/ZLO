@@ -433,7 +433,6 @@ is not needed.
 brew install colima docker                        # docker = CLI only
 colima start --cpu 4 --memory 8 --disk 40
 export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
-export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock   # Ryuk mounts the in-VM socket
 docker run --rm hello-world                       # sanity check
 ```
 

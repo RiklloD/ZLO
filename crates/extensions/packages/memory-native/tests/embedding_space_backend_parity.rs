@@ -94,7 +94,9 @@ async fn only_the_query_space_ranks_in_cosine_order(fs: Arc<dyn RootFilesystem>)
         &repo,
         &doc("notes/near.md"),
         "near",
-        embedding("model-a:2", vec![0.8, 0.6]),
+        // Cosine 0.8 but a far larger magnitude: dot product would rank it
+        // above `exact`, so the asserted order pins cosine, not dot product.
+        embedding("model-a:2", vec![8.0, 6.0]),
     )
     .await;
     write_embedded(
