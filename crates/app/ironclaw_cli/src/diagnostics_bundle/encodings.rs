@@ -200,6 +200,12 @@ fn json_unescape(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Strict-UTF-8 percent-decoding (`+` kept literal), for deriving a known
+/// value's decoded spelling; `None` when the decoded bytes are not UTF-8.
+pub(super) fn percent_decode_utf8(text: &str) -> Option<String> {
+    String::from_utf8(percent_decode(text.as_bytes(), false)).ok()
+}
+
 fn percent_decode(bytes: &[u8], plus_as_space: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;

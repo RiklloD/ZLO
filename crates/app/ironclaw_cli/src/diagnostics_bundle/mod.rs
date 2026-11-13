@@ -37,6 +37,9 @@ const LOG_TAIL_LINES: usize = 2000;
 const MANIFEST_MAX_BYTES: u64 = 1024 * 1024;
 /// Bound on how many extension directories are listed.
 const MAX_EXTENSIONS: usize = 256;
+/// Length of the build commit written to `system.json`; below the scrubber's
+/// 32-hex secret shape.
+const SHORT_COMMIT_LEN: usize = 12;
 
 pub(crate) struct BundleOptions {
     pub(crate) out: PathBuf,
@@ -359,7 +362,40 @@ fn known_secret_values(
             values.push(value.clone());
         }
     }
+    // A known URL's userinfo password is a secret on its own: a log can
+    // quote it outside that exact URL.
+    let passwords: Vec<String> = values
+        .iter()
+        .flat_map(|value| url_userinfo_passwords(value))
+        .collect();
+    values.extend(passwords);
     KnownSecrets { values, degraded }
+}
+
+/// The password of a `scheme://user:password@host…` value, as written and
+/// percent-decoded (when that differs and is valid UTF-8). Empty when the
+/// value carries no userinfo password.
+fn url_userinfo_passwords(value: &str) -> Vec<String> {
+    let Some((_, rest)) = value.split_once("://") else {
+        return Vec::new();
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let Some((userinfo, _host)) = authority.rsplit_once('@') else {
+        return Vec::new();
+    };
+    let Some((_user, password)) = userinfo.split_once(':') else {
+        return Vec::new();
+    };
+    if password.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![password.to_string()];
+    if let Some(decoded) = encodings::percent_decode_utf8(password)
+        && decoded != password
+    {
+        out.push(decoded);
+    }
+    out
 }
 
 /// Collect `*_env`/`*_var` names and credential-keyed values from raw
@@ -437,8 +473,16 @@ fn system_json(
             "unsupported (startup refuses this backend)"
         }
     };
+    // The short SHA: a full 40-hex commit matches the scrubber's long-hex
+    // secret shape (>= 32 hex chars) and would be written as `[REDACTED]`.
+    // `current_build` only yields full ASCII-hex hashes, so the byte slice is
+    // on a char boundary.
+    let commit = build
+        .commit
+        .as_deref()
+        .map(|commit| commit.get(..SHORT_COMMIT_LEN).unwrap_or(commit));
     json!({
-        "zlo": { "version": build.version, "commit": build.commit },
+        "zlo": { "version": build.version, "commit": commit },
         "platform": {
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,

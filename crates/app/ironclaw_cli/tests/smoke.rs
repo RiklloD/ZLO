@@ -3646,6 +3646,27 @@ fn doctor_bundle_writes_local_zip_without_creating_reborn_home() {
         "doctor --bundle must not create state directories"
     );
 
+    // The build commit identifies the binary in a bug report. A full
+    // 40-hex SHA matches the scrubber's long-hex secret shape, so it must be
+    // emitted in a form that survives redaction (the 12-char short SHA).
+    let mut archive =
+        zip::ZipArchive::new(std::fs::File::open(&bundle).expect("open bundle")).expect("zip");
+    let mut system = String::new();
+    std::io::Read::read_to_string(
+        &mut archive.by_name("system.json").expect("system.json"),
+        &mut system,
+    )
+    .expect("read system.json");
+    let system: serde_json::Value = serde_json::from_str(&system).expect("system.json is json");
+    let expected_commit = option_env!("IRONCLAW_BUILD_COMMIT")
+        .filter(|commit| commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(|commit| serde_json::Value::String(commit[..12].to_string()))
+        .unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        system["zlo"]["commit"], expected_commit,
+        "system.json must carry the unredacted short build commit: {system}"
+    );
+
     let again = run(&[]);
     assert!(!again.status.success(), "existing bundle needs --force");
     assert!(

@@ -332,6 +332,42 @@ fn broken_config_degrades_visibly_and_still_knows_env_secrets() {
     );
 }
 
+/// A known secret that is a URL (`DATABASE_URL`) carries its password in the
+/// userinfo. The password is a secret on its own: a log that quotes it
+/// outside that URL (raw, percent-encoded, or base64 of `user:password`
+/// after an unrecognized scheme word) must not leak it, and the final check
+/// must know it too.
+#[test]
+fn password_inside_a_known_secret_url_is_itself_a_known_secret() {
+    let (_tmp, context) = RebornCliContext::test_context();
+    let home = context.boot_config().home().path().to_path_buf();
+    let password = "Pg9pw+canary/31337";
+    let encoded_password = "Pg9pw%2Bcanary%2F31337";
+    let url = format!("postgres://zlo:{encoded_password}@db.internal:5432/zlo");
+    write(
+        &home.join("logs").join("serve.stderr.log"),
+        &format!(
+            "db rejected credential {password}\nretry with {encoded_password}\n\
+             proxy cred {}\nheartbeat ok\n",
+            b64(&format!("zlo:{password}"), false)
+        ),
+    );
+    let env = env(&[("DATABASE_URL", url.as_str())]);
+    let (_out_dir, out, result) = run_bundle(&context, &env, true);
+    result.expect("bundle writes");
+    let entries = read_bundle(&out);
+    assert_no_leaks(
+        &entries,
+        &[
+            password.to_string(),
+            encoded_password.to_string(),
+            b64(&format!("zlo:{password}"), false),
+        ],
+    );
+    let log = String::from_utf8_lossy(&entries["logs/serve.stderr.log.tail.txt"]).into_owned();
+    assert!(log.contains("heartbeat ok"), "{log}");
+}
+
 #[test]
 fn system_json_reports_the_real_storage_kind() {
     let (_tmp, context) = RebornCliContext::test_context();
