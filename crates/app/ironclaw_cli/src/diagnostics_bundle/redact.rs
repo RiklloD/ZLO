@@ -28,9 +28,14 @@ use super::line;
 
 pub(crate) const REDACTED: &str = "[REDACTED]";
 
-/// Below this many characters an "exact secret" is too short to replace
-/// without mangling unrelated text (and too short to be a real credential).
+/// From this many characters a known secret is replaced wherever it occurs.
 const MIN_EXACT_SECRET_CHARS: usize = 8;
+/// Shorter known secrets, down to this many characters, are replaced only as
+/// whole tokens (bounded by non-alphanumeric ASCII or the text's edges), so
+/// replacing them does not mangle words that merely contain them. Anything
+/// shorter cannot be redacted safely at all: see
+/// [`Scrubber::has_unredactable_secret`].
+const MIN_TOKEN_SECRET_CHARS: usize = 4;
 
 /// Bound on JSON values parsed out of one log line.
 const MAX_JSON_ATTEMPTS_PER_LINE: usize = 16;
@@ -79,33 +84,62 @@ const NON_SECRET_KEY_SUFFIXES: &[&str] = &[
 ];
 
 pub(crate) struct Scrubber {
-    /// Every spelling of every known secret, longest first.
+    /// Every spelling of every known secret of at least
+    /// [`MIN_EXACT_SECRET_CHARS`], longest first.
     forms: Vec<String>,
+    /// Every spelling of every shorter known secret of at least
+    /// [`MIN_TOKEN_SECRET_CHARS`], longest first; matched as whole tokens.
+    token_forms: Vec<String>,
+    /// A known secret is shorter than [`MIN_TOKEN_SECRET_CHARS`].
+    unredactable: bool,
 }
 
 impl Scrubber {
     pub(crate) fn new(known_secrets: impl IntoIterator<Item = String>) -> Self {
         let mut forms: Vec<String> = Vec::new();
+        let mut token_forms: Vec<String> = Vec::new();
+        let mut unredactable = false;
+        let mut add = |value: &str| match value.chars().count() {
+            0 => {}
+            n if n < MIN_TOKEN_SECRET_CHARS => unredactable = true,
+            n if n < MIN_EXACT_SECRET_CHARS => token_forms.extend(encodings::forms(value)),
+            _ => forms.extend(encodings::forms(value)),
+        };
         for value in known_secrets {
             let value = value.trim().to_string();
-            if value.chars().count() < MIN_EXACT_SECRET_CHARS {
-                continue;
-            }
+            add(&value);
             let stripped = strip_control(&value);
-            forms.extend(encodings::forms(&value));
-            if stripped != value && stripped.chars().count() >= MIN_EXACT_SECRET_CHARS {
-                forms.extend(encodings::forms(&stripped));
+            if stripped != value {
+                add(&stripped);
             }
         }
         // Longest first so a spelling that contains another is replaced whole.
-        forms.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-        forms.dedup();
-        Self { forms }
+        for list in [&mut forms, &mut token_forms] {
+            list.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+            list.dedup();
+        }
+        Self {
+            forms,
+            token_forms,
+            unredactable,
+        }
     }
 
-    /// Every spelling replacement removes, longest first.
-    pub(crate) fn forms(&self) -> &[String] {
-        &self.forms
+    /// Every spelling replacement removes (exact and whole-token), longest
+    /// first within each kind.
+    pub(crate) fn forms(&self) -> Vec<String> {
+        self.forms
+            .iter()
+            .chain(&self.token_forms)
+            .cloned()
+            .collect()
+    }
+
+    /// A known secret is too short (under [`MIN_TOKEN_SECRET_CHARS`]) to be
+    /// redacted without destroying unrelated text, so free text that could
+    /// contain it (log tails) must be left out of the bundle.
+    pub(crate) fn has_unredactable_secret(&self) -> bool {
+        self.unredactable
     }
 
     /// Scrub free text (log lines, error details).
@@ -114,6 +148,11 @@ impl Scrubber {
         for form in &self.forms {
             if text.contains(form.as_str()) {
                 text = text.replace(form.as_str(), REDACTED);
+            }
+        }
+        for form in &self.token_forms {
+            if text.contains(form.as_str()) {
+                text = replace_tokens(&text, form);
             }
         }
         text.split('\n')
@@ -189,13 +228,17 @@ impl Scrubber {
     /// spelling, or literally after leniently decoding JSON and percent
     /// escapes. Used as the last check before the archive is written.
     pub(crate) fn contains_known_secret(&self, bytes: &[u8]) -> bool {
-        if self.forms.is_empty() {
+        if self.forms.is_empty() && self.token_forms.is_empty() {
             return false;
         }
         encodings::decoded_views(bytes).iter().any(|view| {
             self.forms
                 .iter()
                 .any(|form| contains_subslice(view, form.as_bytes()))
+                || self
+                    .token_forms
+                    .iter()
+                    .any(|form| contains_token(view, form.as_bytes()))
         })
     }
 }
@@ -244,6 +287,43 @@ fn sensitivity(key: &str) -> Sensitivity {
 
 pub(crate) fn is_sensitive_key(key: &str) -> bool {
     !matches!(sensitivity(key), Sensitivity::None)
+}
+
+/// Whether `bytes[start..end]` is a whole token: the bytes on either side
+/// are absent or not ASCII alphanumeric.
+fn is_token_at(bytes: &[u8], start: usize, end: usize) -> bool {
+    let before = start.checked_sub(1).and_then(|index| bytes.get(index));
+    let after = bytes.get(end);
+    before.is_none_or(|byte| !byte.is_ascii_alphanumeric())
+        && after.is_none_or(|byte| !byte.is_ascii_alphanumeric())
+}
+
+/// `needle` occurs in `haystack` as a whole token.
+fn contains_token(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .enumerate()
+            .any(|(start, window)| {
+                window == needle && is_token_at(haystack, start, start + needle.len())
+            })
+}
+
+/// Replace every whole-token occurrence of `form` in `text`.
+fn replace_tokens(text: &str, form: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (start, _) in text.match_indices(form) {
+        if start < copied || !is_token_at(text.as_bytes(), start, start + form.len()) {
+            continue;
+        }
+        out.push_str(&text[copied..start]);
+        out.push_str(REDACTED);
+        copied = start + form.len();
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {

@@ -189,3 +189,23 @@ fn json_inside_a_log_line_is_scrubbed_structurally() {
     );
     assert_clean("token={\"v\":\"x9x9x9x9\"}", &["x9x9x9x9"]);
 }
+
+/// Known secrets of 4–7 characters are replaced, and detected by the final
+/// check, only as whole tokens — in every enumerated spelling and after the
+/// final check's lenient decoding; under 4 they are flagged unredactable.
+#[test]
+fn short_known_secrets_match_as_whole_tokens_only() {
+    let scrubber = Scrubber::new(["Xy7pQ2w".to_string()]);
+    assert!(!scrubber.has_unredactable_secret());
+    assert_eq!(
+        scrubber.text("auth Xy7pQ2w, notXy7pQ2wpart"),
+        "auth [REDACTED], notXy7pQ2wpart"
+    );
+    assert!(scrubber.contains_known_secret(b"left Xy7pQ2w right"));
+    // A mixed spelling replacement does not enumerate still trips the check.
+    assert!(scrubber.contains_known_secret(b"left Xy%37pQ2w right"));
+    assert!(!scrubber.contains_known_secret(b"inside aXy7pQ2wb a word"));
+
+    assert!(Scrubber::new(["a1b".to_string()]).has_unredactable_secret());
+    assert!(!Scrubber::new([String::new()]).has_unredactable_secret());
+}

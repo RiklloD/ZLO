@@ -3710,42 +3710,35 @@ fn traces_state_is_written_under_zlo_home_not_the_user_home() {
     );
 }
 
-/// Through the real binary: the password inside a known secret URL
-/// (`DATABASE_URL` from the process environment) is itself a known secret —
-/// quoted in a log tail on its own, percent-encoded, or as base64 of
-/// `user:password`, it never reaches the archive.
-#[test]
-fn doctor_bundle_redacts_the_password_of_a_secret_url_from_the_environment() {
+/// Run `zlo doctor --bundle` against a fresh home whose service log holds
+/// `log`, with `env` added to the process environment. Returns the command
+/// output and every archive entry as text.
+fn bundle_with_log_and_env(
+    log: &str,
+    env: &[(&str, String)],
+) -> (
+    std::process::Output,
+    std::collections::BTreeMap<String, String>,
+) {
     let temp = tempfile::tempdir().expect("tempdir");
     let zlo_home = temp.path().join("zlo-home");
     let logs = zlo_home.join("logs");
     std::fs::create_dir_all(&logs).expect("logs dir");
-    let password = "Pg9pw+canary/31337";
-    let encoded_password = "Pg9pw%2Bcanary%2F31337";
-    // base64("zlo:Pg9pw+canary/31337"), precomputed (no base64 dev-dep here).
-    let basic = "emxvOlBnOXB3K2NhbmFyeS8zMTMzNw==";
-    std::fs::write(
-        logs.join("serve.stderr.log"),
-        format!(
-            "db rejected credential {password}\nretry with {encoded_password}\n\
-             proxy cred {basic}\nheartbeat ok\n"
-        ),
-    )
-    .expect("seed log");
+    std::fs::write(logs.join("serve.stderr.log"), log).expect("seed log");
     let bundle = temp.path().join("diagnostics.zip");
-
-    let output = reborn_command()
+    let mut command = reborn_command();
+    command
         .arg("doctor")
         .arg("--bundle")
         .arg(&bundle)
         .env("HOME", temp.path().join("user"))
         .env("ZLO_HOME", &zlo_home)
-        .env(
-            "DATABASE_URL",
-            format!("postgres://zlo:{encoded_password}@db.internal:5432/zlo"),
-        )
-        .output()
-        .expect("zlo doctor --bundle should run");
+        .env_remove("DATABASE_URL")
+        .env_remove("IRONCLAW_REBORN_POSTGRES_URL");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let output = command.output().expect("zlo doctor --bundle should run");
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -3753,15 +3746,133 @@ fn doctor_bundle_redacts_the_password_of_a_secret_url_from_the_environment() {
     );
     let mut archive =
         zip::ZipArchive::new(std::fs::File::open(&bundle).expect("open bundle")).expect("zip");
-    let mut all = String::new();
+    let mut entries = std::collections::BTreeMap::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).expect("entry");
-        std::io::Read::read_to_string(&mut entry, &mut all).expect("read entry");
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut text).expect("read entry");
+        entries.insert(entry.name().to_string(), text);
     }
-    for needle in [password, encoded_password, basic, "Pg9pw"] {
-        assert!(!all.contains(needle), "bundle leaks {needle:?}:\n{all}");
+    (output, entries)
+}
+
+fn assert_bundle_omits(entries: &std::collections::BTreeMap<String, String>, needles: &[&str]) {
+    for (name, text) in entries {
+        for needle in needles {
+            assert!(!text.contains(needle), "{name} leaks {needle:?}:\n{text}");
+        }
     }
-    assert!(all.contains("heartbeat ok"), "the log tail is kept:\n{all}");
+}
+
+/// Through the real binary: the password inside a known secret URL
+/// (`DATABASE_URL` from the process environment) is itself a known secret —
+/// quoted in a log tail on its own, percent-encoded, or as base64 of
+/// `user:password`, it never reaches the archive.
+#[test]
+fn doctor_bundle_redacts_the_password_of_a_secret_url_from_the_environment() {
+    let password = "Pg9pw+canary/31337";
+    let encoded_password = "Pg9pw%2Bcanary%2F31337";
+    // base64("zlo:Pg9pw+canary/31337"), precomputed (no base64 dev-dep here).
+    let basic = "emxvOlBnOXB3K2NhbmFyeS8zMTMzNw==";
+    let (_output, entries) = bundle_with_log_and_env(
+        &format!(
+            "db rejected credential {password}\nretry with {encoded_password}\n\
+             proxy cred {basic}\nheartbeat ok\n"
+        ),
+        &[(
+            "DATABASE_URL",
+            format!("postgres://zlo:{encoded_password}@db.internal:5432/zlo"),
+        )],
+    );
+    assert_bundle_omits(&entries, &[password, encoded_password, basic, "Pg9pw"]);
+    assert!(
+        entries["logs/serve.stderr.log.tail.txt"].contains("heartbeat ok"),
+        "the log tail is kept"
+    );
+}
+
+/// Short known passwords (4–7 characters) are redacted as whole tokens, in
+/// the same encodings as long ones: a 7-character password raw and in
+/// base64, and a 6-character one that only appears percent-encoded in its
+/// URL (`p%40ss12` = `p@ss12`), in both spellings. The rest of the log —
+/// including words that merely contain one as a substring — survives.
+#[test]
+fn doctor_bundle_redacts_short_url_passwords_as_whole_tokens() {
+    let seven = "Xy7pQ2w";
+    let seven_b64 = "WHk3cFEydw==";
+    let six = "p@ss12";
+    let six_encoded = "p%40ss12";
+    let six_b64 = "cEBzczEy";
+    let (_output, entries) = bundle_with_log_and_env(
+        &format!(
+            "auth {seven} failed\nblob {seven_b64}\nretry {six} then {six_encoded}\n\
+             token-blob {six_b64}\nnotXy7pQ2wpart stays\nheartbeat ok\n"
+        ),
+        &[
+            (
+                "DATABASE_URL",
+                format!("postgres://zlo:{seven}@db.internal:5432/zlo"),
+            ),
+            (
+                "IRONCLAW_REBORN_POSTGRES_URL",
+                format!("postgres://ops:{six_encoded}@db.internal:5432/zlo"),
+            ),
+        ],
+    );
+    let log = &entries["logs/serve.stderr.log.tail.txt"];
+    for needle in [
+        format!(" {seven} "),
+        format!(" {seven_b64}"),
+        format!(" {six} "),
+        format!(" {six_encoded}"),
+        format!(" {six_b64}"),
+    ] {
+        assert!(!log.contains(&needle), "log tail leaks {needle:?}:\n{log}");
+    }
+    assert!(log.contains("heartbeat ok"), "{log}");
+    assert!(
+        log.contains("notXy7pQ2wpart stays"),
+        "a value inside a longer word is not a token match:\n{log}"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&entries["manifest.json"]).expect("manifest json");
+    assert_eq!(
+        manifest["redaction_inputs"]["degraded"], false,
+        "{manifest}"
+    );
+}
+
+/// A known secret shorter than 4 characters cannot be redacted safely, so
+/// the bundle leaves every log tail out, records why in the manifest, and
+/// tells the user to rotate it.
+#[test]
+fn doctor_bundle_withholds_logs_when_a_known_secret_is_too_short_to_redact() {
+    let (output, entries) = bundle_with_log_and_env(
+        "connected with a1b\nheartbeat ok\n",
+        &[(
+            "DATABASE_URL",
+            "postgres://zlo:a1b@db.internal:5432/zlo".to_string(),
+        )],
+    );
+    assert!(
+        !entries.keys().any(|name| name.starts_with("logs/")),
+        "log tails must be withheld: {:?}",
+        entries.keys()
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&entries["manifest.json"]).expect("manifest json");
+    assert_eq!(manifest["redaction_inputs"]["degraded"], true, "{manifest}");
+    let reasons = manifest["redaction_inputs"]["reasons"].to_string();
+    assert!(reasons.contains("shorter than 4"), "{reasons}");
+    assert_bundle_omits(&entries, &["a1b"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .to_ascii_lowercase()
+            .contains("rotate it to a longer secret")
+            && stdout.contains("log tails were left out"),
+        "the user is warned: {stdout}"
+    );
 }
 
 /// Through real CLI dispatch: with only a pre-ZLO `~/.ironclaw/reborn`

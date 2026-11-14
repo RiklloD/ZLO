@@ -53,6 +53,9 @@ pub(crate) struct BundleReport {
     /// Why the list of known secret values may be incomplete; empty when
     /// every source of known values was readable.
     pub(crate) degraded: Vec<String>,
+    /// A known secret is too short to redact safely, so every log tail was
+    /// left out of the bundle.
+    pub(crate) logs_withheld_for_short_secret: bool,
 }
 
 /// Process-level facts the bundle reads, injectable so tests stay hermetic
@@ -95,13 +98,15 @@ pub(crate) fn write_bundle_with(
             out.display()
         );
     }
-    let (entries, degraded) = collect_entries(context, inputs, options.include_logs)?;
+    let (entries, degraded, logs_withheld_for_short_secret) =
+        collect_entries(context, inputs, options.include_logs)?;
     let bytes = encode_zip(&entries)?;
     crate::file_write::write_atomic_bytes(&out, &bytes, options.force, "diagnostics bundle")?;
     Ok(BundleReport {
         out,
         entries: entries.into_iter().map(|(name, _)| name).collect(),
         degraded,
+        logs_withheld_for_short_secret,
     })
 }
 
@@ -111,7 +116,7 @@ fn collect_entries(
     context: &RebornCliContext,
     inputs: &BundleInputs<'_>,
     include_logs: bool,
-) -> anyhow::Result<(Vec<Entry>, Vec<String>)> {
+) -> anyhow::Result<(Vec<Entry>, Vec<String>, bool)> {
     let home = context.boot_config().home();
     let profile = context.boot_config().profile();
     let config_list = crate::commands::config::config_list_dto(context);
@@ -127,6 +132,14 @@ fn collect_entries(
     );
     let scrubber = redact::Scrubber::new(known.values);
     let degraded = known.degraded;
+    // A known secret under 4 characters cannot be redacted without
+    // destroying unrelated text, and the final check could not tell it from
+    // ordinary text either: leave every log tail out instead.
+    let withhold_logs = scrubber.has_unredactable_secret();
+    let mut redaction_reasons = degraded.clone();
+    if withhold_logs {
+        redaction_reasons.push(SHORT_SECRET_REASON.to_string());
+    }
 
     let mut entries: Vec<(String, Value)> = Vec::new();
 
@@ -188,9 +201,12 @@ fn collect_entries(
 
     let mut logs = Vec::new();
     let mut log_notes = Vec::new();
-    if include_logs {
+    if include_logs && withhold_logs {
+        log_notes.push(format!("logs withheld: {SHORT_SECRET_REASON}"));
+    } else if include_logs {
+        let forms = scrubber.forms();
         for path in log_files(home.path()) {
-            match tail_log(&path, scrubber.forms())? {
+            match tail_log(&path, &forms)? {
                 Some(text) => {
                     let name = path
                         .file_name()
@@ -213,8 +229,8 @@ fn collect_entries(
         "entries": names,
         "logs": log_notes,
         "redaction_inputs": {
-            "degraded": !degraded.is_empty(),
-            "reasons": degraded,
+            "degraded": !redaction_reasons.is_empty(),
+            "reasons": redaction_reasons,
         },
         "redaction": "Values this machine knows are secret (WebUI token, the local secrets \
                       master key, env vars named by config.toml, the built-in provider \
@@ -253,8 +269,13 @@ fn collect_entries(
              (possibly in an encoding the scrubber does not undo){hint}"
         );
     }
-    Ok((out, degraded))
+    Ok((out, degraded, withhold_logs))
 }
+
+/// Recorded in `manifest.json` (and shown by `doctor`) when a known secret
+/// is too short to redact, so the log tails were left out.
+const SHORT_SECRET_REASON: &str = "a known secret value is shorter than 4 characters and cannot be \
+     redacted safely; log tails were left out of this bundle";
 
 /// Env vars whose values are credentials by default, whatever config says.
 const DEFAULT_SECRET_ENV_NAMES: &[&str] = &[
