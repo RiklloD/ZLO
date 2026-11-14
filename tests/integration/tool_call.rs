@@ -120,6 +120,59 @@ async fn runs_numeric_time_input_through_builtin_tools_group() {
     );
 }
 
+/// Stack-depth regression guard for the tool-dispatch path.
+///
+/// A tool call polls one deep chain: process supervisor → turn executor →
+/// agent-loop pipeline → capability stage → loop-host port decorators →
+/// `CapabilityHost` → authorization/dispatch → host runtime → first-party
+/// lane. Unoptimized builds reserve a stack slot for every future temporary
+/// at every `.await` site, so this chain once needed ~2.3 MiB and aborted
+/// with a stack overflow on the 2 MiB default test-thread (and tokio worker)
+/// stack. The boxed seams in `ironclaw_agent_loop` (stage callees return
+/// heap futures) and the per-literal schema builder in `ironclaw_host_runtime`
+/// bring it down to ~1 MiB of dispatch depth. Running the whole journey —
+/// harness assembly included — on a 1.5 MiB thread keeps ~0.5 MiB of
+/// headroom below the default, so a regression trips here as a stack
+/// overflow instead of surfacing as an abort in an unrelated suite.
+#[test]
+fn builtin_tool_call_journey_fits_in_a_one_and_a_half_mib_stack() {
+    run_async_test_on_stack(
+        "builtin_tool_call_journey_fits_in_a_one_and_a_half_mib_stack",
+        1536 * 1024,
+        builtin_tool_call_journey_fits_in_a_one_and_a_half_mib_stack_impl,
+    );
+}
+
+async fn builtin_tool_call_journey_fits_in_a_one_and_a_half_mib_stack_impl() {
+    let g = RebornIntegrationGroup::builtin_tools()
+        .await
+        .expect("builtin tools group builds");
+    let h = g
+        .thread("conv-stack-depth")
+        .script([
+            RebornScriptedReply::tool_call("builtin.time", json!({"operation": "now"})),
+            RebornScriptedReply::text("it is now"),
+        ])
+        .build()
+        .await
+        .expect("time thread builds");
+
+    h.submit_turn("what time is it?")
+        .await
+        .expect("turn completes");
+    let output = h
+        .tool_result_output("builtin.time")
+        .await
+        .expect("time result recorded through the dispatch path");
+    assert!(
+        output.get("unix_millis").is_some(),
+        "builtin.time result must carry the dispatched evidence: {output}"
+    );
+    h.assert_reply_contains("it is now")
+        .await
+        .expect("post-tool reply finalized");
+}
+
 #[test]
 fn runs_http_tool_call_through_recorded_egress() {
     run_async_test_with_stack(
@@ -2201,9 +2254,20 @@ where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + 'static,
 {
+    run_async_test_on_stack(name, 16 * 1024 * 1024, test);
+}
+
+/// Drives `test` to completion on a fresh OS thread with exactly
+/// `stack_bytes` of stack and a current-thread runtime, so every task the
+/// harness spawns (scheduler, turn executor, agent loop) polls on that stack.
+fn run_async_test_on_stack<F, Fut>(name: &'static str, stack_bytes: usize, test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
     let handle = std::thread::Builder::new()
         .name(name.to_string())
-        .stack_size(16 * 1024 * 1024)
+        .stack_size(stack_bytes)
         .spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
