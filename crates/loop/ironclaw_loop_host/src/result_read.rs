@@ -58,11 +58,13 @@ pub fn wrap_result_read_capability_for_test(
         result_writer,
         // trajectory_observer: None — not wired in the integration-test harness.
         None,
-        // `result_read` never raises an approval gate, so its resume path never
-        // loads a replay payload; an in-memory store keeps the seam wired.
-        Arc::new(ironclaw_capabilities::ReplayPayloadStore::new(
-            replay_payload_filesystem()?,
-        )),
+        // `result_read` is read-only and never consults the gate; an
+        // in-memory one keeps the seam wired.
+        Arc::new(
+            crate::synthetic_approval::in_memory_synthetic_approval_gate_for_test(Arc::new(
+                ironclaw_capabilities::ReplayPayloadStore::new(replay_payload_filesystem()?),
+            )),
+        ),
     )
 }
 

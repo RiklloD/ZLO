@@ -352,67 +352,136 @@ async fn require_approval_for_profile_policy(
     // of class-B (see below), so an always-allow/auto-approve cannot bypass it.
     let profile_requires_approval = effect_based_intrinsic_gate || origin_requires_approval;
 
-    let require_approval = || Decision::RequireApproval {
-        request: approval_request(context, descriptor, estimate, action_kind),
-    };
+    let expected_grantee = Principal::Extension(descriptor.provider.clone());
+    let durable_auto_approval_eligible =
+        permission_mode_allows_persistent_approval(descriptor.default_permission);
+    let verdict = approval_gate_verdict(
+        settings,
+        ApprovalGateQuery {
+            scope: &context.resource_scope,
+            capability_id: &descriptor.id,
+            grantee: &expected_grantee,
+            // Fingerprinted approval leases are not ambient grants:
+            // CapabilityHost's `resume_json` path excludes them from normal
+            // grant loading, then validates the blocked run's
+            // approval_request_id, approval request metadata, and invocation
+            // fingerprint before injecting the matching lease grant into this
+            // resume context. This predicate therefore recognizes the already
+            // selected resume lease; it is not the lease lookup boundary.
+            approved_for_this_invocation: has_matching_one_shot_approval_grant(
+                context,
+                descriptor,
+                &gate_effects,
+            ),
+            // The matrix's `AskAlways` hard-floor gate composes here (§5.2.7),
+            // with the same semantics as `effects_force_approval`.
+            force_approval: gate_policy.effects_force_approval(&gate_effects)
+                || origin_forces_approval,
+            exempt_from_approval: gate_policy.capability_exempt_from_approval(&descriptor.id),
+            global_auto_approve_eligible: durable_auto_approval_eligible,
+            always_allow_eligible: durable_auto_approval_eligible,
+            approved_for_this_task: false,
+            policy_requires_approval: profile_requires_approval,
+        },
+    )
+    .await;
+    match verdict {
+        ApprovalGateVerdict::Allow => decision,
+        ApprovalGateVerdict::RequireApproval => Decision::RequireApproval {
+            request: approval_request(context, descriptor, estimate, action_kind),
+        },
+        ApprovalGateVerdict::Deny => Decision::Deny {
+            reason: DenyReason::PolicyDenied,
+        },
+    }
+}
 
+/// What the approval gate concludes for one invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalGateVerdict {
+    Allow,
+    RequireApproval,
+    Deny,
+}
+
+/// The inputs of the approval gate's decision for one invocation that the
+/// settings provider does not answer itself.
+///
+/// The capability host derives these from a [`CapabilityDescriptor`]; callers
+/// without one (synthetic loop capabilities) state them directly, so every
+/// gated call shares [`approval_gate_verdict`]'s precedence instead of a copy.
+#[derive(Debug, Clone, Copy)]
+pub struct ApprovalGateQuery<'a> {
+    /// The invocation's full resource scope — thread included, since the
+    /// thread's profile decides "Full access" and auto-approve.
+    pub scope: &'a ResourceScope,
+    pub capability_id: &'a CapabilityId,
+    /// The principal a stored always-allow grant must name.
+    pub grantee: &'a Principal,
+    /// A verified one-shot approval of exactly this invocation.
+    pub approved_for_this_invocation: bool,
+    /// Hard floor: only a one-shot approval (or Full access) satisfies it.
+    pub force_approval: bool,
+    pub exempt_from_approval: bool,
+    /// Whether the global auto-approve switch may let this capability run.
+    pub global_auto_approve_eligible: bool,
+    /// Whether a stored per-tool always-allow may let this capability run.
+    pub always_allow_eligible: bool,
+    /// An approval already given in this task that, by the capability's own
+    /// contract, covers its later calls. Ranks with always-allow.
+    pub approved_for_this_task: bool,
+    /// Whether the runtime policy gates this capability's effects at all.
+    pub policy_requires_approval: bool,
+}
+
+/// The approval gate's decision precedence (#4776), shared by the capability
+/// host and every other gated caller. Settings errors are the provider's to
+/// fail safe on (an unreadable setting never allows).
+pub async fn approval_gate_verdict(
+    settings: &dyn ApprovalSettingsProvider,
+    query: ApprovalGateQuery<'_>,
+) -> ApprovalGateVerdict {
     // Decision precedence (high → low), #4776:
-    // 1. Explicit per-tool `disabled` → deny outright (strongest user intent).
+    // 1. Explicit per-tool `disabled` → deny outright (strongest user intent),
+    //    even over a one-shot approval already given.
     let tool_override = settings
-        .tool_override(&context.resource_scope, &descriptor.id)
+        .tool_override(query.scope, query.capability_id)
         .await;
     if matches!(tool_override, Some(ToolPermissionOverride::Disabled)) {
-        return Decision::Deny {
-            reason: DenyReason::PolicyDenied,
-        };
+        return ApprovalGateVerdict::Deny;
     }
-    // 2. A matching one-shot approval lease satisfies the current resume. This
-    //    must beat explicit ask_each_time and hard-floor gates: those settings
+    // 2. A matching one-shot approval satisfies the current resume. This must
+    //    beat explicit ask_each_time and hard-floor gates: those settings
     //    require a fresh human approval for each new invocation, but the lease
     //    is the durable proof that this invocation was just approved.
-    //
-    // Fingerprinted approval leases are not ambient grants: CapabilityHost's
-    // `resume_json` path excludes them from normal grant loading, then validates
-    // the blocked run's approval_request_id, approval request metadata, and
-    // invocation fingerprint before injecting the matching lease grant into this
-    // resume context. This predicate therefore recognizes the already selected
-    // resume lease; it is not the lease lookup boundary.
-    if has_matching_one_shot_approval_grant(context, descriptor, &gate_effects) {
-        return decision;
+    if query.approved_for_this_invocation {
+        return ApprovalGateVerdict::Allow;
     }
     // 2b. A "Full access" thread never asks: the person chose to run every
     //     call unattended, hard floors included.
-    if settings.full_access(&context.resource_scope).await {
-        return decision;
+    if settings.full_access(query.scope).await {
+        return ApprovalGateVerdict::Allow;
     }
     // 3. Hard floor: never auto-approve / never satisfiable by a stored grant
     //    (a Full access thread already returned at 2b).
-    //    The matrix's `AskAlways` hard-floor gate composes here (§5.2.7): it
-    //    beats class-B auto-approve/always-allow (steps 6/7/8 below) and is
-    //    satisfied only by the one-shot approval lease checked in step 2 — the
-    //    same semantics as `effects_force_approval`.
-    if gate_policy.effects_force_approval(&gate_effects) || origin_forces_approval {
-        return require_approval();
+    if query.force_approval {
+        return ApprovalGateVerdict::RequireApproval;
     }
     // 4. Explicit per-tool `ask_each_time` → always gate fresh invocations,
     //    ignoring the global auto-approve setting and any stored always-allow
     //    grant.
     if matches!(tool_override, Some(ToolPermissionOverride::AskEachTime)) {
-        return require_approval();
+        return ApprovalGateVerdict::RequireApproval;
     }
     // 5. Capability deliberately exempt from the gate (in-turn consent).
-    if gate_policy.capability_exempt_from_approval(&descriptor.id) {
-        return decision;
+    if query.exempt_from_approval {
+        return ApprovalGateVerdict::Allow;
     }
-    let expected_grantee = Principal::Extension(descriptor.provider.clone());
-    let durable_auto_approval_eligible =
-        permission_mode_allows_persistent_approval(descriptor.default_permission);
     // 6. Global auto-approve bypasses an otherwise-gated eligible tool. Check
-    // this before per-tool always-allow because it is the default-on common
-    // path for new users; if enabled, both branches return the same Allow.
-    if durable_auto_approval_eligible && settings.global_auto_approve(&context.resource_scope).await
-    {
-        return decision;
+    //    this before per-tool always-allow because it is the default-on common
+    //    path for new users; if enabled, both branches return the same Allow.
+    if query.global_auto_approve_eligible && settings.global_auto_approve(query.scope).await {
+        return ApprovalGateVerdict::Allow;
     }
     // 7. A settings-scope per-tool always-allow policy satisfies the gate.
     //    The provider verifies the active settings-page persistent policy
@@ -421,25 +490,29 @@ async fn require_approval_for_profile_policy(
     //    preloaded into this run's grants. Legacy prompt-created persistent
     //    grants are deliberately not enough when the tool row is "Follow
     //    global" and the global switch is off.
-    if durable_auto_approval_eligible
+    if query.always_allow_eligible
         && settings
-            .tool_always_allow(&context.resource_scope, &descriptor.id, &expected_grantee)
+            .tool_always_allow(query.scope, query.capability_id, query.grantee)
             .await
     {
-        return decision;
+        return ApprovalGateVerdict::Allow;
+    }
+    // 7b. An approval earlier in this task that covers the task's later calls.
+    if query.approved_for_this_task {
+        return ApprovalGateVerdict::Allow;
     }
     // 8. With the global switch off, eligible tools default to asking even when
     //    the runtime profile would otherwise allow low-risk effects. This makes
     //    the Tools page switch authoritative for #4776; explicit always-allow
     //    grants above remain the per-tool opt-in.
-    if durable_auto_approval_eligible {
-        return require_approval();
+    if query.global_auto_approve_eligible || query.always_allow_eligible {
+        return ApprovalGateVerdict::RequireApproval;
     }
     // 9. Policy does not require a gate for this effect set.
-    if !profile_requires_approval {
-        return decision;
+    if !query.policy_requires_approval {
+        return ApprovalGateVerdict::Allow;
     }
-    require_approval()
+    ApprovalGateVerdict::RequireApproval
 }
 
 /// Effects the profile approval gate evaluates for `action_kind`.

@@ -7,6 +7,7 @@ use std::{
 
 use crate::{
     CapabilityTrajectoryObserver, LoopCapabilityInputResolver, LoopCapabilityResultWriter,
+    synthetic_approval::{GateOutcome, SyntheticApproval, SyntheticApprovalGate},
 };
 use async_trait::async_trait;
 use ironclaw_host_api::{
@@ -26,7 +27,7 @@ use ironclaw_turns::CapabilityActivityId;
 
 // Synthetic decorator now also carries the host-private replay-payload store it
 // reconstitutes a synthetic approval-gate resume's input from.
-// arch-exempt: too_many_args, synthetic decorator carries the replay-payload store (§5.3 Stage 2a-i), plan #6175
+// arch-exempt: too_many_args, synthetic decorator carries the approval gate (replay-payload store, §5.3 Stage 2a-i), plan #6175
 #[allow(clippy::too_many_arguments)]
 pub fn wrap_synthetic_capabilities(
     inner: Arc<dyn LoopCapabilityPort>,
@@ -36,7 +37,7 @@ pub fn wrap_synthetic_capabilities(
     input_resolver: Arc<dyn LoopCapabilityInputResolver>,
     result_writer: Arc<dyn LoopCapabilityResultWriter>,
     trajectory_observer: Option<Arc<dyn CapabilityTrajectoryObserver>>,
-    replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
+    approval_gate: Arc<SyntheticApprovalGate>,
 ) -> Result<Arc<dyn LoopCapabilityPort>, AgentLoopHostError> {
     if capabilities.is_empty() {
         return Ok(inner);
@@ -49,7 +50,7 @@ pub fn wrap_synthetic_capabilities(
         input_resolver,
         result_writer,
         trajectory_observer,
-        replay_payload_store,
+        approval_gate,
     )?))
 }
 
@@ -94,8 +95,8 @@ impl SyntheticCapability {
         }
     }
 
-    pub fn effect(&self) -> SyntheticCapabilityEffect {
-        self.descriptor.effect
+    pub fn effect(&self) -> &SyntheticCapabilityEffect {
+        &self.descriptor.effect
     }
 
     /// Whether a run with this surface policy may be offered the capability.
@@ -108,21 +109,23 @@ impl SyntheticCapability {
     pub fn admitted_by(&self, policy: &CapabilitySurfacePolicy) -> bool {
         match self.descriptor.effect {
             SyntheticCapabilityEffect::ReadOnly => true,
-            SyntheticCapabilityEffect::Mutating => policy.include_requires_approval,
+            SyntheticCapabilityEffect::Mutating(_) => policy.include_requires_approval,
         }
     }
 }
 
 /// What a synthetic capability does to state outside the run, declared by
 /// whoever builds it — there is no default, so every synthetic is classified.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum SyntheticCapabilityEffect {
     /// Reads the acting user's own state or the run's own results; writes
     /// nothing anyone else can observe.
     ReadOnly,
-    /// Creates, changes, sends, schedules, or starts something. May require
-    /// approval when called, and is dropped from runs nobody can approve for.
-    Mutating,
+    /// Creates, changes, sends, schedules, or starts something. Every call
+    /// passes the approval gate at the synthetic dispatch boundary (the
+    /// handler never runs before it allows), and the capability is dropped
+    /// from runs nobody can approve for.
+    Mutating(SyntheticApproval),
 }
 
 pub struct SyntheticCapabilityDescriptor {
@@ -219,11 +222,12 @@ struct SyntheticCapabilityPort {
     /// can emit `on_capability_input` ourselves — otherwise consumers see the
     /// result event (from `StagedCapabilityIo`) with no matching input.
     trajectory_observer: Option<Arc<dyn CapabilityTrajectoryObserver>>,
-    /// Host-private replay-payload store: a synthetic capability that raised its
-    /// own approval gate reconstitutes {input} from here on resume, keyed by the
-    /// invocation id in the resume token (§5.3 Stage 2a-i), instead of reading raw
-    /// tool args off the loop-facing resume DTO.
-    replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
+    /// The approval gate every mutating synthetic passes before its handler
+    /// runs. Its host-private replay-payload store is also where a resumed call
+    /// reconstitutes {input}, keyed by the invocation id in the resume token
+    /// (§5.3 Stage 2a-i), instead of reading raw tool args off the loop-facing
+    /// resume DTO.
+    approval_gate: Arc<SyntheticApprovalGate>,
 }
 
 struct SyntheticProviderToolCallRegistration {
@@ -234,7 +238,7 @@ struct SyntheticProviderToolCallRegistration {
 impl SyntheticCapabilityPort {
     // Decorator now also carries the fallback user id + host-private
     // replay-payload store for synthetic approval-gate resume reconstitution.
-    // arch-exempt: too_many_args, synthetic decorator carries the replay-payload store (§5.3 Stage 2a-i), plan #6175
+    // arch-exempt: too_many_args, synthetic decorator carries the approval gate (replay-payload store, §5.3 Stage 2a-i), plan #6175
     #[allow(clippy::too_many_arguments)]
     fn new(
         inner: Arc<dyn LoopCapabilityPort>,
@@ -244,7 +248,7 @@ impl SyntheticCapabilityPort {
         input_resolver: Arc<dyn LoopCapabilityInputResolver>,
         result_writer: Arc<dyn LoopCapabilityResultWriter>,
         trajectory_observer: Option<Arc<dyn CapabilityTrajectoryObserver>>,
-        replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
+        approval_gate: Arc<SyntheticApprovalGate>,
     ) -> Result<Self, AgentLoopHostError> {
         let mut capabilities_by_id = HashMap::new();
         let mut capability_ids_by_provider_tool_name = HashMap::new();
@@ -275,7 +279,7 @@ impl SyntheticCapabilityPort {
             current_surface_version: StdMutex::new(None),
             provider_tool_call_registrations: StdMutex::new(HashMap::new()),
             trajectory_observer,
-            replay_payload_store,
+            approval_gate,
         })
     }
 
@@ -586,7 +590,8 @@ impl LoopCapabilityPort for SyntheticCapabilityPort {
                 let replay_scope = self
                     .run_context
                     .acting_resource_scope(&self.fallback_user_id);
-                self.replay_payload_store
+                self.approval_gate
+                    .replay_payload_store()
                     .load(&replay_scope, invocation_id)
                     .await
                     .map_err(replay_payload_store_error)?
@@ -623,6 +628,22 @@ impl LoopCapabilityPort for SyntheticCapabilityPort {
                     "trajectory observer on_capability_input panicked; dropping event"
                 );
             }
+        }
+        // Every mutating synthetic passes the approval gate here, at the one
+        // boundary all synthetic calls cross, so no handler can forget it.
+        if let SyntheticCapabilityEffect::Mutating(approval) = &capability.descriptor.effect
+            && let GateOutcome::Respond(resolution) = self
+                .approval_gate
+                .check(
+                    &self.run_context,
+                    &self.fallback_user_id,
+                    &request,
+                    &input,
+                    approval,
+                )
+                .await?
+        {
+            return Ok(*resolution);
         }
         // Synthetic handlers emit the host `Resolution` directly (§5.3 Stage 2b).
         handler
@@ -806,6 +827,12 @@ mod tests {
         )
     }
 
+    fn gate_over(
+        replay: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
+    ) -> Arc<SyntheticApprovalGate> {
+        Arc::new(crate::synthetic_approval::in_memory_synthetic_approval_gate_for_test(replay))
+    }
+
     async fn synthetic_port() -> SyntheticCapabilityPort {
         synthetic_port_with_io(Arc::new(TestSyntheticHandler), Arc::new(NoopResultWriter)).await
     }
@@ -837,9 +864,9 @@ mod tests {
             }),
             result_writer,
             None,
-            Arc::new(ironclaw_capabilities::ReplayPayloadStore::new(
+            gate_over(Arc::new(ironclaw_capabilities::ReplayPayloadStore::new(
                 replay_payload_filesystem(),
-            )),
+            ))),
         )
         .expect("synthetic port");
         port.visible_capabilities(VisibleCapabilityRequest {})
@@ -866,7 +893,10 @@ mod tests {
         let attended = CapabilitySurfacePolicy::allow_all();
         let unattended = CapabilitySurfacePolicy::allow_all().without_approval_gated();
         let read_only = capability(SyntheticCapabilityEffect::ReadOnly);
-        let mutating = capability(SyntheticCapabilityEffect::Mutating);
+        let mutating = capability(SyntheticCapabilityEffect::Mutating(SyntheticApproval::new(
+            "test requires approval",
+            "test",
+        )));
         assert!(read_only.admitted_by(&attended) && read_only.admitted_by(&unattended));
         assert!(mutating.admitted_by(&attended));
         assert!(!mutating.admitted_by(&unattended));
@@ -1073,7 +1103,9 @@ mod tests {
             }),
             Arc::new(NoopResultWriter),
             None,
-            Arc::new(ironclaw_capabilities::ReplayPayloadStore::new(replay_fs)),
+            gate_over(Arc::new(ironclaw_capabilities::ReplayPayloadStore::new(
+                replay_fs,
+            ))),
         )
         .expect("synthetic port");
         port.visible_capabilities(VisibleCapabilityRequest {})

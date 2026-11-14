@@ -3,22 +3,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ironclaw_approvals::ApprovalSettingsProvider;
-use ironclaw_approvals::ApprovalStoreError;
 use ironclaw_assistant::OutboundPreferencesProductService;
-use ironclaw_authorization::CapabilityLeaseError;
 use ironclaw_host_api::{
-    action::Action,
-    approval::InvocationFingerprint,
-    ids::{ApprovalRequestId, CapabilityGrantId, CapabilityId, InvocationId, UserId},
+    ids::{InvocationId, UserId},
     resolution::Resolution,
-    resource::{ResourceEstimate, ResourceScope},
     result_meta::FailureKind,
-    scope::Principal,
 };
 use ironclaw_loop_contracts::{
     AgentLoopHostError, AgentLoopHostErrorKind, CapabilityDeniedReasonKind, CapabilityInputRef,
-    CapabilityProgress, CapabilityResumeToken, LoopRunContext, resolution,
+    CapabilityProgress, resolution,
 };
 use ironclaw_loop_host::{
     CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
@@ -27,7 +20,6 @@ use ironclaw_loop_host::{
 use ironclaw_product_contracts::surface::{
     ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode,
 };
-use ironclaw_turns::LoopGateRef;
 
 use crate::runtime::capability_host::notification_channels_set::{
     NotificationChannelsSetHandler, notification_channels_set_capability,
@@ -35,23 +27,15 @@ use crate::runtime::capability_host::notification_channels_set::{
 use ironclaw_assistant::{
     OUTBOUND_DELIVERY_TARGETS_LIST_CAPABILITY_ID, OUTBOUND_DELIVERY_TARGETS_LIST_DESCRIPTION,
     OUTBOUND_DELIVERY_TARGETS_LIST_PROVIDER_TOOL_NAME, OutboundDeliveryCapabilityInputError,
-    list_outbound_delivery_targets_for_model, outbound_delivery_synthetic_provider,
-    outbound_delivery_targets_list_input_schema, parse_outbound_delivery_targets_list_input,
+    list_outbound_delivery_targets_for_model, outbound_delivery_targets_list_input_schema,
+    parse_outbound_delivery_targets_list_input,
 };
 
-// Synthetic outbound handler now also carries the host-private replay-payload
-// store it persists at its approval-gate raise and reconstitutes from on resume.
-// arch-exempt: too_many_args, outbound handler carries the replay-payload store (§5.3 Stage 2a-i), plan #6175
-#[allow(clippy::too_many_arguments)]
+/// The outbound-preference synthetics. The setter is declared mutating, so the
+/// shared synthetic approval gate decides each of its calls.
 pub(super) fn outbound_delivery_capabilities(
     service: Arc<dyn OutboundPreferencesProductService>,
     fallback_user_id: UserId,
-    approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
-    capability_leases: Arc<dyn ironclaw_authorization::CapabilityLeaseStorePort>,
-    outbound_preference_write_requires_approval: bool,
-    approval_settings: Arc<dyn ApprovalSettingsProvider>,
-    replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
-    gate_record_store: Arc<dyn ironclaw_approvals::GateRecordStorePort>,
 ) -> Result<Vec<SyntheticCapability>, AgentLoopHostError> {
     Ok(vec![
         SyntheticCapability::new(
@@ -70,17 +54,6 @@ pub(super) fn outbound_delivery_capabilities(
         notification_channels_set_capability(NotificationChannelsSetHandler {
             service,
             fallback_user_id,
-            approval_requests,
-            capability_leases,
-            // `outbound_preference_write_requires_approval` is derived from the
-            // `ExternalWrite` effect kind generically
-            // (`effects_require_approval`), not from any single
-            // capability's identity — it gates every `ExternalWrite`
-            // outbound-preference mutation under this synthetic provider.
-            requires_approval: outbound_preference_write_requires_approval,
-            approval_settings,
-            replay_payload_store,
-            gate_record_store,
         })?,
     ])
 }
@@ -144,33 +117,6 @@ impl SyntheticCapabilityHandler for OutboundDeliveryTargetsListHandler {
     }
 }
 
-/// `pub(super)` (struct and both fields): consumed by the sibling
-/// `notification_channels_set` module, which clones this handler's full
-/// approval-gate dance.
-pub(super) struct ApprovedDispatchLease {
-    pub(super) scope: ResourceScope,
-    pub(super) lease_id: CapabilityGrantId,
-}
-
-/// Outcome of verifying an approval resume before dispatch.
-///
-/// `Approved` carries the claimed lease to consume; `Denied` carries a
-/// model-visible denial so the run continues and the user can re-request
-/// approval, instead of a terminal `Err(AgentLoopHostError)` that would end the
-/// run (see the capability-access contract). `pub(super)`: shared with the
-/// sibling `notification_channels_set` module.
-pub(super) enum ApprovedResumeDecision {
-    Approved(ApprovedDispatchLease),
-    Denied(Resolution),
-}
-
-/// `pub(super)`: shared with the sibling `notification_channels_set` module.
-pub(super) enum OutboundDeliveryApprovalSettingsDecision {
-    Allow,
-    Ask,
-    Deny,
-}
-
 pub(super) async fn write_completed_result(
     invocation: SyntheticCapabilityInvocation,
     output: serde_json::Value,
@@ -197,33 +143,6 @@ pub(super) async fn write_completed_result(
         write_result.output_digest,
         write_result.model_observation,
     ))
-}
-
-/// The input a synthetic invocation dispatches from. The decorator already
-/// reconstitutes the replayed input into `invocation.input` on an approval resume
-/// (loading it from the host-private replay-payload store, §5.3 Stage 2a-i), so
-/// this is simply that value on both fresh and resume dispatch.
-///
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn invocation_replay_input(
-    invocation: &SyntheticCapabilityInvocation,
-) -> &serde_json::Value {
-    &invocation.input
-}
-
-/// Map a replay-payload store failure to a fail-closed host error; the bound
-/// cause (which may carry a host path) is logged server-side and never surfaced
-/// to the model (mirrors the loop-host seam mapper).
-///
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn replay_payload_store_error(
-    error: ironclaw_capabilities::ReplayPayloadStoreError,
-) -> AgentLoopHostError {
-    tracing::warn!(error = %error, "failed to access outbound-delivery replay payload");
-    AgentLoopHostError::new(
-        AgentLoopHostErrorKind::Unavailable,
-        "failed to access capability replay payload",
-    )
 }
 
 fn invocation_effective_input_ref(
@@ -262,111 +181,6 @@ pub(super) fn caller_for_run(
         invocation.run_context.scope.agent_id.clone(),
         invocation.run_context.scope.project_id.clone(),
     )
-}
-
-/// [`LoopRunContext::acting_resource_scope`] with the capability invocation's
-/// own id in place of the run's — the shape the gate-record store is keyed by.
-///
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn resource_scope_for_run(
-    run_context: &LoopRunContext,
-    fallback_user_id: &UserId,
-    invocation_id: InvocationId,
-) -> ResourceScope {
-    let mut scope = run_context.acting_resource_scope(fallback_user_id);
-    scope.invocation_id = invocation_id;
-    scope
-}
-
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn settings_scope_for_run(
-    run_context: &LoopRunContext,
-    fallback_user_id: &UserId,
-) -> ResourceScope {
-    ResourceScope {
-        tenant_id: run_context.scope.tenant_id.clone(),
-        user_id: run_context.acting_user_id(fallback_user_id),
-        agent_id: None,
-        project_id: None,
-        mission_id: None,
-        thread_id: None,
-        invocation_id: InvocationId::new(),
-    }
-}
-
-/// Shared synthetic-provider grantee/principal for every capability
-/// `outbound_delivery_capabilities` wires (`target_set` and
-/// `notification_channels_set` today) — both live under the SAME
-/// `OUTBOUND_DELIVERY_SYNTHETIC_PROVIDER_ID`, so one resolver serves both.
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn outbound_delivery_synthetic_grantee() -> Result<Principal, AgentLoopHostError> {
-    outbound_delivery_synthetic_provider()
-        .map(Principal::Extension)
-        .map_err(|error| {
-            AgentLoopHostError::new(
-                AgentLoopHostErrorKind::Internal,
-                format!("outbound delivery synthetic provider id is invalid: {error}"),
-            )
-        })
-}
-
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn approval_fingerprint(
-    scope: &ResourceScope,
-    capability_id: &CapabilityId,
-    estimate: &ResourceEstimate,
-    input: &serde_json::Value,
-) -> Result<InvocationFingerprint, AgentLoopHostError> {
-    InvocationFingerprint::for_dispatch(scope, capability_id, estimate, input).map_err(|error| {
-        AgentLoopHostError::new(
-            AgentLoopHostErrorKind::Internal,
-            format!("outbound delivery target approval fingerprint could not be computed: {error}"),
-        )
-    })
-}
-
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn approval_request_matches_capability(
-    action: &Action,
-    capability_id: &CapabilityId,
-) -> bool {
-    matches!(action, Action::Dispatch { capability, .. } if capability == capability_id)
-}
-
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn approval_gate_ref(
-    request_id: ApprovalRequestId,
-) -> Result<LoopGateRef, AgentLoopHostError> {
-    LoopGateRef::new(format!("gate:approval-{request_id}")).map_err(|error| {
-        AgentLoopHostError::new(
-            AgentLoopHostErrorKind::Internal,
-            format!("outbound delivery target approval gate ref is invalid: {error}"),
-        )
-    })
-}
-
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn resume_token_from_invocation_id(
-    invocation_id: InvocationId,
-) -> Result<CapabilityResumeToken, AgentLoopHostError> {
-    CapabilityResumeToken::new(invocation_id.to_string()).map_err(|reason| {
-        AgentLoopHostError::new(
-            AgentLoopHostErrorKind::Internal,
-            format!("outbound delivery target resume token is invalid: {reason}"),
-        )
-    })
-}
-
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn invocation_id_from_resume_token(
-    resume_token: &CapabilityResumeToken,
-) -> Result<InvocationId, AgentLoopHostError> {
-    InvocationId::parse(resume_token.as_str()).map_err(|error| {
-        AgentLoopHostError::new(
-            AgentLoopHostErrorKind::InvalidInvocation,
-            format!("outbound delivery target approval resume token is invalid: {error}"),
-        )
-    })
 }
 
 /// `pub(super)`: called from the sibling `notification_channels_set` module.
@@ -413,21 +227,6 @@ impl OutboundPreferenceOperation {
             // misdescribes the refusal and names a retired concept.
             Self::ListTargets => "not permitted to list outbound delivery targets",
             Self::SetNotificationChannels => "not permitted to change notification channels",
-        }
-    }
-
-    /// Summary for a lost or stale approval lease. Operation-specific for the
-    /// same reason the arms above are: only the notification-channel write
-    /// takes a lease today, so a fixed "outbound delivery target" sentence
-    /// would name a retired concept on the one path that can actually reach it.
-    fn lease_invalid_summary(self) -> &'static str {
-        match self {
-            Self::ListTargets => {
-                "outbound delivery target approval lease is no longer valid; re-request approval"
-            }
-            Self::SetNotificationChannels => {
-                "notification channel approval lease is no longer valid; re-request approval"
-            }
         }
     }
 
@@ -521,56 +320,6 @@ pub(super) fn approval_denied(safe_summary: &str) -> Result<Resolution, AgentLoo
     Ok(resolution::denied(reason_kind, safe_summary.to_string()).resolution)
 }
 
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn approval_store_error(
-    operation: &'static str,
-    error: ApprovalStoreError,
-) -> AgentLoopHostError {
-    ironclaw_loop_host::raw_agent_loop_host_error(
-        "capability_host_outbound_delivery",
-        operation,
-        AgentLoopHostErrorKind::Unavailable,
-        "outbound delivery approval state operation failed",
-        error,
-    )
-}
-
-/// Disposition a capability-lease failure into either a model-visible denial
-/// (recoverable — the user can re-request approval) or a terminal host error.
-///
-/// Lease-state arms (unknown / expired / exhausted / unclaimed-fingerprint /
-/// fingerprint-mismatch / inactive) describe a lost or stale approval lease,
-/// which the model can recover from by re-requesting approval — so they return
-/// a denial `Resolution`. Genuine infra faults (lease persistence, version
-/// mismatch, CAS exhaustion) stay terminal `Err(AgentLoopHostError)`.
-///
-/// `pub(super)`: called from the sibling `notification_channels_set` module.
-pub(super) fn approval_lease_outcome(
-    preference_operation: OutboundPreferenceOperation,
-    operation: &'static str,
-    error: CapabilityLeaseError,
-) -> Result<Resolution, AgentLoopHostError> {
-    match error {
-        CapabilityLeaseError::UnknownLease { .. }
-        | CapabilityLeaseError::ExpiredLease { .. }
-        | CapabilityLeaseError::ExhaustedLease { .. }
-        | CapabilityLeaseError::UnclaimedFingerprintLease { .. }
-        | CapabilityLeaseError::FingerprintMismatch { .. }
-        | CapabilityLeaseError::InactiveLease { .. } => {
-            approval_denied(preference_operation.lease_invalid_summary())
-        }
-        CapabilityLeaseError::Persistence { .. }
-        | CapabilityLeaseError::VersionMismatch
-        | CapabilityLeaseError::CasExhausted => Err(ironclaw_loop_host::raw_agent_loop_host_error(
-            "capability_host_outbound_delivery",
-            operation,
-            AgentLoopHostErrorKind::Unavailable,
-            "outbound delivery approval lease operation failed",
-            error,
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,12 +338,6 @@ mod tests {
             // recoverable arm into a terminal `HostUnavailable` (Invariant 2).
             field: Some("slack/<channel>".to_string()),
             validation_code: None,
-        }
-    }
-
-    fn lease_error_unknown() -> CapabilityLeaseError {
-        CapabilityLeaseError::ExpiredLease {
-            lease_id: CapabilityGrantId::new(),
         }
     }
 
@@ -755,20 +498,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn expired_lease_is_a_recoverable_denial_not_terminal() {
-        let denied = approval_lease_outcome(
-            OutboundPreferenceOperation::SetNotificationChannels,
-            "claim_approval_lease",
-            lease_error_unknown(),
-        )
-        .expect("an expired approval lease must be a model-visible denial, not terminal");
-
-        assert!(matches!(denied, Resolution::Denied(_)));
-        LoopSafeSummary::new(recoverable_summary(&denied))
-            .expect("denial safe summary must satisfy the loop validator");
-    }
-
     /// Both denial surfaces must name the operation the caller actually
     /// attempted. The list arm is read-only, so a write verb ("change the
     /// delivery target") misdescribes the refusal; and only the
@@ -786,42 +515,13 @@ mod tests {
             "not permitted to change notification channels"
         );
 
-        let lease_denial = recoverable_summary(
-            &approval_lease_outcome(
-                OutboundPreferenceOperation::SetNotificationChannels,
-                "consume_approval_lease",
-                lease_error_unknown(),
-            )
-            .expect("a stale lease is model-visible"),
-        );
-        assert_eq!(
-            lease_denial,
-            "notification channel approval lease is no longer valid; re-request approval"
-        );
-
         for summary in [
             OutboundPreferenceOperation::ListTargets.denied_summary(),
             OutboundPreferenceOperation::SetNotificationChannels.denied_summary(),
-            OutboundPreferenceOperation::ListTargets.lease_invalid_summary(),
-            OutboundPreferenceOperation::SetNotificationChannels.lease_invalid_summary(),
         ] {
             LoopSafeSummary::new(summary.to_string())
                 .expect("every denial summary must satisfy the loop validator");
         }
-    }
-
-    #[test]
-    fn lease_persistence_failure_stays_terminal() {
-        let error = approval_lease_outcome(
-            OutboundPreferenceOperation::SetNotificationChannels,
-            "claim_approval_lease",
-            CapabilityLeaseError::Persistence {
-                reason: "disk".to_string(),
-            },
-        )
-        .expect_err("genuine lease infra faults must stay terminal");
-
-        assert_eq!(error.kind, AgentLoopHostErrorKind::Unavailable);
     }
 
     #[test]
@@ -875,19 +575,9 @@ mod tests {
             "a run acts as its user"
         );
         assert_eq!(
-            resource_scope_for_run(&with_actor, &fallback, InvocationId::new()).user_id,
-            user,
-            "the approval-gate raise is scoped to the run user"
-        );
-        assert_eq!(
             with_actor.acting_resource_scope(&fallback).user_id,
             user,
-            "the replay-payload/gate-record scope matches the raise scope's user"
-        );
-        assert_eq!(
-            settings_scope_for_run(&with_actor, &fallback).user_id,
-            user,
-            "approval settings are read as the run user"
+            "the approval gate, its records and settings reads are scoped to the run user"
         );
 
         // A host-initiated run carries no actor: fall back to the owner, not to
@@ -895,9 +585,9 @@ mod tests {
         let actorless = run_context_for_test(scope, None);
         assert_eq!(actorless.acting_user_id(&fallback), user);
         assert_eq!(
-            resource_scope_for_run(&actorless, &fallback, InvocationId::new()).user_id,
+            actorless.acting_resource_scope(&fallback).user_id,
             user,
-            "an actorless run's gate dance stays scoped to the thread owner"
+            "an actorless run's gate stays scoped to the thread owner"
         );
     }
 
@@ -905,7 +595,7 @@ mod tests {
     fn run_context_for_test(
         scope: ironclaw_turns::TurnScope,
         actor: Option<UserId>,
-    ) -> LoopRunContext {
+    ) -> ironclaw_loop_contracts::LoopRunContext {
         use ironclaw_loop_contracts::RunProfileResolver as _;
         let resolved = futures::executor::block_on(
             ironclaw_loop_contracts::InMemoryRunProfileResolver::default().resolve_run_profile(
@@ -913,7 +603,7 @@ mod tests {
             ),
         )
         .expect("profile resolves");
-        let mut run_context = LoopRunContext::new(
+        let mut run_context = ironclaw_loop_contracts::LoopRunContext::new(
             scope,
             ironclaw_turns::TurnId::new(),
             ironclaw_turns::TurnRunId::new(),

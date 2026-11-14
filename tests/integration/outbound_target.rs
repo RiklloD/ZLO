@@ -148,10 +148,13 @@ fn notification_channels_set_disabled_by_settings_routes_to_policy_denied() {
                 .expect(
                     "notification_channels_set dispatched through the synthetic-capability port",
                 );
+            // The shared synthetic approval gate refuses a disabled tool the
+            // way the capability host refuses a disabled builtin: a denial
+            // with `policy_denied`, before the handler runs.
             harness
-                .assert_tool_error(ToolErrorClass::Failed, "policy_denied")
+                .assert_tool_error(ToolErrorClass::Denied, "policy_denied")
                 .await
-                .expect("a disabled tool surfaces as Failed(PolicyDenied)");
+                .expect("a disabled tool surfaces as Denied(PolicyDenied)");
             // A policy-denied dispatch must short-circuit before ever reaching the
             // service set seam — proves the deny happened at the settings-decision gate,
             // not merely that the model observed a policy_denied error string.

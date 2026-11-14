@@ -165,4 +165,113 @@ mod tests {
             assert_eq!(ApprovalMode::resolve_auto_approve(None, global), global);
         }
     }
+
+    struct GlobalOn;
+
+    #[async_trait]
+    impl ApprovalSettingsProvider for GlobalOn {
+        async fn tool_override(
+            &self,
+            _scope: &ResourceScope,
+            _capability_id: &CapabilityId,
+        ) -> Option<ToolPermissionOverride> {
+            None
+        }
+
+        async fn global_auto_approve(&self, _scope: &ResourceScope) -> bool {
+            true
+        }
+
+        async fn tool_always_allow(
+            &self,
+            _scope: &ResourceScope,
+            _capability_id: &CapabilityId,
+            _grantee: &Principal,
+        ) -> bool {
+            false
+        }
+    }
+
+    /// A thread whose profile cannot be read never runs a gated call on the
+    /// global switch: with the thread in scope (as every gate asks) the
+    /// failed lookup asks instead of falling through to global auto-approve.
+    #[tokio::test]
+    async fn an_unreadable_thread_profile_asks_even_with_global_auto_approve_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(
+            libsql::Builder::new_local(dir.path().join("o.db"))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let runtime =
+            Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(&db)).unwrap());
+        let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+        let tenant = ironclaw_host_api::ids::TenantId::new("t1").unwrap();
+        let user = ironclaw_host_api::ids::UserId::new("alice").unwrap();
+        let thread = ThreadId::new("thread-unreadable-profile").unwrap();
+        engine
+            .ensure_thread(
+                &thread,
+                &ironclaw_orchestrator::model::ThreadScope {
+                    tenant_id: tenant.clone(),
+                    user_id: user.clone(),
+                    agent_id: None,
+                    project_id: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        db.connect()
+            .unwrap()
+            .execute("DROP TABLE orch_profiles", ())
+            .await
+            .unwrap();
+        let slot: ProfileApprovalEngineSlot = Arc::new(OnceLock::new());
+        assert!(slot.set(engine).is_ok());
+        let provider = ProfileApprovalSettingsProvider::new(Arc::new(GlobalOn), slot);
+
+        let verdict = |thread_id: Option<ThreadId>| {
+            let scope = ResourceScope {
+                tenant_id: tenant.clone(),
+                user_id: user.clone(),
+                agent_id: None,
+                project_id: None,
+                mission_id: None,
+                thread_id,
+                invocation_id: InvocationId::new(),
+            };
+            let provider = &provider;
+            async move {
+                let capability = CapabilityId::new("builtin.t3_delegate").unwrap();
+                ironclaw_approvals::approval_gate_verdict(
+                    provider,
+                    ironclaw_approvals::ApprovalGateQuery {
+                        scope: &scope,
+                        capability_id: &capability,
+                        grantee: &Principal::HostRuntime,
+                        approved_for_this_invocation: false,
+                        force_approval: false,
+                        exempt_from_approval: false,
+                        global_auto_approve_eligible: true,
+                        always_allow_eligible: true,
+                        approved_for_this_task: false,
+                        policy_requires_approval: true,
+                    },
+                )
+                .await
+            }
+        };
+        assert_eq!(
+            verdict(Some(thread)).await,
+            ironclaw_approvals::ApprovalGateVerdict::RequireApproval,
+            "a failed profile lookup must ask, never fall through to allow"
+        );
+        assert_eq!(
+            verdict(None).await,
+            ironclaw_approvals::ApprovalGateVerdict::Allow,
+            "control: without the thread the global switch decides (the old bug's path)"
+        );
+    }
 }

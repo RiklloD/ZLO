@@ -5,29 +5,29 @@
 //!
 //! Every one is declared mutating: the engine registers the calling thread on
 //! each call, and the family delegates, messages, forks, merges, queues,
-//! schedules, and cancels threads. So each call passes the ordinary approval
-//! gate first (auto-approve on: it runs; off: the user is asked), and a run
-//! nobody can approve for is never offered them.
+//! schedules, and cancels threads. So the synthetic dispatch boundary passes
+//! each call through the ordinary approval gate before this handler runs
+//! (auto-approve on: it runs; off: the user is asked), and a run nobody can
+//! approve for is never offered them.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use ironclaw_host_api::{
-    ids::{CapabilityId, InvocationId, UserId},
+    ids::{InvocationId, UserId},
     resolution::Resolution,
 };
 use ironclaw_loop_contracts::{
     AgentLoopHostError, AgentLoopHostErrorKind, CapabilityProgress, resolution,
 };
 use ironclaw_loop_host::{
-    CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
-    SyntheticCapabilityEffect, SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    CapabilityResultWrite, DurablePersistence, SyntheticApproval, SyntheticCapability,
+    SyntheticCapabilityDescriptor, SyntheticCapabilityEffect, SyntheticCapabilityHandler,
+    SyntheticCapabilityInvocation,
 };
 use ironclaw_orchestrator::engine::{CallContext, Engine};
 use ironclaw_orchestrator::model::ThreadScope;
 use ironclaw_orchestrator::tools::TOOLS;
-
-use crate::synthetic_approval::{GateOutcome, SyntheticApprovalGate, SyntheticApprovalStores};
 
 fn orchestrator_capability_id(tool_name: &str) -> String {
     format!("builtin.{tool_name}")
@@ -36,15 +36,8 @@ fn orchestrator_capability_id(tool_name: &str) -> String {
 /// Build the orchestrator tools (`TOOLS`, `t3_schedule` included) for one run's capability surface.
 pub fn orchestrator_capabilities(
     engine: Arc<Engine>,
-    approval_stores: SyntheticApprovalStores,
     fallback_user_id: UserId,
 ) -> Result<Vec<SyntheticCapability>, AgentLoopHostError> {
-    let gate = Arc::new(SyntheticApprovalGate::new(
-        approval_stores,
-        fallback_user_id.clone(),
-        APPROVAL_SUMMARY,
-        "orchestrator_approval_required",
-    ));
     TOOLS
         .iter()
         .map(|tool| {
@@ -54,12 +47,17 @@ pub fn orchestrator_capabilities(
                     tool.name,
                     tool.description,
                     (tool.schema)(),
-                    SyntheticCapabilityEffect::Mutating,
+                    SyntheticCapabilityEffect::Mutating(SyntheticApproval::new(
+                        APPROVAL_SUMMARY,
+                        format!(
+                            "Run the T3 orchestrator tool {} (it can start, message, or stop threads)",
+                            tool.name
+                        ),
+                    )),
                 )?,
                 Arc::new(OrchestratorToolHandler {
                     name: tool.name,
                     engine: Arc::clone(&engine),
-                    gate: Arc::clone(&gate),
                     fallback_user_id: fallback_user_id.clone(),
                 }),
             ))
@@ -73,7 +71,6 @@ const APPROVAL_SUMMARY: &str = "this orchestrator action requires approval";
 struct OrchestratorToolHandler {
     name: &'static str,
     engine: Arc<Engine>,
-    gate: Arc<SyntheticApprovalGate>,
     fallback_user_id: UserId,
 }
 
@@ -97,22 +94,6 @@ impl SyntheticCapabilityHandler for OrchestratorToolHandler {
         &self,
         invocation: SyntheticCapabilityInvocation,
     ) -> Result<Resolution, AgentLoopHostError> {
-        let capability_id =
-            CapabilityId::new(orchestrator_capability_id(self.name)).map_err(|error| {
-                AgentLoopHostError::new(AgentLoopHostErrorKind::Internal, error.to_string())
-            })?;
-        let name = self.name;
-        if let GateOutcome::Respond(resolution) = self
-            .gate
-            .check(&invocation, &capability_id, || {
-                format!(
-                    "Run the T3 orchestrator tool {name} (it can start, message, or stop threads)"
-                )
-            })
-            .await?
-        {
-            return Ok(*resolution);
-        }
         let run = &invocation.run_context;
         let scope = ThreadScope {
             tenant_id: run.scope.tenant_id.clone(),

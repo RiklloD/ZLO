@@ -52,6 +52,7 @@ mod structured_result;
 mod subagent_prompt_port;
 mod subagent_spawn_port;
 mod surface_disclosure;
+mod synthetic_approval;
 mod synthetic_capability;
 mod system_inference;
 pub mod system_prompt_assets;
@@ -172,6 +173,7 @@ pub use subagent_spawn_port::{
     build_spawn_subagent_parameters_schema,
 };
 pub use surface_disclosure::wrap_surface_disclosure;
+pub use synthetic_approval::{SyntheticApproval, SyntheticApprovalGate, SyntheticApprovalStores};
 pub use synthetic_capability::{
     SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityEffect,
     SyntheticCapabilityHandler, SyntheticCapabilityInvocation, wrap_synthetic_capabilities,

@@ -4712,6 +4712,7 @@ dependencies = [
  "futures",
  "http 1.5.0",
  "ironclaw_approvals",
+ "ironclaw_authorization",
  "ironclaw_capabilities",
  "ironclaw_common",
  "ironclaw_filesystem",

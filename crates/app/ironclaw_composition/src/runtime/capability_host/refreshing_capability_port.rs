@@ -35,7 +35,9 @@ use ironclaw_assistant::project_create_capability;
 use ironclaw_extension_host::capability_surface::ExtensionCapabilitySurfaceSource;
 use ironclaw_loop_host::result_read_capability;
 use ironclaw_loop_host::skill_activation_capability;
-use ironclaw_loop_host::wrap_synthetic_capabilities;
+use ironclaw_loop_host::{
+    SyntheticApprovalGate, SyntheticApprovalStores, wrap_synthetic_capabilities,
+};
 
 use super::{
     VisibleCapabilityInputs, capability_io_error, host_api_agent_loop_error,
@@ -363,26 +365,12 @@ impl RefreshingCapabilityPort {
             synthetic_capabilities.extend(outbound_delivery_capabilities(
                 Arc::clone(outbound_preferences_service),
                 self.fallback_user_id.clone(),
-                Arc::clone(&self.approval_requests),
-                Arc::clone(&self.capability_leases),
-                self.outbound_preference_write_requires_approval,
-                Arc::clone(&self.approval_settings),
-                Arc::clone(&self.replay_payload_store),
-                Arc::clone(&self.gate_record_store),
             )?);
         }
-        let approval_stores = ironclaw_assistant::SyntheticApprovalStores {
-            approval_requests: Arc::clone(&self.approval_requests),
-            capability_leases: Arc::clone(&self.capability_leases),
-            approval_settings: Arc::clone(&self.approval_settings),
-            replay_payload_store: Arc::clone(&self.replay_payload_store),
-            gate_record_store: Arc::clone(&self.gate_record_store),
-        };
         if let Some(engine) = &self.orchestrator {
             synthetic_capabilities.extend(
                 ironclaw_assistant::orchestration::orchestrator_capabilities(
                     Arc::clone(engine),
-                    approval_stores.clone(),
                     self.fallback_user_id.clone(),
                 )?,
             );
@@ -391,14 +379,6 @@ impl RefreshingCapabilityPort {
             synthetic_capabilities.extend(
                 ironclaw_assistant::supermemory::supermemory_capabilities(
                     Arc::clone(supermemory),
-                    ironclaw_assistant::supermemory::SupermemoryApprovalStores {
-                        approval_requests: Arc::clone(&self.approval_requests),
-                        capability_leases: Arc::clone(&self.capability_leases),
-                        approval_settings: Arc::clone(&self.approval_settings),
-                        replay_payload_store: Arc::clone(&self.replay_payload_store),
-                        gate_record_store: Arc::clone(&self.gate_record_store),
-                        write_requires_approval: self.outbound_preference_write_requires_approval,
-                    },
                     self.fallback_user_id.clone(),
                 )?,
             );
@@ -407,7 +387,6 @@ impl RefreshingCapabilityPort {
             synthetic_capabilities.extend(
                 ironclaw_assistant::computer_use::computer_use_capabilities(
                     Arc::clone(computer_use),
-                    approval_stores,
                     self.fallback_user_id.clone(),
                 )?,
             );
@@ -442,7 +421,20 @@ impl RefreshingCapabilityPort {
             self.trajectory_observer
                 .clone()
                 .map(crate::observability::trajectory_observer::as_capability_observer),
-            Arc::clone(&self.replay_payload_store),
+            // Every mutating synthetic passes this gate before its handler runs.
+            Arc::new(SyntheticApprovalGate::new(
+                SyntheticApprovalStores {
+                    approval_requests: Arc::clone(&self.approval_requests),
+                    capability_leases: Arc::clone(&self.capability_leases),
+                    approval_settings: Arc::clone(&self.approval_settings),
+                    replay_payload_store: Arc::clone(&self.replay_payload_store),
+                    gate_record_store: Arc::clone(&self.gate_record_store),
+                },
+                ironclaw_assistant::outbound_delivery_synthetic_provider()
+                    .map(ironclaw_host_api::scope::Principal::Extension)
+                    .map_err(host_api_agent_loop_error)?,
+                self.outbound_preference_write_requires_approval,
+            )),
         )?;
         let port = wrap_surface_disclosure(port, &self.workspace_mounts);
         // Outermost: external (client-supplied) tools see the full resolved

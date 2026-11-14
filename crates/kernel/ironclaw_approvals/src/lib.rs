@@ -59,8 +59,8 @@ pub use policy::{
 #[cfg(any(test, feature = "test-support"))]
 pub use profile_gate::EmptyApprovalSettingsProvider;
 pub use profile_gate::{
-    ApprovalSettingsProvider, OriginGateRequirement, ProfileApprovalGatePolicy,
-    profile_approval_authorizer,
+    ApprovalGateQuery, ApprovalGateVerdict, ApprovalSettingsProvider, OriginGateRequirement,
+    ProfileApprovalGatePolicy, approval_gate_verdict, profile_approval_authorizer,
 };
 pub use profile_gate_policy::{
     RuntimeProfileApprovalGateEffectSets, RuntimeProfileApprovalGatePolicy,

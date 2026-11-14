@@ -3,9 +3,9 @@
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
-    CapabilityResultWrite, DurablePersistence, SkillBundleSource, SyntheticCapability,
-    SyntheticCapabilityDescriptor, SyntheticCapabilityEffect, SyntheticCapabilityHandler,
-    SyntheticCapabilityInvocation,
+    CapabilityResultWrite, DurablePersistence, SkillBundleSource, SyntheticApproval,
+    SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityEffect,
+    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 use async_trait::async_trait;
 use ironclaw_host_api::{ids::InvocationId, resolution::Resolution, result_meta::FailureKind};
@@ -33,7 +33,10 @@ where
             SKILL_ACTIVATE_PROVIDER_TOOL_NAME,
             SKILL_ACTIVATE_DESCRIPTION,
             skill_activate_input_schema(),
-            SyntheticCapabilityEffect::Mutating,
+            SyntheticCapabilityEffect::Mutating(SyntheticApproval::new(
+                "activating a skill requires approval",
+                "Activate a skill in this conversation (it adds the skill's instructions and tools)",
+            )),
         )?,
         Arc::new(SkillActivationHandler {
             skill_activation_source,

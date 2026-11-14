@@ -14,8 +14,9 @@ publish = false
 layer = "loops"
 
 [features]
-# Compatibility feature for downstream test configurations.
-test-support = []
+# Compatibility feature for downstream test configurations; also builds the
+# in-memory approval stores `SyntheticApprovalGate::in_memory_for_test` uses.
+test-support = ["ironclaw_approvals/test-support", "ironclaw_authorization/test-support"]
 
 [dependencies]
 async-trait = "0.1"
@@ -48,6 +49,9 @@ ironclaw_threads = { path = "../../domains/ironclaw_threads", version = "0.1.0" 
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", version = "0.1.0" }
 ironclaw_approvals = { path = "../../kernel/ironclaw_approvals", version = "0.1.0" }
+# The lease store the synthetic approval gate claims and consumes an approved
+# call's one-shot lease in (`src/synthetic_approval.rs`).
+ironclaw_authorization = { path = "../../kernel/ironclaw_authorization", version = "0.1.0" }
 rust_decimal = { version = "1", features = ["serde", "serde-with-str"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -64,6 +68,9 @@ ironclaw_turns = { path = "../../kernel/ironclaw_turns", version = "0.1.0", feat
 ironclaw_threads = { path = "../../domains/ironclaw_threads", version = "0.1.0", features = ["test-support"] }
 ironclaw_outbound = { path = "../../domains/ironclaw_outbound", version = "0.1.0", features = ["test-support"] }
 ironclaw_trust = { path = "../../kernel/ironclaw_trust", version = "0.1.0" }
+# In-memory approval/lease stores for the synthetic approval gate's tests.
+ironclaw_approvals = { path = "../../kernel/ironclaw_approvals", version = "0.1.0", features = ["test-support"] }
+ironclaw_authorization = { path = "../../kernel/ironclaw_authorization", version = "0.1.0", features = ["test-support"] }
 reqwest = { workspace = true, features = ["json"] }
 rust_decimal_macros = "1"
 tempfile = "3"

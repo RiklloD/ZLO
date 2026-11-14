@@ -54,6 +54,10 @@ use ironclaw_product_contracts::operator_secrets::{
 use ironclaw_product_contracts::product_wire::{
     RebornSubmitTurnResponse, RebornSuggestionGenerationStatus,
 };
+use ironclaw_product_contracts::profiles::{
+    PROFILE_CREATE_COMMAND, PROFILE_THREAD_CREATE_COMMAND, ProfileThreadCreateRequest,
+    ProfileThreadCreateResponse, ProfileWriteRequest,
+};
 use ironclaw_product_contracts::suggestions::{
     SUGGESTIONS_GENERATE_COMMAND, SUGGESTIONS_LIST_VIEW,
 };
@@ -291,6 +295,37 @@ impl Fixture {
         Ok(())
     }
 
+    /// Set a per-tool permission override (`disabled`, `ask_each_time`, …).
+    async fn set_tool_override(
+        &self,
+        runtime: &RebornRuntime,
+        capability_id: &str,
+        state: ironclaw_approvals::ToolPermissionOverride,
+    ) -> HarnessResult<()> {
+        runtime
+            .standalone_tool_permission_overrides_for_test()
+            .ok_or("runtime exposes no tool permission overrides")?
+            .set(ironclaw_approvals::CapabilityPermissionOverrideInput {
+                scope: self.settings_scope(),
+                capability_id: ironclaw_host_api::ids::CapabilityId::new(capability_id)?,
+                state,
+                updated_by: ironclaw_host_api::scope::Principal::User(self.user_id.clone()),
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// The tool result the model was given for `tool` on any call.
+    fn tool_result(&self, tool: &str) -> HarnessResult<String> {
+        self.scripted_llm
+            .captured_requests()
+            .into_iter()
+            .flatten()
+            .find(|message| message.role == Role::Tool && message.name.as_deref() == Some(tool))
+            .map(|message| message.content)
+            .ok_or_else(|| format!("the model never got a result for {tool}").into())
+    }
+
     fn thread_scope(&self, thread_id: ThreadId) -> TurnScope {
         TurnScope::new_with_owner(
             self.tenant_id.clone(),
@@ -327,12 +362,23 @@ impl Fixture {
             )
             .await?
             .thread;
+        self.submit_chat_in(runtime, thread.thread_id.as_str(), text)
+            .await
+    }
+
+    async fn submit_chat_in(
+        &self,
+        runtime: &RebornRuntime,
+        thread_id: &str,
+        text: &str,
+    ) -> HarnessResult<(TurnScope, TurnRunId)> {
+        let surface = self.surface(runtime)?;
         let response = SUBMIT_TURN_COMMAND
             .invoke_on(
                 &surface,
                 ProductSubmitTurnRequest {
                     client_action_id: Some(uuid::Uuid::new_v4().to_string()),
-                    thread_id: Some(thread.thread_id.as_str().to_string()),
+                    thread_id: Some(thread_id.to_string()),
                     content: Some(text.to_string()),
                     ..ProductSubmitTurnRequest::default()
                 },
@@ -784,4 +830,180 @@ async fn attended_t3_delegate_waits_for_approval_when_auto_approve_is_off() -> H
     );
     runtime.shutdown().await?;
     Ok(())
+}
+
+/// Finding 1: `project_create` and `skill_activate` are mutating synthetics
+/// whose handlers used to run directly. With auto-approve off, each call parks
+/// on the approval gate at the synthetic dispatch boundary — nothing runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn project_create_and_skill_activate_wait_for_approval_when_auto_approve_is_off()
+-> HarnessResult<()> {
+    let fixture = Fixture::new([
+        RebornScriptedReply::tool_call("builtin.project_create", json!({"name": "Gated Project"})),
+        RebornScriptedReply::tool_call("builtin.skill_activate", json!({"skill": "triage"})),
+    ])
+    .await?;
+    let runtime = fixture.runtime(false).await?;
+    fixture.set_auto_approve(&runtime, false).await?;
+    let coordinator = runtime.product_turn_coordinator_for_test();
+
+    for (text, tool) in [
+        ("make a project", "builtin__project_create"),
+        ("activate triage", "builtin__skill_activate"),
+    ] {
+        let (scope, run_id) = fixture.submit_chat(&runtime, text).await?;
+        let state = wait_for_status(&coordinator, scope, run_id, TurnStatus::BlockedApproval)
+            .await
+            .map_err(|error| format!("{tool}: {error}"))?;
+        let gate = state.gate_ref.ok_or("a blocked approval names its gate")?;
+        assert!(
+            gate.as_str().starts_with("gate:approval-"),
+            "{tool} must park on an approval gate; got {gate:?}"
+        );
+    }
+    let projects = projects_of(&fixture, &runtime).await?;
+    runtime.shutdown().await?;
+    assert!(
+        projects.is_empty(),
+        "no project before approval; got {projects:?}"
+    );
+    Ok(())
+}
+
+/// Finding 1: a per-tool `disabled` setting refuses `project_create` and
+/// `skill_activate` even with auto-approve ON — the model is told, and no
+/// project is created.
+#[tokio::test(flavor = "multi_thread")]
+async fn disabled_project_create_and_skill_activate_are_refused_without_side_effect()
+-> HarnessResult<()> {
+    let fixture = Fixture::new([
+        RebornScriptedReply::tool_call(
+            "builtin.project_create",
+            json!({"name": "Disabled Project"}),
+        ),
+        RebornScriptedReply::tool_call("builtin.skill_activate", json!({"skill": "triage"})),
+        RebornScriptedReply::text("Both tools are disabled."),
+    ])
+    .await?;
+    let runtime = fixture.runtime(false).await?;
+    for capability in ["builtin.project_create", "builtin.skill_activate"] {
+        fixture
+            .set_tool_override(
+                &runtime,
+                capability,
+                ironclaw_approvals::ToolPermissionOverride::Disabled,
+            )
+            .await?;
+    }
+
+    let (scope, run_id) = fixture.submit_chat(&runtime, "make a project").await?;
+    let coordinator = runtime.product_turn_coordinator_for_test();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while fixture.scripted_llm.captured_requests().len() < 3 {
+        let state = coordinator
+            .get_run_state(GetRunStateRequest {
+                scope: scope.clone(),
+                run_id,
+            })
+            .await?;
+        if state.status.is_terminal() || std::time::Instant::now() > deadline {
+            return Err(format!("run reached {:?} before both refusals", state.status).into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let projects = projects_of(&fixture, &runtime).await?;
+    let project_refusal = fixture.tool_result("builtin__project_create")?;
+    let skill_refusal = fixture.tool_result("builtin__skill_activate")?;
+    runtime.shutdown().await?;
+
+    for (tool, refusal) in [
+        ("project_create", project_refusal),
+        ("skill_activate", skill_refusal),
+    ] {
+        assert!(
+            refusal.contains("disabled by tool approval settings"),
+            "a disabled {tool} must be refused, not run; got: {refusal}"
+        );
+    }
+    assert!(
+        projects.is_empty(),
+        "a refused project_create creates nothing; got {projects:?}"
+    );
+    Ok(())
+}
+
+/// Finding 2: the gate asks with the thread's own scope, so a thread whose
+/// profile is "Ask first" parks a `t3_delegate` call even though global
+/// auto-approve is ON.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ask_first_thread_profile_wins_over_global_auto_approve() -> HarnessResult<()> {
+    let fixture = Fixture::new([RebornScriptedReply::tool_call(
+        "t3_delegate",
+        json!({"task": "ask-first-delegate-awaits-approval"}),
+    )])
+    .await?;
+    let runtime = fixture.runtime(false).await?;
+    let surface = fixture.surface(&runtime)?;
+    PROFILE_CREATE_COMMAND
+        .invoke_on(
+            &surface,
+            serde_json::from_value::<ProfileWriteRequest>(json!({
+                "profile_id": "ask-first",
+                "display_name": "Ask first",
+                "approval_mode": "ask_first",
+            }))?,
+            ironclaw_host_api::ids::ActivityId::new(),
+        )
+        .await?;
+    let created: ProfileThreadCreateResponse = serde_json::from_value(
+        PROFILE_THREAD_CREATE_COMMAND
+            .invoke_on(
+                &surface,
+                ProfileThreadCreateRequest {
+                    profile_id: "ask-first".to_string(),
+                    client_action_id: Some(uuid::Uuid::new_v4().to_string()),
+                },
+                ironclaw_host_api::ids::ActivityId::new(),
+            )
+            .await?,
+    )?;
+
+    let (scope, run_id) = fixture
+        .submit_chat_in(&runtime, &created.thread_id, "delegate the report")
+        .await?;
+    let state = wait_for_status(
+        &runtime.product_turn_coordinator_for_test(),
+        scope,
+        run_id,
+        TurnStatus::BlockedApproval,
+    )
+    .await?;
+    runtime.shutdown().await?;
+    assert!(
+        state
+            .gate_ref
+            .is_some_and(|gate| gate.as_str().starts_with("gate:approval-")),
+        "an Ask-first thread must park t3_delegate on an approval gate"
+    );
+    Ok(())
+}
+
+async fn projects_of(fixture: &Fixture, runtime: &RebornRuntime) -> HarnessResult<Vec<String>> {
+    let projects = runtime
+        .standalone_project_service_for_test()
+        .ok_or("runtime exposes no project service")?
+        .list_projects(
+            ironclaw_product_contracts::workspace_views::ProjectCaller {
+                tenant_id: fixture.tenant_id.clone(),
+                user_id: fixture.user_id.clone(),
+            },
+            ironclaw_product_contracts::workspace_views::RebornListProjectsRequest { limit: None },
+        )
+        .await?;
+    Ok(projects
+        .projects
+        .into_iter()
+        .map(|project| project.name)
+        .filter(|name| name.contains("Project"))
+        .collect())
 }
