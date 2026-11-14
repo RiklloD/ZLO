@@ -217,7 +217,10 @@ async fn re_begin_on_a_live_flow_is_admitted(
             )
         });
 
-    // silent-ok: cleanup of the conformance flow; cancel idempotency is its own case
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "cleanup of the conformance flow; cancel idempotency is its own case"
+    )]
     let _ = driver
         .cancel(crate::DeviceLinkCancelRequest {
             flow_id: flow,

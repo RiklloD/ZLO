@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 #[path = "auth_product_contract/cleanup_contract.rs"]
 mod cleanup_contract;
 #[path = "auth_product_contract/common.rs"]
