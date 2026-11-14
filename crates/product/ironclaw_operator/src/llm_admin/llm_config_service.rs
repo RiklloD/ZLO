@@ -333,7 +333,7 @@ impl RebornLlmConfigService {
             // The auth exchange above ran outside the live-LLM lock; the
             // selection write and its apply run as one transaction under it.
             if let Err(error) = activate_selection(
-                reload.as_deref(),
+                reload.as_ref(),
                 RebornProviderAdmin::new(boot),
                 "openai_codex".to_string(),
                 None,
@@ -370,7 +370,7 @@ impl RebornLlmConfigService {
             self.refresh_running_provider().await;
             return Ok(());
         }
-        activate_selection(self.reload.as_deref(), self.admin(), id, model).await
+        activate_selection(self.reload.as_ref(), self.admin(), id, model).await
     }
 
     /// Persist-then-reload: the file write already happened; refresh the
@@ -1279,7 +1279,7 @@ impl LlmConfigService for RebornLlmConfigService {
             // The auth exchange above ran outside the live-LLM lock; the
             // selection write and its apply run as one transaction under it.
             if let Err(error) = activate_selection(
-                reload.as_deref(),
+                reload.as_ref(),
                 RebornProviderAdmin::new(boot),
                 "openai_codex".to_string(),
                 None,
@@ -1335,7 +1335,7 @@ impl LlmConfigService for RebornLlmConfigService {
                 LlmConfigServiceError::Internal
             })?;
         activate_selection(
-            self.reload.as_deref(),
+            self.reload.as_ref(),
             self.admin(),
             "nearai".to_string(),
             None,
@@ -1426,7 +1426,7 @@ fn sanitize_origin(raw: &str) -> Option<String> {
 pub async fn apply_nearai_login(
     session: &ironclaw_llm::SessionManager,
     boot: &RebornBootConfig,
-    live: &LiveLlmDefault,
+    live: &Arc<LiveLlmDefault>,
     token: &str,
 ) -> Result<(), String> {
     session
@@ -1452,7 +1452,7 @@ pub async fn apply_nearai_login(
 /// running-server writer of the selection — Settings saves and the login
 /// completions — goes through here.
 async fn activate_selection(
-    live: Option<&LiveLlmDefault>,
+    live: Option<&Arc<LiveLlmDefault>>,
     admin: RebornProviderAdmin,
     provider_id: String,
     model: Option<String>,
@@ -1478,8 +1478,8 @@ async fn activate_selection(
     {
         Ok(()) => Ok(()),
         Err(SelectionWriteError::Write(error)) => Err(map_admin_error(error)),
-        Err(SelectionWriteError::Interrupted) => {
-            tracing::debug!(provider_id = %id, "LLM selection write did not run to completion");
+        Err(SelectionWriteError::Interrupted { cause }) => {
+            tracing::debug!(provider_id = %id, %cause, "LLM selection transaction did not run to completion");
             Err(LlmConfigServiceError::Unavailable)
         }
         Err(SelectionWriteError::NotApplied { reason, config }) => {

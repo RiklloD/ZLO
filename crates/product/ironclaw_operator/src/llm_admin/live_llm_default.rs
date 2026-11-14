@@ -66,10 +66,9 @@ impl LiveLlmDefault {
     /// Take the lock. Read `config.toml` only after this returns, so the file
     /// a caller applies is never older than one another caller applied.
     pub async fn lock(&self) -> LiveLlmDefaultGuard<'_> {
-        use std::sync::atomic::Ordering;
-        self.waiting.fetch_add(1, Ordering::SeqCst);
+        let queued = QueuedCaller::enter(&self.waiting);
         let applied = self.applied.lock().await;
-        self.waiting.fetch_sub(1, Ordering::SeqCst);
+        drop(queued);
         LiveLlmDefaultGuard {
             swap: &self.swap,
             applied,
@@ -82,6 +81,23 @@ impl LiveLlmDefault {
     /// signal instead of sleeping.
     pub fn queued_callers(&self) -> usize {
         self.waiting.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Counts one caller as queued for the lock until dropped — including when
+/// the waiting future is cancelled mid-acquisition.
+struct QueuedCaller<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> QueuedCaller<'a> {
+    fn enter(count: &'a std::sync::atomic::AtomicUsize) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for QueuedCaller<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -110,9 +126,9 @@ impl LiveLlmDefaultGuard<'_> {
 pub(crate) enum SelectionWriteError<E> {
     /// The write itself failed; nothing was applied.
     Write(E),
-    /// The write task did not run to completion (panicked or was cancelled);
-    /// nothing was applied.
-    Interrupted,
+    /// The transaction task did not run to completion (it panicked, or the
+    /// runtime shut down); `cause` is for logs only.
+    Interrupted { cause: String },
     /// The write landed but the running provider refused it; `config` says
     /// what became of the written file. `reason` is for logs only.
     NotApplied {
@@ -130,7 +146,30 @@ impl LiveLlmDefault {
     /// never sees the refused selection on disk, and a rollback never
     /// replaces a change another writer made (see
     /// [`ironclaw_config::ConfigTextWrite::restore_if_unchanged`]).
+    ///
+    /// The transaction runs in its own task that holds the lock to the end:
+    /// a caller that goes away (a client disconnect drops its future) does
+    /// not cut it short, so a write can never land after the lock was
+    /// released and a refused apply is always rolled back.
     pub(crate) async fn write_and_apply<T, E>(
+        self: &Arc<Self>,
+        write: impl FnOnce() -> Result<(T, ironclaw_config::ConfigTextWrite), E> + Send + 'static,
+    ) -> Result<T, SelectionWriteError<E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        let live = Arc::clone(self);
+        tokio::spawn(async move { live.write_and_apply_locked(write).await })
+            .await
+            .unwrap_or_else(|error| {
+                Err(SelectionWriteError::Interrupted {
+                    cause: error.to_string(),
+                })
+            })
+    }
+
+    async fn write_and_apply_locked<T, E>(
         &self,
         write: impl FnOnce() -> Result<(T, ironclaw_config::ConfigTextWrite), E> + Send + 'static,
     ) -> Result<T, SelectionWriteError<E>>
@@ -141,7 +180,9 @@ impl LiveLlmDefault {
         let mut guard = self.lock().await;
         let (value, record) = tokio::task::spawn_blocking(write)
             .await
-            .map_err(|_| SelectionWriteError::Interrupted)?
+            .map_err(|error| SelectionWriteError::Interrupted {
+                cause: error.to_string(),
+            })?
             .map_err(SelectionWriteError::Write)?;
         let applied = match RebornConfigFile::parse_text(&record.written, &record.path) {
             Ok(file) => guard.apply(Some(&file)).await,

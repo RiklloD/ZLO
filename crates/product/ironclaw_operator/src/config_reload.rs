@@ -197,6 +197,9 @@ mod tests {
     #[derive(Default)]
     struct RecordingSwap {
         swapped_models: Mutex<Vec<Option<String>>>,
+        /// The model of every swap that was attempted (refused or not), in
+        /// the order they ran to their outcome.
+        attempted_models: Mutex<Vec<Option<String>>>,
         fail: Mutex<bool>,
         /// Fail the next swap only (a transient refusal a later apply of the
         /// same selection would get past).
@@ -207,6 +210,10 @@ mod tests {
     }
 
     impl RecordingSwap {
+        fn attempted(&self) -> Vec<Option<String>> {
+            self.attempted_models.lock().expect("lock").clone()
+        }
+
         fn swapped(&self) -> Vec<Option<String>> {
             self.swapped_models.lock().expect("lock").clone()
         }
@@ -240,6 +247,10 @@ mod tests {
                 pause.entered.notify_one();
                 pause.release.notified().await;
             }
+            self.attempted_models
+                .lock()
+                .expect("lock")
+                .push(model.clone());
             let fail_once = std::mem::take(&mut *self.fail_once.lock().expect("lock"));
             let fail_model = model.as_ref().is_some_and(|model| {
                 self.fail_models
@@ -343,6 +354,7 @@ mod tests {
         ));
         live.reload().await.expect("boot apply");
         swap.swapped_models.lock().expect("lock").clear();
+        swap.attempted_models.lock().expect("lock").clear();
         let reloader = Arc::new(RebornConfigReloader::new(
             path.clone(),
             boot_file,
@@ -615,6 +627,20 @@ mod tests {
                 .expect("set dir mode")
         };
         set_mode(0o555);
+        // Permissions do not stop root: when the read-only directory is
+        // still writable, the restore cannot be made to fail this way.
+        let probe = dir.join(".write-probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            set_mode(0o755);
+            release.notify_one();
+            let _ = within("settings task", save).await;
+            eprintln!(
+                "skipping a_refused_save_whose_rollback_fails_reports_the_config_diverged: \
+                 a read-only directory is still writable for this user (running as root?)"
+            );
+            return;
+        }
         release.notify_one();
         let result = within("settings task", save).await;
         set_mode(0o755);
@@ -681,6 +707,71 @@ mod tests {
         assert_eq!(live_model(&f.live).await, disk);
         assert_eq!(f.swap.swapped().last().cloned().flatten(), disk);
         assert_eq!(f.reloader.reload().await, ConfigReloadReport::unchanged());
+    }
+
+    /// The caller of a Settings save goes away (the client disconnects) while
+    /// its transaction is paused at the swap. The transaction must still run
+    /// to its end under the lock — here the refusal and its rollback — before
+    /// the next save can take the selection; disk, the applied record and
+    /// the provider then agree on that next save.
+    #[tokio::test]
+    async fn a_settings_save_whose_caller_is_dropped_still_completes_under_the_lock() {
+        let f = fixture(MODEL_A, true).await;
+        f.swap
+            .fail_models
+            .lock()
+            .expect("lock")
+            .push("z".to_string());
+        let (entered, release) = f.swap.arm_pause();
+        let first = f.settings();
+        let dropped = tokio::spawn(async move { settings_try(&first, "z").await });
+        within("the first swap to start", entered.notified()).await;
+        dropped.abort();
+        assert!(
+            within("the dropped caller", dropped)
+                .await
+                .expect_err("the caller was cancelled")
+                .is_cancelled()
+        );
+
+        // The abandoned transaction still holds the selection: the next save
+        // queues behind it instead of running alongside it.
+        let second = f.settings();
+        let next = tokio::spawn(async move { settings_try(&second, "y").await });
+        wait_until_queued(&f.live, 1).await;
+        release.notify_one();
+        within("the second save", next)
+            .await
+            .expect("second save task")
+            .expect("second save applies");
+
+        assert_eq!(f.swap.attempted(), vec![some("z"), some("y")]);
+        assert_eq!(f.swap.swapped(), vec![some("y")]);
+        assert_eq!(disk_model(&f.path), some("y"));
+        assert_eq!(live_model(&f.live).await, some("y"));
+        assert_eq!(f.reloader.reload().await, ConfigReloadReport::unchanged());
+    }
+
+    /// A caller cancelled while queued for the lock is no longer counted as
+    /// queued.
+    #[tokio::test]
+    async fn a_cancelled_waiter_leaves_the_queue_count() {
+        let f = fixture(MODEL_A, true).await;
+        let held = f.live.lock().await;
+        let live = Arc::clone(&f.live);
+        let waiter = tokio::spawn(async move {
+            let _guard = live.lock().await;
+        });
+        wait_until_queued(&f.live, 1).await;
+        waiter.abort();
+        assert!(
+            within("the cancelled waiter", waiter)
+                .await
+                .expect_err("the waiter was cancelled")
+                .is_cancelled()
+        );
+        assert_eq!(f.live.queued_callers(), 0);
+        drop(held);
     }
 
     /// The boot snapshot, not a later re-read, is the restart-required

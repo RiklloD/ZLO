@@ -68,7 +68,7 @@ async fn nearai_callback(
     let Some(token) = query.token.filter(|token| !token.trim().is_empty()) else {
         return Redirect::to(NEARAI_LOGIN_ERROR_REDIRECT);
     };
-    match apply_nearai_login(&state.session, &state.boot, state.reload.as_ref(), &token).await {
+    match apply_nearai_login(&state.session, &state.boot, &state.reload, &token).await {
         Ok(()) => Redirect::to(NEARAI_LOGIN_SUCCESS_REDIRECT),
         Err(error) => {
             tracing::warn!(%error, "NEAR AI login callback failed");
