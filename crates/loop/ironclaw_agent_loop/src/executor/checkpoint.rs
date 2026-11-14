@@ -225,8 +225,9 @@ impl CheckpointStage {
         };
         // Stack depth: this check sits at every cancellation boundary (16 call
         // sites in `ModelStage::process` alone). Boxing only the rare cancel
-        // path shrinks its future from 15.1 KB to ~2 KB without allocating on
-        // the common path; see `ExecutorStage` docs in `executor/pipeline.rs`.
+        // path shrinks its future from 15.1 KB to ~2 KB without an additional
+        // future allocation on the common path; see `ExecutorStage` docs in
+        // `executor/pipeline.rs`.
         Box::pin(self.cancel_on_signal(ctx, state, signal))
             .await
             .map(CancelCheck::Exit)
