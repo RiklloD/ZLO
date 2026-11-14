@@ -78,6 +78,68 @@ impl LiveLlmDefaultGuard<'_> {
     }
 }
 
+/// Why [`LiveLlmDefault::write_and_apply`] did not leave its selection
+/// serving.
+#[derive(Debug)]
+pub(crate) enum SelectionWriteError<E> {
+    /// The write itself failed; nothing was applied.
+    Write(E),
+    /// The write task did not run to completion (panicked or was cancelled);
+    /// nothing was applied.
+    Interrupted,
+    /// The write landed but the running provider refused it. `config.toml`
+    /// was put back (`restored`), unless another writer changed it since, in
+    /// which case their version was kept. `reason` is for logs only.
+    NotApplied { reason: String, restored: bool },
+}
+
+impl LiveLlmDefault {
+    /// The Settings → Inference transaction, under the one lock every apply
+    /// takes: run `write` (which records the text it replaced and wrote,
+    /// under the config update lock), apply exactly what it wrote, and when
+    /// the apply is refused put the file back before the lock is released.
+    /// A concurrent Settings save, SIGHUP reload or boot apply therefore
+    /// never sees the refused selection on disk, and a rollback never
+    /// replaces a change another writer made (see
+    /// [`ironclaw_config::ConfigTextWrite::restore_if_unchanged`]).
+    pub(crate) async fn write_and_apply<T, E>(
+        &self,
+        write: impl FnOnce() -> Result<(T, ironclaw_config::ConfigTextWrite), E> + Send + 'static,
+    ) -> Result<T, SelectionWriteError<E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        let mut guard = self.lock().await;
+        let (value, record) = tokio::task::spawn_blocking(write)
+            .await
+            .map_err(|_| SelectionWriteError::Interrupted)?
+            .map_err(SelectionWriteError::Write)?;
+        let applied = match RebornConfigFile::parse_text(&record.written, &record.path) {
+            Ok(file) => guard.apply(Some(&file)).await,
+            Err(error) => Err(error.redacted_reason()),
+        };
+        let Err(reason) = applied else {
+            return Ok(value);
+        };
+        let restored = match tokio::task::spawn_blocking(move || record.restore_if_unchanged())
+            .await
+        {
+            Ok(Ok(restored)) => restored,
+            Ok(Err(error)) => {
+                tracing::error!(%error, "restoring config.toml after a refused LLM selection failed");
+                false
+            }
+            Err(error) => {
+                tracing::error!(%error, "restoring config.toml after a refused LLM selection did not run");
+                false
+            }
+        };
+        drop(guard);
+        Err(SelectionWriteError::NotApplied { reason, restored })
+    }
+}
+
 #[async_trait]
 impl LlmReloadTrigger for LiveLlmDefault {
     /// Read `config.toml` under the lock and apply it.

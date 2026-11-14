@@ -57,7 +57,7 @@ pub use config_reload::{
     ConfigChangeSet, ConfigKeyReloadability, ConfigReloadDiffError, ConfigReloadOutcome,
     ConfigReloadReport, LIVE_RELOADABLE_CONFIG_KEYS, config_key_reloadability, diff_config_files,
 };
-pub use config_restore::{read_config_text, restore_config_text_if_unchanged};
+pub use config_restore::{ConfigTextWrite, read_config_text, restore_config_text_if_unchanged};
 pub use config_seed::{
     RebornConfigSeedError, RebornConfigSeedOutcome, seed_default_config_file_if_missing,
 };

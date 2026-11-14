@@ -175,7 +175,9 @@ mod tests {
     use async_trait::async_trait;
     use ironclaw_config::{RebornBootConfig, RebornHome, RebornProfile};
     use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, UserId};
-    use ironclaw_product_contracts::operator_llm::{LlmConfigService, SetActiveLlmRequest};
+    use ironclaw_product_contracts::operator_llm::{
+        LlmConfigService, LlmConfigServiceError, SetActiveLlmRequest,
+    };
     use ironclaw_product_contracts::surface::ProductSurfaceCaller;
     use ironclaw_product_contracts::test_support::fakes::FakeOperatorSecretValueStore;
     use tokio::sync::Notify;
@@ -196,6 +198,11 @@ mod tests {
     struct RecordingSwap {
         swapped_models: Mutex<Vec<Option<String>>>,
         fail: Mutex<bool>,
+        /// Fail the next swap only (a transient refusal a later apply of the
+        /// same selection would get past).
+        fail_once: Mutex<bool>,
+        /// Fail every swap to one of these models.
+        fail_models: Mutex<Vec<String>>,
         pause: Mutex<Option<Pause>>,
     }
 
@@ -233,7 +240,15 @@ mod tests {
                 pause.entered.notify_one();
                 pause.release.notified().await;
             }
-            if *self.fail.lock().expect("lock") {
+            let fail_once = std::mem::take(&mut *self.fail_once.lock().expect("lock"));
+            let fail_model = model.as_ref().is_some_and(|model| {
+                self.fail_models
+                    .lock()
+                    .expect("lock")
+                    .iter()
+                    .any(|failing| failing == model)
+            });
+            if *self.fail.lock().expect("lock") || fail_once || fail_model {
                 return Err("provider chain refused the selection".to_string());
             }
             self.swapped_models.lock().expect("lock").push(model);
@@ -262,11 +277,18 @@ mod tests {
                 self.boot.clone(),
                 LlmKeyStore::new(Arc::new(FakeOperatorSecretValueStore::new())),
             )
-            .with_reload_trigger(Arc::clone(&self.live) as Arc<dyn LlmReloadTrigger>)
+            .with_live_llm_default(Arc::clone(&self.live))
         }
     }
 
     async fn settings_pick(service: &RebornLlmConfigService, model: &str) {
+        settings_try(service, model).await.expect("settings save");
+    }
+
+    async fn settings_try(
+        service: &RebornLlmConfigService,
+        model: &str,
+    ) -> Result<(), LlmConfigServiceError> {
         let caller = ProductSurfaceCaller::new(
             TenantId::new("tenant-alpha").expect("tenant"),
             UserId::new("user-alpha").expect("user"),
@@ -283,7 +305,20 @@ mod tests {
                 },
             )
             .await
-            .expect("settings save");
+            .map(|_| ())
+    }
+
+    fn disk_model(path: &std::path::Path) -> Option<String> {
+        RebornConfigFile::load(path)
+            .expect("parse")
+            .and_then(|file| file.default_llm_slot().and_then(|slot| slot.model.clone()))
+    }
+
+    async fn live_model(live: &LiveLlmDefault) -> Option<String> {
+        live.lock()
+            .await
+            .applied()
+            .and_then(|slot| slot.model.clone())
     }
 
     /// Boot the way the runtime does: parse the file once for boot-time
@@ -459,6 +494,84 @@ mod tests {
 
         assert_eq!(report, ConfigReloadReport::unchanged());
         assert_eq!(f.swap.swapped(), vec![some("c")]);
+    }
+
+    /// Two Settings saves race: the first (Z) is refused by the live swap,
+    /// the second (Y) applies. The refused save's rollback must never undo
+    /// the one that succeeded: disk, the applied record and the provider all
+    /// end on Y.
+    #[tokio::test]
+    async fn a_refused_settings_save_never_rolls_back_a_concurrent_one_that_applied() {
+        let f = fixture(MODEL_A, true).await;
+        f.swap
+            .fail_models
+            .lock()
+            .expect("lock")
+            .push("z".to_string());
+        let (entered, release) = f.swap.arm_pause();
+        let first = f.settings();
+        let refused = tokio::spawn(async move { settings_try(&first, "z").await });
+        entered.notified().await;
+
+        let second = f.settings();
+        let applied = tokio::spawn(async move { settings_try(&second, "y").await });
+        let_race_run().await;
+        release.notify_one();
+
+        assert!(
+            matches!(
+                refused.await.expect("first save"),
+                Err(LlmConfigServiceError::NotApplied)
+            ),
+            "the refused save reports NotApplied"
+        );
+        applied
+            .await
+            .expect("second save")
+            .expect("second save applies");
+        assert_eq!(disk_model(&f.path), some("y"));
+        assert_eq!(live_model(&f.live).await, some("y"));
+        assert_eq!(f.swap.swapped(), vec![some("y")]);
+        assert_eq!(f.reloader.reload().await, ConfigReloadReport::unchanged());
+    }
+
+    /// A Settings save is refused at the swap (transiently: the same
+    /// selection would apply a moment later) while a SIGHUP is queued behind
+    /// it. The rollback happens before the SIGHUP can read the file, so the
+    /// SIGHUP never applies the refused selection over the restored file:
+    /// disk, the applied record and the provider all end on A.
+    #[tokio::test]
+    async fn a_reload_queued_behind_a_refused_settings_save_sees_the_restored_file() {
+        let f = fixture(MODEL_A, true).await;
+        *f.swap.fail_once.lock().expect("lock") = true;
+        let (entered, release) = f.swap.arm_pause();
+        let settings = f.settings();
+        let save = tokio::spawn(async move { settings_try(&settings, "z").await });
+        entered.notified().await;
+
+        // Paused at the failure point; a SIGHUP queues behind it. Its own
+        // swap (if it reaches one) pauses too, so a rollback that runs after
+        // the SIGHUP read the file is caught rather than raced.
+        let (_sighup_entered, sighup_release) = f.swap.arm_pause();
+        let reloader = Arc::clone(&f.reloader);
+        let sighup = tokio::spawn(async move { reloader.reload().await });
+        let_race_run().await;
+        release.notify_one();
+        assert!(matches!(
+            save.await.expect("settings task"),
+            Err(LlmConfigServiceError::NotApplied)
+        ));
+        sighup_release.notify_one();
+        let report = sighup.await.expect("sighup task");
+
+        assert_eq!(disk_model(&f.path), some("a"), "{report}");
+        assert_eq!(live_model(&f.live).await, some("a"), "{report}");
+        assert!(
+            f.swap.swapped().is_empty(),
+            "nothing but A may serve: {:?}",
+            f.swap.swapped()
+        );
+        assert_eq!(report, ConfigReloadReport::unchanged());
     }
 
     /// The boot snapshot, not a later re-read, is the restart-required

@@ -6,11 +6,28 @@
 //! overwritten by the rollback.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config_file::{
     RebornConfigFileUpdateError, acquire_update_lock, write_config_text_atomic,
 };
+
+/// One `config.toml` write as seen under the update lock: the text it
+/// replaced (`None` when the write created the file) and the text it wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigTextWrite {
+    pub path: PathBuf,
+    pub before: Option<String>,
+    pub written: String,
+}
+
+impl ConfigTextWrite {
+    /// Put `before` back if the file still holds exactly `written`; `false`
+    /// when someone else changed it since (their version is kept).
+    pub fn restore_if_unchanged(&self) -> Result<bool, RebornConfigFileUpdateError> {
+        restore_config_text_if_unchanged(&self.path, Some(&self.written), self.before.as_deref())
+    }
+}
 
 /// The current text of `path`, or `None` when it does not exist.
 pub fn read_config_text(path: &Path) -> Result<Option<String>, RebornConfigFileUpdateError> {

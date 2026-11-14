@@ -38,7 +38,11 @@ slot already names keeps the slot's hand-set overrides (`base_url`,
 defaults. A selection the live swap refuses is not kept: `config.toml` is put
 back (only while it still holds what the save wrote) and the save answers
 `409 conflict` with `field: "llm.default"` — the file never names a provider
-the running server is not serving. A hand edit of `config.toml` is
+the running server is not serving. The whole save — snapshot, write, apply,
+conditional restore — is one transaction, `LiveLlmDefault::write_and_apply`,
+under the same lock SIGHUP reloads and the boot apply take (lock order: the
+live-LLM lock, then the config file update lock inside it), and the
+before/written texts are captured under the file lock by the write itself. A hand edit of `config.toml` is
 applied by `ironclaw_operator::RebornConfigReloader::reload`, which `zlo serve`
 runs on SIGHUP (`kill -HUP <pid>`) when stdin is not a terminal (the installed
 service). Started from a terminal, SIGHUP keeps its default and stops the

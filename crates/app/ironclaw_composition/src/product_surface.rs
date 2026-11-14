@@ -427,7 +427,7 @@ pub(crate) fn compose_llm_config_service(
         .with_user_model_preference_store(user_model_preference_store);
     if let (Some(parts), Some(live)) = (llm_reload, live_llm_default) {
         llm_config = llm_config
-            .with_reload_trigger(Arc::clone(live) as Arc<dyn ironclaw_operator::LlmReloadTrigger>)
+            .with_live_llm_default(Arc::clone(live))
             .with_nearai_session(Arc::clone(&parts.session))
             .with_nearai_login_states(Arc::clone(&parts.nearai_login_states));
     }
