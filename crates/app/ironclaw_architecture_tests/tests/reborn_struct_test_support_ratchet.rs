@@ -81,7 +81,12 @@ const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 74;
 // `RebornRuntime` became an ungated production field (shutdown reads it);
 // its accessor stays test-support (integration harnesses wiring their own
 // run-delivery observer are its only callers).
-const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 253;
+// 253 -> 259 (2026-11-14, fix/auto-approve-surface): six test-support members
+// on existing frozen composition paths — the Supermemory/computer-use input
+// overrides and the child-run spawn-tree handle that let
+// `reborn_integration_unattended_surface` drive mutating synthetic tools on
+// every admission path through the production runtime. No new path.
+const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 259;
 
 const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
     FrozenPathCount {
@@ -174,13 +179,19 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         path: "crates/ironclaw_composition/src/runtime.rs",
         // 10 -> 9 (2026-08-31): the delivery-coordinator handle became an
         // ungated production field when the reply publication folded onto it.
-        count: 9,
+        // 9 -> 10 (2026-11-14): `child_runs`, the planned coordinator's
+        // spawn-tree face, so a production-runtime test can submit a child run
+        // and wake the scheduler exactly as `spawn_subagent` would.
+        count: 10,
     },
     FrozenPathCount {
         category: "test-support",
         item_kind: "field",
         path: "crates/ironclaw_composition/src/runtime_input.rs",
-        count: 3,
+        // 3 -> 5 (2026-11-14): Supermemory and computer-use overrides, the
+        // only hermetic way to switch those optional tools on (both are
+        // otherwise env-built; process env is shared across a test binary).
+        count: 5,
     },
     FrozenPathCount {
         category: "test-support",
@@ -445,7 +456,9 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         // (shutdown uses it).
         // 44 -> 43 (2026-11-10): the unused
         // `pairing_connection_notices_for_test` accessor was deleted.
-        count: 43,
+        // 43 -> 44 (2026-11-14): `turn_spawn_tree_for_test` (see the
+        // `runtime.rs` field entry).
+        count: 44,
     },
     FrozenPathCount {
         category: "test-support",
@@ -469,7 +482,9 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         category: "test-support",
         item_kind: "method",
         path: "crates/ironclaw_composition/src/runtime_input.rs",
-        count: 5,
+        // 5 -> 7 (2026-11-14): `with_supermemory_for_test` /
+        // `with_computer_use_for_test` (see the field entry above).
+        count: 7,
     },
     FrozenPathCount {
         category: "test-support",
