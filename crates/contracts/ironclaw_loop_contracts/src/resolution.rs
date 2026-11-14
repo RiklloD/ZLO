@@ -696,9 +696,10 @@ fn safe_summary_or_placeholder(raw: String) -> SafeSummary {
 /// fixtures. Listing them here would claim producer coverage this crate does
 /// not have.
 #[cfg(test)]
-const PRODUCTION_DENY_REASONS: [&str; 12] = [
+const PRODUCTION_DENY_REASONS: [&str; 13] = [
     "auth_denied",
     "policy_denied",
+    "settings_unavailable",
     "empty_surface",
     "hook_denied",
     "hook_gate_ref_unavailable",
@@ -737,6 +738,9 @@ fn classify_deny_reason(tag: &str) -> Option<DenyReason> {
         "outbound_delivery_approval_required" | "expected_approval" => DenyReason::ApprovalDenied,
         // Egress refused by network policy.
         "network_denied" => DenyReason::NetworkDenied,
+        // The approval gate could not read the user's tool settings and
+        // refused rather than guess — temporary, retry later.
+        "settings_unavailable" => DenyReason::SettingsUnavailable,
         // Host-side invariant broke; not the caller's doing and not unlockable
         // by them.
         "hook_gate_ref_unavailable" => DenyReason::InternalInvariantViolation,
@@ -892,6 +896,7 @@ mod deny_reason_tests {
                 DenyReason::InternalInvariantViolation,
             ),
             ("missing_provider_trust", DenyReason::MissingGrant),
+            ("settings_unavailable", DenyReason::SettingsUnavailable),
             ("hook_denied", DenyReason::PolicyDenied),
             ("some_future_reason", DenyReason::PolicyDenied),
         ];

@@ -434,8 +434,13 @@ async fn require_approval_for_profile_policy(
         ApprovalGateVerdict::RequireApproval => Decision::RequireApproval {
             request: approval_request(context, descriptor, estimate, action_kind),
         },
-        ApprovalGateVerdict::Deny | ApprovalGateVerdict::SettingsUnavailable => Decision::Deny {
+        ApprovalGateVerdict::Deny => Decision::Deny {
             reason: DenyReason::PolicyDenied,
+        },
+        // Still a refusal — nothing runs — but a temporary one the caller can
+        // retry, not a policy decision.
+        ApprovalGateVerdict::SettingsUnavailable => Decision::Deny {
+            reason: DenyReason::SettingsUnavailable,
         },
     }
 }

@@ -221,7 +221,7 @@ impl SyntheticApprovalGate {
                 .map(|resolution| GateOutcome::Respond(Box::new(resolution))),
             // Unreadable tool settings refuse too, before the lease is touched.
             ApprovalGateVerdict::SettingsUnavailable => self
-                .denied("tool approval settings could not be read; this tool was not run")
+                .settings_unavailable()
                 .map(|resolution| GateOutcome::Respond(Box::new(resolution))),
             ApprovalGateVerdict::Allow => {
                 if let Ok(lease) = lease {
@@ -471,7 +471,21 @@ impl SyntheticApprovalGate {
     }
 
     fn denied(&self, summary: &str) -> Result<Resolution, AgentLoopHostError> {
-        let reason = CapabilityDeniedReasonKind::unknown("synthetic_approval_required")
+        Self::denied_as("synthetic_approval_required", summary)
+    }
+
+    /// Unreadable settings refuse with their own reason, so the model reads a
+    /// temporary outage to wait out rather than a permanent policy refusal.
+    fn settings_unavailable(&self) -> Result<Resolution, AgentLoopHostError> {
+        Self::denied_as(
+            "settings_unavailable",
+            "tool approval settings could not be read, so this tool was not run; \
+             try again shortly",
+        )
+    }
+
+    fn denied_as(kind: &str, summary: &str) -> Result<Resolution, AgentLoopHostError> {
+        let reason = CapabilityDeniedReasonKind::unknown(kind)
             .map_err(|reason| host_error(AgentLoopHostErrorKind::Internal, reason.to_string()))?;
         Ok(resolution::denied(reason, summary.to_string()).resolution)
     }

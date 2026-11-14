@@ -232,6 +232,66 @@ async fn a_denial_tells_the_model_what_would_unlock_it() {
     assert_eq!(recovery.same_call_retry, SameCallRetryConstraint::Forbidden);
 }
 
+/// Unreadable tool settings are a temporary refusal, not a policy decision.
+///
+/// The approval gate fails closed when the user's per-tool settings cannot be
+/// read, but the model must learn that waiting and retrying the same call can
+/// work — not "permanently refused, revise your approach", which is what the
+/// collapse into `PolicyDenied` told it.
+#[tokio::test]
+async fn unreadable_settings_denial_tells_the_model_to_wait_and_retry() {
+    let result_ref = LoopResultRef::new("result:settings-unavailable-ok").expect("valid");
+    let host = MockHost::new(vec![provider_two_calls_response(), reply_response()])
+        .with_batch_outcomes(vec![ironclaw_host_api::resolution::ResolutionBatch {
+            resolutions: vec![
+                resolution::completed(
+                    result_ref,
+                    "provider call completed".to_string(),
+                    ironclaw_loop_contracts::CapabilityProgress::MadeProgress,
+                    true,
+                    0,
+                    None,
+                    None,
+                ),
+                resolution::denied(
+                    ironclaw_loop_contracts::CapabilityDeniedReasonKind::unknown(
+                        "settings_unavailable",
+                    )
+                    .expect("valid reason tag"),
+                    "tool approval settings could not be read, so this tool was not run"
+                        .to_string(),
+                )
+                .resolution,
+            ],
+            stopped_on_suspension: false,
+        }]);
+    let executor = CanonicalAgentLoopExecutor;
+    let state = LoopExecutionState::initial_for_run(host.run_context());
+
+    executor
+        .execute_family(&crate::families::default(), &host, state)
+        .await
+        .expect("execute");
+
+    let appended = host.appended_result_refs();
+    assert_eq!(appended.len(), 2, "completed call plus the denial");
+    let recovery = appended[1]
+        .model_observation
+        .as_ref()
+        .and_then(|observation| observation.recovery.as_ref())
+        .expect("the denial must carry recovery guidance");
+    assert_eq!(
+        recovery.recovery_hint,
+        CapabilityRecoveryHint::WaitThenRetry,
+        "unreadable settings are temporary; the model should wait, not revise"
+    );
+    assert_eq!(
+        recovery.same_call_retry,
+        SameCallRetryConstraint::AllowedAfterDelay,
+        "the same call may succeed once settings can be read again"
+    );
+}
+
 #[tokio::test]
 async fn denial_without_summary_emits_actionable_detail() {
     let host = MockHost::new(vec![provider_calls_response(), reply_response()])

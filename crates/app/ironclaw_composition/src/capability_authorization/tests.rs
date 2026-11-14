@@ -1128,7 +1128,7 @@ async fn standalone_authorizer_fails_closed_when_override_lookup_errors() {
         matches!(
             decision,
             ironclaw_host_api::decision::Decision::Deny {
-                reason: ironclaw_host_api::decision::DenyReason::PolicyDenied
+                reason: ironclaw_host_api::decision::DenyReason::SettingsUnavailable
             }
         ),
         "override-store read errors must refuse even when global auto-approve is enabled, got {decision:?}"

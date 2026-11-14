@@ -551,10 +551,22 @@ async fn an_unreadable_override_store_refuses_fresh_and_approved_calls() {
         CapabilityLeaseStatus::Active,
         "a refused resume leaves the approval lease unspent"
     );
-    assert_eq!(
-        gate.call().await.0.kind(),
-        "denied",
-        "a fresh call refuses too"
-    );
+    let (fresh, _) = gate.call().await;
+    match &fresh {
+        Resolution::Denied(denial) => assert_eq!(
+            denial.reason_kind,
+            Some(ironclaw_host_api::decision::DenyReason::SettingsUnavailable),
+            "the model must see a temporary settings outage, not a policy refusal"
+        ),
+        other => panic!("a fresh call refuses too, got {other:?}"),
+    }
     assert_eq!(gate.runs(), 0, "nothing runs on unreadable tool settings");
+
+    // Once the store reads again, the same call goes through normal approval.
+    overrides.failing.store(false, Ordering::SeqCst);
+    assert!(
+        matches!(gate.call().await.0, Resolution::Blocked(_)),
+        "with settings readable again the call parks for approval as usual"
+    );
+    assert_eq!(gate.runs(), 0);
 }
