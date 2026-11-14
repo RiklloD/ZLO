@@ -381,3 +381,72 @@ fn system_json_reports_the_real_storage_kind() {
     let system: Value = serde_json::from_slice(&read_bundle(&out)["system.json"]).expect("system");
     assert_eq!(system["storage"]["effective_kind"], "postgres", "{system}");
 }
+
+#[test]
+fn obvious_non_secret_values_are_recognized() {
+    for value in [
+        "", "  ", "true", "FALSE", " Yes ", "no", "On", "off", "enabled", "Disabled", "none",
+        "NULL", "0", "1", "3600", "999999",
+    ] {
+        assert!(is_obvious_non_secret(value), "{value:?} is not a secret");
+    }
+    for value in ["1234567", "-1", "1.5", "truthy", "abc1", "sk-1", "a1b"] {
+        assert!(
+            !is_obvious_non_secret(value),
+            "{value:?} must stay a secret"
+        );
+    }
+}
+
+/// Plain toggle and small-number values under credential-like names are not
+/// secrets: they neither withhold the logs nor get redacted as words, and
+/// the manifest names (never values) what was left out. A real short secret
+/// beside them is still redacted.
+#[test]
+fn plain_values_under_credential_names_are_not_known_secrets() {
+    let (_tmp, context) = RebornCliContext::test_context();
+    let home = context.boot_config().home().path().to_path_buf();
+    write(
+        &home.join("logs").join("serve.stderr.log"),
+        "flag true seen\nretries 1 of 3600\nkey Xy7pQ2w used\nheartbeat ok\n",
+    );
+    let env = env(&[
+        ("SOME_AUTH", "1"),
+        ("ACME_TOKEN_ENABLED", "true"),
+        ("ACME_TOKEN_TTL", "3600"),
+        ("ACME_API_KEY", "Xy7pQ2w"),
+    ]);
+    let (_out_dir, out, result) = run_bundle(&context, &env, true);
+    let report = result.expect("bundle writes");
+    assert!(!report.logs_withheld_for_short_secret);
+    let entries = read_bundle(&out);
+    let log = String::from_utf8_lossy(&entries["logs/serve.stderr.log.tail.txt"]).into_owned();
+    assert!(log.contains("flag true seen"), "{log}");
+    assert!(log.contains("retries 1 of 3600"), "{log}");
+    assert!(!log.contains("Xy7pQ2w"), "{log}");
+    let manifest: Value = serde_json::from_slice(&entries["manifest.json"]).expect("manifest");
+    assert_eq!(
+        manifest["redaction_inputs"]["plain_value_names"],
+        serde_json::json!(["ACME_TOKEN_ENABLED", "ACME_TOKEN_TTL", "SOME_AUTH"]),
+        "{manifest}"
+    );
+    assert_eq!(
+        manifest["redaction_inputs"]["degraded"], false,
+        "{manifest}"
+    );
+}
+
+/// The exclusion never applies to a URL's userinfo password: a 3-character
+/// one still withholds the logs, even when it is a plain word or number.
+#[test]
+fn a_plain_looking_url_password_is_still_a_known_secret() {
+    let (_tmp, context) = RebornCliContext::test_context();
+    let home = context.boot_config().home().path().to_path_buf();
+    write(&home.join("logs").join("serve.stderr.log"), "on 123 ok\n");
+    let env = env(&[("DATABASE_URL", "postgres://zlo:123@db.internal:5432/zlo")]);
+    let (_out_dir, out, result) = run_bundle(&context, &env, true);
+    let report = result.expect("bundle writes");
+    assert!(report.logs_withheld_for_short_secret);
+    let entries = read_bundle(&out);
+    assert!(!entries.keys().any(|name| name.starts_with("logs/")));
+}

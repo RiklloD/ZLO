@@ -132,6 +132,7 @@ fn collect_entries(
     );
     let scrubber = redact::Scrubber::new(known.values);
     let degraded = known.degraded;
+    let excluded_names = known.excluded_names;
     // A known secret under 4 characters cannot be redacted without
     // destroying unrelated text, and the final check could not tell it from
     // ordinary text either: leave every log tail out instead.
@@ -231,6 +232,7 @@ fn collect_entries(
         "redaction_inputs": {
             "degraded": !redaction_reasons.is_empty(),
             "reasons": redaction_reasons,
+            "plain_value_names": excluded_names,
         },
         "redaction": "Values this machine knows are secret (WebUI token, the local secrets \
                       master key, env vars named by config.toml, the built-in provider \
@@ -291,6 +293,9 @@ struct KnownSecrets {
     values: Vec<String>,
     /// Sources that could not be read, so `values` may be incomplete.
     degraded: Vec<String>,
+    /// Env var / config key names whose value was left out of `values` as an
+    /// obvious non-secret ([`is_obvious_non_secret`]); names only, sorted.
+    excluded_names: Vec<String>,
 }
 
 /// Values on this machine that are secret by construction, collected only to
@@ -309,6 +314,7 @@ fn known_secret_values(
     let home = context.boot_config().home();
     let mut values = Vec::new();
     let mut degraded = Vec::new();
+    let mut excluded_names = Vec::new();
 
     match crate::webui_token::login_link(home) {
         Ok(Some(link)) => {
@@ -368,7 +374,7 @@ fn known_secret_values(
     }
     match read_bounded_regular_file(&home.config_file_path()) {
         Ok(Some(text)) => {
-            if !scan_raw_config(&text, &mut env_names, &mut values) {
+            if !scan_raw_config(&text, &mut env_names, &mut values, &mut excluded_names) {
                 degraded.push("config.toml is not valid TOML; scanned it line by line".to_string());
             }
         }
@@ -380,7 +386,11 @@ fn known_secret_values(
         let credential_named = redact::is_sensitive_key(name)
             || (name.to_ascii_uppercase().ends_with("_URL") && value.contains('@'));
         if credential_named || env_names.iter().any(|known| known == name) {
-            values.push(value.clone());
+            if is_obvious_non_secret(value) {
+                excluded_names.push(name.clone());
+            } else {
+                values.push(value.clone());
+            }
         }
     }
     // A known URL's userinfo password is a secret on its own: a log can
@@ -389,8 +399,38 @@ fn known_secret_values(
         .iter()
         .flat_map(|value| url_userinfo_passwords(value))
         .collect();
+    // Always kept, however short or plain: a URL password is a secret.
     values.extend(passwords);
-    KnownSecrets { values, degraded }
+    excluded_names.sort();
+    excluded_names.dedup();
+    KnownSecrets {
+        values,
+        degraded,
+        excluded_names,
+    }
+}
+
+/// A value found under a credential-like env var or config key that is
+/// plainly not a secret — empty, a boolean/toggle word, `none`/`null`, or an
+/// integer of at most 6 digits (`SOME_AUTH=1`, `X_TOKEN_TTL=3600`). Kept out
+/// of the known-secret set so it neither withholds the log tails nor gets
+/// redacted wherever the word appears. Applies only to values taken by name;
+/// a URL's userinfo password is always a known secret.
+fn is_obvious_non_secret(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return true;
+    }
+    const PLAIN_WORDS: &[&str] = &[
+        "true", "false", "yes", "no", "on", "off", "enabled", "disabled", "none", "null",
+    ];
+    if PLAIN_WORDS
+        .iter()
+        .any(|word| value.eq_ignore_ascii_case(word))
+    {
+        return true;
+    }
+    value.len() <= 6 && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// The password of a `scheme://user:password@host…` value, as written and
@@ -422,12 +462,21 @@ fn url_userinfo_passwords(value: &str) -> Vec<String> {
 /// Collect `*_env`/`*_var` names and credential-keyed values from raw
 /// `config.toml` text. Returns `false` when the text is not valid TOML (it is
 /// then scanned line by line instead).
-fn scan_raw_config(text: &str, env_names: &mut Vec<String>, values: &mut Vec<String>) -> bool {
+fn scan_raw_config(
+    text: &str,
+    env_names: &mut Vec<String>,
+    values: &mut Vec<String>,
+    excluded_names: &mut Vec<String>,
+) -> bool {
     let mut classify = |key: &str, value: &str| {
         if key.ends_with("_env") || key.ends_with("_var") {
             env_names.push(value.to_string());
         } else if redact::is_sensitive_key(key) {
-            values.push(value.to_string());
+            if is_obvious_non_secret(value) {
+                excluded_names.push(key.to_string());
+            } else {
+                values.push(value.to_string());
+            }
         }
     };
     match toml::from_str::<toml::Table>(text) {

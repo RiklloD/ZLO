@@ -3806,9 +3806,12 @@ fn doctor_bundle_redacts_short_url_passwords_as_whole_tokens() {
     let (_output, entries) = bundle_with_log_and_env(
         &format!(
             "auth {seven} failed\nblob {seven_b64}\nretry {six} then {six_encoded}\n\
-             token-blob {six_b64}\nnotXy7pQ2wpart stays\nheartbeat ok\n"
+             token-blob {six_b64}\nnotXy7pQ2wpart stays\nretry 1 ok\nheartbeat ok\n"
         ),
         &[
+            // A plain value under a credential-like name is not a secret:
+            // it must neither withhold the logs nor be redacted as a word.
+            ("SOME_AUTH", "1".to_string()),
             (
                 "DATABASE_URL",
                 format!("postgres://zlo:{seven}@db.internal:5432/zlo"),
@@ -3839,6 +3842,16 @@ fn doctor_bundle_redacts_short_url_passwords_as_whole_tokens() {
     assert_eq!(
         manifest["redaction_inputs"]["degraded"], false,
         "{manifest}"
+    );
+    assert!(
+        log.contains("retry 1 ok"),
+        "SOME_AUTH=1 is not redacted:\n{log}"
+    );
+    assert!(
+        manifest["redaction_inputs"]["plain_value_names"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name == "SOME_AUTH")),
+        "the excluded name is recorded: {manifest}"
     );
 }
 
