@@ -30,7 +30,9 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::descriptors::ProductCapabilityDescriptor;
-use crate::surface::{ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode};
+use crate::surface::{
+    ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode, ProductSurfaceErrorKind,
+};
 use crate::views::RebornViewDescriptor;
 
 pub const LLM_USER_MODEL_POLICY_SET_CAPABILITY_ID: &str = "builtin.llm_user_model_policy_set";
@@ -784,9 +786,23 @@ pub enum LlmConfigServiceError {
     Internal,
     /// The selection was valid to write, but the running server could not
     /// apply it (it does not resolve, or its provider chain does not build).
-    /// Nothing was changed: `config.toml` was put back and the previous
-    /// provider keeps serving.
-    NotApplied,
+    /// The previous provider keeps serving; `config` says what became of the
+    /// written `config.toml`.
+    NotApplied { config: LlmSelectionConfigState },
+}
+
+/// What became of `config.toml` after the running server refused a written
+/// LLM selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmSelectionConfigState {
+    /// Put back as it was: disk and the running model agree.
+    RolledBack,
+    /// Another writer changed it meanwhile; their version was kept.
+    KeptConcurrentEdit,
+    /// Putting it back failed: the saved file names the refused selection
+    /// while the previous model keeps serving, so a restart or reload would
+    /// apply it.
+    Diverged,
 }
 
 /// Field named by a [`LlmConfigServiceError::NotApplied`] refusal: the
@@ -820,9 +836,22 @@ impl From<LlmConfigServiceError> for ProductSurfaceError {
             // 409, not retryable: the request was well-formed, but it
             // conflicts with what the running server can serve; retrying the
             // same selection fails the same way until the config changes.
-            LlmConfigServiceError::NotApplied => ProductSurfaceError {
+            LlmConfigServiceError::NotApplied { config } => ProductSurfaceError {
                 field: Some(LLM_NOT_APPLIED_FIELD.to_string()),
-                ..ProductSurfaceError::from_status(ProductSurfaceErrorCode::Conflict, 409, false)
+                ..ProductSurfaceError::from_status_kind(
+                    ProductSurfaceErrorCode::Conflict,
+                    match config {
+                        LlmSelectionConfigState::RolledBack
+                        | LlmSelectionConfigState::KeptConcurrentEdit => {
+                            ProductSurfaceErrorKind::NotApplied
+                        }
+                        LlmSelectionConfigState::Diverged => {
+                            ProductSurfaceErrorKind::NotAppliedConfigDiverged
+                        }
+                    },
+                    409,
+                    false,
+                )
             },
         }
     }
@@ -1306,6 +1335,39 @@ mod tests {
             assert_eq!(projected.status_code, status);
             assert_eq!(projected.retryable, retryable);
         }
+    }
+
+    /// A refused selection save is a 409 on `llm.default` in all three
+    /// config outcomes; only a failed rollback — the saved file now differs
+    /// from the running model — gets its own stable kind.
+    #[test]
+    fn not_applied_projects_its_config_outcome_to_a_stable_kind() {
+        for (config, kind) in [
+            (
+                LlmSelectionConfigState::RolledBack,
+                ProductSurfaceErrorKind::NotApplied,
+            ),
+            (
+                LlmSelectionConfigState::KeptConcurrentEdit,
+                ProductSurfaceErrorKind::NotApplied,
+            ),
+            (
+                LlmSelectionConfigState::Diverged,
+                ProductSurfaceErrorKind::NotAppliedConfigDiverged,
+            ),
+        ] {
+            let projected = ProductSurfaceError::from(LlmConfigServiceError::NotApplied { config });
+            assert_eq!(projected.code, ProductSurfaceErrorCode::Conflict);
+            assert_eq!(projected.status_code, 409);
+            assert!(!projected.retryable);
+            assert_eq!(projected.kind, kind, "{config:?}");
+            assert_eq!(projected.field.as_deref(), Some(LLM_NOT_APPLIED_FIELD));
+        }
+        assert_eq!(
+            serde_json::to_value(ProductSurfaceErrorKind::NotAppliedConfigDiverged)
+                .expect("kind serializes"),
+            serde_json::json!("not_applied_config_diverged")
+        );
     }
 
     /// The `reason` on an invalid request is caller-facing, but the projection

@@ -8,6 +8,16 @@
 //! across that whole sequence — file read, resolution, key read, swap — and
 //! records the `[llm.default]` slot that the last successful swap applied.
 //!
+//! Every writer of the running server's selection — Settings saves, the
+//! Codex / ChatGPT-plan / NEAR AI login completions — goes through
+//! [`LiveLlmDefault::write_and_apply`], so its write, apply and rollback are
+//! one step under this lock (lock order: this lock, then the config file
+//! update lock inside it). The guarantee is **per server process**: the CLI
+//! (`zlo models`, `zlo onboard`, `zlo config set`) runs in its own process
+//! and writes `config.toml` under the file lock only, so its edits cannot
+//! tear a write but are applied to a running server only by the next SIGHUP
+//! reload or Settings apply, which reconciles disk and the live provider.
+//!
 //! Without the shared lock, a reload that read the file before a Settings
 //! save could swap in its stale selection after the save, leaving disk and UI
 //! on one model and requests on another. Without the shared record, the
@@ -20,6 +30,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ironclaw_config::{LlmSlotSelection, RebornConfigFile};
+use ironclaw_product_contracts::operator_llm::LlmSelectionConfigState;
 
 use crate::llm_admin::llm_config_service::LlmReloadTrigger;
 
@@ -31,6 +42,9 @@ pub struct LiveLlmDefault {
     /// The `[llm.default]` slot the last successful swap applied; `None`
     /// until the first one (or when the applied file had no slot).
     applied: tokio::sync::Mutex<Option<LlmSlotSelection>>,
+    /// Callers currently waiting for the lock (observability for ordering
+    /// tests: "the racing caller is queued", without sleeping).
+    waiting: std::sync::atomic::AtomicUsize,
 }
 
 /// Exclusive access to the live LLM selection. While held, no other caller
@@ -46,16 +60,27 @@ impl LiveLlmDefault {
             config_path,
             swap,
             applied: tokio::sync::Mutex::new(None),
+            waiting: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     /// Take the lock. Read `config.toml` only after this returns, so the file
     /// a caller applies is never older than one another caller applied.
     pub async fn lock(&self) -> LiveLlmDefaultGuard<'_> {
+        use std::sync::atomic::Ordering;
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        let applied = self.applied.lock().await;
+        self.waiting.fetch_sub(1, Ordering::SeqCst);
         LiveLlmDefaultGuard {
             swap: &self.swap,
-            applied: self.applied.lock().await,
+            applied,
         }
+    }
+
+    /// How many callers are parked on [`Self::lock`] right now.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> usize {
+        self.waiting.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -87,10 +112,12 @@ pub(crate) enum SelectionWriteError<E> {
     /// The write task did not run to completion (panicked or was cancelled);
     /// nothing was applied.
     Interrupted,
-    /// The write landed but the running provider refused it. `config.toml`
-    /// was put back (`restored`), unless another writer changed it since, in
-    /// which case their version was kept. `reason` is for logs only.
-    NotApplied { reason: String, restored: bool },
+    /// The write landed but the running provider refused it; `config` says
+    /// what became of the written file. `reason` is for logs only.
+    NotApplied {
+        reason: String,
+        config: LlmSelectionConfigState,
+    },
 }
 
 impl LiveLlmDefault {
@@ -122,21 +149,21 @@ impl LiveLlmDefault {
         let Err(reason) = applied else {
             return Ok(value);
         };
-        let restored = match tokio::task::spawn_blocking(move || record.restore_if_unchanged())
-            .await
+        let config = match tokio::task::spawn_blocking(move || record.restore_if_unchanged()).await
         {
-            Ok(Ok(restored)) => restored,
+            Ok(Ok(true)) => LlmSelectionConfigState::RolledBack,
+            Ok(Ok(false)) => LlmSelectionConfigState::KeptConcurrentEdit,
             Ok(Err(error)) => {
-                tracing::error!(%error, "restoring config.toml after a refused LLM selection failed");
-                false
+                tracing::debug!(%error, "restoring config.toml after a refused LLM selection failed");
+                LlmSelectionConfigState::Diverged
             }
             Err(error) => {
-                tracing::error!(%error, "restoring config.toml after a refused LLM selection did not run");
-                false
+                tracing::debug!(%error, "restoring config.toml after a refused LLM selection did not run");
+                LlmSelectionConfigState::Diverged
             }
         };
         drop(guard);
-        Err(SelectionWriteError::NotApplied { reason, restored })
+        Err(SelectionWriteError::NotApplied { reason, config })
     }
 }
 

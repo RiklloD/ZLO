@@ -405,7 +405,8 @@ axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
 When a runtime is built with a boot config and an LLM seam, composition
 builds one `ironclaw_operator::LiveLlmDefault` — the single owner of applying
 `[llm.default]` — and routes every apply path through it: the boot-time apply,
-the Settings service and NEAR AI/ChatGPT login flows (`webui_llm_reload_trigger`),
+the Settings service and NEAR AI/ChatGPT/Codex login flows (`live_llm_default`, whose
+`write_and_apply` runs each selection write+apply+rollback under that lock),
 and config reload. It holds one lock across file read, resolution, stored-key
 read and swap, and records the slot last applied, which is the reload's
 `llm.default` baseline. Composition does not build a reloader during assembly

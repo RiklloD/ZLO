@@ -176,7 +176,7 @@ mod tests {
     use ironclaw_config::{RebornBootConfig, RebornHome, RebornProfile};
     use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, UserId};
     use ironclaw_product_contracts::operator_llm::{
-        LlmConfigService, LlmConfigServiceError, SetActiveLlmRequest,
+        LlmConfigService, LlmConfigServiceError, LlmSelectionConfigState, SetActiveLlmRequest,
     };
     use ironclaw_product_contracts::surface::ProductSurfaceCaller;
     use ironclaw_product_contracts::test_support::fakes::FakeOperatorSecretValueStore;
@@ -408,13 +408,25 @@ mod tests {
         assert_eq!(f.swap.swapped(), vec![some("b")]);
     }
 
-    /// Lets a racing task run as far as it can; with correct serialization it
-    /// parks on the lock, so this only bounds how hard the race is driven.
-    async fn let_race_run() {
-        for _ in 0..50 {
-            tokio::task::yield_now().await;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    /// Every wait in these ordering tests has a deadline, so a regression
+    /// that deadlocks or never signals fails instead of hanging.
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    async fn within<F: std::future::Future>(what: &str, future: F) -> F::Output {
+        tokio::time::timeout(DEADLINE, future)
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+    }
+
+    /// Wait until `callers` racing callers are parked on the live-LLM lock —
+    /// an explicit queue signal, not a sleep.
+    async fn wait_until_queued(live: &LiveLlmDefault, callers: usize) {
+        within("a racing caller to queue on the live-LLM lock", async {
+            while live.waiting() < callers {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
     }
 
     /// SIGHUP resolved B and is mid-swap when Settings saves C. Settings must
@@ -426,18 +438,18 @@ mod tests {
         let (entered, release) = f.swap.arm_pause();
         let reloader = Arc::clone(&f.reloader);
         let sighup = tokio::spawn(async move { reloader.reload().await });
-        entered.notified().await;
+        within("the first swap to start", entered.notified()).await;
 
         let settings = f.settings();
         let save = tokio::spawn(async move { settings_pick(&settings, "c").await });
-        let_race_run().await;
+        wait_until_queued(&f.live, 1).await;
         assert!(
             f.swap.swapped().is_empty(),
             "Settings swapped while the reload held the selection"
         );
         release.notify_one();
-        let report = sighup.await.expect("sighup task");
-        save.await.expect("settings task");
+        let report = within("sighup task", sighup).await.expect("sighup task");
+        within("settings task", save).await.expect("settings task");
 
         assert_eq!(report.outcome, ConfigReloadOutcome::Applied, "{report}");
         assert_eq!(f.swap.swapped(), vec![some("b"), some("c")]);
@@ -456,19 +468,19 @@ mod tests {
         let (entered, release) = f.swap.arm_pause();
         let settings = f.settings();
         let save = tokio::spawn(async move { settings_pick(&settings, "c").await });
-        entered.notified().await;
+        within("the first swap to start", entered.notified()).await;
 
         f.write(MODEL_D);
         let reloader = Arc::clone(&f.reloader);
         let sighup = tokio::spawn(async move { reloader.reload().await });
-        let_race_run().await;
+        wait_until_queued(&f.live, 1).await;
         assert!(
             f.swap.swapped().is_empty(),
             "the reload swapped while Settings held the selection"
         );
         release.notify_one();
-        save.await.expect("settings task");
-        let report = sighup.await.expect("sighup task");
+        within("settings task", save).await.expect("settings task");
+        let report = within("sighup task", sighup).await.expect("sighup task");
 
         assert_eq!(report.outcome, ConfigReloadOutcome::Applied, "{report}");
         assert_eq!(f.swap.swapped(), vec![some("c"), some("d")]);
@@ -483,14 +495,14 @@ mod tests {
         let (entered, release) = f.swap.arm_pause();
         let settings = f.settings();
         let save = tokio::spawn(async move { settings_pick(&settings, "c").await });
-        entered.notified().await;
+        within("the first swap to start", entered.notified()).await;
 
         let reloader = Arc::clone(&f.reloader);
         let sighup = tokio::spawn(async move { reloader.reload().await });
-        let_race_run().await;
+        wait_until_queued(&f.live, 1).await;
         release.notify_one();
-        save.await.expect("settings task");
-        let report = sighup.await.expect("sighup task");
+        within("settings task", save).await.expect("settings task");
+        let report = within("sighup task", sighup).await.expect("sighup task");
 
         assert_eq!(report, ConfigReloadReport::unchanged());
         assert_eq!(f.swap.swapped(), vec![some("c")]);
@@ -511,17 +523,19 @@ mod tests {
         let (entered, release) = f.swap.arm_pause();
         let first = f.settings();
         let refused = tokio::spawn(async move { settings_try(&first, "z").await });
-        entered.notified().await;
+        within("the first swap to start", entered.notified()).await;
 
         let second = f.settings();
         let applied = tokio::spawn(async move { settings_try(&second, "y").await });
-        let_race_run().await;
+        wait_until_queued(&f.live, 1).await;
         release.notify_one();
 
         assert!(
             matches!(
-                refused.await.expect("first save"),
-                Err(LlmConfigServiceError::NotApplied)
+                within("first save", refused).await.expect("first save"),
+                Err(LlmConfigServiceError::NotApplied {
+                    config: LlmSelectionConfigState::RolledBack
+                })
             ),
             "the refused save reports NotApplied"
         );
@@ -547,7 +561,7 @@ mod tests {
         let (entered, release) = f.swap.arm_pause();
         let settings = f.settings();
         let save = tokio::spawn(async move { settings_try(&settings, "z").await });
-        entered.notified().await;
+        within("the first swap to start", entered.notified()).await;
 
         // Paused at the failure point; a SIGHUP queues behind it. Its own
         // swap (if it reaches one) pauses too, so a rollback that runs after
@@ -555,14 +569,16 @@ mod tests {
         let (_sighup_entered, sighup_release) = f.swap.arm_pause();
         let reloader = Arc::clone(&f.reloader);
         let sighup = tokio::spawn(async move { reloader.reload().await });
-        let_race_run().await;
+        wait_until_queued(&f.live, 1).await;
         release.notify_one();
         assert!(matches!(
-            save.await.expect("settings task"),
-            Err(LlmConfigServiceError::NotApplied)
+            within("settings task", save).await.expect("settings task"),
+            Err(LlmConfigServiceError::NotApplied {
+                config: LlmSelectionConfigState::RolledBack
+            })
         ));
         sighup_release.notify_one();
-        let report = sighup.await.expect("sighup task");
+        let report = within("sighup task", sighup).await.expect("sighup task");
 
         assert_eq!(disk_model(&f.path), some("a"), "{report}");
         assert_eq!(live_model(&f.live).await, some("a"), "{report}");
@@ -572,6 +588,99 @@ mod tests {
             f.swap.swapped()
         );
         assert_eq!(report, ConfigReloadReport::unchanged());
+    }
+
+    /// The live swap refuses a Settings save and putting `config.toml` back
+    /// fails too (the directory turned read-only meanwhile). That is not the
+    /// clean rollback: the save reports the config as diverged — the file
+    /// names the refused selection while the old model keeps serving.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refused_save_whose_rollback_fails_reports_the_config_diverged() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = fixture(MODEL_A, true).await;
+        f.swap
+            .fail_models
+            .lock()
+            .expect("lock")
+            .push("z".to_string());
+        let (entered, release) = f.swap.arm_pause();
+        let settings = f.settings();
+        let save = tokio::spawn(async move { settings_try(&settings, "z").await });
+        within("the first swap to start", entered.notified()).await;
+
+        let dir = f.path.parent().expect("config dir").to_path_buf();
+        let set_mode = |mode| {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode))
+                .expect("set dir mode")
+        };
+        set_mode(0o555);
+        release.notify_one();
+        let result = within("settings task", save).await;
+        set_mode(0o755);
+
+        assert!(
+            matches!(
+                result.expect("settings task"),
+                Err(LlmConfigServiceError::NotApplied {
+                    config: LlmSelectionConfigState::Diverged
+                })
+            ),
+            "a failed rollback is reported as diverged"
+        );
+        assert_eq!(disk_model(&f.path), some("z"));
+        assert_eq!(live_model(&f.live).await, some("a"));
+        assert!(f.swap.swapped().is_empty());
+    }
+
+    /// A NEAR AI login completes while a refused Settings save holds the
+    /// selection. The login's write and apply queue behind it, so whatever
+    /// the order, disk, the applied record and the provider agree — on the
+    /// login's selection, never on the refused one.
+    #[tokio::test]
+    async fn a_login_selection_racing_a_refused_settings_save_ends_consistent() {
+        let f = fixture(MODEL_A, true).await;
+        f.swap
+            .fail_models
+            .lock()
+            .expect("lock")
+            .push("z".to_string());
+        let (entered, release) = f.swap.arm_pause();
+        let settings = f.settings();
+        let save = tokio::spawn(async move { settings_try(&settings, "z").await });
+        within("the first swap to start", entered.notified()).await;
+
+        let session = ironclaw_llm::SessionManager::new(ironclaw_llm::SessionConfig {
+            auth_base_url: "https://private.near.ai".to_string(),
+            session_path: f.path.with_file_name("nearai-session.json"),
+        });
+        let boot = f.boot.clone();
+        let live = Arc::clone(&f.live);
+        let login = tokio::spawn(async move {
+            crate::llm_admin::llm_config_service::apply_nearai_login(
+                &session,
+                &boot,
+                &live,
+                "nearai-test-session-token",
+            )
+            .await
+        });
+        wait_until_queued(&f.live, 1).await;
+        release.notify_one();
+
+        assert!(matches!(
+            within("settings task", save).await.expect("settings task"),
+            Err(LlmConfigServiceError::NotApplied { .. })
+        ));
+        within("login task", login)
+            .await
+            .expect("login task")
+            .expect("login applies");
+        let disk = disk_model(&f.path);
+        assert_ne!(disk, some("z"));
+        assert_eq!(live_model(&f.live).await, disk);
+        assert_eq!(f.swap.swapped().last().cloned().flatten(), disk);
+        assert_eq!(f.reloader.reload().await, ConfigReloadReport::unchanged());
     }
 
     /// The boot snapshot, not a later re-read, is the restart-required

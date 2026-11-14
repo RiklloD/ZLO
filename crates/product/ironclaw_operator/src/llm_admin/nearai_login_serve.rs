@@ -24,7 +24,7 @@ use ironclaw_host_api::ingress::{
 use ironclaw_host_api::{action::NetworkMethod, error::HostApiError, ingress::IngressScopeSource};
 use serde::Deserialize;
 
-use crate::LlmReloadTrigger;
+use crate::LiveLlmDefault;
 use crate::llm_admin::llm_config_service::{
     NEARAI_LOGIN_CALLBACK_PATH, NearAiLoginStateStore, apply_nearai_login,
 };
@@ -46,7 +46,7 @@ const NEARAI_LOGIN_ERROR_REDIRECT: &str = "/settings/inference?nearai_login=erro
 #[derive(Clone)]
 struct NearAiCallbackState {
     session: Arc<ironclaw_llm::SessionManager>,
-    reload: Arc<dyn LlmReloadTrigger>,
+    reload: Arc<LiveLlmDefault>,
     boot: RebornBootConfig,
     states: Arc<NearAiLoginStateStore>,
 }
@@ -85,7 +85,7 @@ async fn nearai_callback(
 /// vocabulary, and composition wires them together (PROPOSAL §6.9.2).
 pub fn nearai_login_callback_mount(
     session: Arc<ironclaw_llm::SessionManager>,
-    reload: Arc<dyn LlmReloadTrigger>,
+    reload: Arc<LiveLlmDefault>,
     boot: RebornBootConfig,
     states: Arc<NearAiLoginStateStore>,
 ) -> Result<PublicRouteMount, HostApiError> {
@@ -144,6 +144,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::LlmReloadTrigger;
 
     #[derive(Default)]
     struct RecordingReload {
@@ -170,9 +171,13 @@ mod tests {
             auth_base_url: "https://private.near.ai".to_string(),
             session_path: root.join("nearai-session.json"),
         }));
+        let live = Arc::new(LiveLlmDefault::new(
+            home.config_file_path(),
+            reload as Arc<dyn LlmReloadTrigger>,
+        ));
         nearai_login_callback_mount(
             session,
-            reload,
+            live,
             RebornBootConfig::new(home, RebornProfile::Standalone),
             states,
         )

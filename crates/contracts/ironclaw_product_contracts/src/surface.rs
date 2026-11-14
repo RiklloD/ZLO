@@ -260,6 +260,11 @@ pub enum ProductSurfaceErrorKind {
     ServiceUnavailable,
     NotFound,
     Conflict,
+    /// A requested change was refused by the running server and not kept.
+    NotApplied,
+    /// A refused change could not be rolled back: the saved configuration
+    /// differs from what is running until the next restart or reload.
+    NotAppliedConfigDiverged,
     Internal,
 }
 

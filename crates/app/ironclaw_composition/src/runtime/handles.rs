@@ -172,7 +172,7 @@ impl RebornRuntime {
         let Some(session) = self.webui_llm_session() else {
             return Ok(None);
         };
-        let Some(reload) = self.webui_llm_reload_trigger() else {
+        let Some(reload) = self.live_llm_default.clone() else {
             return Ok(None);
         };
         let Some(states) = self.webui_nearai_login_states() else {
@@ -184,18 +184,6 @@ impl RebornRuntime {
         Ok(Some(ironclaw_operator::nearai_login_callback_mount(
             session, reload, boot, states,
         )?))
-    }
-
-    /// Live LLM-provider reload trigger for the settings service. Returns the
-    /// hot-swap adapter when an LLM provider was wired at boot; otherwise
-    /// `None`, in which case config edits persist to disk and apply on the
-    /// next restart.
-    pub(crate) fn webui_llm_reload_trigger(
-        &self,
-    ) -> Option<Arc<dyn ironclaw_operator::LlmReloadTrigger>> {
-        self.live_llm_default
-            .clone()
-            .map(|live| live as Arc<dyn ironclaw_operator::LlmReloadTrigger>)
     }
 
     /// Read-only reader exposing the live active/default model id so the WebUI

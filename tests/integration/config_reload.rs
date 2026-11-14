@@ -370,6 +370,7 @@ async fn settings_save_that_cannot_be_applied_live_is_refused_and_rolled_back() 
     .await;
     assert_eq!(status, axum::http::StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"], "conflict", "{body}");
+    assert_eq!(body["kind"], "not_applied", "{body}");
     assert_eq!(body["field"], "llm.default", "{body}");
 
     let slot = default_slot(&b.config_path);
