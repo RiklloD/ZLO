@@ -631,10 +631,13 @@ mod tests {
         // still writable, the restore cannot be made to fail this way.
         let probe = dir.join(".write-probe");
         if std::fs::write(&probe, b"").is_ok() {
-            let _ = std::fs::remove_file(&probe);
+            std::fs::remove_file(&probe).expect("remove write probe");
             set_mode(0o755);
             release.notify_one();
-            let _ = within("settings task", save).await;
+            within("settings task", save)
+                .await
+                .expect("settings task")
+                .expect_err("z is refused");
             eprintln!(
                 "skipping a_refused_save_whose_rollback_fails_reports_the_config_diverged: \
                  a read-only directory is still writable for this user (running as root?)"
