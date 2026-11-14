@@ -13,7 +13,7 @@
 //! session's config options are saved to `<state_dir>/models.json`, and a
 //! signed-in catalog read refreshes a list older than an hour in the
 //! background (a bare `session/new` + `session/close`, no prompt), so models
-//! Google ships appear in the picker without an app release.
+//! the vendor ships appear in the picker without an app release.
 //!
 //! The `agy` CLI is not an ACP agent (1.4.0 has no ACP mode); the ACP server
 //! is the separately shipped runtime T3 Code and Hermes install.
@@ -61,7 +61,7 @@ const INIT_TIMEOUT: Duration = Duration::from_secs(90);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
 const CONFIG_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the account's model list is trusted before a catalog read asks
-/// the agent again, so models Google ships reach the picker without a turn.
+/// the agent again, so models the vendor ships reach the picker without a turn.
 const MODELS_TTL_MS: i64 = 60 * 60 * 1000;
 /// After a refresh attempt (failed ones included), wait this long before the
 /// next, so an expired sign-in or no network never relaunches the agent on
