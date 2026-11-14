@@ -100,7 +100,7 @@ zeroize = "1"
 # `zlo doctor --bundle` archive. Same version/features as the workspace's
 # other zip users (ironclaw_extension_host, ironclaw_documents, …); no new
 # crate enters Cargo.lock.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 # O_NOFOLLOW for the single-handle, symlink-safe token file open in
