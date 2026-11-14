@@ -640,10 +640,11 @@ fn finish_lease_recovers_from_poisoned_placeholder_index_without_leaking_session
 
     // Poison `session_state` by panicking while holding its lock.
     let poison_broker = Arc::clone(&broker);
-    let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+    let poisoning = std::panic::catch_unwind(AssertUnwindSafe(move || {
         let _guard = poison_broker.session_state.lock().unwrap();
         panic!("deliberately poison session_state for regression test");
     }));
+    assert!(poisoning.is_err(), "the poisoning closure must panic");
 
     let lease = broker
         .mint_on_first_use(

@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::{
     ids::{AgentId, InvocationId, MissionId, ProjectId, SecretHandle, TenantId, ThreadId, UserId},
     resource::ResourceScope,
@@ -416,7 +417,6 @@ fn sample_scope(tenant: &str, user: &str) -> ResourceScope {
 mod lease_listing {
     use std::{
         collections::{BTreeMap, BTreeSet},
-        io::Write as _,
         sync::Arc,
     };
 
@@ -963,10 +963,7 @@ mod lease_listing {
             "IRONCLAW_REQUIRE_POSTGRES is set but the secrets lease PostgreSQL leg \
              cannot run: {reason}"
         );
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED: postgres secrets lease listing contract did not run: {reason}"
-        );
+        eprintln!("SKIPPED: postgres secrets lease listing contract did not run: {reason}");
         None
     }
 
@@ -1002,7 +999,9 @@ mod lease_listing {
             .await
             .map_err(|error| format!("container postgres unreachable ({error})"))?;
         tokio::spawn(async move {
-            let _ = connection.await;
+            if let Err(error) = connection.await {
+                eprintln!("container postgres connection ended: {error}");
+            }
         });
         let name = format!(
             "secrets_lease_{}",
