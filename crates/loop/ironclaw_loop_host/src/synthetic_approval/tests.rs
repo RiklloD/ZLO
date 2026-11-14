@@ -69,12 +69,12 @@ impl Settings {
 
 #[async_trait]
 impl ApprovalSettingsProvider for Settings {
-    async fn tool_override(
+    async fn tool_override_lookup(
         &self,
         _scope: &ResourceScope,
         _capability_id: &CapabilityId,
-    ) -> Option<ToolPermissionOverride> {
-        *self.tool_override.lock().unwrap()
+    ) -> ironclaw_approvals::ToolOverrideLookup {
+        ironclaw_approvals::ToolOverrideLookup::from_setting(*self.tool_override.lock().unwrap())
     }
 
     async fn global_auto_approve(&self, scope: &ResourceScope) -> bool {

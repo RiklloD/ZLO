@@ -75,13 +75,13 @@ fn desktop() -> SyntheticApproval {
 }
 
 /// An override store that answers like an empty one until told to fail.
-struct FlakyOverrides {
+pub(crate) struct FlakyOverrides {
     inner: Arc<dyn CapabilityPermissionOverrideStorePort>,
-    failing: AtomicBool,
+    pub(crate) failing: AtomicBool,
 }
 
 impl FlakyOverrides {
-    fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: Arc::new(in_memory_backed_capability_permission_override_store()),
             failing: AtomicBool::new(false),
@@ -382,7 +382,7 @@ impl Gate {
 
 /// The production settings stack: store-backed settings under the
 /// profile-aware wrapper, the engine slot filled.
-fn production_settings(
+pub(crate) fn production_settings(
     overrides: Arc<dyn CapabilityPermissionOverrideStorePort>,
     auto_approve: Arc<dyn ironclaw_approvals::AutoApproveSettingStorePort>,
     engine: Option<Arc<Engine>>,
@@ -399,7 +399,7 @@ fn production_settings(
     Arc::new(ProfileApprovalSettingsProvider::new(store, slot))
 }
 
-async fn engine() -> (tempfile::TempDir, Arc<Engine>) {
+pub(crate) async fn engine() -> (tempfile::TempDir, Arc<Engine>) {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(
         libsql::Builder::new_local(dir.path().join("o.db"))

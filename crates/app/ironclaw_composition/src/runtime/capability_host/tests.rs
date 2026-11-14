@@ -178,12 +178,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ironclaw_approvals::ApprovalSettingsProvider for GlobalAutoApproveOn {
-        async fn tool_override(
+        async fn tool_override_lookup(
             &self,
             _scope: &ironclaw_host_api::resource::ResourceScope,
             _capability_id: &CapabilityId,
-        ) -> Option<ironclaw_approvals::ToolPermissionOverride> {
-            None
+        ) -> ironclaw_approvals::ToolOverrideLookup {
+            ironclaw_approvals::ToolOverrideLookup::from_setting(None)
         }
 
         async fn global_auto_approve(

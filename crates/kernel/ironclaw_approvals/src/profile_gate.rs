@@ -122,12 +122,6 @@ pub trait ProfileApprovalGatePolicy: Send + Sync {
 /// while non-runnable candidates do not spend approval-store reads.
 #[async_trait]
 pub trait ApprovalSettingsProvider: Send + Sync {
-    async fn tool_override(
-        &self,
-        scope: &ResourceScope,
-        capability_id: &CapabilityId,
-    ) -> Option<ToolPermissionOverride>;
-
     async fn global_auto_approve(&self, scope: &ResourceScope) -> bool;
 
     async fn tool_always_allow(
@@ -147,19 +141,14 @@ pub trait ApprovalSettingsProvider: Send + Sync {
     }
 
     /// The per-tool override, distinguishing "none set" from "could not be
-    /// read". The approval gate refuses on [`ToolOverrideLookup::Unavailable`]
-    /// before any approval or Full-access shortcut. Defaults to
-    /// [`Self::tool_override`]; a provider whose store can fail overrides it.
+    /// read". Every decision on an override reads it here, and an unreadable
+    /// store is [`ToolOverrideLookup::Unavailable`] — refused before any
+    /// approval or Full-access shortcut, never mistaken for "ask".
     async fn tool_override_lookup(
         &self,
         scope: &ResourceScope,
         capability_id: &CapabilityId,
-    ) -> ToolOverrideLookup {
-        match self.tool_override(scope, capability_id).await {
-            Some(state) => ToolOverrideLookup::Set(state),
-            None => ToolOverrideLookup::Unset,
-        }
-    }
+    ) -> ToolOverrideLookup;
 
     /// Where [`Self::full_access`] comes from: an explicit Full-access choice
     /// for the thread, or the global auto-approve switch the thread inherits.
@@ -181,6 +170,13 @@ pub enum ToolOverrideLookup {
     Set(ToolPermissionOverride),
     /// The override store could not be read: fail closed.
     Unavailable,
+}
+
+impl ToolOverrideLookup {
+    /// A lookup that cannot fail (an in-memory or fixed setting).
+    pub fn from_setting(setting: Option<ToolPermissionOverride>) -> Self {
+        setting.map_or(Self::Unset, Self::Set)
+    }
 }
 
 /// Why a thread runs on "Full access", if it does.
@@ -207,12 +203,12 @@ pub struct EmptyApprovalSettingsProvider;
 #[cfg(any(test, feature = "test-support"))]
 #[async_trait]
 impl ApprovalSettingsProvider for EmptyApprovalSettingsProvider {
-    async fn tool_override(
+    async fn tool_override_lookup(
         &self,
         _scope: &ResourceScope,
         _capability_id: &CapabilityId,
-    ) -> Option<ToolPermissionOverride> {
-        None
+    ) -> ToolOverrideLookup {
+        ToolOverrideLookup::from_setting(None)
     }
 
     async fn global_auto_approve(&self, _scope: &ResourceScope) -> bool {
@@ -724,12 +720,12 @@ mod tests {
 
     #[async_trait]
     impl ApprovalSettingsProvider for StubSettingsProvider {
-        async fn tool_override(
+        async fn tool_override_lookup(
             &self,
             _scope: &ResourceScope,
             _capability_id: &CapabilityId,
-        ) -> Option<ToolPermissionOverride> {
-            self.tool_override
+        ) -> ToolOverrideLookup {
+            ToolOverrideLookup::from_setting(self.tool_override)
         }
 
         async fn global_auto_approve(&self, _scope: &ResourceScope) -> bool {
@@ -873,12 +869,12 @@ mod tests {
 
     #[async_trait]
     impl ApprovalSettingsProvider for FullAccessSettings {
-        async fn tool_override(
+        async fn tool_override_lookup(
             &self,
             _scope: &ResourceScope,
             _capability_id: &CapabilityId,
-        ) -> Option<ToolPermissionOverride> {
-            self.0
+        ) -> ToolOverrideLookup {
+            ToolOverrideLookup::from_setting(self.0)
         }
         async fn global_auto_approve(&self, _scope: &ResourceScope) -> bool {
             false
@@ -2093,14 +2089,6 @@ mod tests {
 
     #[async_trait]
     impl ApprovalSettingsProvider for VerdictSettings {
-        async fn tool_override(
-            &self,
-            _scope: &ResourceScope,
-            _capability_id: &CapabilityId,
-        ) -> Option<ToolPermissionOverride> {
-            None
-        }
-
         async fn tool_override_lookup(
             &self,
             _scope: &ResourceScope,

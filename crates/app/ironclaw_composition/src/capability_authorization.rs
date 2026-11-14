@@ -329,21 +329,6 @@ where
 
 #[async_trait]
 impl ApprovalSettingsProvider for StoreApprovalSettingsProvider {
-    async fn tool_override(
-        &self,
-        scope: &ResourceScope,
-        capability_id: &CapabilityId,
-    ) -> Option<ToolPermissionOverride> {
-        // Callers outside the approval gate (which reads
-        // `tool_override_lookup` and refuses on an unreadable store) fall back
-        // to asking rather than silently auto-approving.
-        match self.tool_override_lookup(scope, capability_id).await {
-            ToolOverrideLookup::Set(state) => Some(state),
-            ToolOverrideLookup::Unset => None,
-            ToolOverrideLookup::Unavailable => Some(ToolPermissionOverride::AskEachTime),
-        }
-    }
-
     async fn tool_override_lookup(
         &self,
         scope: &ResourceScope,

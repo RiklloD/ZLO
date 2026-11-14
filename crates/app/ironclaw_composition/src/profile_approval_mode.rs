@@ -27,9 +27,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ironclaw_approvals::{
-    ApprovalSettingsProvider, FullAccessSource, ToolOverrideLookup, ToolPermissionOverride,
-};
+use ironclaw_approvals::{ApprovalSettingsProvider, FullAccessSource, ToolOverrideLookup};
 use ironclaw_host_api::{
     ids::{CapabilityId, InvocationId, ThreadId},
     resource::ResourceScope,
@@ -108,14 +106,6 @@ impl ProfileApprovalSettingsProvider {
 
 #[async_trait]
 impl ApprovalSettingsProvider for ProfileApprovalSettingsProvider {
-    async fn tool_override(
-        &self,
-        scope: &ResourceScope,
-        capability_id: &CapabilityId,
-    ) -> Option<ToolPermissionOverride> {
-        self.inner.tool_override(scope, capability_id).await
-    }
-
     async fn global_auto_approve(&self, scope: &ResourceScope) -> bool {
         let mode = match &scope.thread_id {
             Some(thread) => match self.profile_mode(thread, &scope.invocation_id).await {
@@ -197,12 +187,12 @@ mod tests {
 
     #[async_trait]
     impl ApprovalSettingsProvider for GlobalOn {
-        async fn tool_override(
+        async fn tool_override_lookup(
             &self,
             _scope: &ResourceScope,
             _capability_id: &CapabilityId,
-        ) -> Option<ToolPermissionOverride> {
-            None
+        ) -> ironclaw_approvals::ToolOverrideLookup {
+            ironclaw_approvals::ToolOverrideLookup::from_setting(None)
         }
 
         async fn global_auto_approve(&self, _scope: &ResourceScope) -> bool {
