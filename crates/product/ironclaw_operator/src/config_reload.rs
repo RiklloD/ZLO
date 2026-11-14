@@ -422,7 +422,7 @@ mod tests {
     /// an explicit queue signal, not a sleep.
     async fn wait_until_queued(live: &LiveLlmDefault, callers: usize) {
         within("a racing caller to queue on the live-LLM lock", async {
-            while live.waiting() < callers {
+            while live.queued_callers() < callers {
                 tokio::task::yield_now().await;
             }
         })

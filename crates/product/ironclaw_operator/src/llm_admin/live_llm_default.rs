@@ -42,8 +42,7 @@ pub struct LiveLlmDefault {
     /// The `[llm.default]` slot the last successful swap applied; `None`
     /// until the first one (or when the applied file had no slot).
     applied: tokio::sync::Mutex<Option<LlmSlotSelection>>,
-    /// Callers currently waiting for the lock (observability for ordering
-    /// tests: "the racing caller is queued", without sleeping).
+    /// Callers currently waiting for the lock ([`Self::queued_callers`]).
     waiting: std::sync::atomic::AtomicUsize,
 }
 
@@ -77,9 +76,11 @@ impl LiveLlmDefault {
         }
     }
 
-    /// How many callers are parked on [`Self::lock`] right now.
-    #[cfg(test)]
-    pub(crate) fn waiting(&self) -> usize {
+    /// How many callers are parked on [`Self::lock`] right now: selection
+    /// writers or reloads queued behind the one applying. A diagnostic read;
+    /// ordering tests use it as their explicit "the racing caller is queued"
+    /// signal instead of sleeping.
+    pub fn queued_callers(&self) -> usize {
         self.waiting.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
