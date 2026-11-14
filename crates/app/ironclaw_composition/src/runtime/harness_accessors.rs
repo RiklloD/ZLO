@@ -26,6 +26,13 @@ impl RebornRuntime {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    /// The planned coordinator's spawn-tree face: submits a child run and
+    /// wakes the scheduler for it, exactly as `spawn_subagent` would.
+    pub fn turn_spawn_tree_for_test(&self) -> Arc<dyn ironclaw_turns::TurnSpawnTreePort> {
+        Arc::clone(&self.child_runs)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn standalone_auto_approve_settings_for_test(
         &self,
     ) -> Option<Arc<dyn ironclaw_approvals::AutoApproveSettingStorePort>> {

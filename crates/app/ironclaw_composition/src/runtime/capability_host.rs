@@ -14,9 +14,7 @@ use ironclaw_host_api::{
     capability_surface::CapabilitySurfacePolicy,
     ids::{CapabilityId, ExtensionId, InvocationId, UserId},
     mount::MountView,
-    resolution::Resolution,
     resource::ResourceScope,
-    result_meta::FailureKind,
     runtime::{RuntimeKind, TrustClass},
     scope::ExecutionContext,
 };
@@ -37,8 +35,8 @@ use ironclaw_product_contracts::{
 };
 
 use ironclaw_loop_contracts::{
-    AgentLoopHostError, AgentLoopHostErrorKind, CapabilityFailureDetail, CapabilityInputRef,
-    LoopCapabilityPort, LoopHostMilestoneSink, LoopRunContext, ProviderToolCall, resolution,
+    AgentLoopHostError, AgentLoopHostErrorKind, CapabilityInputRef, LoopCapabilityPort,
+    LoopHostMilestoneSink, LoopRunContext, ProviderToolCall,
 };
 use ironclaw_threads::{
     AppendCapabilityDisplayPreviewRequest, CapabilityDisplayPreviewEnvelope,
@@ -93,14 +91,6 @@ pub(super) use ironclaw_loop_host::wrap_result_read_capability_for_test;
 /// capability it wraps and re-exported here for the `runtime` caller.
 #[cfg(feature = "test-support")]
 pub(super) use refreshing_capability_port::create_refreshing_capability_port_for_test;
-
-fn diagnostic_failure(error_kind: FailureKind, safe_summary: String) -> Resolution {
-    resolution::failed(
-        error_kind,
-        safe_summary.clone(),
-        CapabilityFailureDetail::Diagnostic { text: safe_summary },
-    )
-}
 
 pub(super) struct CapabilityPortWiring {
     pub(super) capability_factory: Arc<dyn LoopCapabilityPortFactory>,

@@ -100,7 +100,7 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 | Providers (Google/Slack/GitHub contracts) | — | — | ✓ | ✓ |
 | Coverage/meta gates | — | 2 | ✓ | ✓ |
 
-Totals: **65** group scenarios · **67** flat integration bins (60 in
+Totals: **65** group scenarios · **68** flat integration bins (61 in
 `tests/integration/`, 7 in `tests/integration/auth/`) · **39** top-level Rust bins ·
 **103** Python scenario files (**889** test functions) registered in the active
 Reborn coverage map below. Section 6 separately inventories retained and legacy
@@ -225,7 +225,7 @@ ones speak MTProto over a raw socket with no injectable seam.
 
 ---
 
-## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (67)
+## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (68)
 
 One thread, whole real turn. Grouped by what the user experiences.
 
@@ -263,7 +263,11 @@ One thread, whole real turn. Grouped by what the user experiences.
 | Dismiss a started suggestion across restart without deleting its thread or timeline | `suggestions.rs::dismissing_a_started_suggestion_persists_across_restart` |
 | Settle failed or contract-invalid suggestion generation as failed with no visible cards | `suggestions.rs::failed_suggestion_run_settles_failed_and_retryable_via_list_view`, `suggestions.rs::semantically_invalid_completed_suggestion_output_settles_failed`, `suggestions.rs::unknown_field_in_completed_suggestion_output_settles_failed` |
 | Reach the user's connected extension tools in an autonomous run under the system default ("Full access"), and, after switching to "Ask first" with those tools always allowed, lose exactly one of them to a per-tool ask-each-time override — the only row of these six needing disclosure forced off, since two connected extensions' full authorized set would otherwise defer behind `tool_search` | `suggestions.rs::connected_extensions_are_reachable_under_the_system_default` |
-| Shrink the autonomous surface when the user turns the global auto-approve toggle off, leaving only the synthetic capabilities that bypass surface policy — a distinct settings-store write from the per-tool override rows below, and the baseline the excluded-call refusal row reuses | `suggestions.rs::disabling_global_auto_approve_shrinks_the_autonomous_surface` |
+| Shrink the autonomous surface when the user turns the global auto-approve toggle off, leaving only read-only synthetic capabilities (each survivor pinned with its read-only reason; `t3_*` orchestrator tools never survive) — a distinct settings-store write from the per-tool override rows below, and the baseline the excluded-call refusal row reuses | `suggestions.rs::disabling_global_auto_approve_shrinks_the_autonomous_surface` |
+| Never be offered a mutating synthetic tool (orchestrator `t3_*`, Supermemory write, computer use) in suggestion generation — a run with no approval channel — even with auto-approve on, while read-only ones (Supermemory search, history search) stay and an attended chat on the same runtime is offered all of them; a `t3_delegate` call made anyway is refused before dispatch. A new bin because it needs Supermemory and computer use switched on through test seams, which no other suggestions scenario wires | `unattended_surface.rs::{optional_mutating_synthetics_never_reach_an_unattended_run,unattended_run_refuses_a_t3_delegate_call}` |
+| With auto-approve off, have an orchestrator `t3_delegate` call park on the ordinary approval gate instead of running — in an attended chat, in a scheduled trigger fire (the owner's Inbox gets an approval notification), and in a spawned child run (likewise notified) | `unattended_surface.rs::{attended_t3_delegate_waits_for_approval_when_auto_approve_is_off,scheduled_trigger_t3_call_parks_on_an_approval_and_notifies,child_run_t3_call_parks_on_an_approval_and_notifies}` |
+| With auto-approve off, have the agent's `project_create` and `skill_activate` calls park on the ordinary approval gate instead of running; with either tool set to disabled, have the call refused (the model is told) and no project created — even with auto-approve on | `unattended_surface.rs::{project_create_and_skill_activate_wait_for_approval_when_auto_approve_is_off,disabled_project_create_and_skill_activate_are_refused_without_side_effect}` |
+| Have a thread whose profile is set to "Ask first" ask before an orchestrator `t3_delegate` call even though global auto-approve is on | `unattended_surface.rs::an_ask_first_thread_profile_wins_over_global_auto_approve` |
 | On "Ask first" with a few tools always allowed, remove exactly one capability from an autonomous run when the user sets it to ask-each-time — a per-tool override rather than the global toggle above, and a different override value than the disabled row below ("Full access" ignores ask-each-time; see `scenario_full_access_never_asks.rs`) | `suggestions.rs::per_tool_ask_each_time_override_removes_only_that_tool` |
 | Keep a disabled capability out of an autonomous run even while global auto-approve is on — `Disabled` outranks the default-on toggle, a precedence ask-each-time doesn't claim | `suggestions.rs::per_tool_disabled_override_removes_the_tool_even_with_auto_approve_on` |
 | Reach a connected extension's capability in an autonomous run only through the user's own always-allow grant when auto-approve is off — combines a connected extension, the global toggle, and an explicit persistent grant, a fixture no single row above exercises | `suggestions.rs::connected_gmail_tool_is_reachable_only_via_the_users_own_grant` |
@@ -353,7 +357,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 | A canonical 10-tool-call agent turn's database write volume is measured and reported (for tracking, not gated) on both libSQL and Postgres, and custom-actor group threads are rejected from canonical durable milestones | `db_write_canonical.rs` |
 | A downloaded run artifact carries per-iteration model-call timing evidence for a completed run, and still carries durable per-message timestamps (with an explicit `run_not_resident` reason) when the process-local timing buffer was evicted or the process restarted | `run_artifact_timings.rs` |
 
-One of the 67 registered bins, `delivery_user_journeys.rs`, holds the explicit
+One of the 68 registered bins, `delivery_user_journeys.rs`, holds the explicit
 channel-delivery journeys (two-lane model):
 
 | A user can… | Scenario |

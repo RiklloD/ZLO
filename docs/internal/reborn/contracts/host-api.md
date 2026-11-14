@@ -1034,6 +1034,10 @@ pub enum DenyReason {
     BudgetDenied,
     ApprovalDenied,
     PolicyDenied,
+    /// Approval settings could not be read; the gate refused rather than
+    /// guess. Temporary — the same call may succeed later (the agent loop
+    /// answers it with wait-then-retry, the host runtime with `Unavailable`).
+    SettingsUnavailable,
     ResourceLimitExceeded,
     InternalInvariantViolation,
 }

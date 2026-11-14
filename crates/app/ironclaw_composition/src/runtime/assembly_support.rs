@@ -204,20 +204,12 @@ pub(super) fn optional_nonzero_u32_env(
     }
 }
 
-/// The mutating synthetic capabilities denied to an unattended run.
-///
-/// Why the list has to exist, and why it lives here rather than in the loop
-/// layer that enforces it: see
-/// `DefaultPlannedRuntimeConfig::unattended_denied_capability_ids`.
-///
-/// Derived by measurement, not inspection — with global auto-approve off these
-/// are the capabilities that survive because they bypass the surface policy.
-/// `tests/integration/suggestions.rs` pins the resulting set.
+/// Builtins denied to an unattended run although they need no approval (why
+/// it lives here: `DefaultPlannedRuntimeConfig::unattended_denied_capability_ids`).
+/// Synthetic capabilities need no entry: each declares its effect and the
+/// mutating ones leave unattended surfaces (`SyntheticCapability::admitted_by`).
 pub(super) fn unattended_denied_capability_ids() -> Result<Vec<CapabilityId>, RebornRuntimeError> {
     [
-        ironclaw_assistant::PROJECT_CREATE_CAPABILITY_ID,
-        ironclaw_assistant::OUTBOUND_NOTIFICATION_CHANNELS_SET_CAPABILITY_ID,
-        ironclaw_loop_host::SKILL_ACTIVATE_CAPABILITY_ID,
         ironclaw_memory::PROFILE_SET_CAPABILITY_ID,
         ironclaw_host_runtime::TRACE_COMMONS_ONBOARD_CAPABILITY_ID,
     ]

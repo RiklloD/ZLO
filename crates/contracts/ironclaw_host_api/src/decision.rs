@@ -40,6 +40,9 @@ pub enum DenyReason {
     BudgetDenied,
     ApprovalDenied,
     PolicyDenied,
+    /// The caller's approval settings could not be read, so the gate refused
+    /// rather than guess. Temporary: the same call may succeed once they can.
+    SettingsUnavailable,
     ResourceLimitExceeded,
     InternalInvariantViolation,
 }

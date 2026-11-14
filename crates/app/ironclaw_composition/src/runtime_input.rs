@@ -397,6 +397,10 @@ pub struct RebornRuntimeInput {
     /// `IRONCLAW_REBORN_MODEL_AVAILABILITY_RETRY_ATTEMPTS` env override.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) model_availability_retry_attempts_override: Option<std::num::NonZeroU32>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) supermemory_override: Option<Arc<ironclaw_supermemory::Supermemory>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) computer_use_override: Option<Arc<ironclaw_computer_use::ComputerUse>>,
 }
 
 impl RebornRuntimeInput {
@@ -434,6 +438,10 @@ impl RebornRuntimeInput {
             model_cost_table_override: None,
             #[cfg(any(test, feature = "test-support"))]
             model_availability_retry_attempts_override: None,
+            #[cfg(any(test, feature = "test-support"))]
+            supermemory_override: None,
+            #[cfg(any(test, feature = "test-support"))]
+            computer_use_override: None,
         }
     }
 
@@ -678,6 +686,29 @@ impl RebornRuntimeInput {
         gateway: Arc<dyn HostManagedModelGateway>,
     ) -> Self {
         self.model_gateway_override = Some(gateway);
+        self
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// Test-only hook: run with this Supermemory instead of the env-built one,
+    /// so a test can switch the optional Supermemory tools on without process
+    /// environment.
+    pub fn with_supermemory_for_test(
+        mut self,
+        supermemory: Arc<ironclaw_supermemory::Supermemory>,
+    ) -> Self {
+        self.supermemory_override = Some(supermemory);
+        self
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// Test-only hook: run with this computer use instead of the env-built
+    /// one (`None` from env), so a test can switch its tools on.
+    pub fn with_computer_use_for_test(
+        mut self,
+        computer_use: Arc<ironclaw_computer_use::ComputerUse>,
+    ) -> Self {
+        self.computer_use_override = Some(computer_use);
         self
     }
 

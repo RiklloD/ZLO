@@ -239,7 +239,17 @@ const WS0_COMPOSITION_SHARE_BP: usize = 653;
 /// ✎ 34_560 -> 34_561 on 2026-11-13: the crate-root
 /// `#![deny(clippy::let_underscore_must_use)]` in composition's `src/lib.rs`
 /// (lint narrowed from `[workspace.lints]` to the 12 triaged crates).
-const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 34_561;
+/// ✎ Re-measured 34_561 -> 34_581 on 2026-11-14 for fix/auto-approve-surface:
+/// ~16 lines of field/`let`-level `#[cfg(test-support)]` seams the counter
+/// cannot see as gated, ~4 production lines (shared synthetic approval stores,
+/// the synthetic effect filter); per-item breakdown in the manifest.
+/// ✎ Re-ratcheted 34_581 -> 33_969 on 2026-11-14 (review round 3): the
+/// notification-channels approval dance moved into the shared synthetic
+/// approval gate in `ironclaw_loop_host`; the manifest moves with it.
+/// ✎ Re-measured 33_969 -> 34_002 on 2026-11-14 (review round 4): the
+/// settings providers' fail-closed override lookup and explicit-vs-inherited
+/// Full access; per-item breakdown in the manifest.
+const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 34_002;
 
 /// Composition dispatch, from the same `--print` run: "composition dispatch:
 /// 827 Arc<dyn> (governed prod, excl slack/extension_host)".

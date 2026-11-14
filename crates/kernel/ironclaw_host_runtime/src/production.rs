@@ -1725,6 +1725,14 @@ pub(crate) fn failure_kind_from(error: &CapabilityInvocationError) -> FailureKin
     match error {
         CapabilityInvocationError::UnknownCapability { .. } => FailureKind::MissingRuntime,
         CapabilityInvocationError::AuthorizationRequiresAuth { .. } => FailureKind::Authorization,
+        // The approval gate refused because the user's tool settings could not
+        // be read: nothing ran, and a later attempt re-runs the whole gate. The
+        // settings store being down is `Unavailable`, not an authorization
+        // failure (which would point the model at an auth flow).
+        CapabilityInvocationError::AuthorizationDenied {
+            reason: DenyReason::SettingsUnavailable,
+            ..
+        } => FailureKind::Unavailable,
         CapabilityInvocationError::AuthorizationDenied { .. }
         | CapabilityInvocationError::UnsupportedObligations { .. }
         | CapabilityInvocationError::AuthorizationRequiresApproval { .. }
@@ -2180,6 +2188,31 @@ mod tests {
         let kind = failure_kind_from(&error);
         assert_eq!(kind, FailureKind::NetworkDenied);
         assert!(!kind.is_retryable());
+    }
+
+    /// An approval gate that could not read the user's tool settings refuses
+    /// (nothing runs), but the refusal is temporary. It must not read as an
+    /// authorization failure — the model would be told to authenticate — nor
+    /// as a permanent policy refusal; it is the backing store being down.
+    #[test]
+    fn unreadable_approval_settings_fail_as_temporarily_unavailable() {
+        let failure = failure_from(
+            CapabilityInvocationError::AuthorizationDenied {
+                capability: cap(),
+                reason: DenyReason::SettingsUnavailable,
+                detail: None,
+            },
+            cap(),
+        );
+        assert_eq!(failure.kind, FailureKind::Unavailable);
+        assert!(failure.kind.is_retryable(), "a later attempt may succeed");
+        // Every other denial keeps its authorization classification.
+        let policy = CapabilityInvocationError::AuthorizationDenied {
+            capability: cap(),
+            reason: DenyReason::PolicyDenied,
+            detail: None,
+        };
+        assert_eq!(failure_kind_from(&policy), FailureKind::Authorization);
     }
 
     #[test]

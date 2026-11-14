@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ironclaw_approvals::{ApprovalSettingsProvider, ToolPermissionOverride};
+use ironclaw_approvals::{ApprovalSettingsProvider, ToolOverrideLookup, ToolPermissionOverride};
 use ironclaw_host_api::{
     ids::{CapabilityId, InvocationId},
     process::CommandExecutionRequest,
@@ -65,12 +65,25 @@ impl GoalCheckRunner for HostGoalCheckRunner {
             );
         }
         let scope = thread_scope(thread);
-        let override_ = match CapabilityId::new(SHELL_CAPABILITY) {
-            Ok(shell) => self.approvals.tool_override(&scope, &shell).await,
+        let lookup = match CapabilityId::new(SHELL_CAPABILITY) {
+            Ok(shell) => self.approvals.tool_override_lookup(&scope, &shell).await,
             Err(error) => {
                 tracing::debug!(%error, "shell capability id rejected; asking");
                 return GoalCheckGate::AskEachRun;
             }
+        };
+        // An unreadable shell setting refuses before Full access or an earlier
+        // approval can stand in for it: it may be exactly the `disabled`.
+        let override_ = match lookup {
+            ToolOverrideLookup::Unavailable => {
+                return GoalCheckGate::Refused(
+                    "Tool settings could not be read, so the check did not run; try again \
+                     once settings are available."
+                        .into(),
+                );
+            }
+            ToolOverrideLookup::Set(state) => Some(state),
+            ToolOverrideLookup::Unset => None,
         };
         if override_ == Some(ToolPermissionOverride::Disabled) {
             return GoalCheckGate::Refused(
@@ -130,6 +143,7 @@ mod tests {
     use ironclaw_orchestrator::model::{RuntimeId, ThreadScope};
 
     use super::*;
+    use ironclaw_orchestrator::engine::Engine;
 
     #[derive(Default)]
     struct Settings {
@@ -139,15 +153,17 @@ mod tests {
 
     #[async_trait]
     impl ApprovalSettingsProvider for Settings {
-        async fn tool_override(
+        async fn tool_override_lookup(
             &self,
             scope: &ResourceScope,
             capability_id: &CapabilityId,
-        ) -> Option<ToolPermissionOverride> {
-            assert_eq!(scope.thread_id.as_ref().map(|t| t.as_str()), Some("t1"));
-            (capability_id.as_str() == SHELL_CAPABILITY)
-                .then_some(self.shell)
-                .flatten()
+        ) -> ironclaw_approvals::ToolOverrideLookup {
+            ironclaw_approvals::ToolOverrideLookup::from_setting({
+                assert_eq!(scope.thread_id.as_ref().map(|t| t.as_str()), Some("t1"));
+                (capability_id.as_str() == SHELL_CAPABILITY)
+                    .then_some(self.shell)
+                    .flatten()
+            })
         }
         async fn global_auto_approve(&self, _scope: &ResourceScope) -> bool {
             self.full_access
@@ -280,5 +296,175 @@ mod tests {
             Some("t1")
         );
         assert_eq!(sent[1].workdir.as_deref(), Some(DEFAULT_WORKDIR));
+    }
+
+    /// Through the goal-check caller: the orchestrator engine asks
+    /// `HostGoalCheckRunner` for the gate, then launches the command on the
+    /// process port. With the production settings providers over an override
+    /// store that cannot be read, a check never runs — not under Full access
+    /// (inherited from global auto-approve), and not when the person already
+    /// approved it.
+    #[tokio::test]
+    async fn an_unreadable_shell_override_refuses_goal_checks() {
+        use crate::synthetic_approval_gate_tests::{FlakyOverrides, engine, production_settings};
+        use ironclaw_orchestrator::runtime::{TurnEventSink as _, TurnOutcome};
+        use ironclaw_product_contracts::inbox::{GoalCheckAction, GoalCheckSpec, GoalCheckStatus};
+
+        async fn armed_check(
+            engine: &Engine,
+            thread: &ThreadId,
+            scope: &ThreadScope,
+        ) -> ironclaw_product_contracts::inbox::GoalCheckRecord {
+            engine.ensure_thread(thread, scope, None).await.unwrap();
+            let now = ironclaw_orchestrator::model::now_ms();
+            engine
+                .store()
+                .set_goal(thread, Some("tests pass"), None, now)
+                .await
+                .unwrap();
+            engine
+                .store()
+                .set_goal_check(
+                    thread,
+                    Some(&GoalCheckSpec {
+                        command: "cargo test".into(),
+                        max_attempts: Some(3),
+                        timeout_secs: Some(30),
+                    }),
+                    now,
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .check
+                .unwrap()
+        }
+
+        async fn complete_turn(engine: &Engine, thread: &ThreadId) {
+            let run = format!("run-{}", ironclaw_orchestrator::model::now_ms());
+            engine
+                .store()
+                .set_turn_running(thread, Some(&run), ironclaw_orchestrator::model::now_ms())
+                .await
+                .unwrap();
+            engine
+                .turn_finished(
+                    thread,
+                    Some(run),
+                    TurnOutcome::completed(None),
+                    ironclaw_orchestrator::model::now_ms(),
+                )
+                .await;
+        }
+
+        async fn status(engine: &Engine, thread: &ThreadId) -> GoalCheckStatus {
+            engine
+                .store()
+                .goal(thread)
+                .await
+                .unwrap()
+                .unwrap()
+                .check
+                .unwrap()
+                .status
+        }
+
+        let scope = ThreadScope {
+            tenant_id: TenantId::new("tenant").unwrap(),
+            user_id: UserId::new("u1").unwrap(),
+            agent_id: None,
+            project_id: None,
+        };
+
+        // Full access (the thread follows global auto-approve, on by
+        // default) with the override store unreadable.
+        let (_dir, engine_a) = engine().await;
+        let overrides = FlakyOverrides::new();
+        overrides
+            .failing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let port = Arc::new(Port::default());
+        engine_a.set_goal_check_runner(Arc::new(HostGoalCheckRunner::new(
+            Some(Arc::clone(&port) as Arc<dyn RuntimeProcessPort>),
+            production_settings(
+                overrides,
+                Arc::new(
+                    ironclaw_approvals::test_support::in_memory_backed_auto_approve_setting_store(),
+                ),
+                Some(Arc::clone(&engine_a)),
+            ),
+        )));
+        let full_access = ThreadId::new("t-full-access").unwrap();
+        armed_check(&engine_a, &full_access, &scope).await;
+        complete_turn(&engine_a, &full_access).await;
+        engine_a.tick().await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            port.0.lock().unwrap().is_empty(),
+            "Full access must not run a check whose shell setting cannot be read"
+        );
+        assert_ne!(
+            status(&engine_a, &full_access).await,
+            GoalCheckStatus::Running
+        );
+
+        // An already-approved check (global auto-approve off), then the store
+        // becomes unreadable before it runs.
+        let (_dir_b, engine_b) = engine().await;
+        let overrides = FlakyOverrides::new();
+        let auto_approve = Arc::new(
+            ironclaw_approvals::test_support::in_memory_backed_auto_approve_setting_store(),
+        );
+        ironclaw_approvals::AutoApproveSettingStorePort::set(
+            auto_approve.as_ref(),
+            ironclaw_approvals::AutoApproveSettingInput {
+                updated_by: Principal::User(scope.user_id.clone()),
+                scope: ResourceScope {
+                    tenant_id: scope.tenant_id.clone(),
+                    user_id: scope.user_id.clone(),
+                    agent_id: None,
+                    project_id: None,
+                    mission_id: None,
+                    thread_id: None,
+                    invocation_id: InvocationId::new(),
+                },
+                enabled: false,
+            },
+        )
+        .await
+        .unwrap();
+        let port = Arc::new(Port::default());
+        engine_b.set_goal_check_runner(Arc::new(HostGoalCheckRunner::new(
+            Some(Arc::clone(&port) as Arc<dyn RuntimeProcessPort>),
+            production_settings(overrides.clone(), auto_approve, Some(Arc::clone(&engine_b))),
+        )));
+        let approved = ThreadId::new("t-approved").unwrap();
+        let check = armed_check(&engine_b, &approved, &scope).await;
+        complete_turn(&engine_b, &approved).await;
+        engine_b.tick().await;
+        assert_eq!(
+            status(&engine_b, &approved).await,
+            GoalCheckStatus::AwaitingApproval,
+            "with auto-approve off the check waits for the person"
+        );
+        engine_b
+            .store()
+            .goal_check_action(
+                &approved,
+                GoalCheckAction::RunNow,
+                Some(check.revision),
+                ironclaw_orchestrator::model::now_ms(),
+            )
+            .await
+            .unwrap();
+        overrides
+            .failing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        engine_b.tick().await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            port.0.lock().unwrap().is_empty(),
+            "an approved check must not run when its shell setting cannot be read"
+        );
     }
 }

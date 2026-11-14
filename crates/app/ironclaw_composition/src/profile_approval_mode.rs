@@ -27,7 +27,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ironclaw_approvals::{ApprovalSettingsProvider, ToolPermissionOverride};
+use ironclaw_approvals::{ApprovalSettingsProvider, FullAccessSource, ToolOverrideLookup};
 use ironclaw_host_api::{
     ids::{CapabilityId, InvocationId, ThreadId},
     resource::ResourceScope,
@@ -106,14 +106,6 @@ impl ProfileApprovalSettingsProvider {
 
 #[async_trait]
 impl ApprovalSettingsProvider for ProfileApprovalSettingsProvider {
-    async fn tool_override(
-        &self,
-        scope: &ResourceScope,
-        capability_id: &CapabilityId,
-    ) -> Option<ToolPermissionOverride> {
-        self.inner.tool_override(scope, capability_id).await
-    }
-
     async fn global_auto_approve(&self, scope: &ResourceScope) -> bool {
         let mode = match &scope.thread_id {
             Some(thread) => match self.profile_mode(thread, &scope.invocation_id).await {
@@ -129,10 +121,35 @@ impl ApprovalSettingsProvider for ProfileApprovalSettingsProvider {
         self.inner.global_auto_approve(scope).await
     }
 
+    async fn tool_override_lookup(
+        &self,
+        scope: &ResourceScope,
+        capability_id: &CapabilityId,
+    ) -> ToolOverrideLookup {
+        self.inner.tool_override_lookup(scope, capability_id).await
+    }
+
     /// "Full access" as the pill shows it: the profile's mode, or the global
     /// switch for a profile that follows it.
     async fn full_access(&self, scope: &ResourceScope) -> bool {
-        scope.thread_id.is_some() && self.global_auto_approve(scope).await
+        self.full_access_source(scope).await != FullAccessSource::Off
+    }
+
+    /// Explicit when the thread's profile chose Full access; inherited when
+    /// the profile follows the global switch and that switch is on. An
+    /// unreadable profile is neither.
+    async fn full_access_source(&self, scope: &ResourceScope) -> FullAccessSource {
+        let Some(thread) = &scope.thread_id else {
+            return FullAccessSource::Off;
+        };
+        match self.profile_mode(thread, &scope.invocation_id).await {
+            Ok(Some(ApprovalMode::FullAccess)) => FullAccessSource::Explicit,
+            Ok(Some(ApprovalMode::AskFirst)) | Err(()) => FullAccessSource::Off,
+            Ok(None) if self.inner.global_auto_approve(scope).await => {
+                FullAccessSource::InheritedGlobal
+            }
+            Ok(None) => FullAccessSource::Off,
+        }
     }
 
     async fn tool_always_allow(
@@ -164,5 +181,115 @@ mod tests {
             ));
             assert_eq!(ApprovalMode::resolve_auto_approve(None, global), global);
         }
+    }
+
+    struct GlobalOn;
+
+    #[async_trait]
+    impl ApprovalSettingsProvider for GlobalOn {
+        async fn tool_override_lookup(
+            &self,
+            _scope: &ResourceScope,
+            _capability_id: &CapabilityId,
+        ) -> ironclaw_approvals::ToolOverrideLookup {
+            ironclaw_approvals::ToolOverrideLookup::from_setting(None)
+        }
+
+        async fn global_auto_approve(&self, _scope: &ResourceScope) -> bool {
+            true
+        }
+
+        async fn tool_always_allow(
+            &self,
+            _scope: &ResourceScope,
+            _capability_id: &CapabilityId,
+            _grantee: &Principal,
+        ) -> bool {
+            false
+        }
+    }
+
+    /// A thread whose profile cannot be read never runs a gated call on the
+    /// global switch: with the thread in scope (as every gate asks) the
+    /// failed lookup asks instead of falling through to global auto-approve.
+    #[tokio::test]
+    async fn an_unreadable_thread_profile_asks_even_with_global_auto_approve_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(
+            libsql::Builder::new_local(dir.path().join("o.db"))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let runtime =
+            Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(&db)).unwrap());
+        let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+        let tenant = ironclaw_host_api::ids::TenantId::new("t1").unwrap();
+        let user = ironclaw_host_api::ids::UserId::new("alice").unwrap();
+        let thread = ThreadId::new("thread-unreadable-profile").unwrap();
+        engine
+            .ensure_thread(
+                &thread,
+                &ironclaw_orchestrator::model::ThreadScope {
+                    tenant_id: tenant.clone(),
+                    user_id: user.clone(),
+                    agent_id: None,
+                    project_id: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        db.connect()
+            .unwrap()
+            .execute("DROP TABLE orch_profiles", ())
+            .await
+            .unwrap();
+        let slot: ProfileApprovalEngineSlot = Arc::new(OnceLock::new());
+        assert!(slot.set(engine).is_ok());
+        let provider = ProfileApprovalSettingsProvider::new(Arc::new(GlobalOn), slot);
+
+        let verdict = |thread_id: Option<ThreadId>| {
+            let scope = ResourceScope {
+                tenant_id: tenant.clone(),
+                user_id: user.clone(),
+                agent_id: None,
+                project_id: None,
+                mission_id: None,
+                thread_id,
+                invocation_id: InvocationId::new(),
+            };
+            let provider = &provider;
+            async move {
+                let capability = CapabilityId::new("builtin.t3_delegate").unwrap();
+                ironclaw_approvals::approval_gate_verdict(
+                    provider,
+                    ironclaw_approvals::ApprovalGateQuery {
+                        scope: &scope,
+                        capability_id: &capability,
+                        grantee: &Principal::HostRuntime,
+                        approved_for_this_invocation: false,
+                        force_approval: false,
+                        exempt_from_approval: false,
+                        global_auto_approve_eligible: true,
+                        inherited_full_access_eligible: true,
+                        always_allow_eligible: true,
+                        approved_for_this_task: false,
+                        policy_requires_approval: true,
+                    },
+                )
+                .await
+            }
+        };
+        assert_eq!(
+            verdict(Some(thread)).await,
+            ironclaw_approvals::ApprovalGateVerdict::RequireApproval,
+            "a failed profile lookup must ask, never fall through to allow"
+        );
+        assert_eq!(
+            verdict(None).await,
+            ironclaw_approvals::ApprovalGateVerdict::Allow,
+            "control: without the thread the global switch decides (the old bug's path)"
+        );
     }
 }

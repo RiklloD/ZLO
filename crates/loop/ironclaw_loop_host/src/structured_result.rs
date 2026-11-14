@@ -23,7 +23,7 @@ use ironclaw_loop_contracts::{
 
 use crate::{
     CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
-    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    SyntheticCapabilityEffect, SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 
 const NOTHING_TO_REPORT_TOOL_DESCRIPTION: &str =
@@ -66,6 +66,8 @@ fn structured_result_capability_with_description(
             STRUCTURED_RESULT_PROVIDER_TOOL_NAME,
             description,
             schema,
+            // Records this run's own terminal result; nothing outside it.
+            SyntheticCapabilityEffect::ReadOnly,
         )?,
         Arc::new(StructuredResultHandler {
             validator: Arc::new(validator),

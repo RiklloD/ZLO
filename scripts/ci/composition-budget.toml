@@ -351,7 +351,27 @@ observed_date = "2026-11-12"
 # ✎ 2026-11-13 (chore/narrow-let-underscore-lint): +1 -> 34561, the crate-root
 # `#![deny(clippy::let_underscore_must_use)]` in src/lib.rs that replaces the
 # workspace-wide entry (the lint is now scoped to the 12 triaged crates).
-loc_ceiling = 34411
+# ✎ 2026-11-14 (fix/auto-approve-surface): 34411 -> 34431, observed 34561 ->
+# 34581, ZERO hidden headroom, pending the owner's sign-off. +20 = ~16 lines of
+# test-support seams the counter cannot see as gated (field-level and
+# `let`-statement `#[cfg(test-support)]`: the Supermemory/computer-use
+# overrides on `RebornRuntimeInput` and the `child_runs` handle) + ~4
+# production lines (one shared `SyntheticApprovalStores` value for the `t3_*`
+# and computer-use gates, and the `admitted_by` filter on synthetic
+# capabilities). The deny-list shrank by 3 entries in the same change.
+# ✎ 2026-11-14 (fix/auto-approve-surface, review round 3): 34431 -> 33819,
+# observed 34581 -> 33969 — a DOWN-ratchet locking in the eviction: the
+# notification-channels approval dance and its outbound_delivery helpers moved
+# into the shared synthetic approval gate in `ironclaw_loop_host` (-612 LOC).
+# ✎ 2026-11-14 (fix/auto-approve-surface, review round 4): 33819 -> 33852,
+# observed 33969 -> 34002, zero hidden headroom, pending the owner's sign-off.
+# +45 production lines in the two approval settings providers composition
+# owns: `StoreApprovalSettingsProvider::tool_override_lookup` (an unreadable
+# override store is its own `Unavailable` answer, refused by the gate) and
+# `ProfileApprovalSettingsProvider::full_access_source` (explicit profile
+# Full access vs Full access inherited from global auto-approve); the rest of
+# the growth was absorbed by the ceiling's remaining slack.
+loc_ceiling = 33852
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -362,8 +382,8 @@ loc_tolerance = 150
 loc_nudge_slack = 200
 # Informational — observed when this file was last updated. Not consulted for
 # the pass/fail decision.
-loc_observed = 34561
-loc_observed_date = "2026-11-13"
+loc_observed = 34002
+loc_observed_date = "2026-11-14"
 
 # --- Dispatch (Arc<dyn>) ratchet ------------------------------------------
 # A companion metric for the "reduce traits & dispatch" goal (issue #6168 / the
@@ -456,6 +476,12 @@ loc_observed_date = "2026-11-13"
 # 681 + 15 = 696 = observed, ZERO hidden headroom. Banks a further +28
 # `Arc<dyn>` pending the owner's sign-off: feat/config-hot-reload +3,
 # feat/operator-readiness-metrics +10, embeddings-hybrid-memory +15.
-arc_dyn_ceiling = 681
+# ✎ 2026-11-14 (fix/auto-approve-surface): 681 -> 682, observed 696 -> 697,
+# ZERO hidden headroom, pending the owner's sign-off: the test-support-only
+# `RebornRuntime::child_runs` spawn-tree handle (field-level `#[cfg]` is not
+# recognized as test code by the counter).
+# ✎ 2026-11-14 (review round 3): 682 -> 672, observed 697 -> 687 — the
+# down-ratchet for the same eviction (-10 sites).
+arc_dyn_ceiling = 672
 arc_dyn_tolerance = 15
-arc_dyn_observed = 696
+arc_dyn_observed = 687

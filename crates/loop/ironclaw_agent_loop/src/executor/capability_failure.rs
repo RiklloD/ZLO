@@ -243,6 +243,12 @@ pub(super) fn deny_recovery(
             SameCallRetryConstraint::AllowedAfterDelay,
             CapabilityRecoveryHint::WaitThenRetry,
         ),
+        // The approval settings could not be read. Nothing ran; the same call
+        // may go through once they can, so wait rather than revise.
+        DenyReason::SettingsUnavailable => (
+            SameCallRetryConstraint::AllowedAfterDelay,
+            CapabilityRecoveryHint::WaitThenRetry,
+        ),
         // Permanently refused.
         DenyReason::NetworkDenied | DenyReason::PolicyDenied => (
             SameCallRetryConstraint::Forbidden,
@@ -291,6 +297,7 @@ pub(super) fn deny_reason_tag(reason: DenyReason) -> &'static str {
         DenyReason::BudgetDenied => "budget_denied",
         DenyReason::ApprovalDenied => "approval_denied",
         DenyReason::PolicyDenied => "policy_denied",
+        DenyReason::SettingsUnavailable => "settings_unavailable",
         DenyReason::ResourceLimitExceeded => "resource_limit_exceeded",
         DenyReason::InternalInvariantViolation => "internal_invariant_violation",
     }

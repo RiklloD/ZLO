@@ -2,6 +2,13 @@
 //! acts on the thread the run belongs to, as the run's acting user; the
 //! engine answers with its JSON document (errors included), which becomes
 //! the model-visible result.
+//!
+//! Every one is declared mutating: the engine registers the calling thread on
+//! each call, and the family delegates, messages, forks, merges, queues,
+//! schedules, and cancels threads. So the synthetic dispatch boundary passes
+//! each call through the ordinary approval gate before this handler runs
+//! (auto-approve on: it runs; off: the user is asked), and a run nobody can
+//! approve for is never offered them.
 
 use std::sync::Arc;
 
@@ -14,12 +21,17 @@ use ironclaw_loop_contracts::{
     AgentLoopHostError, AgentLoopHostErrorKind, CapabilityProgress, resolution,
 };
 use ironclaw_loop_host::{
-    CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
-    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    CapabilityResultWrite, DurablePersistence, SyntheticApproval, SyntheticCapability,
+    SyntheticCapabilityDescriptor, SyntheticCapabilityEffect, SyntheticCapabilityHandler,
+    SyntheticCapabilityInvocation,
 };
 use ironclaw_orchestrator::engine::{CallContext, Engine};
 use ironclaw_orchestrator::model::ThreadScope;
 use ironclaw_orchestrator::tools::TOOLS;
+
+fn orchestrator_capability_id(tool_name: &str) -> String {
+    format!("builtin.{tool_name}")
+}
 
 /// Build the orchestrator tools (`TOOLS`, `t3_schedule` included) for one run's capability surface.
 pub fn orchestrator_capabilities(
@@ -31,10 +43,17 @@ pub fn orchestrator_capabilities(
         .map(|tool| {
             Ok(SyntheticCapability::new(
                 SyntheticCapabilityDescriptor::new(
-                    &format!("builtin.{}", tool.name),
+                    &orchestrator_capability_id(tool.name),
                     tool.name,
                     tool.description,
                     (tool.schema)(),
+                    SyntheticCapabilityEffect::Mutating(SyntheticApproval::new(
+                        APPROVAL_SUMMARY,
+                        format!(
+                            "Run the T3 orchestrator tool {} (it can start, message, or stop threads)",
+                            tool.name
+                        ),
+                    )),
                 )?,
                 Arc::new(OrchestratorToolHandler {
                     name: tool.name,
@@ -45,6 +64,9 @@ pub fn orchestrator_capabilities(
         })
         .collect()
 }
+
+/// Fixed, interpolation-free approval gate text.
+const APPROVAL_SUMMARY: &str = "this orchestrator action requires approval";
 
 struct OrchestratorToolHandler {
     name: &'static str,
@@ -109,7 +131,12 @@ impl SyntheticCapabilityHandler for OrchestratorToolHandler {
             .result_writer
             .write_capability_result(CapabilityResultWrite {
                 run_context: &invocation.run_context,
-                input_ref: &invocation.request.input_ref,
+                // A resumed call writes against the input it was approved for.
+                input_ref: invocation
+                    .request
+                    .approval_resume
+                    .as_ref()
+                    .map_or(&invocation.request.input_ref, |resume| &resume.input_ref),
                 invocation_id: InvocationId::new(),
                 capability_id: &invocation.request.capability_id,
                 output,

@@ -2,12 +2,13 @@
 //! [`ComputerUseSessions`] port (implemented by `ironclaw_computer_use`,
 //! which this crate does not name):
 //!
-//! - every server tool as a synthetic loop capability (`computer_use.<tool>`)
-//!   that raises a durable approval request unless the user chose "always
-//!   allow" for that tool. A tool setting of `Disabled` denies, `AskEachTime`
-//!   always asks, and global auto-approve is ignored: it never hands the
-//!   desktop to the model on its own. A resumed call runs only with a
-//!   matching, claimed lease, then reaches the thread's session through the
+//! - every server tool as a synthetic loop capability (`computer_use.<tool>`),
+//!   declared mutating: the shared synthetic approval gate raises a durable
+//!   approval request unless the user chose "always allow" for that tool or
+//!   the thread runs on Full access. A tool setting of `Disabled` denies,
+//!   `AskEachTime` always asks, and global auto-approve is ignored: it never
+//!   hands the desktop to the model on its own. One approval covers the rest
+//!   of its task. An allowed call reaches the thread's session through the
 //!   port;
 //! - the thread Stop hook: a turn that is stopped or cancelled ends the
 //!   thread's session (kills the process), any other turn end sends the
@@ -18,40 +19,22 @@
 //!   macOS permissions, from the [`ComputerUseReadinessProbe`] port, so a
 //!   client on another computer never checks its own.
 //!
-//! The approval steps follow `crate::supermemory`'s write gate.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ironclaw_approvals::{
-    ApprovalRequestStorePort, ApprovalSettingsProvider, ApprovalStatus, ApprovalStoreError,
-    GateRecordStorePort, ToolPermissionOverride,
-};
-use ironclaw_authorization::{
-    CapabilityLeaseError, CapabilityLeaseStatus, CapabilityLeaseStorePort,
-};
-use ironclaw_capabilities::{ReplayPayload, ReplayPayloadStoreError, ReplayPayloadStorePort};
 use ironclaw_host_api::{
-    action::Action,
-    approval::{ApprovalRequest, InvocationFingerprint},
-    gate_record::GateRecord,
-    ids::{
-        ApprovalRequestId, CapabilityGrantId, CapabilityId, CorrelationId, GateRef, InvocationId,
-        ThreadId, UserId,
-    },
+    ids::{InvocationId, ThreadId, UserId},
     resolution::Resolution,
-    resource::{ResourceEstimate, ResourceScope},
-    safe_summary::SafeSummary,
-    scope::Principal,
 };
 use ironclaw_loop_contracts::{
-    AgentLoopHostError, AgentLoopHostErrorKind, CapabilityApprovalResume,
-    CapabilityDeniedReasonKind, CapabilityProgress, CapabilityResumeToken, LoopRunContext,
-    ModelVisibleToolObservation, ToolObservationDetail, resolution,
+    AgentLoopHostError, AgentLoopHostErrorKind, CapabilityProgress, ModelVisibleToolObservation,
+    ToolObservationDetail, resolution,
 };
 use ironclaw_loop_host::{
-    CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
-    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    CapabilityResultWrite, DurablePersistence, SyntheticApproval, SyntheticCapability,
+    SyntheticCapabilityDescriptor, SyntheticCapabilityEffect, SyntheticCapabilityHandler,
+    SyntheticCapabilityInvocation,
 };
 use ironclaw_processes::{
     ProcessJournalCommit, ProcessJournalCommitObserver, ProcessKind, ProcessLifecycleStatus,
@@ -69,29 +52,17 @@ use ironclaw_product_contracts::surface::{
     ProductSurfaceInvokeResponse, ProductSurfaceQueryPage, ProductSurfaceQueryRequest,
     ProductSurfaceStreamRequest, ProductSurfaceStreamResponse, ProductSurfaceValidationCode,
 };
-use ironclaw_turns::LoopGateRef;
 use serde_json::{Value, json};
 
-/// Fixed, interpolation-free gate text.
+/// Fixed, interpolation-free gate text, shared by every computer-use tool so
+/// one approval covers the task's later calls of any of them.
 const APPROVAL_SUMMARY: &str = "computer use requires approval";
-
-/// The approval stores the gate persists to, all owned by composition.
-pub struct ComputerUseApprovalStores {
-    pub approval_requests: Arc<dyn ApprovalRequestStorePort>,
-    pub capability_leases: Arc<dyn CapabilityLeaseStorePort>,
-    pub approval_settings: Arc<dyn ApprovalSettingsProvider>,
-    pub replay_payload_store: Arc<dyn ReplayPayloadStorePort>,
-    pub gate_record_store: Arc<dyn GateRecordStorePort>,
-}
 
 /// One approval-gated capability per server tool.
 pub fn computer_use_capabilities<S: ComputerUseSessions + 'static>(
     sessions: Arc<S>,
-    stores: ComputerUseApprovalStores,
     fallback_user_id: UserId,
 ) -> Result<Vec<SyntheticCapability>, AgentLoopHostError> {
-    let stores = Arc::new(stores);
-    let approved_turns = Arc::new(ApprovedTurns::default());
     let sessions: Arc<dyn ComputerUseSessions> = sessions;
     sessions
         .tools()
@@ -104,12 +75,22 @@ pub fn computer_use_capabilities<S: ComputerUseSessions + 'static>(
                     &format!("{COMPUTER_USE_TOOL_NAME_PREFIX}{}", tool.name),
                     &tool.description,
                     tool.input_schema.clone(),
+                    SyntheticCapabilityEffect::Mutating(
+                        SyntheticApproval::new(
+                            APPROVAL_SUMMARY,
+                            format!(
+                                "Computer use for this task, starting with {}. Approving lets \
+                                 the agent use this Mac's apps until it answers.",
+                                tool.name
+                            ),
+                        )
+                        .ignoring_global_auto_approve()
+                        .lasting_for_task(),
+                    ),
                 )?,
                 Arc::new(ToolHandler {
                     tool: tool.clone(),
                     sessions: Arc::clone(&sessions),
-                    stores: Arc::clone(&stores),
-                    approved_turns: Arc::clone(&approved_turns),
                     fallback_user_id: fallback_user_id.clone(),
                 }),
             ))
@@ -120,44 +101,7 @@ pub fn computer_use_capabilities<S: ComputerUseSessions + 'static>(
 struct ToolHandler {
     tool: ComputerUseToolSpec,
     sessions: Arc<dyn ComputerUseSessions>,
-    stores: Arc<ComputerUseApprovalStores>,
-    approved_turns: Arc<ApprovedTurns>,
     fallback_user_id: UserId,
-}
-
-/// Turns whose first computer-use call the user approved: the rest of that
-/// task runs without asking again (one approval per task, not per click).
-/// In memory and bounded; a restart asks again.
-#[derive(Default)]
-struct ApprovedTurns(std::sync::Mutex<std::collections::VecDeque<ironclaw_turns::TurnId>>);
-
-const APPROVED_TURNS_KEPT: usize = 64;
-
-impl ApprovedTurns {
-    fn approve(&self, turn: &ironclaw_turns::TurnId) {
-        let mut turns = self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !turns.contains(turn) {
-            if turns.len() == APPROVED_TURNS_KEPT {
-                turns.pop_front();
-            }
-            turns.push_back(*turn);
-        }
-    }
-
-    fn approved(&self, turn: &ironclaw_turns::TurnId) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(turn)
-    }
-}
-
-struct ApprovedLease {
-    scope: ResourceScope,
-    lease_id: CapabilityGrantId,
 }
 
 #[async_trait]
@@ -192,61 +136,6 @@ impl SyntheticCapabilityHandler for ToolHandler {
         &self,
         invocation: SyntheticCapabilityInvocation,
     ) -> Result<Resolution, AgentLoopHostError> {
-        if invocation.request.auth_resume.is_some() {
-            return Err(host_error(
-                AgentLoopHostErrorKind::InvalidInvocation,
-                "computer use does not support auth resume",
-            ));
-        }
-        let capability_id = self.capability_id()?;
-        let lease = match invocation.request.approval_resume.clone() {
-            Some(resume) => match self
-                .verify_resume(&invocation, &resume, &capability_id)
-                .await?
-            {
-                Ok(lease) => {
-                    self.approved_turns.approve(&invocation.run_context.turn_id);
-                    Some(lease)
-                }
-                Err(denied) => return Ok(denied),
-            },
-            None => {
-                let scope = self.settings_scope(&invocation.run_context);
-                let settings = &self.stores.approval_settings;
-                // "Full access" is the thread's profile, so ask with the thread scope.
-                let thread_scope = invocation
-                    .run_context
-                    .acting_resource_scope(&self.fallback_user_id);
-                let tool_override = settings.tool_override(&scope, &capability_id).await;
-                if matches!(tool_override, Some(ToolPermissionOverride::Disabled)) {
-                    return denied("computer use is disabled by tool approval settings");
-                }
-                let full_access = settings.full_access(&thread_scope).await;
-                if !full_access
-                    && (matches!(tool_override, Some(ToolPermissionOverride::AskEachTime))
-                        || (!self
-                            .approved_turns
-                            .approved(&invocation.run_context.turn_id)
-                            && !settings
-                                .tool_always_allow(&scope, &capability_id, &grantee()?)
-                                .await))
-                {
-                    return self.request_approval(&invocation, &capability_id).await;
-                }
-                None
-            }
-        };
-        // A claimed lease is consumed before acting so it cannot be replayed
-        // if the call is cut short.
-        if let Some(lease) = lease
-            && let Err(error) = self
-                .stores
-                .capability_leases
-                .consume(&lease.scope, lease.lease_id)
-                .await
-        {
-            return lease_outcome("consume_approval_lease", error);
-        }
         let scope = invocation
             .run_context
             .acting_resource_scope(&self.fallback_user_id);
@@ -266,209 +155,6 @@ impl SyntheticCapabilityHandler for ToolHandler {
             }
         })
         .await
-    }
-}
-
-impl ToolHandler {
-    fn capability_id(&self) -> Result<CapabilityId, AgentLoopHostError> {
-        CapabilityId::new(format!(
-            "{COMPUTER_USE_CAPABILITY_PREFIX}{}",
-            self.tool.name
-        ))
-        .map_err(|error| host_error(AgentLoopHostErrorKind::Internal, error.to_string()))
-    }
-
-    fn settings_scope(&self, run: &LoopRunContext) -> ResourceScope {
-        ResourceScope {
-            tenant_id: run.scope.tenant_id.clone(),
-            user_id: run.acting_user_id(&self.fallback_user_id),
-            agent_id: None,
-            project_id: None,
-            mission_id: None,
-            thread_id: None,
-            invocation_id: InvocationId::new(),
-        }
-    }
-
-    fn invocation_scope(&self, run: &LoopRunContext, invocation_id: InvocationId) -> ResourceScope {
-        let mut scope = run.acting_resource_scope(&self.fallback_user_id);
-        scope.invocation_id = invocation_id;
-        scope
-    }
-
-    async fn request_approval(
-        &self,
-        invocation: &SyntheticCapabilityInvocation,
-        capability_id: &CapabilityId,
-    ) -> Result<Resolution, AgentLoopHostError> {
-        let run = &invocation.run_context;
-        let approval_request_id = ApprovalRequestId::new();
-        let correlation_id = CorrelationId::new();
-        let invocation_id = InvocationId::new();
-        let estimate = ResourceEstimate::default();
-        let scope = self.invocation_scope(run, invocation_id);
-        let fingerprint = fingerprint(&scope, capability_id, &estimate, &invocation.input)?;
-        let replay_scope = run.acting_resource_scope(&self.fallback_user_id);
-        self.stores
-            .replay_payload_store
-            .save(
-                replay_scope.clone(),
-                invocation_id,
-                ReplayPayload {
-                    input: invocation.input.clone(),
-                    estimate: estimate.clone(),
-                    prior_approval: None,
-                    input_ref: invocation.request.input_ref.clone(),
-                    correlation_id,
-                },
-            )
-            .await
-            .map_err(replay_error)?;
-        self.stores
-            .approval_requests
-            .save_pending(
-                scope,
-                ApprovalRequest {
-                    id: approval_request_id,
-                    correlation_id,
-                    requested_by: grantee()?,
-                    action: Box::new(Action::Dispatch {
-                        capability: capability_id.clone(),
-                        estimated_resources: estimate,
-                    }),
-                    invocation_fingerprint: Some(fingerprint),
-                    reason: format!(
-                        "Computer use for this task, starting with {}. Approving lets the \
-                         agent use this Mac's apps until it answers.",
-                        self.tool.name
-                    ),
-                    reusable_scope: None,
-                },
-            )
-            .await
-            .map_err(|error| store_error("save_pending_approval", error))?;
-        let summary = SafeSummary::new(APPROVAL_SUMMARY).map_err(|error| {
-            ironclaw_loop_host::raw_agent_loop_host_error(
-                "computer_use",
-                "gate_record_summary",
-                AgentLoopHostErrorKind::Internal,
-                "computer-use gate summary is not renderable",
-                error,
-            )
-        })?;
-        self.stores
-            .gate_record_store
-            .save(
-                replay_scope,
-                GateRef::for_approval_request(approval_request_id),
-                GateRecord::Approval { summary },
-            )
-            .await
-            .map_err(|error| store_error("save_gate_record", error))?;
-        let gate_ref = LoopGateRef::new(format!("gate:approval-{approval_request_id}"))
-            .map_err(|error| host_error(AgentLoopHostErrorKind::Internal, error.to_string()))?;
-        let resume_token = CapabilityResumeToken::new(invocation_id.to_string())
-            .map_err(|reason| host_error(AgentLoopHostErrorKind::Internal, reason.to_string()))?;
-        Ok(resolution::approval_required(
-            gate_ref,
-            APPROVAL_SUMMARY.to_string(),
-            Some(CapabilityApprovalResume {
-                approval_request_id,
-                resume_token,
-                correlation_id,
-                input_ref: invocation.request.input_ref.clone(),
-            }),
-        )
-        .resolution)
-    }
-
-    /// `Ok(Ok(lease))` to act, `Ok(Err(denial))` for a lost or ungranted
-    /// approval the user can re-request, `Err` for a mismatch.
-    async fn verify_resume(
-        &self,
-        invocation: &SyntheticCapabilityInvocation,
-        resume: &CapabilityApprovalResume,
-        capability_id: &CapabilityId,
-    ) -> Result<Result<ApprovedLease, Resolution>, AgentLoopHostError> {
-        let run = &invocation.run_context;
-        let invocation_id = InvocationId::parse(resume.resume_token.as_str()).map_err(|error| {
-            host_error(AgentLoopHostErrorKind::InvalidInvocation, error.to_string())
-        })?;
-        let replay = self
-            .stores
-            .replay_payload_store
-            .load(
-                &run.acting_resource_scope(&self.fallback_user_id),
-                invocation_id,
-            )
-            .await
-            .map_err(replay_error)?
-            .ok_or_else(|| {
-                host_error(
-                    AgentLoopHostErrorKind::Unavailable,
-                    "computer-use approval replay payload is unavailable",
-                )
-            })?;
-        let mismatch = |what: &str| {
-            host_error(
-                AgentLoopHostErrorKind::InvalidInvocation,
-                format!("computer-use approval {what} does not match"),
-            )
-        };
-        if replay.input != invocation.input {
-            return Err(mismatch("input"));
-        }
-        let scope = self.invocation_scope(run, invocation_id);
-        let fingerprint = fingerprint(&scope, capability_id, &replay.estimate, &invocation.input)?;
-        let Some(record) = self
-            .stores
-            .approval_requests
-            .get(&scope, resume.approval_request_id)
-            .await
-            .map_err(|error| store_error("load_approval", error))?
-        else {
-            return Ok(Err(denied(
-                "computer-use approval is unavailable; re-request approval",
-            )?));
-        };
-        if record.status != ApprovalStatus::Approved {
-            return Ok(Err(denied(
-                "computer-use approval has not been granted; re-request approval",
-            )?));
-        }
-        if record.request.correlation_id != replay.correlation_id {
-            return Err(mismatch("correlation"));
-        }
-        if record.request.invocation_fingerprint.as_ref() != Some(&fingerprint) {
-            return Err(mismatch("fingerprint"));
-        }
-        if !matches!(record.request.action.as_ref(), Action::Dispatch { capability, .. } if capability == capability_id)
-        {
-            return Err(mismatch("action"));
-        }
-        let leases = &self.stores.capability_leases;
-        let Some(lease) = leases
-            .leases_for_scope(&scope)
-            .await
-            .into_iter()
-            .find(|lease| {
-                lease.status == CapabilityLeaseStatus::Active
-                    && lease.grant.capability == *capability_id
-                    && lease.grant.grantee == record.request.requested_by
-                    && lease.invocation_fingerprint.as_ref() == Some(&fingerprint)
-            })
-        else {
-            return Ok(Err(denied(
-                "computer-use approval lease is unavailable; re-request approval",
-            )?));
-        };
-        if let Err(error) = leases.claim(&scope, lease.grant.id, &fingerprint).await {
-            return lease_outcome("claim_approval_lease", error).map(Err);
-        }
-        Ok(Ok(ApprovedLease {
-            scope,
-            lease_id: lease.grant.id,
-        }))
     }
 }
 
@@ -625,75 +311,8 @@ fn success_text(serialized: &[u8]) -> Option<String> {
     }
 }
 
-/// The same synthetic grantee the other approval-gated builtin tools use.
-fn grantee() -> Result<Principal, AgentLoopHostError> {
-    crate::outbound_delivery_synthetic_provider()
-        .map(Principal::Extension)
-        .map_err(|error| host_error(AgentLoopHostErrorKind::Internal, error.to_string()))
-}
-
-fn fingerprint(
-    scope: &ResourceScope,
-    capability_id: &CapabilityId,
-    estimate: &ResourceEstimate,
-    input: &Value,
-) -> Result<InvocationFingerprint, AgentLoopHostError> {
-    InvocationFingerprint::for_dispatch(scope, capability_id, estimate, input)
-        .map_err(|error| host_error(AgentLoopHostErrorKind::Internal, error.to_string()))
-}
-
 fn host_error(kind: AgentLoopHostErrorKind, message: impl Into<String>) -> AgentLoopHostError {
     AgentLoopHostError::new(kind, message)
-}
-
-fn denied(summary: &str) -> Result<Resolution, AgentLoopHostError> {
-    let reason = CapabilityDeniedReasonKind::unknown("computer_use_approval_required")
-        .map_err(|reason| host_error(AgentLoopHostErrorKind::Internal, reason.to_string()))?;
-    Ok(resolution::denied(reason, summary.to_string()).resolution)
-}
-
-fn replay_error(error: ReplayPayloadStoreError) -> AgentLoopHostError {
-    tracing::warn!(error = %error, "failed to access computer-use replay payload");
-    host_error(
-        AgentLoopHostErrorKind::Unavailable,
-        "failed to access capability replay payload",
-    )
-}
-
-fn store_error(operation: &'static str, error: ApprovalStoreError) -> AgentLoopHostError {
-    ironclaw_loop_host::raw_agent_loop_host_error(
-        "computer_use",
-        operation,
-        AgentLoopHostErrorKind::Unavailable,
-        "computer-use approval state operation failed",
-        error,
-    )
-}
-
-/// A stale or lost lease is a recoverable denial; lease storage faults end the run.
-fn lease_outcome(
-    operation: &'static str,
-    error: CapabilityLeaseError,
-) -> Result<Resolution, AgentLoopHostError> {
-    match error {
-        CapabilityLeaseError::UnknownLease { .. }
-        | CapabilityLeaseError::ExpiredLease { .. }
-        | CapabilityLeaseError::ExhaustedLease { .. }
-        | CapabilityLeaseError::UnclaimedFingerprintLease { .. }
-        | CapabilityLeaseError::FingerprintMismatch { .. }
-        | CapabilityLeaseError::InactiveLease { .. } => {
-            denied("computer-use approval lease is no longer valid; re-request approval")
-        }
-        CapabilityLeaseError::Persistence { .. }
-        | CapabilityLeaseError::VersionMismatch
-        | CapabilityLeaseError::CasExhausted => Err(ironclaw_loop_host::raw_agent_loop_host_error(
-            "computer_use",
-            operation,
-            AgentLoopHostErrorKind::Unavailable,
-            "computer-use approval lease operation failed",
-            error,
-        )),
-    }
 }
 
 /// Ends a thread's session when its turn is stopped or cancelled; tells the

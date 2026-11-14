@@ -130,14 +130,10 @@ pub struct DefaultPlannedRuntimeConfig {
     pub disabled_capability_ids: Vec<CapabilityId>,
     /// Capability IDs removed from a run that declared `require_no_approval`.
     ///
-    /// This exists because the surface policy cannot reach every capability.
-    /// Synthetic capabilities are appended to the surface by
-    /// `SyntheticCapabilityPort` AFTER the host catalog has applied effect and
-    /// approval filtering, so no policy narrowing can gate them — only an id
-    /// deny-list can. That append is correct for loop infrastructure
-    /// (`result_read`, `structured_result`, `capability_info`) and accidental
-    /// for product tools that happen to be implemented synthetically. The
-    /// mutating ones belong here.
+    /// Synthetic capabilities need no entry: each declares its effect, and the
+    /// mutating ones leave a surface that excludes approval-gated capabilities
+    /// (`SyntheticCapability::admitted_by`). This list is for the remaining
+    /// state-changing builtins that never ask.
     ///
     /// Populated by composition, which is the layer that can name product
     /// capability ids; the loop layer cannot depend on product crates.
@@ -500,6 +496,8 @@ where
     pub driver_registry: Arc<DriverRegistry>,
     pub run_profile_resolver: Arc<dyn RunProfileResolver>,
     pub coordinator: Arc<dyn ironclaw_turns::TurnCoordinator>,
+    /// The same coordinator's spawn-tree face (child-run submission + wake).
+    pub child_runs: Arc<dyn TurnSpawnTreePort>,
     pub host_factory: Arc<RebornLoopDriverHostFactory<S, G>>,
     pub scheduler_handle: TurnRunSchedulerHandle,
 }
@@ -812,6 +810,7 @@ where
         ));
     let base_coordinator_arc = Arc::new(base_coordinator);
     let child_runs: Arc<dyn TurnSpawnTreePort> = base_coordinator_arc.clone();
+    let spawn_tree = Arc::clone(&child_runs);
     let coordinator: Arc<dyn ironclaw_turns::TurnCoordinator> = base_coordinator_arc;
     subagent_await_edge_settler
         .bind_coordinator(Arc::clone(&coordinator))
@@ -1025,6 +1024,7 @@ where
             driver_registry,
             run_profile_resolver,
             coordinator,
+            child_runs: spawn_tree,
             host_factory,
             scheduler_handle,
         },
@@ -1147,7 +1147,8 @@ impl LoopCapabilityPortFactory for RuntimeProfiledCapabilityPortFactory {
                 }
                 // No human is present, so an approval-gated capability is a
                 // run that PARKS, not one that asks: drop those from the
-                // surface. The decision itself stays with the kernel
+                // surface (and with them every synthetic declared mutating).
+                // The decision itself stays with the kernel
                 // authorizer — this only sets the input it already consumes,
                 // so "auto-approved" means exactly what the user's own
                 // settings say, uniformly across built-ins, extensions, and

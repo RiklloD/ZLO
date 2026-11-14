@@ -589,12 +589,12 @@ struct DefaultApprovalSettingsProvider;
 
 #[async_trait::async_trait]
 impl ironclaw_approvals::ApprovalSettingsProvider for DefaultApprovalSettingsProvider {
-    async fn tool_override(
+    async fn tool_override_lookup(
         &self,
         _scope: &ironclaw_host_api::resource::ResourceScope,
         _capability_id: &CapabilityId,
-    ) -> Option<ironclaw_approvals::ToolPermissionOverride> {
-        None
+    ) -> ironclaw_approvals::ToolOverrideLookup {
+        ironclaw_approvals::ToolOverrideLookup::from_setting(None)
     }
 
     async fn global_auto_approve(
@@ -979,12 +979,12 @@ async fn standalone_authorizer_coalesces_concurrent_scope_listing_settings_misse
         let scope = scope.clone();
         let capability_id = capability_id.clone();
         override_handles.push(tokio::spawn(async move {
-            settings.tool_override(&scope, &capability_id).await
+            settings.tool_override_lookup(&scope, &capability_id).await
         }));
     }
     for handle in override_handles {
         let state = handle.await.expect("override lookup should finish");
-        assert_eq!(state, None);
+        assert_eq!(state, ironclaw_approvals::ToolOverrideLookup::Unset);
     }
     assert_eq!(
         overrides.list_count(),
@@ -996,7 +996,10 @@ async fn standalone_authorizer_coalesces_concurrent_scope_listing_settings_misse
         0,
         "an authoritative scope-list miss must not fall through to an exact read"
     );
-    assert_eq!(settings.tool_override(&scope, &capability_id).await, None);
+    assert_eq!(
+        settings.tool_override_lookup(&scope, &capability_id).await,
+        ironclaw_approvals::ToolOverrideLookup::Unset
+    );
     assert_eq!(
         overrides.get_count(),
         0,
@@ -1118,12 +1121,17 @@ async fn standalone_authorizer_fails_closed_when_override_lookup_errors() {
     let authorizer = capability_authorizer(None, policy, settings);
 
     let decision = local_host_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
+    // Fail closed means refuse: the unreadable setting may be exactly the
+    // `disabled` that wins, so neither auto-approve nor an approval prompt
+    // (whose lease would outrank ask-each-time on resume) may stand in for it.
     assert!(
         matches!(
             decision,
-            ironclaw_host_api::decision::Decision::RequireApproval { .. }
+            ironclaw_host_api::decision::Decision::Deny {
+                reason: ironclaw_host_api::decision::DenyReason::SettingsUnavailable
+            }
         ),
-        "override-store read errors must fail closed even when global auto-approve is enabled, got {decision:?}"
+        "override-store read errors must refuse even when global auto-approve is enabled, got {decision:?}"
     );
 }
 

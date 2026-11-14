@@ -173,6 +173,36 @@ mod tests {
     /// switch is authoritative for first-party tool dispatch; enabling
     /// it here mirrors the operator having flipped it on before letting the
     /// agent run tools.
+    /// Global auto-approve on, nothing else set.
+    struct GlobalAutoApproveOn;
+
+    #[async_trait::async_trait]
+    impl ironclaw_approvals::ApprovalSettingsProvider for GlobalAutoApproveOn {
+        async fn tool_override_lookup(
+            &self,
+            _scope: &ironclaw_host_api::resource::ResourceScope,
+            _capability_id: &CapabilityId,
+        ) -> ironclaw_approvals::ToolOverrideLookup {
+            ironclaw_approvals::ToolOverrideLookup::from_setting(None)
+        }
+
+        async fn global_auto_approve(
+            &self,
+            _scope: &ironclaw_host_api::resource::ResourceScope,
+        ) -> bool {
+            true
+        }
+
+        async fn tool_always_allow(
+            &self,
+            _scope: &ironclaw_host_api::resource::ResourceScope,
+            _capability_id: &CapabilityId,
+            _grantee: &ironclaw_host_api::scope::Principal,
+        ) -> bool {
+            false
+        }
+    }
+
     async fn enable_global_auto_approve_for_run(
         services: &crate::factory::RebornRuntimeStores,
         run_context: &LoopRunContext,
@@ -2853,7 +2883,11 @@ mod tests {
             supermemory: None,
             computer_use: None,
             outbound_preference_write_requires_approval: false,
-            approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
+            // `project_create`/`skill_activate` are mutating synthetics: the shared
+            // gate asks unless auto-approve is on. This test pins the side
+            // effect, so it runs with auto-approve on (the ask path is pinned
+            // by `reborn_integration_unattended_surface`).
+            approval_settings: Arc::new(GlobalAutoApproveOn),
             project_service: Arc::clone(&runtime_surfaces.project_service),
             thread_service: Arc::new(InMemorySessionThreadService::default()),
             approval_requests: runtime_surfaces.approval_requests_for_test().clone(),
@@ -3229,7 +3263,11 @@ mod tests {
             supermemory: None,
             computer_use: None,
             outbound_preference_write_requires_approval: false,
-            approval_settings: Arc::new(ironclaw_approvals::EmptyApprovalSettingsProvider),
+            // `project_create`/`skill_activate` are mutating synthetics: the shared
+            // gate asks unless auto-approve is on. This test pins the side
+            // effect, so it runs with auto-approve on (the ask path is pinned
+            // by `reborn_integration_unattended_surface`).
+            approval_settings: Arc::new(GlobalAutoApproveOn),
             approval_requests: runtime_surfaces.approval_requests_for_test().clone(),
             capability_leases: runtime_surfaces.capability_leases_for_test().clone(),
             gate_record_store: Arc::new(ironclaw_approvals::GateRecordStore::new(
@@ -5001,14 +5039,11 @@ mod tests {
         )
         .expect("resume token converts");
         let raise_invocation_id =
-            super::super::outbound_delivery::invocation_id_from_resume_token(&resume_token)
+            ironclaw_host_api::ids::InvocationId::parse(resume_token.as_str())
                 .expect("resume token encodes the raise invocation id");
-        // Recompute the raise scope EXACTLY as the production raise did.
-        let raise_scope = super::super::outbound_delivery::resource_scope_for_run(
-            &run_context,
-            &fallback_user_id,
-            raise_invocation_id,
-        );
+        // Recompute the raise scope EXACTLY as the shared synthetic gate does.
+        let mut raise_scope = run_context.acting_resource_scope(&fallback_user_id);
+        raise_scope.invocation_id = raise_invocation_id;
         // PINNED IDENTITY: a run acts as its user, so the approval-gate raise
         // (and therefore the lease) is scoped to that user — who sees and
         // approves the gate. Raise and resume derive this identity the same

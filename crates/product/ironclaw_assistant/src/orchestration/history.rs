@@ -29,7 +29,7 @@ use ironclaw_loop_contracts::{
 };
 use ironclaw_loop_host::{
     CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
-    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    SyntheticCapabilityEffect, SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::model::ThreadRecord;
@@ -569,6 +569,7 @@ pub fn history_search_capability(
             HISTORY_SEARCH_TOOL_NAME,
             DESCRIPTION.trim(),
             history_search_input_schema(),
+            SyntheticCapabilityEffect::ReadOnly,
         )?,
         Arc::new(HistorySearchToolHandler {
             threads,
