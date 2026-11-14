@@ -419,7 +419,7 @@ mod tests {
 
         assert_eq!(headers[0], (String::new(), String::new()));
         assert_eq!(headers[1], (String::new(), String::new()));
-        let _ = req;
+        drop(req);
     }
 
     #[test]

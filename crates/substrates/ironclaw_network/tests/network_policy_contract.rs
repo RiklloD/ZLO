@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::{
     action::{NetworkMethod, NetworkPolicy, NetworkScheme, NetworkTarget, NetworkTargetPattern},
     ids::{InvocationId, ProjectId, TenantId, ThreadId, UserId},
