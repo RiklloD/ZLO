@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use ironclaw_host_api::resolution::{Resolution, Suspension};
 use ironclaw_host_api::turn::LoopGateRef;
 use ironclaw_loop_contracts::{
@@ -63,47 +65,55 @@ pub(super) enum SelectedParallelTerminal {
     Host(ironclaw_loop_contracts::AgentLoopHostError),
 }
 
-pub(super) async fn finish_selected_parallel_terminal(
+// Stack depth: returns a heap future (see `ExecutorStage` docs in
+// `executor/pipeline.rs`). Unboxed: 9.0 KB; 10 slots in `CapabilityStage::process`.
+pub(super) fn finish_selected_parallel_terminal(
     ctx: StageContext<'_>,
     state: LoopExecutionState,
     terminal: SelectedParallelTerminal,
-) -> Result<TurnCompletedStep, AgentLoopExecutorError> {
-    let checked = CheckpointStage
-        .write(ctx, state, CheckpointKind::Final)
-        .await?;
-    match terminal {
-        SelectedParallelTerminal::Loop(exit) => {
-            let exit = rebuild_terminal_exit_against_checkpoint(
-                ctx,
-                exit,
-                checked.state,
-                checked.checkpoint_id,
-            )?;
-            Ok(TurnCompletedStep::Exit(exit))
+) -> Pin<Box<impl Future<Output = Result<TurnCompletedStep, AgentLoopExecutorError>>>> {
+    Box::pin(async move {
+        let checked = CheckpointStage
+            .write(ctx, state, CheckpointKind::Final)
+            .await?;
+        match terminal {
+            SelectedParallelTerminal::Loop(exit) => {
+                let exit = rebuild_terminal_exit_against_checkpoint(
+                    ctx,
+                    exit,
+                    checked.state,
+                    checked.checkpoint_id,
+                )?;
+                Ok(TurnCompletedStep::Exit(exit))
+            }
+            SelectedParallelTerminal::Host(error) => Err(capability_host_error(error)),
         }
-        SelectedParallelTerminal::Host(error) => Err(capability_host_error(error)),
-    }
+    })
 }
 
 impl CapabilityStage {
-    pub(super) async fn completed_turn(
+    // Stack depth: returns a heap future (see `ExecutorStage` docs in
+    // `executor/pipeline.rs`). Unboxed: 17.3 KB; 16 slots in `CapabilityStage::process`.
+    pub(super) fn completed_turn(
         &self,
         ctx: StageContext<'_>,
         state: LoopExecutionState,
         result_refs_start: usize,
         capability_batch: CapabilityBatchTurnSummary,
-    ) -> Result<TurnCompletedStep, AgentLoopExecutorError> {
-        let state = match CheckpointStage.cancel_if_requested(ctx, state).await? {
-            CancelCheck::Continue(state) => *state,
-            CancelCheck::Exit(exit) => return Ok(TurnCompletedStep::Exit(exit)),
-        };
-        let summary = TurnSummary::after_capability_batch(
-            state.result_refs[result_refs_start..].to_vec(),
-            capability_batch,
-        );
-        Ok(TurnCompletedStep::Continue {
-            state: Box::new(state),
-            summary,
+    ) -> Pin<Box<impl Future<Output = Result<TurnCompletedStep, AgentLoopExecutorError>>>> {
+        Box::pin(async move {
+            let state = match CheckpointStage.cancel_if_requested(ctx, state).await? {
+                CancelCheck::Continue(state) => *state,
+                CancelCheck::Exit(exit) => return Ok(TurnCompletedStep::Exit(exit)),
+            };
+            let summary = TurnSummary::after_capability_batch(
+                state.result_refs[result_refs_start..].to_vec(),
+                capability_batch,
+            );
+            Ok(TurnCompletedStep::Continue {
+                state: Box::new(state),
+                summary,
+            })
         })
     }
 }

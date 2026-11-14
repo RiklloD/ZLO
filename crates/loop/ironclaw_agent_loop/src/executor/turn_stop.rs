@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use async_trait::async_trait;
 use ironclaw_loop_contracts::{AgentLoopDriverHost, LoopExit};
 use tracing::debug;
@@ -122,65 +124,73 @@ impl StopStage {
         StopStep::Continue { state: stop_state }
     }
 
-    pub(super) async fn observe(
+    // Stack depth: returns a heap future (see `ExecutorStage` docs in
+    // `executor/pipeline.rs`). Unboxed: 21.6 KB; 6 slots in `DefaultExecutorPipeline::execute`.
+    pub(super) fn observe(
         &self,
         ctx: StageContext<'_>,
         input: StopObservationInput,
-    ) -> Result<StopObservationStep, AgentLoopExecutorError> {
-        let mut state = input.state;
-        state.stop_state = ctx
-            .planner
-            .stop()
-            .observe_completed_turn(&state, &input.summary)
-            .await;
-        state = match CheckpointStage.cancel_if_requested(ctx, state).await? {
-            CancelCheck::Continue(state) => *state,
-            CancelCheck::Exit(exit) => return Ok(StopObservationStep::Exit(exit)),
-        };
-        Ok(StopObservationStep::Continue {
-            state: Box::new(state),
-            summary: input.summary,
+    ) -> Pin<Box<impl Future<Output = Result<StopObservationStep, AgentLoopExecutorError>>>> {
+        Box::pin(async move {
+            let mut state = input.state;
+            state.stop_state = ctx
+                .planner
+                .stop()
+                .observe_completed_turn(&state, &input.summary)
+                .await;
+            state = match CheckpointStage.cancel_if_requested(ctx, state).await? {
+                CancelCheck::Continue(state) => *state,
+                CancelCheck::Exit(exit) => return Ok(StopObservationStep::Exit(exit)),
+            };
+            Ok(StopObservationStep::Continue {
+                state: Box::new(state),
+                summary: input.summary,
+            })
         })
     }
 
-    pub(super) async fn decide(
+    // Stack depth: returns a heap future (see `ExecutorStage` docs in
+    // `executor/pipeline.rs`). Unboxed: 21.6 KB; 6 slots in `DefaultExecutorPipeline::execute`.
+    pub(super) fn decide(
         &self,
         ctx: StageContext<'_>,
         input: StopInput,
-    ) -> Result<StopStep, AgentLoopExecutorError> {
-        let mut state = input.state;
-        // `decide` is also a cancellation boundary for callers that split
-        // observation from the terminal decision.
-        let outcome = ctx
-            .planner
-            .stop()
-            .should_stop_after_observed_turn(&state, &input.summary)
-            .await;
-        state.terminal_warning_state.clear_active();
+    ) -> Pin<Box<impl Future<Output = Result<StopStep, AgentLoopExecutorError>>>> {
+        Box::pin(async move {
+            let mut state = input.state;
+            // `decide` is also a cancellation boundary for callers that split
+            // observation from the terminal decision.
+            let outcome = ctx
+                .planner
+                .stop()
+                .should_stop_after_observed_turn(&state, &input.summary)
+                .await;
+            state.terminal_warning_state.clear_active();
 
-        match outcome {
-            StopOutcome::Stop { kind } => {
-                state = match CheckpointStage.cancel_if_requested(ctx, state).await? {
-                    CancelCheck::Continue(state) => *state,
-                    CancelCheck::Exit(exit) => return Ok(StopStep::Exit(exit)),
-                };
-                if schedule_no_progress_warning(&mut state, &kind) {
-                    debug!(
-                        iteration = state.iteration,
-                        "agent loop scheduling final no-progress recovery iteration"
-                    );
-                    return Ok(StopStep::Continue { state });
+            match outcome {
+                StopOutcome::Stop { kind } => {
+                    state = match CheckpointStage.cancel_if_requested(ctx, state).await? {
+                        CancelCheck::Continue(state) => *state,
+                        CancelCheck::Exit(exit) => return Ok(StopStep::Exit(exit)),
+                    };
+                    if schedule_no_progress_warning(&mut state, &kind) {
+                        debug!(
+                            iteration = state.iteration,
+                            "agent loop scheduling final no-progress recovery iteration"
+                        );
+                        return Ok(StopStep::Continue { state });
+                    }
+                    Ok(StopStep::Stop { state, kind })
                 }
-                Ok(StopStep::Stop { state, kind })
+                StopOutcome::Continue {} => {
+                    state = match CheckpointStage.cancel_if_requested(ctx, state).await? {
+                        CancelCheck::Continue(state) => *state,
+                        CancelCheck::Exit(exit) => return Ok(StopStep::Exit(exit)),
+                    };
+                    Ok(StopStep::Continue { state })
+                }
             }
-            StopOutcome::Continue {} => {
-                state = match CheckpointStage.cancel_if_requested(ctx, state).await? {
-                    CancelCheck::Continue(state) => *state,
-                    CancelCheck::Exit(exit) => return Ok(StopStep::Exit(exit)),
-                };
-                Ok(StopStep::Continue { state })
-            }
-        }
+        })
     }
 }
 
