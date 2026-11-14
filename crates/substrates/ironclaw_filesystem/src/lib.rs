@@ -14,6 +14,7 @@
 //! hostile local directories should use fd-relative traversal such as `openat2`
 //! with `RESOLVE_BENEATH`, `O_NOFOLLOW`, or a capability filesystem crate.
 
+#![deny(clippy::let_underscore_must_use)]
 mod backend;
 mod cas;
 mod catalog;

@@ -412,9 +412,17 @@ mod postgres_tests {
                 .await
                 .expect("configured Postgres contender connection");
         let locker_task = tokio::spawn(async move {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the task only drives the connection; a broken connection fails the client's next query"
+            )]
             let _ = locker_connection.await;
         });
         let contender_task = tokio::spawn(async move {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the task only drives the connection; a broken connection fails the client's next query"
+            )]
             let _ = contender_connection.await;
         });
         let suffix = SystemTime::now()

@@ -3260,7 +3260,15 @@ mod tests {
             if matches_target { gate.take() } else { None }
         };
         if let Some(DeleteIfVersionCancellationGate { begun, release, .. }) = gate {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test gate: the receiver belongs to the waiting test, which has already failed if it is gone"
+            )]
             let _ = begun.send(());
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test gate: a dropped release sender releases the paused delete just as a send does"
+            )]
             let _ = release.await;
         }
     }
@@ -3295,7 +3303,15 @@ mod tests {
             inserted, release, ..
         }) = gate
         {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test gate: the receiver belongs to the waiting test, which has already failed if it is gone"
+            )]
             let _ = inserted.send(());
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test gate: a dropped release sender releases the paused append just as a send does"
+            )]
             let _ = release.await;
         }
     }

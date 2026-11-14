@@ -152,7 +152,10 @@ impl IsolatedPostgresProvisioner {
             },
         };
         tokio::spawn(async move {
-            // silent-ok: the connection task ends with an error when the database is dropped
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the connection task ends with an error when the database is dropped; query failures surface through the client"
+            )]
             let _ = connection.await;
         });
         self.stale_sweep

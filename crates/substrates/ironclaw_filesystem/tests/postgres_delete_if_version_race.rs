@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_filesystem::{
@@ -113,8 +114,16 @@ async fn postgres_delete_if_version_stays_notfound_under_concurrent_delete_recre
             .unwrap();
         // The uncommitted DELETE holds the row lock that the CAS statement
         // must reach before the replacement is allowed to commit.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the receiver belongs to the test body, which has already failed if it is gone"
+        )]
         let _ = deleted_tx.send(());
         if recreate_rx.await.is_err() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the race was abandoned; dropping the connection rolls the transaction back if this ROLLBACK fails"
+            )]
             let _ = racer_client.batch_execute("ROLLBACK").await;
             return;
         }

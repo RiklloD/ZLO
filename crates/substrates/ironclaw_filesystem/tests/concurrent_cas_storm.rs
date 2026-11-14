@@ -16,6 +16,7 @@
 //! the in-memory variant here re-runs the invariant under real OS-thread
 //! parallelism so the two database backends have an in-process control.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
