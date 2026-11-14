@@ -56,8 +56,18 @@ What is redacted, and how far that goes:
   the values of env vars that hold credentials (names from `config.toml`, the built-in
   provider list, the defaults, and any env var whose name contains `TOKEN`, `SECRET`,
   `PASSWORD`, `API_KEY` and similar) — are replaced wherever they appear, also when
-  JSON-escaped, percent-encoded or base64-encoded. If one still shows up in any other
-  encoding, the bundle is not written at all.
+  JSON-escaped, percent-encoded or base64-encoded. The password inside a secret URL
+  (such as `DATABASE_URL`) counts as one too. A known value of 4–7 characters is replaced
+  only where it stands as a separate word, so text that merely contains it is kept. A known
+  value under 4 characters can't be replaced safely: the bundle then leaves the log tails
+  out, says so in `manifest.json`, and asks you to rotate it to a longer one. A credential-like
+  name whose last part is a setting word (`_ENABLED`, `_DISABLED`, `_ENABLE`, `_MODE`,
+  `_COUNT`, `_PORT`, `_TIMEOUT`, `_LEVEL`, `_TTL`, `_RETRIES`, e.g. `AUTH_ENABLED=1`) holds
+  a setting, not a secret; those names are listed in `manifest.json`. Under every other
+  credential-like name the value is treated as a secret however plain it looks
+  (`DEVICE_PIN=123456` is redacted; `SOME_AUTH=1` is too short to redact, so the log
+  tails are left out). A URL password is always treated as a secret. If a known
+  value still shows up in any other encoding, the bundle is not written at all.
 - **Recognizable credentials** are replaced with `[REDACTED]`: values of credential-named
   keys and flags (`token=`, `"password": "…"`, `Authorization: Bearer …`, `--api-key …`),
   passwords in URLs, URL query strings, PEM private keys, and known token shapes (OpenAI,

@@ -14,9 +14,12 @@
 //! - API-key **values**           → scoped secret store (never the file)
 //!
 //! After a successful write the running provider's inner backend is hot-swapped
-//! via the reload trigger. The on-disk files are the source of truth: if reload
-//! fails the change is still persisted and applies on the next restart, so the
-//! operator is never left with a silently-dropped edit (the failure is logged).
+//! via the reload trigger. Saving the *active selection* (`set_active`, and
+//! `upsert_provider` with `set_active`) is all-or-nothing: when the live swap
+//! refuses it, `config.toml` is put back and the save fails `NotApplied`, so
+//! the file never names a provider the running server is not serving. Other
+//! writes (a provider definition or key) stay persisted when the reload
+//! fails and apply on the next restart (the failure is logged).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -45,6 +48,7 @@ use ironclaw_product_contracts::task_models::{
 };
 use secrecy::{ExposeSecret as _, SecretString};
 
+use crate::llm_admin::live_llm_default::{LiveLlmDefault, SelectionWriteError};
 use crate::llm_admin::llm_catalog::{apply_stored_api_key, resolve_against_registry};
 use crate::llm_admin::{LlmKeyStore, ProviderRepo, RebornProviderAdmin, task_models};
 
@@ -218,7 +222,9 @@ pub struct RebornLlmConfigService {
     keys: LlmKeyStore,
     model_policy_store: Option<Arc<dyn ModelSelectionPolicyStore>>,
     user_model_preference_store: Option<Arc<dyn UserModelPreferenceStore>>,
-    reload: Option<Arc<dyn LlmReloadTrigger>>,
+    /// The runtime's live-LLM owner: every apply of `[llm.default]` (and
+    /// the Settings write-then-apply transaction) runs under its lock.
+    reload: Option<Arc<LiveLlmDefault>>,
     /// The runtime's NEAR AI session manager — the same instance the live
     /// provider reads its token from, so a completed login takes effect on
     /// reload. Absent when the runtime has no LLM seam wired.
@@ -258,9 +264,9 @@ impl RebornLlmConfigService {
         self
     }
 
-    /// Attach the live-reload trigger (from the runtime).
-    pub fn with_reload_trigger(mut self, reload: Arc<dyn LlmReloadTrigger>) -> Self {
-        self.reload = Some(reload);
+    /// Attach the runtime's live-LLM owner.
+    pub fn with_live_llm_default(mut self, live: Arc<LiveLlmDefault>) -> Self {
+        self.reload = Some(live);
         self
     }
 
@@ -324,17 +330,47 @@ impl RebornLlmConfigService {
             if !current {
                 return;
             }
-            if let Err(error) = RebornProviderAdmin::new(boot).set_provider("openai_codex", None) {
-                tracing::debug!(%error, "ChatGPT plan login: could not set active provider");
-                return;
-            }
-            if let Some(reload) = reload
-                && let Err(error) = reload.reload().await
+            // The auth exchange above ran outside the live-LLM lock; the
+            // selection write and its apply run as one transaction under it.
+            if let Err(error) = activate_selection(
+                reload.as_ref(),
+                RebornProviderAdmin::new(boot),
+                "openai_codex".to_string(),
+                None,
+            )
+            .await
             {
-                tracing::debug!(%error, "ChatGPT plan login: live reload failed; applies on restart");
+                tracing::debug!(
+                    ?error,
+                    "ChatGPT plan login: could not make openai_codex active"
+                );
             }
         });
         Ok(login)
+    }
+
+    /// Write the active selection to `[llm.default]` and apply it to the
+    /// running provider as one transaction under the live-LLM owner's lock
+    /// ([`LiveLlmDefault::write_and_apply`]): the snapshot, the write, the
+    /// apply and — when the live swap refuses it — the conditional restore
+    /// are never interleaved with another Settings save, a SIGHUP reload or
+    /// the boot apply. A refusal fails the save with
+    /// [`LlmConfigServiceError::NotApplied`]: the old provider keeps serving
+    /// and the file names it again. With no live provider wired (cold boot)
+    /// the write stands and applies on restart.
+    async fn write_and_apply_active_selection(
+        &self,
+        id: String,
+        model: Option<String>,
+    ) -> Result<(), LlmConfigServiceError> {
+        if self.reload.is_none() {
+            self.set_provider_async(id, model)
+                .await
+                .map_err(map_admin_error)?;
+            self.refresh_running_provider().await;
+            return Ok(());
+        }
+        activate_selection(self.reload.as_ref(), self.admin(), id, model).await
     }
 
     /// Persist-then-reload: the file write already happened; refresh the
@@ -841,17 +877,17 @@ impl LlmConfigService for RebornLlmConfigService {
 
         if request.set_active {
             let active_result = self
-                .set_provider_async(id.clone(), request.model.clone())
+                .write_and_apply_active_selection(id.clone(), request.model.clone())
                 .await;
             if let Err(error) = active_result {
-                tracing::error!(provider_id = %id, %error, "LLM provider save: writing active selection failed");
+                tracing::error!(provider_id = %id, ?error, "LLM provider save: activating the selection failed");
                 self.rollback_upsert(&id, previous_definition, previous_key, has_new_key)
                     .await;
-                return Err(map_admin_error(error));
+                return Err(error);
             }
+        } else {
+            self.refresh_running_provider().await;
         }
-
-        self.refresh_running_provider().await;
         if request.set_active {
             self.align_model_policy_with_active(&caller).await?;
         }
@@ -908,10 +944,8 @@ impl LlmConfigService for RebornLlmConfigService {
         request: SetActiveLlmRequest,
     ) -> Result<LlmConfigSnapshot, LlmConfigServiceError> {
         let id = validate_provider_id(&request.provider_id)?;
-        self.set_provider_async(id, request.model)
-            .await
-            .map_err(map_admin_error)?;
-        self.refresh_running_provider().await;
+        self.write_and_apply_active_selection(id, request.model)
+            .await?;
         self.align_model_policy_with_active(&caller).await?;
         self.snapshot(caller).await
     }
@@ -1242,14 +1276,17 @@ impl LlmConfigService for RebornLlmConfigService {
                 tracing::debug!("codex login completed after a newer attempt superseded it");
                 return;
             }
-            if let Err(error) = RebornProviderAdmin::new(boot).set_provider("openai_codex", None) {
-                tracing::debug!(%error, "codex login: could not set active provider");
-                return;
-            }
-            if let Some(reload) = reload
-                && let Err(error) = reload.reload().await
+            // The auth exchange above ran outside the live-LLM lock; the
+            // selection write and its apply run as one transaction under it.
+            if let Err(error) = activate_selection(
+                reload.as_ref(),
+                RebornProviderAdmin::new(boot),
+                "openai_codex".to_string(),
+                None,
+            )
+            .await
             {
-                tracing::debug!(%error, "codex login: live reload failed; applies on restart");
+                tracing::debug!(?error, "codex login: could not make openai_codex active");
             }
         });
 
@@ -1297,21 +1334,19 @@ impl LlmConfigService for RebornLlmConfigService {
                 tracing::debug!(%error, "NEAR AI wallet login: token persist failed");
                 LlmConfigServiceError::Internal
             })?;
-        self.admin().set_provider("nearai", None).map_err(|error| {
-            tracing::debug!(%error, "NEAR AI wallet login: set active failed");
-            LlmConfigServiceError::Internal
+        activate_selection(
+            self.reload.as_ref(),
+            self.admin(),
+            "nearai".to_string(),
+            None,
+        )
+        .await
+        .inspect_err(|error| {
+            tracing::debug!(?error, "NEAR AI wallet login: could not make nearai active");
         })?;
-        let active = match &self.reload {
-            Some(reload) => {
-                reload.reload().await.map_err(|error| {
-                    tracing::debug!(%error, "NEAR AI wallet login: live reload failed");
-                    LlmConfigServiceError::Internal
-                })?;
-                true
-            }
-            None => false,
-        };
-        Ok(NearAiWalletLoginResult { active })
+        Ok(NearAiWalletLoginResult {
+            active: self.reload.is_some(),
+        })
     }
 }
 
@@ -1391,17 +1426,72 @@ fn sanitize_origin(raw: &str) -> Option<String> {
 pub async fn apply_nearai_login(
     session: &ironclaw_llm::SessionManager,
     boot: &RebornBootConfig,
-    reload: &dyn LlmReloadTrigger,
+    live: &Arc<LiveLlmDefault>,
     token: &str,
 ) -> Result<(), String> {
     session
         .save_session_for_renewer(token, Some("nearai"))
         .await
         .map_err(|error| error.to_string())?;
-    RebornProviderAdmin::new(boot.clone())
-        .set_provider("nearai", None)
-        .map_err(|error| format!("set nearai active: {error}"))?;
-    reload.reload().await
+    activate_selection(
+        Some(live),
+        RebornProviderAdmin::new(boot.clone()),
+        "nearai".to_string(),
+        None,
+    )
+    .await
+    .map_err(|error| format!("make nearai active: {error:?}"))
+}
+
+/// Make `provider_id` (and `model`, else its catalog default) the active
+/// selection. With the running server's live-LLM owner this is one
+/// transaction under its lock ([`LiveLlmDefault::write_and_apply`]): write,
+/// apply, and on refusal the conditional rollback, never interleaved with
+/// another selection writer, a SIGHUP reload or the boot apply. Without one
+/// (cold boot) only the file is written; it applies on restart. Every
+/// running-server writer of the selection — Settings saves and the login
+/// completions — goes through here.
+async fn activate_selection(
+    live: Option<&Arc<LiveLlmDefault>>,
+    admin: RebornProviderAdmin,
+    provider_id: String,
+    model: Option<String>,
+) -> Result<(), LlmConfigServiceError> {
+    let Some(live) = live else {
+        return tokio::task::spawn_blocking(move || {
+            admin
+                .set_provider(&provider_id, model.as_deref())
+                .map(|_| ())
+        })
+        .await
+        .map_err(|_| LlmConfigServiceError::Unavailable)?
+        .map_err(map_admin_error);
+    };
+    let id = provider_id.clone();
+    match live
+        .write_and_apply(move || {
+            admin
+                .set_provider_recorded(&provider_id, model.as_deref())
+                .map(|(_outcome, write)| ((), write))
+        })
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(SelectionWriteError::Write(error)) => Err(map_admin_error(error)),
+        Err(SelectionWriteError::Interrupted { cause }) => {
+            tracing::debug!(provider_id = %id, %cause, "LLM selection transaction did not run to completion");
+            Err(LlmConfigServiceError::Unavailable)
+        }
+        Err(SelectionWriteError::NotApplied { reason, config }) => {
+            tracing::debug!(
+                provider_id = %id,
+                %reason,
+                ?config,
+                "LLM selection could not be applied to the running provider"
+            );
+            Err(LlmConfigServiceError::NotApplied { config })
+        }
+    }
 }
 
 /// Parse a wire adapter name (e.g. `open_ai_completions`) into a protocol.

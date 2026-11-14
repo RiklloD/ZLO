@@ -37,6 +37,9 @@ const LOG_TAIL_LINES: usize = 2000;
 const MANIFEST_MAX_BYTES: u64 = 1024 * 1024;
 /// Bound on how many extension directories are listed.
 const MAX_EXTENSIONS: usize = 256;
+/// Length of the build commit written to `system.json`; below the scrubber's
+/// 32-hex secret shape.
+const SHORT_COMMIT_LEN: usize = 12;
 
 pub(crate) struct BundleOptions {
     pub(crate) out: PathBuf,
@@ -50,6 +53,9 @@ pub(crate) struct BundleReport {
     /// Why the list of known secret values may be incomplete; empty when
     /// every source of known values was readable.
     pub(crate) degraded: Vec<String>,
+    /// A known secret is too short to redact safely, so every log tail was
+    /// left out of the bundle.
+    pub(crate) logs_withheld_for_short_secret: bool,
 }
 
 /// Process-level facts the bundle reads, injectable so tests stay hermetic
@@ -92,13 +98,15 @@ pub(crate) fn write_bundle_with(
             out.display()
         );
     }
-    let (entries, degraded) = collect_entries(context, inputs, options.include_logs)?;
+    let (entries, degraded, logs_withheld_for_short_secret) =
+        collect_entries(context, inputs, options.include_logs)?;
     let bytes = encode_zip(&entries)?;
     crate::file_write::write_atomic_bytes(&out, &bytes, options.force, "diagnostics bundle")?;
     Ok(BundleReport {
         out,
         entries: entries.into_iter().map(|(name, _)| name).collect(),
         degraded,
+        logs_withheld_for_short_secret,
     })
 }
 
@@ -108,7 +116,7 @@ fn collect_entries(
     context: &RebornCliContext,
     inputs: &BundleInputs<'_>,
     include_logs: bool,
-) -> anyhow::Result<(Vec<Entry>, Vec<String>)> {
+) -> anyhow::Result<(Vec<Entry>, Vec<String>, bool)> {
     let home = context.boot_config().home();
     let profile = context.boot_config().profile();
     let config_list = crate::commands::config::config_list_dto(context);
@@ -124,6 +132,15 @@ fn collect_entries(
     );
     let scrubber = redact::Scrubber::new(known.values);
     let degraded = known.degraded;
+    let excluded_names = known.excluded_names;
+    // A known secret under 4 characters cannot be redacted without
+    // destroying unrelated text, and the final check could not tell it from
+    // ordinary text either: leave every log tail out instead.
+    let withhold_logs = scrubber.has_unredactable_secret();
+    let mut redaction_reasons = degraded.clone();
+    if withhold_logs {
+        redaction_reasons.push(SHORT_SECRET_REASON.to_string());
+    }
 
     let mut entries: Vec<(String, Value)> = Vec::new();
 
@@ -185,9 +202,12 @@ fn collect_entries(
 
     let mut logs = Vec::new();
     let mut log_notes = Vec::new();
-    if include_logs {
+    if include_logs && withhold_logs {
+        log_notes.push(format!("logs withheld: {SHORT_SECRET_REASON}"));
+    } else if include_logs {
+        let forms = scrubber.forms();
         for path in log_files(home.path()) {
-            match tail_log(&path, scrubber.forms())? {
+            match tail_log(&path, &forms)? {
                 Some(text) => {
                     let name = path
                         .file_name()
@@ -210,8 +230,9 @@ fn collect_entries(
         "entries": names,
         "logs": log_notes,
         "redaction_inputs": {
-            "degraded": !degraded.is_empty(),
-            "reasons": degraded,
+            "degraded": !redaction_reasons.is_empty(),
+            "reasons": redaction_reasons,
+            "setting_names": excluded_names,
         },
         "redaction": "Values this machine knows are secret (WebUI token, the local secrets \
                       master key, env vars named by config.toml, the built-in provider \
@@ -250,8 +271,13 @@ fn collect_entries(
              (possibly in an encoding the scrubber does not undo){hint}"
         );
     }
-    Ok((out, degraded))
+    Ok((out, degraded, withhold_logs))
 }
+
+/// Recorded in `manifest.json` (and shown by `doctor`) when a known secret
+/// is too short to redact, so the log tails were left out.
+const SHORT_SECRET_REASON: &str = "a known secret value is shorter than 4 characters and cannot be \
+     redacted safely; log tails were left out of this bundle";
 
 /// Env vars whose values are credentials by default, whatever config says.
 const DEFAULT_SECRET_ENV_NAMES: &[&str] = &[
@@ -267,6 +293,9 @@ struct KnownSecrets {
     values: Vec<String>,
     /// Sources that could not be read, so `values` may be incomplete.
     degraded: Vec<String>,
+    /// Credential-like env var / config key names left out of `values`
+    /// because they name a setting ([`is_setting_name`]); names only, sorted.
+    excluded_names: Vec<String>,
 }
 
 /// Values on this machine that are secret by construction, collected only to
@@ -285,6 +314,7 @@ fn known_secret_values(
     let home = context.boot_config().home();
     let mut values = Vec::new();
     let mut degraded = Vec::new();
+    let mut excluded_names = Vec::new();
 
     match crate::webui_token::login_link(home) {
         Ok(Some(link)) => {
@@ -344,7 +374,7 @@ fn known_secret_values(
     }
     match read_bounded_regular_file(&home.config_file_path()) {
         Ok(Some(text)) => {
-            if !scan_raw_config(&text, &mut env_names, &mut values) {
+            if !scan_raw_config(&text, &mut env_names, &mut values, &mut excluded_names) {
                 degraded.push("config.toml is not valid TOML; scanned it line by line".to_string());
             }
         }
@@ -355,22 +385,102 @@ fn known_secret_values(
     for (name, value) in env {
         let credential_named = redact::is_sensitive_key(name)
             || (name.to_ascii_uppercase().ends_with("_URL") && value.contains('@'));
-        if credential_named || env_names.iter().any(|known| known == name) {
+        let configured = env_names.iter().any(|known| known == name);
+        if configured {
+            // Named by config/the catalog as a credential source: always a
+            // secret, whatever the name looks like.
             values.push(value.clone());
+        } else if credential_named {
+            if is_setting_name(name) {
+                excluded_names.push(name.clone());
+            } else {
+                values.push(value.clone());
+            }
         }
     }
-    KnownSecrets { values, degraded }
+    // A known URL's userinfo password is a secret on its own: a log can
+    // quote it outside that exact URL.
+    let passwords: Vec<String> = values
+        .iter()
+        .flat_map(|value| url_userinfo_passwords(value))
+        .collect();
+    // Always kept, however short or plain: a URL password is a secret.
+    // (Empty values are dropped by the scrubber itself.)
+    values.extend(passwords);
+    excluded_names.sort();
+    excluded_names.dedup();
+    KnownSecrets {
+        values,
+        degraded,
+        excluded_names,
+    }
+}
+
+/// Last name segments that make a credential-like name a *setting* about
+/// the credential rather than the credential itself (`AUTH_ENABLED=1`,
+/// `ACME_TOKEN_TTL=3600`).
+const SETTING_NAME_SUFFIXES: &[&str] = &[
+    "enabled", "disabled", "enable", "mode", "count", "port", "timeout", "level", "ttl", "retries",
+];
+
+/// A credential-like env var or config key whose last segment (split on
+/// `_`, `.` or `-`) is a flag/count word names a setting: its value is not
+/// a secret. Decided by the name alone — under any other credential-like
+/// name the value is kept whatever it looks like, so `DEVICE_PIN=123456`
+/// and `SOME_AUTH=1` stay known secrets. A URL's userinfo password is never
+/// exempt.
+fn is_setting_name(name: &str) -> bool {
+    name.rsplit(['_', '.', '-']).next().is_some_and(|last| {
+        SETTING_NAME_SUFFIXES
+            .iter()
+            .any(|suffix| last.eq_ignore_ascii_case(suffix))
+    })
+}
+
+/// The password of a `scheme://user:password@host…` value, as written and
+/// percent-decoded (when that differs and is valid UTF-8). Empty when the
+/// value carries no userinfo password.
+fn url_userinfo_passwords(value: &str) -> Vec<String> {
+    let Some((_, rest)) = value.split_once("://") else {
+        return Vec::new();
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let Some((userinfo, _host)) = authority.rsplit_once('@') else {
+        return Vec::new();
+    };
+    let Some((_user, password)) = userinfo.split_once(':') else {
+        return Vec::new();
+    };
+    if password.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![password.to_string()];
+    if let Some(decoded) = encodings::percent_decode_utf8(password)
+        && decoded != password
+    {
+        out.push(decoded);
+    }
+    out
 }
 
 /// Collect `*_env`/`*_var` names and credential-keyed values from raw
 /// `config.toml` text. Returns `false` when the text is not valid TOML (it is
 /// then scanned line by line instead).
-fn scan_raw_config(text: &str, env_names: &mut Vec<String>, values: &mut Vec<String>) -> bool {
+fn scan_raw_config(
+    text: &str,
+    env_names: &mut Vec<String>,
+    values: &mut Vec<String>,
+    excluded_names: &mut Vec<String>,
+) -> bool {
     let mut classify = |key: &str, value: &str| {
         if key.ends_with("_env") || key.ends_with("_var") {
             env_names.push(value.to_string());
         } else if redact::is_sensitive_key(key) {
-            values.push(value.to_string());
+            if is_setting_name(key) {
+                excluded_names.push(key.to_string());
+            } else {
+                values.push(value.to_string());
+            }
         }
     };
     match toml::from_str::<toml::Table>(text) {
@@ -437,8 +547,16 @@ fn system_json(
             "unsupported (startup refuses this backend)"
         }
     };
+    // The short SHA: a full 40-hex commit matches the scrubber's long-hex
+    // secret shape (>= 32 hex chars) and would be written as `[REDACTED]`.
+    // `current_build` only yields full ASCII-hex hashes, so the byte slice is
+    // on a char boundary.
+    let commit = build
+        .commit
+        .as_deref()
+        .map(|commit| commit.get(..SHORT_COMMIT_LEN).unwrap_or(commit));
     json!({
-        "zlo": { "version": build.version, "commit": build.commit },
+        "zlo": { "version": build.version, "commit": commit },
         "platform": {
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,

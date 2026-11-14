@@ -74,6 +74,17 @@ These are recorded so they are not rediscovered as bugs. See PROPOSAL §6.4.14.
   8 in `onboarding/device_key.rs` carry 0700-permission logic the mount plane
   cannot express yet, so adoption is two decisions, not one conversion. Do
   not add new raw-filesystem call sites.
+  **Where** that state lives is no longer a gap (2026-11-13): every
+  default-path helper resolves its base through `location::base_dir()`, and
+  the `zlo` binary calls `location::set_base_dir(<ZLO_HOME>)` when it resolves
+  its context (`crates/app/ironclaw_cli/src/context.rs`), so a ZLO process
+  keeps `trace_contributions/` inside its home instead of `~/.ironclaw`
+  (smoke: `traces_state_is_written_under_zlo_home_not_the_user_home`).
+  Re-verify with `rg -n "ironclaw_base_dir" crates/domains/ironclaw_trace_commons/src`
+  — the only hit should be the fallback in `location.rs`. An existing
+  `~/.ironclaw/trace_contributions` is not migrated: `home.rs` moves only the
+  pre-ZLO `~/.ironclaw/reborn` folder, so a prior Trace Commons enrollment
+  must be redone from the ZLO home.
 
 Two former entries here are **discharged** (verified 2026-08-05, WS12 F3a) and
 struck rather than left to be re-attempted:

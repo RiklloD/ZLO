@@ -140,7 +140,13 @@ impl Command {
             Self::Status(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
-            Self::Traces(command) => command.execute(),
+            Self::Traces(command) => {
+                // Resolving the context binds Trace Commons' local state to
+                // the ZLO home, so these commands read and write the same
+                // folder `serve` does.
+                let _context = crate::context::RebornCliContext::resolve_from_env()?;
+                command.execute()
+            }
             Self::Transfer(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }

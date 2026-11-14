@@ -247,7 +247,7 @@ impl OperatorMetrics {
                     let reason = event
                         .error_kind
                         .as_deref()
-                        .map(label_value)
+                        .map(capability_failure_reason)
                         .unwrap_or_else(|| UNKNOWN_LABEL_VALUE.to_string());
                     state.capability_failures.increment(
                         &mut state.overflow,
@@ -641,5 +641,16 @@ fn escape_label_value(value: &str) -> String {
         .replace('\n', "\\n")
 }
 
+/// The `reason` label of a capability failure: the sanitized `error_kind`,
+/// except that `input_encode` — the host's tag for a call whose arguments did
+/// not validate against the capability's schema (or could not be encoded for
+/// it) — is exported as `invalid_input`, the name the model-visible failure
+/// detail and the operator documentation use for the same thing.
+fn capability_failure_reason(error_kind: &str) -> String {
+    match error_kind {
+        "input_encode" => "invalid_input".to_string(),
+        other => label_value(other),
+    }
+}
 #[cfg(test)]
 mod tests;

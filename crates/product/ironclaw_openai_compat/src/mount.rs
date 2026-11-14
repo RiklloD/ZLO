@@ -210,7 +210,10 @@ fn map_llm_config_error_to_openai(error: LlmConfigServiceError) -> OpenAiCompatH
             OpenAiCompatErrorKind::ServiceUnavailable,
             None,
         ),
-        LlmConfigServiceError::Internal => OpenAiCompatHttpError::internal(),
+        // `NotApplied` is a save-path outcome these routes never trigger.
+        LlmConfigServiceError::Internal | LlmConfigServiceError::NotApplied { .. } => {
+            OpenAiCompatHttpError::internal()
+        }
     }
 }
 

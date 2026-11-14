@@ -3646,6 +3646,27 @@ fn doctor_bundle_writes_local_zip_without_creating_reborn_home() {
         "doctor --bundle must not create state directories"
     );
 
+    // The build commit identifies the binary in a bug report. A full
+    // 40-hex SHA matches the scrubber's long-hex secret shape, so it must be
+    // emitted in a form that survives redaction (the 12-char short SHA).
+    let mut archive =
+        zip::ZipArchive::new(std::fs::File::open(&bundle).expect("open bundle")).expect("zip");
+    let mut system = String::new();
+    std::io::Read::read_to_string(
+        &mut archive.by_name("system.json").expect("system.json"),
+        &mut system,
+    )
+    .expect("read system.json");
+    let system: serde_json::Value = serde_json::from_str(&system).expect("system.json is json");
+    let expected_commit = option_env!("IRONCLAW_BUILD_COMMIT")
+        .filter(|commit| commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(|commit| serde_json::Value::String(commit[..12].to_string()))
+        .unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        system["zlo"]["commit"], expected_commit,
+        "system.json must carry the unredacted short build commit: {system}"
+    );
+
     let again = run(&[]);
     assert!(!again.status.success(), "existing bundle needs --force");
     assert!(
@@ -3654,6 +3675,242 @@ fn doctor_bundle_writes_local_zip_without_creating_reborn_home() {
         String::from_utf8_lossy(&again.stderr)
     );
     assert!(run(&["--force", "--no-logs"]).status.success());
+}
+
+/// Trace Commons local state lives under the ZLO home like the rest of the
+/// binary's state: `zlo traces opt-out` (a write through the same default-path
+/// helpers `serve`'s turn-end capture and queue worker use) lands in
+/// `ZLO_HOME/trace_contributions`, and nothing is written to `~/.ironclaw`.
+#[test]
+fn traces_state_is_written_under_zlo_home_not_the_user_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let user_home = temp.path().join("user");
+    let zlo_home = temp.path().join("zlo-home");
+    std::fs::create_dir_all(&user_home).expect("user home");
+
+    let output = reborn_command()
+        .args(["traces", "opt-out"])
+        .env("HOME", &user_home)
+        .env("ZLO_HOME", &zlo_home)
+        .env_remove("IRONCLAW_BASE_DIR")
+        .output()
+        .expect("zlo traces opt-out should run");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        zlo_home.join("trace_contributions").is_dir(),
+        "trace state is kept under ZLO_HOME"
+    );
+    assert!(
+        !user_home.join(".ironclaw").exists(),
+        "zlo must not write Trace Commons state to ~/.ironclaw"
+    );
+}
+
+/// Run `zlo doctor --bundle` against a fresh home whose service log holds
+/// `log`, with `env` added to the process environment. Returns the command
+/// output and every archive entry as text.
+fn bundle_with_log_and_env(
+    log: &str,
+    env: &[(&str, String)],
+) -> (
+    std::process::Output,
+    std::collections::BTreeMap<String, String>,
+) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let zlo_home = temp.path().join("zlo-home");
+    let logs = zlo_home.join("logs");
+    std::fs::create_dir_all(&logs).expect("logs dir");
+    std::fs::write(logs.join("serve.stderr.log"), log).expect("seed log");
+    let bundle = temp.path().join("diagnostics.zip");
+    let mut command = reborn_command();
+    command
+        .arg("doctor")
+        .arg("--bundle")
+        .arg(&bundle)
+        .env("HOME", temp.path().join("user"))
+        .env("ZLO_HOME", &zlo_home)
+        .env_remove("DATABASE_URL")
+        .env_remove("IRONCLAW_REBORN_POSTGRES_URL");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let output = command.output().expect("zlo doctor --bundle should run");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut archive =
+        zip::ZipArchive::new(std::fs::File::open(&bundle).expect("open bundle")).expect("zip");
+    let mut entries = std::collections::BTreeMap::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).expect("entry");
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut text).expect("read entry");
+        entries.insert(entry.name().to_string(), text);
+    }
+    (output, entries)
+}
+
+fn assert_bundle_omits(entries: &std::collections::BTreeMap<String, String>, needles: &[&str]) {
+    for (name, text) in entries {
+        for needle in needles {
+            assert!(!text.contains(needle), "{name} leaks {needle:?}:\n{text}");
+        }
+    }
+}
+
+/// Through the real binary: the password inside a known secret URL
+/// (`DATABASE_URL` from the process environment) is itself a known secret —
+/// quoted in a log tail on its own, percent-encoded, or as base64 of
+/// `user:password`, it never reaches the archive.
+#[test]
+fn doctor_bundle_redacts_the_password_of_a_secret_url_from_the_environment() {
+    let password = "Pg9pw+canary/31337";
+    let encoded_password = "Pg9pw%2Bcanary%2F31337";
+    // base64("zlo:Pg9pw+canary/31337"), precomputed (no base64 dev-dep here).
+    let basic = "emxvOlBnOXB3K2NhbmFyeS8zMTMzNw==";
+    let (_output, entries) = bundle_with_log_and_env(
+        &format!(
+            "db rejected credential {password}\nretry with {encoded_password}\n\
+             proxy cred {basic}\nheartbeat ok\n"
+        ),
+        &[(
+            "DATABASE_URL",
+            format!("postgres://zlo:{encoded_password}@db.internal:5432/zlo"),
+        )],
+    );
+    assert_bundle_omits(&entries, &[password, encoded_password, basic, "Pg9pw"]);
+    assert!(
+        entries["logs/serve.stderr.log.tail.txt"].contains("heartbeat ok"),
+        "the log tail is kept"
+    );
+}
+
+/// Short known passwords (4–7 characters) are redacted as whole tokens, in
+/// the same encodings as long ones: a 7-character password raw and in
+/// base64, and a 6-character one that only appears percent-encoded in its
+/// URL (`p%40ss12` = `p@ss12`), in both spellings. The rest of the log —
+/// including words that merely contain one as a substring — survives.
+#[test]
+fn doctor_bundle_redacts_short_url_passwords_as_whole_tokens() {
+    let seven = "Xy7pQ2w";
+    let seven_b64 = "WHk3cFEydw==";
+    let six = "p@ss12";
+    let six_encoded = "p%40ss12";
+    let six_b64 = "cEBzczEy";
+    // base64 / unpadded base64url of `user:Xy7pQ2w:suffix` and of
+    // `pre Xy7pQ2w post data`: the short secret sits inside a larger blob,
+    // so only decoding the blob can find it.
+    let embedded = "dXNlcjpYeTdwUTJ3OnN1ZmZpeA==";
+    let embedded_url = "cHJlIFh5N3BRMncgcG9zdCBkYXRh";
+    // base64 of `zz:p@ss12`.
+    let embedded_six = "eno6cEBzczEy";
+    let (_output, entries) = bundle_with_log_and_env(
+        &format!(
+            "data {embedded}\nsession={embedded_url}\nproxy {embedded_six}\n\
+             auth {seven} failed\nblob {seven_b64}\nretry {six} then {six_encoded}\n\
+             token-blob {six_b64}\nnotXy7pQ2wpart stays\nretry 1 ok\npin 123456 entered\n\
+             heartbeat ok\n"
+        ),
+        &[
+            // A credential-like name ending in a flag/count word names a
+            // setting: its value neither withholds the logs nor is redacted.
+            ("AUTH_ENABLED", "1".to_string()),
+            // Any other credential name keeps its value, however plain: a
+            // 6-digit PIN is redacted as a whole token.
+            ("DEVICE_PIN", "123456".to_string()),
+            (
+                "DATABASE_URL",
+                format!("postgres://zlo:{seven}@db.internal:5432/zlo"),
+            ),
+            (
+                "IRONCLAW_REBORN_POSTGRES_URL",
+                format!("postgres://ops:{six_encoded}@db.internal:5432/zlo"),
+            ),
+        ],
+    );
+    let log = &entries["logs/serve.stderr.log.tail.txt"];
+    for needle in [
+        format!(" {seven} "),
+        format!(" {seven_b64}"),
+        format!(" {six} "),
+        format!(" {six_encoded}"),
+        format!(" {six_b64}"),
+        embedded.to_string(),
+        embedded_url.to_string(),
+        embedded_six.to_string(),
+    ] {
+        assert!(!log.contains(&needle), "log tail leaks {needle:?}:\n{log}");
+    }
+    assert!(log.contains("heartbeat ok"), "{log}");
+    assert!(
+        log.contains("notXy7pQ2wpart stays"),
+        "a value inside a longer word is not a token match:\n{log}"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&entries["manifest.json"]).expect("manifest json");
+    assert_eq!(
+        manifest["redaction_inputs"]["degraded"], false,
+        "{manifest}"
+    );
+    assert!(
+        log.contains("retry 1 ok"),
+        "AUTH_ENABLED=1 is not redacted:\n{log}"
+    );
+    assert!(!log.contains("123456"), "the PIN is redacted:\n{log}");
+    assert!(
+        manifest["redaction_inputs"]["setting_names"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name == "AUTH_ENABLED")),
+        "the setting name is recorded: {manifest}"
+    );
+}
+
+/// A known secret shorter than 4 characters cannot be redacted safely, so
+/// the bundle leaves every log tail out, records why in the manifest, and
+/// tells the user to rotate it.
+#[test]
+fn doctor_bundle_withholds_logs_when_a_known_secret_is_too_short_to_redact() {
+    let (output, entries) = bundle_with_log_and_env(
+        "connected with a1b\nheartbeat ok\n",
+        &[(
+            "DATABASE_URL",
+            "postgres://zlo:a1b@db.internal:5432/zlo".to_string(),
+        )],
+    );
+    assert!(
+        !entries.keys().any(|name| name.starts_with("logs/")),
+        "log tails must be withheld: {:?}",
+        entries.keys()
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&entries["manifest.json"]).expect("manifest json");
+    assert_eq!(manifest["redaction_inputs"]["degraded"], true, "{manifest}");
+    let reasons = manifest["redaction_inputs"]["reasons"].to_string();
+    assert!(reasons.contains("shorter than 4"), "{reasons}");
+    assert_bundle_omits(&entries, &["a1b"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .to_ascii_lowercase()
+            .contains("rotate it to a longer secret")
+            && stdout.contains("log tails were left out"),
+        "the user is warned: {stdout}"
+    );
+    // A plain value under a credential name that is not a setting is a
+    // secret too: `SOME_AUTH=1` withholds the log tails the same way.
+    let (_output, entries) =
+        bundle_with_log_and_env("retry 1 ok\n", &[("SOME_AUTH", "1".to_string())]);
+    assert!(
+        !entries.keys().any(|name| name.starts_with("logs/")),
+        "SOME_AUTH=1 withholds the log tails: {:?}",
+        entries.keys()
+    );
 }
 
 /// Through real CLI dispatch: with only a pre-ZLO `~/.ironclaw/reborn`

@@ -419,7 +419,7 @@ fn cli_model_resolution_error(error: LlmConfigServiceError) -> RebornRuntimeErro
         LlmConfigServiceError::Unavailable => {
             RebornRuntimeError::LlmProvider("model selection is unavailable".to_string())
         }
-        LlmConfigServiceError::Internal => {
+        LlmConfigServiceError::Internal | LlmConfigServiceError::NotApplied { .. } => {
             RebornRuntimeError::LlmProvider("model selection failed".to_string())
         }
     }

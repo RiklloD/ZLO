@@ -696,6 +696,8 @@ pub struct DefaultLlmSlotUpdate {
 pub struct DefaultLlmSlotUpdateSession {
     path: PathBuf,
     doc: toml_edit::DocumentMut,
+    /// The file's text as read under the lock (`None`: it did not exist).
+    original: Option<String>,
     _lock_file: fs::File,
 }
 
@@ -732,15 +734,27 @@ impl DefaultLlmSlotUpdateSession {
         }))
     }
 
-    pub fn apply(
+    pub fn apply(self, update: &DefaultLlmSlotUpdate) -> Result<(), RebornConfigFileUpdateError> {
+        self.apply_recorded(update).map(|_| ())
+    }
+
+    /// [`Self::apply`], returning the text the file held before and the text
+    /// written, both captured while the update lock is held — the exact pair
+    /// a later [`crate::restore_config_text_if_unchanged`] needs.
+    pub fn apply_recorded(
         mut self,
         update: &DefaultLlmSlotUpdate,
-    ) -> Result<(), RebornConfigFileUpdateError> {
+    ) -> Result<crate::ConfigTextWrite, RebornConfigFileUpdateError> {
         apply_llm_slot_field(&mut self.doc, "provider_id", &update.provider_id);
         apply_llm_slot_field(&mut self.doc, "model", &update.model);
         apply_llm_slot_field(&mut self.doc, "api_key_env", &update.api_key_env);
         apply_llm_slot_field(&mut self.doc, "base_url", &update.base_url);
-        write_edit_document(&self.path, &self.doc)
+        write_edit_document(&self.path, &self.doc)?;
+        Ok(crate::ConfigTextWrite {
+            path: self.path.clone(),
+            before: self.original.take(),
+            written: self.doc.to_string(),
+        })
     }
 }
 
@@ -1344,10 +1358,20 @@ pub fn begin_default_llm_slot_update(
     path: &Path,
 ) -> Result<DefaultLlmSlotUpdateSession, RebornConfigFileUpdateError> {
     let lock_file = acquire_update_lock(path)?;
-    let doc = load_edit_document(path)?;
+    let original = crate::read_config_text(path)?;
+    let doc = match original.as_deref() {
+        Some(text) => text.parse::<toml_edit::DocumentMut>().map_err(|source| {
+            RebornConfigFileUpdateError::Parse {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?,
+        None => toml_edit::DocumentMut::new(),
+    };
     Ok(DefaultLlmSlotUpdateSession {
         path: path.to_path_buf(),
         doc,
+        original,
         _lock_file: lock_file,
     })
 }
@@ -1450,7 +1474,15 @@ pub(crate) fn write_edit_document(
             source: Box::new(source),
         }
     })?;
+    write_config_text_atomic(path, &text)
+}
 
+/// Replace `path` with `text` atomically (temp file in the same directory,
+/// then rename). Callers hold the config update lock.
+pub(crate) fn write_config_text_atomic(
+    path: &Path,
+    text: &str,
+) -> Result<(), RebornConfigFileUpdateError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| RebornConfigFileUpdateError::Write {
             path: parent.to_path_buf(),

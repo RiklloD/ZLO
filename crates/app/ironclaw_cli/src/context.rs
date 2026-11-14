@@ -15,6 +15,7 @@ impl RebornCliContext {
         if let Some(notice) = boot_config.home().migration().notice() {
             eprintln!("{notice}");
         }
+        bind_trace_commons_home(&boot_config)?;
         Ok(Self { boot_config })
     }
 
@@ -25,9 +26,9 @@ impl RebornCliContext {
         let home = ironclaw_config::RebornHome::resolve_from_env_without_migrating()?;
         let profile =
             ironclaw_config::RebornProfile::from_env_value(ironclaw_config::profile_env_value())?;
-        Ok(Self {
-            boot_config: RebornBootConfig::new(home, profile),
-        })
+        let boot_config = RebornBootConfig::new(home, profile);
+        bind_trace_commons_home(&boot_config)?;
+        Ok(Self { boot_config })
     }
 
     #[cfg(test)]
@@ -51,4 +52,17 @@ impl RebornCliContext {
     pub(crate) fn boot_config(&self) -> &RebornBootConfig {
         &self.boot_config
     }
+}
+
+/// Keep Trace Commons' local state (`trace_contributions/`) inside the
+/// resolved ZLO home rather than the crate default `~/.ironclaw`, so no
+/// process this binary starts writes outside its home.
+fn bind_trace_commons_home(boot_config: &RebornBootConfig) -> anyhow::Result<()> {
+    let home = boot_config.home().path().to_path_buf();
+    ironclaw_trace_commons::location::set_base_dir(home).map_err(|existing| {
+        anyhow::anyhow!(
+            "Trace Commons state is already bound to {} in this process",
+            existing.display()
+        )
+    })
 }

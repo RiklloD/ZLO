@@ -56,6 +56,13 @@ impl DoctorCommand {
                     println!("  {}", terminal_safe_text(reason));
                 }
             }
+            if report.logs_withheld_for_short_secret {
+                println!(
+                    "Warning: a known secret value (a password, token or key this machine \
+                     uses) is shorter than 4 characters, too short to redact safely, so the \
+                     log tails were left out. Rotate it to a longer secret."
+                );
+            }
             println!("Review it before sharing; nothing was uploaded.");
             return Ok(());
         }

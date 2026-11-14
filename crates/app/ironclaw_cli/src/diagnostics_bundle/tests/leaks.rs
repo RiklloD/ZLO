@@ -332,6 +332,42 @@ fn broken_config_degrades_visibly_and_still_knows_env_secrets() {
     );
 }
 
+/// A known secret that is a URL (`DATABASE_URL`) carries its password in the
+/// userinfo. The password is a secret on its own: a log that quotes it
+/// outside that URL (raw, percent-encoded, or base64 of `user:password`
+/// after an unrecognized scheme word) must not leak it, and the final check
+/// must know it too.
+#[test]
+fn password_inside_a_known_secret_url_is_itself_a_known_secret() {
+    let (_tmp, context) = RebornCliContext::test_context();
+    let home = context.boot_config().home().path().to_path_buf();
+    let password = "Pg9pw+canary/31337";
+    let encoded_password = "Pg9pw%2Bcanary%2F31337";
+    let url = format!("postgres://zlo:{encoded_password}@db.internal:5432/zlo");
+    write(
+        &home.join("logs").join("serve.stderr.log"),
+        &format!(
+            "db rejected credential {password}\nretry with {encoded_password}\n\
+             proxy cred {}\nheartbeat ok\n",
+            b64(&format!("zlo:{password}"), false)
+        ),
+    );
+    let env = env(&[("DATABASE_URL", url.as_str())]);
+    let (_out_dir, out, result) = run_bundle(&context, &env, true);
+    result.expect("bundle writes");
+    let entries = read_bundle(&out);
+    assert_no_leaks(
+        &entries,
+        &[
+            password.to_string(),
+            encoded_password.to_string(),
+            b64(&format!("zlo:{password}"), false),
+        ],
+    );
+    let log = String::from_utf8_lossy(&entries["logs/serve.stderr.log.tail.txt"]).into_owned();
+    assert!(log.contains("heartbeat ok"), "{log}");
+}
+
 #[test]
 fn system_json_reports_the_real_storage_kind() {
     let (_tmp, context) = RebornCliContext::test_context();
@@ -344,4 +380,104 @@ fn system_json_reports_the_real_storage_kind() {
     result.expect("bundle writes");
     let system: Value = serde_json::from_slice(&read_bundle(&out)["system.json"]).expect("system");
     assert_eq!(system["storage"]["effective_kind"], "postgres", "{system}");
+}
+
+#[test]
+fn credential_names_ending_in_a_flag_or_count_word_are_settings() {
+    for name in [
+        "AUTH_ENABLED",
+        "acme_token_ttl",
+        "PASSWORD_RETRIES",
+        "auth.mode",
+        "OTP_TIMEOUT",
+        "SECRET_LEVEL",
+        "TOKEN_COUNT",
+        "AUTH_PORT",
+        "AUTH_ENABLE",
+        "TOKEN_DISABLED",
+    ] {
+        assert!(is_setting_name(name), "{name} names a setting");
+    }
+    for name in [
+        "SOME_AUTH",
+        "DEVICE_PIN",
+        "OTP_SECRET",
+        "ACME_API_KEY",
+        "ENABLED_TOKEN",
+        "AUTH_MODES",
+    ] {
+        assert!(!is_setting_name(name), "{name} names a secret");
+    }
+}
+
+/// A credential-like name whose last segment is a flag/count word names a
+/// setting, not a secret: its value neither withholds the logs nor is
+/// redacted, and the manifest lists the name (never the value). Every other
+/// credential-named value is kept whatever it looks like: a 6-digit PIN is
+/// redacted as a whole token.
+#[test]
+fn settings_under_credential_names_are_not_known_secrets_but_numeric_secrets_are() {
+    let (_tmp, context) = RebornCliContext::test_context();
+    let home = context.boot_config().home().path().to_path_buf();
+    write(
+        &home.join("logs").join("serve.stderr.log"),
+        "auth flag 1 seen\nttl 3600 set\npin 123456 entered\nkey Xy7pQ2w used\nheartbeat ok\n",
+    );
+    let env = env(&[
+        ("AUTH_ENABLED", "1"),
+        ("ACME_TOKEN_TTL", "3600"),
+        ("DEVICE_PIN", "123456"),
+        ("ACME_API_KEY", "Xy7pQ2w"),
+    ]);
+    let (_out_dir, out, result) = run_bundle(&context, &env, true);
+    let report = result.expect("bundle writes");
+    assert!(!report.logs_withheld_for_short_secret);
+    let entries = read_bundle(&out);
+    let log = String::from_utf8_lossy(&entries["logs/serve.stderr.log.tail.txt"]).into_owned();
+    assert!(log.contains("auth flag 1 seen"), "{log}");
+    assert!(log.contains("ttl 3600 set"), "{log}");
+    assert!(!log.contains("123456"), "{log}");
+    assert!(!log.contains("Xy7pQ2w"), "{log}");
+    let manifest: Value = serde_json::from_slice(&entries["manifest.json"]).expect("manifest");
+    assert_eq!(
+        manifest["redaction_inputs"]["setting_names"],
+        serde_json::json!(["ACME_TOKEN_TTL", "AUTH_ENABLED"]),
+        "{manifest}"
+    );
+}
+
+/// Under any other credential-like name a value is a secret however plain it
+/// looks: `SOME_AUTH=1` is too short to redact, so the logs are withheld.
+#[test]
+fn a_plain_value_under_a_credential_name_still_withholds_logs() {
+    let (_tmp, context) = RebornCliContext::test_context();
+    let home = context.boot_config().home().path().to_path_buf();
+    write(&home.join("logs").join("serve.stderr.log"), "retry 1 ok\n");
+    let env = env(&[("SOME_AUTH", "1")]);
+    let (_out_dir, out, result) = run_bundle(&context, &env, true);
+    assert!(
+        result
+            .expect("bundle writes")
+            .logs_withheld_for_short_secret
+    );
+    assert!(
+        !read_bundle(&out)
+            .keys()
+            .any(|name| name.starts_with("logs/"))
+    );
+}
+
+/// The exclusion never applies to a URL's userinfo password: a 3-character
+/// one still withholds the logs, even when it is a plain word or number.
+#[test]
+fn a_plain_looking_url_password_is_still_a_known_secret() {
+    let (_tmp, context) = RebornCliContext::test_context();
+    let home = context.boot_config().home().path().to_path_buf();
+    write(&home.join("logs").join("serve.stderr.log"), "on 123 ok\n");
+    let env = env(&[("DATABASE_URL", "postgres://zlo:123@db.internal:5432/zlo")]);
+    let (_out_dir, out, result) = run_bundle(&context, &env, true);
+    let report = result.expect("bundle writes");
+    assert!(report.logs_withheld_for_short_secret);
+    let entries = read_bundle(&out);
+    assert!(!entries.keys().any(|name| name.starts_with("logs/")));
 }

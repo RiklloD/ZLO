@@ -473,13 +473,39 @@ impl HostRuntimeLoopCapabilityPort {
                             host_error.safe_summary,
                             detail,
                         )));
+                        // The model asked for this capability and the request
+                        // failed: publish the same invoked/failed pair a
+                        // dispatch failure does, so activity projections and
+                        // the operator metrics see a failed invocation
+                        // (`input_encode`), not nothing.
+                        let activity_id =
+                            CapabilityActivityId::from_uuid(requested_invocation_id.as_uuid());
+                        Box::pin(self.emit_capability_milestone(
+                            LoopHostMilestoneKind::CapabilityInvoked {
+                                activity_id,
+                                capability_id: request.capability_id.clone(),
+                            },
+                        ))
+                        .await?;
+                        let terminal_milestone = LoopHostMilestoneKind::CapabilityFailed {
+                            activity_id,
+                            capability_id: request.capability_id.clone(),
+                            provider: Some(capability.provider.clone()),
+                            runtime: Some(capability.runtime),
+                            reason_kind: FailureKind::InputEncode,
+                            // The model already sees the validation issues in
+                            // the result; the event carries the kind only.
+                            safe_summary: None,
+                        };
                         guard.commit();
-                        self.record_loop_completed(
-                            &idempotency_key,
-                            requested_invocation_id,
-                            result.clone(),
-                        )?;
-                        return result;
+                        return self
+                            .complete_terminal_milestone(
+                                &idempotency_key,
+                                requested_invocation_id,
+                                result,
+                                Some(terminal_milestone),
+                            )
+                            .await;
                     }
                     Err(error) => return Err(*error.error),
                 };

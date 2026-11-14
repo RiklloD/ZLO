@@ -8,8 +8,8 @@
 use std::path::PathBuf;
 
 use ironclaw_config::{
-    DefaultLlmSlotUpdate, LlmSlotFieldUpdate, LlmSlotSelection, RebornBootConfig, RebornConfigFile,
-    begin_default_llm_slot_update, update_default_llm_slot,
+    ConfigTextWrite, DefaultLlmSlotUpdate, LlmSlotFieldUpdate, LlmSlotSelection, RebornBootConfig,
+    RebornConfigFile, begin_default_llm_slot_update,
 };
 use ironclaw_product_contracts::operator_llm::{
     DetectedEnvLlm, EXAMPLE_OVERLAY_PROVIDER_ID, LlmProbeRequest, ProviderMenuEntry,
@@ -251,6 +251,18 @@ impl RebornProviderAdmin {
         provider: &str,
         model: Option<&str>,
     ) -> Result<RebornProviderWriteOutcome, RebornProviderAdminError> {
+        self.set_provider_recorded(provider, model)
+            .map(|(outcome, _write)| outcome)
+    }
+
+    /// [`Self::set_provider`], also returning the `config.toml` text the
+    /// write replaced and wrote (captured under the config update lock), so a
+    /// caller that then fails to apply the selection can put it back.
+    pub fn set_provider_recorded(
+        &self,
+        provider: &str,
+        model: Option<&str>,
+    ) -> Result<(RebornProviderWriteOutcome, ConfigTextWrite), RebornProviderAdminError> {
         let provider = provider.trim();
         if provider.is_empty() {
             return Err(RebornProviderAdminError::InvalidRequest {
@@ -274,35 +286,56 @@ impl RebornProviderAdmin {
             .filter(|model| !model.is_empty())
             .unwrap_or(&def.default_model);
 
-        update_default_llm_slot(
-            &config_path,
-            &DefaultLlmSlotUpdate {
-                provider_id: LlmSlotFieldUpdate::Set(def.id.clone()),
-                model: LlmSlotFieldUpdate::Set(model.to_string()),
-                api_key_env: def
-                    .api_key_env
+        let update_error = |source| RebornProviderAdminError::UpdateConfig {
+            path: config_path.clone(),
+            source: Box::new(source),
+        };
+        let session = begin_default_llm_slot_update(&config_path).map_err(update_error)?;
+        // Re-selecting the provider the slot already names (a model change)
+        // keeps the operator's slot overrides — a hand-set `base_url` or
+        // `api_key_env` may be the only thing pointing it at its endpoint or
+        // key. Switching provider resets them to the new provider's catalog
+        // defaults: another provider's endpoint and key name never carry over.
+        let same_provider = session
+            .default_llm_slot()
+            .map_err(update_error)?
+            .and_then(|slot| slot.provider_id)
+            .and_then(|current| registry.find(&current).map(|current| current.id.clone()))
+            .is_some_and(|current| current == def.id);
+        let (api_key_env, base_url) = if same_provider {
+            (LlmSlotFieldUpdate::Keep, LlmSlotFieldUpdate::Keep)
+        } else {
+            (
+                def.api_key_env
                     .clone()
                     .map(LlmSlotFieldUpdate::Set)
                     .unwrap_or(LlmSlotFieldUpdate::Remove),
-                base_url: LlmSlotFieldUpdate::Remove,
-            },
-        )
-        .map_err(|source| RebornProviderAdminError::UpdateConfig {
-            path: config_path.clone(),
-            source: Box::new(source),
-        })?;
+                LlmSlotFieldUpdate::Remove,
+            )
+        };
+        let write = session
+            .apply_recorded(&DefaultLlmSlotUpdate {
+                provider_id: LlmSlotFieldUpdate::Set(def.id.clone()),
+                model: LlmSlotFieldUpdate::Set(model.to_string()),
+                api_key_env,
+                base_url,
+            })
+            .map_err(update_error)?;
 
-        Ok(RebornProviderWriteOutcome {
-            provider_id: def.id.clone(),
-            model: model.to_string(),
-            api_key_env: def.api_key_env.clone(),
-            api_key_required: def.api_key_required,
-            missing_api_key: def.api_key_env.as_deref().is_some_and(|api_key_env| {
-                def.api_key_required && std::env::var_os(api_key_env).is_none()
-            }),
-            config_file: config_path,
-            v1_state: RebornV1State::NotUsed,
-        })
+        Ok((
+            RebornProviderWriteOutcome {
+                provider_id: def.id.clone(),
+                model: model.to_string(),
+                api_key_env: def.api_key_env.clone(),
+                api_key_required: def.api_key_required,
+                missing_api_key: def.api_key_env.as_deref().is_some_and(|api_key_env| {
+                    def.api_key_required && std::env::var_os(api_key_env).is_none()
+                }),
+                config_file: config_path,
+                v1_state: RebornV1State::NotUsed,
+            },
+            write,
+        ))
     }
 
     /// Providers offered on the interactive `onboard` numbered menu, in

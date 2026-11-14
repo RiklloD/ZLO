@@ -1812,7 +1812,7 @@ pub(super) async fn assemble_runtime(
 
     // Apply the effective LLM config (config.toml/env selection + any stored
     // key) to the placeholder gateway exactly once, via the same live-reload
-    // path the settings UI uses (see `webui_llm_reload_trigger`). Failure
+    // path the settings UI uses (the shared `live_llm_default`). Failure
     // degrades like a boot with no LLM configured: placeholder stays wired,
     // operator retries through Settings -> Inference without a restart.
     // Through the shared live seam, so the slot it applies is the baseline a

@@ -152,7 +152,7 @@ pub async fn mint_account_login_link_via_sink(
     // Typed at the public boundary so callers can't transpose tenant/user;
     // stringify only when handing off to the dir-parameterised core.
     mint_account_login_link_inner(
-        ironclaw_common::paths::ironclaw_base_dir().as_path(),
+        crate::location::base_dir().as_path(),
         tenant_id.as_str(),
         user_id.as_str(),
         sink,
@@ -177,7 +177,7 @@ pub async fn mint_account_login_link(
     // Typed at the public boundary so callers can't transpose tenant/user;
     // stringify only when handing off to the dir-parameterised core.
     mint_account_login_link_direct(
-        ironclaw_common::paths::ironclaw_base_dir().as_path(),
+        crate::location::base_dir().as_path(),
         tenant_id.as_str(),
         user_id.as_str(),
     )
@@ -365,7 +365,7 @@ pub async fn fetch_account_traces_via_sink(
     sink: &dyn ContributionHttpSink,
 ) -> anyhow::Result<Vec<AccountTraceItem>> {
     fetch_account_traces_inner(
-        ironclaw_common::paths::ironclaw_base_dir().as_path(),
+        crate::location::base_dir().as_path(),
         tenant_id,
         user_id,
         limit,
@@ -396,7 +396,7 @@ pub async fn fetch_account_traces(
     limit: Option<usize>,
 ) -> anyhow::Result<Vec<AccountTraceItem>> {
     fetch_account_traces_direct(
-        ironclaw_common::paths::ironclaw_base_dir().as_path(),
+        crate::location::base_dir().as_path(),
         tenant_id,
         user_id,
         limit,

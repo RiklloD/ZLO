@@ -1099,10 +1099,14 @@ fn inbound_model_resolution_failure(error: LlmConfigServiceError) -> ProductSurf
             reason: "model selection is temporarily unavailable".into(),
             retryable: true,
         },
-        LlmConfigServiceError::Internal => ProductSurfaceFailure::InboundModelResolutionFailed {
-            reason: "model selection failed".into(),
-            retryable: true,
-        },
+        // `NotApplied` is a save-path outcome; model resolution never yields
+        // it, so it is grouped with the backend fault it would indicate.
+        LlmConfigServiceError::Internal | LlmConfigServiceError::NotApplied { .. } => {
+            ProductSurfaceFailure::InboundModelResolutionFailed {
+                reason: "model selection failed".into(),
+                retryable: true,
+            }
+        }
     }
 }
 
