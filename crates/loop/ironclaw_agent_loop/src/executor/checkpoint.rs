@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use ironclaw_host_api::turn::LoopGateRef;
 use ironclaw_loop_contracts::{
     AgentLoopHostError, AgentLoopHostErrorKind, CheckpointSchemaId, LoopCancellationSignal,
@@ -72,34 +74,38 @@ impl CheckpointStage {
     /// The other `BeforeModel` writers (input drain, compaction, model-retry
     /// recovery) call [`write`] directly and stay unbatched: each persists
     /// consumed one-shot budget that a replay must not re-grant.
-    pub(super) async fn write_before_model_batched(
+    // Stack depth: returns a heap future (see `ExecutorStage` docs in
+    // `executor/pipeline.rs`). Unboxed: 10.8 KB; 2 slots in `DefaultExecutorPipeline::execute`.
+    pub(super) fn write_before_model_batched(
         &self,
         ctx: StageContext<'_>,
         state: LoopExecutionState,
-    ) -> Result<LoopExecutionState, AgentLoopExecutorError> {
-        let policy = &ctx
-            .host
-            .run_context()
-            .resolved_run_profile
-            .checkpoint_policy;
-        // Fail-closed on the first iteration too: no previous checkpoint means
-        // nothing to fall back to, so it always flushes.
-        let previous_is_resumable = state
-            .last_checkpoint
-            .as_ref()
-            .is_some_and(|marker| !marker.kind.replays_side_effect());
-        if previous_is_resumable && !policy.flushes_before_model_at(state.iteration) {
-            tracing::debug!(
-                iteration = state.iteration,
-                interval = policy.before_model_flush_interval(),
-                "skipping batched BeforeModel checkpoint between flush points"
-            );
-            return Ok(state);
-        }
-        Ok(self
-            .write(ctx, state, CheckpointKind::BeforeModel)
-            .await?
-            .state)
+    ) -> Pin<Box<impl Future<Output = Result<LoopExecutionState, AgentLoopExecutorError>>>> {
+        Box::pin(async move {
+            let policy = &ctx
+                .host
+                .run_context()
+                .resolved_run_profile
+                .checkpoint_policy;
+            // Fail-closed on the first iteration too: no previous checkpoint means
+            // nothing to fall back to, so it always flushes.
+            let previous_is_resumable = state
+                .last_checkpoint
+                .as_ref()
+                .is_some_and(|marker| !marker.kind.replays_side_effect());
+            if previous_is_resumable && !policy.flushes_before_model_at(state.iteration) {
+                tracing::debug!(
+                    iteration = state.iteration,
+                    interval = policy.before_model_flush_interval(),
+                    "skipping batched BeforeModel checkpoint between flush points"
+                );
+                return Ok(state);
+            }
+            Ok(self
+                .write(ctx, state, CheckpointKind::BeforeModel)
+                .await?
+                .state)
+        })
     }
 
     /// Variant of [`write`] for `BeforeBlock` checkpoints. Stores the
@@ -217,7 +223,11 @@ impl CheckpointStage {
         let Some(signal) = ctx.host.observe_cancellation() else {
             return Ok(CancelCheck::Continue(Box::new(state)));
         };
-        self.cancel_on_signal(ctx, state, signal)
+        // Stack depth: this check sits at every cancellation boundary (16 call
+        // sites in `ModelStage::process` alone). Boxing only the rare cancel
+        // path shrinks its future from 15.1 KB to ~2 KB without allocating on
+        // the common path; see `ExecutorStage` docs in `executor/pipeline.rs`.
+        Box::pin(self.cancel_on_signal(ctx, state, signal))
             .await
             .map(CancelCheck::Exit)
     }

@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use ironclaw_loop_contracts::{CapabilityCallCandidate, LoopFailureKind};
 
 use super::capabilities::{CapabilityStage, OutcomeStep};
@@ -59,38 +61,43 @@ impl CapabilityStage {
     /// Every launched call gets a model-visible "stopped" result so the
     /// transcript keeps each provider tool call paired for the next turn,
     /// then the run exits cancelled through the normal Final checkpoint.
-    pub(super) async fn stopped_mid_batch(
+    // Stack depth: returns a heap future (see `ExecutorStage` docs in
+    // `executor/pipeline.rs`). Unboxed: 13.3 KB; 2 slots in `CapabilityStage::process`.
+    pub(super) fn stopped_mid_batch(
         &self,
         ctx: StageContext<'_>,
         mut state: LoopExecutionState,
         calls: &[CapabilityCallCandidate],
-    ) -> Result<TurnCompletedStep, AgentLoopExecutorError> {
-        // Count the whole window as launched: we cannot know how far the
-        // dropped batch got, and over-counting is the fail-safe direction.
-        if !state
-            .budget_ledger
-            .settle_invocation_reservation(calls.len(), calls.len())
-        {
-            return Err(AgentLoopExecutorError::PlannerContract {
-                detail: "stopped capability batch cannot settle its budget reservation",
-            });
-        }
-        for call in calls {
-            append_capability_safe_summary_ref(
+    ) -> Pin<Box<impl Future<Output = Result<TurnCompletedStep, AgentLoopExecutorError>>>> {
+        Box::pin(async move {
+            // Count the whole window as launched: we cannot know how far the
+            // dropped batch got, and over-counting is the fail-safe direction.
+            if !state
+                .budget_ledger
+                .settle_invocation_reservation(calls.len(), calls.len())
+            {
+                return Err(AgentLoopExecutorError::PlannerContract {
+                    detail: "stopped capability batch cannot settle its budget reservation",
+                });
+            }
+            for call in calls {
+                append_capability_safe_summary_ref(
+                    ctx.host,
+                    &mut state,
+                    call,
+                    "capability stopped by the user before it finished".to_string(),
+                )
+                .await?;
+            }
+            let exit = cancelled_exit_with_reason(
                 ctx.host,
-                &mut state,
-                call,
-                "capability stopped by the user before it finished".to_string(),
-            )
-            .await?;
-        }
-        let exit = cancelled_exit_with_reason(
-            ctx.host,
-            state.clone(),
-            ironclaw_loop_contracts::LoopCancelledReasonKind::HostCancellation,
-            None,
-        )?;
-        finish_selected_parallel_terminal(ctx, state, SelectedParallelTerminal::Loop(exit)).await
+                state.clone(),
+                ironclaw_loop_contracts::LoopCancelledReasonKind::HostCancellation,
+                None,
+            )?;
+            finish_selected_parallel_terminal(ctx, state, SelectedParallelTerminal::Loop(exit))
+                .await
+        })
     }
 
     pub(super) fn cancelled_for_batch_drain_with_reason(
