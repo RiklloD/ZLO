@@ -383,37 +383,50 @@ fn system_json_reports_the_real_storage_kind() {
 }
 
 #[test]
-fn obvious_non_secret_values_are_recognized() {
-    for value in [
-        "", "  ", "true", "FALSE", " Yes ", "no", "On", "off", "enabled", "Disabled", "none",
-        "NULL", "0", "1", "3600", "999999",
+fn credential_names_ending_in_a_flag_or_count_word_are_settings() {
+    for name in [
+        "AUTH_ENABLED",
+        "acme_token_ttl",
+        "PASSWORD_RETRIES",
+        "auth.mode",
+        "OTP_TIMEOUT",
+        "SECRET_LEVEL",
+        "TOKEN_COUNT",
+        "AUTH_PORT",
+        "AUTH_ENABLE",
+        "TOKEN_DISABLED",
     ] {
-        assert!(is_obvious_non_secret(value), "{value:?} is not a secret");
+        assert!(is_setting_name(name), "{name} names a setting");
     }
-    for value in ["1234567", "-1", "1.5", "truthy", "abc1", "sk-1", "a1b"] {
-        assert!(
-            !is_obvious_non_secret(value),
-            "{value:?} must stay a secret"
-        );
+    for name in [
+        "SOME_AUTH",
+        "DEVICE_PIN",
+        "OTP_SECRET",
+        "ACME_API_KEY",
+        "ENABLED_TOKEN",
+        "AUTH_MODES",
+    ] {
+        assert!(!is_setting_name(name), "{name} names a secret");
     }
 }
 
-/// Plain toggle and small-number values under credential-like names are not
-/// secrets: they neither withhold the logs nor get redacted as words, and
-/// the manifest names (never values) what was left out. A real short secret
-/// beside them is still redacted.
+/// A credential-like name whose last segment is a flag/count word names a
+/// setting, not a secret: its value neither withholds the logs nor is
+/// redacted, and the manifest lists the name (never the value). Every other
+/// credential-named value is kept whatever it looks like: a 6-digit PIN is
+/// redacted as a whole token.
 #[test]
-fn plain_values_under_credential_names_are_not_known_secrets() {
+fn settings_under_credential_names_are_not_known_secrets_but_numeric_secrets_are() {
     let (_tmp, context) = RebornCliContext::test_context();
     let home = context.boot_config().home().path().to_path_buf();
     write(
         &home.join("logs").join("serve.stderr.log"),
-        "flag true seen\nretries 1 of 3600\nkey Xy7pQ2w used\nheartbeat ok\n",
+        "auth flag 1 seen\nttl 3600 set\npin 123456 entered\nkey Xy7pQ2w used\nheartbeat ok\n",
     );
     let env = env(&[
-        ("SOME_AUTH", "1"),
-        ("ACME_TOKEN_ENABLED", "true"),
+        ("AUTH_ENABLED", "1"),
         ("ACME_TOKEN_TTL", "3600"),
+        ("DEVICE_PIN", "123456"),
         ("ACME_API_KEY", "Xy7pQ2w"),
     ]);
     let (_out_dir, out, result) = run_bundle(&context, &env, true);
@@ -421,18 +434,36 @@ fn plain_values_under_credential_names_are_not_known_secrets() {
     assert!(!report.logs_withheld_for_short_secret);
     let entries = read_bundle(&out);
     let log = String::from_utf8_lossy(&entries["logs/serve.stderr.log.tail.txt"]).into_owned();
-    assert!(log.contains("flag true seen"), "{log}");
-    assert!(log.contains("retries 1 of 3600"), "{log}");
+    assert!(log.contains("auth flag 1 seen"), "{log}");
+    assert!(log.contains("ttl 3600 set"), "{log}");
+    assert!(!log.contains("123456"), "{log}");
     assert!(!log.contains("Xy7pQ2w"), "{log}");
     let manifest: Value = serde_json::from_slice(&entries["manifest.json"]).expect("manifest");
     assert_eq!(
-        manifest["redaction_inputs"]["plain_value_names"],
-        serde_json::json!(["ACME_TOKEN_ENABLED", "ACME_TOKEN_TTL", "SOME_AUTH"]),
+        manifest["redaction_inputs"]["setting_names"],
+        serde_json::json!(["ACME_TOKEN_TTL", "AUTH_ENABLED"]),
         "{manifest}"
     );
-    assert_eq!(
-        manifest["redaction_inputs"]["degraded"], false,
-        "{manifest}"
+}
+
+/// Under any other credential-like name a value is a secret however plain it
+/// looks: `SOME_AUTH=1` is too short to redact, so the logs are withheld.
+#[test]
+fn a_plain_value_under_a_credential_name_still_withholds_logs() {
+    let (_tmp, context) = RebornCliContext::test_context();
+    let home = context.boot_config().home().path().to_path_buf();
+    write(&home.join("logs").join("serve.stderr.log"), "retry 1 ok\n");
+    let env = env(&[("SOME_AUTH", "1")]);
+    let (_out_dir, out, result) = run_bundle(&context, &env, true);
+    assert!(
+        result
+            .expect("bundle writes")
+            .logs_withheld_for_short_secret
+    );
+    assert!(
+        !read_bundle(&out)
+            .keys()
+            .any(|name| name.starts_with("logs/"))
     );
 }
 

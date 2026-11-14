@@ -3806,12 +3806,16 @@ fn doctor_bundle_redacts_short_url_passwords_as_whole_tokens() {
     let (_output, entries) = bundle_with_log_and_env(
         &format!(
             "auth {seven} failed\nblob {seven_b64}\nretry {six} then {six_encoded}\n\
-             token-blob {six_b64}\nnotXy7pQ2wpart stays\nretry 1 ok\nheartbeat ok\n"
+             token-blob {six_b64}\nnotXy7pQ2wpart stays\nretry 1 ok\npin 123456 entered\n\
+             heartbeat ok\n"
         ),
         &[
-            // A plain value under a credential-like name is not a secret:
-            // it must neither withhold the logs nor be redacted as a word.
-            ("SOME_AUTH", "1".to_string()),
+            // A credential-like name ending in a flag/count word names a
+            // setting: its value neither withholds the logs nor is redacted.
+            ("AUTH_ENABLED", "1".to_string()),
+            // Any other credential name keeps its value, however plain: a
+            // 6-digit PIN is redacted as a whole token.
+            ("DEVICE_PIN", "123456".to_string()),
             (
                 "DATABASE_URL",
                 format!("postgres://zlo:{seven}@db.internal:5432/zlo"),
@@ -3845,13 +3849,14 @@ fn doctor_bundle_redacts_short_url_passwords_as_whole_tokens() {
     );
     assert!(
         log.contains("retry 1 ok"),
-        "SOME_AUTH=1 is not redacted:\n{log}"
+        "AUTH_ENABLED=1 is not redacted:\n{log}"
     );
+    assert!(!log.contains("123456"), "the PIN is redacted:\n{log}");
     assert!(
-        manifest["redaction_inputs"]["plain_value_names"]
+        manifest["redaction_inputs"]["setting_names"]
             .as_array()
-            .is_some_and(|names| names.iter().any(|name| name == "SOME_AUTH")),
-        "the excluded name is recorded: {manifest}"
+            .is_some_and(|names| names.iter().any(|name| name == "AUTH_ENABLED")),
+        "the setting name is recorded: {manifest}"
     );
 }
 
@@ -3885,6 +3890,15 @@ fn doctor_bundle_withholds_logs_when_a_known_secret_is_too_short_to_redact() {
             .contains("rotate it to a longer secret")
             && stdout.contains("log tails were left out"),
         "the user is warned: {stdout}"
+    );
+    // A plain value under a credential name that is not a setting is a
+    // secret too: `SOME_AUTH=1` withholds the log tails the same way.
+    let (_output, entries) =
+        bundle_with_log_and_env("retry 1 ok\n", &[("SOME_AUTH", "1".to_string())]);
+    assert!(
+        !entries.keys().any(|name| name.starts_with("logs/")),
+        "SOME_AUTH=1 withholds the log tails: {:?}",
+        entries.keys()
     );
 }
 
