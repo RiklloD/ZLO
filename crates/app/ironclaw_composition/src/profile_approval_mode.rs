@@ -27,7 +27,9 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ironclaw_approvals::{ApprovalSettingsProvider, ToolPermissionOverride};
+use ironclaw_approvals::{
+    ApprovalSettingsProvider, FullAccessSource, ToolOverrideLookup, ToolPermissionOverride,
+};
 use ironclaw_host_api::{
     ids::{CapabilityId, InvocationId, ThreadId},
     resource::ResourceScope,
@@ -129,10 +131,35 @@ impl ApprovalSettingsProvider for ProfileApprovalSettingsProvider {
         self.inner.global_auto_approve(scope).await
     }
 
+    async fn tool_override_lookup(
+        &self,
+        scope: &ResourceScope,
+        capability_id: &CapabilityId,
+    ) -> ToolOverrideLookup {
+        self.inner.tool_override_lookup(scope, capability_id).await
+    }
+
     /// "Full access" as the pill shows it: the profile's mode, or the global
     /// switch for a profile that follows it.
     async fn full_access(&self, scope: &ResourceScope) -> bool {
-        scope.thread_id.is_some() && self.global_auto_approve(scope).await
+        self.full_access_source(scope).await != FullAccessSource::Off
+    }
+
+    /// Explicit when the thread's profile chose Full access; inherited when
+    /// the profile follows the global switch and that switch is on. An
+    /// unreadable profile is neither.
+    async fn full_access_source(&self, scope: &ResourceScope) -> FullAccessSource {
+        let Some(thread) = &scope.thread_id else {
+            return FullAccessSource::Off;
+        };
+        match self.profile_mode(thread, &scope.invocation_id).await {
+            Ok(Some(ApprovalMode::FullAccess)) => FullAccessSource::Explicit,
+            Ok(Some(ApprovalMode::AskFirst)) | Err(()) => FullAccessSource::Off,
+            Ok(None) if self.inner.global_auto_approve(scope).await => {
+                FullAccessSource::InheritedGlobal
+            }
+            Ok(None) => FullAccessSource::Off,
+        }
     }
 
     async fn tool_always_allow(
@@ -255,6 +282,7 @@ mod tests {
                         force_approval: false,
                         exempt_from_approval: false,
                         global_auto_approve_eligible: true,
+                        inherited_full_access_eligible: true,
                         always_allow_eligible: true,
                         approved_for_this_task: false,
                         policy_requires_approval: true,

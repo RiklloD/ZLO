@@ -1118,12 +1118,17 @@ async fn standalone_authorizer_fails_closed_when_override_lookup_errors() {
     let authorizer = capability_authorizer(None, policy, settings);
 
     let decision = local_host_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
+    // Fail closed means refuse: the unreadable setting may be exactly the
+    // `disabled` that wins, so neither auto-approve nor an approval prompt
+    // (whose lease would outrank ask-each-time on resume) may stand in for it.
     assert!(
         matches!(
             decision,
-            ironclaw_host_api::decision::Decision::RequireApproval { .. }
+            ironclaw_host_api::decision::Decision::Deny {
+                reason: ironclaw_host_api::decision::DenyReason::PolicyDenied
+            }
         ),
-        "override-store read errors must fail closed even when global auto-approve is enabled, got {decision:?}"
+        "override-store read errors must refuse even when global auto-approve is enabled, got {decision:?}"
     );
 }
 

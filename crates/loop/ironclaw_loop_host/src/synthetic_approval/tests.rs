@@ -164,6 +164,8 @@ struct Fixture {
     port: Arc<dyn LoopCapabilityPort>,
     stores: SyntheticApprovalStores,
     settings: Arc<Settings>,
+    gate: Arc<SyntheticApprovalGate>,
+    approval: SyntheticApproval,
     runs: Arc<AtomicUsize>,
     run: LoopRunContext,
 }
@@ -197,6 +199,39 @@ async fn fixture(settings: Arc<Settings>) -> Fixture {
 }
 
 async fn fixture_with(settings: Arc<Settings>, approval: SyntheticApproval) -> Fixture {
+    let stores = SyntheticApprovalStores {
+        approval_requests: Arc::new(in_memory_backed_approval_request_store()),
+        capability_leases: Arc::new(in_memory_backed_capability_lease_store()),
+        approval_settings: settings.clone(),
+        replay_payload_store: Arc::new(ReplayPayloadStore::new(replay_filesystem())),
+        gate_record_store: Arc::new(in_memory_backed_gate_record_store()),
+    };
+    let gate = Arc::new(SyntheticApprovalGate::new(
+        stores.clone(),
+        Principal::Extension(ironclaw_host_api::ids::ExtensionId::new("builtin").unwrap()),
+        true,
+    ));
+    port_over(
+        gate,
+        stores,
+        settings,
+        approval,
+        Arc::new(AtomicUsize::new(0)),
+        TurnId::new(),
+    )
+    .await
+}
+
+/// A port for one turn of the run over an existing gate (and its per-task
+/// approval state), stores and settings.
+async fn port_over(
+    gate: Arc<SyntheticApprovalGate>,
+    stores: SyntheticApprovalStores,
+    settings: Arc<Settings>,
+    approval: SyntheticApproval,
+    runs: Arc<AtomicUsize>,
+    turn: TurnId,
+) -> Fixture {
     let profile = InMemoryRunProfileResolver::default()
         .resolve_run_profile(RunProfileResolutionRequest::interactive_default())
         .await
@@ -208,26 +243,18 @@ async fn fixture_with(settings: Arc<Settings>, approval: SyntheticApproval) -> F
             None,
             ThreadId::new("thread-gate").unwrap(),
         ),
-        TurnId::new(),
+        turn,
         TurnRunId::new(),
         profile,
     )
     .with_actor(ironclaw_turns::TurnActor::new(user()));
-    let stores = SyntheticApprovalStores {
-        approval_requests: Arc::new(in_memory_backed_approval_request_store()),
-        capability_leases: Arc::new(in_memory_backed_capability_lease_store()),
-        approval_settings: settings.clone(),
-        replay_payload_store: Arc::new(ReplayPayloadStore::new(replay_filesystem())),
-        gate_record_store: Arc::new(in_memory_backed_gate_record_store()),
-    };
-    let runs = Arc::new(AtomicUsize::new(0));
     let capability = SyntheticCapability::new(
         SyntheticCapabilityDescriptor::new(
             CAPABILITY,
             TOOL,
             "A mutating test capability",
             json!({"type": "object"}),
-            SyntheticCapabilityEffect::Mutating(approval),
+            SyntheticCapabilityEffect::Mutating(approval.clone()),
         )
         .unwrap(),
         Arc::new(Counting(Arc::clone(&runs))),
@@ -240,11 +267,7 @@ async fn fixture_with(settings: Arc<Settings>, approval: SyntheticApproval) -> F
         Arc::new(Input),
         Arc::new(NoWrites),
         None,
-        Arc::new(SyntheticApprovalGate::new(
-            stores.clone(),
-            Principal::Extension(ironclaw_host_api::ids::ExtensionId::new("builtin").unwrap()),
-            true,
-        )),
+        Arc::clone(&gate),
     )
     .unwrap();
     port.visible_capabilities(VisibleCapabilityRequest {})
@@ -256,10 +279,25 @@ async fn fixture_with(settings: Arc<Settings>, approval: SyntheticApproval) -> F
         settings,
         runs,
         run,
+        gate,
+        approval,
     }
 }
 
 impl Fixture {
+    /// The same gate, stores and settings in another turn (another task).
+    async fn next_turn(&self) -> Fixture {
+        port_over(
+            Arc::clone(&self.gate),
+            self.stores.clone(),
+            Arc::clone(&self.settings),
+            self.approval.clone(),
+            Arc::clone(&self.runs),
+            TurnId::new(),
+        )
+        .await
+    }
+
     /// A fresh model call of the capability: registered, then invoked.
     async fn call(&self) -> (Resolution, LoopRequest) {
         let activity_id = CapabilityActivityId::new();
@@ -538,7 +576,15 @@ async fn one_approval_lasting_for_the_task_covers_its_later_calls_only() {
         "a tool set to ask each time still asks"
     );
 
-    // A fresh turn (another task) asks again.
-    let next_task = fixture_with(settings(false, false), desktop_approval()).await;
-    assert!(matches!(next_task.call().await.0, Resolution::Blocked(_)));
+    // The SAME gate in another turn (another task) asks again: the task
+    // approval is scoped to the turn it was given in.
+    gate.settings.set_override(None);
+    let next_task = gate.next_turn().await;
+    assert!(
+        matches!(next_task.call().await.0, Resolution::Blocked(_)),
+        "another task on the same gate asks again"
+    );
+    assert_eq!(gate.runs(), 2, "nothing ran for the new task");
+    // …while the approved turn still runs on.
+    assert_eq!(gate.call().await.0.kind(), "done");
 }

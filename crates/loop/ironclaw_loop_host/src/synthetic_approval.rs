@@ -102,8 +102,10 @@ impl SyntheticApproval {
         self.lasts_for_task
     }
 
-    /// The global auto-approve switch never lets this capability run; only
-    /// Full access, a per-tool always-allow, or an approval does.
+    /// The global auto-approve switch never lets this capability run —
+    /// neither directly nor as the Full access a thread merely inherits from
+    /// it; only an explicit Full-access profile, a per-tool always-allow, or
+    /// an approval does.
     pub fn ignoring_global_auto_approve(mut self) -> Self {
         self.global_auto_approve = false;
         self
@@ -201,6 +203,9 @@ impl SyntheticApprovalGate {
                 force_approval: false,
                 exempt_from_approval: false,
                 global_auto_approve_eligible: approval.global_auto_approve,
+                // A Full access the thread only inherits from the global
+                // switch is global auto-approve by another name.
+                inherited_full_access_eligible: approval.global_auto_approve,
                 always_allow_eligible: true,
                 approved_for_this_task: approval.lasts_for_task
                     && self.task_approved(&run.turn_id, approval.summary),
@@ -213,6 +218,10 @@ impl SyntheticApprovalGate {
             // claimed, so the approval is not spent.
             ApprovalGateVerdict::Deny => self
                 .denied("this tool is disabled by tool approval settings")
+                .map(|resolution| GateOutcome::Respond(Box::new(resolution))),
+            // Unreadable tool settings refuse too, before the lease is touched.
+            ApprovalGateVerdict::SettingsUnavailable => self
+                .denied("tool approval settings could not be read; this tool was not run")
                 .map(|resolution| GateOutcome::Respond(Box::new(resolution))),
             ApprovalGateVerdict::Allow => {
                 if let Ok(lease) = lease {

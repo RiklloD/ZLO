@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use ironclaw_approvals::{
     ApprovalSettingsProvider, AutoApproveSettingKey, PersistentApprovalAction,
     PersistentApprovalPolicyKey, PersistentApprovalScope, ProfileApprovalGatePolicy,
-    RuntimeProfileApprovalGatePolicy, ToolPermissionOverride, ToolPermissionOverrideKey,
-    profile_approval_authorizer,
+    RuntimeProfileApprovalGatePolicy, ToolOverrideLookup, ToolPermissionOverride,
+    ToolPermissionOverrideKey, profile_approval_authorizer,
 };
 use ironclaw_authorization::TrustAwareCapabilityDispatchAuthorizer;
 use ironclaw_host_api::{
@@ -334,9 +334,23 @@ impl ApprovalSettingsProvider for StoreApprovalSettingsProvider {
         scope: &ResourceScope,
         capability_id: &CapabilityId,
     ) -> Option<ToolPermissionOverride> {
-        // Fail safe: a store read error resolves to "ask each time" with
-        // auto-approve off so the gate falls back to asking rather than
-        // silently auto-approving or denying. The error is logged, not swallowed.
+        // Callers outside the approval gate (which reads
+        // `tool_override_lookup` and refuses on an unreadable store) fall back
+        // to asking rather than silently auto-approving.
+        match self.tool_override_lookup(scope, capability_id).await {
+            ToolOverrideLookup::Set(state) => Some(state),
+            ToolOverrideLookup::Unset => None,
+            ToolOverrideLookup::Unavailable => Some(ToolPermissionOverride::AskEachTime),
+        }
+    }
+
+    async fn tool_override_lookup(
+        &self,
+        scope: &ResourceScope,
+        capability_id: &CapabilityId,
+    ) -> ToolOverrideLookup {
+        // A store read error is its own answer, `Unavailable`: the gate
+        // refuses on it (fail closed). The error is logged, not swallowed.
         let operator_scope = operator_tool_permission_scope(scope);
         if self.overrides.supports_scope_listing() {
             let cache_key = ApprovalSettingsScopeCacheKey::from_scope(&operator_scope);
@@ -347,10 +361,10 @@ impl ApprovalSettingsProvider for StoreApprovalSettingsProvider {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .get(&cache_key)
                 {
-                    if let Some(state) = overrides.get(capability_id).copied() {
-                        return Some(state);
-                    }
-                    return None;
+                    return overrides
+                        .get(capability_id)
+                        .copied()
+                        .map_or(ToolOverrideLookup::Unset, ToolOverrideLookup::Set);
                 }
                 match begin_inflight_settings_load(&self.override_inflight, &cache_key) {
                     InflightSettingsLoad::Follower(wait_for_leader) => {
@@ -370,7 +384,10 @@ impl ApprovalSettingsProvider for StoreApprovalSettingsProvider {
                                     .into_iter()
                                     .map(|record| (record.key.capability_id, record.state))
                                     .collect::<HashMap<_, _>>();
-                                let result = overrides.get(capability_id).copied();
+                                let result = overrides
+                                    .get(capability_id)
+                                    .copied()
+                                    .map_or(ToolOverrideLookup::Unset, ToolOverrideLookup::Set);
                                 let key = leader.key().clone();
                                 self.override_cache
                                     .lock()
@@ -396,11 +413,12 @@ impl ApprovalSettingsProvider for StoreApprovalSettingsProvider {
         let key = ToolPermissionOverrideKey::new(&operator_scope, capability_id.clone());
         let started_at = ironclaw_observability::live_latency_started_at();
         let result = match self.overrides.get(&key).await {
-            Ok(record) => record.map(|record| record.state),
+            Ok(record) => record.map_or(ToolOverrideLookup::Unset, |record| {
+                ToolOverrideLookup::Set(record.state)
+            }),
             Err(error) => {
-                // silent-ok: fail-safe to "ask" on store read error; logged for observability.
-                tracing::warn!(%error, "tool permission override lookup failed; defaulting to ask");
-                Some(ToolPermissionOverride::AskEachTime)
+                tracing::warn!(%error, "tool permission override lookup failed; refusing gated calls");
+                ToolOverrideLookup::Unavailable
             }
         };
         trace_approval_settings_latency_ok("tool_override", scope, Some(capability_id), started_at);

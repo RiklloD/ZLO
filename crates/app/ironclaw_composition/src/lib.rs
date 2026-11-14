@@ -67,6 +67,8 @@ pub mod setup_transfer;
 mod standalone_bootstrap_assembly;
 mod storage_catalog;
 mod support;
+#[cfg(test)]
+mod synthetic_approval_gate_tests;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod trigger_fire_access;
