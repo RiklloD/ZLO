@@ -173,14 +173,26 @@ impl Drop for DockerCleanup {
             ));
         }
         for id in &self.container_ids {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "best-effort docker teardown in Drop; a failure here must not mask the test's own outcome"
+            )]
             let _ = Command::new("docker")
                 .args(["container", "rm", "--force", id])
                 .output();
         }
         for id in &self.network_ids {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "best-effort docker teardown in Drop; a failure here must not mask the test's own outcome"
+            )]
             let _ = Command::new("docker").args(["network", "rm", id]).output();
         }
         for image in &self.image_tags {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "best-effort docker teardown in Drop; a failure here must not mask the test's own outcome"
+            )]
             let _ = Command::new("docker")
                 .args(["image", "rm", "--force", image])
                 .output();

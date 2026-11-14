@@ -104,7 +104,10 @@ impl UserContainerSweeper {
     }
 
     pub(super) async fn shutdown(&self) {
-        // silent-ok: no receiver means the sweeper already stopped
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "no receiver means the sweeper already stopped"
+        )]
         let _ = self.shutdown.send(true);
         if let Some(task) = self.take_task()
             && let Err(error) = task.await
@@ -120,7 +123,10 @@ impl UserContainerSweeper {
 
 impl Drop for UserContainerSweeper {
     fn drop(&mut self) {
-        // silent-ok: no receiver means the sweeper already stopped
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "no receiver means the sweeper already stopped"
+        )]
         let _ = self.shutdown.send(true);
         if let Some(task) = self.take_task() {
             task.abort();

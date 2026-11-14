@@ -3,6 +3,7 @@
 //! Run explicitly with one Railway token plus project configuration:
 //! `cargo test -p ironclaw_sandbox --test railway_sandbox_live -- --ignored --nocapture`.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{collections::HashMap, process::Command};
 
 use ironclaw_host_api::{
