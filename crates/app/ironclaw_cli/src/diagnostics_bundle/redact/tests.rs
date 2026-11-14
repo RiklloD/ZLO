@@ -209,3 +209,32 @@ fn short_known_secrets_match_as_whole_tokens_only() {
     assert!(Scrubber::new(["a1b".to_string()]).has_unredactable_secret());
     assert!(!Scrubber::new([String::new()]).has_unredactable_secret());
 }
+
+/// A short known secret inside a larger base64 / base64url blob has no
+/// spelling of its own: the blob is decoded, the token rule applied to the
+/// decoded text, and the whole blob replaced — and the final check finds it
+/// the same way.
+#[test]
+fn short_secret_inside_a_base64_blob_is_found_by_decoding() {
+    let scrubber = Scrubber::new(["Xy7pQ2w".to_string()]);
+    // base64("user:Xy7pQ2w:suffix") and base64url-unpadded of the same.
+    let padded = "dXNlcjpYeTdwUTJ3OnN1ZmZpeA==";
+    let unpadded = "dXNlcjpYeTdwUTJ3OnN1ZmZpeA";
+    for blob in [padded, unpadded] {
+        assert!(
+            scrubber.contains_known_secret(format!("data {blob} end").as_bytes()),
+            "{blob}"
+        );
+        assert_eq!(
+            scrubber.text(&format!("data {blob} end")),
+            "data [REDACTED] end"
+        );
+    }
+    // base64("aXy7pQ2wb"): the secret is inside a longer word, not a token.
+    let inside_word = "YVh5N3BRMndi";
+    assert!(!scrubber.contains_known_secret(format!("data {inside_word}").as_bytes()));
+    assert_eq!(
+        scrubber.text(&format!("data {inside_word}")),
+        format!("data {inside_word}")
+    );
+}

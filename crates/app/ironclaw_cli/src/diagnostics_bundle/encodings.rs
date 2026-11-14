@@ -144,6 +144,66 @@ fn base64_core(bytes: &[u8], shift: usize, alphabet: &[u8; 64]) -> String {
 /// Decoded views of `bytes` searched by the final check: the raw text, JSON
 /// escapes decoded, percent-escapes decoded (with and without `+` as space),
 /// and both decodings stacked.
+/// Shortest run of base64 alphabet characters treated as a possible
+/// encoded blob.
+const MIN_BASE64_SPAN: usize = 8;
+
+/// Byte ranges of `text` that could be base64 or base64url: maximal runs of
+/// at least [`MIN_BASE64_SPAN`] alphabet characters (both alphabets), plus
+/// any trailing `=` padding.
+pub(super) fn base64_spans(text: &[u8]) -> Vec<(usize, usize)> {
+    let is_alphabet =
+        |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'-' | b'_');
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while index < text.len() {
+        if !is_alphabet(text[index]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < text.len() && is_alphabet(text[index]) {
+            index += 1;
+        }
+        let core_end = index;
+        while index < text.len() && text[index] == b'=' {
+            index += 1;
+        }
+        if core_end - start >= MIN_BASE64_SPAN {
+            spans.push((start, index));
+        }
+    }
+    spans
+}
+
+/// `span` decoded as standard base64 and as base64url, padded or not; a
+/// trailing partial group is dropped. An alphabet the span does not fit
+/// yields nothing.
+pub(super) fn base64_decodings(span: &[u8]) -> Vec<Vec<u8>> {
+    let core: Vec<u8> = span.iter().copied().filter(|byte| *byte != b'=').collect();
+    [STD, URL]
+        .iter()
+        .filter_map(|alphabet| base64_decode(&core, alphabet))
+        .collect()
+}
+
+fn base64_decode(core: &[u8], alphabet: &[u8; 64]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(core.len() * 3 / 4);
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+    for byte in core {
+        let value = alphabet.iter().position(|symbol| symbol == byte)? as u32;
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
 pub(super) fn decoded_views(bytes: &[u8]) -> Vec<Vec<u8>> {
     let json = json_unescape(bytes);
     vec![

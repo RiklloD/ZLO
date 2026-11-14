@@ -3803,9 +3803,17 @@ fn doctor_bundle_redacts_short_url_passwords_as_whole_tokens() {
     let six = "p@ss12";
     let six_encoded = "p%40ss12";
     let six_b64 = "cEBzczEy";
+    // base64 / unpadded base64url of `user:Xy7pQ2w:suffix` and of
+    // `pre Xy7pQ2w post data`: the short secret sits inside a larger blob,
+    // so only decoding the blob can find it.
+    let embedded = "dXNlcjpYeTdwUTJ3OnN1ZmZpeA==";
+    let embedded_url = "cHJlIFh5N3BRMncgcG9zdCBkYXRh";
+    // base64 of `zz:p@ss12`.
+    let embedded_six = "eno6cEBzczEy";
     let (_output, entries) = bundle_with_log_and_env(
         &format!(
-            "auth {seven} failed\nblob {seven_b64}\nretry {six} then {six_encoded}\n\
+            "data {embedded}\nsession={embedded_url}\nproxy {embedded_six}\n\
+             auth {seven} failed\nblob {seven_b64}\nretry {six} then {six_encoded}\n\
              token-blob {six_b64}\nnotXy7pQ2wpart stays\nretry 1 ok\npin 123456 entered\n\
              heartbeat ok\n"
         ),
@@ -3833,6 +3841,9 @@ fn doctor_bundle_redacts_short_url_passwords_as_whole_tokens() {
         format!(" {six} "),
         format!(" {six_encoded}"),
         format!(" {six_b64}"),
+        embedded.to_string(),
+        embedded_url.to_string(),
+        embedded_six.to_string(),
     ] {
         assert!(!log.contains(&needle), "log tail leaks {needle:?}:\n{log}");
     }

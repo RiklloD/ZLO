@@ -90,6 +90,10 @@ pub(crate) struct Scrubber {
     /// Every spelling of every shorter known secret of at least
     /// [`MIN_TOKEN_SECRET_CHARS`], longest first; matched as whole tokens.
     token_forms: Vec<String>,
+    /// The short known secrets themselves, searched as whole tokens inside
+    /// decoded base64 blobs (a short secret embedded in a larger encoded
+    /// value has no spelling of its own to match).
+    token_secrets: Vec<String>,
     /// A known secret is shorter than [`MIN_TOKEN_SECRET_CHARS`].
     unredactable: bool,
 }
@@ -98,11 +102,15 @@ impl Scrubber {
     pub(crate) fn new(known_secrets: impl IntoIterator<Item = String>) -> Self {
         let mut forms: Vec<String> = Vec::new();
         let mut token_forms: Vec<String> = Vec::new();
+        let mut token_secrets: Vec<String> = Vec::new();
         let mut unredactable = false;
         let mut add = |value: &str| match value.chars().count() {
             0 => {}
             n if n < MIN_TOKEN_SECRET_CHARS => unredactable = true,
-            n if n < MIN_EXACT_SECRET_CHARS => token_forms.extend(encodings::forms(value)),
+            n if n < MIN_EXACT_SECRET_CHARS => {
+                token_forms.extend(encodings::forms(value));
+                token_secrets.push(value.to_string());
+            }
             _ => forms.extend(encodings::forms(value)),
         };
         for value in known_secrets {
@@ -114,6 +122,8 @@ impl Scrubber {
             }
         }
         // Longest first so a spelling that contains another is replaced whole.
+        token_secrets.sort();
+        token_secrets.dedup();
         for list in [&mut forms, &mut token_forms] {
             list.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
             list.dedup();
@@ -121,6 +131,7 @@ impl Scrubber {
         Self {
             forms,
             token_forms,
+            token_secrets,
             unredactable,
         }
     }
@@ -154,6 +165,9 @@ impl Scrubber {
             if text.contains(form.as_str()) {
                 text = replace_tokens(&text, form);
             }
+        }
+        if !self.token_secrets.is_empty() {
+            text = self.redact_encoded_short_secrets(&text);
         }
         text.split('\n')
             .map(|line| self.line(line))
@@ -239,7 +253,49 @@ impl Scrubber {
                     .token_forms
                     .iter()
                     .any(|form| contains_token(view, form.as_bytes()))
+                || self.base64_span_holding_short_secret(view).is_some()
         })
+    }
+
+    /// The first base64-shaped span of `bytes` that decodes (either alphabet)
+    /// to text holding a short known secret as a whole token.
+    fn base64_span_holding_short_secret(&self, bytes: &[u8]) -> Option<(usize, usize)> {
+        encodings::base64_spans(bytes)
+            .into_iter()
+            .find(|&(start, end)| {
+                encodings::base64_decodings(&bytes[start..end])
+                    .iter()
+                    .any(|decoded| {
+                        self.token_secrets
+                            .iter()
+                            .any(|secret| contains_token(decoded, secret.as_bytes()))
+                    })
+            })
+    }
+
+    /// Replace every base64-shaped span whose decoding holds a short known
+    /// secret as a whole token with [`REDACTED`], whole.
+    fn redact_encoded_short_secrets(&self, text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = String::with_capacity(text.len());
+        let mut copied = 0;
+        for (start, end) in encodings::base64_spans(bytes) {
+            let holds = encodings::base64_decodings(&bytes[start..end])
+                .iter()
+                .any(|decoded| {
+                    self.token_secrets
+                        .iter()
+                        .any(|secret| contains_token(decoded, secret.as_bytes()))
+                });
+            if holds {
+                // Spans are ASCII-only, so both ends are char boundaries.
+                out.push_str(&text[copied..start]);
+                out.push_str(REDACTED);
+                copied = end;
+            }
+        }
+        out.push_str(&text[copied..]);
+        out
     }
 }
 
