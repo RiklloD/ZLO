@@ -31,15 +31,14 @@
 # bare `python3` with `tomllib`, then the newest >= 3.10 without it. The choice
 # is exported so the shell gates that shell out to Python use it too.
 #
-# Environmental SKIPs: four self-tests depend on host tools CI's Ubuntu image
+# Environmental SKIPs: three self-tests depend on host tools CI's Ubuntu image
 # has and a stock Mac does not. They are reported SKIPPED (with the reason),
 # never FAILED and never silently dropped, when the prerequisite is absent:
 #   * test-check-wasm-artifact-freshness.sh — the `python3` on PATH needs
 #     `tomllib`;
 #   * test-ironclaw-integration-batch-runner.sh — forces
 #     PATH=<stubs>:/usr/bin:/bin, so `/usr/bin/python3` needs `tomllib`;
-#   * test-install-ci-apt-packages.sh — needs GNU `timeout`;
-#   * test-reborn-docker-entrypoint.sh — needs GNU `readlink -m`.
+#   * test-install-ci-apt-packages.sh — needs GNU `timeout`.
 # CI is unaffected: it runs these from code_style.yml directly.
 #
 # Self-test: scripts/ci/test-preflight-gates.sh (wired into code_style.yml).
@@ -146,10 +145,6 @@ self_test_skip_reason() {
         *test-install-ci-apt-packages.sh*)
             timeout --version 2>/dev/null | grep -q GNU \
                 || echo "needs GNU timeout (coreutils) on PATH"
-            ;;
-        *test-reborn-docker-entrypoint.sh*)
-            readlink -m / >/dev/null 2>&1 \
-                || echo "needs GNU readlink (-m) on PATH"
             ;;
     esac
 }

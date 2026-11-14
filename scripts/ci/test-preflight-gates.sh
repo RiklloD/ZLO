@@ -10,7 +10,7 @@
 #      `<runner> <path>` command whose path exists — and refuses an empty
 #      extraction instead of reporting a pass over nothing;
 #   4. a self-test whose host prerequisite is missing (macOS lacks GNU
-#      timeout/readlink and a tomllib python) is SKIPPED with a reason, not
+#      timeout and a tomllib python) is SKIPPED with a reason, not
 #      FAILED, and not silently dropped;
 #   5. the interpreter choice prefers one with `tomllib`.
 
