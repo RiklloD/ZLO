@@ -22,7 +22,7 @@ use ironclaw_loop_contracts::{
 };
 use ironclaw_loop_host::{
     CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
-    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    SyntheticCapabilityEffect, SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 use ironclaw_product_contracts::surface::{
     ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode,
@@ -60,6 +60,7 @@ pub(super) fn outbound_delivery_capabilities(
                 OUTBOUND_DELIVERY_TARGETS_LIST_PROVIDER_TOOL_NAME,
                 OUTBOUND_DELIVERY_TARGETS_LIST_DESCRIPTION,
                 outbound_delivery_targets_list_input_schema(),
+                SyntheticCapabilityEffect::ReadOnly,
             )?,
             Arc::new(OutboundDeliveryTargetsListHandler {
                 service: Arc::clone(&service),

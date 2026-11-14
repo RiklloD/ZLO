@@ -17,6 +17,9 @@ use ironclaw_processes::{JournaledProcessSnapshot, ProcessJournalCursor, Process
 use ironclaw_product_contracts::computer_use::ComputerUseControlAction;
 use ironclaw_turns::{TurnActor, TurnId, TurnRunId, TurnScope};
 
+use ironclaw_approvals::ApprovalSettingsProvider;
+use ironclaw_capabilities::ReplayPayloadStorePort;
+
 use super::*;
 
 /// Records what reached the session layer; nothing touches a screen.

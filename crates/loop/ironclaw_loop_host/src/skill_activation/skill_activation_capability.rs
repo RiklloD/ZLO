@@ -4,7 +4,8 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     CapabilityResultWrite, DurablePersistence, SkillBundleSource, SyntheticCapability,
-    SyntheticCapabilityDescriptor, SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    SyntheticCapabilityDescriptor, SyntheticCapabilityEffect, SyntheticCapabilityHandler,
+    SyntheticCapabilityInvocation,
 };
 use async_trait::async_trait;
 use ironclaw_host_api::{ids::InvocationId, resolution::Resolution, result_meta::FailureKind};
@@ -32,6 +33,7 @@ where
             SKILL_ACTIVATE_PROVIDER_TOOL_NAME,
             SKILL_ACTIVATE_DESCRIPTION,
             skill_activate_input_schema(),
+            SyntheticCapabilityEffect::Mutating,
         )?,
         Arc::new(SkillActivationHandler {
             skill_activation_source,

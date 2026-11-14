@@ -173,8 +173,8 @@ pub use subagent_spawn_port::{
 };
 pub use surface_disclosure::wrap_surface_disclosure;
 pub use synthetic_capability::{
-    SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityHandler,
-    SyntheticCapabilityInvocation, wrap_synthetic_capabilities,
+    SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityEffect,
+    SyntheticCapabilityHandler, SyntheticCapabilityInvocation, wrap_synthetic_capabilities,
 };
 pub use system_inference::{GuardedSystemInferencePort, ModelGatewayBackedSystemInferencePort};
 pub use system_prompt_assets::{

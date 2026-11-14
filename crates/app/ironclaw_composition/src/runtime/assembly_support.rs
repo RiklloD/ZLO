@@ -204,22 +204,16 @@ pub(super) fn optional_nonzero_u32_env(
     }
 }
 
-/// The mutating synthetic capabilities denied to an unattended run (why it
-/// exists and lives here: `DefaultPlannedRuntimeConfig::unattended_denied_capability_ids`),
-/// plus every `t3_*` orchestrator tool (`orchestrator_capability_ids`). With
-/// auto-approve off these survive the surface policy; `tests/integration/suggestions.rs`
-/// pins what remains, and only read-only synthetics may.
+/// Builtins denied to an unattended run although they need no approval (why
+/// it lives here: `DefaultPlannedRuntimeConfig::unattended_denied_capability_ids`).
+/// Synthetic capabilities need no entry: each declares its effect and the
+/// mutating ones leave unattended surfaces (`SyntheticCapability::admitted_by`).
 pub(super) fn unattended_denied_capability_ids() -> Result<Vec<CapabilityId>, RebornRuntimeError> {
     [
-        ironclaw_assistant::PROJECT_CREATE_CAPABILITY_ID,
-        ironclaw_assistant::OUTBOUND_NOTIFICATION_CHANNELS_SET_CAPABILITY_ID,
-        ironclaw_loop_host::SKILL_ACTIVATE_CAPABILITY_ID,
         ironclaw_memory::PROFILE_SET_CAPABILITY_ID,
         ironclaw_host_runtime::TRACE_COMMONS_ONBOARD_CAPABILITY_ID,
     ]
     .into_iter()
-    .map(str::to_string)
-    .chain(ironclaw_assistant::orchestration::orchestrator_capability_ids())
     .map(|id| {
         CapabilityId::new(id).map_err(|reason| RebornRuntimeError::InvalidArgument {
             reason: format!("unattended-denied capability id: {reason}"),

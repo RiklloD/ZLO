@@ -23,14 +23,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ironclaw_approvals::{
-    ApprovalRequestStorePort, ApprovalSettingsProvider, ApprovalStatus, ApprovalStoreError,
-    GateRecordStorePort, ToolPermissionOverride,
-};
-use ironclaw_authorization::{
-    CapabilityLeaseError, CapabilityLeaseStatus, CapabilityLeaseStorePort,
-};
-use ironclaw_capabilities::{ReplayPayload, ReplayPayloadStoreError, ReplayPayloadStorePort};
+use ironclaw_approvals::{ApprovalStatus, ApprovalStoreError, ToolPermissionOverride};
+use ironclaw_authorization::{CapabilityLeaseError, CapabilityLeaseStatus};
+use ironclaw_capabilities::{ReplayPayload, ReplayPayloadStoreError};
 use ironclaw_host_api::{
     action::Action,
     approval::{ApprovalRequest, InvocationFingerprint},
@@ -51,7 +46,7 @@ use ironclaw_loop_contracts::{
 };
 use ironclaw_loop_host::{
     CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
-    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    SyntheticCapabilityEffect, SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 use ironclaw_processes::{
     ProcessJournalCommit, ProcessJournalCommitObserver, ProcessKind, ProcessLifecycleStatus,
@@ -75,14 +70,9 @@ use serde_json::{Value, json};
 /// Fixed, interpolation-free gate text.
 const APPROVAL_SUMMARY: &str = "computer use requires approval";
 
-/// The approval stores the gate persists to, all owned by composition.
-pub struct ComputerUseApprovalStores {
-    pub approval_requests: Arc<dyn ApprovalRequestStorePort>,
-    pub capability_leases: Arc<dyn CapabilityLeaseStorePort>,
-    pub approval_settings: Arc<dyn ApprovalSettingsProvider>,
-    pub replay_payload_store: Arc<dyn ReplayPayloadStorePort>,
-    pub gate_record_store: Arc<dyn GateRecordStorePort>,
-}
+/// The approval stores the gate persists to, all owned by composition — the
+/// same set every approval-gated synthetic capability uses.
+pub type ComputerUseApprovalStores = crate::SyntheticApprovalStores;
 
 /// One approval-gated capability per server tool.
 pub fn computer_use_capabilities<S: ComputerUseSessions + 'static>(
@@ -104,6 +94,8 @@ pub fn computer_use_capabilities<S: ComputerUseSessions + 'static>(
                     &format!("{COMPUTER_USE_TOOL_NAME_PREFIX}{}", tool.name),
                     &tool.description,
                     tool.input_schema.clone(),
+                    // Every call is approval-gated (one approval per task).
+                    SyntheticCapabilityEffect::Mutating,
                 )?,
                 Arc::new(ToolHandler {
                     tool: tool.clone(),

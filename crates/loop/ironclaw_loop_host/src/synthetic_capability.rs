@@ -10,6 +10,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use ironclaw_host_api::{
+    capability_surface::CapabilitySurfacePolicy,
     ids::{CapabilityId, ProviderToolName},
     resolution::{Resolution, ResolutionBatch},
     runtime::RuntimeKind,
@@ -92,6 +93,36 @@ impl SyntheticCapability {
             handler,
         }
     }
+
+    pub fn effect(&self) -> SyntheticCapabilityEffect {
+        self.descriptor.effect
+    }
+
+    /// Whether a run with this surface policy may be offered the capability.
+    ///
+    /// Synthetic capabilities join the surface after the host catalog's
+    /// approval narrowing, so that narrowing cannot see them; this is their
+    /// half of it. A mutating synthetic may have to ask for approval when it
+    /// is called, so a run that cannot ask (`include_requires_approval` off:
+    /// nobody is there to answer) never gets it. Read-only ones always may.
+    pub fn admitted_by(&self, policy: &CapabilitySurfacePolicy) -> bool {
+        match self.descriptor.effect {
+            SyntheticCapabilityEffect::ReadOnly => true,
+            SyntheticCapabilityEffect::Mutating => policy.include_requires_approval,
+        }
+    }
+}
+
+/// What a synthetic capability does to state outside the run, declared by
+/// whoever builds it — there is no default, so every synthetic is classified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntheticCapabilityEffect {
+    /// Reads the acting user's own state or the run's own results; writes
+    /// nothing anyone else can observe.
+    ReadOnly,
+    /// Creates, changes, sends, schedules, or starts something. May require
+    /// approval when called, and is dropped from runs nobody can approve for.
+    Mutating,
 }
 
 pub struct SyntheticCapabilityDescriptor {
@@ -99,6 +130,7 @@ pub struct SyntheticCapabilityDescriptor {
     provider_tool_name: ProviderToolName,
     description: String,
     parameters_schema: serde_json::Value,
+    effect: SyntheticCapabilityEffect,
 }
 
 impl SyntheticCapabilityDescriptor {
@@ -107,8 +139,10 @@ impl SyntheticCapabilityDescriptor {
         provider_tool_name: &str,
         description: &str,
         parameters_schema: serde_json::Value,
+        effect: SyntheticCapabilityEffect,
     ) -> Result<Self, AgentLoopHostError> {
         Ok(Self {
+            effect,
             capability_id: CapabilityId::new(capability_id).map_err(|_| {
                 AgentLoopHostError::new(
                     AgentLoopHostErrorKind::Internal,
@@ -786,6 +820,7 @@ mod tests {
                 TEST_PROVIDER_TOOL_NAME,
                 "Synthetic test capability",
                 serde_json::json!({"type": "object"}),
+                SyntheticCapabilityEffect::ReadOnly,
             )
             .expect("descriptor"),
             handler,
@@ -811,6 +846,30 @@ mod tests {
             .await
             .expect("visible surface");
         port
+    }
+
+    #[test]
+    fn only_read_only_synthetics_are_admitted_where_nobody_can_approve() {
+        let capability = |effect| {
+            SyntheticCapability::new(
+                SyntheticCapabilityDescriptor::new(
+                    TEST_CAPABILITY_ID,
+                    TEST_PROVIDER_TOOL_NAME,
+                    "Synthetic test capability",
+                    serde_json::json!({"type": "object"}),
+                    effect,
+                )
+                .expect("descriptor"),
+                Arc::new(TestSyntheticHandler),
+            )
+        };
+        let attended = CapabilitySurfacePolicy::allow_all();
+        let unattended = CapabilitySurfacePolicy::allow_all().without_approval_gated();
+        let read_only = capability(SyntheticCapabilityEffect::ReadOnly);
+        let mutating = capability(SyntheticCapabilityEffect::Mutating);
+        assert!(read_only.admitted_by(&attended) && read_only.admitted_by(&unattended));
+        assert!(mutating.admitted_by(&attended));
+        assert!(!mutating.admitted_by(&unattended));
     }
 
     #[tokio::test]
@@ -995,6 +1054,7 @@ mod tests {
                 TEST_PROVIDER_TOOL_NAME,
                 "Synthetic test capability",
                 serde_json::json!({"type": "object"}),
+                SyntheticCapabilityEffect::ReadOnly,
             )
             .expect("descriptor"),
             Arc::new(CountingSyntheticHandler {

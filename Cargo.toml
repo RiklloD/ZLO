@@ -278,6 +278,8 @@ ironclaw_triggers = { path = "crates/domains/ironclaw_triggers", version = "0.1.
 # mirrors the conversation-services type production's own local-dev build wires for the
 # trusted-trigger submit path (ironclaw_composition::runtime.rs).
 ironclaw_conversations = { path = "crates/domains/ironclaw_conversations", version = "0.1.0" }
+ironclaw_supermemory = { path = "crates/domains/ironclaw_supermemory", version = "0.1.0" }
+ironclaw_computer_use = { path = "crates/lanes/ironclaw_computer_use", version = "0.1.0" }
 ironclaw_trust = { path = "crates/kernel/ironclaw_trust", version = "0.1.0" }
 ironclaw_wasm = { path = "crates/lanes/ironclaw_wasm", version = "0.1.0" }
 # Reusable before/after database probe used by dedicated measured workloads.
@@ -357,6 +359,10 @@ path = "tests/integration/reborn_sandbox_shell_turn.rs"
 [[test]]
 name = "reborn_integration_suggestions"
 path = "tests/integration/suggestions.rs"
+
+[[test]]
+name = "reborn_integration_unattended_surface"
+path = "tests/integration/unattended_surface.rs"
 
 [[test]]
 name = "reborn_integration_subagent_await_edge"

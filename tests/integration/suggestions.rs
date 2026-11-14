@@ -1440,33 +1440,27 @@ async fn disabling_global_auto_approve_shrinks_the_autonomous_surface() -> Harne
         );
     }
 
-    // What DOES survive is worth pinning, because it exposes a real limit of
-    // this feature: every survivor is a SYNTHETIC capability, and synthetics
-    // are exempt from surface narrowing by construction.
-    // `SyntheticCapabilityPort::visible_capabilities`
-    // (loop_host/src/synthetic_capability.rs:472-506) calls the inner port —
-    // which is where `include_requires_approval` and `allows_effects` are
-    // applied — and then `surface.descriptors.extend(synthetic_descriptors)`
-    // unconditionally. The outer `apply_capability_surface_policy` re-filters
-    // by capability ID only. So `require_no_approval` cannot gate a synthetic
-    // capability at all; only an ID deny-list can.
+    // What DOES survive is worth pinning. Every survivor is a SYNTHETIC
+    // capability: synthetics join the surface after the host catalog's
+    // approval narrowing (`SyntheticCapabilityPort::visible_capabilities`), so
+    // each declares its effect and a run that cannot ask keeps only the
+    // read-only ones (`SyntheticCapability::admitted_by`).
     //
     // Pin the WHOLE survivor set, in the same deliberately-brittle style as
     // `expected_autonomous_surface` above (and for the same reason): a NEW
-    // state-changing synthetic capability, or any other unexpected
+    // synthetic capability declared read-only, or any other unexpected
     // survivor, must fail this test loudly instead of silently widening
     // what an unattended run with nothing auto-approved can still reach.
-    // The remedy for a mutating newcomer is the composition deny-list
-    // (`unattended_denied_capability_ids`), never this table.
+    // The remedy for a mutating newcomer is to declare it
+    // `SyntheticCapabilityEffect::Mutating`, never this table.
     //
     // Each survivor carries the reason it is exempt, and the only acceptable
-    // reason is that it is READ-ONLY over the acting user's own state (the
-    // deny-list contract: "the mutating ones belong here"). Regression
-    // pin: `history_search` and all six `t3_*` orchestrator tools were added
-    // as synthetics after the deny-list existed; the `t3_*` family writes
-    // orchestration state on every call and launches/messages/schedules/
-    // cancels threads, so it is denied as a family (derived from
-    // `ironclaw_orchestrator::tools::TOOLS`) and none of it may reappear here.
+    // reason is that it is READ-ONLY over the acting user's own state.
+    // Regression pin: `history_search` and all six `t3_*` orchestrator tools
+    // were added as synthetics without a classification; the `t3_*` family
+    // writes orchestration state on every call and launches/messages/
+    // schedules/cancels threads, so it is mutating and none of it may
+    // reappear here.
     let survivors_with_reasons: [(&str, &str); 4] = [
         (
             "builtin__outbound_delivery_targets_list",

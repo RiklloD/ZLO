@@ -41,7 +41,7 @@ use ironclaw_loop_contracts::{
 };
 use ironclaw_loop_host::{
     CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
-    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    SyntheticCapabilityEffect, SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 use ironclaw_supermemory::{
     SUPERMEMORY_SEARCH_CAPABILITY_ID, SUPERMEMORY_SEARCH_DESCRIPTION, SUPERMEMORY_SEARCH_TOOL_NAME,
@@ -102,6 +102,7 @@ pub fn supermemory_capabilities(
             SUPERMEMORY_SEARCH_TOOL_NAME,
             SUPERMEMORY_SEARCH_DESCRIPTION,
             ironclaw_supermemory::search_schema(),
+            SyntheticCapabilityEffect::ReadOnly,
         )?,
         Arc::new(SearchHandler {
             supermemory: Arc::clone(&supermemory),
@@ -114,6 +115,7 @@ pub fn supermemory_capabilities(
             SUPERMEMORY_WRITE_TOOL_NAME,
             SUPERMEMORY_WRITE_DESCRIPTION,
             ironclaw_supermemory::write_schema(),
+            SyntheticCapabilityEffect::Mutating,
         )?,
         Arc::new(WriteHandler {
             supermemory,

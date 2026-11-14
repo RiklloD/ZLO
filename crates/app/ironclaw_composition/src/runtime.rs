@@ -577,6 +577,8 @@ pub struct RebornRuntime {
         Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
     pub(crate) _process_gate_query_source: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
     turn_tree_store: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
+    #[cfg(any(test, feature = "test-support"))]
+    child_runs: Arc<dyn ironclaw_turns::TurnSpawnTreePort>,
     thread_service: Arc<dyn SessionThreadService>,
     pub(crate) subagent_delivery: SubagentDeliveryRuntime,
     thread_scope: ThreadScope,

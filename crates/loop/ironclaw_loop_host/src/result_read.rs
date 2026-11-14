@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::{
     CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
-    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    SyntheticCapabilityEffect, SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 use async_trait::async_trait;
 use ironclaw_host_api::{
@@ -146,6 +146,7 @@ pub fn result_read_capability(
             RESULT_READ_PROVIDER_TOOL_NAME,
             "Read a bounded continuation of a prior tool result, or select a JSON node with an RFC 6901 json_pointer.",
             result_read_input_schema(),
+            SyntheticCapabilityEffect::ReadOnly,
         )?,
         Arc::new(ResultReadHandler {
             thread_service,

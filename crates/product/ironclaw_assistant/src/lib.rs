@@ -92,10 +92,12 @@ mod steering;
 mod suggestions;
 mod suggestions_observer;
 mod suggestions_store;
+mod synthetic_approval;
 mod unbound_turn;
 mod workflow;
 
 pub use project_create_capability::{PROJECT_CREATE_CAPABILITY_ID, project_create_capability};
+pub use synthetic_approval::SyntheticApprovalStores;
 
 pub use action::{ActionDispatchKind, ActionPhase, ProductInboundAction};
 pub use admin_user_directory::{

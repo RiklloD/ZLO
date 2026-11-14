@@ -48,6 +48,10 @@ pub(super) async fn assemble_runtime(
         model_cost_table_override,
         #[cfg(any(test, feature = "test-support"))]
         model_availability_retry_attempts_override,
+        #[cfg(any(test, feature = "test-support"))]
+        supermemory_override,
+        #[cfg(any(test, feature = "test-support"))]
+        computer_use_override,
     } = input;
 
     let mut services_input = services_input.ok_or(RebornRuntimeError::InvalidArgument {
@@ -215,6 +219,8 @@ pub(super) async fn assemble_runtime(
             reason: error.to_string(),
         }
     })?;
+    #[cfg(any(test, feature = "test-support"))]
+    let computer_use = computer_use_override.or(computer_use);
     if let Some(computer_use) = &computer_use {
         let observer = ironclaw_assistant::computer_use::stop_observer(computer_use);
         processes
@@ -604,6 +610,8 @@ pub(super) async fn assemble_runtime(
     .map_err(|error| RebornRuntimeError::MalformedConfig {
         reason: error.to_string(),
     })?;
+    #[cfg(any(test, feature = "test-support"))]
+    let supermemory = supermemory_override.unwrap_or(supermemory);
     let (
         capability_factory,
         capability_input_resolver,
@@ -1360,6 +1368,8 @@ pub(super) async fn assemble_runtime(
     // goes through this ONE decorated coordinator, so a run cancelled before
     // its next drain flips its queued messages to `RejectedBusy` (resend
     // affordance) instead of leaving them `Queued` forever.
+    #[cfg(any(test, feature = "test-support"))]
+    let composition_child_runs = Arc::clone(&composition.child_runs);
     let planned_turn_coordinator: Arc<dyn TurnCoordinator> = Arc::new(
         ironclaw_turn_runner::steering_reconcile::CancelReconcilingTurnCoordinator::new(
             composition.coordinator.clone(),
@@ -1933,6 +1943,8 @@ pub(super) async fn assemble_runtime(
         channel_workflow_factory: channel_workflow_factory.clone(),
         _process_gate_query_source: process_gate_query_source,
         turn_tree_store: turn_projection,
+        #[cfg(any(test, feature = "test-support"))]
+        child_runs: composition_child_runs,
         thread_service,
         subagent_delivery: SubagentDeliveryRuntime {
             input_queue: host_input_queue,

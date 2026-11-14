@@ -371,10 +371,18 @@ impl RefreshingCapabilityPort {
                 Arc::clone(&self.gate_record_store),
             )?);
         }
+        let approval_stores = ironclaw_assistant::SyntheticApprovalStores {
+            approval_requests: Arc::clone(&self.approval_requests),
+            capability_leases: Arc::clone(&self.capability_leases),
+            approval_settings: Arc::clone(&self.approval_settings),
+            replay_payload_store: Arc::clone(&self.replay_payload_store),
+            gate_record_store: Arc::clone(&self.gate_record_store),
+        };
         if let Some(engine) = &self.orchestrator {
             synthetic_capabilities.extend(
                 ironclaw_assistant::orchestration::orchestrator_capabilities(
                     Arc::clone(engine),
+                    approval_stores.clone(),
                     self.fallback_user_id.clone(),
                 )?,
             );
@@ -399,13 +407,7 @@ impl RefreshingCapabilityPort {
             synthetic_capabilities.extend(
                 ironclaw_assistant::computer_use::computer_use_capabilities(
                     Arc::clone(computer_use),
-                    ironclaw_assistant::computer_use::ComputerUseApprovalStores {
-                        approval_requests: Arc::clone(&self.approval_requests),
-                        capability_leases: Arc::clone(&self.capability_leases),
-                        approval_settings: Arc::clone(&self.approval_settings),
-                        replay_payload_store: Arc::clone(&self.replay_payload_store),
-                        gate_record_store: Arc::clone(&self.gate_record_store),
-                    },
+                    approval_stores,
                     self.fallback_user_id.clone(),
                 )?,
             );
@@ -425,6 +427,9 @@ impl RefreshingCapabilityPort {
         if suppressed_scheduled_run {
             synthetic_capabilities.push(ironclaw_loop_host::nothing_to_report_result_capability()?);
         }
+        // Synthetics bypass the host catalog's approval narrowing; a run that
+        // cannot ask (unattended) loses the ones declared mutating here.
+        synthetic_capabilities.retain(|capability| capability.admitted_by(&self.surface_policy));
         let port = wrap_synthetic_capabilities(
             port,
             synthetic_capabilities,

@@ -15,7 +15,7 @@ use ironclaw_loop_contracts::{
 };
 use ironclaw_loop_host::{
     CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
-    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+    SyntheticCapabilityEffect, SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 use ironclaw_product_contracts::project_service::{ProjectService, ProjectServiceError};
 
@@ -38,6 +38,7 @@ pub fn project_create_capability(
             PROJECT_CREATE_PROVIDER_TOOL_NAME,
             PROJECT_CREATE_DESCRIPTION,
             project_create_input_schema(),
+            SyntheticCapabilityEffect::Mutating,
         )?,
         Arc::new(ProjectCreateHandler {
             project_service,

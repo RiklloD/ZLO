@@ -55,8 +55,8 @@ use ironclaw_assistant::{
     parse_notification_channels_set_input, set_notification_channels_for_model,
 };
 use ironclaw_loop_host::{
-    SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityHandler,
-    SyntheticCapabilityInvocation,
+    SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityEffect,
+    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 
 /// Host-authored, model-independent summary for the notification-channels
@@ -471,6 +471,7 @@ pub(super) fn notification_channels_set_capability(
             OUTBOUND_NOTIFICATION_CHANNELS_SET_PROVIDER_TOOL_NAME,
             OUTBOUND_NOTIFICATION_CHANNELS_SET_DESCRIPTION,
             notification_channels_set_input_schema(),
+            SyntheticCapabilityEffect::Mutating,
         )?,
         Arc::new(handler),
     ))
