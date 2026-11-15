@@ -13,6 +13,7 @@
 //! heartbeat loop died while its main task stayed blocked wakes up after
 //! recovery handed its run to a replacement, and must be refused.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     sync::{
         Arc,

@@ -45,6 +45,7 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_hooks",
     "ironclaw_host_runtime",
     "ironclaw_identity",
+    "ironclaw_loop_host",
     "ironclaw_mcp",
     "ironclaw_memory",
     "ironclaw_network",

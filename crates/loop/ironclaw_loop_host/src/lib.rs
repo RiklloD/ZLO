@@ -5,6 +5,7 @@
 //! host-managed model gateways) into the narrow `AgentLoopHost` ports. It does
 //! not own provider clients, tool dispatchers, secrets, or runtime handles.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     collections::{HashMap, HashSet},
     fmt,
@@ -754,7 +755,10 @@ where
             if let Err(error) = publish_result {
                 tracing::debug!("failed to emit personal context admitted milestone: {error}");
             } else {
-                // silent-ok: a racing emitter already marked the milestone; set-once is the goal
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "a racing emitter already marked the milestone; set-once is the goal"
+                )]
                 let _ = identity_candidates
                     .personal_context_admitted_cell_for_mode(mode)
                     .set(());

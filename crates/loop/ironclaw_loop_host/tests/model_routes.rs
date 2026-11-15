@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_loop_host::{
     ActiveModelRouteSettings, ModelRoute, ModelRoutePolicy, ModelRouteProviderKey,
     ModelRouteResolver, ModelSelectionMode, ModelSlot, StaticModelRouteResolver,

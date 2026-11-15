@@ -49,6 +49,10 @@ async fn cancelled_gate_persist_clears_reservation_so_replay_can_re_own() {
         .expect("save entered")
         .forget();
     handle.abort();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the task was aborted just above; its Cancelled join error is the expected outcome"
+    )]
     let _ = handle.await;
 
     // Replay must NOT hang on the orphaned reservation: it re-owns, saves, and

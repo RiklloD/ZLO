@@ -188,7 +188,11 @@ where
 
     /// Hide skills per run (a thread profile's hidden skills). First call wins.
     pub fn set_run_filter(&self, filter: Arc<dyn SkillRunFilter>) {
-        let _ = self.run_filter.set(filter); // silent-ok: already bound by an earlier wiring
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "set-once by contract; a later attach keeps the first value"
+        )]
+        let _ = self.run_filter.set(filter);
     }
 
     async fn hidden_for_run(
