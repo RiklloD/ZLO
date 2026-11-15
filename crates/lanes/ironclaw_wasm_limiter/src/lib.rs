@@ -11,6 +11,7 @@
 //! verbatim copy (plus the `memory_used`/`memory_limit` accessors, now folded
 //! in here); it imports this one instead.
 
+#![deny(clippy::let_underscore_must_use)]
 use wasmtime::ResourceLimiter;
 
 #[derive(Debug)]
@@ -151,7 +152,9 @@ mod tests {
         // Stage an approved grow.
         assert!(limiter.memory_growing(0, 32 * 1024, None).unwrap());
         // wasmtime reports the OS-level grow failed.
-        let _ = limiter.memory_grow_failed(wasmtime::Error::msg("simulated ENOMEM"));
+        limiter
+            .memory_grow_failed(wasmtime::Error::msg("simulated ENOMEM"))
+            .expect("the limiter absorbs a failed grow");
         // A second grow that would exceed the limit if the first attempt
         // were still counted must now succeed: the first attempt's
         // bookkeeping must have rolled back to zero.

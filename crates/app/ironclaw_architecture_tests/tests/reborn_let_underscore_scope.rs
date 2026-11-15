@@ -46,6 +46,7 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_secrets",
     "ironclaw_turn_runner",
     "ironclaw_wasm",
+    "ironclaw_wasm_limiter",
 ];
 
 const DENY_ATTRIBUTE: &str = "#![deny(clippy::let_underscore_must_use)]";
