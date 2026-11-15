@@ -12,6 +12,7 @@
 //!   undeclared path before the network, so a missing entry is an outage.
 //! - The internal setup guide mirrors the essentials.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::path::PathBuf;
 
 use ironclaw_host_api::action::NetworkMethod;

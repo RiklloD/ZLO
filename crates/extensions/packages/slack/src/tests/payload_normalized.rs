@@ -345,6 +345,7 @@ fn oversized_payload_and_missing_event_id_fail_closed() {
 proptest! {
     #[test]
     fn arbitrary_untrusted_bytes_never_panic(raw in proptest::collection::vec(any::<u8>(), 0..512)) {
+        #[expect(clippy::let_underscore_must_use, reason = "the property is only that untrusted bytes never panic; the result is irrelevant")]
         let _ = normalize_slack_event(&raw, &installation_id(), Some(TEST_BOT_USER_ID));
     }
 }

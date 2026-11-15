@@ -21,6 +21,7 @@
 //! * [`preference_targets`] — reply-target binding-ref grammar + the
 //!   preference-target codec for the generic triggered-delivery driver.
 
+#![deny(clippy::let_underscore_must_use)]
 #![forbid(unsafe_code)]
 
 mod api;
