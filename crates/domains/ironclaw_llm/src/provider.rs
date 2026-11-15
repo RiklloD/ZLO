@@ -8,6 +8,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::error::LlmError;
+use ironclaw_host_api::resource::ModelUsageSource;
 
 /// Role in a conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -617,6 +618,13 @@ pub struct CompletionResponse {
     /// Tokens written to the provider's server-side prompt cache (Anthropic).
     /// Zero when caching is not supported or no new prefix was cached.
     pub cache_creation_input_tokens: u32,
+    /// Who served this response, and so whether its usage was billed.
+    /// [`ModelUsageSource::ResponseCache`] means `CachedProvider` replayed an
+    /// earlier response: the token counts are that response's (the context
+    /// size is real) but no provider was called. Every provider adapter
+    /// reports [`ModelUsageSource::Provider`]. `ToolCompletionResponse` has no
+    /// such field because tool completions are never cached.
+    pub usage_source: ModelUsageSource,
 }
 
 /// Why the completion finished.

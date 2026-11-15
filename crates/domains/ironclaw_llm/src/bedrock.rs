@@ -155,6 +155,7 @@ impl LlmProvider for BedrockProvider {
             output_tokens,
             finish_reason: map_stop_reason(response.stop_reason()),
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             reasoning: None,
             cache_read_input_tokens: 0,
         })

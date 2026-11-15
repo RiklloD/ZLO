@@ -676,6 +676,7 @@ mod tests {
                     reasoning: None,
                     cache_read_input_tokens: 0,
                     cache_creation_input_tokens: 0,
+                    usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
                 }),
                 Err(reason) => Err(LlmError::StreamInterrupted {
                     provider: "streaming-outcome".to_string(),
@@ -892,6 +893,7 @@ mod tests {
                     reasoning: None,
                     cache_read_input_tokens: 0,
                     cache_creation_input_tokens: 0,
+                    usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
                 }))),
                 tool_complete_result: Mutex::new(Some(Ok(ToolCompletionResponse {
                     content: Some(content.to_string()),
@@ -1287,6 +1289,7 @@ mod tests {
                 reasoning: None,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
+                usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             })
         }
 

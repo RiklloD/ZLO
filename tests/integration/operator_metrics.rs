@@ -605,3 +605,154 @@ async fn token_series_fold_into_other_past_the_series_ceiling() {
         "the request itself folded too:\n{after}"
     );
 }
+
+/// `LLM_RESPONSE_CACHE_ENABLED=true`: two identical non-streaming model calls
+/// through the production provider chain, the production metering decorator
+/// outermost, and the production model gateway. The provider serves the first;
+/// the response cache replays the second. Tokens are counted once, the replay
+/// is counted as one cache hit, and the replayed usage reaches the loop with
+/// its full counts (context accounting needs them) marked as a cache replay —
+/// the provenance the budget accountant reads to charge nothing for it. The
+/// budget half is pinned where production sends non-streaming calls — the
+/// guarded system-inference port with the production accountant, in
+/// `ironclaw_loop_host`'s
+/// `llm_gateway.rs::response_cache_replay_is_budgeted_once_and_keeps_its_context_counts`
+/// (the interactive loop streams, and the cache never serves a streaming call).
+#[tokio::test]
+async fn a_response_cache_hit_is_counted_as_a_hit_not_as_tokens() {
+    use ironclaw_host_api::resource::ModelUsageSource;
+    use ironclaw_loop_contracts::ModelProfileId;
+    use ironclaw_loop_host::{
+        HostManagedModelGateway, HostManagedModelMessage, HostManagedModelMessageRole,
+        HostManagedModelRequest, LlmModelProfilePolicy, LlmProviderModelGateway,
+    };
+    use ironclaw_turns::{LoopMessageRef, TurnId, TurnRunId};
+
+    let metrics = Arc::new(OperatorMetrics::new());
+    let session_root = tempfile::tempdir().expect("session dir");
+    let session = ironclaw_llm::create_session_manager(ironclaw_llm::SessionConfig {
+        session_path: session_root.path().join("cache.session.json"),
+        ..ironclaw_llm::SessionConfig::default()
+    })
+    .await;
+    let mut config = ironclaw_llm::testing::nearai_test_config(SCRIPTED_MODEL_NAME);
+    config.response_cache_enabled = true;
+    // A second scripted step only a cache miss could consume.
+    let vendor = Arc::new(
+        scripted_trace_llm([
+            RebornScriptedReply::text("cached answer")
+                .with_usage(ScriptedTokenUsage::new(90, 12).with_cache(40, 0)),
+            RebornScriptedReply::text("a second provider call")
+                .with_usage(ScriptedTokenUsage::new(1, 1)),
+        ])
+        .with_provider_id(SCRIPTED_VENDOR),
+    );
+    let chain = ironclaw_llm::testing::provider_chain_over(
+        Arc::clone(&vendor) as Arc<dyn ironclaw_llm::LlmProvider>,
+        &config,
+        session,
+    )
+    .await
+    .expect("production provider chain builds");
+    let metered = ironclaw_composition::test_support::operator_metered_model_provider_for_test(
+        chain,
+        Arc::clone(&metrics),
+    );
+    let profile = ModelProfileId::new("interactive_model").expect("profile id");
+    let gateway = LlmProviderModelGateway::new(
+        metered,
+        LlmModelProfilePolicy::new().allow_model_profile(profile.clone(), None),
+    );
+    let message = |role, content: &str, reference: &str| HostManagedModelMessage {
+        role,
+        content: content.to_string(),
+        content_ref: LoopMessageRef::new(reference).expect("message ref"),
+        tool_result_provider_call: None,
+        tool_result_content: None,
+        image_parts: Vec::new(),
+    };
+    let request = HostManagedModelRequest {
+        model_profile_id: profile,
+        messages: vec![
+            message(
+                HostManagedModelMessageRole::System,
+                "system instructions",
+                "msg:11111111-1111-1111-1111-111111111111",
+            ),
+            message(
+                HostManagedModelMessageRole::User,
+                "the same question twice",
+                "msg:22222222-2222-2222-2222-222222222222",
+            ),
+        ],
+        surface_version: None,
+        fallback_index: 0,
+        resolved_model_route: None,
+        run_id: TurnRunId::new(),
+        turn_id: TurnId::new(),
+        thread_id: None,
+        tool_choice: None,
+        response_format: None,
+    };
+
+    let served = gateway
+        .stream_model(request.clone())
+        .await
+        .expect("provider serves the first call");
+    let replayed = gateway
+        .stream_model(request)
+        .await
+        .expect("the cache replays the second call");
+    assert_eq!(
+        vendor.calls(),
+        1,
+        "the second call never reached the provider"
+    );
+    let served_usage = served.usage.expect("served usage");
+    let replayed_usage = replayed.usage.expect("replayed usage");
+    assert_eq!(served_usage.usage_source, ModelUsageSource::Provider);
+    assert_eq!(
+        replayed_usage.usage_source,
+        ModelUsageSource::ResponseCache,
+        "the loop is told no provider billed the replay"
+    );
+    assert_eq!(
+        (
+            replayed_usage.input_tokens,
+            replayed_usage.output_tokens,
+            replayed_usage.cache_read_input_tokens
+        ),
+        (90, 12, 40),
+        "the replay keeps its counts for context accounting"
+    );
+
+    let after = scrape(&metrics).await;
+    for (kind, expected) in [("input", 90), ("output", 12), ("cache_read", 40)] {
+        assert_eq!(
+            tokens(&after, SCRIPTED_VENDOR, SCRIPTED_MODEL_NAME, kind),
+            expected,
+            "{kind} tokens are counted once, for the provider call:\n{after}"
+        );
+    }
+    assert_eq!(total_tokens(&after), 142, "{after}");
+    assert_eq!(
+        sample(
+            &after,
+            &format!(
+                "ironclaw_llm_response_cache_hits_total{{provider=\"{SCRIPTED_VENDOR}\",model=\"{SCRIPTED_MODEL_NAME}\"}}"
+            )
+        ),
+        1,
+        "one cache hit:\n{after}"
+    );
+    assert_eq!(
+        sample(
+            &after,
+            &format!(
+                "ironclaw_llm_requests_total{{provider=\"{SCRIPTED_VENDOR}\",model=\"{SCRIPTED_MODEL_NAME}\",outcome=\"success\"}}"
+            )
+        ),
+        2,
+        "both requests were answered:\n{after}"
+    );
+}

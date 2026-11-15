@@ -11,11 +11,12 @@ use ironclaw_llm::{
 };
 use rust_decimal::Decimal;
 
-use super::{LlmRequestLabels, LlmTokenUsage, OperatorMetrics};
+use super::{LlmRequestLabels, LlmResponseRecord, LlmTokenUsage, OperatorMetrics};
 
 /// Wraps the composed provider chain and records one sample per completion
-/// call: provider and served model as labels, token usage on success, a
-/// closed-vocabulary error kind on failure. Every other method delegates
+/// call: provider and served model as labels, token usage on success (a
+/// response-cache replay is counted as a hit instead), a closed-vocabulary
+/// error kind on failure. Every other method delegates
 /// unchanged — a wrapper delegates the complete provider trait
 /// (`ironclaw_llm/CONTRACT.md`).
 ///
@@ -47,7 +48,7 @@ impl MetricsLlmProvider {
         requested_model: Option<&str>,
         started: Instant,
         result: &Result<T, LlmError>,
-        usage: impl FnOnce(&T) -> LlmTokenUsage,
+        usage: impl FnOnce(&T) -> LlmResponseRecord,
     ) {
         let elapsed = started.elapsed();
         let outcome = match result {
@@ -74,22 +75,28 @@ impl MetricsLlmProvider {
     }
 }
 
-fn completion_usage(response: &CompletionResponse) -> LlmTokenUsage {
-    LlmTokenUsage {
+fn completion_usage(response: &CompletionResponse) -> LlmResponseRecord {
+    if !response.usage_source.is_provider() {
+        // Replayed by `CachedProvider`: its counts were counted when the
+        // provider first served them.
+        return LlmResponseRecord::ResponseCacheHit;
+    }
+    LlmResponseRecord::Provider(LlmTokenUsage {
         input: u64::from(response.input_tokens),
         output: u64::from(response.output_tokens),
         cache_read: u64::from(response.cache_read_input_tokens),
         cache_write: u64::from(response.cache_creation_input_tokens),
-    }
+    })
 }
 
-fn tool_completion_usage(response: &ToolCompletionResponse) -> LlmTokenUsage {
-    LlmTokenUsage {
+/// Tool completions are never served from the response cache.
+fn tool_completion_usage(response: &ToolCompletionResponse) -> LlmResponseRecord {
+    LlmResponseRecord::Provider(LlmTokenUsage {
         input: u64::from(response.input_tokens),
         output: u64::from(response.output_tokens),
         cache_read: u64::from(response.cache_read_input_tokens),
         cache_write: u64::from(response.cache_creation_input_tokens),
-    }
+    })
 }
 
 /// Stable, payload-free error label. Never the error's `Display`, which can

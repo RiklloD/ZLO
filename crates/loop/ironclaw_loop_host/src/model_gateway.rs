@@ -31,7 +31,9 @@ use crate::{
 };
 use async_trait::async_trait;
 use ironclaw_common::llm_costs::{default_cost, model_cost};
-use ironclaw_host_api::{approval::sha256_digest_token, ids::ProviderToolName};
+use ironclaw_host_api::{
+    approval::sha256_digest_token, ids::ProviderToolName, resource::ModelUsageSource,
+};
 use ironclaw_llm::{
     ChatMessage, CompletionRequest, CompletionResponse, CompletionStreamSink, ContentPart,
     FinishReason, ImageUrl, LlmError, LlmProvider, Role, ToolCall, ToolCompletionRequest,
@@ -2259,6 +2261,8 @@ async fn tool_response_to_host(
             output_tokens: response.output_tokens,
             cache_read_input_tokens: response.cache_read_input_tokens,
             cache_creation_input_tokens: response.cache_creation_input_tokens,
+            // Tool completions are never served from the response cache.
+            usage_source: ModelUsageSource::Provider,
         }));
     }
 
@@ -2289,6 +2293,8 @@ fn assistant_reply_from_tool_response(
                         output_tokens: response.output_tokens,
                         cache_read_input_tokens: response.cache_read_input_tokens,
                         cache_creation_input_tokens: response.cache_creation_input_tokens,
+                        // Tool completions are never served from the response cache.
+                        usage_source: ModelUsageSource::Provider,
                     }),
             )
         }
@@ -2301,6 +2307,8 @@ fn assistant_reply_from_tool_response(
             output_tokens: response.output_tokens,
             cache_read_input_tokens: response.cache_read_input_tokens,
             cache_creation_input_tokens: response.cache_creation_input_tokens,
+            // Tool completions are never served from the response cache.
+            usage_source: ModelUsageSource::Provider,
         })),
         FinishReason::ContentFilter => Err(HostManagedModelError::safe(
             HostManagedModelErrorKind::ContentFiltered,
@@ -2432,6 +2440,7 @@ fn response_to_host_reply(
         output_tokens: response.output_tokens,
         cache_read_input_tokens: response.cache_read_input_tokens,
         cache_creation_input_tokens: response.cache_creation_input_tokens,
+        usage_source: response.usage_source,
     };
     match response.finish_reason {
         FinishReason::Stop => {
@@ -3338,6 +3347,7 @@ mod tests {
                 reasoning: None,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
+                usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             })
         }
 

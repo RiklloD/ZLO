@@ -256,6 +256,7 @@ async fn get_run_state_surfaces_token_usage_and_priced_cost() {
             output_tokens: 500,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            ..Default::default()
         },
         LoopModelRouteSnapshot::new("openai", "gpt-4o", "config:v1", "auth:v1"),
     );
@@ -319,6 +320,7 @@ async fn get_run_state_prices_default_model_run_against_active_model() {
         output_tokens: 500,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     });
     let services = session_services(
         Arc::new(InMemorySessionThreadService::default()),
@@ -366,6 +368,7 @@ async fn get_run_state_default_model_run_omits_cost_without_active_model() {
         output_tokens: 500,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     });
     // No active-model reader wired (and a reader that reports no concrete model
     // behaves the same): the run reports token usage but omits cost rather than

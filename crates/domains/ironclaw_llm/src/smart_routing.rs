@@ -1679,6 +1679,7 @@ mod tests {
             reasoning: None,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         };
         assert!(SmartRoutingProvider::response_is_uncertain(&response));
     }
@@ -1693,6 +1694,7 @@ mod tests {
             reasoning: None,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         };
         assert!(SmartRoutingProvider::response_is_uncertain(&response));
     }
@@ -1707,6 +1709,7 @@ mod tests {
             reasoning: None,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         };
         assert!(!SmartRoutingProvider::response_is_uncertain(&response));
     }
@@ -1722,6 +1725,7 @@ mod tests {
             reasoning: None,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         };
         assert!(!SmartRoutingProvider::response_is_uncertain(&response));
     }
@@ -1785,6 +1789,7 @@ mod tests {
                 reasoning: None,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
+                usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             }
         }
     }

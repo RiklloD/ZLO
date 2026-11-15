@@ -681,12 +681,14 @@ async fn cumulative_usage_counts_capability_call_and_reply_turns() {
         output_tokens: 0,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     };
     let reply_usage = LoopModelUsage {
         input_tokens: 40,
         output_tokens: 20,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     };
     let calls = LoopModelResponse {
         usage: Some(calls_usage),
@@ -729,6 +731,7 @@ async fn cumulative_usage_counts_capability_call_and_reply_turns() {
                     output_tokens: 20,
                     cache_read_input_tokens: 0,
                     cache_creation_input_tokens: 0,
+                    ..Default::default()
                 })
             );
         }
@@ -748,6 +751,7 @@ async fn cumulative_usage_survives_model_retry_and_usage_less_response() {
         output_tokens: 19,
         cache_read_input_tokens: 11,
         cache_creation_input_tokens: 5,
+        ..Default::default()
     };
     let calls = LoopModelResponse {
         usage: Some(successful_usage),

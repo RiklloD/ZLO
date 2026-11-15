@@ -960,6 +960,7 @@ impl LlmProvider for NearAiChatProvider {
             reasoning: provider_reasoning,
             cache_read_input_tokens: cached_tokens.unwrap_or(0).min(input_tokens),
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         })
     }
 
@@ -1019,6 +1020,7 @@ impl LlmProvider for NearAiChatProvider {
             reasoning: provider_reasoning,
             cache_read_input_tokens: response.cache_read_input_tokens,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         })
     }
 

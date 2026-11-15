@@ -23,10 +23,12 @@
 //!   transition that counts a gate opened, and counting the discard would
 //!   make resolved exceed opened. A gate whose run ends (cancelled, failed)
 //!   while still pending stays in `opened - resolved`;
-//! - **LLM requests, tokens, errors** — the provider responses the model
-//!   gateway receives, observed by [`MetricsLlmProvider`] at the outermost
-//!   position of the provider chain, labelled from the request's own route
-//!   evidence after the call (see that type).
+//! - **LLM requests, tokens, errors, response-cache hits** — the provider
+//!   responses the model gateway receives, observed by [`MetricsLlmProvider`]
+//!   at the outermost position of the provider chain, labelled from the
+//!   request's own route evidence after the call (see that type). A response
+//!   the host replayed from its response cache counts as a hit, not as tokens:
+//!   no provider billed it.
 //!
 //! Label cardinality is bounded by construction: no label carries a tenant,
 //! user, thread, run, or invocation id, every label value is reduced to a
@@ -133,6 +135,15 @@ pub(crate) struct LlmRequestLabels<'a> {
     pub(crate) model: &'a str,
 }
 
+/// What one answered request contributes: the usage a provider billed, or a
+/// replay from the host's response cache (counted as a hit, never as tokens —
+/// the replayed counts were already counted when the provider served them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LlmResponseRecord {
+    Provider(LlmTokenUsage),
+    ResponseCacheHit,
+}
+
 /// Token counts one successful provider response reported.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct LlmTokenUsage {
@@ -158,6 +169,7 @@ struct MetricsState {
     llm_requests: LabeledCounter,
     llm_errors: LabeledCounter,
     llm_tokens: LabeledCounter,
+    llm_response_cache_hits: LabeledCounter,
     llm_request_duration: LabeledHistogram,
     approvals_opened: u64,
     approvals_resolved: LabeledCounter,
@@ -276,12 +288,13 @@ impl OperatorMetrics {
         );
     }
 
-    /// One provider request finished — `Ok` with its token usage, or `Err`
-    /// with a closed-vocabulary error kind.
+    /// One provider request finished — `Ok` with what the response
+    /// contributes (billed usage or a response-cache hit), or `Err` with a
+    /// closed-vocabulary error kind.
     pub(crate) fn record_llm_request(
         &self,
         labels: LlmRequestLabels<'_>,
-        outcome: Result<LlmTokenUsage, &'static str>,
+        outcome: Result<LlmResponseRecord, &'static str>,
         duration: Duration,
     ) {
         let mut provider = label_value(labels.provider);
@@ -316,7 +329,17 @@ impl OperatorMetrics {
             .llm_request_duration
             .observe(vec![outcome_label.into()], duration);
         match outcome {
-            Ok(usage) => {
+            Ok(LlmResponseRecord::ResponseCacheHit) => {
+                state.llm_response_cache_hits.increment(
+                    &mut state.overflow,
+                    "llm_response_cache_hits",
+                    vec![provider, model],
+                    OPEN_OPEN,
+                    1,
+                    MAX_LLM_SERIES,
+                );
+            }
+            Ok(LlmResponseRecord::Provider(usage)) => {
                 for (kind, count) in [
                     ("input", usage.input),
                     ("output", usage.output),
@@ -415,6 +438,13 @@ impl OperatorMetrics {
                 "Tokens reported by LLM providers, by provider, model and token kind.",
                 &["provider", "model", "kind"],
                 &state.llm_tokens,
+            )?;
+            render_counter(
+                out,
+                "ironclaw_llm_response_cache_hits_total",
+                "LLM requests answered from the host response cache (no provider call, no tokens billed), by provider and model.",
+                &["provider", "model"],
+                &state.llm_response_cache_hits,
             )?;
             render_histogram(
                 out,

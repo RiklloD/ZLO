@@ -400,6 +400,7 @@ impl OpenAiCodexProvider {
             reasoning: parsed.reasoning,
             cache_read_input_tokens: parsed.cached_input_tokens,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         })
     }
 

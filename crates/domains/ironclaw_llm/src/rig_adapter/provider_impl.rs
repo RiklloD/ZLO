@@ -104,6 +104,7 @@ where
             reasoning,
             cache_read_input_tokens: saturate_u32(response.usage.cached_input_tokens),
             cache_creation_input_tokens: extract_cache_creation(raw_response.as_ref()),
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         };
 
         if resp.cache_read_input_tokens > 0 {
@@ -181,6 +182,7 @@ where
             reasoning: drained.reasoning,
             cache_read_input_tokens: saturate_u32(drained.usage.cached_input_tokens),
             cache_creation_input_tokens: drained.cache_creation_input_tokens,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         };
 
         if resp.cache_read_input_tokens > 0 {

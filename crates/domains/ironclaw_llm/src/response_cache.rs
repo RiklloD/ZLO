@@ -14,6 +14,11 @@
 //! │  complete_with_tools() ──► always call inner       │
 //! └──────────────────────────────────────────────────┘
 //! ```
+//!
+//! A hit returns the stored response with
+//! `usage_source = ModelUsageSource::ResponseCache`: the token counts are the
+//! original call's (context accounting still needs them) but nothing was
+//! billed, so spend accounting must not charge them again.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -236,7 +241,11 @@ impl LlmProvider for CachedProvider {
                     entry.hit_count += 1;
                     let hit_count = entry.hit_count;
                     // Clone now so we can release the mutable borrow before stats.
-                    let cached_response = entry.response.clone();
+                    // A replay keeps the original counts (they still size the
+                    // context) but no provider billed it this time.
+                    let mut cached_response = entry.response.clone();
+                    cached_response.usage_source =
+                        ironclaw_host_api::resource::ModelUsageSource::ResponseCache;
                     tracing::trace!(hits = hit_count, "response cache hit");
                     // Drop the mutable borrow of `entry` before reading `guard` immutably.
                     let _ = entry;
@@ -432,6 +441,7 @@ mod tests {
                 reasoning: None,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
+                usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             })
         }
 
@@ -592,6 +602,39 @@ mod tests {
         assert_eq!(r2.content, "cached response");
 
         assert_eq!(cached.total_hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn cache_hit_reports_replayed_usage_as_served_from_the_cache() {
+        use ironclaw_host_api::resource::ModelUsageSource;
+
+        let stub = Arc::new(StubLlm::new("cached response"));
+        let cached = CachedProvider::new(
+            stub.clone(),
+            ResponseCacheConfig {
+                ttl: Duration::from_secs(60),
+                max_entries: 100,
+            },
+        );
+
+        let served = cached.complete(simple_request()).await.unwrap();
+        assert_eq!(served.usage_source, ModelUsageSource::Provider);
+        let replayed = cached.complete(simple_request()).await.unwrap();
+        assert_eq!(stub.calls(), 1, "the second call is a cache hit");
+        assert_eq!(
+            replayed.usage_source,
+            ModelUsageSource::ResponseCache,
+            "a hit must say no provider billed it"
+        );
+        // The counts are the replayed response's: they still size the context.
+        assert_eq!(
+            (replayed.input_tokens, replayed.output_tokens),
+            (served.input_tokens, served.output_tokens)
+        );
+        // The stored entry stays provider-sourced, so a later miss path that
+        // re-reads it is not affected, and every hit is marked.
+        let again = cached.complete(simple_request()).await.unwrap();
+        assert_eq!(again.usage_source, ModelUsageSource::ResponseCache);
     }
 
     #[tokio::test]

@@ -726,6 +726,15 @@ fn usage_for_reported_usage(
     effective_model: &ModelProfileId,
     default_cost: &ModelCost,
 ) -> ResourceUsage {
+    if !usage.usage_source.is_provider() {
+        // A response-cache replay: the counts size the context, but no
+        // provider was called, so it spends neither USD nor token quota.
+        // Settling to zero still releases the call's reservation.
+        return ResourceUsage {
+            output_bytes,
+            ..ResourceUsage::default()
+        };
+    }
     let cost = cost_table
         .cost_for(effective_model)
         .unwrap_or(*default_cost);
@@ -1369,6 +1378,78 @@ mod tests {
         );
         assert_eq!(snapshot.ledger.spent.input_tokens, 7);
         assert_eq!(snapshot.ledger.spent.output_tokens, 3);
+    }
+
+    #[tokio::test]
+    async fn post_model_call_charges_nothing_for_a_response_cache_replay() {
+        // A replay from the host response cache reports the original call's
+        // counts (the context is that big) but no provider billed it: the
+        // reservation must settle to zero spend, and the counts must survive
+        // on the response for context accounting.
+        let governor: Arc<dyn ResourceGovernor> = Arc::new(InMemoryResourceGovernor::new());
+        let context = run_context();
+        let user_account = ResourceAccount::user(
+            context.scope.tenant_id.clone(),
+            UserId::new("acct-user").unwrap(),
+        );
+        governor
+            .set_limit(
+                user_account.clone(),
+                ResourceLimits::default()
+                    .set_max_usd(dec!(10_000.00))
+                    .set_period(BudgetPeriod::Rolling24h),
+            )
+            .unwrap();
+        let cost = ModelCost {
+            input_per_token: dec!(0.01),
+            output_per_token: dec!(0.10),
+            max_output_tokens: 1024,
+        };
+        let accountant = GovernorBackedAccountant::new(governor.clone(), Arc::new(CostStub(cost)));
+        let request = sample_request();
+        let response = |usage_source| LoopModelResponse {
+            chunks: vec![],
+            safe_reasoning_deltas: Vec::new(),
+            output: ironclaw_loop_contracts::ParentLoopOutput::AssistantReply(
+                ironclaw_loop_contracts::AssistantReply {
+                    content: "ok".to_string(),
+                },
+            ),
+            effective_model_profile_id: ModelProfileId::new("acct_model").unwrap(),
+            usage: Some(ironclaw_loop_contracts::LoopModelUsage {
+                input_tokens: 7,
+                output_tokens: 3,
+                usage_source,
+                ..Default::default()
+            }),
+        };
+        for usage_source in [
+            ironclaw_host_api::resource::ModelUsageSource::Provider,
+            ironclaw_host_api::resource::ModelUsageSource::ResponseCache,
+        ] {
+            accountant.pre_model_call(&context, &request).await.unwrap();
+            accountant
+                .post_model_call(
+                    &context,
+                    &request,
+                    ModelCallOutcome::Success(&response(usage_source)),
+                )
+                .await
+                .unwrap();
+        }
+        let snapshot = governor.account_snapshot(&user_account).unwrap().unwrap();
+        assert_eq!(
+            snapshot.ledger.spent.usd,
+            dec!(0.37),
+            "only the provider-served call is charged (7 * $0.01 + 3 * $0.10)"
+        );
+        assert_eq!(snapshot.ledger.spent.input_tokens, 7);
+        assert_eq!(snapshot.ledger.spent.output_tokens, 3);
+        assert_eq!(
+            snapshot.ledger.reserved.usd,
+            Decimal::ZERO,
+            "the replay's reservation is settled, not left held"
+        );
     }
 
     #[tokio::test]

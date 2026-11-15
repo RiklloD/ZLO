@@ -961,6 +961,7 @@ impl LlmProvider for TraceLlm {
                         reasoning: None,
                         cache_read_input_tokens,
                         cache_creation_input_tokens,
+                        usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
                     });
                 }
                 TraceResponse::ToolCalls { .. } => {

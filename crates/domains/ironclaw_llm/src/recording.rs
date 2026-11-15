@@ -1558,6 +1558,7 @@ mod tests {
                 reasoning: None,
                 cache_read_input_tokens: 1,
                 cache_creation_input_tokens: 2,
+                usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             })
         }
 
