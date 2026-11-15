@@ -219,6 +219,10 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
         // silent-ok: the v2 tombstone (the authority) is committed; the legacy
         // manifest projection mirrors it best-effort and startup repair
         // converges it.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the v2 record (the authority) is committed; this legacy projection is best-effort and startup repair converges it"
+        )]
         let _ = self.put_manifest(&manifest, CasExpectation::Any).await;
         Ok(())
     }
@@ -235,7 +239,15 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
         // the install has succeeded; failing on a compatibility-projection
         // write would make callers compensate against a live install and
         // leave a ghost. Startup repairs the projections from v2.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the v2 record (the authority) is committed; this legacy projection is best-effort and startup repair converges it"
+        )]
         let _ = self.put_manifest(&manifest, CasExpectation::Any).await;
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the v2 record (the authority) is committed; this legacy projection is best-effort and startup repair converges it"
+        )]
         let _ = self
             .put_installation(&installation, CasExpectation::Any)
             .await;
@@ -293,6 +305,10 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
         // silent-ok: v2 is authoritative and committed; see
         // upsert_manifest_and_installation for why the projection write must
         // not fail the operation. Startup repairs the projection from v2.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the v2 record (the authority) is committed; this legacy projection is best-effort and startup repair converges it"
+        )]
         let _ = self
             .put_installation(&installation, CasExpectation::Any)
             .await;
@@ -384,6 +400,10 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
         .map_err(|error| map_extension_state_cas_error(error, "installation"))?;
         // The v2 row is authoritative. Keep the legacy projection best effort;
         // startup repair converges it if this compatibility write races.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the v2 record (the authority) is committed; this legacy projection is best-effort and startup repair converges it"
+        )]
         let _ = self.put_manifest(&manifest, CasExpectation::Any).await;
         Ok(())
     }
@@ -422,6 +442,10 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
                 // or retry; the matching lease is cleared, while a newer lease
                 // is preserved, and the original rejection remains the error
                 // the caller must see.
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "best-effort lease release; the original rejection is the error the caller must see, and repair clears a stranded lease"
+                )]
                 let _ = self
                     .clear_v2_preparation_lease(
                         installation_id,
@@ -436,9 +460,17 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
         // The v2 aggregate has committed. Compatibility rows are repaired at
         // next open, so a projection failure must not make callers undo the
         // winner or expose a partial publication.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the v2 record (the authority) is committed; this legacy projection is best-effort and startup repair converges it"
+        )]
         let _ = self
             .put_manifest(&finalized_manifest, CasExpectation::Any)
             .await;
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the v2 record (the authority) is committed; this legacy projection is best-effort and startup repair converges it"
+        )]
         let _ = self
             .put_installation(&installation, CasExpectation::Any)
             .await;
@@ -501,6 +533,10 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
             Err(rejection) => {
                 // The lease was committed above. Keep the pending aggregate
                 // immediately visible if the checkpoint CAS fails.
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "best-effort lease release; the original rejection is the error the caller must see, and repair clears a stranded lease"
+                )]
                 let _ = self
                     .clear_v2_preparation_lease(
                         installation_id,
@@ -512,9 +548,17 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
             }
         };
         let installation = self.reconstruct_v2_installation(&core).await?;
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the v2 record (the authority) is committed; this legacy projection is best-effort and startup repair converges it"
+        )]
         let _ = self
             .put_manifest(&next_pending_manifest, CasExpectation::Any)
             .await;
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the v2 record (the authority) is committed; this legacy projection is best-effort and startup repair converges it"
+        )]
         let _ = self
             .put_installation(&installation, CasExpectation::Any)
             .await;
@@ -584,6 +628,10 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
         // silent-ok: the membership row (the authority) is committed; a
         // projection-write failure must not report the join as failed.
         // Startup repairs the projection from v2.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the v2 record (the authority) is committed; this legacy projection is best-effort and startup repair converges it"
+        )]
         let _ = self
             .put_installation(&installation, CasExpectation::Any)
             .await;

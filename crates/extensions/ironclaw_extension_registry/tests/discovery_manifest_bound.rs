@@ -6,6 +6,7 @@
 //! filesystem whose `get` (the body read) PANICS — discovery must reject the
 //! oversized manifest via `stat` alone and never call `get`.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

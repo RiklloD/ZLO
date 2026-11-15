@@ -1,5 +1,6 @@
 //! Extension Manifest v2 contract tests.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_extension_contracts::surface::CapabilitySurfaceKind;

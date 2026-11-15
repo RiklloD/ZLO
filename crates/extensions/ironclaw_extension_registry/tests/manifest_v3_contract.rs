@@ -5,6 +5,7 @@
 //! `ExtensionManifestRecord::from_toml` entry point and normalize into the
 //! same [`ResolvedExtensionManifest`] (checklist MAN-2).
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_extension_contracts::{
