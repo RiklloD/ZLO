@@ -7,6 +7,7 @@
 //! percentage/reset rules. Every endpoint is undocumented, so parsing treats
 //! every field as optional and drops a window rather than failing a provider.
 
+#![deny(clippy::let_underscore_must_use)]
 mod antigravity;
 mod claude;
 mod codex;

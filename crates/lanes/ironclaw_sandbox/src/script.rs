@@ -496,17 +496,31 @@ fn execute_docker_request(
             break status;
         }
         if started.elapsed() >= timeout {
-            // silent-ok: best-effort kill of a timed-out script; the timeout is returned below
-            let _ = child.kill();
-            // silent-ok: reaping the child killed just above
-            let _ = child.wait();
+            // Best-effort: the timeout is returned below either way, but a
+            // failed kill or reap is worth a trace (a failed kill can leave
+            // the reap blocking on the script).
+            if let Err(error) = child.kill() {
+                tracing::debug!(%error, "killing a timed-out script's docker child failed");
+            }
+            if let Err(error) = child.wait() {
+                tracing::debug!(%error, "reaping a timed-out script's docker child failed");
+            }
             if let Some(stdin_writer) = stdin_writer.take() {
-                // silent-ok: a panicked pipe thread only loses output of a script that already timed out
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "a panicked pipe thread only loses output of a script that already timed out"
+                )]
                 let _ = stdin_writer.join();
             }
-            // silent-ok: a panicked pipe thread only loses output of a script that already timed out
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a panicked pipe thread only loses output of a script that already timed out"
+            )]
             let _ = stdout_reader.join();
-            // silent-ok: a panicked pipe thread only loses output of a script that already timed out
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a panicked pipe thread only loses output of a script that already timed out"
+            )]
             let _ = stderr_reader.join();
             return Err(format!(
                 "script timed out after {} ms",

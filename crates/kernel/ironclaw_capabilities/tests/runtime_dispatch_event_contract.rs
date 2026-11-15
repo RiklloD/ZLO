@@ -8,6 +8,7 @@
 //! `runtime_selected` (from the resolved binding's provider/runtime) →
 //! `dispatch_succeeded`/`dispatch_failed`.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -9,6 +9,7 @@
 //! constructs both the backing filesystem and the repo per call, so
 //! contracts cannot leak state into each other.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_filesystem::InMemoryBackend;

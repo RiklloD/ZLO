@@ -916,7 +916,6 @@ mod tests {
     /// "logged the detail" from "dropped it".
     #[test]
     fn output_serialization_failure_maps_to_output_decode_and_logs_the_detail() {
-        use std::io::Write as _;
         use std::sync::{Arc, Mutex};
 
         #[derive(Clone, Default)]
@@ -967,7 +966,6 @@ mod tests {
             rendered.contains("key must be a string"),
             "the detail belongs in the debug log, not nowhere: {rendered}"
         );
-        let _ = std::io::sink().flush();
     }
 
     use ironclaw_auth::{

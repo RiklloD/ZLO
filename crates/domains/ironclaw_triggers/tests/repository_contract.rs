@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use chrono::{SecondsFormat, TimeZone, Utc};
 use ironclaw_filesystem::{LibSqlRootFilesystem, RootFilesystem, SeqNo};
 use ironclaw_host_api::turn::TurnRunId;

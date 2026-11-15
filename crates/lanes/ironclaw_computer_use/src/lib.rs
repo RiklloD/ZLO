@@ -30,6 +30,7 @@
 //! | `catalog` | The server's tool definitions, embedded verbatim |
 //! | `client` | The `ironclaw_mcp::McpClient` and `ComputerUseSessions` port implementations |
 
+#![deny(clippy::let_underscore_must_use)]
 mod args;
 mod capture;
 mod catalog;

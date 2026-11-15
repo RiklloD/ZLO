@@ -311,10 +311,18 @@ impl RestrictedEgress for FakeSlackAgentApi {
             }
             Some(Fault::SlackError { error, .. }) => return Ok(slack_error(error)),
             Some(Fault::TransportAfterAccept { .. }) => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the fault simulates the server having applied the request; the fault decides the response"
+                )]
                 let _ = handle(&mut state, &request, endpoint);
                 return Err(transport_error("connection reset after write"));
             }
             Some(Fault::InvalidBody { .. }) => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the fault simulates the server having applied the request; the fault decides the response"
+                )]
                 let _ = handle(&mut state, &request, endpoint);
                 return Ok(RestrictedEgressResponse {
                     status: 200,
@@ -323,6 +331,10 @@ impl RestrictedEgress for FakeSlackAgentApi {
                 });
             }
             Some(Fault::BareOk { .. }) => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the fault simulates the server having applied the request; the fault decides the response"
+                )]
                 let _ = handle(&mut state, &request, endpoint);
                 return Ok(ok(json!({ "ok": true })));
             }

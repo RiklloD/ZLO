@@ -16,6 +16,7 @@
 //!   cargo test -p ironclaw_memory_mem0 --test live_local_mem0 -- --ignored --nocapture
 //! ```
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -1059,10 +1059,11 @@ mod tests {
     fn authority_lock_failure_does_not_mask_primary_storage_error() {
         let governor = FilesystemResourceGovernor::new(scoped_resources_fs());
         let authority = governor.authority().expect("authority");
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let poisoning = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = governor.authority.lock().expect("authority lock");
             panic!("poison authority lock for recovery coverage");
         }));
+        assert!(poisoning.is_err(), "the poisoning closure must panic");
         let primary_reason = "primary durable journal write failed";
 
         let result: Result<(), ResourceError> = governor.invalidate_authority(

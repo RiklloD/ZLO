@@ -17,6 +17,7 @@
 //! same way as quota denials: do not start costed or quota-limited work until a
 //! reservation operation succeeds.
 
+#![deny(clippy::let_underscore_must_use)]
 mod cas_snapshot;
 mod event;
 mod filesystem_governor;
@@ -1086,8 +1087,13 @@ fn write_file_snapshot_atomically(
         .and_then(|()| replace_file_atomically(&temp_path, path))
         .and_then(|()| sync_parent_dir(path));
     if write_result.is_err() {
-        // silent-ok: temp-file cleanup; the write error is returned
-        let _ = std::fs::remove_file(&temp_path);
+        // Temp-file cleanup; the write error is returned either way.
+        if let Err(cleanup_error) = std::fs::remove_file(&temp_path) {
+            tracing::debug!(
+                error = %cleanup_error,
+                "resource snapshot temp-file cleanup failed after a failed write"
+            );
+        }
     }
     write_result
 }

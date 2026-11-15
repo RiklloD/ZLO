@@ -2,6 +2,7 @@
 //! bounded and validated on the wire, and every row persisted before it
 //! existed still loads.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::{
     audit::{ApprovalDecisionKind, DecisionSummary},
     turn::{DENIAL_FEEDBACK_MAX_CHARS, DenialFeedback, DenialFeedbackError, GateResumeDisposition},

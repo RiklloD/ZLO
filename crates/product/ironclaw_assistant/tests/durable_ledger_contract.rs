@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

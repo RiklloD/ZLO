@@ -173,7 +173,10 @@ where
                 .await;
             match publish_result {
                 Ok(()) => {
-                    // silent-ok: a racing emitter already marked the milestone; set-once is the goal
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "a racing emitter already marked the milestone; set-once is the goal"
+                    )]
                     let _ = emitted.set(());
                 }
                 Err(error) => {

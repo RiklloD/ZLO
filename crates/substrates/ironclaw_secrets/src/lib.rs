@@ -7,6 +7,7 @@
 //! injection is not enforced until a higher-level obligation-handler/runtime
 //! composition slice consumes these primitives.
 
+#![deny(clippy::let_underscore_must_use)]
 mod crypto;
 pub mod keychain;
 mod legacy_store;

@@ -75,6 +75,10 @@ where
                 Ok(_) => ProductSurfaceError::not_found(),
                 Err(error) => error,
             };
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the subscription stream may have closed between the revalidation and this send; either way the task ends"
+            )]
             let _ = access_error_sender.send(error).await;
             return;
         }

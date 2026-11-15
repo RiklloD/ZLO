@@ -296,6 +296,10 @@ mod tests {
     impl Drop for ScopeCleanup {
         fn drop(&mut self) {
             let dir = trace_contribution_dir_for_scope(Some(self.0.as_str()));
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "best-effort test teardown in Drop; a failure must not mask the test's own outcome"
+            )]
             let _ = std::fs::remove_dir_all(dir);
         }
     }

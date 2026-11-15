@@ -356,7 +356,10 @@ impl ProcessSupervisorHandle {
     }
 
     pub async fn shutdown(mut self) {
-        // silent-ok: no receiver means the supervisor already stopped
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "no receiver means the supervisor already stopped"
+        )]
         let _ = self.shutdown_tx.send(true);
         if let Some(supervisor) = self.supervisor.take()
             && let Err(error) = supervisor.await
@@ -372,7 +375,10 @@ impl ProcessSupervisorHandle {
 
 impl Drop for ProcessSupervisorHandle {
     fn drop(&mut self) {
-        // silent-ok: no receiver means the supervisor already stopped
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "no receiver means the supervisor already stopped"
+        )]
         let _ = self.shutdown_tx.send(true);
     }
 }
@@ -707,7 +713,10 @@ fn spawn_executor(
                 relinquish(&runtime, &identity).await;
             }
             drop(permit);
-            // silent-ok: a closed command channel means the supervisor is shutting down
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a closed command channel means the supervisor is shutting down"
+            )]
             let _ = command_tx.send(SupervisorCommand::Drain).await;
             process_id
         }
@@ -903,7 +912,10 @@ fn static_failure(category: &'static str) -> Option<SanitizedFailure> {
 fn schedule_retry(command_tx: mpsc::Sender<SupervisorCommand>, delay: Duration) {
     tokio::spawn(async move {
         sleep(delay).await;
-        // silent-ok: a closed command channel means the supervisor is shutting down
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a closed command channel means the supervisor is shutting down"
+        )]
         let _ = command_tx.send(SupervisorCommand::RetryDrain).await;
     });
 }
@@ -1515,6 +1527,10 @@ mod tests {
         let notifier = handle.wake_notifier();
 
         for _ in 0..16 {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the test floods duplicate wakes on purpose; a full command channel refusing some of them is part of the scenario"
+            )]
             let _ = notifier.notify_scope(scope());
         }
         tokio::time::timeout(Duration::from_secs(2), started.notified())

@@ -10,6 +10,7 @@
 //! production removal is the service path (`remove_record` + auth cleanup) and
 //! is covered through the composition services.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_extension_contracts::channel_adapter::ChannelSurfaces;
 use ironclaw_extension_contracts::state::InstallationState;
 use std::sync::Arc;

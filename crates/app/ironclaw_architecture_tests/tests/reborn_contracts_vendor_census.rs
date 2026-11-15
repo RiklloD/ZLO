@@ -61,6 +61,7 @@
 //! compiled, passed locally, and reported `running 0 tests` under the exact
 //! command CI uses.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

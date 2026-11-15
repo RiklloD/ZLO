@@ -5,6 +5,7 @@
 //! `wit/tool.wit` instead of the temporary JSON pointer/length ABI that was
 //! abandoned before landing.
 
+#![deny(clippy::let_underscore_must_use)]
 mod bindings;
 mod config;
 mod error;

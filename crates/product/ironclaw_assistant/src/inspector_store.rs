@@ -3074,10 +3074,11 @@ mod tests {
     #[test]
     fn poisoned_state_returns_a_redacted_error() {
         let store = InMemoryDiagnosticStore::new(tiny_limits()).expect("store");
-        let _ = catch_unwind(AssertUnwindSafe(|| {
+        let poisoning = catch_unwind(AssertUnwindSafe(|| {
             let _guard = store.state.write().expect("lock before poison");
             panic!("poison store lock");
         }));
+        assert!(poisoning.is_err(), "the poisoning closure must panic");
         let error = store
             .snapshot(&scope("tenant", "user", "thread", TurnRunId::new()))
             .expect_err("poison must fail closed");

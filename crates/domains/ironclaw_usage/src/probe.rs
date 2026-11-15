@@ -70,7 +70,11 @@ pub(crate) async fn run(
     if result.is_none() {
         tracing::debug!(binary = %binary.display(), "usage probe gave no answer");
     }
-    let _ = child.start_kill(); // silent-ok: the child may have exited already
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the child may have exited already"
+    )]
+    let _ = child.start_kill();
     result
 }
 

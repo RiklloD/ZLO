@@ -34,6 +34,7 @@
 //!    exercised over every impl shape the workspace actually uses, every I/O
 //!    error is fatal, and each walk asserts it found something.
 
+#![deny(clippy::let_underscore_must_use)]
 // The shared walker is compiled per test binary; each binary uses a subset.
 #[allow(dead_code)]
 mod ratchet_support;

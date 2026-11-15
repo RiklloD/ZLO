@@ -21,6 +21,7 @@
 //! review question; whether every item has exactly one owner is a mechanical
 //! one, and that is what is enforced.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

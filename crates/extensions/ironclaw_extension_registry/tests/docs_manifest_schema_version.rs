@@ -11,6 +11,7 @@
 //! removed fence entry widens this scan with it. Fenced areas may
 //! legitimately name retired versions.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

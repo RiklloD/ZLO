@@ -1,6 +1,7 @@
 // arch-exempt: large_file, mechanical §4.3 store swap only — test seams repointed from deleted InMemory*Store doubles to the production stores over InMemoryBackend, plan #6168
 //! Contract tests for the InboundTurnService.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

@@ -15,6 +15,7 @@
 //! every term on purpose. The list is shrink-only and pinned to reality — see
 //! `SANCTIONED_PATHS`.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

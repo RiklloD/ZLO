@@ -9,6 +9,7 @@
 //! finished job's status read back, and that no request input reaches the
 //! port (it takes none, and a body is refused before the handler).
 
+#![deny(clippy::let_underscore_must_use)]
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;

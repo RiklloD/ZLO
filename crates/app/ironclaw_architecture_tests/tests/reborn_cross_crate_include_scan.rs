@@ -48,6 +48,7 @@
 //! here — `providers.json` exists and is COPYd, and is still a reach outside
 //! `ironclaw_llm`. The two are complementary; neither subsumes the other.
 
+#![deny(clippy::let_underscore_must_use)]
 // Only `workspace_root` is reachable from this binary; the type-def scanners in
 // the shared module belong to the sibling ratchet binaries.
 #[allow(dead_code)]

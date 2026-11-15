@@ -1,5 +1,6 @@
 //! Real-Docker proof for persistent per-user containers and workspaces.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{collections::HashMap, process::Command, sync::Arc, time::Duration};
 
 use ironclaw_host_api::{
@@ -624,6 +625,10 @@ async fn aborting_caller_does_not_release_same_user_serialization() {
     )
     .await;
     first.abort();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the task was aborted just above; its Cancelled join error is the expected outcome"
+    )]
     let _ = first.await;
 
     let second = transport

@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use async_trait::async_trait;
 use ironclaw_authorization::*;
 use ironclaw_capabilities::*;

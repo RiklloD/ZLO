@@ -5,6 +5,7 @@
 //! not render SSE/WebSocket/channel frames and does not read durable logs
 //! directly.
 
+#![deny(clippy::let_underscore_must_use)]
 mod admission;
 mod error;
 mod keys;

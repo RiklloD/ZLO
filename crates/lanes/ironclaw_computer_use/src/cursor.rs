@@ -177,7 +177,10 @@ impl CursorWatch {
 
     pub(crate) async fn finish(mut self) {
         if let Some(stop) = self.stop.take() {
-            // silent-ok: the task may have ended already.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the task may have ended already and dropped its stop receiver"
+            )]
             let _ = stop.send(());
         }
         if tokio::time::timeout(Duration::from_millis(500), &mut self.task)

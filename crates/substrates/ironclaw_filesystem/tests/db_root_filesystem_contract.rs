@@ -1,4 +1,6 @@
 // arch-exempt: large_file, backend parity contracts stay in one shared behavioral suite, plan #5274
+
+#![deny(clippy::let_underscore_must_use)]
 use std::time::Duration;
 
 use ironclaw_filesystem::PostgresRootFilesystem;
@@ -2656,9 +2658,13 @@ mod postgres_tests {
             } = self;
             drop(filesystem);
             drop(client);
-            let _ = admin
+            if let Err(error) = admin
                 .execute(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"), &[])
-                .await;
+                .await
+            {
+                // The next run's stale sweep collects it; say so rather than leak silently.
+                eprintln!("isolated database {name} was not dropped: {error}");
+            }
         }
     }
 
@@ -2685,6 +2691,10 @@ mod postgres_tests {
             .await
             .expect("connect to the resolved postgres server");
         tokio::spawn(async move {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the task only drives the connection; a broken connection fails the client's next query"
+            )]
             let _ = connection.await;
         });
 
@@ -2700,6 +2710,10 @@ mod postgres_tests {
         {
             for row in stale {
                 let name = row.get::<_, String>(0);
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "a stale database another run still holds open refuses to drop, which is the intended outcome when binaries share a server"
+                )]
                 let _ = admin
                     .execute(&format!("DROP DATABASE IF EXISTS {name}"), &[])
                     .await;
@@ -2732,6 +2746,10 @@ mod postgres_tests {
             .await
             .expect("connect to the isolated database");
         tokio::spawn(async move {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the task only drives the connection; a broken connection fails the client's next query"
+            )]
             let _ = connection.await;
         });
 
@@ -3218,6 +3236,10 @@ mod postgres_tests {
             // `delete_if_version` must wait, then report the updated row as
             // stale rather than collapsing every waited-on version change to
             // NotFound.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the receiver belongs to the test body, which has already failed if it is gone"
+            )]
             let _ = updated_tx.send(());
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             racer_client.batch_execute("COMMIT").await.unwrap();

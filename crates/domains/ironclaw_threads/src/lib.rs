@@ -8,6 +8,7 @@
 //! per-backend impls. See
 //! `docs/internal/plans/2026-05-16-scoped-filesystem-tenant-isolation.md`.
 
+#![deny(clippy::let_underscore_must_use)]
 mod attachment_context;
 mod capability_display_preview;
 mod context_projection;

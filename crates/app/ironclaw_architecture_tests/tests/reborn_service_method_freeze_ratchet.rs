@@ -29,6 +29,7 @@
 //! descriptors, and the product crate does not reintroduce its own product
 //! surface trait vocabulary.
 
+#![deny(clippy::let_underscore_must_use)]
 // This ratchet uses only the shared stripper + workspace-root helper; the
 // type-def scanners in the shared module are unreachable from this binary
 // (each test binary compiles the whole module and uses a different subset).

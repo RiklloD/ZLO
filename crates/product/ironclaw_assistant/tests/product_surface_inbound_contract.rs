@@ -1,5 +1,6 @@
 //! Contract tests for route-independent WebUI inbound DTOs.
 
+#![deny(clippy::let_underscore_must_use)]
 use base64::Engine;
 use ironclaw_assistant::{
     DecodeInboundAttachments, IntoProductInboundCommand, ProductInboundCommand,

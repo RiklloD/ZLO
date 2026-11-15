@@ -8,6 +8,7 @@
 //!
 //! The generated source is included from `src/assets.rs`.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::env;
 use std::fs;
 use std::io;

@@ -5,6 +5,7 @@
 //! execute WASM modules, start Docker containers, connect to MCP servers, resolve
 //! secrets, or reserve resources.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_extension_contracts::runtime::{
     ExtensionAssetPath, ExtensionAssetPathError, ExtensionRuntime,
 };

@@ -6,6 +6,7 @@
 //! the terminal stream opened and closed in one reconcile, liveness
 //! re-assertion, and terminal attachments.
 
+#![deny(clippy::let_underscore_must_use)]
 mod support;
 
 use std::time::Duration;

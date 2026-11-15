@@ -52,7 +52,11 @@ pub(crate) fn runtime_refused(runtime: &dyn TurnRuntime) -> OrchestratorError {
 impl Engine {
     /// Turn on worktree isolation (first call wins).
     pub fn set_worktree_host(&self, host: WorktreeHost) {
-        let _ = self.worktree_host.set(host); // silent-ok: already set by an earlier wiring
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "first call wins by contract; a later wiring is ignored"
+        )]
+        let _ = self.worktree_host.set(host);
     }
 
     pub(super) fn worktree_host(&self) -> Result<&WorktreeHost> {

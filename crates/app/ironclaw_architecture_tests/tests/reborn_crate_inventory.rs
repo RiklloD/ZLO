@@ -15,6 +15,7 @@
 //! it. A resolver that answered "no such crate" with a path matching nothing
 //! would reintroduce exactly the silent-dark failure WS0 closed.
 
+#![deny(clippy::let_underscore_must_use)]
 mod ratchet_support;
 
 use std::path::{Path, PathBuf};

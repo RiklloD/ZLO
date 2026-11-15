@@ -1,5 +1,6 @@
 //! Durable-backend conformance fixtures for process-journal persistence.
 
+#![deny(clippy::let_underscore_must_use)]
 use chrono::Utc;
 use std::sync::Arc;
 

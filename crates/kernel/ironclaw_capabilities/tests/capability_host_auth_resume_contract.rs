@@ -5,6 +5,8 @@
 // handling, terminal vs non-terminal bounce lease disposition, approval
 // fingerprint validation, and capability-existence check ordering vs lease
 // acquisition (unknown-capability must not strand leases).
+
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_approvals::*;
 use ironclaw_authorization::*;
 use ironclaw_capabilities::*;

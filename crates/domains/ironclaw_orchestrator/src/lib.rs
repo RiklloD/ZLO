@@ -21,6 +21,7 @@
 //! State lives in `orch_*` tables of the deployment's libSQL file
 //! ([`store::Store`]).
 
+#![deny(clippy::let_underscore_must_use)]
 pub mod cli_approvals;
 mod console;
 pub mod context_report;

@@ -219,7 +219,11 @@ fn render(prompt: &str, request: &WebhookRequest) -> String {
 impl Engine {
     /// The gateway's loopback origin, set once the listener is bound.
     pub fn set_webhook_base(&self, origin: String) {
-        let _ = self.webhook_base.set(origin); // silent-ok: the gateway binds once per process
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the gateway binds once per process; first origin wins"
+        )]
+        let _ = self.webhook_base.set(origin);
     }
 
     pub(crate) fn webhook_url(&self, r: &ScheduleRecord) -> Option<String> {
@@ -292,13 +296,18 @@ impl Engine {
         };
         if let Err(error) = scanned {
             tracing::debug!(%error, schedule = %record.id, "webhook prompt refused");
-            let _ = self
+            // The refusal itself is the answer; last_error is advisory, but a
+            // failed write should leave a trace rather than vanish.
+            if let Err(store_error) = self
                 .store
                 .exec(
                     "UPDATE orch_schedules SET last_error = ?2 WHERE id = ?1",
                     vec![s(record.id.as_str()), s(error.to_string())],
                 )
-                .await; // silent-ok: the refusal itself is the answer; last_error is advisory
+                .await
+            {
+                tracing::debug!(error = %store_error, schedule = %record.id, "recording the webhook refusal failed");
+            }
             self.note_delivery(&record, "rejected").await;
             return Err(WebhookRefusal::Rejected);
         }

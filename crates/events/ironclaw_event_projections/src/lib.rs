@@ -5,6 +5,7 @@
 //! implementation is replay-derived over [`ironclaw_event_log::DurableEventLog`]
 //! so it stays independent of concrete JSONL/PostgreSQL/libSQL adapters.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::HashSet;
 use std::sync::Arc;
 

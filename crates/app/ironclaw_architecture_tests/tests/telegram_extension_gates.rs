@@ -9,6 +9,7 @@
 //!    actor, while device link grants the caller's MTProto account.
 //! 3. The Reborn context stays free of the retired v1 `/api/pairing/` routes.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

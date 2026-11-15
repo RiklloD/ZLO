@@ -127,7 +127,11 @@ impl Engine {
     /// Run goal checks through `runner` (first call wins). Without one,
     /// armed checks wait.
     pub fn set_goal_check_runner(&self, runner: Arc<dyn GoalCheckRunner>) {
-        let _ = self.goal_check_runner.set(runner); // silent-ok: already set by an earlier wiring
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "first call wins by contract; a later wiring is ignored"
+        )]
+        let _ = self.goal_check_runner.set(runner);
     }
 
     /// Set, replace or remove (`None`) the goal's check, cancelling a run

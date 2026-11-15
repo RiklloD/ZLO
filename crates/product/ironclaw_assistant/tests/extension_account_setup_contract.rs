@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::error::Error as _;
 use std::sync::Arc;
 

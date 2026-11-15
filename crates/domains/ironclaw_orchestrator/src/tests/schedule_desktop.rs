@@ -123,10 +123,11 @@ async fn previews_list_reveal_rotate_and_record_the_last_delivery() {
 
     // A wrong token touches nothing.
     let (hook_id, _) = key.split_once('.').unwrap();
-    let _ = h
+    let refused = h
         .engine
         .fire_webhook(&format!("{hook_id}.nope"), &forged)
         .await;
+    assert!(refused.is_err(), "a wrong webhook token must be refused");
     let row = h.engine.schedule_list_for(&scope()).await.unwrap()["schedules"][0].clone();
     assert_eq!(row["lastDelivery"]["status"], "accepted");
 

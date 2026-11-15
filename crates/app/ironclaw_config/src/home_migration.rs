@@ -294,9 +294,16 @@ impl Paths {
             // `~/.zlo` is a file, or absent: the rename reports what matters.
             Err(error) if error.kind() == io::ErrorKind::NotADirectory => {}
             Err(error) => {
-                let reason = format!("remove {}: {error}", finder.display());
-                // silent-ok: best-effort cleanup; the removal error is returned
-                let _ = fs::remove_file(&marker);
+                let mut reason = format!("remove {}: {error}", finder.display());
+                // Best-effort cleanup; the removal error is returned. A marker
+                // that stays behind is named in that error rather than left
+                // silently for the next start to misread.
+                if let Err(cleanup) = fs::remove_file(&marker) {
+                    reason.push_str(&format!(
+                        "; also could not remove {}: {cleanup}",
+                        marker.display()
+                    ));
+                }
                 return Err(self.error(reason));
             }
         }

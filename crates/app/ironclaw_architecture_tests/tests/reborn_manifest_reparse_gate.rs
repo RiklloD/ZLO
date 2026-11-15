@@ -14,6 +14,7 @@
 //! is updated with a justification; removing one — moving a projection onto the
 //! resolved record — fails the stale entry. The list can only shrink.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

@@ -73,6 +73,7 @@
 //!   - bundled extensions — `ironclaw_composition` →
 //!     `bundled_extension_capabilities_carry_behavior_neutral_origin_gate_matrix`.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

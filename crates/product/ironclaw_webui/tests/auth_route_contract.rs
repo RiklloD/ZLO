@@ -24,6 +24,7 @@
 //! Supports the authentication slice of the #3615 WebUI security parity
 //! audit.
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "test-support")]
 
 use std::sync::Arc;
@@ -487,6 +488,10 @@ async fn query_token_honored_on_sse_events_route() {
     // count).
     use http_body_util::BodyExt;
     let mut body = with_token.into_body();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the drain is bounded by the timeout; the assertions below check what was observed"
+    )]
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while body.frame().await.is_some() {}
     })
@@ -754,6 +759,10 @@ async fn spawn_jwks_server(jwk: serde_json::Value) -> (String, tokio::task::Join
         .expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let handle = tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test mock server; a serve failure surfaces as the client's connection error"
+        )]
         let _ = axum::serve(listener, router).await;
     });
     (format!("http://{addr}/jwks"), handle)

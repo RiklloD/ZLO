@@ -4,6 +4,7 @@
 //! generic filesystem crate owns only virtual path authority, scoped mounts,
 //! backend cataloging, and backend routing.
 
+#![deny(clippy::let_underscore_must_use)]
 mod backend;
 mod chunking;
 #[cfg(any(test, feature = "test-support"))]

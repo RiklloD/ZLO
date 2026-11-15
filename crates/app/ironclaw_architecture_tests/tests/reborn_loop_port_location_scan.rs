@@ -21,6 +21,7 @@
 //! scope. They are implementations, and implementations are supposed to live
 //! above the contract.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

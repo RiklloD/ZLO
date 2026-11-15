@@ -5,6 +5,7 @@
 //! The channel-level regression net (the vendor e2e scenarios through the
 //! real ingress mount) re-points onto these components at the cutover.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_extension_contracts::channel_adapter::ChannelDelivery;
 use ironclaw_extension_contracts::reply::{
     ReplyAudience, ReplyPhase, ReplyReconcilePoint, ReplySink,

@@ -8,6 +8,7 @@
 //! the service method bodies that are already covered in
 //! `ironclaw_assistant`.
 
+#![deny(clippy::let_underscore_must_use)]
 // arch-exempt: large_file, WebUI ProductSurface route contracts stay in the caller-level handler suite until the WebUI route split lands, plan #5985
 
 #[path = "support/product_surface.rs"]
@@ -7663,6 +7664,10 @@ async fn stream_events_same_connection_id_supersedes_stale_stream() {
         .expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let serve_handle = tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test mock server; a serve failure surfaces as the client's connection error"
+        )]
         let _ = axum::serve(listener, router).await;
     });
 

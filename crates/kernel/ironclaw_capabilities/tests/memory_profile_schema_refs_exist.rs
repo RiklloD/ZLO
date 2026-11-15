@@ -4,6 +4,7 @@
 //! This is purely a drift guard; no runtime behavior depends on these files
 //! yet, but renames must not silently break the docs/contract layer.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::path::PathBuf;
 
 use ironclaw_host_api::capability_profile::CapabilityProfileSchemaRef;

@@ -5,6 +5,7 @@
 //! executable evidence. New and stale entries both fail, so the ledger cannot
 //! become an inert allowlist.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

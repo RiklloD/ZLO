@@ -51,6 +51,7 @@
 //! neither. Recorded rather than silently passed — unifying them is a domain
 //! change (auth's flow records persist its own), not a contracts extraction.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 

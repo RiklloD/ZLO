@@ -1,4 +1,6 @@
 // arch-exempt: large_file, crate layer boundary gate stays with existing architecture suite, plan #5852
+
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

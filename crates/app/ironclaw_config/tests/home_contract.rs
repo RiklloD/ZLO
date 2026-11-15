@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::{ffi::OsString, path::Path};
 
 use ironclaw_config::{REBORN_HOME_ENV, RebornConfigError, RebornHome, RebornHomeSource};

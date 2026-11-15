@@ -29,6 +29,7 @@
 //!   list names the row that removes each, and a stale entry fails, so the
 //!   edge can only get smaller.
 
+#![deny(clippy::let_underscore_must_use)]
 // The shared walker is compiled per test binary; each binary uses a subset.
 #[allow(dead_code)]
 mod ratchet_support;

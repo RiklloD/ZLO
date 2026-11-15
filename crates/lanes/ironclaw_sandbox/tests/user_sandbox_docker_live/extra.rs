@@ -358,6 +358,10 @@ async fn proxy_config_failure_rolls_back_partially_provisioned_networks() {
         .expect("docker removes initial proxy");
     assert!(removed_proxy.status.success());
     for network in &networks {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a network the worker is not attached to refuses the disconnect; the network rm below asserts the outcome"
+        )]
         let _ = Command::new("docker")
             .args([
                 "network",

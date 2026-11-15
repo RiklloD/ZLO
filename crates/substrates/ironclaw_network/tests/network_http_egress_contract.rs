@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener};
 use std::sync::{Arc, Mutex};

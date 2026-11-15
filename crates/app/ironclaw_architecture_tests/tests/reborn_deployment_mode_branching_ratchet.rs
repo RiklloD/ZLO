@@ -48,6 +48,7 @@
 //! Skips `tests/`, `examples/`, `benches/` trees and `*tests.rs` files —
 //! test fixtures naming a profile are not production branching.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

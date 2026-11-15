@@ -187,17 +187,26 @@ pub(crate) fn crate_directories(root: &Path) -> Vec<String> {
 /// are excluded from the inventory by construction rather than by omission.
 #[allow(dead_code)]
 pub(crate) fn nested_workspace_roots(root: &Path) -> Vec<String> {
+    try_nested_workspace_roots(root).unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// `nested_workspace_roots`, returning the walk failure instead of panicking.
+/// Fail-closed like `try_crate_directories`: an unreadable subtree is an error,
+/// never a silently shorter list (which would let a guest workspace's types
+/// leak into the location scans that subtract these roots).
+#[allow(dead_code)]
+pub(crate) fn try_nested_workspace_roots(root: &Path) -> Result<Vec<String>, String> {
     let mut roots = Vec::new();
     let crates_root = root.join(CRATES_ROOT);
     if crates_root.is_dir() {
-        let _ = walk_manifest_dirs(root, &crates_root, &mut |relative, declares_workspace| {
+        walk_manifest_dirs(root, &crates_root, &mut |relative, declares_workspace| {
             if declares_workspace {
                 roots.push(relative.to_string());
             }
-        });
+        })?;
     }
     roots.sort();
-    roots
+    Ok(roots)
 }
 
 fn collect_crate_manifest_dirs(

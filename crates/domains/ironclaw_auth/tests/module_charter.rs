@@ -17,6 +17,7 @@
 //! is really shared vocabulary is a review question; whether every file has
 //! exactly one owner is a mechanical one, and that is what is enforced.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

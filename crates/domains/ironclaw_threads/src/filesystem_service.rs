@@ -4286,7 +4286,10 @@ fn tool_result_record_key(result_ref: &str) -> String {
     output.push_str("sha256-");
     for byte in digest {
         use std::fmt::Write as _;
-        // silent-ok: fmt::Write for String cannot fail
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "fmt::Write for String cannot fail"
+        )]
         let _ = write!(&mut output, "{byte:02x}");
     }
     output

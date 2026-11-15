@@ -44,6 +44,7 @@
 //! product* for that reason, so "finishing the row" cannot quietly mean moving
 //! it and dragging the loop tier into a substrate.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 

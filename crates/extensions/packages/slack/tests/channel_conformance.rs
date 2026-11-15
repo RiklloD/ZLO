@@ -3,6 +3,7 @@
 //! `stream` reply cadence (Opened → repeat → Terminal → repeat) against the
 //! native Agent endpoints.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_extension_contracts::channel::ReplyTransport;

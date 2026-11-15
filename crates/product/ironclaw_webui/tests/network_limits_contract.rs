@@ -36,6 +36,7 @@
 //! Supports the CSRF/origin/CORS + body/rate/connection-limit slice of
 //! the #3615 WebUI security parity audit.
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "test-support")]
 
 use std::net::SocketAddr;

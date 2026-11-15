@@ -9,6 +9,7 @@
 //! stay Reborn-native: this crate does not depend on V1 route handlers, V1
 //! pending maps, V1 extension manager authority, or V1 secret stores.
 
+#![deny(clippy::let_underscore_must_use)]
 mod account_state;
 mod channel_connection;
 mod cleanup;

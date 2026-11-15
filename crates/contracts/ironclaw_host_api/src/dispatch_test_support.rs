@@ -247,8 +247,8 @@ mod tests {
     #[tokio::test]
     async fn records_every_request_in_call_order() {
         let d = TestDispatcher::auth_required();
-        let _ = d.dispatch_json(request("test.a")).await;
-        let _ = d.dispatch_json(request("test.b")).await;
+        assert!(d.dispatch_json(request("test.a")).await.is_err());
+        assert!(d.dispatch_json(request("test.b")).await.is_err());
 
         assert_eq!(d.call_count(), 2);
         let recorded = d.recorded();
@@ -293,7 +293,11 @@ mod tests {
     #[should_panic(expected = "scripted queue exhausted")]
     async fn scripted_panics_when_over_dispatched() {
         let d = TestDispatcher::scripted(vec![Err(auth_required_err("test.only"))]);
-        let _ = d.dispatch_json(request("test.x")).await;
+        assert!(d.dispatch_json(request("test.x")).await.is_err());
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the over-dispatch panics before returning; should_panic is the assertion"
+        )]
         let _ = d.dispatch_json(request("test.x")).await; // one too many
     }
 

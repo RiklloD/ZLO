@@ -1,4 +1,6 @@
 // arch-exempt: large_file, resource governor contract suite decomposition, plan #5662
+
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     fs,
     sync::{Arc, Barrier},
@@ -1886,14 +1888,14 @@ impl ironclaw_filesystem::RootFilesystem for PersistentVersionMismatchBackend {
             && matches!(cas, ironclaw_filesystem::CasExpectation::Version(_));
         if should_race && let Some(current) = self.inner.get(path).await? {
             self.races.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let _ = self
-                .inner
+            // The bump must land, or the test exercises no contention.
+            self.inner
                 .put(
                     path,
                     current.entry,
                     ironclaw_filesystem::CasExpectation::Any,
                 )
-                .await;
+                .await?;
         }
         self.inner.put(path, entry, cas).await
     }

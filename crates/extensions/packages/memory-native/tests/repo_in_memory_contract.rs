@@ -7,6 +7,7 @@
 //! contract, named `in_memory::<contract_name>` so failures attribute
 //! cleanly to this impl.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_memory::{MemoryDocumentPath, MemoryDocumentScope};
 use ironclaw_memory_native::{
     InMemoryMemoryDocumentRepository, MemoryDocumentRepository, contract_test,

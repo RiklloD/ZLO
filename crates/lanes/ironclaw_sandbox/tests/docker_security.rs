@@ -6,6 +6,7 @@
 //! failure instead of a skip. Without that switch, local runs keep the same
 //! visible `SKIP:` behavior.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::process::Command;
 
 #[path = "support/docker_gate.rs"]

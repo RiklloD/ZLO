@@ -2,6 +2,7 @@
 //! keeping an absent `signature` (keep the stored one) apart from
 //! `"signature": null` (turn signing off) and a value.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

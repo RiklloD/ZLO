@@ -1,5 +1,6 @@
 //! Contract tests for the Reborn-native product command model.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_assistant::{
     CommandAudience, LifecyclePackageId, LifecyclePackageKind, LifecyclePackageRef,
     LifecycleProductAction, ProductCommand, ProductModelCommand, ProductStopInvocation,

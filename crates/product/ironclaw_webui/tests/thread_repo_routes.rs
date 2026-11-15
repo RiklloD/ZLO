@@ -9,6 +9,7 @@
 //! tests, and the decorator's operator/ownership tests in
 //! `ironclaw_assistant`); this tier proves the HTTP contract.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 

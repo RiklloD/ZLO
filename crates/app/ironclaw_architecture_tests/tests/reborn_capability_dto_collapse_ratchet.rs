@@ -27,6 +27,7 @@
 //! `pub`/`pub(crate)`/`pub(super)`/`pub(in …)`; skips `tests/`/`examples/`/
 //! `benches/`; line-based, not cfg-aware.
 
+#![deny(clippy::let_underscore_must_use)]
 mod ratchet_support;
 
 use std::collections::BTreeMap;

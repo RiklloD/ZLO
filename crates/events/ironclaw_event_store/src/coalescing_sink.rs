@@ -267,6 +267,10 @@ async fn drain_loop(
                     Some(error) => Err(error.clone()),
                 };
                 // Receiver may have given up; ignore.
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the flush waiter may have given up and dropped its receiver"
+                )]
                 let _ = ack.send(payload);
             }
         }

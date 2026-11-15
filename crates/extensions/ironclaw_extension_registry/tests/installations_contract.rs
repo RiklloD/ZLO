@@ -1,4 +1,6 @@
 // arch-exempt: large_file, filesystem-v2 migration and compatibility contract coverage remains colocated through rollout, plan #6637
+
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     collections::BTreeSet,
     sync::Arc,

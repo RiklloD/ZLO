@@ -2667,10 +2667,10 @@ mod tests {
                 // bump the caller's CAS version is stale, so the delegated
                 // put below will return VersionMismatch — exactly the
                 // contention shape the retry loop must absorb.
-                let _ = self
-                    .inner
+                // The bump must land, or the test exercises no contention.
+                self.inner
                     .put(path, current.entry, CasExpectation::Any)
-                    .await;
+                    .await?;
             }
             self.inner.put(path, entry, cas).await
         }
@@ -2750,10 +2750,10 @@ mod tests {
                 path.as_str() == self.watched && matches!(cas, CasExpectation::Version(_));
             if should_race && let Some(current) = self.inner.get(path).await? {
                 self.races.fetch_add(1, Ordering::SeqCst);
-                let _ = self
-                    .inner
+                // The bump must land, or the test exercises no contention.
+                self.inner
                     .put(path, current.entry, CasExpectation::Any)
-                    .await;
+                    .await?;
             }
             self.inner.put(path, entry, cas).await
         }

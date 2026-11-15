@@ -10,6 +10,7 @@
 //! Pure file parsing — does not depend on any of the crate's Rust APIs, so it
 //! runs under the default feature set.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;

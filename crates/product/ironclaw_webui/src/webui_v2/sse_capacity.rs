@@ -159,7 +159,10 @@ impl SseCapacity {
                     (None, Some(_)) => return SseAcquireResult::StaleGeneration,
                     _ => {}
                 }
-                // silent-ok: the replaced stream may already have ended
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the replaced stream may already have ended and dropped its cancellation receiver"
+                )]
                 let _ = previous.cancel.send(true);
                 let (cancel, cancellation) = watch::channel(false);
                 state.named_slots.insert(

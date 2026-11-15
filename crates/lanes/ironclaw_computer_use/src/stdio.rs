@@ -129,9 +129,21 @@ impl StdioServer {
 
     /// Close stdin and kill; waits briefly so the child is reaped.
     pub(crate) async fn shutdown(mut self) {
-        let _ = self.stdin.shutdown().await; // silent-ok: the process is being killed anyway
-        let _ = self.child.start_kill(); // silent-ok: it may have exited already
-        let _ = tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await; // silent-ok: kill_on_drop backs this up
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the process is being killed anyway"
+        )]
+        let _ = self.stdin.shutdown().await;
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the child may have exited already"
+        )]
+        let _ = self.child.start_kill();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "kill_on_drop backs up a reap that does not finish in time"
+        )]
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await;
     }
 
     async fn send(&mut self, message: &Value) -> Result<(), ComputerUseError> {

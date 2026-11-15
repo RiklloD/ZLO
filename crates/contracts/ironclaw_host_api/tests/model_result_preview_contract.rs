@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::model_result_preview::{ModelResultJsonPage, ModelResultPreview};
 use serde_json::json;
 

@@ -33,6 +33,7 @@
 //!   operation vocabulary, canonical input/output schemas, description cores,
 //!   and the `messaging.*` error-code taxonomy.
 
+#![deny(clippy::let_underscore_must_use)]
 pub mod action;
 pub mod agent_plan;
 pub mod approval;

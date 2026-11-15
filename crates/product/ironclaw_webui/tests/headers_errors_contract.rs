@@ -27,6 +27,7 @@
 //! #3615 WebUI security parity audit, plus the connection-limit backfill
 //! for `02-network-limits.md`.
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "test-support")]
 
 use std::sync::Arc;

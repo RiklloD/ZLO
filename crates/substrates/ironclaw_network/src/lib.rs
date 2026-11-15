@@ -6,6 +6,7 @@
 //! not inject secrets, reserve resources, emit audit/events, or run product
 //! workflow.
 
+#![deny(clippy::let_underscore_must_use)]
 mod egress;
 mod error;
 mod policy;

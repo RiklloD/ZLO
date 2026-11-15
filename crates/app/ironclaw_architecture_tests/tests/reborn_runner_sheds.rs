@@ -34,6 +34,7 @@
 //! production code — see the ordering guard below), every I/O error fatal, and
 //! non-vacuity asserted so a broken walk can never read as a clean tree.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -677,6 +678,10 @@ fn reborn_runner_sheds_unreadable_input_fails_the_scan_rather_than_disappearing_
             let _ = std::fs::read_to_string(&path)
                 .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
         }
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best-effort fixture cleanup right before the deliberate panic"
+        )]
         let _ = std::fs::remove_dir_all(&temporary);
         panic!("cannot read: the fixture produced no unreadable file, so this test proved nothing");
     }

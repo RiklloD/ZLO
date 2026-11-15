@@ -13,6 +13,7 @@
 //! else a testcontainers server. Without either it skips with a notice on
 //! stderr; `IRONCLAW_REQUIRE_POSTGRES` turns that skip into a failure.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::io::Write as _;
 use std::sync::Arc;
 

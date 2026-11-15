@@ -4,6 +4,7 @@
 //! It coordinates authorization, approval resume, process invocation transitions, and
 //! neutral runtime dispatch without depending on concrete runtime crates.
 
+#![deny(clippy::let_underscore_must_use)]
 mod dispatch;
 mod error;
 mod helpers;

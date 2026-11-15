@@ -153,10 +153,11 @@ fn tenant(value: &str) -> TenantId {
 
 fn poison_in_memory_repo(repo: &InMemoryTriggerRepository) {
     let poison_repo = repo.clone();
-    let _ = std::panic::catch_unwind(move || {
+    let poisoning = std::panic::catch_unwind(move || {
         let _guard = poison_repo.state.lock().expect("lock before poison");
         panic!("poison trigger repository mutex");
     });
+    assert!(poisoning.is_err(), "the poisoning closure must panic");
 }
 
 fn user(value: &str) -> UserId {
@@ -901,10 +902,11 @@ async fn in_memory_repository_running_history_does_not_overwrite_terminal_histor
 fn in_memory_repository_returns_backend_error_when_mutex_is_poisoned() {
     let repo = InMemoryTriggerRepository::default();
     let poison_repo = repo.clone();
-    let _ = std::panic::catch_unwind(move || {
+    let poisoning = std::panic::catch_unwind(move || {
         let _guard = poison_repo.state.lock().expect("lock before poison");
         panic!("poison trigger repository mutex");
     });
+    assert!(poisoning.is_err(), "the poisoning closure must panic");
 
     let error = repo
         .lock_state()

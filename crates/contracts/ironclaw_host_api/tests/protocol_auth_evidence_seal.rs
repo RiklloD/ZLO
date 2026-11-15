@@ -10,6 +10,7 @@
 //! minters belong — and keeping the ratchet free of a `#[cfg(test)]` carve-out
 //! means an inline test module cannot become a hiding place for a grant source.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::ids::TenantId;
 use ironclaw_host_api::product_adapter::auth::{
     AuthRequirement, ChannelIngressVerifier, HostAuthenticationGrant, HostProtocolAuthenticator,

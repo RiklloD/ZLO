@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 #[test]
 fn network_crate_does_not_depend_on_workflow_runtime_secret_or_observability_crates() {
     let manifest_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");

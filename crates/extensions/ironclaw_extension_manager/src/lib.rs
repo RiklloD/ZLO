@@ -18,6 +18,7 @@
 //! Nothing here may write installation state directly — every mutation goes
 //! through `ironclaw_extension_host::ExtensionLifecycleManager`.
 
+#![deny(clippy::let_underscore_must_use)]
 pub mod admin_configuration;
 pub mod admin_configuration_capability;
 pub mod channel_config_product_service;

@@ -6,6 +6,7 @@
 //! cover recipe shapes no current vendor exercises. There is deliberately no
 //! per-vendor test suite anywhere else.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_extension_contracts::product_adapter_section::ProductAdapterSectionError;
 use ironclaw_extension_contracts::surface::CapabilitySurfaceKind;
 use ironclaw_extension_registry::host_api::product_adapter::{

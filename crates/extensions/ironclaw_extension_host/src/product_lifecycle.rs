@@ -381,12 +381,18 @@ impl ExtensionLifecycleManager {
     /// Attach the generic extension host so lifecycle mutations publish the
     /// active snapshot the dispatch chain resolves from.
     pub fn attach_generic_host(&self, host: Arc<crate::ExtensionHost>) {
-        // silent-ok: the host attaches once; a later attach keeps the first host
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "set-once by contract; a later attach keeps the first value"
+        )]
         let _ = self.generic_host.set(host);
     }
 
     pub fn attach_channel_config(&self, channel_config: &Arc<crate::ChannelConfigService>) {
-        // silent-ok: attached once; a later attach keeps the first service
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "set-once by contract; a later attach keeps the first value"
+        )]
         let _ = self.channel_config.set(Arc::downgrade(channel_config));
     }
 

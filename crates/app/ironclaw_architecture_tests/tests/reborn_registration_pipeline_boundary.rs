@@ -50,6 +50,7 @@
 //! how this gate would come back as a false positive against the registration
 //! pipeline's own owner.
 
+#![deny(clippy::let_underscore_must_use)]
 // Each integration-test binary compiles the shared module independently; this
 // binary uses only the workspace-root search.
 #[allow(dead_code)]

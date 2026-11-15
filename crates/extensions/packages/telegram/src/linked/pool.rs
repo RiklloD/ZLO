@@ -578,10 +578,11 @@ mod tests {
         // Before the fix this surfaced as `AtCapacity` — a "retry shortly"
         // answer to permanent process-local corruption.
         let pool = SessionPool::new(Arc::new(UntouchableFactory), Some(1));
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let poisoning = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = pool.inner.entries.lock().expect("first lock");
             panic!("poison the entries lock");
         }));
+        assert!(poisoning.is_err(), "the poisoning closure must panic");
         assert!(matches!(
             pool.inner.lock_entries(),
             Err(SessionPoolError::Poisoned)

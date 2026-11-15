@@ -846,7 +846,8 @@ mod tests {
             .output()
             .unwrap();
         let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
-        let _ = std::fs::remove_file(repo.join(".git/objects").join(&blob[..2]).join(&blob[2..]));
+        std::fs::remove_file(repo.join(".git/objects").join(&blob[..2]).join(&blob[2..]))
+            .expect("delete the loose blob object");
         std::fs::write(repo.join("b.txt"), "changed\n").unwrap();
 
         let folder = MentionUri::Directory {

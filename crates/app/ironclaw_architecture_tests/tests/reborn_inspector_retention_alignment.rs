@@ -12,6 +12,7 @@
 //! The two constants live in different languages and cannot import each other,
 //! so this gate is the only thing holding them together.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::fs;
 
 use ironclaw_product_contracts::inspector::DEFAULT_MAX_RETAINED_RUNS_PER_SESSION;

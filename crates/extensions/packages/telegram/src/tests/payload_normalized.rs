@@ -255,6 +255,7 @@ fn invalid_update_identity_and_batch_order_fail_closed() {
 proptest! {
     #[test]
     fn arbitrary_untrusted_bytes_never_panic(raw in proptest::collection::vec(any::<u8>(), 0..512)) {
+        #[expect(clippy::let_underscore_must_use, reason = "the property is only that untrusted bytes never panic; the result is irrelevant")]
         let _ = normalize(&raw);
     }
 }

@@ -58,6 +58,10 @@ impl HeldRunner {
         let tx = self.answers.lock().unwrap()[i]
             .take()
             .expect("run already answered");
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the run under test may already have stopped waiting for this answer"
+        )]
         let _ = tx.send(Ok(GoalCheckOutput {
             exit_code,
             output: output.into(),

@@ -944,7 +944,10 @@ impl RebornProductAuthServices {
         driver: Arc<crate::DeviceLinkFlowDriver>,
         revoker: Arc<dyn crate::LinkedDeviceRevoker>,
     ) {
-        // silent-ok: first bind wins, matching the revoker slot filled beside it
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "first bind wins by contract, matching the revoker slot filled beside it"
+        )]
         let _ = self.device_link_driver.set(driver);
         self.linked_device_revoker.fill(revoker);
     }

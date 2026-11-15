@@ -1,4 +1,6 @@
 // arch-exempt: large_file, mechanical approval-store migration only — InMemory*Store deleted, tests repointed to Filesystem*Store<InMemoryBackend> (arch-simplification §4.3), no new test logic, plan #6168
+
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

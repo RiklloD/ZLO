@@ -83,6 +83,7 @@
 //! and the feature can reach a manifest's normal dependency resolution
 //! nowhere.
 
+#![deny(clippy::let_underscore_must_use)]
 // Each integration-test binary compiles the shared module independently; this
 // binary uses only the comment/string stripper.
 #[allow(dead_code)]

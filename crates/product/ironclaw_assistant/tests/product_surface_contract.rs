@@ -1,6 +1,7 @@
 // arch-exempt: large_file, §4.3 delete InMemoryDeliveredGateRouteStore (workflow default -> NoopDeliveredGateRouteStore; test doubles -> OutboundStateStore helper), no logic change, plan #6168
 //! Contract tests for the product workflow service.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_loop_host::RejectingInputEnqueue;
 use ironclaw_product_contracts::binding::ResetBindingRequest;
 use std::collections::HashMap;

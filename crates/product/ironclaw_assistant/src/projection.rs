@@ -278,7 +278,10 @@ impl TurnEventWakeSource {
     }
 
     fn publish(&self, event: &TurnLifecycleEvent) {
-        // silent-ok: a wake with no subscriber is a no-op by design
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a wake with no subscriber is a no-op by design"
+        )]
         let _ = self.sender.send(TurnEventWake {
             scope: event.scope.clone(),
             owner_user_id: event.owner_user_id.clone(),
@@ -702,7 +705,10 @@ async fn send_projection_subscription_error(
     sender: &mpsc::Sender<Result<ProductOutboundEnvelope, ProductAdapterError>>,
     error: ProductAdapterError,
 ) {
-    // silent-ok: the outbound stream consumer may have disconnected
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the outbound stream consumer may have disconnected; nothing is left to tell"
+    )]
     let _ = sender.send(Err(error)).await;
 }
 

@@ -20,6 +20,7 @@
 //!   production [`BackgroundProcessManager`]
 //! - `supervisor` — wake-assisted claim, lease recovery, and execution loop
 
+#![deny(clippy::let_underscore_must_use)]
 mod cancellation;
 mod capability_process;
 mod host;

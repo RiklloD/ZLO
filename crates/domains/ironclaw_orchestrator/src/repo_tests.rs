@@ -55,6 +55,10 @@ impl HostCommandProcess for ShellProcess {
                 libc_kill(-(pid as i32), 9);
             }
         }
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best-effort test teardown in Drop; the process group was already killed above"
+        )]
         let _ = self.child.start_kill();
     }
 }

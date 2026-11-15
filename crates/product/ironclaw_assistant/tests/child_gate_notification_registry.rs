@@ -28,6 +28,7 @@
 //! this same store under production wiring — waits on the R9 enable slice /
 //! R4 harness enablement work tracked alongside subagent rollout.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use chrono::Utc;

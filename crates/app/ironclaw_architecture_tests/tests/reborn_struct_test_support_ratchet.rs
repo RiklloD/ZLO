@@ -8,6 +8,7 @@
 //! new occurrence fails by increasing a path count; removing one should shrink
 //! the matching baseline entry in the same PR.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

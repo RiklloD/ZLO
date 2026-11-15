@@ -5,6 +5,7 @@
 //! lifecycle wiring, first-party capabilities, and outbound delivery are owned
 //! by later slices.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,

@@ -31,6 +31,7 @@
 //! `system.process_sandbox.run` — the Docker/CA machinery and the script lane
 //! have no production constructor. See this crate's `AGENTS.md`.
 
+#![deny(clippy::let_underscore_must_use)]
 pub mod plan;
 pub mod sandbox_process;
 pub mod script;

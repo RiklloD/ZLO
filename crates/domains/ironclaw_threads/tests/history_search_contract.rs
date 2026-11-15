@@ -4,6 +4,7 @@
 //! when `IRONCLAW_THREADS_HISTORY_POSTGRES_URL` names a server and skip with a
 //! notice otherwise.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_filesystem::{
