@@ -22,6 +22,8 @@
 //! merged it here, giving Telegram the same one-crate-per-package shape Slack
 //! already had (PROPOSAL §5, CHECKLIST WS2).
 //!
+
+#![deny(clippy::let_underscore_must_use)]
 #![forbid(unsafe_code)]
 
 mod attachment_transfer;

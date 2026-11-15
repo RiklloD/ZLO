@@ -1,6 +1,7 @@
 //! TEST-1: the Telegram channel adapter runs the exported channel-adapter
 //! conformance suite against a scripted Bot API.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_extension_contracts::channel::ReplyTransport;
