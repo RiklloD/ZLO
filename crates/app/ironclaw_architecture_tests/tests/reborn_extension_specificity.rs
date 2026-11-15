@@ -57,6 +57,7 @@
 //! owner's next decision: do NOT casually "fix" one — degenericize by routing
 //! on a manifest capability, or carve deliberately with a one-line justification.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

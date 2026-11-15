@@ -121,6 +121,7 @@
 //! a test here without checking both turns a security gate into a file nothing
 //! runs.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

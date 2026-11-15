@@ -29,6 +29,7 @@
 //! skips comment lines rather than path-scoping the files that carry that
 //! history.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

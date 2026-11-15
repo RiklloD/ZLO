@@ -17,6 +17,7 @@
 //! [`metadata_target_only_follows_the_colon_form`] pins the language fact the
 //! gate rests on, so the gate cannot outlive its own premise.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 
@@ -192,6 +193,10 @@ fn tracing_macros_set_the_metadata_target() {
         // still point at the real site.
         for hit in field_form_targets(&strip_comments_and_strings(&source)) {
             violations += 1;
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "fmt::Write for String cannot fail"
+            )]
             let _ = writeln!(
                 report,
                 "  {}:{} — {}!(target = …)",

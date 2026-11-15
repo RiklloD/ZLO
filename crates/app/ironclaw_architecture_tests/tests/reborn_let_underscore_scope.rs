@@ -16,6 +16,7 @@
 //! deny to its target roots, add the crate here. Backlog:
 //! `docs/internal/lint-backlog.md`.
 
+#![deny(clippy::let_underscore_must_use)]
 mod ratchet_support;
 
 use std::collections::BTreeSet;
@@ -26,21 +27,26 @@ use ratchet_support::{crate_dir, workspace_root};
 use syn::parse::Parser;
 use syn::{AttrStyle, Meta, Token};
 
-/// Crates whose `let _ = <must_use>` discards were triaged (fix/let-underscore-must-use).
+/// Crates whose `let _ = <must_use>` discards were triaged (fix/let-underscore-must-use,
+/// then chore/triage-let-underscore-batch-1). Entries are crate *directory* names, as
+/// `crate_dir` resolves them (`memory-native`, `slack`, ...), not package names.
 const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_approvals",
+    "ironclaw_architecture_tests",
     "ironclaw_assistant",
     "ironclaw_attachments",
     "ironclaw_auth",
     "ironclaw_capabilities",
     "ironclaw_composition",
     "ironclaw_computer_use",
+    "ironclaw_config",
     "ironclaw_documents",
     "ironclaw_event_log",
     "ironclaw_event_projections",
     "ironclaw_event_store",
     "ironclaw_event_streams",
     "ironclaw_extension_host",
+    "ironclaw_extension_manager",
     "ironclaw_extension_registry",
     "ironclaw_filesystem",
     "ironclaw_hooks",
@@ -60,12 +66,16 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_sandbox",
     "ironclaw_secrets",
     "ironclaw_threads",
+    "ironclaw_triggers",
     "ironclaw_turn_runner",
+    "ironclaw_usage",
     "ironclaw_wasm",
     "ironclaw_wasm_limiter",
     "ironclaw_webui",
     "mem0",
     "memory-native",
+    "slack",
+    "telegram",
 ];
 
 const DENY_ATTRIBUTE: &str = "#![deny(clippy::let_underscore_must_use)]";
@@ -207,7 +217,7 @@ fn triaged_crates_deny_let_underscore_must_use_in_every_target_root() {
 
 #[test]
 fn let_underscore_must_use_stays_out_of_workspace_lints() {
-    // A workspace-wide entry would bind ~70 crates whose discards were never
+    // A workspace-wide entry would bind the opted-in crates whose discards were never
     // triaged — the regression this crate-scoped opt-in replaced.
     let manifest_path = workspace_root().join("Cargo.toml");
     let manifest: toml::Table = toml::from_str(

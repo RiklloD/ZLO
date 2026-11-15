@@ -37,6 +37,7 @@
 //! `Hosted*` false positives stay (trim only if a type is genuinely deleted);
 //! `Enterprise*` stays empty.
 
+#![deny(clippy::let_underscore_must_use)]
 mod ratchet_support;
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -16,6 +16,7 @@
 //! Definition of done: when `authorize()` is wired, the ONE production impl lives
 //! in `ironclaw_capabilities`; this test keeps it the only one.
 
+#![deny(clippy::let_underscore_must_use)]
 // Each integration-test binary compiles the shared module independently; this
 // binary uses the comment/string stripper and the implementor census, so the
 // other shared helpers are dead code HERE (and live in the sibling binaries).

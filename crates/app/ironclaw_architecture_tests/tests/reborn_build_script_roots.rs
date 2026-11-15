@@ -20,6 +20,7 @@
 //! below (`manifest_dir.join("frontend")` in `ironclaw_webui/build.rs` is
 //! correct and untouched). Only escaping the crate by counted hops is banned.
 
+#![deny(clippy::let_underscore_must_use)]
 mod ratchet_support;
 
 use std::path::{Path, PathBuf};

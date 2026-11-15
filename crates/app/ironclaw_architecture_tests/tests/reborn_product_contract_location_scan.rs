@@ -57,6 +57,7 @@
 //! downward, which is the only placement that serves both. They are therefore
 //! not defined in this crate and this scan never sees them.
 
+#![deny(clippy::let_underscore_must_use)]
 // This scan uses the shared type-def walker and workspace-root helper; the
 // other helpers in the shared module are unreachable from this binary (each
 // test binary compiles the whole module and uses a different subset).

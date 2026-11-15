@@ -30,6 +30,7 @@
 //!   naming product's type are frozen exact-match and shrink-only, exactly like
 //!   the trait residue.
 
+#![deny(clippy::let_underscore_must_use)]
 // The shared walker is compiled per test binary; each binary uses a subset.
 #[allow(dead_code)]
 mod ratchet_support;

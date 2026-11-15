@@ -12,6 +12,7 @@
 //! crates* may link the driver at all (a shrink-only ratchet), the other pins
 //! that event_store's own public surface is driver-free.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

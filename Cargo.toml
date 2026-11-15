@@ -96,7 +96,7 @@ unused_must_use = "deny"
 # `clippy::let_underscore_must_use` (`let _ = <must_use>`, the other swallow
 # idiom) is deliberately NOT a `[workspace.lints]` entry: those bind every crate
 # that opts in with `[lints] workspace = true` (69 of 71), and the discards were
-# triaged in only 12 of them. Those 12 deny it with a crate-root
+# triaged in 45 of them (12, then 33 more on 2026-11-15). Those deny it with a crate-root
 # `#![deny(clippy::let_underscore_must_use)]` in every target root (lib, tests,
 # bins, benches, examples) — Cargo forbids a per-crate `[lints]` table beside
 # `workspace = true`. A kept discard there carries a statement-level

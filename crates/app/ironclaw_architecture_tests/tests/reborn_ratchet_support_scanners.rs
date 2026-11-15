@@ -28,12 +28,13 @@
 //! this file adds is the fixture proving each family behaves the way its
 //! callers depend on, *including* the shape the other family gets wrong.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 
 use ratchet_support::{
     balanced_angle_close, implemented_trait_names, is_rust_identifier, strip_cfg_test_blocks,
-    strip_comments_and_strings, strip_line_anchored_cfg_test_items,
+    strip_comments_and_strings, strip_line_anchored_cfg_test_items, try_nested_workspace_roots,
 };
 
 // ---------------------------------------------------------------------------
@@ -295,5 +296,45 @@ fn is_rust_identifier_accepts_identifiers_and_rejects_fragments() {
             !is_rust_identifier(rejected),
             "{rejected:?} must not read as an identifier"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// try_nested_workspace_roots — the walk must fail closed
+
+#[test]
+fn nested_workspace_roots_reports_an_unreadable_subtree_instead_of_skipping_it() {
+    // Regression: the walk's error used to be discarded with `let _ =`, so an
+    // unreadable directory under `crates/` read as "no nested workspace there"
+    // and the location scans that subtract these roots ran over it unseen.
+    let fixture = tempfile::tempdir().expect("fixture root");
+    let crates_root = fixture.path().join("crates");
+    let guest = crates_root.join("guest");
+    std::fs::create_dir_all(&guest).expect("guest dir");
+    std::fs::write(guest.join("Cargo.toml"), "[workspace]\n").expect("guest manifest");
+    assert_eq!(
+        try_nested_workspace_roots(fixture.path()).expect("readable tree walks"),
+        vec!["crates/guest".to_string()],
+        "positive control: a readable nested workspace is found"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let locked = crates_root.join("locked");
+        std::fs::create_dir_all(&locked).expect("locked dir");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .expect("lock the directory");
+        // Root reads a 0000 directory, so the fixture only bites unprivileged.
+        let fixture_bites = std::fs::read_dir(&locked).is_err();
+        let outcome = try_nested_workspace_roots(fixture.path());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .expect("unlock for cleanup");
+        if fixture_bites {
+            let error = outcome.expect_err("an unreadable subtree must fail the walk");
+            assert!(error.contains("cannot read"), "{error}");
+        } else {
+            eprintln!("SKIPPED: running as a user that can read a 0000 directory");
+        }
     }
 }

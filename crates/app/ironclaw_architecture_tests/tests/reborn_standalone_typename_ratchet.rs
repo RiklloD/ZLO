@@ -36,6 +36,7 @@
 //! — is a separate concern, so this ratchet stays high-signal with a clean
 //! empty-set goal.)
 
+#![deny(clippy::let_underscore_must_use)]
 mod ratchet_support;
 
 use std::collections::{BTreeMap, BTreeSet};

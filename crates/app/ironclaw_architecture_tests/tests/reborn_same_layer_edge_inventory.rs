@@ -82,6 +82,7 @@
 //! failure mode this whole file exists to stop. Verified by running that command
 //! and reading the count.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 

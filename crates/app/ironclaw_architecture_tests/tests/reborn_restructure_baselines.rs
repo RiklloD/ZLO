@@ -39,6 +39,7 @@
 //! cargo test -p ironclaw_architecture_tests --test reborn_restructure_baselines -- --nocapture
 //! ```
 
+#![deny(clippy::let_underscore_must_use)]
 // Only `workspace_root` is reachable from this binary; the scanners in the
 // shared module belong to the sibling ratchet binaries.
 #[allow(dead_code)]

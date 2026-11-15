@@ -26,6 +26,7 @@
 //!   row is to move them — which would hand the contracts crate the product's
 //!   surface inventory. Asserted in the opposite direction so that is loud.
 
+#![deny(clippy::let_underscore_must_use)]
 // The shared walker is compiled per test binary; each binary uses a subset.
 #[allow(dead_code)]
 mod ratchet_support;

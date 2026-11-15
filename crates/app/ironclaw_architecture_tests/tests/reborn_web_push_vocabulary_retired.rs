@@ -33,6 +33,7 @@
 //! - the specificity gate's carve-out doc records the rename;
 //! - this gate names every term on purpose.
 
+#![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
 mod ratchet_support;
 
