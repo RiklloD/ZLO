@@ -178,7 +178,14 @@ struct ScriptedEmbedder {
     max_input_bytes: usize,
     faults: Vec<(usize, CallFault)>,
     calls: Mutex<Vec<Vec<String>>>,
+    /// Runs inside the provider call (after the inputs are taken, before the
+    /// answer returns) with the call number: the window between embed and
+    /// attach where a concurrent write can land.
+    during_call: Mutex<Option<DuringCall>>,
 }
+
+type DuringCall =
+    Box<dyn FnMut(usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send>;
 
 impl ScriptedEmbedder {
     fn new(fingerprint: &'static str, max_batch: usize) -> Self {
@@ -188,7 +195,19 @@ impl ScriptedEmbedder {
             max_input_bytes: 1_000,
             faults: Vec::new(),
             calls: Mutex::new(Vec::new()),
+            during_call: Mutex::new(None),
         }
+    }
+
+    fn during_call(self, hook: DuringCall) -> Self {
+        *self.during_call.lock().unwrap() = Some(hook);
+        self
+    }
+
+    /// Every input the run handed the provider, retries included.
+    #[allow(dead_code)]
+    fn dispatched_inputs(&self) -> usize {
+        self.calls().iter().map(Vec::len).sum()
     }
 
     fn failing(mut self, call: usize, fault: CallFault) -> Self {
@@ -236,6 +255,15 @@ impl MemoryEmbedder for ScriptedEmbedder {
             calls.push(texts.clone());
             calls.len() - 1
         };
+        let pending = self
+            .during_call
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(|hook| hook(number));
+        if let Some(pending) = pending {
+            pending.await;
+        }
         match self.faults.iter().find(|(at, _)| *at == number) {
             Some((_, CallFault::Transient)) => Err(MemoryEmbeddingError::transient(
                 "HTTP 429",
@@ -553,6 +581,105 @@ async fn reembed_background_task_backfills_and_reports(fs: Arc<dyn RootFilesyste
     );
 }
 
+fn memory_invocation() -> ironclaw_memory::MemoryInvocation {
+    use ironclaw_host_api::ids::{InvocationId, ProjectId, TenantId, UserId};
+    ironclaw_memory::MemoryInvocation {
+        scope: ironclaw_host_api::resource::ResourceScope {
+            tenant_id: TenantId::new("tenant-a").unwrap(),
+            user_id: UserId::new("alice").unwrap(),
+            agent_id: None,
+            project_id: Some(ProjectId::new("proj-1").unwrap()),
+            mission_id: None,
+            thread_id: None,
+            invocation_id: InvocationId::new(),
+        },
+        correlation_id: ironclaw_host_api::ids::CorrelationId::new(),
+    }
+}
+
+/// Full-text hits for `query` with their snippets (the chunk bodies).
+async fn text_hits(repo: &Repo, query: &str) -> Vec<(String, String)> {
+    let scope = doc("x.md").scope().clone();
+    repo.search_documents(&scope, &MemorySearchRequest::new(query).unwrap())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|hit| (hit.path.relative_path().to_string(), hit.snippet))
+        .collect()
+}
+
+/// `memory.write` (the production `NativeMemoryService::write` caller)
+/// rewrites a document after the backfill embedded its old chunk and before
+/// the vector is attached. The rewrite deletes and recreates the chunk path
+/// (versions restart), so a CAS on the scanned version could succeed against
+/// the NEW chunk; the backfill must notice the chunk is not the one it
+/// embedded and write nothing.
+async fn reembed_never_overwrites_a_chunk_rewritten_mid_batch(fs: Arc<dyn RootFilesystem>) {
+    let repo = Repo::new(Arc::clone(&fs));
+    write_text_only(&repo, &doc("notes/race.md"), &["alpha old"]).await;
+    let service = Arc::new(
+        ironclaw_memory_native::NativeMemoryService::from_filesystem_with_embedder(
+            Arc::clone(&fs),
+            None,
+            Some(Arc::new(ScriptedEmbedder::new("model-b:2", 8)) as Arc<dyn MemoryEmbedder>),
+        ),
+    );
+    let writer = Arc::clone(&service);
+    let racing = Arc::new(ScriptedEmbedder::new("model-b:2", 8).during_call(Box::new(
+        move |number| {
+            let writer = Arc::clone(&writer);
+            Box::pin(async move {
+                if number == 0 {
+                    use ironclaw_memory::MemoryServiceWriteRequest;
+                    writer
+                        .write(
+                            memory_invocation(),
+                            MemoryServiceWriteRequest {
+                                target: "notes/race.md".to_string(),
+                                content: "beta new".to_string(),
+                                append: false,
+                                old_string: None,
+                                new_string: None,
+                                replace_all: false,
+                                metadata: None,
+                                timezone: None,
+                                expected_content_hash: None,
+                            },
+                        )
+                        .await
+                        .expect("the concurrent memory.write succeeds");
+                }
+            })
+        },
+    )));
+    let (report, _) = run_job(&fs, &racing, &fast(None)).await;
+    assert_eq!(
+        (report.embedded, report.superseded),
+        (0, 1),
+        "the chunk the backfill embedded was replaced: nothing is attached"
+    );
+    assert_eq!(
+        text_hits(&repo, "beta").await,
+        vec![("notes/race.md".to_string(), "beta new".to_string())],
+        "the new chunk's body survives"
+    );
+    assert!(
+        text_hits(&repo, "alpha").await.is_empty(),
+        "the old body was not written back"
+    );
+    assert_eq!(
+        vector_hits(&repo, embedding("model-b:2", vec![0.0, 1.0])).await,
+        vec!["notes/race.md"],
+        "the new chunk keeps the vector its own write gave it"
+    );
+    assert!(
+        vector_hits(&repo, embedding("model-b:2", vec![1.0, 0.0]))
+            .await
+            .is_empty(),
+        "the old text's vector was not attached to the new chunk"
+    );
+}
+
 // -- Backends -----------------------------------------------------------------
 
 enum Guard {
@@ -726,6 +853,7 @@ backend_suite!(in_memory:
     reembed_survives_partial_provider_failure,
     reembed_after_a_model_switch_keeps_the_old_space,
     reembed_background_task_backfills_and_reports,
+    reembed_never_overwrites_a_chunk_rewritten_mid_batch,
 );
 backend_suite!(libsql:
     only_the_query_space_ranks_in_cosine_order,
@@ -735,6 +863,7 @@ backend_suite!(libsql:
     reembed_survives_partial_provider_failure,
     reembed_after_a_model_switch_keeps_the_old_space,
     reembed_background_task_backfills_and_reports,
+    reembed_never_overwrites_a_chunk_rewritten_mid_batch,
 );
 backend_suite!(postgres:
     only_the_query_space_ranks_in_cosine_order,
@@ -744,4 +873,5 @@ backend_suite!(postgres:
     reembed_survives_partial_provider_failure,
     reembed_after_a_model_switch_keeps_the_old_space,
     reembed_background_task_backfills_and_reports,
+    reembed_never_overwrites_a_chunk_rewritten_mid_batch,
 );

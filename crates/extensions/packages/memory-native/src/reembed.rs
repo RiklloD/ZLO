@@ -20,10 +20,13 @@
 //!   timeout) backs off exponentially, honoring the provider's `retry_after`.
 //!   A run stops at its chunk budget, after `max_transient_retries`, or on a
 //!   permanent failure; vectors already attached stay.
-//! - **Attach.** Each vector is added to its chunk with a version-checked
-//!   put: nothing else on the chunk changes, vectors of other spaces stay
-//!   (never deleted, just not queried), and a chunk a concurrent write
-//!   replaced is left to that write's own indexing (`superseded`).
+//! - **Attach.** Each vector is inserted into the chunk's *current* record
+//!   (re-read, then CAS on its version) only while the document's content
+//!   hash and the chunk's identity digest still match what was embedded —
+//!   versions alone restart when a rewrite recreates chunk paths. Nothing
+//!   else on the chunk changes, vectors of other spaces stay (never deleted,
+//!   just not queried), and a chunk a concurrent write replaced is left to
+//!   that write's own indexing (`superseded`).
 //! - **Resume.** Progress is a durable per-space cursor (CAS-written beside
 //!   the tenant trees), advanced past each document once all its pending
 //!   chunks are attached. A restarted run continues after it; a pass that

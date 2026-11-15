@@ -476,7 +476,7 @@ where
     /// The space is the vector's key (`vector_key` = 128 bits of the
     /// fingerprint's SHA-256), not the `embedding_fingerprint` label: a chunk
     /// the re-embed backfill extended holds vectors of several spaces, and
-    /// the label names only the newest. A pre-fingerprint vector sits under
+    /// the label records only the one it was indexed with at write time. A pre-fingerprint vector sits under
     /// the legacy `embedding` key, which no query's key ever equals.
     fn chunk_similarity(
         versioned: &ironclaw_filesystem::VersionedEntry,

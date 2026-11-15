@@ -4,8 +4,14 @@
 //!
 //! Attaching a vector never removes anything: the chunk keeps its content,
 //! its other indexed keys, and every vector it holds under another space's
-//! key. Each attach is a version-checked put, so a chunk the indexer replaced
-//! meanwhile (the document was rewritten) is left alone.
+//! key. Each attach is a read-modify-write of the chunk's CURRENT record:
+//! it re-reads the document and the chunk, and adds the one vector key only
+//! while both are still what was embedded — the document's content hash
+//! unchanged and the chunk's identity digest (body, indexed content,
+//! document path, chunk index, scope projection) equal. A version alone is
+//! not enough: a rewrite deletes and recreates chunk paths, so versions
+//! restart and a stale CAS could match a new chunk (ABA). The scanned record
+//! is never written back.
 
 use std::collections::BTreeMap;
 
@@ -25,11 +31,25 @@ const ABSENT_SEGMENT: &str = "_none";
 /// Directory children read per page while enumerating scopes.
 const SCOPE_PAGE: usize = 256;
 
-/// One chunk that has no vector in the space being backfilled.
+/// Attempts of one attach when the chunk's version moves under it while its
+/// identity still matches (a concurrent attach of another space's vector).
+const ATTACH_ATTEMPTS: usize = 3;
+
+/// One chunk that has no vector in the space being backfilled, with what it
+/// was when scanned: its identity digest and its document's revision.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingChunk {
     pub(crate) content: String,
-    versioned: ironclaw_filesystem::VersionedEntry,
+    path: VirtualPath,
+    identity: String,
+    document: Arc<DocumentRevision>,
+}
+
+/// A document as scanned: where its body lives and the hash of that body.
+#[derive(Debug)]
+struct DocumentRevision {
+    path: VirtualPath,
+    content_hash: String,
 }
 
 /// The pending chunks of one document, in chunk order.
@@ -73,6 +93,39 @@ pub(crate) fn scope_key(scope: &MemoryDocumentScope) -> [String; 4] {
         scope.agent_id().unwrap_or(ABSENT_SEGMENT).to_string(),
         scope.project_id().unwrap_or(ABSENT_SEGMENT).to_string(),
     ]
+}
+
+/// Digest of everything that makes a chunk record *this* chunk: its kind,
+/// body, and the identity-bearing indexed projections. Vectors, the space
+/// label, and versions are deliberately not part of it.
+fn chunk_identity(entry: &Entry) -> String {
+    let field = |key: &str| match IndexKey::new(key)
+        .ok()
+        .and_then(|key| entry.indexed.get(&key))
+    {
+        Some(IndexValue::Text(text)) => format!("t:{text}"),
+        Some(IndexValue::I64(number)) => format!("i:{number}"),
+        Some(other) => format!("o:{other:?}"),
+        None => "-".to_string(),
+    };
+    let mut canonical = Vec::new();
+    let kind = entry.kind.as_ref().map_or("", |kind| kind.as_str());
+    for part in [
+        kind.to_string(),
+        field(fs_keys::DOC_PATH),
+        field(fs_keys::CHUNK_INDEX),
+        field(fs_keys::CONTENT),
+        field(fs_keys::TENANT),
+        field(fs_keys::USER),
+        field(fs_keys::AGENT),
+        field(fs_keys::PROJECT),
+    ] {
+        canonical.extend_from_slice(&(part.len() as u64).to_le_bytes());
+        canonical.extend_from_slice(part.as_bytes());
+    }
+    canonical.extend_from_slice(&(entry.body.len() as u64).to_le_bytes());
+    canonical.extend_from_slice(&entry.body);
+    content_bytes_sha256(&canonical)
 }
 
 fn present_segment(segment: &str) -> Option<&str> {
@@ -175,9 +228,33 @@ where
                 error.to_string(),
             )
         })?;
+        let entries = self.query_all(&prefix, &Filter::All).await?;
+        // The revision each chunk was derived from: the document bodies in
+        // this same scan.
+        let body_prefix = format!("{}/", prefix.as_str().trim_end_matches('/'));
+        let revisions: HashMap<String, Arc<DocumentRevision>> = entries
+            .iter()
+            .filter(|versioned| {
+                versioned
+                    .entry
+                    .kind
+                    .as_ref()
+                    .is_some_and(|kind| kind.as_str() == DOCUMENT_KIND)
+            })
+            .filter_map(|versioned| {
+                let relative = versioned.path.as_str().strip_prefix(&body_prefix)?;
+                Some((
+                    relative.to_string(),
+                    Arc::new(DocumentRevision {
+                        path: versioned.path.clone(),
+                        content_hash: content_bytes_sha256(&versioned.entry.body),
+                    }),
+                ))
+            })
+            .collect();
         let mut by_document = BTreeMap::<String, Vec<(i64, PendingChunk)>>::new();
         let mut ineligible = 0_u64;
-        for versioned in self.query_all(&prefix, &Filter::All).await? {
+        for versioned in entries {
             if versioned
                 .entry
                 .kind
@@ -190,13 +267,20 @@ where
             let Some(document) = Self::document_relative_path_from_chunk_entry(&versioned) else {
                 continue;
             };
-            let content = match String::from_utf8(versioned.entry.body.clone()) {
-                Ok(content) if embeddable(embedder, &content) => content,
+            // A chunk whose document is gone (an orphan) or whose text the
+            // embedder cannot take is never pending: sending it would cost a
+            // call on every run without ever completing.
+            let revision = revisions.get(&document).cloned();
+            let content = match (String::from_utf8(versioned.entry.body.clone()), revision) {
+                (Ok(content), Some(revision)) if embeddable(embedder, &content) => {
+                    (content, revision)
+                }
                 _ => {
                     ineligible += 1;
                     continue;
                 }
             };
+            let (content, revision) = content;
             let index = match versioned
                 .entry
                 .indexed
@@ -205,10 +289,16 @@ where
                 Some(IndexValue::I64(index)) => *index,
                 _ => i64::MAX,
             };
-            by_document
-                .entry(document)
-                .or_default()
-                .push((index, PendingChunk { content, versioned }));
+            let identity = chunk_identity(&versioned.entry);
+            by_document.entry(document).or_default().push((
+                index,
+                PendingChunk {
+                    content,
+                    path: versioned.path,
+                    identity,
+                    document: revision,
+                },
+            ));
         }
         let documents = by_document
             .into_iter()
@@ -226,9 +316,11 @@ where
         })
     }
 
-    /// Add `vector` (in `fingerprint`'s space) to `chunk`, keeping everything
-    /// it already holds. `false` when the chunk changed since it was read (a
-    /// reindex replaced or removed it): nothing is written.
+    /// Add `vector` (in `fingerprint`'s space) to the chunk's current
+    /// record, only while it is still the chunk that was embedded. `false`
+    /// (nothing written) when the document's body changed, the chunk is gone
+    /// or is a different chunk now, or it already holds a vector in this
+    /// space.
     pub(crate) async fn attach_chunk_vector(
         &self,
         chunk: &PendingChunk,
@@ -242,30 +334,45 @@ where
                 error.to_string(),
             )
         })?;
-        let entry = chunk
-            .versioned
-            .entry
-            .clone()
-            .with_indexed(
-                Self::index_key(fs_keys::EMBEDDING_FINGERPRINT),
-                IndexValue::Text(fingerprint.as_str().to_string()),
-            )
-            .with_indexed(vector_key, IndexValue::Bytes(encode_embedding_blob(vector)));
-        match self
-            .filesystem
-            .put(
-                &chunk.versioned.path,
-                entry,
-                CasExpectation::Version(chunk.versioned.version),
-            )
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(FilesystemError::VersionMismatch { .. } | FilesystemError::NotFound { .. }) => {
-                Ok(false)
+        for _ in 0..ATTACH_ATTEMPTS {
+            match self.filesystem.get(&chunk.document.path).await? {
+                Some(document)
+                    if content_bytes_sha256(&document.entry.body)
+                        == chunk.document.content_hash => {}
+                _ => return Ok(false),
             }
-            Err(error) => Err(error),
+            let Some(current) = self.filesystem.get(&chunk.path).await? else {
+                return Ok(false);
+            };
+            let is_chunk = current
+                .entry
+                .kind
+                .as_ref()
+                .is_some_and(|kind| kind.as_str() == CHUNK_KIND);
+            if !is_chunk
+                || chunk_identity(&current.entry) != chunk.identity
+                || current.entry.indexed.contains_key(&vector_key)
+            {
+                return Ok(false);
+            }
+            let mut entry = current.entry;
+            entry.indexed.insert(
+                vector_key.clone(),
+                IndexValue::Bytes(encode_embedding_blob(vector)),
+            );
+            match self
+                .filesystem
+                .put(&chunk.path, entry, CasExpectation::Version(current.version))
+                .await
+            {
+                Ok(_) => return Ok(true),
+                // Moved since the read: re-read and re-check identity.
+                Err(FilesystemError::VersionMismatch { .. }) => continue,
+                Err(FilesystemError::NotFound { .. }) => return Ok(false),
+                Err(error) => return Err(error),
+            }
         }
+        Ok(false)
     }
 
     fn cursor_path(
