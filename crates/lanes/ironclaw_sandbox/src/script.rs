@@ -5,13 +5,11 @@
 //! extensions do not receive raw Docker flags, host paths, ambient environment,
 //! secrets, or network by default.
 
-use std::{
-    io::{Read, Write},
-    panic::AssertUnwindSafe,
-    process::{Command, Stdio},
-    thread,
-    time::{Duration, Instant},
-};
+pub mod docker;
+
+use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
+
+use async_trait::async_trait;
 
 use futures_util::FutureExt as _;
 use ironclaw_extension_contracts::runtime::ExtensionRuntime;
@@ -38,6 +36,11 @@ pub struct ScriptRuntimeConfig {
     pub max_stdout_bytes: u64,
     pub max_stderr_bytes: u64,
     pub max_wall_clock_ms: u64,
+    /// Extra time, past `max_wall_clock_ms`, the runtime waits for the backend
+    /// to tear a timed-out script down before abandoning the backend call,
+    /// releasing the reservation, and reporting the timeout. Must exceed the
+    /// backend's own bounded teardown (the sum of `docker::TeardownBounds`).
+    pub teardown_grace_ms: u64,
 }
 
 impl Default for ScriptRuntimeConfig {
@@ -46,6 +49,7 @@ impl Default for ScriptRuntimeConfig {
             max_stdout_bytes: 1024 * 1024,
             max_stderr_bytes: 64 * 1024,
             max_wall_clock_ms: 30_000,
+            teardown_grace_ms: 15_000,
         }
     }
 }
@@ -56,6 +60,7 @@ impl ScriptRuntimeConfig {
             max_stdout_bytes: 64 * 1024,
             max_stderr_bytes: 16 * 1024,
             max_wall_clock_ms: 5_000,
+            teardown_grace_ms: 200,
         }
     }
 }
@@ -135,33 +140,6 @@ impl ScriptBackendOutput {
 /// Backend interface for sandboxed script execution.
 pub trait ScriptBackend: Send + Sync {
     fn execute(&self, request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String>;
-}
-
-/// Docker CLI backend for V1 script execution.
-///
-/// This backend intentionally accepts only normalized manifest-derived command
-/// fields. It does not expose raw Docker flags to extensions, does not mount host
-/// paths, does not pass host environment variables, and disables container
-/// network access by default.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DockerScriptBackend;
-
-impl ScriptBackend for DockerScriptBackend {
-    fn execute(&self, request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String> {
-        if request.runner != "docker" {
-            return Err(format!(
-                "DockerScriptBackend cannot execute runner {}",
-                request.runner
-            ));
-        }
-        let image = request
-            .image
-            .clone()
-            .ok_or_else(|| "DockerScriptBackend requires an image".to_string())?;
-        validate_docker_image_reference(&image)?;
-
-        execute_docker_request(request, &image)
-    }
 }
 
 /// Full resource-governed script execution result.
@@ -252,25 +230,34 @@ impl From<RuntimeResourceError> for ScriptError {
 }
 
 /// Runtime for executing manifest-declared script capabilities.
+///
+/// The backend is synchronous (it waits on a host child process), so the
+/// runtime runs it on the Tokio blocking pool and never on an async worker,
+/// and bounds the wait at `max_wall_clock_ms + teardown_grace_ms`. A backend
+/// still running at that deadline is abandoned on its blocking thread; the
+/// reservation is released and the call reports [`ScriptError::Timeout`].
 #[derive(Debug, Clone)]
 pub struct ScriptRuntime<B> {
     config: ScriptRuntimeConfig,
-    backend: B,
+    backend: Arc<B>,
 }
 
 impl<B> ScriptRuntime<B>
 where
-    B: ScriptBackend,
+    B: ScriptBackend + 'static,
 {
     pub fn new(config: ScriptRuntimeConfig, backend: B) -> Self {
-        Self { config, backend }
+        Self {
+            config,
+            backend: Arc::new(backend),
+        }
     }
 
     pub fn config(&self) -> &ScriptRuntimeConfig {
         &self.config
     }
 
-    pub fn execute_extension_json<Budget>(
+    pub async fn execute_extension_json<Budget>(
         &self,
         budget: &Budget,
         request: ScriptExecutionRequest<'_>,
@@ -286,15 +273,9 @@ where
             request.resource_reservation.clone(),
         )?;
 
-        let output = match self.backend.execute(backend_request) {
+        let output = match self.execute_backend_off_worker(backend_request).await {
             Ok(output) => output,
-            Err(reason) => {
-                return Err(release_after_failure(
-                    budget,
-                    reservation.id,
-                    ScriptError::Backend { reason },
-                ));
-            }
+            Err(error) => return Err(release_after_failure(budget, reservation.id, error)),
         };
 
         if output.stdout.len() as u64 > self.config.max_stdout_bytes {
@@ -347,6 +328,35 @@ where
             },
             receipt,
         })
+    }
+
+    /// Run the synchronous backend on the blocking pool with an outer deadline.
+    async fn execute_backend_off_worker(
+        &self,
+        request: ScriptBackendRequest,
+    ) -> Result<ScriptBackendOutput, ScriptError> {
+        let limit_ms = request.max_wall_clock_ms;
+        let deadline =
+            Duration::from_millis(limit_ms.saturating_add(self.config.teardown_grace_ms));
+        let backend = Arc::clone(&self.backend);
+        let task = tokio::task::spawn_blocking(move || backend.execute(request));
+        match tokio::time::timeout(deadline, task).await {
+            Ok(Ok(Ok(output))) => Ok(output),
+            Ok(Ok(Err(reason))) => Err(ScriptError::Backend { reason }),
+            Ok(Err(join_error)) => Err(ScriptError::Backend {
+                reason: format!("script backend task failed: {join_error}"),
+            }),
+            Err(_elapsed) => {
+                // Dropping the join handle detaches the blocking thread; the
+                // backend's own teardown bounds decide when it finishes.
+                tracing::debug!(
+                    limit_ms,
+                    deadline_ms = deadline.as_millis() as u64,
+                    "abandoning a script backend call that outlived its teardown deadline"
+                );
+                Err(ScriptError::Timeout { limit_ms })
+            }
+        }
     }
 
     fn prepare_backend_request(
@@ -420,169 +430,26 @@ where
 }
 
 /// Object-safe script executor interface used by the kernel composition layer.
+#[async_trait]
 pub trait ScriptExecutor: Send + Sync {
-    fn execute_extension_json(
+    async fn execute_extension_json(
         &self,
         budget: &dyn RuntimeResourceBudget,
         request: ScriptExecutionRequest<'_>,
     ) -> Result<ScriptExecutionResult, ScriptError>;
 }
 
+#[async_trait]
 impl<B> ScriptExecutor for ScriptRuntime<B>
 where
-    B: ScriptBackend,
+    B: ScriptBackend + 'static,
 {
-    fn execute_extension_json(
+    async fn execute_extension_json(
         &self,
         budget: &dyn RuntimeResourceBudget,
         request: ScriptExecutionRequest<'_>,
     ) -> Result<ScriptExecutionResult, ScriptError> {
-        ScriptRuntime::execute_extension_json(self, budget, request)
-    }
-}
-
-fn validate_docker_image_reference(image: &str) -> Result<(), String> {
-    if image.is_empty() {
-        return Err("Docker image reference must not be empty".to_string());
-    }
-    if image.starts_with('-') {
-        return Err("Docker image reference must not start with '-'".to_string());
-    }
-    if image.chars().any(char::is_whitespace) {
-        return Err("Docker image reference must not contain whitespace".to_string());
-    }
-    Ok(())
-}
-
-fn execute_docker_request(
-    request: ScriptBackendRequest,
-    image: &str,
-) -> Result<ScriptBackendOutput, String> {
-    let started = Instant::now();
-    let mut command = Command::new("docker");
-    command.args(docker_run_args(&request, image));
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Docker child stdout was not captured".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "Docker child stderr was not captured".to_string())?;
-    let stdout_limit = request.max_stdout_bytes;
-    let stderr_limit = request.max_stderr_bytes;
-    let stdout_reader = thread::spawn(move || read_bounded(stdout, stdout_limit));
-    let stderr_reader = thread::spawn(move || read_bounded(stderr, stderr_limit));
-
-    let stdin_json = request.stdin_json.clone();
-    let mut stdin_writer = child.stdin.take().map(|mut stdin| {
-        thread::spawn(move || {
-            stdin
-                .write_all(stdin_json.as_bytes())
-                .map_err(|error| error.to_string())
-        })
-    });
-
-    let timeout = Duration::from_millis(request.max_wall_clock_ms);
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            break status;
-        }
-        if started.elapsed() >= timeout {
-            // Best-effort: the timeout is returned below either way, but a
-            // failed kill or reap is worth a trace (a failed kill can leave
-            // the reap blocking on the script).
-            if let Err(error) = child.kill() {
-                tracing::debug!(%error, "killing a timed-out script's docker child failed");
-            }
-            if let Err(error) = child.wait() {
-                tracing::debug!(%error, "reaping a timed-out script's docker child failed");
-            }
-            if let Some(stdin_writer) = stdin_writer.take() {
-                #[expect(
-                    clippy::let_underscore_must_use,
-                    reason = "a panicked pipe thread only loses output of a script that already timed out"
-                )]
-                let _ = stdin_writer.join();
-            }
-            #[expect(
-                clippy::let_underscore_must_use,
-                reason = "a panicked pipe thread only loses output of a script that already timed out"
-            )]
-            let _ = stdout_reader.join();
-            #[expect(
-                clippy::let_underscore_must_use,
-                reason = "a panicked pipe thread only loses output of a script that already timed out"
-            )]
-            let _ = stderr_reader.join();
-            return Err(format!(
-                "script timed out after {} ms",
-                request.max_wall_clock_ms
-            ));
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-
-    if let Some(stdin_writer) = stdin_writer.take() {
-        stdin_writer
-            .join()
-            .map_err(|_| "stdin writer panicked".to_string())??;
-    }
-
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| "stdout reader panicked".to_string())??;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| "stderr reader panicked".to_string())??;
-
-    Ok(ScriptBackendOutput {
-        exit_code: status.code().unwrap_or(-1),
-        stdout,
-        stderr,
-        wall_clock_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-    })
-}
-
-fn docker_run_args(request: &ScriptBackendRequest, image: &str) -> Vec<String> {
-    let mut args = vec![
-        "run".to_string(),
-        "--rm".to_string(),
-        "-i".to_string(),
-        "--network".to_string(),
-        "none".to_string(),
-        image.to_string(),
-        request.command.clone(),
-    ];
-    args.extend(request.args.clone());
-    args
-}
-
-fn read_bounded<R>(mut reader: R, limit: u64) -> Result<Vec<u8>, String>
-where
-    R: Read,
-{
-    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-    let mut output = Vec::new();
-    let mut buffer = [0_u8; 8192];
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|error| error.to_string())?;
-        if read == 0 {
-            return Ok(output);
-        }
-        if output.len().saturating_add(read) > limit {
-            return Err(format!("output exceeded {limit} bytes"));
-        }
-        output.extend_from_slice(&buffer[..read]);
+        ScriptRuntime::execute_extension_json(self, budget, request).await
     }
 }
 
@@ -624,196 +491,4 @@ fn bounded_lossy(bytes: &[u8], limit: u64) -> String {
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
     let end = bytes.len().min(limit);
     String::from_utf8_lossy(&bytes[..end]).into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::Cursor;
-
-    #[cfg(unix)]
-    use std::{ffi::OsString, fs, sync::Mutex};
-
-    #[cfg(unix)]
-    use super::{DockerScriptBackend, ScriptBackend};
-    use super::{
-        ScriptBackendRequest, docker_run_args, read_bounded, validate_docker_image_reference,
-    };
-    use ironclaw_host_api::{
-        ids::{CapabilityId, InvocationId, TenantId, UserId},
-        resource::ResourceScope,
-    };
-
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-
-    #[cfg(unix)]
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn read_bounded_rejects_output_larger_than_limit() {
-        let err = read_bounded(Cursor::new(b"abcdef"), 4).unwrap_err();
-        assert!(err.contains("output exceeded 4 bytes"));
-    }
-
-    #[test]
-    fn read_bounded_allows_output_at_limit() {
-        let output = read_bounded(Cursor::new(b"abcd"), 4).unwrap();
-        assert_eq!(output, b"abcd");
-    }
-
-    #[test]
-    fn docker_image_reference_rejects_cli_flag_injection() {
-        let err = validate_docker_image_reference("--network=host").unwrap_err();
-        assert!(err.contains("must not start with '-'"));
-    }
-
-    #[test]
-    fn docker_image_reference_rejects_whitespace() {
-        let err = validate_docker_image_reference("alpine --privileged").unwrap_err();
-        assert!(err.contains("must not contain whitespace"));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn docker_backend_disables_ambient_network_before_image_and_manifest_args() {
-        let fake_bin = tempfile::tempdir().unwrap();
-        let args_file = fake_bin.path().join("docker-args.txt");
-        let docker_path = fake_bin.path().join("docker");
-        fs::write(
-            &docker_path,
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$IRONCLAW_DOCKER_ARGS_FILE\"\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&docker_path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&docker_path, permissions).unwrap();
-
-        let _lock = ENV_LOCK.lock().unwrap();
-        let old_path = std::env::var_os("PATH");
-        let old_args_file = std::env::var_os("IRONCLAW_DOCKER_ARGS_FILE");
-        let _restore = EnvRestore(vec![
-            ("PATH", old_path.clone()),
-            ("IRONCLAW_DOCKER_ARGS_FILE", old_args_file),
-        ]);
-        let mut paths = vec![fake_bin.path().to_path_buf()];
-        if let Some(old_path) = old_path.as_ref() {
-            paths.extend(std::env::split_paths(old_path));
-        }
-        let path = std::env::join_paths(paths).unwrap();
-        unsafe {
-            std::env::set_var("PATH", path);
-            std::env::set_var("IRONCLAW_DOCKER_ARGS_FILE", &args_file);
-        }
-
-        let output = DockerScriptBackend
-            .execute(sample_docker_request())
-            .unwrap();
-
-        assert_eq!(output.exit_code, 0);
-        assert_eq!(output.stdout, br#"{"ok":true}"#);
-        let recorded = fs::read_to_string(args_file).unwrap();
-        let args = recorded.lines().collect::<Vec<_>>();
-        assert_eq!(
-            &args[..6],
-            &["run", "--rm", "-i", "--network", "none", "alpine:latest"]
-        );
-        assert_eq!(args[6], "script-echo");
-        assert_eq!(args[7], "--json");
-        assert_eq!(args[8], "--network=host");
-        let image_index = args
-            .iter()
-            .position(|arg| *arg == "alpine:latest")
-            .expect("image must be present");
-        let network_index = args
-            .iter()
-            .position(|arg| *arg == "--network")
-            .expect("network flag must be present");
-        let command_index = args
-            .iter()
-            .position(|arg| *arg == "script-echo")
-            .expect("command must be present");
-        let manifest_arg_index = args
-            .iter()
-            .position(|arg| *arg == "--network=host")
-            .expect("manifest arg must be preserved after the command");
-        assert!(network_index < image_index);
-        assert!(image_index < command_index);
-        assert!(command_index < manifest_arg_index);
-    }
-
-    #[test]
-    fn docker_run_args_disable_ambient_network_before_image_and_manifest_args() {
-        let request = sample_docker_request();
-
-        let args = docker_run_args(&request, "alpine:latest");
-
-        assert_eq!(
-            &args[..6],
-            &["run", "--rm", "-i", "--network", "none", "alpine:latest"]
-        );
-        assert_eq!(args[6], "script-echo");
-        assert_eq!(args[7], "--json");
-        assert_eq!(args[8], "--network=host");
-        let image_index = args
-            .iter()
-            .position(|arg| arg == "alpine:latest")
-            .expect("image must be present");
-        let network_index = args
-            .iter()
-            .position(|arg| arg == "--network")
-            .expect("network flag must be present");
-        let command_index = args
-            .iter()
-            .position(|arg| arg == "script-echo")
-            .expect("command must be present");
-        let manifest_arg_index = args
-            .iter()
-            .position(|arg| arg == "--network=host")
-            .expect("manifest arg must be preserved after the command");
-        assert!(network_index < image_index);
-        assert!(image_index < command_index);
-        assert!(command_index < manifest_arg_index);
-    }
-
-    fn sample_docker_request() -> ScriptBackendRequest {
-        ScriptBackendRequest {
-            provider: ironclaw_host_api::ids::ExtensionId::new("script").unwrap(),
-            capability_id: CapabilityId::new("script.echo").unwrap(),
-            scope: ResourceScope {
-                tenant_id: TenantId::new("tenant1").unwrap(),
-                user_id: UserId::new("user1").unwrap(),
-                agent_id: None,
-                project_id: None,
-                mission_id: None,
-                thread_id: None,
-                invocation_id: InvocationId::new(),
-            },
-            runner: "docker".to_string(),
-            image: Some("alpine:latest".to_string()),
-            command: "script-echo".to_string(),
-            args: vec!["--json".to_string(), "--network=host".to_string()],
-            stdin_json: "{}".to_string(),
-            max_stdout_bytes: 1024,
-            max_stderr_bytes: 1024,
-            max_wall_clock_ms: 1_000,
-        }
-    }
-
-    #[cfg(unix)]
-    struct EnvRestore(Vec<(&'static str, Option<OsString>)>);
-
-    #[cfg(unix)]
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (key, value) in &self.0 {
-                unsafe {
-                    if let Some(value) = value {
-                        std::env::set_var(key, value);
-                    } else {
-                        std::env::remove_var(key);
-                    }
-                }
-            }
-        }
-    }
 }

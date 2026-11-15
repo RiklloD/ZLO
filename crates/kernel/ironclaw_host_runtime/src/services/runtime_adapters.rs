@@ -446,6 +446,7 @@ where
                     },
                 },
             )
+            .await
             .map_err(|error| {
                 dispatch_error_for_runtime(
                     RuntimeKind::Script,

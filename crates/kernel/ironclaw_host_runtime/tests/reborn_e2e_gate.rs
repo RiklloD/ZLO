@@ -397,6 +397,85 @@ async fn reborn_e2e_gate_redacts_runtime_output_before_public_result() {
     );
 }
 
+/// Regression: a script backend wedged in teardown (a Docker CLI that survives
+/// its kill, a pipe that never closes) used to run synchronously inside the
+/// async dispatch, pinning the Tokio worker and holding the reservation until
+/// the backend returned. On this current-thread runtime the old path blocked
+/// the only worker for the backend's full stall.
+#[tokio::test]
+async fn reborn_e2e_gate_stuck_script_backend_times_out_without_pinning_the_worker() {
+    let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
+    let governor = Arc::new(InMemoryResourceGovernor::new());
+    let (release_backend, backend) = StuckScriptBackend::new();
+    let services = HostRuntimeServices::new(
+        Arc::new(registry_with_manifest(SCRIPT_MANIFEST)),
+        Arc::new(DiskFilesystem::new()),
+        Arc::clone(&governor),
+        Arc::new(GrantAuthorizer::new()),
+        ironclaw_processes::in_memory_backed_process_services(),
+        CapabilitySurfaceVersion::new("surface-v1").unwrap(),
+    )
+    .with_trust_policy(Arc::new(local_manifest_trust_policy()))
+    .with_invocation_state(Arc::clone(&run_state))
+    .with_script_runtime(Arc::new(ScriptRuntime::new(
+        ScriptRuntimeConfig {
+            max_wall_clock_ms: 50,
+            ..ScriptRuntimeConfig::for_testing()
+        },
+        backend,
+    )));
+    let runtime = services.host_runtime_for_local_testing();
+    let context = execution_context_with_dispatch_grant();
+    let scope = context.resource_scope.clone();
+    let invocation_id = context.invocation_id;
+
+    // A sibling task on the same (only) worker must keep making progress
+    // while the stuck script call is in flight.
+    let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ticker = tokio::spawn({
+        let ticks = Arc::clone(&ticks);
+        async move {
+            loop {
+                ticks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+    });
+
+    let started = std::time::Instant::now();
+    let outcome = runtime
+        .invoke_capability((
+            context,
+            script_capability_id(),
+            ResourceEstimate::default().set_concurrency_slots(1),
+            json!({"message": "stuck"}),
+        ))
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    ticker.abort();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "a stuck script backend must not hold dispatch past the runtime deadline: {elapsed:?}"
+    );
+    assert!(
+        ticks.load(std::sync::atomic::Ordering::SeqCst) > 1,
+        "the async worker must stay free while the script backend is stuck"
+    );
+    // `ScriptError::Timeout` keeps its existing executor classification.
+    assert_failed_outcome(outcome, FailureKind::Executor);
+    let run = run_state.get(&scope, invocation_id).await.unwrap().unwrap();
+    assert_eq!(run.status, ProcessInvocationStatus::Failed);
+    let tenant_account = ResourceAccount::tenant(scope.tenant_id.clone());
+    assert_eq!(
+        governor.reserved_for(&tenant_account),
+        ResourceTally::default(),
+        "the reservation must be released when the runtime abandons a stuck backend"
+    );
+    drop(release_backend);
+}
+
 #[tokio::test]
 async fn reborn_e2e_gate_sanitizes_runtime_backend_failure_before_public_surfaces() {
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
@@ -816,6 +895,33 @@ impl TrustAwareCapabilityDispatchAuthorizer for ObligatingAuthorizer {
 }
 
 struct EchoScriptBackend;
+
+/// A backend that stays blocked until the test drops the release handle (or
+/// 10 s pass), standing in for a Docker teardown that never finishes.
+struct StuckScriptBackend {
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl StuckScriptBackend {
+    fn new() -> (std::sync::mpsc::Sender<()>, Self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        (
+            sender,
+            Self {
+                release: Mutex::new(receiver),
+            },
+        )
+    }
+}
+
+impl ScriptBackend for StuckScriptBackend {
+    fn execute(&self, _request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String> {
+        let release = self.release.lock().unwrap();
+        // Either outcome (released or 10 s elapsed) is "the stall ended".
+        let ended = release.recv_timeout(std::time::Duration::from_secs(10));
+        Err(format!("stuck backend returned: {ended:?}"))
+    }
+}
 
 struct FailingScriptBackend;
 

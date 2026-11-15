@@ -114,8 +114,15 @@ backend fails -> release reservation
 non-zero exit -> release reservation
 output limit fails -> release reservation
 invalid JSON stdout -> release reservation
+backend outlives max_wall_clock_ms + teardown_grace_ms -> release reservation, ScriptError::Timeout
 success -> reconcile reservation
 ```
+
+The backend is synchronous, so `ScriptRuntime::execute_extension_json` is
+`async` and runs the backend on the Tokio blocking pool, never on an async
+worker. It waits at most `max_wall_clock_ms + teardown_grace_ms`; a backend
+still running then is abandoned on its blocking thread, the reservation is
+released, and the call reports `ScriptError::Timeout`.
 
 Actual usage currently records:
 
@@ -130,8 +137,17 @@ Actual usage currently records:
 `DockerScriptBackend` invokes Docker only when the manifest resolves to `runner = "docker"` with an image. It uses normalized fields only:
 
 ```text
-docker run --rm -i --network none <image> <command> <args...>
+docker run --rm -i --name ironclaw-script-<uuid> --label ironclaw.lane=script \
+  --network none <image> <command> <args...>
 ```
+
+The container name is host-assigned per execution; the label marks every
+script-lane container. On a wall-clock timeout the backend tears down in
+bounded steps: kill the CLI child, wait a bounded time for it to exit,
+`docker rm -f` the container by name (always — killing `docker run` does not
+stop the container), wait again, then join the pipe threads with a deadline,
+abandoning any that never close. It then returns its timeout error; no step
+waits without a bound.
 
 V1 default restrictions:
 

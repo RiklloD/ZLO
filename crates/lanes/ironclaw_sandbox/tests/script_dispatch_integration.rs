@@ -15,8 +15,8 @@ use ironclaw_resources::*;
 use ironclaw_sandbox::*;
 use serde_json::json;
 
-#[test]
-fn script_lane_executes_manifest_command_and_reconciles_resources() {
+#[tokio::test]
+async fn script_lane_executes_manifest_command_and_reconciles_resources() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput {
         exit_code: 0,
         stdout: br#"{"message":"script ok"}"#.to_vec(),
@@ -31,6 +31,7 @@ fn script_lane_executes_manifest_command_and_reconciles_resources() {
             &GovernorRuntimeBudget::new(&governor),
             script_request(json!({"message":"hello", "command":"ignored"})),
         )
+        .await
         .unwrap();
 
     assert_eq!(result.result.output, json!({"message":"script ok"}));
@@ -50,8 +51,8 @@ fn script_lane_executes_manifest_command_and_reconciles_resources() {
     assert_eq!(stdin_json, json!({"message":"hello", "command":"ignored"}));
 }
 
-#[test]
-fn script_lane_nonzero_exit_releases_reservation() {
+#[tokio::test]
+async fn script_lane_nonzero_exit_releases_reservation() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput {
         exit_code: 2,
         stdout: Vec::new(),
@@ -66,6 +67,7 @@ fn script_lane_nonzero_exit_releases_reservation() {
             &GovernorRuntimeBudget::new(&governor),
             script_request(json!({"message":"fail"})),
         )
+        .await
         .unwrap_err();
 
     assert!(matches!(err, ScriptError::ExitFailure { code: 2, .. }));
@@ -73,8 +75,8 @@ fn script_lane_nonzero_exit_releases_reservation() {
     assert_eq!(governor.usage_for(&account), ResourceTally::default());
 }
 
-#[test]
-fn script_lane_invalid_json_releases_reservation() {
+#[tokio::test]
+async fn script_lane_invalid_json_releases_reservation() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput {
         exit_code: 0,
         stdout: b"not-json".to_vec(),
@@ -89,6 +91,7 @@ fn script_lane_invalid_json_releases_reservation() {
             &GovernorRuntimeBudget::new(&governor),
             script_request(json!({"message":"bad-json"})),
         )
+        .await
         .unwrap_err();
 
     assert!(matches!(err, ScriptError::InvalidOutput { .. }));

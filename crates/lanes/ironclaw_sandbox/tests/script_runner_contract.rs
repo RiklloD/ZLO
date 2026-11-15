@@ -15,8 +15,8 @@ use ironclaw_resources::*;
 use ironclaw_sandbox::*;
 use serde_json::json;
 
-#[test]
-fn script_runtime_reserves_executes_and_reconciles_success() {
+#[tokio::test]
+async fn script_runtime_reserves_executes_and_reconciles_success() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput {
         exit_code: 0,
         stdout: br#"{"message":"hello script"}"#.to_vec(),
@@ -58,6 +58,7 @@ fn script_runtime_reserves_executes_and_reconciles_success() {
                 },
             },
         )
+        .await
         .unwrap();
 
     assert_eq!(execution.result.output, json!({"message":"hello script"}));
@@ -89,8 +90,8 @@ fn script_runtime_reserves_executes_and_reconciles_success() {
     assert!(!requests[0].command.contains("malicious"));
 }
 
-#[test]
-fn script_runtime_denies_budget_before_backend_execution() {
+#[tokio::test]
+async fn script_runtime_denies_budget_before_backend_execution() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput::json(json!({"ok": true})));
     let runtime = ScriptRuntime::new(ScriptRuntimeConfig::for_testing(), backend.clone());
     let governor = InMemoryResourceGovernor::new();
@@ -130,6 +131,7 @@ fn script_runtime_denies_budget_before_backend_execution() {
                 invocation: ScriptInvocation { input: json!({}) },
             },
         )
+        .await
         .unwrap_err();
 
     let ScriptError::Resource(denial) = &err else {
@@ -153,8 +155,8 @@ fn script_runtime_denies_budget_before_backend_execution() {
 /// host's hold untouched for the host to release. Regression for #7067: this
 /// path moved from constructing the kernel's `ResourceError` to constructing
 /// the port's error.
-#[test]
-fn script_runtime_reuses_a_matching_prepared_reservation_and_rejects_a_mismatched_one() {
+#[tokio::test]
+async fn script_runtime_reuses_a_matching_prepared_reservation_and_rejects_a_mismatched_one() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput::json(json!({"ok": true})));
     let runtime = ScriptRuntime::new(ScriptRuntimeConfig::for_testing(), backend.clone());
     let governor = InMemoryResourceGovernor::new();
@@ -189,6 +191,7 @@ fn script_runtime_reuses_a_matching_prepared_reservation_and_rejects_a_mismatche
                 invocation: ScriptInvocation { input: json!({}) },
             },
         )
+        .await
         .unwrap_err();
     let ScriptError::Resource(mismatch) = &err else {
         panic!("expected a reservation mismatch, got {err:?}");
@@ -216,6 +219,7 @@ fn script_runtime_reuses_a_matching_prepared_reservation_and_rejects_a_mismatche
                 invocation: ScriptInvocation { input: json!({}) },
             },
         )
+        .await
         .unwrap();
     assert_eq!(result.receipt.id, prepared.id);
     assert_eq!(result.receipt.status, ReservationStatus::Reconciled);
@@ -228,8 +232,8 @@ fn script_runtime_reuses_a_matching_prepared_reservation_and_rejects_a_mismatche
 /// approval gate instead of reporting a refusal. Regression for #7067 — the
 /// narrow port must not collapse the denial cone into one undifferentiated
 /// "resource error". Fail-closed either way: the backend is never executed.
-#[test]
-fn script_runtime_surfaces_approval_pause_distinctly_from_a_hard_denial() {
+#[tokio::test]
+async fn script_runtime_surfaces_approval_pause_distinctly_from_a_hard_denial() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput::json(json!({"ok": true})));
     let runtime = ScriptRuntime::new(ScriptRuntimeConfig::for_testing(), backend.clone());
     let governor = InMemoryResourceGovernor::new();
@@ -261,6 +265,7 @@ fn script_runtime_surfaces_approval_pause_distinctly_from_a_hard_denial() {
                 invocation: ScriptInvocation { input: json!({}) },
             },
         )
+        .await
         .unwrap_err();
 
     let ScriptError::Resource(pause) = &err else {
@@ -272,8 +277,8 @@ fn script_runtime_surfaces_approval_pause_distinctly_from_a_hard_denial() {
     assert_eq!(governor.usage_for(&account), ResourceTally::default());
 }
 
-#[test]
-fn script_runtime_releases_reservation_when_backend_exits_nonzero() {
+#[tokio::test]
+async fn script_runtime_releases_reservation_when_backend_exits_nonzero() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput {
         exit_code: 2,
         stdout: Vec::new(),
@@ -307,6 +312,7 @@ fn script_runtime_releases_reservation_when_backend_exits_nonzero() {
                 invocation: ScriptInvocation { input: json!({}) },
             },
         )
+        .await
         .unwrap_err();
 
     assert!(matches!(err, ScriptError::ExitFailure { code: 2, .. }));
@@ -314,8 +320,8 @@ fn script_runtime_releases_reservation_when_backend_exits_nonzero() {
     assert_eq!(governor.usage_for(&account), ResourceTally::default());
 }
 
-#[test]
-fn script_runtime_preserves_backend_error_when_release_cleanup_fails() {
+#[tokio::test]
+async fn script_runtime_preserves_backend_error_when_release_cleanup_fails() {
     let backend = RecordingScriptBackend::failure("backend unavailable");
     let runtime = ScriptRuntime::new(ScriptRuntimeConfig::for_testing(), backend);
     let governor = ReleaseFailingGovernor::new();
@@ -336,13 +342,14 @@ fn script_runtime_preserves_backend_error_when_release_cleanup_fails() {
                 invocation: ScriptInvocation { input: json!({}) },
             },
         )
+        .await
         .unwrap_err();
 
     assert!(matches!(err, ScriptError::Backend { .. }));
 }
 
-#[test]
-fn script_runtime_releases_reservation_when_output_limit_fails() {
+#[tokio::test]
+async fn script_runtime_releases_reservation_when_output_limit_fails() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput {
         exit_code: 0,
         stdout: br#"{"too":"large"}"#.to_vec(),
@@ -382,6 +389,7 @@ fn script_runtime_releases_reservation_when_output_limit_fails() {
                 invocation: ScriptInvocation { input: json!({}) },
             },
         )
+        .await
         .unwrap_err();
 
     assert!(matches!(err, ScriptError::OutputLimitExceeded { .. }));
@@ -389,8 +397,8 @@ fn script_runtime_releases_reservation_when_output_limit_fails() {
     assert_eq!(governor.usage_for(&account), ResourceTally::default());
 }
 
-#[test]
-fn script_runtime_rejects_non_script_package_before_reserving() {
+#[tokio::test]
+async fn script_runtime_rejects_non_script_package_before_reserving() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput::json(json!({"ok": true})));
     let runtime = ScriptRuntime::new(ScriptRuntimeConfig::for_testing(), backend);
     let governor = InMemoryResourceGovernor::new();
@@ -419,6 +427,7 @@ fn script_runtime_rejects_non_script_package_before_reserving() {
                 invocation: ScriptInvocation { input: json!({}) },
             },
         )
+        .await
         .unwrap_err();
 
     assert!(matches!(err, ScriptError::ExtensionRuntimeMismatch { .. }));
@@ -426,8 +435,8 @@ fn script_runtime_rejects_non_script_package_before_reserving() {
     assert_eq!(governor.usage_for(&account), ResourceTally::default());
 }
 
-#[test]
-fn script_runtime_rejects_undeclared_capability_before_reserving() {
+#[tokio::test]
+async fn script_runtime_rejects_undeclared_capability_before_reserving() {
     let backend = RecordingScriptBackend::success(ScriptBackendOutput::json(json!({"ok": true})));
     let runtime = ScriptRuntime::new(ScriptRuntimeConfig::for_testing(), backend);
     let governor = InMemoryResourceGovernor::new();
@@ -456,6 +465,7 @@ fn script_runtime_rejects_undeclared_capability_before_reserving() {
                 invocation: ScriptInvocation { input: json!({}) },
             },
         )
+        .await
         .unwrap_err();
 
     assert!(matches!(err, ScriptError::CapabilityNotDeclared { .. }));

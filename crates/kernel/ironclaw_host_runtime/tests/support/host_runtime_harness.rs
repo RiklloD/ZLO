@@ -744,8 +744,9 @@ impl RecordingScriptExecutor {
     }
 }
 
+#[async_trait]
 impl ScriptExecutor for RecordingScriptExecutor {
-    fn execute_extension_json(
+    async fn execute_extension_json(
         &self,
         budget: &dyn RuntimeResourceBudget,
         request: ScriptExecutionRequest<'_>,
