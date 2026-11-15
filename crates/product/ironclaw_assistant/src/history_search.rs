@@ -498,6 +498,11 @@ const INDEX_STEPS_PER_CATCH_UP: usize = 400;
 /// Scopes with a catch-up running: single-flight bookkeeping only.
 static INDEXING: LazyLock<Mutex<HashSet<ThreadScope>>> = LazyLock::new(Default::default);
 
+#[cfg(test)]
+pub(crate) fn index_catch_up_running(scope: &ThreadScope) -> bool {
+    INDEXING.lock().is_ok_and(|running| running.contains(scope))
+}
+
 /// Holds a scope's `INDEXING` slot; frees it when dropped. A catch-up task
 /// that panics, or is dropped unfinished because its runtime shut down,
 /// must not leave the scope marked as indexing — every later catch-up for

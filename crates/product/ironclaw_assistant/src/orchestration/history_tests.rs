@@ -237,6 +237,80 @@ async fn search_until(
     found
 }
 
+/// Hang guard for waits on background work: generous, never a budget the
+/// work is expected to meet.
+const HANG_GUARD: Duration = Duration::from_secs(60);
+
+/// Wait until `done` holds, letting spawned tasks run; panics only if the
+/// background work hangs.
+async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + HANG_GUARD;
+    while !done() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: background work hung"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// The production path with no foreground help: each search starts the
+/// background sweep and catch-up, and the desktop asks again once that work
+/// is idle. More CLI threads than one sweep pass takes, so completion needs
+/// a second pass started by a later search.
+#[tokio::test]
+async fn background_indexing_alone_completes_through_repeated_searches() {
+    let (_dir, engine) = engine().await;
+    let cli = Arc::new(ScriptedCli::default());
+    engine.register_runtime(cli.clone());
+    let threads: Arc<dyn SessionThreadService> = Arc::new(InMemorySessionThreadService::default());
+    for n in 0..30 {
+        let thread = cli_thread(&engine, &format!("cli-bg-{n:02}"), "Background").await;
+        cli.set(
+            &thread,
+            vec![msg(HistoryRole::User, &format!("item wombat{n:02}"))],
+        );
+    }
+    let surface = wrap_surface(
+        Arc::new(Inner),
+        Some(Arc::clone(&engine)),
+        Arc::clone(&threads),
+    );
+    let owner = ironclaw_orchestrator::profiles::ProfileOwner::from(&scope_of(&owner()));
+    let scope = transcript_scope();
+
+    let deadline = std::time::Instant::now() + HANG_GUARD;
+    let mut searches = 0;
+    loop {
+        let found = history(surface.as_ref(), json!({"query": "wombat00"})).await;
+        searches += 1;
+        if found.index_complete {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the index never completed after {searches} searches"
+        );
+        // The explicit completion signal: the work this search started is
+        // idle (both single-flight slots released). Then ask again.
+        wait_until("background indexing", || {
+            !super::history_ingest::owner_sweeping(&engine, &owner)
+                && !crate::history_search::index_catch_up_running(&scope)
+        })
+        .await;
+    }
+    assert!(searches >= 2, "the first search only starts the work");
+    for n in 0..30 {
+        let found = history(surface.as_ref(), json!({"query": format!("wombat{n:02}")})).await;
+        let ids: Vec<&str> = found.threads.iter().map(|t| t.thread_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [format!("cli-bg-{n:02}")],
+            "every CLI thread was indexed in the background"
+        );
+    }
+}
+
 /// A sweep dropped before it finishes (its runtime shut down, or it
 /// panicked) frees the owner, so the next search starts another pass.
 #[test]
@@ -930,13 +1004,12 @@ async fn completion_bursts_coalesce_per_thread() {
     for _ in 0..10 {
         listener.turn_completed(&record);
     }
-    for _ in 0..200 {
-        if listener.running.lock().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
-    assert!(listener.running.lock().unwrap().is_empty());
+    // The listener's own completion signal: its per-thread entry is removed
+    // when the last coalesced ingestion finishes.
+    wait_until("completion ingestion", || {
+        listener.running.lock().unwrap().is_empty()
+    })
+    .await;
     let reads = cli.reads.load(SeqCst);
     assert!(
         (1..=2).contains(&reads),
