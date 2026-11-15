@@ -6,6 +6,7 @@
 //! but the kernel crate. A test double under `tests/` is not inventoried by that
 //! ratchet, so this is where the seal's own test authorizer belongs.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::{
     Timestamp,
     authorized::{

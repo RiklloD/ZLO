@@ -6,6 +6,7 @@
 //! `reborn_cross_crate_include_scan.rs`). The scan reads the owning crate's own
 //! source now, so the include no longer escapes a crate root.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::failure::categories::{
     BUDGET_ACCOUNTING_FAILED_CATEGORY, CHECKPOINT_REJECTED_CATEGORY,
     HOST_STAGE_UNAVAILABLE_CAPABILITY_CATEGORY, HOST_STAGE_UNAVAILABLE_CHECKPOINT_CATEGORY,
