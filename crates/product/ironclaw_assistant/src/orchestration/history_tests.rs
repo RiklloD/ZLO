@@ -193,20 +193,80 @@ async fn history(surface: &dyn ProductSurface, input: Value) -> HistorySearchRes
     serde_json::from_value(page.items[0].clone()).unwrap()
 }
 
-/// Ask until the index reports complete and `thread` is among the hits.
+/// Run the background indexing to completion in the foreground — the owner
+/// sweep (which records the owner as swept) and the caller's index
+/// catch-up — then search once: the index must report complete with
+/// `thread` among the hits. No timing: each loop is a bounded progress
+/// loop whose bound only guards against a hang.
 async fn search_until(
     surface: &dyn ProductSurface,
+    engine: &Arc<Engine>,
+    threads: &Arc<dyn SessionThreadService>,
     query: &str,
     thread: &str,
 ) -> HistorySearchResponse {
-    for _ in 0..400 {
-        let found = history(surface, json!({"query": query})).await;
-        if found.index_complete && found.threads.iter().any(|t| t.thread_id == thread) {
-            return found;
+    let owner = ironclaw_orchestrator::profiles::ProfileOwner::from(&scope_of(&owner()));
+    let weak = Arc::downgrade(engine);
+    let mut swept = false;
+    for _ in 0..1_000 {
+        if super::history_ingest::sweep(&weak, threads.as_ref(), &owner).await {
+            swept = true;
+            break;
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    panic!("{query} never found in {thread}");
+    assert!(swept, "the owner sweep never completed");
+    let mut indexed = false;
+    for _ in 0..10_000 {
+        if threads
+            .advance_message_search_index(&transcript_scope(), 500)
+            .await
+            .unwrap()
+            .complete
+        {
+            indexed = true;
+            break;
+        }
+    }
+    assert!(indexed, "the search index never caught up");
+    let found = history(surface, json!({"query": query})).await;
+    assert!(found.index_complete, "{query}: index incomplete: {found:?}");
+    assert!(
+        found.threads.iter().any(|t| t.thread_id == thread),
+        "{query} not found in {thread}: {found:?}"
+    );
+    found
+}
+
+/// A sweep dropped before it finishes (its runtime shut down, or it
+/// panicked) frees the owner, so the next search starts another pass.
+#[test]
+fn an_unfinished_sweep_frees_its_owner() {
+    let setup = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (_dir, engine) = setup.block_on(engine());
+    let threads: Arc<dyn SessionThreadService> = Arc::new(InMemorySessionThreadService::default());
+    let owner = ironclaw_orchestrator::profiles::ProfileOwner::from(&scope_of(&owner()));
+    let sweeping = || super::history_ingest::owner_sweeping(&engine, &owner);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    {
+        let _entered = runtime.enter();
+        super::history_ingest::spawn_owner_sweep(&engine, &threads, owner.clone());
+    }
+    assert!(sweeping(), "sweep claimed");
+
+    // Never driven: shutting the runtime down drops the task unfinished.
+    drop(runtime);
+
+    assert!(
+        !sweeping(),
+        "a dropped sweep must not hold its owner forever"
+    );
+    assert!(!super::history_ingest::owner_swept(&engine, &owner));
 }
 
 #[tokio::test]
@@ -264,14 +324,14 @@ async fn cli_threads_become_searchable_and_navigable() {
     let first = history(surface.as_ref(), json!({"query": "porcupine"})).await;
     assert!(!first.index_complete);
 
-    let found = search_until(surface.as_ref(), "porcupine", "cli-long").await;
+    let found = search_until(surface.as_ref(), &engine, &threads, "porcupine", "cli-long").await;
     assert_eq!(
         found.threads[0].title.as_deref(),
         Some("Long terminal session")
     );
 
     // A hit carries the id the thread's own timeline renders for it.
-    let hit = search_until(surface.as_ref(), "heron", "cli-short")
+    let hit = search_until(surface.as_ref(), &engine, &threads, "heron", "cli-short")
         .await
         .threads[0]
         .hits[0]
@@ -370,7 +430,7 @@ async fn cli_threads_become_searchable_and_navigable() {
             now_ms(),
         )
         .await;
-    search_until(surface.as_ref(), "toucan", "cli-short").await;
+    search_until(surface.as_ref(), &engine, &threads, "toucan", "cli-short").await;
 }
 
 #[tokio::test]
@@ -513,7 +573,7 @@ async fn engine_turns_are_excluded_by_provenance_not_text() {
         Some(Arc::clone(&engine)),
         Arc::clone(&threads),
     );
-    let found = search_until(surface.as_ref(), "continue", "cli-prov").await;
+    let found = search_until(surface.as_ref(), &engine, &threads, "continue", "cli-prov").await;
     let snippets: Vec<&str> = found.threads[0]
         .hits
         .iter()
@@ -525,7 +585,7 @@ async fn engine_turns_are_excluded_by_provenance_not_text() {
         "only the person's turn matches"
     );
     // The engine run's reply is still the assistant's text, and searchable.
-    search_until(surface.as_ref(), "quokka", "cli-prov").await;
+    search_until(surface.as_ref(), &engine, &threads, "quokka", "cli-prov").await;
     let read = history(surface.as_ref(), json!({"thread_id": "cli-prov"})).await;
     let texts: Vec<&str> = read.messages.iter().map(|m| m.text.as_str()).collect();
     assert_eq!(
@@ -727,7 +787,7 @@ async fn long_cli_thread_hits_open_their_own_timeline_rows() {
             .and_then(|r| r["content"].as_str().map(str::to_string))
     };
 
-    let recent = search_until(surface.as_ref(), "newword", "cli-big")
+    let recent = search_until(surface.as_ref(), &engine, &threads, "newword", "cli-big")
         .await
         .threads[0]
         .hits[0]
@@ -739,7 +799,7 @@ async fn long_cli_thread_hits_open_their_own_timeline_rows() {
         "a recent hit opens its own row in the newest page"
     );
 
-    let old = search_until(surface.as_ref(), "oldword", "cli-big")
+    let old = search_until(surface.as_ref(), &engine, &threads, "oldword", "cli-big")
         .await
         .threads[0]
         .hits[0]
@@ -781,7 +841,7 @@ async fn rewritten_cli_transcripts_are_reindexed() {
         Some(Arc::clone(&engine)),
         Arc::clone(&threads),
     );
-    search_until(surface.as_ref(), "zephyr", "cli-rw").await;
+    search_until(surface.as_ref(), &engine, &threads, "zephyr", "cli-rw").await;
 
     cli.set(
         &thread,
@@ -793,7 +853,7 @@ async fn rewritten_cli_transcripts_are_reindexed() {
     super::history_ingest::ingest_thread(&engine, threads.as_ref(), &record)
         .await
         .unwrap();
-    search_until(surface.as_ref(), "quasar", "cli-rw").await;
+    search_until(surface.as_ref(), &engine, &threads, "quasar", "cli-rw").await;
     assert!(
         history(surface.as_ref(), json!({"query": "zephyr"}))
             .await
@@ -808,7 +868,7 @@ async fn rewritten_cli_transcripts_are_reindexed() {
     super::history_ingest::ingest_thread(&engine, threads.as_ref(), &record)
         .await
         .unwrap();
-    search_until(surface.as_ref(), "nebula", "cli-rw").await;
+    search_until(surface.as_ref(), &engine, &threads, "nebula", "cli-rw").await;
 }
 
 /// The owner sweep is bounded per pass and resumable: a pass stops at its

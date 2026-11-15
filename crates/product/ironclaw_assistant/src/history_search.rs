@@ -498,6 +498,27 @@ const INDEX_STEPS_PER_CATCH_UP: usize = 400;
 /// Scopes with a catch-up running: single-flight bookkeeping only.
 static INDEXING: LazyLock<Mutex<HashSet<ThreadScope>>> = LazyLock::new(Default::default);
 
+/// Holds a scope's `INDEXING` slot; frees it when dropped. A catch-up task
+/// that panics, or is dropped unfinished because its runtime shut down,
+/// must not leave the scope marked as indexing — every later catch-up for
+/// it would be skipped and the index would never complete in this process.
+struct IndexingSlot(ThreadScope);
+
+impl IndexingSlot {
+    fn claim(scope: &ThreadScope) -> Option<Self> {
+        let mut running = INDEXING.lock().ok()?;
+        running.insert(scope.clone()).then(|| Self(scope.clone()))
+    }
+}
+
+impl Drop for IndexingSlot {
+    fn drop(&mut self) {
+        if let Ok(mut running) = INDEXING.lock() {
+            running.remove(&self.0);
+        }
+    }
+}
+
 /// Bring the scope's search index up to date in the background, one
 /// bounded step at a time, unless a catch-up for it is already running.
 /// Called by the history view, never by the model tool; logs at `debug!`.
@@ -505,18 +526,15 @@ pub fn spawn_index_catch_up(threads: &Arc<dyn SessionThreadService>, scope: &Thr
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         return;
     };
-    let Ok(mut running) = INDEXING.lock() else {
+    let Some(slot) = IndexingSlot::claim(scope) else {
         return;
     };
-    if !running.insert(scope.clone()) {
-        return;
-    }
-    drop(running);
-    let (threads, scope) = (Arc::clone(threads), scope.clone());
+    let threads = Arc::clone(threads);
     runtime.spawn(async move {
+        let scope = &slot.0;
         for _ in 0..INDEX_STEPS_PER_CATCH_UP {
             match threads
-                .advance_message_search_index(&scope, INDEX_STEP_BUDGET)
+                .advance_message_search_index(scope, INDEX_STEP_BUDGET)
                 .await
             {
                 Ok(progress) if progress.complete => break,
@@ -526,9 +544,6 @@ pub fn spawn_index_catch_up(threads: &Arc<dyn SessionThreadService>, scope: &Thr
                     break;
                 }
             }
-        }
-        if let Ok(mut running) = INDEXING.lock() {
-            running.remove(&scope);
         }
     });
 }
@@ -601,6 +616,38 @@ mod tests {
         request: HistorySearchRequest,
     ) -> Result<HistorySearchResponse, HistorySearchError> {
         run_history_search(service, &scope(), &request, &EngineKnowledge::default()).await
+    }
+
+    /// A catch-up dropped before it finishes (its runtime shut down, or it
+    /// panicked) frees its scope, so the next search's catch-up runs.
+    #[test]
+    fn an_unfinished_catch_up_frees_its_scope() {
+        // A scope no other test uses: `INDEXING` is process-wide.
+        let scope = ThreadScope {
+            tenant_id: TenantId::new("t-unfinished-catch-up").unwrap(),
+            ..scope()
+        };
+        let threads: Arc<dyn SessionThreadService> =
+            Arc::new(InMemorySessionThreadService::default());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        {
+            let _entered = runtime.enter();
+            spawn_index_catch_up(&threads, &scope);
+        }
+        assert!(
+            INDEXING.lock().unwrap().contains(&scope),
+            "catch-up claimed"
+        );
+
+        // Never driven: shutting the runtime down drops the task unfinished.
+        drop(runtime);
+
+        assert!(
+            !INDEXING.lock().unwrap().contains(&scope),
+            "a dropped catch-up must not hold its scope forever"
+        );
     }
 
     #[tokio::test]
