@@ -263,7 +263,9 @@ const WS0_COMPOSITION_SHARE_BP: usize = 642;
 /// the re-embed backfill's composition wiring (job construction, background
 /// start, `reembed_memory`, provider-error retry classification); per-item
 /// breakdown in the manifest.
-const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 33_563;
+/// ✎ Re-measured 33_563 -> 33_582 on 2026-11-17 (review round 1): the
+/// background re-embed worker became an opt-in runtime input (`serve` only).
+const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 33_582;
 
 /// Composition dispatch, from the same `--print` run: "composition dispatch:
 /// 827 Arc<dyn> (governed prod, excl slack/extension_host)".

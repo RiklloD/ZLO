@@ -680,3 +680,111 @@ async fn reembed_backfill_makes_a_text_only_document_vector_searchable() {
         "a finished backfill calls nothing"
     );
 }
+
+/// A runtime with `[embeddings]` (a no-key `ollama` provider on the loopback
+/// stub) built from the plain build input — exactly what one-shot CLI
+/// commands such as `zlo memory reembed` build — optionally opted in to the
+/// background re-embed worker the way `serve` is.
+async fn embeddings_runtime(
+    storage: &std::path::Path,
+    server: &StubEmbeddingServer,
+    background: Option<ironclaw_memory_native::MemoryReembedOptions>,
+) -> ironclaw_composition::RebornRuntime {
+    let section = ironclaw_config::EmbeddingsSection {
+        provider: "ollama".to_string(),
+        model: "test-embedder".to_string(),
+        dimension: Some(2),
+        base_url: Some(server.base_url.clone()),
+    };
+    let services =
+        ironclaw_composition::local_filesystem_build_input("reembed-owner", storage.to_path_buf())
+            .with_runtime_policy(
+                ironclaw_composition::standalone_runtime_policy().expect("standalone policy"),
+            )
+            .with_embeddings_section(&section, None)
+            .expect("[embeddings] resolves");
+    let mut input = ironclaw_composition::RebornRuntimeInput::from_build_input(services);
+    input.memory_reembed_background = background;
+    ironclaw_composition::build_reborn_runtime(input)
+        .await
+        .expect("runtime builds")
+}
+
+/// A document written before any embedder existed: text-only chunks.
+async fn seed_text_only(runtime: &ironclaw_composition::RebornRuntime) {
+    let service = ironclaw_memory_native::NativeMemoryService::from_filesystem(
+        ironclaw_composition::test_support::memory_filesystem_for_test(runtime),
+        None,
+    );
+    record(&service, "run-1", "my car is teal").await;
+}
+
+async fn dry_run_backlog(runtime: &ironclaw_composition::RebornRuntime) -> u64 {
+    runtime
+        .reembed_memory(true, None, &mut |_| {})
+        .await
+        .expect("dry run")
+        .expect("embeddings configured")
+        .backlog
+}
+
+/// What `zlo memory reembed --dry-run` builds starts no background worker:
+/// after the dry run and well past the opted-in start delay below, the
+/// provider was never called and no vector or cursor was written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_one_shot_runtime_never_starts_the_background_reembed() {
+    let storage = tempfile::tempdir().expect("tempdir");
+    let server = StubEmbeddingServer::start().await;
+    let runtime = embeddings_runtime(storage.path(), &server, None).await;
+    assert!(
+        !ironclaw_composition::test_support::memory_reembed_background_started_for_test(&runtime)
+    );
+    seed_text_only(&runtime).await;
+
+    let report = runtime
+        .reembed_memory(true, None, &mut |_| {})
+        .await
+        .expect("dry run")
+        .expect("embeddings configured");
+    assert_eq!((report.backlog, report.provider_calls), (1, 0));
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert!(server.requests().is_empty(), "no provider call");
+    assert_eq!(dry_run_backlog(&runtime).await, 1, "no vector was written");
+    let cursors = ironclaw_composition::test_support::memory_filesystem_for_test(&runtime)
+        .list_dir(&ironclaw_host_api::path::VirtualPath::new("/memory/.reembed").expect("path"))
+        .await;
+    assert!(
+        cursors.as_ref().map_or(true, Vec::is_empty),
+        "no cursor was written: {cursors:?}"
+    );
+    runtime.shutdown().await.expect("shutdown");
+}
+
+/// The same runtime opted in (as `serve` is), with a short start delay,
+/// backfills the document by itself — so the test above is not vacuous.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_opted_in_runtime_backfills_in_the_background() {
+    let storage = tempfile::tempdir().expect("tempdir");
+    let server = StubEmbeddingServer::start().await;
+    let options = ironclaw_memory_native::MemoryReembedOptions {
+        start_delay: std::time::Duration::from_millis(200),
+        min_call_interval: std::time::Duration::ZERO,
+        ..ironclaw_memory_native::MemoryReembedOptions::background()
+    };
+    let runtime = embeddings_runtime(storage.path(), &server, Some(options)).await;
+    assert!(
+        ironclaw_composition::test_support::memory_reembed_background_started_for_test(&runtime)
+    );
+    seed_text_only(&runtime).await;
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while dry_run_backlog(&runtime).await > 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the background worker never backfilled the document"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(!server.requests().is_empty());
+    runtime.shutdown().await.expect("shutdown");
+}

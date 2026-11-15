@@ -30,6 +30,7 @@ pub(super) async fn assemble_runtime(
         tool_disclosure,
         trigger_poller,
         credential_refresh,
+        memory_reembed_background: memory_reembed_background_options,
         trigger_fire_access_checker,
         trigger_fire_access,
         poll,
@@ -970,7 +971,8 @@ pub(super) async fn assemble_runtime(
     };
     let memory_upkeep_hook_wired = memory_scheduled_op_hook_wiring.is_some();
     // `[embeddings]` on a native binding: backfill chunks with no vector in
-    // the current space, in the background after boot (low priority, paced).
+    // the current space (low priority, paced) — on demand via
+    // `reembed_memory`, and in the background after boot when opted in.
     let memory_reembed = local_runtime.and_then(|local_runtime| {
         let resolver = &local_runtime.memory_service_resolver;
         (resolver.resolved_binding()
@@ -984,13 +986,16 @@ pub(super) async fn assemble_runtime(
                 )
             })
     });
-    let memory_reembed_background = memory_reembed.clone().map(|job| {
-        let metrics = ironclaw_operator::operator_metrics();
-        job.spawn_background(
-            ironclaw_memory_native::MemoryReembedOptions::background(),
-            move |progress| metrics.record_memory_reembed(progress.embedded, progress.backlog),
-        )
-    });
+    // Only a caller that opted in (`serve`) runs it in the background.
+    let memory_reembed_background = memory_reembed
+        .clone()
+        .zip(memory_reembed_background_options)
+        .map(|(job, options)| {
+            let metrics = ironclaw_operator::operator_metrics();
+            job.spawn_background(options, move |progress| {
+                metrics.record_memory_reembed(progress.embedded, progress.backlog)
+            })
+        });
     let memory_page = crate::memory_page_parts::MemoryPageParts {
         documents: local_runtime
             .filter(|local_runtime| {

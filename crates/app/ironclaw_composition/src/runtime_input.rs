@@ -336,6 +336,10 @@ pub struct RebornRuntimeInput {
     pub tool_disclosure: Option<ToolDisclosureMode>,
     pub trigger_poller: TriggerPollerSettings,
     pub credential_refresh: KeepaliveSweepSettings,
+    /// Native memory's background re-embed backfill: `None` (the default)
+    /// starts none — one-shot commands must not; `serve` opts in with
+    /// [`with_background_memory_reembed`](Self::with_background_memory_reembed).
+    pub memory_reembed_background: Option<ironclaw_memory_native::MemoryReembedOptions>,
     /// Explicit fire-time access checker override. Primarily a test/advanced
     /// seam; production callers set [`trigger_fire_access`](Self::trigger_fire_access)
     /// and let the build construct the checker. When set, it takes precedence
@@ -420,6 +424,7 @@ impl RebornRuntimeInput {
             tool_disclosure: None,
             trigger_poller: TriggerPollerSettings::default(),
             credential_refresh: KeepaliveSweepSettings::default(),
+            memory_reembed_background: None,
             trigger_fire_access_checker: None,
             trigger_fire_access: TriggerFireAccessPolicy::default(),
             poll: PollSettings::default(),
@@ -599,6 +604,15 @@ impl RebornRuntimeInput {
         credential_refresh: KeepaliveSweepSettings,
     ) -> Self {
         self.credential_refresh = credential_refresh;
+        self
+    }
+
+    /// Start native memory's re-embed backfill in the background after boot
+    /// (when `[embeddings]` serves a native binding) — for the long-lived
+    /// `serve` process only.
+    pub fn with_background_memory_reembed(mut self) -> Self {
+        self.memory_reembed_background =
+            Some(ironclaw_memory_native::MemoryReembedOptions::background());
         self
     }
 

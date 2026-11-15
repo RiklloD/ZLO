@@ -591,6 +591,11 @@ pub(crate) fn build_runtime_input_with_options(
             runtime_services.config_file.as_ref(),
         ))
         .with_hooks_config(HooksActivationConfig::from_env());
+    // The long-lived server runs memory upkeep in the background; one-shot
+    // commands never start it (`zlo memory reembed` runs it in the foreground).
+    if caller == RuntimeInputCaller::Serve {
+        runtime_input = runtime_input.with_background_memory_reembed();
+    }
 
     {
         // The composition runtime cold-boots with a placeholder gateway and
@@ -2208,6 +2213,36 @@ mod tests {
                 panic!("{caller:?} must carry boot config for the initial LLM reload")
             });
             assert_eq!(boot.home().path(), config.home().path());
+        }
+    }
+
+    /// Only the long-lived server runs memory upkeep in the background; a
+    /// one-shot caller (`run`, `memory reembed`, `extension`, …) starts none.
+    #[test]
+    fn only_serve_starts_the_background_memory_reembed() {
+        let _lock = lock_runtime_env();
+        let _guards = clear_runner_env();
+        let (_enabled, _interval) = clear_trigger_poller_env();
+        for (caller, expected) in [
+            (RuntimeInputCaller::Run, false),
+            (RuntimeInputCaller::Serve, true),
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let reborn_home = temp.path().join("reborn-home");
+            std::fs::create_dir_all(&reborn_home).expect("mkdir");
+            let config = RebornBootConfig::resolve_from_env_parts(
+                Some(reborn_home.into_os_string()),
+                None,
+                None,
+                None,
+            )
+            .expect("boot config");
+            let input = build_runtime_input(&config, caller).expect("runtime input");
+            assert_eq!(
+                input.memory_reembed_background.is_some(),
+                expected,
+                "{caller:?}"
+            );
         }
     }
 

@@ -104,6 +104,19 @@ pub async fn semantic_native_memory_for_test(
         })
 }
 
+/// The filesystem `runtime`'s native memory lives on (`/memory/...`), for
+/// seeding and reading back memory state.
+pub fn memory_filesystem_for_test(
+    runtime: &crate::RebornRuntime,
+) -> std::sync::Arc<dyn ironclaw_filesystem::RootFilesystem> {
+    runtime.extension_filesystem.clone()
+}
+
+/// Whether `runtime` started the background memory re-embed worker.
+pub fn memory_reembed_background_started_for_test(runtime: &crate::RebornRuntime) -> bool {
+    runtime.memory_reembed_background.is_some()
+}
+
 /// Native memory's re-embed backfill over the same production `[embeddings]`
 /// chain [`semantic_native_memory_for_test`] builds — the job the runtime
 /// assembles from the resolver's native embedder (`runtime/assembly.rs`).
