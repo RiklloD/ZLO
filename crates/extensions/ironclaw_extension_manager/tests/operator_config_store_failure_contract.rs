@@ -14,6 +14,7 @@
 //! `ironclaw_extension_host`, which made the changed-code coverage gate treat
 //! all 500 of its unchanged lines as newly added.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use async_trait::async_trait;
