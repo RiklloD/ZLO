@@ -21,6 +21,7 @@
 //! - [`seed_default_config_file_if_missing`] — first-run seeding for the
 //!   sparse runtime `config.toml` written by stateful Reborn commands.
 
+#![deny(clippy::let_underscore_must_use)]
 mod boot;
 mod budget;
 mod config_file;

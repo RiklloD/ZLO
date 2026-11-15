@@ -1,6 +1,8 @@
 //! `~/.ironclaw/reborn` → `~/.zlo` migration, driven through
 //! `RebornHome::resolve_from_env_parts_migrating` — the same resolution
 //! `RebornHome::resolve_from_env` runs at boot — against temp user homes.
+
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(unix)]
 
 use std::{

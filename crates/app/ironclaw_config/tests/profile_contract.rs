@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::{ffi::OsString, str::FromStr};
 
 use ironclaw_config::{REBORN_PROFILE_ENV, RebornBootConfig, RebornConfigError, RebornProfile};
