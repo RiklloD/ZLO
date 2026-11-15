@@ -145,14 +145,19 @@ async fn write_plugin(dir: &Path, skills: &[SkillFiles], fingerprint: &str) -> s
     let had_old = tokio::fs::rename(dir, &old).await.is_ok(); // silent-ok: no previous mirror is the first-run case
     if let Err(error) = tokio::fs::rename(&staging, dir).await {
         // A concurrent turn of the same profile swapped its copy in first.
-        let _ = tokio::fs::remove_dir_all(&staging).await; // silent-ok: staging cleanup
+        if let Err(cleanup_error) = tokio::fs::remove_dir_all(&staging).await {
+            tracing::debug!(error = %cleanup_error, "profile mirror staging cleanup failed");
+        }
         let theirs = tokio::fs::read_to_string(dir.join(FINGERPRINT_FILE)).await;
         if !matches!(&theirs, Ok(found) if found == fingerprint) {
             return Err(error);
         }
     }
     if had_old {
-        let _ = tokio::fs::remove_dir_all(&old).await; // silent-ok: a stale copy only costs disk
+        // A stale copy only costs disk, but a leak should leave a trace.
+        if let Err(error) = tokio::fs::remove_dir_all(&old).await {
+            tracing::debug!(%error, "removing the previous profile mirror failed");
+        }
     }
     Ok(())
 }

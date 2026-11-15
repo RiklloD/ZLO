@@ -29,6 +29,7 @@ use syn::{AttrStyle, Meta, Token};
 /// Crates whose `let _ = <must_use>` discards were triaged (fix/let-underscore-must-use).
 const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_approvals",
+    "ironclaw_assistant",
     "ironclaw_attachments",
     "ironclaw_auth",
     "ironclaw_capabilities",

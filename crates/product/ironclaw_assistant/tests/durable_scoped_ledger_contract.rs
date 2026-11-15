@@ -1,5 +1,6 @@
 // The generic filesystem-backed ledger lives behind the `storage` feature.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 

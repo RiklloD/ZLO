@@ -505,7 +505,12 @@ impl DeliveryCoordinator {
                 // lease is handed back: a worker mid-write must not land a
                 // guarded advance after another publisher has claimed the row.
                 task.abort();
-                let _ = task.await; // silent-ok: an aborted join is Cancelled.
+                // An aborted join is Cancelled; only a panic is worth a trace.
+                if let Err(error) = task.await
+                    && error.is_panic()
+                {
+                    tracing::debug!(%error, "reply publication worker panicked before abort");
+                }
             }
             let scope = target.registration.scope.clone();
             let held = match self

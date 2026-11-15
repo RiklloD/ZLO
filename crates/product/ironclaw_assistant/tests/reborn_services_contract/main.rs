@@ -1,5 +1,6 @@
 //! Contract tests for WebUI-facing RebornServices service.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     collections::{HashMap, HashSet},
     sync::{

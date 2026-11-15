@@ -1,4 +1,6 @@
 // arch-exempt: large_file, cross-surface auth interaction contract suite, plan #5905
+
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

@@ -632,6 +632,10 @@ async fn delete_thread_waits_for_in_flight_submit_before_active_run_check() {
                 },
             )
             .await;
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the receiver belongs to the test body, which has already failed if it is gone"
+        )]
         let _ = delete_done_tx.send(result);
     });
 
@@ -921,6 +925,4 @@ fn service_source_avoids_forbidden_runtime_dependencies() {
             );
         }
     }
-
-    let _ = Utc::now();
 }

@@ -1,5 +1,6 @@
 //! Contract tests for product command dispatch through the product surface.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_extension_contracts::channel_adapter::ProductTriggerReason;
 use ironclaw_extension_contracts::external::{
     ExternalActorRef, ExternalConversationRef, ExternalEventId,

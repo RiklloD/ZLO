@@ -22,6 +22,7 @@
 //!   recovery semantics.
 //! - [`ProductInboundAction`] — durable ledger record for inbound actions.
 
+#![deny(clippy::let_underscore_must_use)]
 #![forbid(unsafe_code)]
 
 mod action;

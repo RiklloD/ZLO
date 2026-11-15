@@ -1,4 +1,6 @@
 // arch-exempt: large_file, mechanical OutboundStateStore<ironclaw_filesystem::InMemoryBackend> -> OutboundStateStore<InMemoryBackend> §4.3 store consolidation, no logic change, plan #6168
+
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_extension_contracts::channel_adapter::ChannelDelivery;
 use ironclaw_extension_contracts::reply::ReplySink;
 use ironclaw_extension_contracts::test_support::fakes::RecordingReplySink;
