@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     collections::HashMap,
     sync::{
@@ -918,7 +919,11 @@ fn release_wasm_reservation(
     governor: &InMemoryResourceGovernor,
     reservation_id: ResourceReservationId,
 ) {
-    let _ = governor.release(reservation_id);
+    // A failed release would leak the reservation and skew every later
+    // budget assertion, so it fails the test.
+    governor
+        .release(reservation_id)
+        .expect("release the open wasm reservation");
 }
 
 fn preserved_wasm_error_usage(error: &ironclaw_wasm::WasmError) -> Option<ResourceUsage> {
