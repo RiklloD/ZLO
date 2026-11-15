@@ -12,6 +12,7 @@
 //! pinned where they live: `ironclaw_host_runtime` for the registry-lane
 //! resolver, `ironclaw_extension_host` for the active-snapshot resolver.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

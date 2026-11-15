@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_authorization::*;
 use ironclaw_capabilities::*;
 use ironclaw_host_api::{

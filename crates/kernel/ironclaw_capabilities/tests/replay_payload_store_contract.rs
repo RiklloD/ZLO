@@ -14,6 +14,7 @@
 //!
 //! Mirrors `ironclaw_approvals`'s `gate_record_store_contract.rs`.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_capabilities::{
