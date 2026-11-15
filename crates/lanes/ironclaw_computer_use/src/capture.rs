@@ -149,7 +149,10 @@ impl Capture {
                 .is_some_and(|shot| after_seq.is_none_or(|after| shot.seq > after))
         };
         if !newer(&rx.borrow()) {
-            // silent-ok: a timeout means "nothing newer yet", answered below.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a timeout means nothing newer yet, which is answered below"
+            )]
             let _ = tokio::time::timeout(LONG_POLL, rx.wait_for(newer)).await;
         }
         let shot = rx.borrow().clone();
@@ -425,7 +428,12 @@ async fn screencapture(window_id: u32, max_width: u32) -> Result<(Vec<u8>, u32, 
             }
         }
     };
-    // silent-ok: the capture file may not exist when screencapture failed.
-    let _ = tokio::fs::remove_file(&path).await;
+    // The capture file may not exist when screencapture failed; any other
+    // failure leaves a screenshot on disk, which deserves a trace.
+    if let Err(error) = tokio::fs::remove_file(&path).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::debug!(%error, "computer-use capture file cleanup failed");
+    }
     result
 }

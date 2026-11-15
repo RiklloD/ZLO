@@ -398,8 +398,13 @@ impl ComputerUse {
             let keep = !session.idle_for(&self.config);
             if !keep {
                 live.ended(key);
-                // silent-ok: the file may never have been written.
-                let _ = std::fs::remove_file(&session.cursor_file);
+                // The file may never have been written; any other failure
+                // leaves a stale cursor file behind, which deserves a trace.
+                if let Err(error) = std::fs::remove_file(&session.cursor_file)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::debug!(%error, "computer-use cursor file cleanup failed");
+                }
             }
             keep
         });

@@ -34,6 +34,7 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_auth",
     "ironclaw_capabilities",
     "ironclaw_composition",
+    "ironclaw_computer_use",
     "ironclaw_documents",
     "ironclaw_event_log",
     "ironclaw_event_projections",
