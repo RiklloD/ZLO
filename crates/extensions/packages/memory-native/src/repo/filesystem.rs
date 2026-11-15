@@ -58,6 +58,10 @@ use super::{
     ensure_document_path_does_not_conflict, scoped_memory_changed_by_key,
 };
 
+mod reembed;
+
+pub(crate) use reembed::{PendingChunk, ReembedCursor, ReembedPosition, scope_key};
+
 const DOCUMENT_KIND: &str = "memory_document";
 const CHUNK_KIND: &str = "memory_chunk";
 const VERSION_KIND: &str = "memory_document_version";
@@ -467,17 +471,19 @@ where
     }
 
     /// Cosine similarity of a chunk hit's stored vector to the query, or
-    /// `None` when the chunk's recorded space is not the query's.
+    /// `None` when the chunk holds no vector in the query's space.
+    ///
+    /// The space is the vector's key (`vector_key` = 128 bits of the
+    /// fingerprint's SHA-256), not the `embedding_fingerprint` label: a chunk
+    /// the re-embed backfill extended holds vectors of several spaces, and
+    /// the label names only the newest. A pre-fingerprint vector sits under
+    /// the legacy `embedding` key, which no query's key ever equals.
     fn chunk_similarity(
         versioned: &ironclaw_filesystem::VersionedEntry,
         vector_key: &IndexKey,
         query: &crate::MemoryChunkEmbedding,
     ) -> Option<f32> {
         let indexed = &versioned.entry.indexed;
-        match indexed.get(&Self::index_key(fs_keys::EMBEDDING_FINGERPRINT)) {
-            Some(IndexValue::Text(fingerprint)) if fingerprint == query.fingerprint.as_str() => {}
-            _ => return None,
-        }
         let Some(IndexValue::Bytes(bytes)) = indexed.get(vector_key) else {
             return None;
         };

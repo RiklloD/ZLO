@@ -95,6 +95,44 @@ pub async fn semantic_native_memory_for_test(
     api_key: secrecy::SecretString,
     filesystem: std::sync::Arc<dyn ironclaw_filesystem::RootFilesystem>,
 ) -> Result<std::sync::Arc<dyn ironclaw_memory::MemoryService>, crate::RebornBuildError> {
+    let resolved = production_native_memory_chain(section, operator_secrets, api_key).await?;
+    resolved
+        .resolver
+        .resolve_provider(filesystem, None)
+        .ok_or_else(|| crate::RebornBuildError::InvalidConfig {
+            reason: "native memory did not resolve".to_string(),
+        })
+}
+
+/// Native memory's re-embed backfill over the same production `[embeddings]`
+/// chain [`semantic_native_memory_for_test`] builds — the job the runtime
+/// assembles from the resolver's native embedder (`runtime/assembly.rs`).
+pub async fn memory_reembed_job_for_test(
+    section: &ironclaw_config::EmbeddingsSection,
+    operator_secrets: std::sync::Arc<
+        dyn ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore,
+    >,
+    api_key: secrecy::SecretString,
+    filesystem: std::sync::Arc<dyn ironclaw_filesystem::RootFilesystem>,
+) -> Result<ironclaw_memory_native::MemoryReembedJob, crate::RebornBuildError> {
+    let resolved = production_native_memory_chain(section, operator_secrets, api_key).await?;
+    let embedder = resolved.resolver.native_embedder().ok_or_else(|| {
+        crate::RebornBuildError::InvalidConfig {
+            reason: "the native binding has no embedder".to_string(),
+        }
+    })?;
+    Ok(ironclaw_memory_native::MemoryReembedJob::new(
+        filesystem, embedder,
+    ))
+}
+
+async fn production_native_memory_chain(
+    section: &ironclaw_config::EmbeddingsSection,
+    operator_secrets: std::sync::Arc<
+        dyn ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore,
+    >,
+    api_key: secrecy::SecretString,
+) -> Result<crate::memory_provider_factory::ResolvedMemoryProvider, crate::RebornBuildError> {
     let invalid = |reason: String| crate::RebornBuildError::InvalidConfig { reason };
     let bindings =
         crate::RebornHostBindings::disabled("test-owner").with_embeddings_section(section, None)?;
@@ -112,10 +150,7 @@ pub async fn semantic_native_memory_for_test(
         &crate::MemoryProviderDeps::for_third_party(crate::Mem0ConnectionConfig::default()),
     )?
     .with_native_embedder(crate::embeddings::memory_embedder(assembly.provider())?);
-    resolved
-        .resolver
-        .resolve_provider(filesystem, None)
-        .ok_or_else(|| invalid("native memory did not resolve".to_string()))
+    Ok(resolved)
 }
 
 pub fn defer_reply_publication_for_test(input: &mut crate::RebornRuntimeInput) {

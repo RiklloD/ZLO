@@ -389,7 +389,17 @@ observed_date = "2026-11-17"
 # gated `capability_host_tests`). The ceiling is lowered by the full -650
 # (488 + the 12 + 150 the prior ceiling carried above 33990), so the next
 # added line trips the gate.
-loc_ceiling = 33352
+# ✎ 2026-11-17 (feat/memory-reembed-backfill, re-measured with the one-file
+# counter): 33352 -> 33413, observed 33502 -> 33563, zero hidden headroom,
+# pending the owner's sign-off. +61 lines over main: production wiring only
+# — the embedder adapter's retry classification of provider errors
+# (429/5xx/transport -> transient), the runtime's job + background-task
+# fields, constructing `MemoryReembedJob` and starting `spawn_background`
+# with the metrics observer, and `RebornRuntime::reembed_memory` for
+# `zlo memory reembed` (incl. the explicit stop at shutdown). The job's
+# behavior (scan, batching, pacing, backoff, cursor) lives in
+# `ironclaw_memory_native`.
+loc_ceiling = 33413
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -400,7 +410,7 @@ loc_tolerance = 150
 loc_nudge_slack = 200
 # Informational — observed when this file was last updated. Not consulted for
 # the pass/fail decision.
-loc_observed = 33502
+loc_observed = 33563
 loc_observed_date = "2026-11-17"
 
 # --- Dispatch (Arc<dyn>) ratchet ------------------------------------------

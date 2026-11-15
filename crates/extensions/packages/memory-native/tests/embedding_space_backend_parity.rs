@@ -9,6 +9,11 @@
 //! scenarios run on all three. The in-crate unit tests cover the in-memory
 //! backend only.
 //!
+//! The re-embed backfill (`MemoryReembedJob`) runs on the same three
+//! backends: it enumerates scopes by directory listing, attaches vectors with
+//! a version-checked put, and keeps its cursor as a CAS record — all backend
+//! behavior.
+//!
 //! PostgreSQL leg: `DATABASE_URL` when set (one isolated database per test),
 //! else a testcontainers server. Without either it skips with a notice on
 //! stderr; `IRONCLAW_REQUIRE_POSTGRES` turns that skip into a failure.
@@ -22,10 +27,16 @@ use ironclaw_filesystem::{
     PostgresRootFilesystem, PostgresUnreachable, RootFilesystem,
 };
 use ironclaw_memory::{MemoryDocumentPath, content_sha256};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use ironclaw_memory::MemoryDocumentScope;
 use ironclaw_memory_native::{
     FilesystemMemoryDocumentRepository, MemoryChunkEmbedding, MemoryChunkWrite,
-    MemoryDocumentIndexRepository, MemoryDocumentRepository, MemoryEmbeddingFingerprint,
-    MemorySearchRequest,
+    MemoryDocumentIndexRepository, MemoryDocumentRepository, MemoryEmbedder, MemoryEmbeddingError,
+    MemoryEmbeddingFingerprint, MemoryReembedJob, MemoryReembedOptions, MemoryReembedOutcome,
+    MemoryReembedProgress, MemoryReembedReport, MemorySearchRequest,
 };
 
 type Repo = FilesystemMemoryDocumentRepository<dyn RootFilesystem>;
@@ -146,6 +157,399 @@ async fn reembedding_moves_a_document_between_spaces(fs: Arc<dyn RootFilesystem>
     assert_eq!(
         vector_hits(&repo, embedding("model-b:2", vec![0.0, 1.0])).await,
         vec!["notes/moved.md"]
+    );
+}
+
+// -- Re-embed backfill ---------------------------------------------------------
+
+/// What the scripted embedder does on one call (0-based).
+#[derive(Clone, Copy)]
+enum CallFault {
+    Transient,
+    Permanent,
+}
+
+/// Deterministic 2-d embedder: a text containing "alpha" embeds to `[1, 0]`,
+/// anything else to `[0, 1]`. Records every call's inputs; `faults` scripts
+/// failures by call number.
+struct ScriptedEmbedder {
+    fingerprint: &'static str,
+    max_batch: usize,
+    max_input_bytes: usize,
+    faults: Vec<(usize, CallFault)>,
+    calls: Mutex<Vec<Vec<String>>>,
+}
+
+impl ScriptedEmbedder {
+    fn new(fingerprint: &'static str, max_batch: usize) -> Self {
+        Self {
+            fingerprint,
+            max_batch,
+            max_input_bytes: 1_000,
+            faults: Vec::new(),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn failing(mut self, call: usize, fault: CallFault) -> Self {
+        self.faults.push((call, fault));
+        self
+    }
+
+    fn calls(&self) -> Vec<Vec<String>> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// Every text that reached the provider and got an answer, in order.
+    fn embedded_texts(&self) -> Vec<String> {
+        let calls = self.calls();
+        calls
+            .iter()
+            .enumerate()
+            .filter(|(number, _)| !self.faults.iter().any(|(at, _)| at == number))
+            .flat_map(|(_, texts)| texts.clone())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl MemoryEmbedder for ScriptedEmbedder {
+    fn dimension(&self) -> u32 {
+        2
+    }
+    fn max_batch(&self) -> usize {
+        self.max_batch
+    }
+    fn max_input_bytes(&self) -> usize {
+        self.max_input_bytes
+    }
+    fn fingerprint(&self) -> MemoryEmbeddingFingerprint {
+        MemoryEmbeddingFingerprint::new(self.fingerprint).unwrap()
+    }
+    async fn embed(
+        &self,
+        _scope: &MemoryDocumentScope,
+        texts: Vec<String>,
+    ) -> Result<Vec<Vec<f32>>, MemoryEmbeddingError> {
+        let number = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(texts.clone());
+            calls.len() - 1
+        };
+        match self.faults.iter().find(|(at, _)| *at == number) {
+            Some((_, CallFault::Transient)) => Err(MemoryEmbeddingError::transient(
+                "HTTP 429",
+                Some(Duration::from_millis(1)),
+            )),
+            Some((_, CallFault::Permanent)) => Err(MemoryEmbeddingError::new("HTTP 401")),
+            None => Ok(texts
+                .iter()
+                .map(|text| {
+                    if text.contains("alpha") {
+                        vec![1.0, 0.0]
+                    } else {
+                        vec![0.0, 1.0]
+                    }
+                })
+                .collect()),
+        }
+    }
+}
+
+/// Operator pacing with test-sized waits.
+fn fast(max_chunks: Option<u64>) -> MemoryReembedOptions {
+    MemoryReembedOptions {
+        min_call_interval: Duration::ZERO,
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(5),
+        max_transient_retries: 2,
+        start_delay: Duration::ZERO,
+        pause_between_runs: Duration::ZERO,
+        ..MemoryReembedOptions::operator(false, max_chunks)
+    }
+}
+
+/// A document as it was stored before embeddings existed: text-only chunks.
+async fn write_text_only(repo: &Repo, path: &MemoryDocumentPath, chunks: &[&str]) {
+    let content = chunks.join("\n\n");
+    repo.write_document(path, content.as_bytes()).await.unwrap();
+    let writes: Vec<MemoryChunkWrite> = chunks
+        .iter()
+        .map(|chunk| MemoryChunkWrite {
+            content: chunk.to_string(),
+            embedding: None,
+        })
+        .collect();
+    repo.replace_document_chunks_if_current(path, &content_sha256(&content), &writes)
+        .await
+        .unwrap();
+}
+
+async fn run_job(
+    fs: &Arc<dyn RootFilesystem>,
+    embedder: &Arc<ScriptedEmbedder>,
+    options: &MemoryReembedOptions,
+) -> (MemoryReembedReport, Vec<MemoryReembedProgress>) {
+    let job = MemoryReembedJob::new(
+        Arc::clone(fs),
+        Arc::clone(embedder) as Arc<dyn MemoryEmbedder>,
+    );
+    let mut samples = Vec::new();
+    let mut sink = |progress| samples.push(progress);
+    let report = job.run(options, &mut sink).await.unwrap();
+    (report, samples)
+}
+
+/// Five pre-embedding chunks over three documents in two scopes.
+async fn seed_unembedded(repo: &Repo) {
+    write_text_only(repo, &doc("notes/a.md"), &["alpha one", "beta two"]).await;
+    write_text_only(repo, &doc("notes/b.md"), &["beta three"]).await;
+    let other_scope =
+        MemoryDocumentPath::new_with_agent("tenant-a", "bob", Some("agent-1"), None, "c.md")
+            .unwrap();
+    write_text_only(repo, &other_scope, &["alpha four", "beta five"]).await;
+}
+
+/// Pre-embedding chunks get a vector in the current space, sent in batches no
+/// larger than the embedder admits; a re-run finds nothing and calls nothing.
+async fn reembed_backfills_in_bounded_batches_and_reruns_as_a_no_op(fs: Arc<dyn RootFilesystem>) {
+    let repo = Repo::new(Arc::clone(&fs));
+    seed_unembedded(&repo).await;
+    // Plus one chunk the embedder can never take (over its input limit).
+    write_text_only(&repo, &doc("notes/long.md"), &[&"x".repeat(1_001)]).await;
+    assert!(
+        vector_hits(&repo, embedding("model-a:2", vec![1.0, 0.0]))
+            .await
+            .is_empty(),
+        "before the backfill nothing is vector-searchable"
+    );
+
+    let embedder = Arc::new(ScriptedEmbedder::new("model-a:2", 2));
+    let (report, samples) = run_job(&fs, &embedder, &fast(None)).await;
+    assert_eq!(report.outcome, MemoryReembedOutcome::Complete);
+    assert_eq!((report.backlog, report.ineligible), (5, 1));
+    assert_eq!((report.embedded, report.remaining), (5, 0));
+    assert!(
+        embedder.calls().iter().all(|batch| batch.len() <= 2),
+        "batches respect max_batch: {:?}",
+        embedder.calls()
+    );
+    let mut sent = embedder.embedded_texts();
+    sent.sort();
+    assert_eq!(
+        sent,
+        vec![
+            "alpha four",
+            "alpha one",
+            "beta five",
+            "beta three",
+            "beta two"
+        ],
+        "every pending chunk was sent exactly once; the over-long one never"
+    );
+    assert_eq!(samples.first().map(|s| s.backlog), Some(5));
+    assert_eq!(
+        samples.last().map(|s| (s.backlog, s.embedded_total)),
+        Some((0, 5))
+    );
+    assert_eq!(
+        samples.iter().map(|s| s.embedded).sum::<u64>(),
+        5,
+        "progress deltas add up to the embedded total"
+    );
+    assert_eq!(
+        vector_hits(&repo, embedding("model-a:2", vec![1.0, 0.0])).await,
+        vec!["notes/a.md"],
+        "a pre-existing document is now found by meaning"
+    );
+
+    let calls_before = embedder.calls().len();
+    let (again, _) = run_job(&fs, &embedder, &fast(None)).await;
+    assert_eq!(again.outcome, MemoryReembedOutcome::Complete);
+    assert_eq!(
+        (again.backlog, again.embedded, again.provider_calls),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        embedder.calls().len(),
+        calls_before,
+        "a finished backfill calls no provider"
+    );
+
+    // Dry run counts, sends nothing, writes nothing.
+    write_text_only(&repo, &doc("notes/late.md"), &["alpha late"]).await;
+    let dry_run = MemoryReembedOptions {
+        dry_run: true,
+        ..fast(None)
+    };
+    let (dry, _) = run_job(&fs, &embedder, &dry_run).await;
+    assert_eq!(
+        (dry.outcome, dry.backlog, dry.remaining),
+        (MemoryReembedOutcome::DryRun, 1, 1)
+    );
+    assert_eq!(embedder.calls().len(), calls_before);
+}
+
+/// A run stopped by its budget resumes after a restart (a fresh job over the
+/// same storage) from the durable cursor: nothing is re-sent.
+async fn reembed_resumes_from_its_durable_cursor(fs: Arc<dyn RootFilesystem>) {
+    let repo = Repo::new(Arc::clone(&fs));
+    seed_unembedded(&repo).await;
+    let first = Arc::new(ScriptedEmbedder::new("model-a:2", 1));
+    let (stopped, _) = run_job(&fs, &first, &fast(Some(2))).await;
+    assert_eq!(stopped.outcome, MemoryReembedOutcome::BudgetExhausted);
+    assert_eq!((stopped.embedded, stopped.remaining), (2, 3));
+    assert!(!stopped.resumed, "the first run starts a fresh pass");
+
+    let second = Arc::new(ScriptedEmbedder::new("model-a:2", 1));
+    let (resumed, _) = run_job(&fs, &second, &fast(None)).await;
+    assert_eq!(resumed.outcome, MemoryReembedOutcome::Complete);
+    assert_eq!((resumed.backlog, resumed.embedded), (3, 3));
+    assert!(
+        resumed.resumed,
+        "the restarted run continued from the durable cursor"
+    );
+    let mut all = first.embedded_texts();
+    all.extend(second.embedded_texts());
+    all.sort();
+    assert_eq!(
+        all,
+        vec![
+            "alpha four",
+            "alpha one",
+            "beta five",
+            "beta three",
+            "beta two"
+        ],
+        "each chunk embedded exactly once across the interruption"
+    );
+    // The finished pass reset the cursor: new backlog starts a fresh pass.
+    write_text_only(&repo, &doc("notes/z.md"), &["alpha new"]).await;
+    let third = Arc::new(ScriptedEmbedder::new("model-a:2", 1));
+    let (fresh, _) = run_job(&fs, &third, &fast(None)).await;
+    assert_eq!((fresh.embedded, fresh.resumed), (1, false));
+}
+
+/// A provider failure part-way keeps the batches that landed; transient
+/// failures are retried with backoff, permanent ones stop the run at once.
+async fn reembed_survives_partial_provider_failure(fs: Arc<dyn RootFilesystem>) {
+    let repo = Repo::new(Arc::clone(&fs));
+    seed_unembedded(&repo).await;
+
+    // A 429 on the first call is retried after a backoff; the batch lands.
+    let flaky = Arc::new(ScriptedEmbedder::new("model-a:2", 2).failing(0, CallFault::Transient));
+    let (report, _) = run_job(&fs, &flaky, &fast(Some(2))).await;
+    assert_eq!(report.outcome, MemoryReembedOutcome::BudgetExhausted);
+    assert_eq!((report.embedded, report.provider_calls), (2, 2));
+
+    // Permanent failure on the next call: stop, keep what landed.
+    let rejecting =
+        Arc::new(ScriptedEmbedder::new("model-a:2", 2).failing(0, CallFault::Permanent));
+    let (rejected, _) = run_job(&fs, &rejecting, &fast(None)).await;
+    assert_eq!(rejected.outcome, MemoryReembedOutcome::ProviderRejected);
+    assert!(rejected.outcome.is_failure());
+    assert_eq!(
+        (rejected.backlog, rejected.embedded, rejected.provider_calls),
+        (3, 0, 1)
+    );
+
+    // Transient on every attempt: retries exhausted, reported unavailable.
+    let down = Arc::new(
+        ScriptedEmbedder::new("model-a:2", 2)
+            .failing(0, CallFault::Transient)
+            .failing(1, CallFault::Transient)
+            .failing(2, CallFault::Transient),
+    );
+    let (unavailable, _) = run_job(&fs, &down, &fast(None)).await;
+    assert_eq!(
+        unavailable.outcome,
+        MemoryReembedOutcome::ProviderUnavailable
+    );
+    assert_eq!(
+        unavailable.provider_calls, 3,
+        "one call plus max_transient_retries"
+    );
+
+    // A healthy provider then finishes only what is left, once a 429 clears.
+    let healthy = Arc::new(ScriptedEmbedder::new("model-a:2", 2).failing(0, CallFault::Transient));
+    let (finished, _) = run_job(&fs, &healthy, &fast(None)).await;
+    assert_eq!(finished.outcome, MemoryReembedOutcome::Complete);
+    assert_eq!((finished.backlog, finished.embedded), (3, 3));
+    let mut sent = flaky.embedded_texts();
+    sent.extend(healthy.embedded_texts());
+    sent.sort();
+    assert_eq!(
+        sent,
+        vec![
+            "alpha four",
+            "alpha one",
+            "beta five",
+            "beta three",
+            "beta two"
+        ],
+        "batches that landed before the failure were not re-sent"
+    );
+}
+
+/// Switching models backfills the new space and keeps the old space's
+/// vectors (never deleted — just not queried by the new model).
+async fn reembed_after_a_model_switch_keeps_the_old_space(fs: Arc<dyn RootFilesystem>) {
+    let repo = Repo::new(Arc::clone(&fs));
+    write_embedded(
+        &repo,
+        &doc("notes/old.md"),
+        "alpha old",
+        embedding("model-a:2", vec![1.0, 0.0]),
+    )
+    .await;
+    let model_b = Arc::new(ScriptedEmbedder::new("model-b:2", 8));
+    let (report, _) = run_job(&fs, &model_b, &fast(None)).await;
+    assert_eq!(
+        (report.outcome, report.backlog, report.embedded),
+        (MemoryReembedOutcome::Complete, 1, 1)
+    );
+    assert_eq!(
+        vector_hits(&repo, embedding("model-b:2", vec![1.0, 0.0])).await,
+        vec!["notes/old.md"],
+        "the new space finds the document"
+    );
+    assert_eq!(
+        vector_hits(&repo, embedding("model-a:2", vec![1.0, 0.0])).await,
+        vec!["notes/old.md"],
+        "the old space's vector was kept"
+    );
+    // Back on model A: nothing to do — its vectors were never removed.
+    let model_a = Arc::new(ScriptedEmbedder::new("model-a:2", 8));
+    let (back, _) = run_job(&fs, &model_a, &fast(None)).await;
+    assert_eq!((back.backlog, back.provider_calls), (0, 0));
+}
+
+/// The boot-time task runs the same job in the background and reports
+/// progress through its observer.
+async fn reembed_background_task_backfills_and_reports(fs: Arc<dyn RootFilesystem>) {
+    let repo = Repo::new(Arc::clone(&fs));
+    seed_unembedded(&repo).await;
+    let embedder = Arc::new(ScriptedEmbedder::new("model-a:2", 2));
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&samples);
+    let task = MemoryReembedJob::new(
+        Arc::clone(&fs),
+        Arc::clone(&embedder) as Arc<dyn MemoryEmbedder>,
+    )
+    .spawn_background(fast(Some(2)), move |progress| {
+        sink.lock().unwrap().push(progress)
+    });
+    task.wait().await;
+    let samples = samples.lock().unwrap().clone();
+    assert_eq!(
+        samples.iter().map(|s| s.embedded).sum::<u64>(),
+        5,
+        "budgeted runs repeat until the backlog is done"
+    );
+    assert_eq!(samples.last().map(|s| s.backlog), Some(0));
+    assert_eq!(
+        vector_hits(&repo, embedding("model-a:2", vec![1.0, 0.0])).await,
+        vec!["notes/a.md"]
     );
 }
 
@@ -314,6 +718,30 @@ macro_rules! backend_suite {
     };
 }
 
-backend_suite!(in_memory: only_the_query_space_ranks_in_cosine_order, reembedding_moves_a_document_between_spaces);
-backend_suite!(libsql: only_the_query_space_ranks_in_cosine_order, reembedding_moves_a_document_between_spaces);
-backend_suite!(postgres: only_the_query_space_ranks_in_cosine_order, reembedding_moves_a_document_between_spaces);
+backend_suite!(in_memory:
+    only_the_query_space_ranks_in_cosine_order,
+    reembedding_moves_a_document_between_spaces,
+    reembed_backfills_in_bounded_batches_and_reruns_as_a_no_op,
+    reembed_resumes_from_its_durable_cursor,
+    reembed_survives_partial_provider_failure,
+    reembed_after_a_model_switch_keeps_the_old_space,
+    reembed_background_task_backfills_and_reports,
+);
+backend_suite!(libsql:
+    only_the_query_space_ranks_in_cosine_order,
+    reembedding_moves_a_document_between_spaces,
+    reembed_backfills_in_bounded_batches_and_reruns_as_a_no_op,
+    reembed_resumes_from_its_durable_cursor,
+    reembed_survives_partial_provider_failure,
+    reembed_after_a_model_switch_keeps_the_old_space,
+    reembed_background_task_backfills_and_reports,
+);
+backend_suite!(postgres:
+    only_the_query_space_ranks_in_cosine_order,
+    reembedding_moves_a_document_between_spaces,
+    reembed_backfills_in_bounded_batches_and_reruns_as_a_no_op,
+    reembed_resumes_from_its_durable_cursor,
+    reembed_survives_partial_provider_failure,
+    reembed_after_a_model_switch_keeps_the_old_space,
+    reembed_background_task_backfills_and_reports,
+);

@@ -12,6 +12,25 @@ impl RebornRuntime {
         self.session_channel_extension_id.as_deref()
     }
 
+    /// Run native memory's re-embed backfill now (`zlo memory reembed`),
+    /// reporting progress after the scan and each batch. `None` when the
+    /// deployment has no `[embeddings]` or memory is not the native provider.
+    pub async fn reembed_memory(
+        &self,
+        dry_run: bool,
+        max_chunks: Option<u64>,
+        on_progress: &mut (dyn FnMut(ironclaw_memory_native::MemoryReembedProgress) + Send),
+    ) -> Result<
+        Option<ironclaw_memory_native::MemoryReembedReport>,
+        ironclaw_filesystem::FilesystemError,
+    > {
+        let Some(job) = &self.memory_reembed else {
+            return Ok(None);
+        };
+        let options = ironclaw_memory_native::MemoryReembedOptions::operator(dry_run, max_chunks);
+        job.run(&options, on_progress).await.map(Some)
+    }
+
     pub fn readiness(&self) -> &RebornReadiness {
         &self.readiness
     }
@@ -545,6 +564,8 @@ impl RebornRuntime {
         if let Some(skill_learning_extraction_tasks) = self.skill_learning_extraction_tasks {
             skill_learning_extraction_tasks.shutdown().await;
         }
+        // Stop the boot-time memory backfill; its cursor holds the place.
+        drop(self.memory_reembed_background);
         self.turn_scheduler.shutdown().await;
         // Stop the boot-recovery sweep before its leases are released below.
         if let Some(recovery) = self.reply_publication_recovery {

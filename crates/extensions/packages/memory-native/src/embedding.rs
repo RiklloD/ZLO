@@ -33,6 +33,22 @@ pub(crate) const INDEX_EMBEDDING_BUDGET: Duration = Duration::from_secs(20);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryEmbeddingError {
     pub reason: String,
+    /// Whether retrying the same call later can succeed. Only the background
+    /// re-embed job acts on it (backoff); write and search paths degrade
+    /// either way.
+    pub retry: MemoryEmbeddingRetry,
+}
+
+/// Retry classification of a [`MemoryEmbeddingError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryEmbeddingRetry {
+    /// The provider is overloaded or briefly unreachable (HTTP 429/5xx, a
+    /// transport fault, a timed-out call): back off, optionally no sooner
+    /// than the provider's own `retry_after`.
+    Transient { retry_after: Option<Duration> },
+    /// Retrying the same request cannot help (bad credential, rejected
+    /// request, malformed answer).
+    Permanent,
 }
 
 impl std::fmt::Display for MemoryEmbeddingError {
@@ -44,10 +60,24 @@ impl std::fmt::Display for MemoryEmbeddingError {
 impl std::error::Error for MemoryEmbeddingError {}
 
 impl MemoryEmbeddingError {
+    /// A permanent failure.
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
+            retry: MemoryEmbeddingRetry::Permanent,
         }
+    }
+
+    /// A failure worth retrying after a backoff (HTTP 429/5xx, transport).
+    pub fn transient(reason: impl Into<String>, retry_after: Option<Duration>) -> Self {
+        Self {
+            reason: reason.into(),
+            retry: MemoryEmbeddingRetry::Transient { retry_after },
+        }
+    }
+
+    pub fn is_transient(&self) -> bool {
+        matches!(self.retry, MemoryEmbeddingRetry::Transient { .. })
     }
 }
 
@@ -185,11 +215,10 @@ pub(crate) async fn embed_chunks(
     Option<MemoryEmbeddingError>,
 ) {
     let mut out: Vec<Option<MemoryChunkEmbedding>> = vec![None; texts.len()];
-    let max_bytes = embedder.max_input_bytes();
     let eligible: Vec<usize> = texts
         .iter()
         .enumerate()
-        .filter(|(_, text)| !text.trim().is_empty() && text.len() <= max_bytes)
+        .filter(|(_, text)| embeddable(embedder, text))
         .map(|(index, _)| index)
         .collect();
     if eligible.is_empty() {
@@ -197,20 +226,11 @@ pub(crate) async fn embed_chunks(
     }
     let fingerprint = embedder.fingerprint();
     let dimension = embedder.dimension() as usize;
-    let batch = embedder.max_batch().clamp(1, MAX_MEMORY_EMBEDDING_BATCH);
+    let batch = effective_batch_size(embedder);
     let run = async {
         for indexes in eligible.chunks(batch) {
             let inputs = indexes.iter().map(|&index| texts[index].clone()).collect();
-            let embedded = embedder.embed(scope, inputs).await?;
-            if embedded.len() != indexes.len()
-                || embedded
-                    .iter()
-                    .any(|vector| !well_shaped(vector, dimension))
-            {
-                return Err(MemoryEmbeddingError::new(
-                    "embedder returned a batch of the wrong shape",
-                ));
-            }
+            let embedded = embed_checked_batch(embedder, scope, inputs, dimension).await?;
             for (&index, vector) in indexes.iter().zip(embedded) {
                 out[index] = Some(MemoryChunkEmbedding {
                     fingerprint: fingerprint.clone(),
@@ -223,11 +243,46 @@ pub(crate) async fn embed_chunks(
     let error = match tokio::time::timeout(INDEX_EMBEDDING_BUDGET, run).await {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(error),
-        Err(_) => Some(MemoryEmbeddingError::new(
+        Err(_) => Some(MemoryEmbeddingError::transient(
             "chunk embedding exceeded its time budget",
+            None,
         )),
     };
     (out, error)
+}
+
+/// The batch size indexing and re-embedding use: the embedder's own limit,
+/// never more than [`MAX_MEMORY_EMBEDDING_BATCH`].
+pub(crate) fn effective_batch_size(embedder: &dyn MemoryEmbedder) -> usize {
+    embedder.max_batch().clamp(1, MAX_MEMORY_EMBEDDING_BATCH)
+}
+
+/// Whether `text` may be sent to `embedder` at all: blank chunks and chunks
+/// over its per-input byte limit are stored text-only.
+pub(crate) fn embeddable(embedder: &dyn MemoryEmbedder, text: &str) -> bool {
+    !text.trim().is_empty() && text.len() <= embedder.max_input_bytes()
+}
+
+/// One embedding call whose answer is shape-checked (count, dimension,
+/// finiteness) so a misbehaving embedder can never store a mis-sized vector.
+pub(crate) async fn embed_checked_batch(
+    embedder: &dyn MemoryEmbedder,
+    scope: &MemoryDocumentScope,
+    inputs: Vec<String>,
+    dimension: usize,
+) -> Result<Vec<Vec<f32>>, MemoryEmbeddingError> {
+    let expected = inputs.len();
+    let embedded = embedder.embed(scope, inputs).await?;
+    if embedded.len() != expected
+        || embedded
+            .iter()
+            .any(|vector| !well_shaped(vector, dimension))
+    {
+        return Err(MemoryEmbeddingError::new(
+            "embedder returned a batch of the wrong shape",
+        ));
+    }
+    Ok(embedded)
 }
 
 /// Cosine similarity of two equal-length vectors; `None` for mismatched

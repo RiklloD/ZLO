@@ -350,13 +350,14 @@ impl ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore for 
 }
 
 /// A loopback OpenAI-compatible `/v1/embeddings` stub: records every
-/// request's `authorization` header and JSON body; requests numbered at or
-/// after `fail_from` get HTTP 500. "car"/"automobile" embed to `[1, 0]`,
+/// request's `authorization` header and JSON body; requests numbered in
+/// `fail_from..fail_to` get HTTP 500. "car"/"automobile" embed to `[1, 0]`,
 /// everything else to `[0, 1]`.
 struct StubEmbeddingServer {
     base_url: String,
     requests: Arc<std::sync::Mutex<Vec<StubRequest>>>,
     fail_from: Arc<std::sync::atomic::AtomicUsize>,
+    fail_to: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl StubEmbeddingServer {
@@ -366,7 +367,12 @@ impl StubEmbeddingServer {
         let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let fail_from = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
-        let (log, fail) = (Arc::clone(&requests), Arc::clone(&fail_from));
+        let fail_to = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let (log, fail, fail_end) = (
+            Arc::clone(&requests),
+            Arc::clone(&fail_from),
+            Arc::clone(&fail_to),
+        );
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 let mut raw = Vec::new();
@@ -404,7 +410,10 @@ impl StubEmbeddingServer {
                     log.push((header("authorization"), body.clone()));
                     log.len() - 1
                 };
-                let (status, reply) = if number >= fail.load(std::sync::atomic::Ordering::SeqCst) {
+                let failing = (fail.load(std::sync::atomic::Ordering::SeqCst)
+                    ..fail_end.load(std::sync::atomic::Ordering::SeqCst))
+                    .contains(&number);
+                let (status, reply) = if failing {
                     (
                         "500 Internal Server Error",
                         serde_json::json!({"error": "down"}),
@@ -442,6 +451,7 @@ impl StubEmbeddingServer {
             base_url,
             requests,
             fail_from,
+            fail_to,
         }
     }
 
@@ -574,5 +584,99 @@ async fn production_embedding_chain_sends_the_bound_key_and_degrades_on_failure(
     assert!(
         server.requests().len() > requests.len(),
         "the failing calls were attempted"
+    );
+}
+
+/// The re-embed backfill over the production `[embeddings]` chain
+/// (`memory_reembed_job_for_test` = the job the runtime assembles from the
+/// native binding's embedder): a document stored while the provider was
+/// down is reachable by full text only; after the job it is found by
+/// meaning. Asserted at the wire (the bound key reaches `authorization`, a
+/// provider 500 is retried as transient through composition's error mapping)
+/// and at recall; a second run finds no backlog and calls nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reembed_backfill_makes_a_text_only_document_vector_searchable() {
+    use std::sync::atomic::Ordering::SeqCst;
+    const KEY: &str = "sk-backfill-key-7";
+    let server = StubEmbeddingServer::start().await;
+    let section = ironclaw_config::EmbeddingsSection {
+        provider: "openai".to_string(),
+        model: "text-embedding-3-small".to_string(),
+        dimension: Some(2),
+        base_url: Some(server.base_url.clone()),
+    };
+    let filesystem: Arc<dyn ironclaw_filesystem::RootFilesystem> =
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new());
+    let keys: Arc<dyn ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore> =
+        Arc::new(OperatorKeys::default());
+    let service = ironclaw_composition::test_support::semantic_native_memory_for_test(
+        &section,
+        Arc::clone(&keys),
+        SecretString::from(KEY),
+        Arc::clone(&filesystem),
+    )
+    .await
+    .expect("the production chain builds");
+
+    // Written while the provider is down: stored text-only.
+    server.fail_from.store(0, SeqCst);
+    record(service.as_ref(), "run-1", "my car is teal").await;
+    server.fail_from.store(usize::MAX, SeqCst);
+    assert!(
+        recall(service.as_ref(), "automobile").await.is_empty(),
+        "before the backfill a meaning-only query finds nothing"
+    );
+
+    let job = ironclaw_composition::test_support::memory_reembed_job_for_test(
+        &section,
+        keys,
+        SecretString::from(KEY),
+        Arc::clone(&filesystem),
+    )
+    .await
+    .expect("the production backfill job builds");
+    // The backfill's first provider call answers 500, the retry succeeds.
+    let before = server.requests().len();
+    server.fail_from.store(before, SeqCst);
+    server.fail_to.store(before + 1, SeqCst);
+    let options = ironclaw_memory_native::MemoryReembedOptions {
+        initial_backoff: std::time::Duration::from_millis(10),
+        ..ironclaw_memory_native::MemoryReembedOptions::operator(false, None)
+    };
+    let mut samples = Vec::new();
+    let report = job
+        .run(&options, &mut |progress| samples.push(progress))
+        .await
+        .expect("backfill runs");
+    assert_eq!(
+        report.outcome,
+        ironclaw_memory_native::MemoryReembedOutcome::Complete
+    );
+    assert_eq!((report.backlog, report.embedded), (1, 1));
+    assert_eq!(report.provider_calls, 2, "the 500 was retried once");
+    assert_eq!(samples.last().map(|sample| sample.backlog), Some(0));
+    let backfill_requests = &server.requests()[before..];
+    assert_eq!(backfill_requests.len(), 2);
+    for (authorization, body) in backfill_requests {
+        assert_eq!(
+            authorization.as_deref(),
+            Some(format!("Bearer {KEY}").as_str()),
+            "the operator key is injected host-side on every backfill call"
+        );
+        assert_eq!(body["input"], json!(["## user\nmy car is teal\n"]));
+    }
+
+    assert_eq!(
+        recall(service.as_ref(), "automobile").await,
+        vec!["threads/convo/run-1.md".to_string()],
+        "after the backfill the pre-existing document is found by meaning"
+    );
+    let calls = server.requests().len();
+    let again = job.run(&options, &mut |_| {}).await.expect("second run");
+    assert_eq!((again.backlog, again.provider_calls), (0, 0));
+    assert_eq!(
+        server.requests().len(),
+        calls,
+        "a finished backfill calls nothing"
     );
 }

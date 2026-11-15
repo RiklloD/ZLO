@@ -226,7 +226,19 @@ impl ironclaw_memory_native::MemoryEmbedder for MemoryEmbedderAdapter {
             .embed(EmbeddingRequest::new(scope, texts))
             .await
             .map(|response| response.embeddings)
-            .map_err(|error| ironclaw_memory_native::MemoryEmbeddingError::new(error.to_string()))
+            .map_err(|error| {
+                use ironclaw_memory_native::MemoryEmbeddingError as E;
+                match error {
+                    EmbeddingError::RateLimited { retry_after } => {
+                        E::transient(error.to_string(), retry_after)
+                    }
+                    EmbeddingError::Http { status } if status >= 500 => {
+                        E::transient(error.to_string(), None)
+                    }
+                    EmbeddingError::Transport { .. } => E::transient(error.to_string(), None),
+                    other => E::new(other.to_string()),
+                }
+            })
     }
 }
 

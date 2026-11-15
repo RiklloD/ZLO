@@ -42,6 +42,12 @@ rule 1).
     Vector hits below `DEFAULT_MIN_VECTOR_SIMILARITY` never rank, and the
     vector branch only ranks vectors stored under the query embedder's
     `MemoryEmbeddingFingerprint` (contract: `docs/internal/reborn/contracts/memory.md` §5.2).
+  - The re-embed backfill (`reembed`, storage half in
+    `repo/filesystem/reembed.rs`): `MemoryReembedJob` gives chunks with no
+    vector in the current space one — batched, paced, backed off on transient
+    provider failures, resumable from a durable CAS cursor, never removing
+    another space's vectors. Composition only constructs it and starts
+    `spawn_background`; the policy (budgets, pacing, retry) is here.
   - The significant-event sink (`events`), and the prompt-write safety engine
     (`PromptWriteSafetyPolicy` + protected-path/decision/event types, `safety`)
     that implements the vocabulary the neutral contract defines.
@@ -96,7 +102,7 @@ rule 1).
   on how a backend round-trips this crate's own index keys: the page-archive
   libSQL legs (`tests/memory_page_archive.rs`) and the embedding-space
   fingerprint parity suite (`tests/embedding_space_backend_parity.rs`, run on
-  in-memory, libSQL and PostgreSQL; re-list with
+  in-memory, libSQL and PostgreSQL — the re-embed backfill scenarios live there too; re-list with
   `rg -l "LibSqlRootFilesystem|PostgresRootFilesystem" crates/extensions/packages/memory-native/tests`).
 
 ## Do Not Move In Here
