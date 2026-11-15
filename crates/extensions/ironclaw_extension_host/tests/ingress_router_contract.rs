@@ -7,6 +7,7 @@
 //! 2xx. Checklist: ING-1/2/5/6/7/8-unit/9/11-storage; the recipe byte
 //! semantics themselves are pinned by the verifier unit tests (ING-3/4).
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS;
 use ironclaw_extension_contracts::state::InstallationState;
 use std::sync::Arc;
@@ -572,6 +573,10 @@ fn sign(timestamp: &str, body: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut hex = String::new();
     for byte in digest {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "fmt::Write for String cannot fail"
+        )]
         let _ = write!(&mut hex, "{byte:02x}");
     }
     format!("v0={hex}")

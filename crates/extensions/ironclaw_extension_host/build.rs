@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::env;
 use std::fs::{self, FileType};
 use std::path::{Path, PathBuf};

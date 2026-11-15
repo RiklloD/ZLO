@@ -13,6 +13,7 @@
 //! The generic assembly layer binds those adapters and resolved manifests to
 //! the host-runtime lane binder without linking concrete extension crates.
 
+#![deny(clippy::let_underscore_must_use)]
 extern crate self as ironclaw_extension_host;
 
 mod activation_credentials;

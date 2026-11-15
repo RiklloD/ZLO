@@ -6,6 +6,7 @@
 //! the real `ActiveExtensionPublisher`. No fakes stand in for the guard or its
 //! caller.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_extension_host::{
