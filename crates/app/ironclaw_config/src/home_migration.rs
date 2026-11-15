@@ -89,13 +89,8 @@ pub fn legacy_home_path(user_home: &Path) -> PathBuf {
 /// Move `<user_home>/.ironclaw/reborn` to `<user_home>/.zlo` when needed.
 pub fn migrate_legacy_home(user_home: &Path) -> Result<HomeMigration, RebornConfigError> {
     let paths = Paths::new(user_home);
-    match paths.state()? {
-        State::Fresh | State::Linked => Ok(HomeMigration::NotNeeded),
-        State::BothExist => Ok(paths.both_exist()),
-        // Something to do: take the lock and decide again, since another
-        // process may have finished (or started) the move meanwhile.
-        State::NeedsMove | State::NeedsLink => paths.migrate_locked(),
-    }
+    let observed = paths.state()?;
+    paths.settle(observed)
 }
 
 /// Where the data lives right now, without moving anything: the pre-ZLO
@@ -221,15 +216,50 @@ impl Paths {
         Ok(true)
     }
 
-    fn migrate_locked(&self) -> Result<HomeMigration, RebornConfigError> {
+    /// Act on a state read *without* the lock.
+    ///
+    /// That read inspects several paths one after another, so it can tear
+    /// across another start's `rename(2)`: the legacy folder read before the
+    /// move and `~/.zlo` read after it both "hold data", although the move
+    /// was simply in flight. Only the states nothing can leave on its own
+    /// (`Fresh`, `Linked`) are trusted unlocked; `BothExist` is re-read under
+    /// the lock like the states that need work, so a concurrent start that
+    /// can take the lock never reports a spurious "both folders exist"
+    /// warning.
+    fn settle(&self, observed: State) -> Result<HomeMigration, RebornConfigError> {
+        match observed {
+            State::Fresh | State::Linked => Ok(HomeMigration::NotNeeded),
+            State::BothExist => match self.open_lock() {
+                Ok(lock) => self.migrate_locked(lock),
+                // The lock file cannot be opened here (e.g. `~/.ironclaw` is
+                // read-only to this process), so this start attempts no
+                // migration and changes nothing; BothExist needs no write,
+                // so report what was observed rather than failing a start
+                // that previously succeeded. Another process that *can* open
+                // the lock may be mid-move, in which case this warning can be
+                // stale — but either way the home resolves to `~/.zlo` and
+                // no data is touched on this path.
+                Err(_) => Ok(self.both_exist()), // silent-ok: no migration is attempted without the lock; BothExist is advisory
+            },
+            // Something to do: take the lock and decide again, since another
+            // process may have finished (or started) the move meanwhile.
+            State::NeedsMove | State::NeedsLink => self.migrate_locked(self.open_lock()?),
+        }
+    }
+
+    fn open_lock(&self) -> Result<fs::File, RebornConfigError> {
         let lock_path = self.legacy_parent.join(LOCK_FILE_NAME);
-        let lock = fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(&lock_path)
-            .map_err(|error| self.io_error("open lock", &lock_path, error))?;
+            .map_err(|error| self.io_error("open lock", &lock_path, error))
+    }
+
+    fn migrate_locked(&self, lock: fs::File) -> Result<HomeMigration, RebornConfigError> {
+        let lock_path = self.legacy_parent.join(LOCK_FILE_NAME);
         lock.lock()
             .map_err(|error| self.io_error("lock", &lock_path, error))?;
 
@@ -316,4 +346,65 @@ fn symlink_dir(target: &Path, link: &Path) -> io::Result<()> {
 #[cfg(windows)]
 fn symlink_dir(target: &Path, link: &Path) -> io::Result<()> {
     std::os::windows::fs::symlink_dir(target, link)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seed_legacy(user_home: &Path) {
+        let legacy = legacy_home_path(user_home);
+        fs::create_dir_all(&legacy).expect("legacy dir");
+        fs::write(legacy.join("config.toml"), "").expect("config");
+    }
+
+    #[test]
+    fn torn_unlocked_both_exist_read_is_rechecked_under_the_lock() {
+        // A start that read the legacy folder just before another start's
+        // rename and `~/.zlo` just after it sees BothExist although nothing
+        // but the in-flight move is there. Model that torn read directly: the
+        // disk holds a home still waiting to move.
+        let temp = tempfile::tempdir().expect("tempdir");
+        seed_legacy(temp.path());
+        let paths = Paths::new(temp.path());
+        assert_eq!(paths.state().expect("state"), State::NeedsMove);
+
+        let outcome = paths.settle(State::BothExist).expect("settles");
+
+        assert!(
+            matches!(outcome, HomeMigration::Migrated { .. }),
+            "a torn read must be re-decided under the lock, got {outcome:?}"
+        );
+        assert_eq!(paths.state().expect("state"), State::Linked);
+    }
+
+    #[test]
+    fn torn_both_exist_read_after_a_finished_migration_is_not_needed() {
+        // The other half of the race: the move finished by the time the lock
+        // is held — nothing to warn about.
+        let temp = tempfile::tempdir().expect("tempdir");
+        seed_legacy(temp.path());
+        migrate_legacy_home(temp.path()).expect("first start migrates");
+        let paths = Paths::new(temp.path());
+
+        assert_eq!(
+            paths.settle(State::BothExist).expect("settles"),
+            HomeMigration::NotNeeded
+        );
+    }
+
+    #[test]
+    fn genuine_both_exist_is_still_reported_under_the_lock() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        seed_legacy(temp.path());
+        let current = temp.path().join(DEFAULT_HOME_DIR_NAME);
+        fs::create_dir(&current).expect("zlo");
+        fs::write(current.join("config.toml"), "").expect("zlo config");
+
+        assert!(matches!(
+            migrate_legacy_home(temp.path()).expect("resolves"),
+            HomeMigration::BothExist { .. }
+        ));
+        assert!(legacy_home_path(temp.path()).join("config.toml").is_file());
+    }
 }

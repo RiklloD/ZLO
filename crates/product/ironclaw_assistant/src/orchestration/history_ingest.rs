@@ -15,7 +15,7 @@
 //! threads — imported terminal sessions included, once they are threads
 //! read by these runtimes — get indexed. Background work logs at `debug!`.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use chrono::{DateTime, Utc};
@@ -232,15 +232,50 @@ fn owner_key(engine: &Engine, owner: &ProfileOwner) -> OwnerKey {
 
 /// Owners whose CLI threads were swept in this process, and sweeps running.
 /// Single-flight bookkeeping, not a cache of any stored value.
-static SWEPT: LazyLock<Mutex<HashSet<OwnerKey>>> = LazyLock::new(Default::default);
-static SWEEPING: LazyLock<Mutex<HashSet<OwnerKey>>> = LazyLock::new(Default::default);
+///
+/// A key carries the engine's address, so each entry also holds a `Weak` to
+/// that engine: while it exists the allocation cannot be freed, so no later
+/// engine can be created at the same address and inherit a stale "swept".
+static SWEPT: LazyLock<Mutex<HashMap<OwnerKey, Weak<Engine>>>> = LazyLock::new(Default::default);
+static SWEEPING: LazyLock<Mutex<HashMap<OwnerKey, Weak<Engine>>>> = LazyLock::new(Default::default);
 
 /// Whether this process already indexed every CLI thread of `owner`
 /// (completed turns keep it current afterwards).
 pub(crate) fn owner_swept(engine: &Engine, owner: &ProfileOwner) -> bool {
     SWEPT
         .lock()
-        .is_ok_and(|s| s.contains(&owner_key(engine, owner)))
+        .is_ok_and(|s| s.contains_key(&owner_key(engine, owner)))
+}
+
+#[cfg(test)]
+pub(super) fn owner_sweeping(engine: &Engine, owner: &ProfileOwner) -> bool {
+    SWEEPING
+        .lock()
+        .is_ok_and(|s| s.contains_key(&owner_key(engine, owner)))
+}
+
+/// Holds an owner's `SWEEPING` slot; frees it when dropped, so a sweep
+/// that panics or whose runtime shuts down mid-pass (its task is dropped,
+/// not finished) never leaves the owner marked as sweeping forever.
+struct SweepSlot(OwnerKey);
+
+impl SweepSlot {
+    fn claim(engine: &Arc<Engine>, key: OwnerKey) -> Option<Self> {
+        let mut running = SWEEPING.lock().ok()?;
+        if running.contains_key(&key) {
+            return None;
+        }
+        running.insert(key.clone(), Arc::downgrade(engine));
+        Some(Self(key))
+    }
+}
+
+impl Drop for SweepSlot {
+    fn drop(&mut self) {
+        if let Ok(mut running) = SWEEPING.lock() {
+            running.remove(&self.0);
+        }
+    }
 }
 
 /// Index every CLI thread of `owner` in the background, once per process.
@@ -252,30 +287,17 @@ pub(crate) fn spawn_owner_sweep(
     if owner_swept(engine, &owner) {
         return;
     }
-    let key = owner_key(engine, &owner);
-    let Ok(mut running) = SWEEPING.lock() else {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         return;
     };
-    if !running.insert(key.clone()) {
-        return;
-    }
-    drop(running);
-    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-        if let Ok(mut running) = SWEEPING.lock() {
-            running.remove(&key);
-        }
+    let Some(slot) = SweepSlot::claim(engine, owner_key(engine, &owner)) else {
         return;
     };
     let engine = Arc::downgrade(engine);
     let threads = Arc::clone(threads);
     runtime.spawn(async move {
-        let complete = sweep(&engine, threads.as_ref(), &owner).await;
-        if complete && let Ok(mut swept) = SWEPT.lock() {
-            swept.insert(key.clone());
-        }
-        if let Ok(mut running) = SWEEPING.lock() {
-            running.remove(&key);
-        }
+        let _slot = slot;
+        sweep(&engine, threads.as_ref(), &owner).await;
     });
 }
 
@@ -288,7 +310,8 @@ const SWEEP_ROWS_PER_PASS: usize = 5_000;
 /// One bounded pass over the owner's CLI threads. A thread whose activity
 /// version matches its stored summary is skipped without reading its
 /// transcript, so a pass resumes where the last one (or the last process)
-/// stopped. `true` when every thread is current.
+/// stopped. `true` when every thread is current, in which case the owner
+/// is recorded as swept — whoever ran the pass.
 pub(super) async fn sweep(
     engine: &Weak<Engine>,
     threads: &dyn SessionThreadService,
@@ -297,6 +320,18 @@ pub(super) async fn sweep(
     let Some(engine) = engine.upgrade() else {
         return false;
     };
+    let complete = sweep_pass(&engine, threads, owner).await;
+    if complete && let Ok(mut swept) = SWEPT.lock() {
+        swept.insert(owner_key(&engine, owner), Arc::downgrade(&engine));
+    }
+    complete
+}
+
+async fn sweep_pass(
+    engine: &Arc<Engine>,
+    threads: &dyn SessionThreadService,
+    owner: &ProfileOwner,
+) -> bool {
     let list = match engine.owner_external_threads(owner).await {
         Ok(list) => list,
         Err(error) => {
@@ -314,7 +349,7 @@ pub(super) async fn sweep(
         if thread_is_current(threads, &thread).await {
             continue;
         }
-        match ingest_thread(&engine, threads, &thread).await {
+        match ingest_thread(engine, threads, &thread).await {
             Ok(written) => {
                 ingested += 1;
                 rows += written;

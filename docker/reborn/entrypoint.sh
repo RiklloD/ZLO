@@ -14,6 +14,96 @@ railway_runtime_detected() {
     || [ -n "${RAILWAY_SERVICE_ID:-}" ]
 }
 
+# Portable stand-in for GNU `readlink -m` (BSD/macOS readlink has no `-m`, and
+# this script must behave identically in the container and on a developer
+# Mac). Prints the absolute, symlink-free spelling of $1, resolving `.`, `..`
+# and every symlink component that exists, while -- like `readlink -m` --
+# tolerating components that do not exist yet (they are kept verbatim, and a
+# later `..` simply removes them). Fails (non-zero, no output) on an empty
+# argument, an unreadable link, or a symlink loop, so callers fail closed
+# exactly as with `readlink -m`.
+#
+# Loops are caught by a cap on the TOTAL number of links followed while
+# resolving one path. Linux's MAXSYMLINKS (40) bounds nesting depth, not this
+# total, so GNU resolves finite paths that follow more than 40 links in all;
+# 256 keeps those working while a real loop still fails closed.
+#
+# Newlines are refused outright -- in the argument, in the working directory
+# a relative argument resolves against, and in any symlink target. Command
+# substitution strips trailing newlines, so a link `<mount>/x -> "<mount>\n"`
+# would otherwise canonicalize `<mount>/x/project` as `<mount>/project` (inside
+# the mount) while the real path, `<mount>\n/project`, is outside it. Every
+# substitution below appends a sentinel so a trailing newline is seen, not
+# lost. Nothing legitimate puts a newline in these paths.
+_cp_nl='
+'
+canonicalize_path() {
+  [ -n "${1:-}" ] || return 1
+  case "$1" in
+    *"$_cp_nl"*)
+      echo "refusing to resolve a path that contains a newline" >&2
+      return 1
+      ;;
+    /*) _cp_rest="$1" ;;
+    *)
+      _cp_rest="$(pwd -P && printf x)" || return 1
+      _cp_rest="${_cp_rest%x}"
+      _cp_rest="${_cp_rest%"$_cp_nl"}"
+      case "$_cp_rest" in
+        *"$_cp_nl"*)
+          echo "refusing to resolve against a working directory that contains a newline" >&2
+          return 1
+          ;;
+      esac
+      _cp_rest="$_cp_rest/$1"
+      ;;
+  esac
+  _cp_out=""
+  _cp_hops=0
+  while :; do
+    while [ "${_cp_rest#/}" != "$_cp_rest" ]; do
+      _cp_rest="${_cp_rest#/}"
+    done
+    [ -n "$_cp_rest" ] || break
+    _cp_comp="${_cp_rest%%/*}"
+    case "$_cp_rest" in
+      */*) _cp_rest="${_cp_rest#*/}" ;;
+      *) _cp_rest="" ;;
+    esac
+    case "$_cp_comp" in
+      .) continue ;;
+      ..) _cp_out="${_cp_out%/*}"; continue ;;
+    esac
+    if [ -L "$_cp_out/$_cp_comp" ]; then
+      _cp_hops=$((_cp_hops + 1))
+      if [ "$_cp_hops" -gt 256 ]; then
+        echo "refusing to resolve $1: more than 256 symlinks (a loop?)" >&2
+        return 1
+      fi
+      # `-n` prints the target with no delimiter (GNU, BSD/macOS and
+      # busybox alike -- plain `readlink` does not portably append exactly
+      # one newline: macOS omits it when the target already ends in one), and
+      # the sentinel keeps a trailing newline that is part of the target.
+      _cp_target="$(readlink -n "$_cp_out/$_cp_comp" && printf x)" || return 1
+      _cp_target="${_cp_target%x}"
+      case "$_cp_target" in
+        "")
+          return 1
+          ;;
+        *"$_cp_nl"*)
+          echo "refusing to resolve $1: symlink $_cp_out/$_cp_comp has a target containing a newline" >&2
+          return 1
+          ;;
+        /*) _cp_out="" ;;
+      esac
+      _cp_rest="$_cp_target/$_cp_rest"
+    else
+      _cp_out="$_cp_out/$_cp_comp"
+    fi
+  done
+  printf '%s\n' "${_cp_out:-/}"
+}
+
 railway_volume_mount=""
 if [ -n "${RAILWAY_VOLUME_MOUNT_PATH:-}" ]; then
   railway_volume_mount="${RAILWAY_VOLUME_MOUNT_PATH%/}"
@@ -46,8 +136,9 @@ export IRONCLAW_REBORN_HOME
 if [ -n "${IRONCLAW_REBORN_WORKSPACE_ROOT:-}" ]; then
   IRONCLAW_REBORN_WORKSPACE_ROOT="${IRONCLAW_REBORN_WORKSPACE_ROOT%/}"
   # Same reasoning as IRONCLAW_REBORN_HOME above. Without this the empty value
-  # reached `readlink -m ""`, which exits non-zero and, under `set -eu`, killed
-  # the boot with no diagnostic at all.
+  # reached the canonicalizer (`canonicalize_path ""`, formerly `readlink -m
+  # ""`), which exits non-zero and, under `set -eu`, killed the boot with no
+  # diagnostic at all.
   if [ -z "$IRONCLAW_REBORN_WORKSPACE_ROOT" ]; then
     echo "IRONCLAW_REBORN_WORKSPACE_ROOT must not be the filesystem root (/)." >&2
     exit 1
@@ -103,15 +194,15 @@ if [ "$(id -u)" = "0" ]; then
   # later unprivileged `mkdir -p` reports the failure as it did before.
   # Compare canonicalized paths so `$IRONCLAW_REBORN_HOME/../../etc` cannot
   # spell its way in.
-  canonical_home="$(readlink -m "$IRONCLAW_REBORN_HOME")"
-  canonical_ws_root="$(readlink -m "$IRONCLAW_REBORN_WORKSPACE_ROOT")"
+  canonical_home="$(canonicalize_path "$IRONCLAW_REBORN_HOME")"
+  canonical_ws_root="$(canonicalize_path "$IRONCLAW_REBORN_WORKSPACE_ROOT")"
   workspace_root_managed=false
   case "$canonical_ws_root" in
     "$canonical_home"|"$canonical_home"/*) workspace_root_managed=true ;;
   esac
   if [ "$workspace_root_managed" = false ] \
     && [ -n "$railway_volume_mount" ] && [ "$railway_volume_mount" != "/" ]; then
-    canonical_mount="$(readlink -m "$railway_volume_mount")"
+    canonical_mount="$(canonicalize_path "$railway_volume_mount")"
     case "$canonical_ws_root" in
       "$canonical_mount"/*) workspace_root_managed=true ;;
     esac
@@ -340,10 +431,11 @@ then
       # `/volume/../ephemeral`, passes a purely lexical prefix test while the
       # runtime resolves the real (ephemeral) target — booting a deployment
       # whose project files silently do not persist, which is the exact failure
-      # this guard exists to prevent. `readlink -m` canonicalizes symlinks and
-      # `.`/`..` segments even when a path (or an intermediate component of it)
-      # does not exist yet. `readlink -f` requires every component but the
-      # last to already exist and otherwise fails outright, which used to send
+      # this guard exists to prevent. `canonicalize_path` (a portable
+      # equivalent of GNU `readlink -m`, defined at the top of this script)
+      # canonicalizes symlinks and `.`/`..` segments even when a path (or an
+      # intermediate component of it) does not exist yet. `readlink -f`
+      # requires every component but the last to already exist and otherwise fails outright, which used to send
       # a not-yet-created path (routine for a fresh volume) down a fallback to
       # its raw, unresolved spelling — and a raw spelling containing `..` can
       # lexically match the containment check below while actually resolving
@@ -351,11 +443,11 @@ then
       # fallback to the raw spelling any more: failing closed on a
       # canonicalization error is safe, silently comparing an unresolved path
       # is not.
-      if ! canonical_workspace_root="$(readlink -m "$IRONCLAW_REBORN_WORKSPACE_ROOT" 2>/dev/null)"; then
+      if ! canonical_workspace_root="$(canonicalize_path "$IRONCLAW_REBORN_WORKSPACE_ROOT" 2>/dev/null)"; then
         echo "Failed to resolve IRONCLAW_REBORN_WORKSPACE_ROOT=$IRONCLAW_REBORN_WORKSPACE_ROOT for the Railway containment check." >&2
         exit 1
       fi
-      if ! canonical_volume_mount="$(readlink -m "$railway_volume_mount" 2>/dev/null)"; then
+      if ! canonical_volume_mount="$(canonicalize_path "$railway_volume_mount" 2>/dev/null)"; then
         echo "Failed to resolve RAILWAY_VOLUME_MOUNT_PATH=$railway_volume_mount for the Railway containment check." >&2
         exit 1
       fi

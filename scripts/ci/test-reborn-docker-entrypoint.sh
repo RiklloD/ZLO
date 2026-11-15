@@ -424,6 +424,32 @@ for outside_case in "${WORK}/not-managed-at-all" "${outside_mount}/../not-manage
   fi
 done
 
+# 6c. A symlink whose target ends in a newline must not spell its way into a
+#     managed directory. `$(readlink ...)` strips trailing newlines, so a link
+#     `<mount>/nl-escape -> "<mount>\n"` used to canonicalize
+#     `<mount>/nl-escape/x` as `<mount>/x` (managed) although the real path is
+#     the sibling directory `<mount>\n/x`, outside it. The entrypoint must fail
+#     closed instead of chowning it.
+nl='
+'
+outside_nl_target="${outside_mount}${nl}"
+mkdir -p "$outside_nl_target"
+ln -sfn "$outside_nl_target" "${outside_mount}/nl-escape"
+rm -f "$outside_chown_record"
+if run_outside_workspace_root "${outside_mount}/nl-escape/not-managed-newline"; then
+  echo "FAIL[workspace_root_newline_escape]: root pass accepted a workspace root behind a newline-terminated symlink" >&2
+  failures=$((failures + 1))
+elif ! grep -q 'newline' "${outside_root_home}/entrypoint.err"; then
+  echo "FAIL[workspace_root_newline_escape]: expected a newline diagnostic" >&2
+  cat "${outside_root_home}/entrypoint.err" >&2
+  failures=$((failures + 1))
+fi
+if [ -f "$outside_chown_record" ] && grep -q "not-managed-newline" "$outside_chown_record"; then
+  echo "FAIL[workspace_root_newline_escape]: root pass chowned a workspace root outside the mount" >&2
+  cat "$outside_chown_record" >&2
+  failures=$((failures + 1))
+fi
+
 # 7. The Railway containment guard must canonicalize paths even when an
 #    intermediate component does not exist yet. GNU `readlink -f` requires
 #    every component but the last to already exist and otherwise fails
@@ -440,6 +466,27 @@ if run_railway_entrypoint "$railway_escape_missing_root"; then
 elif ! grep -q 'IRONCLAW_REBORN_WORKSPACE_ROOT' "${railway_home}/railway.err"; then
   echo "FAIL[railway_escape_missing_intermediate]: expected a workspace-root containment diagnostic" >&2
   cat "${railway_home}/railway.err" >&2
+  failures=$((failures + 1))
+fi
+
+# 7b. The Railway containment guard must not be fooled by a symlink whose
+#     target ends in a newline (see 6c): `<mount>/nl-escape -> "<mount>\n"`
+#     makes `<mount>/nl-escape/project` look like `<mount>/project` while the
+#     runtime would write to `<mount>\n/project`, outside the volume.
+railway_nl_target="${railway_mount}${nl}"
+mkdir -p "$railway_nl_target"
+ln -sfn "$railway_nl_target" "${railway_mount}/nl-escape"
+rm -f "${railway_home}/argv"
+if run_railway_entrypoint "${railway_mount}/nl-escape/project"; then
+  echo "FAIL[railway_newline_escape]: a workspace root behind a newline-terminated symlink was accepted" >&2
+  failures=$((failures + 1))
+elif ! grep -q 'IRONCLAW_REBORN_WORKSPACE_ROOT' "${railway_home}/railway.err"; then
+  echo "FAIL[railway_newline_escape]: expected a workspace-root diagnostic" >&2
+  cat "${railway_home}/railway.err" >&2
+  failures=$((failures + 1))
+fi
+if [ -e "${railway_nl_target}/project" ]; then
+  echo "FAIL[railway_newline_escape]: the entrypoint created a workspace outside the volume" >&2
   failures=$((failures + 1))
 fi
 
