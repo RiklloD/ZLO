@@ -10,6 +10,7 @@
 //! provider derives a distinct namespace per scope and round-trips through
 //! it, end to end at this crate's seam.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

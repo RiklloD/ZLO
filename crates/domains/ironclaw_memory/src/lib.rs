@@ -8,6 +8,7 @@
 //! `ironclaw_memory_native` provider crate, which depends on this crate and
 //! re-exports these types for backward compatibility.
 
+#![deny(clippy::let_underscore_must_use)]
 mod context;
 mod events;
 mod hash;

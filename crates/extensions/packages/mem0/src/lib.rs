@@ -51,6 +51,7 @@
 //! crate and the host-api id/scope substrate among internal IronClaw crates. It
 //! never reaches into host composition, dispatch, filesystem, or runtime.
 
+#![deny(clippy::let_underscore_must_use)]
 mod config;
 mod error;
 mod service;

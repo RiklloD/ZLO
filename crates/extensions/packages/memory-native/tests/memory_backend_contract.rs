@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -719,6 +720,10 @@ fn chunk_document_handles_zero_chunk_size_without_hanging() {
                 min_chunk_size: 1,
             },
         );
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the test body times out and drops the receiver if chunking hangs; that timeout is the assertion"
+        )]
         let _ = tx.send(chunks);
     });
 

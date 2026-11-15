@@ -3,6 +3,7 @@
 //! Archive keeps the body under `archive/`, unindexed, and removes the live
 //! path only while it still matches the hash the user read.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_filesystem::{InMemoryBackend, LibSqlRootFilesystem, RootFilesystem};

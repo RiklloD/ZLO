@@ -44,6 +44,7 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_host_runtime",
     "ironclaw_identity",
     "ironclaw_mcp",
+    "ironclaw_memory",
     "ironclaw_network",
     "ironclaw_notifications",
     "ironclaw_openai_compat",
@@ -55,6 +56,8 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_wasm",
     "ironclaw_wasm_limiter",
     "ironclaw_webui",
+    "mem0",
+    "memory-native",
 ];
 
 const DENY_ATTRIBUTE: &str = "#![deny(clippy::let_underscore_must_use)]";
