@@ -49,6 +49,7 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_notifications",
     "ironclaw_openai_compat",
     "ironclaw_operator",
+    "ironclaw_resources",
     "ironclaw_sandbox",
     "ironclaw_secrets",
     "ironclaw_threads",

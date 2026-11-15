@@ -335,10 +335,11 @@ where
 
     #[cfg(test)]
     pub(super) fn poison_sender_lock(&self) {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let poisoning = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = self.sender.lock().expect("sender lock"); // safety: test-only helper deliberately poisons this lock under #[cfg(test)].
             panic!("poison journal sender lock for restart failure coverage");
         }));
+        assert!(poisoning.is_err(), "the poisoning closure must panic"); // safety: test-only helper under #[cfg(test)].
     }
 }
 
@@ -450,7 +451,10 @@ fn run_delta_journal_flusher<F>(
         Ok(runtime) => runtime,
         Err(error) => {
             while let Ok(request) = receiver.recv() {
-                // silent-ok: the requester may have given up waiting for the ack
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the requester may have given up waiting for the ack"
+                )]
                 let _ = request
                     .ack
                     .send(Err(DeltaJournalFailure::fatal(storage_error(format!(
@@ -484,7 +488,7 @@ fn run_delta_journal_flusher<F>(
             if request.generation == current {
                 return true;
             }
-            // silent-ok: the requester may have given up waiting for the ack
+            #[expect(clippy::let_underscore_must_use, reason = "the requester may have given up waiting for the ack")]
             let _ = request
                 .ack
                 .send(Err(DeltaJournalFailure::transient(storage_error(
@@ -503,7 +507,10 @@ fn run_delta_journal_flusher<F>(
         match result {
             Ok(seqs) => {
                 for (request, seq) in requests.into_iter().zip(seqs) {
-                    // silent-ok: the requester may have given up waiting for the ack
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "the requester may have given up waiting for the ack"
+                    )]
                     let _ = request.ack.send(Ok(seq));
                 }
             }
@@ -514,7 +521,10 @@ fn run_delta_journal_flusher<F>(
                 // instead of appending on top of the gap this batch left.
                 generation.fetch_add(1, Ordering::SeqCst);
                 for request in requests {
-                    // silent-ok: the requester may have given up waiting for the ack
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "the requester may have given up waiting for the ack"
+                    )]
                     let _ = request.ack.send(Err(failure.clone()));
                 }
                 if transient {
@@ -1200,11 +1210,19 @@ mod tests {
             if self.appends.fetch_add(1, Ordering::SeqCst) > 0 {
                 return Ok((1..=count as u64).map(SeqNo::from_backend).collect());
             }
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test gate: the peer belongs to the test body, which has already failed if it is gone"
+            )]
             let _ = self
                 .entered
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .send(());
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test gate: a dropped release sender releases the gated append just as a send does"
+            )]
             let _ = self
                 .release
                 .lock()
@@ -1558,6 +1576,10 @@ mod tests {
                 .expect("runtime");
 
             let result = runtime.block_on(async { pending_delta_wait_with_gated_append().await });
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test gate: the peer belongs to the test body, which has already failed if it is gone"
+            )]
             let _ = done_tx.send(result);
         });
 
@@ -1580,6 +1602,10 @@ mod tests {
 
         tokio::spawn(async move {
             tokio::task::yield_now().await;
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test gate: the peer belongs to the test body, which has already failed if it is gone"
+            )]
             let _ = release_tx.send(());
         });
 

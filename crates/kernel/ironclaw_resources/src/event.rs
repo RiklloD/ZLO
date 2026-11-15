@@ -178,6 +178,10 @@ impl BudgetEventSink for BroadcastBudgetEventSink {
         // `send` returns Err only when there are no active receivers —
         // a perfectly valid state (nobody is projecting yet). Drop
         // silently.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "send fails only with no active receivers, a valid state before anyone projects"
+        )]
         let _ = self.sender.send(event);
     }
 }

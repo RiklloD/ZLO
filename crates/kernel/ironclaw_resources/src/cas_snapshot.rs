@@ -357,12 +357,18 @@ impl AsyncStorageWorker {
                 {
                     Ok(runtime) => runtime,
                     Err(error) => {
-                        // silent-ok: the constructor may have given up waiting for the worker
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "the constructor may have given up waiting for the worker"
+                        )]
                         let _ = ready_sender.send(Err(error.to_string()));
                         return;
                     }
                 };
-                // silent-ok: the constructor may have given up waiting for the worker
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the constructor may have given up waiting for the worker"
+                )]
                 let _ = ready_sender.send(Ok(()));
                 while let Ok(job) = receiver.recv() {
                     job(&runtime);
@@ -386,7 +392,10 @@ impl AsyncStorageWorker {
         self.sender
             .send(Box::new(move |runtime| {
                 let result = runtime.block_on(build());
-                // silent-ok: the caller may have given up waiting for this result
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the caller may have given up waiting for this result"
+                )]
                 let _ = result_sender.send(result);
             }))
             .map_err(|_| E::storage("cas snapshot storage worker stopped".to_string()))?;
