@@ -1,4 +1,6 @@
 // arch-exempt: large_file, process journal persistence invariants stay in one caller-level contract suite, plan #5274
+
+#![deny(clippy::let_underscore_must_use)]
 use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_filesystem::{

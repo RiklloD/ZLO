@@ -142,7 +142,10 @@ impl DeliveryBatch {
 
     fn release(self) {
         for (responder, result) in self.waiters {
-            // silent-ok: the waiter may have given up; the flush outcome is already durable
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the waiter may have given up; the flush outcome is already durable"
+            )]
             let _ = responder.send(result);
         }
     }
@@ -254,7 +257,10 @@ impl PendingCommand {
 
     fn respond(&mut self, result: CommandResult) {
         if let Some(responder) = self.responder.take() {
-            // silent-ok: the caller may have given up waiting for this result
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the caller may have given up waiting for this result"
+            )]
             let _ = responder.send(result);
         }
     }
@@ -278,7 +284,10 @@ async fn flush_batch<F>(
                 outcome: None,
             }),
             Err(error) => {
-                // silent-ok: the caller may have given up waiting for this result
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the caller may have given up waiting for this result"
+                )]
                 let _ = queued.responder.send(Err(error));
             }
         }
@@ -585,7 +594,10 @@ fn release_committed_batch<F>(
         if deliver && command.awaits_observer_delivery {
             waiters.push((responder, Ok(outcome)));
         } else {
-            // silent-ok: the caller may have given up waiting for this result
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the caller may have given up waiting for this result"
+            )]
             let _ = responder.send(Ok(outcome));
         }
     }
