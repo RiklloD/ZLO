@@ -20,13 +20,43 @@ railway_runtime_detected() {
 # and every symlink component that exists, while -- like `readlink -m` --
 # tolerating components that do not exist yet (they are kept verbatim, and a
 # later `..` simply removes them). Fails (non-zero, no output) on an empty
-# argument, an unreadable link, or a symlink loop (more than 40 hops, the
-# Linux MAXSYMLINKS), so callers fail closed exactly as with `readlink -m`.
+# argument, an unreadable link, or a symlink loop, so callers fail closed
+# exactly as with `readlink -m`.
+#
+# Loops are caught by a cap on the TOTAL number of links followed while
+# resolving one path. Linux's MAXSYMLINKS (40) bounds nesting depth, not this
+# total, so GNU resolves finite paths that follow more than 40 links in all;
+# 256 keeps those working while a real loop still fails closed.
+#
+# Newlines are refused outright -- in the argument, in the working directory
+# a relative argument resolves against, and in any symlink target. Command
+# substitution strips trailing newlines, so a link `<mount>/x -> "<mount>\n"`
+# would otherwise canonicalize `<mount>/x/project` as `<mount>/project` (inside
+# the mount) while the real path, `<mount>\n/project`, is outside it. Every
+# substitution below appends a sentinel so a trailing newline is seen, not
+# lost. Nothing legitimate puts a newline in these paths.
+_cp_nl='
+'
 canonicalize_path() {
   [ -n "${1:-}" ] || return 1
   case "$1" in
+    *"$_cp_nl"*)
+      echo "refusing to resolve a path that contains a newline" >&2
+      return 1
+      ;;
     /*) _cp_rest="$1" ;;
-    *) _cp_rest="$(pwd -P)/$1" || return 1 ;;
+    *)
+      _cp_rest="$(pwd -P && printf x)" || return 1
+      _cp_rest="${_cp_rest%x}"
+      _cp_rest="${_cp_rest%"$_cp_nl"}"
+      case "$_cp_rest" in
+        *"$_cp_nl"*)
+          echo "refusing to resolve against a working directory that contains a newline" >&2
+          return 1
+          ;;
+      esac
+      _cp_rest="$_cp_rest/$1"
+      ;;
   esac
   _cp_out=""
   _cp_hops=0
@@ -46,10 +76,24 @@ canonicalize_path() {
     esac
     if [ -L "$_cp_out/$_cp_comp" ]; then
       _cp_hops=$((_cp_hops + 1))
-      [ "$_cp_hops" -le 40 ] || return 1
-      _cp_target="$(readlink "$_cp_out/$_cp_comp")" || return 1
-      [ -n "$_cp_target" ] || return 1
+      if [ "$_cp_hops" -gt 256 ]; then
+        echo "refusing to resolve $1: more than 256 symlinks (a loop?)" >&2
+        return 1
+      fi
+      # `-n` prints the target with no delimiter (GNU, BSD/macOS and
+      # busybox alike -- plain `readlink` does not portably append exactly
+      # one newline: macOS omits it when the target already ends in one), and
+      # the sentinel keeps a trailing newline that is part of the target.
+      _cp_target="$(readlink -n "$_cp_out/$_cp_comp" && printf x)" || return 1
+      _cp_target="${_cp_target%x}"
       case "$_cp_target" in
+        "")
+          return 1
+          ;;
+        *"$_cp_nl"*)
+          echo "refusing to resolve $1: symlink $_cp_out/$_cp_comp has a target containing a newline" >&2
+          return 1
+          ;;
         /*) _cp_out="" ;;
       esac
       _cp_rest="$_cp_target/$_cp_rest"
