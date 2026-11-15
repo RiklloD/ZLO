@@ -6,6 +6,7 @@
 //! fail-closed default, which would leave the door shut in production without
 //! a compile error.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},

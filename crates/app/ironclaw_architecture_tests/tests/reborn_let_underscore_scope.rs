@@ -46,6 +46,7 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_operator",
     "ironclaw_sandbox",
     "ironclaw_secrets",
+    "ironclaw_threads",
     "ironclaw_turn_runner",
     "ironclaw_wasm",
     "ironclaw_wasm_limiter",

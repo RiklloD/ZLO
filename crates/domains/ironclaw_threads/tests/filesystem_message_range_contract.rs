@@ -1,5 +1,6 @@
 //! Focused filesystem range and summary-index contract tests.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},

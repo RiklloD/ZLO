@@ -8,6 +8,7 @@
 //! `crates/kernel/ironclaw_approvals/tests/approval_resolution_contract.rs` and
 //! `crates/kernel/ironclaw_processes/tests/process_journal_store_contract.rs`.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     collections::HashMap,
     sync::{

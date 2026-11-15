@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use chrono::Utc;
 use futures::future::join_all;
 use ironclaw_host_api::ids::{
