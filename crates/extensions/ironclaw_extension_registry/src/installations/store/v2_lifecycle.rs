@@ -216,12 +216,15 @@ impl ExtensionInstallationStore {
         installation_id: &ExtensionInstallationId,
         incarnation_id: &InstallationIncarnationId,
         expected_manifest_ref: &ExtensionManifestRef,
-    ) -> Result<(), ExtensionInstallationError> {
+    ) -> Result<PreparationLeaseToken, ExtensionInstallationError> {
         let path = self.v2_scoped_path(&self.v2_installation_path(installation_id)?)?;
+        let token_installation_id = installation_id.clone();
+        let token_incarnation_id = incarnation_id.clone();
+        let token_manifest_ref = expected_manifest_ref.clone();
         let installation_id = installation_id.clone();
         let incarnation_id = incarnation_id.clone();
         let expected_manifest_ref = expected_manifest_ref.clone();
-        cas_update(
+        let taken_at = cas_update(
             self.scoped_filesystem.as_ref(),
             &ResourceScope::system(),
             &path,
@@ -265,13 +268,20 @@ impl ExtensionInstallationStore {
                         incarnation_id,
                         expected_manifest_ref,
                     ));
-                    record.updated_at = Utc::now();
-                    Ok(CasApply::new(record, ()))
+                    let taken_at = Utc::now();
+                    record.updated_at = taken_at;
+                    Ok(CasApply::new(record, taken_at))
                 }
             },
         )
         .await
-        .map_err(|error| map_extension_state_cas_error(error, "installation"))
+        .map_err(|error| map_extension_state_cas_error(error, "installation"))?;
+        Ok(PreparationLeaseToken {
+            installation_id: token_installation_id,
+            incarnation_id: token_incarnation_id,
+            expected_manifest_ref: token_manifest_ref,
+            taken_at,
+        })
     }
 
     pub(super) async fn finish_v2_preparation(

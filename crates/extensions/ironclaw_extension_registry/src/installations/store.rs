@@ -2,6 +2,7 @@ use super::*;
 
 mod port_impl;
 mod repair;
+use repair::PreparationLeaseToken;
 mod v2_lifecycle;
 mod v2_membership;
 

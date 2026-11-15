@@ -4,6 +4,7 @@ use ironclaw_host_api::{host_port::HostPortCatalog, ids::ExtensionId, path::Virt
 use super::*;
 use crate::ManifestSource;
 use crate::installations::test_support::*;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn load_migrates_pre_resolved_manifest_rows_before_projection() {
@@ -453,7 +454,7 @@ async fn preparation_lease_cleanup_clears_only_the_matching_lease() {
         )
         .await
         .expect("seed pending");
-    store
+    let lease = store
         .take_v2_preparation_lease(&installation_id, &incarnation, &expected_ref)
         .await
         .expect("take preparation lease");
@@ -463,7 +464,10 @@ async fn preparation_lease_cleanup_clears_only_the_matching_lease() {
         Some(ManifestHash::new("hash-other").expect("hash")),
     );
     store
-        .clear_v2_preparation_lease(&installation_id, &incarnation, &different_ref)
+        .clear_v2_preparation_lease(&PreparationLeaseToken {
+            expected_manifest_ref: different_ref,
+            ..lease.clone()
+        })
         .await
         .expect("mismatched cleanup is a no-op");
     assert!(
@@ -476,7 +480,7 @@ async fn preparation_lease_cleanup_clears_only_the_matching_lease() {
     );
 
     store
-        .clear_v2_preparation_lease(&installation_id, &incarnation, &expected_ref)
+        .clear_v2_preparation_lease(&lease)
         .await
         .expect("matching cleanup succeeds");
     assert!(
@@ -772,4 +776,258 @@ async fn reopen_recovers_a_crashed_pending_finalizer_without_publishing() {
         .expect("load recovered aggregate")
         .expect("pending aggregate remains");
     assert_eq!(recovered.incarnation_id(), Some(&incarnation_id));
+}
+
+/// The failed lease release rides as the error's typed source (the backend
+/// reason itself is sanitized by the store).
+fn assert_lease_cleanup_cause(error: &ExtensionInstallationError) {
+    assert!(
+        matches!(
+            error,
+            ExtensionInstallationError::RejectedWithLeaseCleanupPending { .. }
+        ),
+        "{error:?}"
+    );
+    let cause = error
+        .lease_cleanup_error()
+        .expect("the lease cleanup failure must be carried as the cause");
+    assert_eq!(
+        std::error::Error::source(error).map(ToString::to_string),
+        Some(cause.to_string()),
+        "the cleanup failure is the error's source"
+    );
+    assert!(
+        matches!(cause, ExtensionInstallationError::StoreUnavailable { .. }),
+        "{cause:?}"
+    );
+}
+
+/// Poll until `installation_id` is visible again (the in-process lease repair
+/// ran) or the bound elapses.
+async fn wait_until_visible(
+    store: &ExtensionInstallationStore,
+    installation_id: &ExtensionInstallationId,
+) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if store
+            .get_installation(installation_id)
+            .await
+            .expect("load during lease repair")
+            .is_some()
+        {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+async fn store_over(
+    backend: Arc<FaultInjecting<InMemoryBackend>>,
+    root: &str,
+) -> ExtensionInstallationStore {
+    ExtensionInstallationStore::load_at(
+        backend,
+        VirtualPath::new(format!("/system/extensions/.installations/{root}")).expect("valid root"),
+        HostPortCatalog::empty(),
+        capability_provider_contracts(),
+    )
+    .await
+    .expect("filesystem store")
+}
+
+#[tokio::test]
+async fn rejected_finalize_with_failed_lease_release_repairs_the_lease_in_process() {
+    // Writes to the v2 installation row: 1 seed, 2 take lease, 3 the
+    // post-rejection lease release (failed here), 4 the in-process repair.
+    let backend = Arc::new(
+        FaultInjecting::new(InMemoryBackend::new()).with_fault(
+            Fault::on(FilesystemOperation::WriteFile)
+                .path("/v2/installations/")
+                .nth(3)
+                .backend("injected lease release failure"),
+        ),
+    );
+    let store = store_over(Arc::clone(&backend), "finalize-lease-repair").await;
+    let pending = pending_installation("fixture", Some("hash-pending"));
+    let installation_id = pending.installation_id().clone();
+    let incarnation = pending.incarnation_id().cloned().expect("incarnation");
+    let pending_ref = pending.manifest_ref().clone();
+    store
+        .upsert_manifest_and_installation(
+            pending_manifest_record("fixture", Some("hash-pending")),
+            pending,
+        )
+        .await
+        .expect("seed pending");
+
+    let error = store
+        .finalize_preparation(
+            &installation_id,
+            &incarnation,
+            &pending_ref,
+            manifest_record("other", Some("hash-final")),
+        )
+        .await
+        .expect_err("mismatched finalize is rejected");
+
+    // The caller still sees the original rejection, with the failed lease
+    // release carried as the error's source.
+    assert!(
+        matches!(
+            error.rejection(),
+            ExtensionInstallationError::PreparationFinalizationRejected { .. }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        error.rejection().to_string(),
+        "the rejection stays the error the caller reads"
+    );
+    assert_lease_cleanup_cause(&error);
+
+    assert!(
+        wait_until_visible(&store, &installation_id).await,
+        "the in-process repair must clear the stranded lease without a restart"
+    );
+    let retry = store
+        .finalize_preparation(
+            &installation_id,
+            &incarnation,
+            &pending_ref,
+            manifest_record("fixture", Some("hash-final")),
+        )
+        .await
+        .expect("the next finalize proceeds once the lease is repaired");
+    assert_eq!(
+        retry
+            .manifest_ref()
+            .manifest_hash()
+            .map(ManifestHash::as_str),
+        Some("hash-final")
+    );
+}
+
+#[tokio::test]
+async fn failed_checkpoint_with_failed_lease_release_repairs_the_lease_in_process() {
+    // Writes: 1 seed, 2 take lease, 3 checkpoint commit (failed), 4 the
+    // lease release (failed), 5 the in-process repair. The first rule to fire
+    // stops evaluation, so the second rule never counts write 3: its third
+    // match is write 4.
+    let backend = Arc::new(
+        FaultInjecting::new(InMemoryBackend::new())
+            .with_fault(
+                Fault::on(FilesystemOperation::WriteFile)
+                    .path("/v2/installations/")
+                    .nth(3)
+                    .backend("interrupt checkpoint commit"),
+            )
+            .with_fault(
+                Fault::on(FilesystemOperation::WriteFile)
+                    .path("/v2/installations/")
+                    .nth(3)
+                    .backend("injected lease release failure"),
+            ),
+    );
+    let store = store_over(Arc::clone(&backend), "checkpoint-lease-repair").await;
+    let pending = pending_installation("fixture", Some("hash-one"));
+    let installation_id = pending.installation_id().clone();
+    let incarnation = pending.incarnation_id().cloned().expect("incarnation");
+    let expected_ref = pending.manifest_ref().clone();
+    store
+        .upsert_manifest_and_installation(
+            pending_manifest_record("fixture", Some("hash-one")),
+            pending,
+        )
+        .await
+        .expect("seed pending");
+
+    let error = store
+        .checkpoint_preparation(
+            &installation_id,
+            &incarnation,
+            &expected_ref,
+            pending_manifest_record("fixture", Some("hash-two")),
+        )
+        .await
+        .expect_err("the injected checkpoint commit failure surfaces");
+    assert!(
+        matches!(
+            error.rejection(),
+            ExtensionInstallationError::StoreUnavailable { .. }
+        ),
+        "the failed checkpoint commit stays the error: {error:?}"
+    );
+    assert_lease_cleanup_cause(&error);
+
+    assert!(
+        wait_until_visible(&store, &installation_id).await,
+        "the in-process repair must clear the stranded lease without a restart"
+    );
+    store
+        .checkpoint_preparation(
+            &installation_id,
+            &incarnation,
+            &expected_ref,
+            pending_manifest_record("fixture", Some("hash-two")),
+        )
+        .await
+        .expect("the next checkpoint proceeds once the lease is repaired");
+}
+
+#[tokio::test]
+async fn lease_repair_never_clears_a_newer_lease_with_the_same_identity() {
+    let store = installation_store().await;
+    let pending = pending_installation("fixture", Some("hash-one"));
+    let installation_id = pending.installation_id().clone();
+    let incarnation = pending.incarnation_id().cloned().expect("incarnation");
+    let expected_ref = pending.manifest_ref().clone();
+    store
+        .upsert_manifest_and_installation(
+            pending_manifest_record("fixture", Some("hash-one")),
+            pending,
+        )
+        .await
+        .expect("seed pending");
+    let first = store
+        .take_v2_preparation_lease(&installation_id, &incarnation, &expected_ref)
+        .await
+        .expect("take first lease");
+    store
+        .clear_v2_preparation_lease(&first)
+        .await
+        .expect("release first lease");
+    let second = store
+        .take_v2_preparation_lease(&installation_id, &incarnation, &expected_ref)
+        .await
+        .expect("take a second lease with the same incarnation and manifest");
+
+    // A late repair for the first lease must leave the second one alone.
+    store
+        .clear_v2_preparation_lease(&first)
+        .await
+        .expect("stale release is a no-op");
+    assert!(
+        store
+            .get_installation(&installation_id)
+            .await
+            .expect("load leased installation")
+            .is_none(),
+        "a stale release must not clear a newer lease"
+    );
+    store
+        .clear_v2_preparation_lease(&second)
+        .await
+        .expect("matching release");
+    assert!(
+        store
+            .get_installation(&installation_id)
+            .await
+            .expect("load released installation")
+            .is_some()
+    );
 }
