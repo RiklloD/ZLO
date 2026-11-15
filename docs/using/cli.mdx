@@ -216,7 +216,7 @@ See [Inference Providers](/capabilities/llm-providers) for the full catalog.
 
 | Command | What it does |
 | --- | --- |
-| `zlo memory reembed` | Give every saved memory chunk a vector for the configured `[embeddings]` model, so documents written before embeddings were set up, after a failed embedding call, or under a previous model become searchable by meaning. `--dry-run` only counts the backlog; `--limit <n>` caps one run; `--json` prints the report |
+| `zlo memory reembed` | Give every saved memory chunk a vector for the configured `[embeddings]` model, so documents written before embeddings were set up, after a failed embedding call, or under a previous model become searchable by meaning. `--dry-run` only counts the backlog; `--limit <n>` caps how many chunks one run sends to the provider (retries count); `--json` prints the report |
 
 The same backfill also runs on its own in the background a minute after `zlo serve` starts, at a gentle pace, whenever there is a backlog. Progress is saved as it goes, so an interrupted run picks up where it stopped, and a finished one does nothing. Vectors from a previous model are kept (just not used), so switching back does not need a new backfill.
 

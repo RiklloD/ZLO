@@ -36,7 +36,8 @@ struct MemoryReembedCommand {
     #[arg(long)]
     dry_run: bool,
 
-    /// Embed at most this many chunks in this run (the rest resume next run).
+    /// Send at most this many chunks to the provider in this run, retries
+    /// included (the rest resume next run).
     #[arg(long)]
     limit: Option<u64>,
 
@@ -104,6 +105,7 @@ impl MemoryCommand {
                         "superseded": report.superseded,
                         "remaining": report.remaining,
                         "provider_calls": report.provider_calls,
+                        "dispatched": report.dispatched,
                         "resumed": report.resumed,
                     })
                 );

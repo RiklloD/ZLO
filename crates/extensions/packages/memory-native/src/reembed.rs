@@ -53,7 +53,9 @@ use crate::repo::{
 pub struct MemoryReembedOptions {
     /// Count the backlog only: no provider call, no write.
     pub dry_run: bool,
-    /// Most chunks one run embeds; `None` = until the backlog is done.
+    /// Most chunk inputs one run sends to the provider, charged at dispatch:
+    /// every input of every call, retries and inputs whose attach is later
+    /// superseded included. `None` = until the backlog is done.
     pub max_chunks: Option<u64>,
     /// Least time between the starts of two provider calls.
     pub min_call_interval: Duration,
@@ -65,6 +67,8 @@ pub struct MemoryReembedOptions {
     pub max_transient_retries: u32,
     /// Longest one provider call may take (a timeout is transient).
     pub call_timeout: Duration,
+    /// Most provider calls one run makes, retries included; `None` = no cap.
+    pub max_provider_calls: Option<u64>,
     /// Background only: wait this long after boot before the first scan.
     pub start_delay: Duration,
     /// Background only: pause between runs while a backlog remains.
@@ -78,6 +82,7 @@ impl MemoryReembedOptions {
         Self {
             dry_run: false,
             max_chunks: Some(2_000),
+            max_provider_calls: Some(64),
             min_call_interval: Duration::from_millis(500),
             initial_backoff: Duration::from_secs(2),
             max_backoff: Duration::from_secs(300),
@@ -94,6 +99,7 @@ impl MemoryReembedOptions {
         Self {
             dry_run,
             max_chunks,
+            max_provider_calls: None,
             min_call_interval: Duration::from_millis(100),
             initial_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
@@ -163,6 +169,9 @@ pub struct MemoryReembedReport {
     pub remaining: u64,
     /// Embedding calls made, retries included.
     pub provider_calls: u64,
+    /// Inputs sent to the provider, retries and later-superseded ones
+    /// included: what the run's `max_chunks` budget is charged.
+    pub dispatched: u64,
     /// The run continued an earlier, unfinished pass from its durable cursor.
     pub resumed: bool,
     pub outcome: MemoryReembedOutcome,
@@ -191,6 +200,7 @@ struct RunState<'a> {
     batch: usize,
     last_call: Option<Instant>,
     provider_calls: u64,
+    dispatched: u64,
     embedded: u64,
     superseded: u64,
     /// Pending chunks dealt with (embedded, superseded) this run.
@@ -201,10 +211,20 @@ struct RunState<'a> {
 }
 
 impl RunState<'_> {
+    /// Inputs the run may still dispatch.
     fn budget_left(&self) -> u64 {
         self.options
             .max_chunks
-            .map_or(u64::MAX, |max| max.saturating_sub(self.embedded))
+            .map_or(u64::MAX, |max| max.saturating_sub(self.dispatched))
+    }
+
+    /// Whether one more call of `inputs` inputs fits both budgets.
+    fn can_dispatch(&self, inputs: usize) -> bool {
+        let calls_ok = self
+            .options
+            .max_provider_calls
+            .is_none_or(|max| self.provider_calls < max);
+        calls_ok && self.budget_left() >= inputs as u64
     }
 
     fn progress(&self, embedded: u64) -> MemoryReembedProgress {
@@ -214,6 +234,13 @@ impl RunState<'_> {
             backlog: self.backlog.saturating_sub(self.handled),
         }
     }
+}
+
+/// Why a batch was not embedded.
+enum BatchStop {
+    /// The run's input or call budget is spent.
+    Budget,
+    Provider(MemoryEmbeddingError),
 }
 
 type ProgressSink<'a> = &'a mut (dyn FnMut(MemoryReembedProgress) + Send);
@@ -273,6 +300,7 @@ impl MemoryReembedJob {
             fingerprint,
             last_call: None,
             provider_calls: 0,
+            dispatched: 0,
             embedded: 0,
             superseded: 0,
             handled: 0,
@@ -308,6 +336,7 @@ impl MemoryReembedJob {
             superseded: state.superseded,
             remaining: backlog.saturating_sub(state.handled),
             provider_calls: state.provider_calls,
+            dispatched: state.dispatched,
             resumed,
             outcome,
         })
@@ -394,7 +423,8 @@ impl MemoryReembedJob {
                 .collect();
             let vectors = match self.embed_with_backoff(scope, inputs, state).await {
                 Ok(vectors) => vectors,
-                Err(error) => {
+                Err(BatchStop::Budget) => return Ok(Some(MemoryReembedOutcome::BudgetExhausted)),
+                Err(BatchStop::Provider(error)) => {
                     tracing::debug!(%error, "memory re-embed stopped on a provider failure");
                     return Ok(Some(if error.is_transient() {
                         MemoryReembedOutcome::ProviderUnavailable
@@ -434,21 +464,29 @@ impl MemoryReembedJob {
     }
 
     /// One shape-checked provider call with pacing, a timeout, and
-    /// exponential backoff on transient failures.
+    /// exponential backoff on transient failures. Each attempt (retries
+    /// included) is charged to the run's input and call budgets before it is
+    /// sent; when they are spent the batch stops — as `Budget` on its first
+    /// attempt, as the provider failure it was retrying otherwise.
     async fn embed_with_backoff(
         &self,
         scope: &MemoryDocumentScope,
         inputs: Vec<String>,
         state: &mut RunState<'_>,
-    ) -> Result<Vec<Vec<f32>>, MemoryEmbeddingError> {
+    ) -> Result<Vec<Vec<f32>>, BatchStop> {
         let mut backoff = state.options.initial_backoff;
         let mut retries = 0_u32;
+        let mut last_error: Option<MemoryEmbeddingError> = None;
         loop {
+            if !state.can_dispatch(inputs.len()) {
+                return Err(last_error.map_or(BatchStop::Budget, BatchStop::Provider));
+            }
             if let Some(last) = state.last_call {
                 tokio::time::sleep_until(last + state.options.min_call_interval).await;
             }
             state.last_call = Some(Instant::now());
             state.provider_calls += 1;
+            state.dispatched += inputs.len() as u64;
             let call = embed_checked_batch(
                 self.embedder.as_ref(),
                 scope,
@@ -461,10 +499,10 @@ impl MemoryReembedJob {
                 Err(_) => MemoryEmbeddingError::transient("re-embed call timed out", None),
             };
             let MemoryEmbeddingRetry::Transient { retry_after } = error.retry else {
-                return Err(error);
+                return Err(BatchStop::Provider(error));
             };
             if retries >= state.options.max_transient_retries {
-                return Err(error);
+                return Err(BatchStop::Provider(error));
             }
             retries += 1;
             let wait = retry_after
@@ -474,6 +512,7 @@ impl MemoryReembedJob {
             tracing::debug!(%error, retries, ?wait, "memory re-embed backing off");
             tokio::time::sleep(wait).await;
             backoff = backoff.saturating_mul(2).min(state.options.max_backoff);
+            last_error = Some(error);
         }
     }
 

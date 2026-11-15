@@ -205,7 +205,6 @@ impl ScriptedEmbedder {
     }
 
     /// Every input the run handed the provider, retries included.
-    #[allow(dead_code)]
     fn dispatched_inputs(&self) -> usize {
         self.calls().iter().map(Vec::len).sum()
     }
@@ -465,10 +464,14 @@ async fn reembed_survives_partial_provider_failure(fs: Arc<dyn RootFilesystem>) 
     seed_unembedded(&repo).await;
 
     // A 429 on the first call is retried after a backoff; the batch lands.
+    // The retry is charged too: 2 inputs sent twice = the budget of 4.
     let flaky = Arc::new(ScriptedEmbedder::new("model-a:2", 2).failing(0, CallFault::Transient));
-    let (report, _) = run_job(&fs, &flaky, &fast(Some(2))).await;
+    let (report, _) = run_job(&fs, &flaky, &fast(Some(4))).await;
     assert_eq!(report.outcome, MemoryReembedOutcome::BudgetExhausted);
-    assert_eq!((report.embedded, report.provider_calls), (2, 2));
+    assert_eq!(
+        (report.embedded, report.provider_calls, report.dispatched),
+        (2, 2, 4)
+    );
 
     // Permanent failure on the next call: stop, keep what landed.
     let rejecting =
@@ -680,6 +683,85 @@ async fn reembed_never_overwrites_a_chunk_rewritten_mid_batch(fs: Arc<dyn RootFi
     );
 }
 
+/// Every provider call rewrites the documents, so every attach is
+/// superseded. The input budget is charged at dispatch, so the run still
+/// stops after sending `max_chunks` inputs; and a separate call cap bounds
+/// retries.
+async fn reembed_budget_charges_inputs_at_dispatch(fs: Arc<dyn RootFilesystem>) {
+    let repo = Arc::new(Repo::new(Arc::clone(&fs)));
+    seed_unembedded(&repo).await;
+    let rewriter = Arc::clone(&repo);
+    let conflicting = Arc::new(ScriptedEmbedder::new("model-a:2", 1).during_call(Box::new(
+        move |number| {
+            let repo = Arc::clone(&rewriter);
+            Box::pin(async move {
+                let other = MemoryDocumentPath::new_with_agent(
+                    "tenant-a",
+                    "bob",
+                    Some("agent-1"),
+                    None,
+                    "c.md",
+                )
+                .unwrap();
+                let suffix = format!(" v{number}");
+                for (path, chunks) in [
+                    (doc("notes/a.md"), vec!["alpha one", "beta two"]),
+                    (doc("notes/b.md"), vec!["beta three"]),
+                    (other, vec!["alpha four", "beta five"]),
+                ] {
+                    let chunks: Vec<String> = chunks
+                        .iter()
+                        .map(|chunk| format!("{chunk}{suffix}"))
+                        .collect();
+                    let chunks: Vec<&str> = chunks.iter().map(String::as_str).collect();
+                    write_text_only(&repo, &path, &chunks).await;
+                }
+            })
+        },
+    )));
+    let (report, _) = run_job(&fs, &conflicting, &fast(Some(2))).await;
+    assert_eq!(report.outcome, MemoryReembedOutcome::BudgetExhausted);
+    assert_eq!((report.embedded, report.superseded), (0, 2));
+    assert_eq!(report.dispatched, 2);
+    assert_eq!(
+        conflicting.dispatched_inputs(),
+        2,
+        "superseded inputs are charged: the provider saw at most the budget"
+    );
+
+    // The call cap bounds a failing batch's retries.
+    let down = Arc::new(
+        (0..10).fold(ScriptedEmbedder::new("model-a:2", 8), |embedder, call| {
+            embedder.failing(call, CallFault::Transient)
+        }),
+    );
+    let capped = MemoryReembedOptions {
+        max_transient_retries: 9,
+        max_provider_calls: Some(3),
+        ..fast(None)
+    };
+    let (unavailable, _) = run_job(&fs, &down, &capped).await;
+    assert_eq!(
+        unavailable.outcome,
+        MemoryReembedOutcome::ProviderUnavailable
+    );
+    assert_eq!(
+        unavailable.provider_calls, 3,
+        "retries count against the call cap"
+    );
+    assert_eq!(down.calls().len(), 3);
+
+    // Retried inputs are charged too: one 8-input batch retried once is 16.
+    let flaky = Arc::new(ScriptedEmbedder::new("model-a:2", 8).failing(0, CallFault::Transient));
+    let (retried, _) = run_job(&fs, &flaky, &fast(Some(9))).await;
+    assert_eq!(retried.dispatched, flaky.dispatched_inputs() as u64);
+    assert!(
+        flaky.dispatched_inputs() <= 9,
+        "a retry is charged before it is sent: {}",
+        flaky.dispatched_inputs()
+    );
+}
+
 // -- Backends -----------------------------------------------------------------
 
 enum Guard {
@@ -854,6 +936,7 @@ backend_suite!(in_memory:
     reembed_after_a_model_switch_keeps_the_old_space,
     reembed_background_task_backfills_and_reports,
     reembed_never_overwrites_a_chunk_rewritten_mid_batch,
+    reembed_budget_charges_inputs_at_dispatch,
 );
 backend_suite!(libsql:
     only_the_query_space_ranks_in_cosine_order,
@@ -864,6 +947,7 @@ backend_suite!(libsql:
     reembed_after_a_model_switch_keeps_the_old_space,
     reembed_background_task_backfills_and_reports,
     reembed_never_overwrites_a_chunk_rewritten_mid_batch,
+    reembed_budget_charges_inputs_at_dispatch,
 );
 backend_suite!(postgres:
     only_the_query_space_ranks_in_cosine_order,
@@ -874,4 +958,5 @@ backend_suite!(postgres:
     reembed_after_a_model_switch_keeps_the_old_space,
     reembed_background_task_backfills_and_reports,
     reembed_never_overwrites_a_chunk_rewritten_mid_batch,
+    reembed_budget_charges_inputs_at_dispatch,
 );
