@@ -8,6 +8,7 @@
 //!   contract the SPA's `exchangeLoginTicket` already uses)
 //! - wrong token → 401, no ticket minted; a redeemed ticket is single-use
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use axum::body::Body;

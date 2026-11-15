@@ -2,6 +2,7 @@
 //! authenticated caller and the expected descriptor ids and inputs. A
 //! recording surface stands in for product; the router is the real one.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

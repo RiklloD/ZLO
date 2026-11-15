@@ -20,6 +20,7 @@
 //! stamp) would break exactly the path users hit when they sign in
 //! with Google.
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "test-support")]
 
 use std::sync::{Arc, Mutex};

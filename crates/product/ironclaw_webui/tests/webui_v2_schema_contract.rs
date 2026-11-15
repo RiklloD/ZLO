@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use chrono::Utc;
 use ironclaw_assistant::{
     RebornCancelRunResponse, RebornGetRunStateResponse, RebornSubmitTurnResponse,

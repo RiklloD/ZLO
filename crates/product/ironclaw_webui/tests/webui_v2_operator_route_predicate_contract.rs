@@ -1,5 +1,6 @@
 //! Contract tests for operator-wide WebUI route predicates.
 
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_webui::webui_v2::{
     WEBUI_V2_ROUTE_CREATE_THREAD, WEBUI_V2_ROUTE_IMPORT_EXTENSION, WEBUI_V2_ROUTE_INSPECTOR_PROMPT,
     WEBUI_V2_ROUTE_INSPECTOR_SNAPSHOT, WEBUI_V2_ROUTE_INSPECTOR_TOOL,

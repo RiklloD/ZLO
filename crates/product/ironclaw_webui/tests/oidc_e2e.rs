@@ -10,6 +10,7 @@
 //! kid-miss force-refresh) would not show up in the helper tests but
 //! does show up here.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -119,6 +120,10 @@ async fn spawn_jwks_server(state: JwksState) -> (String, tokio::task::JoinHandle
         .expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let handle = tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test mock server; a serve failure surfaces as the client's connection error"
+        )]
         let _ = axum::serve(listener, app).await;
     });
     (format!("http://{addr}/jwks"), handle)

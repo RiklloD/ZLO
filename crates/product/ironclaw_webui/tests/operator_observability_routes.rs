@@ -7,6 +7,7 @@
 //! metrics registry is `ironclaw_operator`'s, both with their own tests; what
 //! only this tier proves is the HTTP contract of the two routes.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

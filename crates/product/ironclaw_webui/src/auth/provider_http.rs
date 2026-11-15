@@ -183,14 +183,26 @@ mod tests {
             if let Ok((mut sock, _)) = listener.accept().await {
                 // Drain the request so the client's write completes.
                 let mut buf = [0u8; 1024];
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the test asserts on the client's error; this half only shapes the broken response"
+                )]
                 let _ = sock.read(&mut buf).await;
                 // Advertise 1000 bytes (well under the cap, so the
                 // Content-Length early-bail does NOT fire) but send only
                 // 10, then drop the connection. The client reads the
                 // first chunk, then errors on the premature EOF.
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the test asserts on the client's error; this half only shapes the broken response"
+                )]
                 let _ = sock
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nonly-ten!!")
                     .await;
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the test asserts on the client's error; this half only shapes the broken response"
+                )]
                 let _ = sock.flush().await;
                 // Socket dropped here without the remaining 990 bytes.
             }

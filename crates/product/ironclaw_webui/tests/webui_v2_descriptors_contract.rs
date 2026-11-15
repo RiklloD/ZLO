@@ -9,6 +9,7 @@
 //! mode, audit class, or allowed effect path is a behavior change the
 //! host cannot enforce silently.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroU64};
 

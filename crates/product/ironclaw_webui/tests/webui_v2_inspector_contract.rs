@@ -1,5 +1,6 @@
 //! Caller-level contract tests for the operator diagnostic surface.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

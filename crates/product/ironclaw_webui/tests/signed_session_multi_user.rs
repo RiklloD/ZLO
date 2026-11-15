@@ -12,6 +12,7 @@
 //! collapsed both logins onto one user (or onto the operator) would fail
 //! here.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

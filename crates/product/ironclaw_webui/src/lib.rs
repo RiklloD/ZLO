@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 #![forbid(unsafe_code)]
 
 //! Host-owned listener binding + serve loop for the Reborn WebChat v2
@@ -276,6 +277,10 @@ pub async fn serve_webui_v2(opts: RebornWebuiServeOptions) -> Result<(), RebornW
     if let Some(tx) = bound_addr_tx {
         // Receiver may have been dropped (test exited early). Ignore
         // — that's a test bug, not a serve-loop concern.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the bound-address receiver may have been dropped by a test that exited early; the serve loop does not depend on it"
+        )]
         let _ = tx.send(bound.local_addr());
     }
     serve_bound_webui_v2(bound, router, shutdown).await
@@ -297,6 +302,7 @@ pub async fn serve_bound_webui_v2(
         // If the host drops the sender without firing, treat that
         // as "shutdown requested" so the serve loop returns
         // cleanly rather than running forever.
+        #[expect(clippy::let_underscore_must_use, reason = "a dropped shutdown sender is treated as shutdown requested, same as a fired one")]
         let _ = shutdown.await;
         tracing::info!(
             target: "ironclaw::reborn::webui_ingress",

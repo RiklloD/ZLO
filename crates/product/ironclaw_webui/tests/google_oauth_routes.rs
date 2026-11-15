@@ -12,6 +12,7 @@
 //! Gated on `test-support` because the test wires `EmailUserDirectory`, which
 //! only exists behind that feature. Matches `session_round_trip.rs`.
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "test-support")]
 
 use std::sync::Arc;

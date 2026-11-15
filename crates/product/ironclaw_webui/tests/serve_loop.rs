@@ -9,6 +9,7 @@
 //! serve-loop + graceful-shutdown behaviour — by handing the ingress a
 //! trivial axum `Router`.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::net::SocketAddr;
 use std::time::Duration;
 

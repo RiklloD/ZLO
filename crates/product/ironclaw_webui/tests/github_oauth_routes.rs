@@ -16,6 +16,7 @@
 //! `EmailUserDirectory` plus the test-only `GitHubProvider::with_endpoints`
 //! constructor, which only exist behind that feature.
 
+#![deny(clippy::let_underscore_must_use)]
 #![cfg(feature = "test-support")]
 
 use std::collections::HashMap;

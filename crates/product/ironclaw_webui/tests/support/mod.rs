@@ -39,6 +39,10 @@ pub async fn spawn_router(router: axum::Router) -> (SocketAddr, AbortOnDrop) {
         .expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let handle = tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test mock server; a serve failure surfaces as the client's connection error"
+        )]
         let _ = axum::serve(listener, router).await;
     });
     (addr, AbortOnDrop(handle))
