@@ -16,6 +16,7 @@
 //! a list, not a wildcard, so a *new* inline reason fails here even though the
 //! two existing ones are grandfathered.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::path::{Path, PathBuf};
 
 fn src_dir() -> PathBuf {

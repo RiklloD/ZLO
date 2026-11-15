@@ -1,4 +1,6 @@
 // arch-exempt: large_file, whole-handshake catalog regression reuses the existing mediated HTTP fixture, plan #4088
+
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

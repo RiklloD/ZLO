@@ -47,6 +47,7 @@
 //!   and the running-total check read the *same* constants from `discovery`, so
 //!   the two enforcement points cannot drift apart.
 
+#![deny(clippy::let_underscore_must_use)]
 mod client;
 mod contract;
 mod diagnostics;

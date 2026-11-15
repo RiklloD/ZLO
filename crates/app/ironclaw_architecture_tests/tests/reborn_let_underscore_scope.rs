@@ -38,6 +38,7 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_hooks",
     "ironclaw_host_runtime",
     "ironclaw_identity",
+    "ironclaw_mcp",
     "ironclaw_network",
     "ironclaw_notifications",
     "ironclaw_openai_compat",
