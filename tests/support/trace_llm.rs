@@ -279,6 +279,10 @@ impl LlmTrace {
 ///    "warn but continue" contract that pre-existing tests rely on.
 pub struct TraceLlm {
     model_name: String,
+    /// Vendor id this provider reports through `LlmProvider::provider_id`.
+    /// `None` keeps the trait default (`"unknown"`), which every existing
+    /// trace consumer was built against.
+    provider_id: Option<String>,
     steps: Mutex<std::collections::VecDeque<TraceStep>>,
     /// Total non-error calls served, regardless of which step they returned.
     calls_served: AtomicUsize,
@@ -516,12 +520,21 @@ impl TraceLlm {
             trace.turns.into_iter().flat_map(|t| t.steps).collect();
         Self {
             model_name: trace.model_name,
+            provider_id: None,
             steps: Mutex::new(steps),
             calls_served: AtomicUsize::new(0),
             streaming_calls: AtomicUsize::new(0),
             hint_mismatches: AtomicUsize::new(0),
             captured_calls: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Report `provider_id` as this provider's vendor id, the way a real
+    /// provider adapter names itself (operator metrics label provider
+    /// requests with it).
+    pub fn with_provider_id(mut self, provider_id: impl Into<String>) -> Self {
+        self.provider_id = Some(provider_id.into());
+        self
     }
 
     /// Load from a JSON file and create the provider.
@@ -905,6 +918,13 @@ impl TraceLlm {
 
 #[async_trait]
 impl LlmProvider for TraceLlm {
+    fn provider_id(&self) -> String {
+        match &self.provider_id {
+            Some(provider_id) => provider_id.clone(),
+            None => "unknown".to_string(),
+        }
+    }
+
     fn model_name(&self) -> &str {
         &self.model_name
     }
@@ -930,6 +950,8 @@ impl LlmProvider for TraceLlm {
                     content,
                     input_tokens,
                     output_tokens,
+                    cache_read_input_tokens,
+                    cache_creation_input_tokens,
                 } => {
                     return Ok(CompletionResponse {
                         content,
@@ -937,8 +959,8 @@ impl LlmProvider for TraceLlm {
                         output_tokens,
                         finish_reason: FinishReason::Stop,
                         reasoning: None,
-                        cache_read_input_tokens: 0,
-                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens,
+                        cache_creation_input_tokens,
                     });
                 }
                 TraceResponse::ToolCalls { .. } => {
@@ -982,14 +1004,16 @@ impl LlmProvider for TraceLlm {
                 content,
                 input_tokens,
                 output_tokens,
+                cache_read_input_tokens,
+                cache_creation_input_tokens,
             } => Ok(ToolCompletionResponse {
                 content: Some(content),
                 tool_calls: Vec::new(),
                 input_tokens,
                 output_tokens,
                 finish_reason: FinishReason::Stop,
-                cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
+                cache_read_input_tokens,
+                cache_creation_input_tokens,
                 reasoning: None,
                 reasoning_details: None,
             }),
@@ -997,6 +1021,8 @@ impl LlmProvider for TraceLlm {
                 tool_calls,
                 input_tokens,
                 output_tokens,
+                cache_read_input_tokens,
+                cache_creation_input_tokens,
             } => {
                 let calls: Vec<ToolCall> = tool_calls
                     .into_iter()
@@ -1015,8 +1041,8 @@ impl LlmProvider for TraceLlm {
                     input_tokens,
                     output_tokens,
                     finish_reason: FinishReason::ToolUse,
-                    cache_read_input_tokens: 0,
-                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens,
+                    cache_creation_input_tokens,
                     reasoning: None,
                     reasoning_details: None,
                 })
@@ -1083,6 +1109,8 @@ mod prompt_cache_tests {
                                 content: "ok".to_string(),
                                 input_tokens: 1,
                                 output_tokens: 1,
+                                cache_read_input_tokens: 0,
+                                cache_creation_input_tokens: 0,
                             },
                             expected_tool_results: Vec::new(),
                         })

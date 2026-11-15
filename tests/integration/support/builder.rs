@@ -159,6 +159,8 @@ pub struct RebornIntegrationHarnessBuilder {
     /// Mutually exclusive raw-provider behavior for this one-thread harness.
     /// Each model-selecting builder method replaces the previous mode.
     model_mode: ThreadModelMode,
+    /// Vendor id the scripted provider reports (`None`: the trait default).
+    scripted_provider_id: Option<String>,
     /// Wire production's RootFilesystem-backed durable loop milestone sink.
     durable_milestone_event_store: bool,
     operator_metrics: Option<Arc<ironclaw_operator::OperatorMetrics>>,
@@ -291,6 +293,13 @@ impl RebornIntegrationHarnessBuilder {
     /// model response. The real decorator chain still wraps this provider.
     pub fn with_model_call_delay_for_test(mut self, delay: Duration) -> Self {
         self.model_mode = ThreadModelMode::Delayed(delay);
+        self
+    }
+
+    /// Have the scripted vendor report `provider_id` as its provider id. See
+    /// [`RebornThreadBuilder::with_scripted_provider_id`](super::group::RebornThreadBuilder::with_scripted_provider_id).
+    pub fn with_scripted_provider_id(mut self, provider_id: impl Into<String>) -> Self {
+        self.scripted_provider_id = Some(provider_id.into());
         self
     }
 
@@ -822,13 +831,15 @@ impl RebornIntegrationHarnessBuilder {
         let group: RebornIntegrationGroup = group_builder
             .build_with_capability(group_capability)
             .await?;
-        group
+        let mut thread = group
             .thread(self.conversation_id)
             .script(self.replies)
             .model_mode(self.model_mode)
-            .record_model_calls_for_test(self.record_model_calls)
-            .build()
-            .await
+            .record_model_calls_for_test(self.record_model_calls);
+        if let Some(provider_id) = self.scripted_provider_id {
+            thread = thread.with_scripted_provider_id(provider_id);
+        }
+        thread.build().await
     }
 }
 
@@ -932,6 +943,7 @@ impl RebornIntegrationHarness {
             safety_context: None,
             shell_mode: ShellMode::default(),
             model_mode: ThreadModelMode::Normal,
+            scripted_provider_id: None,
             turn_event_sink: false,
             durable_milestone_event_store: false,
             operator_metrics: None,

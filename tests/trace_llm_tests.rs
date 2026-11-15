@@ -25,6 +25,8 @@ async fn trace_llm_resolves_exact_result_binding_through_provider_call() {
                 }],
                 input_tokens: 1,
                 output_tokens: 1,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
             expected_tool_results: Vec::new(),
         }],

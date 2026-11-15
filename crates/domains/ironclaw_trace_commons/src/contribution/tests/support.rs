@@ -200,6 +200,8 @@ pub(super) fn sample_trace() -> TraceFile {
                     }],
                     input_tokens: 10,
                     output_tokens: 3,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
                 },
                 expected_tool_results: Vec::new(),
             },

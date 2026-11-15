@@ -11,8 +11,9 @@
 //! run families are folded from committed turn lifecycle events, the
 //! model-call and capability families from the durable runtime events, and
 //! the LLM families from the provider responses — a crate-tier test of any
-//! one observer cannot prove the turn actually reaches it. (Scripted replies
-//! report zero tokens, so the token family is pinned at the decorator tier.)
+//! one observer cannot prove the turn actually reaches it. Scripted replies
+//! report zero tokens unless they declare usage (`with_usage`); the token
+//! scenarios here declare it so the token family moves by exact amounts.
 
 #[allow(dead_code)]
 #[path = "support/mod.rs"]
@@ -33,11 +34,17 @@ use ironclaw_webui::webui_v2::WebUiV2Capabilities;
 use ironclaw_webui::{OPERATOR_METRICS_PATH, operator_metrics_route_mount};
 use reborn_support::builder::RebornIntegrationHarness;
 use reborn_support::group::RebornIntegrationGroup;
-use reborn_support::reply::RebornScriptedReply;
+use reborn_support::reply::{RebornScriptedReply, ScriptedTokenUsage};
+use reborn_support::scripted_provider::{
+    SCRIPTED_FALLBACK_MODEL_NAME, SCRIPTED_MODEL_NAME, scripted_trace_llm,
+};
 use serde_json::json;
 use tower::ServiceExt;
 
 const HTTP_TOOL_URL: &str = "https://api.example.test/v1/items";
+/// The vendor id the scripted provider reports in the token scenarios, so
+/// the provider label is the provider's own, not the `unknown` fold.
+const SCRIPTED_VENDOR: &str = "scripted-vendor";
 
 /// Read the scrape through the real route; the operator capability stands in
 /// for the bearer middleware (its 401/403 gate is pinned at the WebUI crate
@@ -72,6 +79,31 @@ fn sample(scrape: &str, series: &str) -> u64 {
         .unwrap_or(0)
 }
 
+fn tokens(scrape: &str, provider: &str, model: &str, kind: &str) -> u64 {
+    sample(
+        scrape,
+        &format!(
+            "ironclaw_llm_tokens_total{{provider=\"{provider}\",model=\"{model}\",kind=\"{kind}\"}}"
+        ),
+    )
+}
+
+/// Every `ironclaw_llm_tokens_total` sample line, for "nothing else moved"
+/// assertions.
+fn token_lines(scrape: &str) -> Vec<&str> {
+    scrape
+        .lines()
+        .filter(|line| line.starts_with("ironclaw_llm_tokens_total{"))
+        .collect()
+}
+
+fn total_tokens(scrape: &str) -> u64 {
+    token_lines(scrape)
+        .iter()
+        .filter_map(|line| line.rsplit(' ').next()?.parse::<u64>().ok())
+        .sum()
+}
+
 #[test]
 fn a_tool_call_turn_moves_the_operator_scrape() {
     // The HTTP tool turn needs the same stack headroom `tool_call.rs` gives it.
@@ -101,12 +133,16 @@ async fn a_tool_call_turn_moves_the_operator_scrape_impl() {
     let h = RebornIntegrationHarness::test_default()
         .with_durable_capability_io_builtin_http_tools()
         .with_operator_metrics_for_test(Arc::clone(&metrics))
+        .with_scripted_provider_id(SCRIPTED_VENDOR)
         .script([
             // First attempt fails argument validation (no `url`): a
             // model-visible `invalid_input` failure the model recovers from.
-            RebornScriptedReply::tool_call("builtin.http", json!({})),
-            RebornScriptedReply::tool_call("builtin.http", json!({"url": HTTP_TOOL_URL})),
-            RebornScriptedReply::text("fetched"),
+            RebornScriptedReply::tool_call("builtin.http", json!({}))
+                .with_usage(ScriptedTokenUsage::new(100, 20)),
+            RebornScriptedReply::tool_call("builtin.http", json!({"url": HTTP_TOOL_URL}))
+                .with_usage(ScriptedTokenUsage::new(140, 22).with_cache(90, 0)),
+            RebornScriptedReply::text("fetched")
+                .with_usage(ScriptedTokenUsage::new(180, 9).with_cache(120, 0)),
         ])
         .build()
         .await
@@ -183,6 +219,31 @@ async fn a_tool_call_turn_moves_the_operator_scrape_impl() {
     assert!(
         llm_requests >= 2,
         "provider requests counted by provider/model:\n{after}"
+    );
+    // Every model call of the turn reports its own usage, and the token
+    // family is their exact sum under the serving provider/model — each
+    // call counted once, the cache kinds as reported.
+    assert_eq!(
+        sample(
+            &after,
+            &format!(
+                "ironclaw_llm_requests_total{{provider=\"{SCRIPTED_VENDOR}\",model=\"{SCRIPTED_MODEL_NAME}\",outcome=\"success\"}}"
+            )
+        ),
+        3,
+        "three provider requests:\n{after}"
+    );
+    for (kind, expected) in [("input", 420), ("output", 51), ("cache_read", 210)] {
+        assert_eq!(
+            tokens(&after, SCRIPTED_VENDOR, SCRIPTED_MODEL_NAME, kind),
+            expected,
+            "{kind} tokens are the sum over the turn's three model calls:\n{after}"
+        );
+    }
+    assert_eq!(
+        token_lines(&after).len(),
+        3,
+        "no cache_write series when no call reported one, and no other provider/model:\n{after}"
     );
     assert_eq!(
         sample(&after, "ironclaw_approval_gates_opened_total"),
@@ -290,5 +351,257 @@ async fn an_approved_gate_moves_the_opened_and_resolved_counters() {
         ),
         0,
         "{after}"
+    );
+}
+
+/// A plain chat turn whose one model call declares usage moves each token
+/// kind by exactly that amount, labelled with the provider that served it and
+/// the model it served — and moves nothing else in the token family.
+#[tokio::test]
+async fn a_chat_turn_moves_the_token_counters_by_its_declared_usage() {
+    let metrics = Arc::new(OperatorMetrics::new());
+    let h = RebornIntegrationHarness::test_default()
+        .with_operator_metrics_for_test(Arc::clone(&metrics))
+        .with_scripted_provider_id(SCRIPTED_VENDOR)
+        .script([RebornScriptedReply::text("hello back")
+            .with_usage(ScriptedTokenUsage::new(120, 30).with_cache(80, 10))])
+        .build()
+        .await
+        .expect("harness builds");
+    h.submit_turn("hello").await.expect("turn completes");
+    h.assert_reply_contains("hello back")
+        .await
+        .expect("reply finalized");
+
+    let after = scrape(&metrics).await;
+    for (kind, expected) in [
+        ("input", 120),
+        ("output", 30),
+        ("cache_read", 80),
+        ("cache_write", 10),
+    ] {
+        assert_eq!(
+            tokens(&after, SCRIPTED_VENDOR, SCRIPTED_MODEL_NAME, kind),
+            expected,
+            "{kind} tokens:\n{after}"
+        );
+    }
+    assert_eq!(total_tokens(&after), 240, "nothing else counted:\n{after}");
+}
+
+/// Usage rides only on a provider *response*: `LlmError` has no usage field,
+/// so a call that fails at the provider counts an error and zero tokens. A
+/// response the loop rejects (here: truncated at the length limit, then
+/// recovered) was still served and billed, so its reported usage counts — the
+/// metric is provider-reported spend, not useful output.
+#[tokio::test]
+async fn a_rejected_response_counts_its_usage_and_a_provider_error_counts_none() {
+    // Provider error: the request fails before any response exists.
+    let metrics = Arc::new(OperatorMetrics::new());
+    let failing = RebornIntegrationHarness::test_default()
+        .with_operator_metrics_for_test(Arc::clone(&metrics))
+        .fail_model()
+        .build()
+        .await
+        .expect("harness builds");
+    let run_id = failing
+        .submit_turn_async("do something")
+        .await
+        .expect("turn submitted");
+    failing
+        .wait_for_status(run_id, TurnStatus::Failed)
+        .await
+        .expect("a non-retryable provider error fails the run");
+    let after_error = scrape(&metrics).await;
+    assert_eq!(
+        sample(
+            &after_error,
+            "ironclaw_llm_errors_total{provider=\"unknown\",model=\"unknown\",kind=\"context_length_exceeded\"}"
+        ),
+        2,
+        "both failed requests (the call and the loop's one recovery attempt) are counted, on model=\"unknown\" because that model was never served:\n{after_error}"
+    );
+    assert!(
+        token_lines(&after_error).is_empty(),
+        "a provider error reports no usage, so no token series exists:\n{after_error}"
+    );
+    assert!(
+        !after_error.contains(SCRIPTED_MODEL_NAME),
+        "a failure mints no series for the model it asked for:\n{after_error}"
+    );
+
+    // Rejected response: served with usage (11 in / 7 out, finish=length),
+    // discarded by the loop, then a recovered reply with its own usage.
+    let metrics = Arc::new(OperatorMetrics::new());
+    let truncated = RebornIntegrationHarness::test_default()
+        .with_operator_metrics_for_test(Arc::clone(&metrics))
+        .with_scripted_provider_id(SCRIPTED_VENDOR)
+        .output_truncated_model_times(1)
+        .script([
+            RebornScriptedReply::text("complete answer after truncation")
+                .with_usage(ScriptedTokenUsage::new(40, 5)),
+        ])
+        .build()
+        .await
+        .expect("harness builds");
+    truncated
+        .submit_turn("give a complete answer")
+        .await
+        .expect("run survives a truncated provider response");
+    truncated
+        .assert_reply_contains("complete answer after truncation")
+        .await
+        .expect("recovered reply finalized");
+    let after = scrape(&metrics).await;
+    assert_eq!(
+        tokens(&after, SCRIPTED_VENDOR, SCRIPTED_MODEL_NAME, "input"),
+        51,
+        "the truncated response's 11 input tokens count with the recovery's 40:\n{after}"
+    );
+    assert_eq!(
+        tokens(&after, SCRIPTED_VENDOR, SCRIPTED_MODEL_NAME, "output"),
+        12,
+        "the truncated response's 7 output tokens count with the recovery's 5:\n{after}"
+    );
+    assert_eq!(total_tokens(&after), 63, "{after}");
+}
+
+/// Failover: the primary is unavailable, the turn is served from the
+/// configured fallback. The fallback's usage is counted exactly once, under
+/// the fallback model that served it; the primary's failure adds no tokens.
+#[tokio::test]
+async fn failover_counts_the_serving_fallbacks_usage_once() {
+    let metrics = Arc::new(OperatorMetrics::new());
+    let h = RebornIntegrationHarness::test_default()
+        .with_operator_metrics_for_test(Arc::clone(&metrics))
+        .with_scripted_provider_id(SCRIPTED_VENDOR)
+        .advance_fallback_after_unavailable()
+        .script([RebornScriptedReply::text("fallback recovered the turn")
+            .with_usage(ScriptedTokenUsage::new(60, 9).with_cache(30, 0))])
+        .build()
+        .await
+        .expect("harness builds");
+    h.submit_turn("recover through the configured provider fallback")
+        .await
+        .expect("turn completes through the fallback");
+    h.assert_ordered_fallback_vendor_calls()
+        .await
+        .expect("primary is called once and the fallback serves");
+
+    let after = scrape(&metrics).await;
+    let fallback_tokens: Vec<&str> = token_lines(&after);
+    assert_eq!(
+        total_tokens(&after),
+        99,
+        "the fallback's usage is counted once:\n{after}"
+    );
+    assert!(
+        fallback_tokens.iter().all(|line| line.contains(&format!(
+            "provider=\"failover\",model=\"{SCRIPTED_FALLBACK_MODEL_NAME}\""
+        ))),
+        "every token sample is attributed to the fallback model that served it:\n{after}"
+    );
+    for (kind, expected) in [("input", 60), ("output", 9), ("cache_read", 30)] {
+        assert_eq!(
+            fallback_tokens
+                .iter()
+                .filter(|line| line.contains(&format!("kind=\"{kind}\"")))
+                .filter_map(|line| line.rsplit(' ').next()?.parse::<u64>().ok())
+                .sum::<u64>(),
+            expected,
+            "{kind}:\n{after}"
+        );
+    }
+}
+
+/// The series ceiling holds for tokens too: once other traffic has filled the
+/// LLM families, a new provider/model's token samples fold into
+/// `provider/model="__other__"` with the closed `kind` label kept, and each
+/// folded sample is counted in the overflow family. The folded series still
+/// carries the turn's exact token counts.
+#[tokio::test]
+async fn token_series_fold_into_other_past_the_series_ceiling() {
+    const PREFILLED_MODELS: usize = 128;
+    let metrics = Arc::new(OperatorMetrics::new());
+
+    // Other traffic: 128 served provider/model pairs, each reporting all four
+    // token kinds — the request family's 128-series and the token family's
+    // 512-series ceilings, both exactly full. Recorded through the production
+    // decorator over the same scripted vendor seam.
+    let prefill_vendor = Arc::new(
+        scripted_trace_llm((0..PREFILLED_MODELS).map(|_| {
+            RebornScriptedReply::text("prefill")
+                .with_usage(ScriptedTokenUsage::new(1, 1).with_cache(1, 1))
+        }))
+        .with_provider_id("prefill-vendor"),
+    );
+    let prefill = ironclaw_operator::MetricsLlmProvider::new(prefill_vendor, Arc::clone(&metrics));
+    for index in 0..PREFILLED_MODELS {
+        ironclaw_llm::LlmProvider::complete(
+            &prefill,
+            ironclaw_llm::CompletionRequest::new(vec![ironclaw_llm::ChatMessage::user("fill")])
+                .with_model(format!("prefill-model-{index}")),
+        )
+        .await
+        .expect("prefill call is served");
+    }
+    let saturated = scrape(&metrics).await;
+    assert_eq!(
+        token_lines(&saturated).len(),
+        PREFILLED_MODELS * 4,
+        "{saturated}"
+    );
+    assert!(
+        !saturated.contains("=\"__other__\""),
+        "nothing folded yet:\n{saturated}"
+    );
+
+    let h = RebornIntegrationHarness::test_default()
+        .with_operator_metrics_for_test(Arc::clone(&metrics))
+        .with_scripted_provider_id(SCRIPTED_VENDOR)
+        .script([RebornScriptedReply::text("folded")
+            .with_usage(ScriptedTokenUsage::new(70, 8).with_cache(50, 4))])
+        .build()
+        .await
+        .expect("harness builds");
+    h.submit_turn("hello").await.expect("turn completes");
+
+    let after = scrape(&metrics).await;
+    for (kind, expected) in [
+        ("input", 70),
+        ("output", 8),
+        ("cache_read", 50),
+        ("cache_write", 4),
+    ] {
+        assert_eq!(
+            tokens(&after, "__other__", "__other__", kind),
+            expected,
+            "the turn's {kind} tokens fold with their kind kept:\n{after}"
+        );
+    }
+    assert!(
+        !after.contains(SCRIPTED_VENDOR) && !after.contains(SCRIPTED_MODEL_NAME),
+        "the new provider/model mints no series past the ceiling:\n{after}"
+    );
+    assert_eq!(
+        token_lines(&after).len(),
+        PREFILLED_MODELS * 4 + 4,
+        "only the four __other__ kind series were added:\n{after}"
+    );
+    assert_eq!(
+        sample(
+            &after,
+            "ironclaw_metrics_series_overflow_total{family=\"llm_tokens\"}"
+        ),
+        4,
+        "one folded sample per reported token kind:\n{after}"
+    );
+    assert_eq!(
+        sample(
+            &after,
+            "ironclaw_metrics_series_overflow_total{family=\"llm_requests\"}"
+        ),
+        1,
+        "the request itself folded too:\n{after}"
     );
 }
