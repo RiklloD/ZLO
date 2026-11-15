@@ -7,6 +7,7 @@
 //! SQL backends serve, so the SQL backends can be deleted in task #17
 //! without losing coverage.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 
 use ironclaw_event_log::{

@@ -26,6 +26,7 @@
 //! the JSONL/in-memory `matches_event` / `matches_audit` predicates, and
 //! every replay caller — tracked as a follow-up.
 
+#![deny(clippy::let_underscore_must_use)]
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -1657,8 +1658,14 @@ where
                 "jsonl event store failed to truncate torn tail after failed append"
             );
         }
-        // silent-ok: best-effort flush of the truncate above; the original error is returned
-        let _ = file.sync_data();
+        // Best-effort flush of the truncate above; the original error is returned.
+        if let Err(sync_error) = file.sync_data() {
+            tracing::debug!(
+                path = %path.display(),
+                error = %sync_error,
+                "jsonl event store failed to fsync the torn-tail truncate"
+            );
+        }
         return Err(error);
     }
 
@@ -1667,7 +1674,10 @@ where
         // fsync the directory entry on POSIX. Best-effort on platforms that
         // don't support it (e.g. Windows handles this implicitly).
         if let Ok(dir) = std::fs::File::open(parent) {
-            // silent-ok: directory fsync is unsupported on some platforms (see above)
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "directory fsync is unsupported on some platforms; the append itself already succeeded"
+            )]
             let _ = dir.sync_all();
         }
     }
@@ -2115,7 +2125,7 @@ mod tests {
             },
         )
         .await;
-        let _ = std::env::set_current_dir(cwd);
+        std::env::set_current_dir(cwd).expect("restore cwd");
         assert!(
             !matches!(
                 result,

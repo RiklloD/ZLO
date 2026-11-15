@@ -5,6 +5,7 @@
 //! tail (buffered-but-unflushed events are not yet durable; everything flushed
 //! survives).
 
+#![deny(clippy::let_underscore_must_use)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;

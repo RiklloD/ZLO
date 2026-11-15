@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_event_store::PostgresPoolTlsOptions;
 use ironclaw_event_store::{
     RebornEventStoreConfig, RebornEventStoreError, RebornProfile, build_reborn_event_stores,
@@ -53,6 +54,10 @@ fn rejecting_remote_postgres_url(database: &str, ssl_mode: &str) -> SecretString
     // hermetic endpoint. Closing the accepted socket makes the backend fail
     // immediately after policy validation instead of waiting on DNS retries.
     let _rejector = std::thread::spawn(move || {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the rejector only closes the accepted socket; an accept error rejects the connection just the same"
+        )]
         let _ = listener.accept();
     });
 
