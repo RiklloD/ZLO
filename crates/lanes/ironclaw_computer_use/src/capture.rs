@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -24,6 +24,7 @@ use image::{DynamicImage, ImageFormat, imageops::FilterType};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
+use crate::leftovers::Leftovers;
 use crate::live::{Live, WatchedWindow, desk};
 
 pub(crate) const MAX_FPS: f64 = 10.0;
@@ -36,6 +37,13 @@ const SCREENCAPTURE_TIMEOUT: Duration = Duration::from_secs(4);
 const LONG_POLL: Duration = Duration::from_millis(1000);
 const MAX_PRODUCERS: usize = 6;
 const JPEG_QUALITY: u8 = 72;
+/// Window captures live in their own directory under the temp dir.
+const CAPTURE_DIR_NAME: &str = "ironclaw-cu-captures";
+/// Earlier builds wrote captures straight into the temp dir with this prefix.
+const LEGACY_CAPTURE_PREFIX: &str = "ironclaw_cu_";
+/// A capture file older than this at startup is a leftover of an earlier
+/// process (a capture lives at most `SCREENCAPTURE_TIMEOUT` plus decoding).
+const STALE_CAPTURE_AGE: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Method {
@@ -118,13 +126,45 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 pub(crate) struct Capture {
     producers: Mutex<HashMap<ProducerKey, Arc<Producer>>>,
+    capture_dir: PathBuf,
+    leftovers: Arc<Leftovers>,
+    next_file: AtomicU64,
 }
 
 impl Capture {
-    pub(crate) fn new() -> Self {
+    /// Captures go to a private directory under the temp dir. Leftover
+    /// screenshots of an earlier process are deleted here, at startup.
+    pub(crate) fn new(leftovers: Arc<Leftovers>) -> Self {
+        let temp = std::env::temp_dir();
+        leftovers.sweep_stale(&temp, LEGACY_CAPTURE_PREFIX, ".jpg", STALE_CAPTURE_AGE);
+        Self::in_dir(temp.join(CAPTURE_DIR_NAME), leftovers, STALE_CAPTURE_AGE)
+    }
+
+    pub(crate) fn in_dir(capture_dir: PathBuf, leftovers: Arc<Leftovers>, stale: Duration) -> Self {
+        leftovers.sweep_stale(&capture_dir, "", ".jpg", stale);
         Self {
             producers: Mutex::new(HashMap::new()),
+            capture_dir,
+            leftovers,
+            next_file: AtomicU64::new(0),
         }
+    }
+
+    /// Where the next window capture is written. Retries any screenshot an
+    /// earlier capture could not delete first.
+    fn next_capture_path(&self) -> PathBuf {
+        self.leftovers.sweep();
+        create_private_dir(&self.capture_dir);
+        self.capture_dir.join(format!(
+            "{}_{}.jpg",
+            std::process::id(),
+            self.next_file.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    /// Delete a finished capture; a failed delete is retried, then swept.
+    async fn discard_capture(&self, path: &Path) {
+        self.leftovers.remove(path).await;
     }
 
     /// The newest picture of `window` after `after_seq`, waiting briefly for
@@ -236,7 +276,7 @@ async fn produce(
             // Never keep (or show) what was on screen around a takeover.
             producer.latest.send_replace(None);
         } else {
-            match capture_window(&live, window.window_id, *width).await {
+            match capture_window(&capture, &live, window.window_id, *width).await {
                 Some((jpeg, w, h, method)) => {
                     let (held_after, epoch_after) = live.lease(&desk);
                     if held_after || epoch_after != epoch {
@@ -281,6 +321,7 @@ async fn produce(
 /// per window, so one failing window never pushes the others onto the
 /// fallback.
 async fn capture_window(
+    capture: &Capture,
     live: &Live,
     window_id: u32,
     max_width: u32,
@@ -291,7 +332,7 @@ async fn capture_window(
             .failed_until
             .is_none_or(|until| Instant::now() >= until)
     {
-        match screencapture(window_id, max_width).await {
+        match screencapture(capture, window_id, max_width).await {
             Ok((jpeg, w, h)) => {
                 live.set_health(window_id, |health| {
                     health.method = Some("window");
@@ -371,19 +412,25 @@ fn looks_blank(image: &DynamicImage) -> bool {
     hi.saturating_sub(lo) < 3
 }
 
-fn temp_path() -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
-        "ironclaw_cu_{}_{}.jpg",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
+/// The capture directory, readable only by this user where the OS allows.
+fn create_private_dir(dir: &Path) {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    if let Err(error) = builder.create(dir) {
+        tracing::debug!(%error, "computer-use capture directory unavailable");
+    }
 }
 
 /// macOS window capture by CGWindowID: works for covered windows, needs
 /// Screen Recording for the IronClaw process.
-async fn screencapture(window_id: u32, max_width: u32) -> Result<(Vec<u8>, u32, u32), String> {
-    let path = temp_path();
+async fn screencapture(
+    capture: &Capture,
+    window_id: u32,
+    max_width: u32,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let path = capture.next_capture_path();
     let run = tokio::process::Command::new("/usr/sbin/screencapture")
         .arg("-x")
         .arg("-o")
@@ -428,12 +475,84 @@ async fn screencapture(window_id: u32, max_width: u32) -> Result<(Vec<u8>, u32, 
             }
         }
     };
-    // The capture file may not exist when screencapture failed; any other
-    // failure leaves a screenshot on disk, which deserves a trace.
-    if let Err(error) = tokio::fs::remove_file(&path).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::debug!(%error, "computer-use capture file cleanup failed");
-    }
+    // The capture file may not exist when screencapture failed. Any other
+    // delete failure is retried, then swept by the next capture.
+    capture.discard_capture(&path).await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::leftovers::{FileRemover, Leftovers};
+
+    struct FailingOnce(AtomicU64);
+
+    impl FileRemover for FailingOnce {
+        fn remove(&self, path: &Path) -> std::io::Result<()> {
+            // Fails the first four calls (one attempt + three retries).
+            if self.0.fetch_add(1, Ordering::SeqCst) < 4 {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::remove_file(path)
+        }
+    }
+
+    #[tokio::test]
+    async fn an_undeletable_capture_is_swept_by_the_next_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let leftovers = Arc::new(Leftovers::with_remover(
+            Arc::new(FailingOnce(AtomicU64::new(0))),
+            vec![Duration::from_millis(1); 3],
+        ));
+        let capture = Capture::in_dir(dir.path().join("captures"), leftovers, STALE_CAPTURE_AGE);
+
+        let first = capture.next_capture_path();
+        std::fs::write(&first, b"a screenshot").unwrap();
+        capture.discard_capture(&first).await;
+        assert!(first.exists(), "the injected failure kept the screenshot");
+
+        let second = capture.next_capture_path();
+
+        assert_ne!(first, second);
+        assert!(
+            !first.exists(),
+            "the next capture must delete the leftover screenshot"
+        );
+    }
+
+    #[test]
+    fn startup_deletes_stale_captures_in_the_capture_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let captures = dir.path().join("captures");
+        std::fs::create_dir_all(&captures).unwrap();
+        let leftover = captures.join("4242_7.jpg");
+        std::fs::write(&leftover, b"a screenshot from a crashed process").unwrap();
+
+        let _capture = Capture::in_dir(captures, Arc::new(Leftovers::new()), Duration::ZERO);
+
+        assert!(!leftover.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_capture_directory_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let capture = Capture::in_dir(
+            dir.path().join("captures"),
+            Arc::new(Leftovers::new()),
+            STALE_CAPTURE_AGE,
+        );
+
+        let path = capture.next_capture_path();
+
+        let mode = std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
 }

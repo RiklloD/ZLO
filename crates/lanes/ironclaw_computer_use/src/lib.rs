@@ -23,6 +23,7 @@
 //! | `live` | The live view: activity, windows used, pointer, typing, the desktop take-over lease |
 //! | `capture` | Window pictures for the viewer: `screencapture -l`, the agent's screenshot as fallback, shared producers |
 //! | `cursor` | The viewer's cursor: coordinate targets and the native cursor's observation file |
+//! | `leftovers` | Screenshot and cursor files: bounded delete retries, then a sweep on the next capture/session and at startup |
 //! | `readiness` | Engine present, and Accessibility / Screen Recording preflight for this host (never prompts) |
 //! | `prompt` | The system-prompt section: server instructions, tool names, fork guidance |
 //! | `trace` | One JSON line per call (tool, ok, code, seconds) |
@@ -39,6 +40,7 @@ mod config;
 mod cursor;
 mod error;
 mod frame;
+mod leftovers;
 mod live;
 mod prompt;
 mod readiness;

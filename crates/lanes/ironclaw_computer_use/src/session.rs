@@ -23,6 +23,7 @@ use crate::config::ComputerUseConfig;
 use crate::cursor::{CursorWatch, pointer_before, pointer_kind};
 use crate::error::ComputerUseError;
 use crate::frame::{Frame, split_content};
+use crate::leftovers::Leftovers;
 use crate::live::{Desk, Live, QUIET, WindowTarget, describe, desk, now_ms};
 use crate::stdio::StdioServer;
 use crate::target::TargetState;
@@ -347,16 +348,20 @@ pub struct ComputerUse {
     sessions: Mutex<HashMap<ComputerUseSession, Arc<Session>>>,
     live: Arc<Live>,
     capture: Arc<Capture>,
+    /// Screenshot and cursor files whose delete failed, retried by sweeps.
+    leftovers: Arc<Leftovers>,
 }
 
 impl ComputerUse {
     pub fn new(config: ComputerUseConfig) -> Self {
         let live = Arc::new(Live::new(config.live_preview));
+        let leftovers = Arc::new(Leftovers::new());
         Self {
             config,
             sessions: Mutex::new(HashMap::new()),
             live,
-            capture: Arc::new(Capture::new()),
+            capture: Arc::new(Capture::new(Arc::clone(&leftovers))),
+            leftovers,
         }
     }
 
@@ -394,17 +399,15 @@ impl ComputerUse {
             return Some(Arc::clone(session));
         }
         let live = &self.live;
+        // Retry any capture or cursor file an earlier delete left behind.
+        self.leftovers.sweep();
         sessions.retain(|key, session| {
             let keep = !session.idle_for(&self.config);
             if !keep {
                 live.ended(key);
-                // The file may never have been written; any other failure
-                // leaves a stale cursor file behind, which deserves a trace.
-                if let Err(error) = std::fs::remove_file(&session.cursor_file)
-                    && error.kind() != std::io::ErrorKind::NotFound
-                {
-                    tracing::debug!(%error, "computer-use cursor file cleanup failed");
-                }
+                // The file may never have been written; a failed delete is
+                // retried, then swept by the next capture or session.
+                self.leftovers.remove_soon(&session.cursor_file);
             }
             keep
         });
