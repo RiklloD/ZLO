@@ -37,6 +37,7 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_event_log",
     "ironclaw_event_projections",
     "ironclaw_event_store",
+    "ironclaw_event_streams",
     "ironclaw_filesystem",
     "ironclaw_hooks",
     "ironclaw_host_runtime",

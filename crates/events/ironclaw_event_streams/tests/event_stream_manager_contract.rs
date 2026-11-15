@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 include!("event_stream_manager_contract/support/imports.rs");
 include!("event_stream_manager_contract/support/fakes.rs");
 include!("event_stream_manager_contract/support/builders.rs");
