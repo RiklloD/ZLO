@@ -223,18 +223,23 @@ impl Paths {
     /// move and `~/.zlo` read after it both "hold data", although the move
     /// was simply in flight. Only the states nothing can leave on its own
     /// (`Fresh`, `Linked`) are trusted unlocked; `BothExist` is re-read under
-    /// the lock like the states that need work, so a concurrent start never
-    /// reports a spurious "both folders exist" warning.
+    /// the lock like the states that need work, so a concurrent start that
+    /// can take the lock never reports a spurious "both folders exist"
+    /// warning.
     fn settle(&self, observed: State) -> Result<HomeMigration, RebornConfigError> {
         match observed {
             State::Fresh | State::Linked => Ok(HomeMigration::NotNeeded),
             State::BothExist => match self.open_lock() {
                 Ok(lock) => self.migrate_locked(lock),
-                // Without the lock nothing can be moving: every migrating
-                // start must open it first. Both folders genuinely hold data,
-                // and this state needs no write, so report it rather than
-                // failing a start that previously succeeded.
-                Err(_) => Ok(self.both_exist()), // silent-ok: BothExist needs no lock when no start can hold it
+                // The lock file cannot be opened here (e.g. `~/.ironclaw` is
+                // read-only to this process), so this start attempts no
+                // migration and changes nothing; BothExist needs no write,
+                // so report what was observed rather than failing a start
+                // that previously succeeded. Another process that *can* open
+                // the lock may be mid-move, in which case this warning can be
+                // stale — but either way the home resolves to `~/.zlo` and
+                // no data is touched on this path.
+                Err(_) => Ok(self.both_exist()), // silent-ok: no migration is attempted without the lock; BothExist is advisory
             },
             // Something to do: take the lock and decide again, since another
             // process may have finished (or started) the move meanwhile.
