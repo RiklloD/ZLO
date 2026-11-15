@@ -237,7 +237,11 @@ impl Consoles {
             Ok(mut map) => {
                 for session in map.values_mut() {
                     if let Some(stop) = session.run.as_mut().and_then(|r| r.stop.take()) {
-                        let _ = stop.send(()); // silent-ok: the command already ended
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "the command already ended and dropped its stop receiver"
+                        )]
+                        let _ = stop.send(());
                     }
                 }
             }
@@ -250,7 +254,11 @@ impl Engine {
     /// Turn on the operator console with `runner` (first call wins). Only
     /// where the agent itself gets a host shell.
     pub fn set_console_runner(&self, runner: Arc<dyn HostCommandRunner>) {
-        let _ = self.consoles.runner.set(runner); // silent-ok: already set by an earlier wiring
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "first call wins by contract; a later wiring is ignored"
+        )]
+        let _ = self.consoles.runner.set(runner);
     }
 
     /// `thread`'s console after `after` (the caller checked ownership).
@@ -370,7 +378,11 @@ impl Engine {
                     .and_then(|s| s.run.as_mut())
                     .and_then(|r| r.stop.take())
                 {
-                    let _ = stop.send(()); // silent-ok: the command ended on its own meanwhile
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "the command ended on its own meanwhile and dropped its stop receiver"
+                    )]
+                    let _ = stop.send(());
                 }
             }
             ThreadConsoleAction::Clear {} => {

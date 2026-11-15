@@ -142,17 +142,29 @@ impl Engine {
 
     /// Enable `t3_schedule` with the host's schedule grammar (first call wins).
     pub fn set_schedule_planner(&self, planner: Arc<dyn crate::schedules::SchedulePlanner>) {
-        let _ = self.schedule_planner.set(planner); // silent-ok: already set by an earlier wiring
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "first call wins by contract; a later wiring is ignored"
+        )]
+        let _ = self.schedule_planner.set(planner);
     }
 
     /// Give CLI turns their profile's soul, folder and skills (first call wins).
     pub fn set_profile_context(&self, source: Arc<dyn ProfileContextSource>) {
-        let _ = self.profile_context.set(source); // silent-ok: already set by an earlier wiring
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "first call wins by contract; a later wiring is ignored"
+        )]
+        let _ = self.profile_context.set(source);
     }
 
     /// Hear about every completed turn (first call wins).
     pub fn set_turn_listener(&self, listener: Arc<dyn TurnCompletedListener>) {
-        let _ = self.turn_listener.set(listener); // silent-ok: already set by an earlier wiring
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "first call wins by contract; a later wiring is ignored"
+        )]
+        let _ = self.turn_listener.set(listener);
     }
 
     /// Add a listener told after every completed turn, beside the one
