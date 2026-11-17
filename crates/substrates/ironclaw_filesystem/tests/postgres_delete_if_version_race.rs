@@ -55,7 +55,7 @@ async fn wait_for_delete_if_version_lock_wait(
                       AND state = 'active'
                       AND wait_event_type = 'Lock'
                       AND wait_event = 'transactionid'
-                      AND query LIKE '%WITH candidate AS MATERIALIZED%'
+                      AND query LIKE '%WITH path_lock AS MATERIALIZED%'
                 )",
                 &[&application_name],
             )

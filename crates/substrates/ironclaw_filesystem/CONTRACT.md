@@ -204,16 +204,33 @@ boundary. The current rule is codified in
    inner backend's. Gate: `versions_never_repeat_across_delete_and_recreate_contract`
    in `tests/db_root_filesystem_contract.rs`, on all three backends.
 
-   *PostgreSQL concurrency:* writers there are concurrent under READ
-   COMMITTED, and a create's version is computed from its statement
-   snapshot. It therefore starts above both the mark and any row the
-   snapshot still sees, which covers a create racing a single concurrent
-   delete of the same path (the snapshot still sees the row being deleted).
-   The residual is a create statement during which two *other* transactions
-   both write and then delete the same path; that needs three concurrent
-   writers on one path and is not closed by this invariant. In-memory
-   (one mutex) and libSQL (one writer lane) serialize writers, so they have
-   no such window.
+   *PostgreSQL concurrency:* writers there run concurrently under READ
+   COMMITTED, so a version computed from a statement snapshot could repeat
+   (two writers suffice: A updates v1→v2 uncommitted, B's create computes 2,
+   A deletes and commits, B inserts v2). Every record create, CAS update and
+   delete therefore takes a transaction-scoped advisory lock on its path
+   (`pg_advisory_xact_lock` on a seeded 64-bit hash of the full virtual
+   path, `migrations/V36__root_filesystem_record_path_locks.sql`), and a
+   create computes its version only after the lock is granted — inside the
+   VOLATILE `root_filesystem_next_record_version`, whose query takes a fresh
+   snapshot after the wait. The lock lives until the writer's transaction
+   ends, so an open `StorageTxn` keeps a path serialized through all its
+   statements. Deadlock-free for every single statement: each takes the
+   path lock before any row lock, and multi-path statements take path
+   locks in sorted path order (subtree `delete` locks every removed path
+   `ORDER BY path`; `create_subtree_atomic` inserts in path order). A
+   multi-statement `StorageTxn` that writes several paths in different
+   orders can still deadlock, exactly as it already could on row locks;
+   PostgreSQL detects that and aborts one transaction. A hash collision
+   only makes two unrelated paths wait for each other. Cost: one advisory
+   lock per record write, taken inside the write statement — no extra
+   round trip. Pinned by `tests/postgres_recreate_version_race.rs`, which
+   replays that two-writer schedule. In-memory (one mutex) and libSQL (one
+   writer lane) already serialize writers.
+
+   *Floor growth:* one row per distinct deleted path, kept forever (no
+   expiry): an expired mark would reopen the repeat it exists to prevent.
+   That is the price of the invariant.
 
    *Compatibility / rollback:* the floors table is additive (created by the
    ordinary migration run; no existing row changes; old binaries ignore

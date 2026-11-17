@@ -820,12 +820,7 @@ impl RootFilesystem for PostgresRootFilesystem {
                 INSERT INTO root_filesystem_entries
                     (path, contents, is_dir, content_type, kind, indexed, version)
                 VALUES ($1, $2, FALSE, 'application/octet-stream', NULL, '{}'::jsonb,
-                    (SELECT GREATEST(
-        COALESCE((SELECT floor.version FROM root_filesystem_version_floors AS floor
-                  WHERE floor.path = $1), 0),
-        COALESCE((SELECT live.version FROM root_filesystem_entries AS live
-                  WHERE live.path = $1), 0)
-    ) + 1))
+                    root_filesystem_next_record_version($1))
                 ON CONFLICT (path) DO UPDATE SET
                     contents = EXCLUDED.contents,
                     is_dir = FALSE,
@@ -870,12 +865,7 @@ impl RootFilesystem for PostgresRootFilesystem {
                 INSERT INTO root_filesystem_entries
                     (path, contents, is_dir, content_type, kind, indexed, version)
                 VALUES ($1, $2, FALSE, 'application/octet-stream', NULL, '{}'::jsonb,
-                    (SELECT GREATEST(
-        COALESCE((SELECT floor.version FROM root_filesystem_version_floors AS floor
-                  WHERE floor.path = $1), 0),
-        COALESCE((SELECT live.version FROM root_filesystem_entries AS live
-                  WHERE live.path = $1), 0)
-    ) + 1))
+                    root_filesystem_next_record_version($1))
                 ON CONFLICT (path) DO UPDATE SET
                     contents = root_filesystem_entries.contents || EXCLUDED.contents,
                     is_dir = FALSE,
@@ -1699,8 +1689,13 @@ async fn postgres_create_subtree_with_transaction(
         });
     }
 
-    let mut versions = Vec::with_capacity(entries.len());
-    for item in entries {
+    // Insert in path order: each insert takes its path lock, and taking
+    // them in one global order keeps concurrent multi-path writers from
+    // deadlocking (invariant 9). Versions are returned in input order.
+    let mut versions = vec![RecordVersion::from_backend(0); entries.len()];
+    let mut ordered: Vec<(usize, AtomicSubtreeEntry)> = entries.into_iter().enumerate().collect();
+    ordered.sort_by(|(_, left), (_, right)| left.path.as_str().cmp(right.path.as_str()));
+    for (index, item) in ordered {
         let indexed_json = serde_json::to_value(&item.entry.indexed).map_err(|_| {
             FilesystemError::SerializeIndexed {
                 path: item.path.clone(),
@@ -1744,10 +1739,7 @@ async fn postgres_create_subtree_with_transaction(
                 found: None,
             });
         };
-        versions.push(record_version_from_i64(
-            &item.path,
-            row.get::<_, i64>("version"),
-        )?);
+        versions[index] = record_version_from_i64(&item.path, row.get::<_, i64>("version"))?;
     }
     Ok(versions)
 }
@@ -1758,12 +1750,7 @@ async fn postgres_create_subtree_with_transaction(
 const PUT_ABSENT_SQL: &str = r#"
     INSERT INTO root_filesystem_entries
         (path, contents, is_dir, content_type, kind, indexed, version)
-    SELECT $1, $2, FALSE, $3, $4, $5, (SELECT GREATEST(
-        COALESCE((SELECT floor.version FROM root_filesystem_version_floors AS floor
-                  WHERE floor.path = $1), 0),
-        COALESCE((SELECT live.version FROM root_filesystem_entries AS live
-                  WHERE live.path = $1), 0)
-    ) + 1)
+    SELECT $1, $2, FALSE, $3, $4, $5, root_filesystem_next_record_version($1)
     WHERE NOT EXISTS (
         SELECT 1 FROM root_filesystem_entries
         WHERE path >= $6 AND path < $7
@@ -1785,6 +1772,8 @@ const PUT_VERSION_SQL: &str = r#"
         version = version + 1,
         updated_at = NOW()
     WHERE path = $5 AND is_dir = FALSE AND version = $6
+      -- Serialize with creates/deletes of this path (invariant 9).
+      AND root_filesystem_lock_record_path($5)
       AND NOT EXISTS (
           SELECT 1 FROM root_filesystem_entries AS child
           WHERE child.path >= $7 AND child.path < $8
@@ -1798,12 +1787,7 @@ const PUT_VERSION_SQL: &str = r#"
 const PUT_ANY_SQL: &str = r#"
     INSERT INTO root_filesystem_entries
         (path, contents, is_dir, content_type, kind, indexed, version)
-    SELECT $1, $2, FALSE, $3, $4, $5, (SELECT GREATEST(
-        COALESCE((SELECT floor.version FROM root_filesystem_version_floors AS floor
-                  WHERE floor.path = $1), 0),
-        COALESCE((SELECT live.version FROM root_filesystem_entries AS live
-                  WHERE live.path = $1), 0)
-    ) + 1)
+    SELECT $1, $2, FALSE, $3, $4, $5, root_filesystem_next_record_version($1)
     WHERE NOT EXISTS (
         SELECT 1 FROM root_filesystem_entries
         WHERE path >= $6 AND path < $7
@@ -2087,9 +2071,20 @@ async fn postgres_stat_with_client(
     })
 }
 const DELETE_SUBTREE_KEEPING_VERSION_FLOORS_SQL: &str = r#"
-    WITH removed AS (
+    WITH locked AS MATERIALIZED (
+        -- Path locks in sorted order (volatile target-list functions run
+        -- after ORDER BY), so concurrent multi-path writers cannot deadlock.
+        SELECT root_filesystem_lock_record_path(ordered.path) AS locked
+        FROM (
+            SELECT path FROM root_filesystem_entries
+            WHERE (path = $1 OR (path >= $2 AND path < $3)) AND is_dir = FALSE
+        ) AS ordered
+        ORDER BY ordered.path
+    ),
+    removed AS (
         DELETE FROM root_filesystem_entries
-        WHERE path = $1 OR (path >= $2 AND path < $3)
+        WHERE (path = $1 OR (path >= $2 AND path < $3))
+          AND (SELECT COUNT(*) FROM locked) >= 0
         RETURNING path, version, is_dir
     ),
     floored AS (
@@ -2171,11 +2166,17 @@ async fn postgres_delete_with_client(
 /// writer mutates it on update, replacement detection would classify that
 /// update as a new incarnation.
 const DELETE_IF_VERSION_ATOMIC_SQL: &str = r#"
-    WITH candidate AS MATERIALIZED (
+    WITH path_lock AS MATERIALIZED (
+        -- The path lock first, before the row lock `locked` takes below:
+        -- the order every other record write takes them (invariant 9).
+        SELECT root_filesystem_lock_record_path($1) AS locked
+    ),
+    candidate AS MATERIALIZED (
         SELECT version, created_at
         FROM root_filesystem_entries
         WHERE path = $1
           AND is_dir = FALSE
+          AND (SELECT locked FROM path_lock)
     ),
     candidate_state AS MATERIALIZED (
         SELECT
@@ -2797,6 +2798,8 @@ const POSTGRES_ROOT_FILESYSTEM_SCHEMA: &str = concat!(
     include_str!("../migrations/V34__root_filesystem_ordered_index_path_collation.sql"),
     "\n",
     include_str!("../migrations/V35__root_filesystem_version_floors.sql"),
+    "\n",
+    include_str!("../migrations/V36__root_filesystem_record_path_locks.sql"),
 );
 
 #[cfg(test)]
@@ -2918,6 +2921,15 @@ mod tests {
             "delete_if_version must lock the row before deciding NotFound vs \
              VersionMismatch, or a concurrent delete+recreate can race the \
              classification: {sql}"
+        );
+        let lock = sql
+            .find("root_filesystem_lock_record_path")
+            .expect("delete_if_version takes the path lock");
+        let row_lock = sql.find("FOR UPDATE").expect("row lock");
+        assert!(
+            lock < row_lock,
+            "the path lock must come before the row lock, the order every \
+             other record write takes them, or the two can deadlock: {sql}"
         );
         assert!(
             sql.contains("candidate AS MATERIALIZED"),
