@@ -329,7 +329,13 @@ fn view(q: &QuickState, _cx: &mut Cx<QuickState>) -> El {
                 });
             })
         };
-        crate::voice::ui::draw(c, p, on, |mic| mic)
+        // No menu in this window: a right-click on the mic is talk mode.
+        let talk = on(Press::Talk);
+        crate::voice::ui::draw(c, p, on, move |mic| {
+            mic.on_secondary_press(
+                move |q: &mut QuickState, _: rune::PointerPress, _: &mut rune::Tx| talk(q),
+            )
+        })
     });
     let card = card(p, input, controls).w_full().h_full();
     el().w_full()

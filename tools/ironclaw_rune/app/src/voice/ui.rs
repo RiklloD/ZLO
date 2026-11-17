@@ -3,7 +3,8 @@
 //! dictates; right-clicking the mic offers talk mode and, in a thread,
 //! read-aloud. (A second, talk-mode button beside the mic read as a second
 //! dictation button: both showed "Listening".) Every composer (thread, new
-//! thread, quick) draws the same controls; the quick composer has no menu.
+//! thread, quick) draws the same controls; in the quick composer, which has
+//! no menu, a right-click on the mic toggles talk mode.
 //!
 //! Rune port of the GPUI `voice/ui.rs`. Area A (chat composer) and area B
 //! (new-thread and quick composers) place [`composer_controls`] in their
@@ -48,9 +49,9 @@ impl Controls {
                 .iter()
                 .find(|(k, _)| *k == prefs.hotkey)
                 .map_or("the key", |(_, label)| *label);
-            format!("Dictate (or hold {key})")
+            format!("Dictate (or hold {key}) · right-click for talk mode")
         } else {
-            "Dictate".to_string()
+            "Dictate · right-click for talk mode".to_string()
         };
         Self {
             status,

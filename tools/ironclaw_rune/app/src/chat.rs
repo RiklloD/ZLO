@@ -704,6 +704,9 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
         // frame everything jumped by the change. Hold the prompt where it is
         // drawn across this commit instead.
         tx.keep_on_screen(anchor);
+        // Holding takes the list off its end: once the answer outgrows the
+        // room, the layout handler goes back to following it.
+        c.held_prompt = true;
     }
     try_reveal(s, id, tx);
     false
@@ -714,6 +717,8 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
 pub fn reveal_message(s: &mut State, message_id: String, tx: &mut Tx) {
     let Some(c) = s.chat.as_mut() else { return };
     c.reveal = Some(message_id);
+    // A search hit is somewhere to go: the send's climb gives way.
+    c.climb_until = None;
     let id = c.thread_id.clone();
     try_reveal(s, &id, tx);
 }

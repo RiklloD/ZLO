@@ -426,3 +426,53 @@ fn updates_during_the_climb_do_not_stop_it() {
         );
     }
 }
+
+/// An answer that lands whole after the climb and outgrows the room is
+/// followed to its end (holding the prompt across that commit must not
+/// leave the list off its end).
+#[test]
+fn a_late_answer_longer_than_the_room_is_followed() {
+    let s = real_chat();
+    let mut rt = Runtime::new(s, crate::view, (1352., 878.), Env::new(true, 2.));
+    let dt = 1. / 60.;
+    let mut t = 0.;
+    rt.frame(t);
+    rt.update(|s, tx| {
+        super::refresh_rows(s, "t1", tx);
+    });
+    for _ in 0..30 {
+        t += dt;
+        rt.frame(t);
+    }
+    let mut first = 0;
+    rt.update(|s, tx| first = send_like(s, "write a lot", tx));
+    for _ in 0..60 {
+        t += dt;
+        rt.frame(t);
+    }
+    std::thread::sleep(super::view::CLIMB);
+    let long = format!(
+        "> {}",
+        "A long paragraph of the answer that wraps. ".repeat(160)
+    );
+    rt.update(move |s, tx| {
+        let c = s.chat.as_mut().expect("chat");
+        c.transcript.ack_pending_user(first);
+        c.transcript.set_timeline(page(&["write a lot", &long]));
+        super::refresh_rows(s, "t1", tx);
+    });
+    for _ in 0..240 {
+        t += dt;
+        rt.frame(t);
+    }
+    let (list, _) = rt.presented("transcript:t1").expect("list");
+    let (reply, _) = rt
+        .presented("row:msg:a1")
+        .expect("the reply's end is drawn");
+    let (list_end, reply_end) = (list[1] + list[3], reply[1] + reply[3]);
+    eprintln!("list end {list_end:.1}, reply end {reply_end:.1}");
+    assert!(
+        reply_end <= list_end + 1. && list_end - reply_end < 120.,
+        "the list follows the answer's end: reply ends at {reply_end:.1}, list at {list_end:.1}"
+    );
+}

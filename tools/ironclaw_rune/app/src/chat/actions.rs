@@ -449,6 +449,7 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
                     if let Some(r) = c.reserve.as_mut() {
                         r.held = false;
                     }
+                    c.climb_until = None;
                     let error = restore_failed(c, &draft_text, &draft_pills, files, e.to_string());
                     record_draft(s, &thread_id);
                     set_error(s, &thread_id, error);

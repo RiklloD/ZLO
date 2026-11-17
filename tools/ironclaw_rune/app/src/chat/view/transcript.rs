@@ -385,6 +385,11 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
         })
         .on_far_from_bottom(160., move |s: &mut State, far| {
             if let Some(c) = chat_for(s, &far_id) {
+                // Scrolled away (the wheel, a reveal): the send's climb
+                // stops chasing the end.
+                if far {
+                    c.climb_until = None;
+                }
                 c.far_from_bottom = far;
             }
         })

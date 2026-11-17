@@ -635,7 +635,11 @@ impl Transcript {
 
     /// Show a message immediately while the send is in flight.
     pub fn push_pending_user(&mut self, text: &str, files: &[String]) -> u64 {
-        self.tick += 1;
+        // Unique across every transcript (main and side chats): the row key
+        // `pending:N` outlives the send once the server copy takes it, and
+        // scroll requests resolve keys window-wide.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let chips = files
             .iter()
             .enumerate()
@@ -648,13 +652,13 @@ impl Transcript {
             })
             .collect();
         self.pending_user.push(PendingUser {
-            id: self.tick,
+            id,
             text: text.to_string(),
             acked: false,
             chips,
             after: self.durable.iter().map(|m| m.sequence).max(),
         });
-        self.tick
+        id
     }
 
     /// The row key of durable message `message_id`.
