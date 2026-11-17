@@ -132,6 +132,11 @@ pub struct ChatState {
     /// The view held the newest prompt in place over a reserve correction
     /// (`view::transcript`), which takes the list off its end.
     pub(crate) held_prompt: bool,
+    /// Until then the send's climb runs: the list follows its end (which
+    /// the reserve makes the prompt at the top) rather than holding the
+    /// prompt where it was first drawn, which stopped the climb before it
+    /// began and left the new message under the fold.
+    pub(crate) climb_until: Option<Instant>,
     /// A history-search hit to scroll to once its message is in the list.
     reveal: Option<String>,
     /// Keep the transcript loaded back to this message (an older hit was
@@ -215,6 +220,7 @@ impl ChatState {
             pin_next: false,
             rise: None,
             held_prompt: false,
+            climb_until: None,
             reveal: None,
             history_floor: None,
             floor_pending: false,
@@ -247,6 +253,11 @@ impl ChatState {
             orchestration: Default::default(),
             computer: Default::default(),
         }
+    }
+
+    /// The send's climb to the top is still running.
+    pub(crate) fn climbing(&self) -> bool {
+        self.climb_until.is_some_and(|until| Instant::now() < until)
     }
 
     /// The running turn, streamed (IronClaw's loop) or polled (CLI runtime).
@@ -672,6 +683,7 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
         // The reserve keeps exactly the room under the newest prompt, so
         // the end of the list is the prompt at the top.
         tx.scroll_to_bottom(view::transcript_key(id));
+        c.climb_until = Some(Instant::now() + view::CLIMB);
         // MonoCode's prompt rise, once per send (none under reduced motion).
         c.rise = (!reduced)
             .then(|| {
@@ -681,6 +693,17 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
                 })
             })
             .flatten();
+    } else if c.climbing() {
+        // Mid-climb: keep heading for the end as rows change under it.
+        tx.scroll_to_bottom(view::transcript_key(id));
+    } else if let Some(anchor) = view::prompt_anchor(c) {
+        // Rows of the held turn changed (the server copy took the bubble's
+        // place, the working line gave way to the answer, the run ended):
+        // the reserve is resized from their heights only after this frame
+        // lays out, and the list follows its end meanwhile, so for one
+        // frame everything jumped by the change. Hold the prompt where it is
+        // drawn across this commit instead.
+        tx.keep_on_screen(anchor);
     }
     try_reveal(s, id, tx);
     false
@@ -700,15 +723,12 @@ fn try_reveal(s: &mut State, id: &str, tx: &mut Tx) {
     let Some(target) = c.reveal.clone() else {
         return;
     };
+    // A message sent from this view keeps its bubble's key.
+    let sent = c.transcript.key_of_message(&target);
+    let hit = |key: &str| key.ends_with(&target) || key == sent;
     let found = c.items.iter().find_map(|item| match item {
-        Item::Activity { rows, key, .. } => rows
-            .iter()
-            .any(|r| r.key().ends_with(&target))
-            .then(|| key.clone()),
-        other => other
-            .key()
-            .ends_with(&target)
-            .then(|| other.key().to_string()),
+        Item::Activity { rows, key, .. } => rows.iter().any(|r| hit(r.key())).then(|| key.clone()),
+        other => hit(other.key()).then(|| other.key().to_string()),
     });
     let Some(key) = found else {
         // Not in the latest page: once that page is in, load back to the

@@ -22,7 +22,24 @@ use crate::state::State;
 
 mod transcript;
 
-pub(crate) use transcript::PROMPT_RISE_SPRING;
+/// The newest prompt's row key while the reserve keeps room under it (the
+/// prompt is held at the top of the list), else None.
+pub(crate) fn prompt_anchor(chat: &ChatState) -> Option<String> {
+    if transcript::reserve_height(chat) <= 0. {
+        return None;
+    }
+    chat.items
+        .iter()
+        .rfind(|i| {
+            matches!(
+                i,
+                super::Item::Row(zlo_client::transcript::Row::User { .. })
+            )
+        })
+        .map(|i| row_key(i.key()))
+}
+
+pub(crate) use transcript::{CLIMB, PROMPT_RISE_SPRING};
 
 /// The transcript viewport of `thread`'s chat, for scroll requests.
 pub fn transcript_key(thread: &str) -> String {

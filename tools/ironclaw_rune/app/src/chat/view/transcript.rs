@@ -33,6 +33,9 @@ const ROW_ESTIMATE: f32 = 72.;
 const PROMPT_RISE: f32 = 0.56;
 const PROMPT_FADE: f32 = 0.48;
 const PROMPT_RISE_TOTAL: f32 = 0.88;
+/// How long after a send the list follows its end while the prompt climbs
+/// (the rise's scroll, with a margin for the reserve's last correction).
+pub(crate) const CLIMB: std::time::Duration = std::time::Duration::from_millis(900);
 /// The send commit's curve (`actions::send`): the scroll that carries the
 /// new prompt from the composer to the top of the list.
 /// Growth rows take a commit's spring 15 % slower, so this lands the climb
@@ -273,6 +276,13 @@ impl Rows {
                 // drawn while both settle, so it never creeps. Once the
                 // answer fills the room the list follows its end instead.
                 match anchor.as_ref().filter(|_| reserve_height(c) > 0.) {
+                    // The send's climb is under way: holding the prompt
+                    // where it was first drawn would cancel it, so follow
+                    // the end, which the resized reserve keeps at the
+                    // prompt.
+                    Some(_) if c.climbing() => {
+                        tx.scroll_to_bottom(transcript_key(&thread));
+                    }
                     Some(anchor) => {
                         tx.keep_on_screen(anchor.clone());
                         c.held_prompt = true;

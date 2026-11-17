@@ -12,7 +12,7 @@
 //! or usage limit that ends sets one timer for that moment; a working row
 //! repaints its timer once a second; an idle inbox schedules nothing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -77,6 +77,11 @@ pub struct Inbox {
     pub cmd_held: bool,
     /// The spacer that seats the shelves at the sidebar's bottom.
     pub(super) shelf_gap: view::list::ShelfGap,
+    /// Working threads that keep their card in the main list: they were in
+    /// it (or open) when their run started. Sending a message must not fly
+    /// the card down to the Working shelf and back up when the run ends;
+    /// its badge says it works. Cleared once the row stops working.
+    pub(super) working_in_place: BTreeMap<String, InboxState>,
 }
 
 impl Inbox {
@@ -103,6 +108,20 @@ impl Inbox {
             revealed: None,
             cmd_held: false,
             shelf_gap: view::list::ShelfGap::default(),
+            working_in_place: BTreeMap::new(),
+        }
+    }
+
+    /// Where `row` is drawn: a working row kept in place shows in the
+    /// section it was in (Pinned or the main list), not on the shelf.
+    pub fn shown_state(&self, row: &InboxRow) -> InboxState {
+        match row.state {
+            InboxState::Working => self
+                .working_in_place
+                .get(&row.thread_id)
+                .copied()
+                .unwrap_or(InboxState::Working),
+            state => state,
         }
     }
 
@@ -290,6 +309,8 @@ pub(super) fn apply(s: &mut State, list: InboxListResponse) {
             )
         }) && row.status != Some(InboxStatus::Working)
     });
+    let in_place = working_in_place(&s.workspace.inbox, &list.rows, active_id(s));
+    s.workspace.inbox.working_in_place = in_place;
     s.workspace.inbox.list = list;
     super::draft::bind_catalog(s);
     if finished {
@@ -299,6 +320,29 @@ pub(super) fn apply(s: &mut State, list: InboxListResponse) {
     ensure_poll(s);
     schedule_wake(s);
     ensure_tick(s);
+}
+
+/// The working rows of `rows` that stay where they were, with the section
+/// they stay in: the one they were drawn in before, else the main list for
+/// the open thread. Runs that start in a parked row (or a thread this view
+/// never listed) go to the Working shelf.
+fn working_in_place(
+    inbox: &Inbox,
+    rows: &[InboxRow],
+    open: Option<&str>,
+) -> BTreeMap<String, InboxState> {
+    rows.iter()
+        .filter(|r| r.state == InboxState::Working)
+        .filter_map(|r| {
+            let before = inbox.row(&r.thread_id).map(|old| inbox.shown_state(old));
+            let home = match before {
+                Some(st @ (InboxState::Inbox | InboxState::Pinned)) => Some(st),
+                _ if open == Some(r.thread_id.as_str()) => Some(InboxState::Inbox),
+                _ => None,
+            }?;
+            Some((r.thread_id.clone(), home))
+        })
+        .collect()
 }
 
 fn ensure_tick(s: &mut State) {
@@ -637,5 +681,67 @@ mod tests {
         let picker = &s.workspace.draft.as_ref().expect("draft").picker;
         assert_eq!(picker.catalog_thread.as_deref(), Some("t2"));
         assert_eq!(picker.current, picked, "binding keeps the pick");
+    }
+
+    /// The thread's card stays put while its run works: no trip down to the
+    /// Working shelf and back up when the run ends.
+    #[test]
+    fn a_listed_thread_keeps_its_place_while_it_works() {
+        let list = |rows| InboxListResponse {
+            rows,
+            ..Default::default()
+        };
+        let shelf_of = |s: &State, id: &str| {
+            let sh = shelves(s);
+            if sh.pinned.iter().any(|r| r.thread_id == id) {
+                "pinned"
+            } else if sh.main.iter().any(|r| r.thread_id == id) {
+                "main"
+            } else if sh.working.iter().any(|r| r.thread_id == id) {
+                "working"
+            } else {
+                "elsewhere"
+            }
+        };
+        let mut s = crate::chat::fixtures::test_state();
+        apply(
+            &mut s,
+            list(vec![
+                row("a", InboxState::Inbox, None),
+                row("p", InboxState::Pinned, None),
+                row("z", InboxState::Settled, None),
+            ]),
+        );
+        apply(
+            &mut s,
+            list(vec![
+                row("a", InboxState::Working, None),
+                row("p", InboxState::Working, None),
+                row("z", InboxState::Working, None),
+                row("new", InboxState::Working, None),
+            ]),
+        );
+        assert_eq!(shelf_of(&s, "a"), "main", "an inbox card stays in the list");
+        assert_eq!(shelf_of(&s, "p"), "pinned", "a pinned card stays pinned");
+        assert_eq!(
+            shelf_of(&s, "z"),
+            "working",
+            "a parked thread's run shows on the shelf"
+        );
+        assert_eq!(shelf_of(&s, "new"), "working");
+        // Still working on the next poll: still in place.
+        apply(
+            &mut s,
+            list(vec![
+                row("a", InboxState::Working, None),
+                row("p", InboxState::Working, None),
+            ]),
+        );
+        assert_eq!(shelf_of(&s, "a"), "main");
+        assert_eq!(shelf_of(&s, "p"), "pinned");
+        // The run ends; a later run from the shelf is the shelf's again.
+        apply(&mut s, list(vec![row("a", InboxState::Settled, None)]));
+        apply(&mut s, list(vec![row("a", InboxState::Working, None)]));
+        assert_eq!(shelf_of(&s, "a"), "working");
     }
 }
