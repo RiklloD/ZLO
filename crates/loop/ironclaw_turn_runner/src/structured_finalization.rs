@@ -458,6 +458,9 @@ fn to_loop_usage(usage: StructuredFinalizationUsage) -> LoopModelUsage {
         output_tokens: usage.output_tokens,
         cache_read_input_tokens: usage.cache_read_input_tokens,
         cache_creation_input_tokens: usage.cache_creation_input_tokens,
+        // The finalizer runs on the streaming transport, which the response
+        // cache never serves, so its recorded usage was provider-billed.
+        usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
     }
 }
 

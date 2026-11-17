@@ -279,6 +279,7 @@ impl SystemInferencePort for CountingInference {
                 output_tokens: 5,
                 cache_read_input_tokens: 2,
                 cache_creation_input_tokens: 1,
+                ..Default::default()
             }),
         })
     }
@@ -689,6 +690,7 @@ async fn coordinator_replays_adopts_and_rejects_conflicts_without_second_inferen
             output_tokens: 5,
             cache_read_input_tokens: 2,
             cache_creation_input_tokens: 1,
+            ..Default::default()
         })
     );
 

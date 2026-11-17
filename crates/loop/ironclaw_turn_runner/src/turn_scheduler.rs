@@ -539,6 +539,7 @@ mod tests {
             output_tokens: 5,
             cache_read_input_tokens: 2,
             cache_creation_input_tokens: 1,
+            ..Default::default()
         };
         let process_system = in_memory_agent_turn_process_system();
         let executor = TurnProcessExecutor {
@@ -571,6 +572,7 @@ mod tests {
             output_tokens: 5,
             cache_read_input_tokens: 2,
             cache_creation_input_tokens: 1,
+            ..Default::default()
         };
         let failure = TurnRunExecutorError::from_failure(
             SanitizedFailure::new("transcript_write_failed").expect("valid category"),
@@ -592,18 +594,21 @@ mod tests {
             output_tokens: 40,
             cache_read_input_tokens: 10,
             cache_creation_input_tokens: 2,
+            ..Default::default()
         };
         let finalizer = LoopModelUsage {
             input_tokens: 13,
             output_tokens: 5,
             cache_read_input_tokens: 2,
             cache_creation_input_tokens: 1,
+            ..Default::default()
         };
         let expected = LoopModelUsage {
             input_tokens: 113,
             output_tokens: 45,
             cache_read_input_tokens: 12,
             cache_creation_input_tokens: 3,
+            ..Default::default()
         };
 
         let failure_usage = LoopModelUsage::merge_optional(Some(prior), Some(finalizer));

@@ -8,6 +8,7 @@ use std::{
 
 use async_trait::async_trait;
 use ironclaw_host_api::ids::CapabilityId;
+use ironclaw_host_api::resource::ModelUsageSource;
 use serde::{Deserialize, Serialize};
 
 use crate::instruction_bundle::InstructionBundleFingerprint;
@@ -342,6 +343,16 @@ pub struct LoopModelUsage {
     /// caching is unsupported or no new prefix was cached.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub cache_creation_input_tokens: u32,
+    /// Whether a provider billed this usage. A response-cache replay keeps the
+    /// replayed counts (they still size the context) but reports
+    /// [`ModelUsageSource::ResponseCache`], so spend accounting charges
+    /// nothing for it. Omitted on the wire for the default `provider`, so
+    /// usage recorded before this field existed reads back as billed.
+    ///
+    /// Per-call provenance: on a cumulative total built with
+    /// [`Self::add_assign`] it is `provider` as soon as any merged call was.
+    #[serde(default, skip_serializing_if = "ModelUsageSource::is_provider")]
+    pub usage_source: ModelUsageSource,
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -354,7 +365,9 @@ impl LoopModelUsage {
         let Some(supplemental) = supplemental else {
             return cumulative;
         };
-        let mut cumulative = cumulative.unwrap_or_default();
+        let Some(mut cumulative) = cumulative else {
+            return Some(supplemental);
+        };
         cumulative.add_assign(&supplemental);
         Some(cumulative)
     }
@@ -369,6 +382,9 @@ impl LoopModelUsage {
         self.cache_creation_input_tokens = self
             .cache_creation_input_tokens
             .saturating_add(other.cache_creation_input_tokens);
+        if other.usage_source.is_provider() {
+            self.usage_source = ModelUsageSource::Provider;
+        }
     }
 
     /// Total billable tokens (input + output). Cache tokens are already counted
@@ -426,6 +442,39 @@ mod tests {
     use super::*;
     use crate::snapshot::ResolvedRunProfile;
     use ironclaw_host_api::turn::{RunProfileId, RunProfileVersion, TurnId, TurnScope};
+
+    #[test]
+    fn usage_source_is_optional_on_the_wire_and_per_call() {
+        // Usage recorded before the field existed reads back as billed.
+        let legacy: LoopModelUsage =
+            serde_json::from_value(serde_json::json!({"input_tokens": 4, "output_tokens": 2}))
+                .unwrap();
+        assert_eq!(legacy.usage_source, ModelUsageSource::Provider);
+        assert!(
+            serde_json::to_value(legacy)
+                .unwrap()
+                .get("usage_source")
+                .is_none(),
+            "the billed default stays off the wire"
+        );
+        let replay = LoopModelUsage {
+            input_tokens: 4,
+            output_tokens: 2,
+            usage_source: ModelUsageSource::ResponseCache,
+            ..LoopModelUsage::default()
+        };
+        assert_eq!(
+            serde_json::to_value(replay).unwrap()["usage_source"],
+            "response_cache"
+        );
+        // A run total of only replays is a replay; one billed call makes it billed.
+        let only_replays = LoopModelUsage::merge_optional(None, Some(replay)).unwrap();
+        assert_eq!(only_replays.usage_source, ModelUsageSource::ResponseCache);
+        assert_eq!(only_replays.input_tokens, 4);
+        let mixed = LoopModelUsage::merge_optional(Some(replay), Some(legacy)).unwrap();
+        assert_eq!(mixed.usage_source, ModelUsageSource::Provider);
+        assert_eq!(mixed.total_tokens(), 12);
+    }
 
     fn test_context() -> LoopRunContext {
         let scope = TurnScope::new(

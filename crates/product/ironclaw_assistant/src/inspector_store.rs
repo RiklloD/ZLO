@@ -2476,6 +2476,7 @@ mod tests {
                         output_tokens: 4,
                         cache_read_input_tokens: 2,
                         cache_creation_input_tokens: 1,
+                        ..Default::default()
                     }),
                 },
             },

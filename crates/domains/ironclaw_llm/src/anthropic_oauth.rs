@@ -512,6 +512,7 @@ impl LlmProvider for AnthropicOAuthProvider {
             output_tokens: response.usage.output_tokens,
             reasoning: extracted.reasoning,
             cache_creation_input_tokens: response.usage.cache_creation_input_tokens,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             cache_read_input_tokens: response.usage.cache_read_input_tokens,
         })
     }
@@ -548,6 +549,7 @@ impl LlmProvider for AnthropicOAuthProvider {
             output_tokens: response.usage.output_tokens,
             reasoning: response.reasoning,
             cache_creation_input_tokens: response.usage.cache_creation_input_tokens,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             cache_read_input_tokens: response.usage.cache_read_input_tokens,
         })
     }

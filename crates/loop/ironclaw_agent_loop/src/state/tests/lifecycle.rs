@@ -23,6 +23,7 @@ fn rebase_for_run_resets_run_owned_refs_and_input_cursor() {
         output_tokens: 50,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     });
     // Gate-bound resume state must survive the rebase: this path also
     // resumes a run after an approval/auth gate, where the pending-resume
@@ -182,6 +183,7 @@ fn rebase_for_run_preserves_refs_for_same_run_gate_resume() {
         output_tokens: 50,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     });
     // A same-run gate resume must also preserve per-run budget
     // accounting: the full-equality assertion below locks that in

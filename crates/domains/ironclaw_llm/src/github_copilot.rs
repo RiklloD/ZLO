@@ -302,6 +302,7 @@ impl LlmProvider for GithubCopilotProvider {
                 .unwrap_or(0),
             reasoning: None,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             cache_read_input_tokens: 0,
         })
     }

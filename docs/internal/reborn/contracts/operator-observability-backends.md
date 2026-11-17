@@ -150,7 +150,8 @@ with the process-wide registry and the integration harness calls with its own.
 | `ironclaw_model_calls_total`, `ironclaw_model_call_duration_seconds` | `outcome` | `ModelCompleted` / `ModelFailed` runtime events **durably committed** to the event log, observed by `MetricsDurableEventLog` beneath the write-behind `CoalescingEventSink`'s drain. Events that sink drops while its bounded queue is full (its `try_emit` still answers `Ok`) and rows the backend rejects are not counted; events lost in a crash before the drain flushes are not counted either |
 | `ironclaw_capability_invocations_total` | `capability_id`, `outcome` | `CapabilityActivitySucceeded` / `CapabilityActivityFailed` runtime events, committed as above |
 | `ironclaw_capability_failures_total` | `capability_id`, `reason` (sanitized `error_kind`; the host's `input_encode` is exported as `invalid_input`) | `CapabilityActivityFailed` — including a call whose arguments fail the capability's schema: the loop host publishes the invoked/failed pair for it like any dispatch failure, so it counts as a failed invocation with `reason="invalid_input"` |
-| `ironclaw_llm_requests_total`, `ironclaw_llm_errors_total`, `ironclaw_llm_tokens_total` | `provider`, `model`, `outcome` / `kind` | provider responses, observed by `MetricsLlmProvider` outermost on the provider chain (so routed providers and reloads are both covered). `provider` is the provider a routed request (`<provider>::<model>`) named, else the chain's own id (`failover` for a failover set); `model` is read after the call through `effective_model_name`, so a failover that served from a later provider reports that provider's model. A failed request mints no series: it is attributed to `model="unknown"` (and a caller-named provider to `provider="unknown"`) unless that provider/model pair has already served a request — a per-run requested model reaches the provider unvalidated, so this keeps junk model names from claiming series slots |
+| `ironclaw_llm_requests_total`, `ironclaw_llm_errors_total`, `ironclaw_llm_tokens_total` | `provider`, `model`, `outcome` / `kind` | provider responses, observed by `MetricsLlmProvider` outermost on the provider chain (so routed providers and reloads are both covered). `provider` is the provider a routed request (`<provider>::<model>`) named, else the chain's own id (`failover` for a failover set); `model` is read after the call through `effective_model_name`, so a failover that served from a later provider reports that provider's model. A failed request mints no series: it is attributed to `model="unknown"` (and a caller-named provider to `provider="unknown"`) unless that provider/model pair has already served a request — a per-run requested model reaches the provider unvalidated, so this keeps junk model names from claiming series slots. Tokens are counted only from a provider *response* (`LlmError` carries no usage, so a failed request adds zero tokens); a response the loop then rejects — truncated, filtered, malformed tool output — was served and is counted. `kind` is `input` / `output` / `cache_read` / `cache_write`, and a zero count mints no series |
+| `ironclaw_llm_response_cache_hits_total` | `provider`, `model` | the same observation, for a response the host replayed from its response cache (`CachedProvider`, `LLM_RESPONSE_CACHE_ENABLED=true`; the response's `usage_source` is `response_cache`). A hit is still one `ironclaw_llm_requests_total{outcome="success"}`, but adds **no** tokens: its counts were counted when the provider first served them. The budget accountant likewise charges a hit nothing (zero USD, zero token quota) while the run keeps its counts for context accounting. Streaming calls are never served from the cache, so in practice hits come from non-streaming callers (system inference) |
 | `ironclaw_llm_request_duration_seconds` (histogram) | `outcome` = success / error | same observation |
 | `ironclaw_approval_gates_opened_total` | — | committed `Blocked` turn transitions whose gate kind is `approval` (same turn-event adapter) |
 | `ironclaw_approval_gates_resolved_total` | `resolution` = approved / denied | committed user decisions, observed by `MetricsApprovalRequestStore` around the approval resolver's store (`approve`, `deny`). A capability-side rollback (`discard_pending` when blocking the invocation fails) is not counted: it runs before the turn commits `Blocked`, so the gate was never counted opened. `opened - resolved` is therefore gates still pending plus gates whose run ended (cancelled, failed) while pending |
@@ -159,10 +160,22 @@ with the process-wide registry and the integration harness calls with its own.
 Cardinality rules, enforced by the registry: no tenant, user, agent, project,
 thread, run, or invocation id is ever a label; label values are reduced to
 `[A-Za-z0-9_.:/@-]`, at most 96 chars; `capability_id` families hold at most
-256 series and provider/model families 128, beyond which the open-vocabulary
+256 series and provider/model families 128 (the token family 512: 128
+pairs × 4 kinds), beyond which the open-vocabulary
 labels (`capability_id`, `reason`, `provider`, `model`) fold into `__other__`
 and the sample is counted; closed labels (`outcome`, token/error `kind`) are
 kept, so an overflowed failure is still a failure.
+
+Each family's ceiling is counted independently, so two families can disagree
+about the same provider/model once one of them is full. The request family's
+128 series include `outcome="error"` series, while the token family holds 512
+(128 pairs × 4 kinds) and the cache-hit family 128 pairs: when failures have
+filled the request family, a newly served model's request folds into
+`provider/model="__other__"` while its tokens (or cache hits) still mint
+series under the real labels. Cardinality stays bounded either way; do not
+join `ironclaw_llm_tokens_total` to `ironclaw_llm_requests_total` per model
+and expect every token series to have a matching request series — compare
+the `__other__` and `ironclaw_metrics_series_overflow_total` samples instead.
 
 The approval-store decorator wraps the store at its consumer (the resolver),
 never where it is registered with `HostRuntimeServices`, so the

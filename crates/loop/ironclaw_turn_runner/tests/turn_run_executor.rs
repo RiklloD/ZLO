@@ -395,6 +395,7 @@ fn completed_exit() -> LoopExit {
             output_tokens: 48,
             cache_read_input_tokens: 11,
             cache_creation_input_tokens: 3,
+            ..Default::default()
         }),
         exit_id: LoopExitId::new("exit:finalizer-failure").expect("valid test exit id"),
     })
@@ -570,6 +571,7 @@ fn claimed_run_full(
                 output_tokens: 40,
                 cache_read_input_tokens: 10,
                 cache_creation_input_tokens: 2,
+                ..Default::default()
             }),
             execution_outcome: None,
             received_at: Utc::now(),
@@ -627,6 +629,7 @@ fn build_executor_for_sweep_test(
                 output_tokens: 1,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
+                ..Default::default()
             },
             finalize_fails: true,
         }),
@@ -745,6 +748,7 @@ async fn execute_claimed_run_preserves_finalizer_usage_on_host_failure() {
         output_tokens: 5,
         cache_read_input_tokens: 2,
         cache_creation_input_tokens: 1,
+        ..Default::default()
     };
     let mut registry = DriverRegistry::new();
     registry
@@ -788,6 +792,7 @@ async fn execute_claimed_run_preserves_finalizer_usage_on_host_failure() {
             output_tokens: 53,
             cache_read_input_tokens: 13,
             cache_creation_input_tokens: 4,
+            ..Default::default()
         })
     );
 }
@@ -1025,6 +1030,7 @@ fn after_turn_executor(
                 output_tokens: 0,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
+                ..Default::default()
             },
             finalize_fails: false,
         }),

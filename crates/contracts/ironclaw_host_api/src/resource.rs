@@ -308,6 +308,31 @@ impl ResourceEstimate {
     }
 }
 
+/// Where a model call's reported token usage came from.
+///
+/// The counts always describe the size of what the call put in and took out of
+/// the model context, so context-window accounting reads them either way. Only
+/// [`Self::Provider`] usage was billed: a response replayed from the host's
+/// response cache reports the original call's counts but cost nothing, so
+/// spend accounting (budgets, operator token metrics) must not charge it again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelUsageSource {
+    /// The provider served this call and reported (and billed) the usage.
+    #[default]
+    Provider,
+    /// The host replayed a previously served response from its response
+    /// cache; no provider was called.
+    ResponseCache,
+}
+
+impl ModelUsageSource {
+    /// `true` when the usage was billed by a provider call.
+    pub fn is_provider(&self) -> bool {
+        matches!(self, Self::Provider)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceUsage {
     pub usd: Decimal,

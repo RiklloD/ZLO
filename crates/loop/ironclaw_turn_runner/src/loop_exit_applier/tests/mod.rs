@@ -283,6 +283,7 @@ async fn completed_exit_persists_model_usage_in_process_projection_metadata() {
         output_tokens: 21,
         cache_read_input_tokens: 34,
         cache_creation_input_tokens: 8,
+        ..Default::default()
     };
     let fixture = Fixture::new(InMemoryLoopExitEvidencePort::all_verified());
     let exit = LoopExit::Completed(LoopCompleted {
@@ -310,18 +311,21 @@ async fn blocked_exit_adds_supplemental_usage_to_claimed_cumulative_usage() {
         output_tokens: 40,
         cache_read_input_tokens: 10,
         cache_creation_input_tokens: 2,
+        ..Default::default()
     };
     let supplemental_usage = LoopModelUsage {
         input_tokens: 13,
         output_tokens: 5,
         cache_read_input_tokens: 2,
         cache_creation_input_tokens: 1,
+        ..Default::default()
     };
     let expected = LoopModelUsage {
         input_tokens: 113,
         output_tokens: 45,
         cache_read_input_tokens: 12,
         cache_creation_input_tokens: 3,
+        ..Default::default()
     };
     let mut claimed = claimed_run();
     claimed.state.model_usage = Some(claimed_usage);
@@ -351,6 +355,7 @@ async fn cancelled_exit_adds_supplemental_usage_to_claimed_cumulative_usage() {
         output_tokens: 5,
         cache_read_input_tokens: 2,
         cache_creation_input_tokens: 1,
+        ..Default::default()
     };
     let claimed = claimed_run();
     let transition = Arc::new(RecordingTransitionPort::new());

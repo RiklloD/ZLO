@@ -756,6 +756,7 @@ impl RebornIntegrationGroup {
             model_mode: ThreadModelMode::Normal,
             record_model_calls: false,
             model_override: None,
+            scripted_provider_id: None,
         }
     }
 
@@ -1704,6 +1705,8 @@ pub struct RebornThreadBuilder<'g> {
     /// are dropped); `Some` routes through a vision-capable id so `convert_messages`
     /// builds `ContentPart::ImageUrl` parts.
     model_override: Option<String>,
+    /// Vendor id the scripted provider reports (`None`: the trait default).
+    scripted_provider_id: Option<String>,
 }
 
 /// A thread's model-call behavior: exactly one of normal scripted playback,
@@ -1809,6 +1812,13 @@ impl<'g> RebornThreadBuilder<'g> {
         self
     }
 
+    /// Have the scripted vendor report `provider_id` as its provider id, as a
+    /// real provider adapter does. Unset, it reports the `LlmProvider` default.
+    pub fn with_scripted_provider_id(mut self, provider_id: impl Into<String>) -> Self {
+        self.scripted_provider_id = Some(provider_id.into());
+        self
+    }
+
     /// Build the per-thread `RebornIntegrationHarness` over the group's shared
     /// storage and ONE shared planned runtime.
     ///
@@ -1871,7 +1881,11 @@ impl<'g> RebornThreadBuilder<'g> {
         // wraps it in a parking provider at the SAME vendor-SDK seam (decorator
         // chain still runs on top), so captured requests stay inspectable either
         // way.
-        let scripted_llm: Arc<TraceLlm> = Arc::new(scripted_trace_llm(self.replies));
+        let scripted_llm = scripted_trace_llm(self.replies);
+        let scripted_llm: Arc<TraceLlm> = Arc::new(match self.scripted_provider_id {
+            Some(provider_id) => scripted_llm.with_provider_id(provider_id),
+            None => scripted_llm,
+        });
         // C-ERRORS: `Failing` swaps in `ErrLlm` at the same vendor-SDK seam;
         // `Parked` swaps in the parking wrapper. `ThreadModelMode` keeps all
         // provider modes mutually exclusive by construction — no priority

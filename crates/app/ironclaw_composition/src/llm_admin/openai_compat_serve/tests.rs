@@ -1182,6 +1182,7 @@ fn response_usage_reports_total_input_including_cache_and_breaks_out_cached_toke
         output_tokens: 500,
         cache_read_input_tokens: 2_000,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     };
     let built = response_usage_from_model_usage(&usage, "gpt-4o");
     // OpenAI `input_tokens` is the total input including the cached subset.
@@ -1207,6 +1208,7 @@ fn response_usage_adds_cache_creation_on_top_of_input() {
         output_tokens: 500,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 3_000,
+        ..Default::default()
     };
     let built = response_usage_from_model_usage(&usage, "gpt-4o");
     assert_eq!(built.input_tokens, 4_000); // 1000 + 3000
@@ -1224,6 +1226,7 @@ fn chat_usage_reports_prompt_tokens_including_cache_and_breaks_out_cached_tokens
         output_tokens: 500,
         cache_read_input_tokens: 2_000,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     };
     let built = chat_usage_from_model_usage(&usage);
     assert_eq!(built.prompt_tokens, 3_000);
@@ -1250,6 +1253,7 @@ fn chat_usage_adds_cache_creation_on_top_of_prompt_tokens() {
         output_tokens: 500,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 3_000,
+        ..Default::default()
     };
     let built = chat_usage_from_model_usage(&usage);
     assert_eq!(built.prompt_tokens, 4_000); // 1000 + 3000
@@ -1267,6 +1271,7 @@ fn response_cost_prices_input_output_and_discounts_cached_tokens() {
         output_tokens: 500,
         cache_read_input_tokens: 2_000,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     };
     let cost = response_cost_from_model_usage(&usage, "gpt-4o").expect("cost under llm feature");
     assert_eq!(cost.currency, "USD");
@@ -1291,6 +1296,7 @@ fn response_cost_bills_cache_creation_at_full_input_rate() {
         output_tokens: 0,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 3_000,
+        ..Default::default()
     };
     let cost = response_cost_from_model_usage(&usage, "gpt-4o").expect("cost");
     // billable input = (1000 - 0) + 3000 = 4000 → 4000 * 0.0000025 = 0.01
@@ -1308,6 +1314,7 @@ fn response_cost_applies_claude_cache_read_discount() {
         output_tokens: 0,
         cache_read_input_tokens: 2_000,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     };
     let cost = response_cost_from_model_usage(&usage, "claude-opus-4-6").expect("cost");
     // fresh input = (3000 - 2000) * 0.000015 = 0.015
@@ -1325,6 +1332,7 @@ fn response_cost_falls_back_to_default_rate_for_unknown_model() {
         output_tokens: 0,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
+        ..Default::default()
     };
     let cost =
         response_cost_from_model_usage(&usage, "some-brand-new-model-9000").expect("cost present");

@@ -135,15 +135,30 @@ pub enum TraceResponse {
         content: String,
         input_tokens: u32,
         output_tokens: u32,
+        /// Prompt-cache usage the provider reported for this step. Omitted
+        /// from the wire when zero, so traces recorded before these fields
+        /// existed (and providers without prompt caching) are unchanged.
+        #[serde(default, skip_serializing_if = "is_zero_tokens")]
+        cache_read_input_tokens: u32,
+        #[serde(default, skip_serializing_if = "is_zero_tokens")]
+        cache_creation_input_tokens: u32,
     },
     ToolCalls {
         tool_calls: Vec<TraceToolCall>,
         input_tokens: u32,
         output_tokens: u32,
+        #[serde(default, skip_serializing_if = "is_zero_tokens")]
+        cache_read_input_tokens: u32,
+        #[serde(default, skip_serializing_if = "is_zero_tokens")]
+        cache_creation_input_tokens: u32,
     },
     /// Marker for a user message that triggered subsequent LLM calls.
     /// Not an LLM response — replay providers must skip these.
     UserInput { content: String },
+}
+
+fn is_zero_tokens(count: &u32) -> bool {
+    *count == 0
 }
 
 /// A tool call in a trace step.
@@ -1168,6 +1183,8 @@ impl RecordingLlm {
                 content: response.content.clone(),
                 input_tokens: response.input_tokens,
                 output_tokens: response.output_tokens,
+                cache_read_input_tokens: response.cache_read_input_tokens,
+                cache_creation_input_tokens: response.cache_creation_input_tokens,
             },
             expected_tool_results: tool_results,
         });
@@ -1197,6 +1214,8 @@ impl RecordingLlm {
                     content: response.content.clone().unwrap_or_default(),
                     input_tokens: response.input_tokens,
                     output_tokens: response.output_tokens,
+                    cache_read_input_tokens: response.cache_read_input_tokens,
+                    cache_creation_input_tokens: response.cache_creation_input_tokens,
                 },
                 expected_tool_results: tool_results,
             }
@@ -1219,6 +1238,8 @@ impl RecordingLlm {
                         .collect(),
                     input_tokens: response.input_tokens,
                     output_tokens: response.output_tokens,
+                    cache_read_input_tokens: response.cache_read_input_tokens,
+                    cache_creation_input_tokens: response.cache_creation_input_tokens,
                 },
                 expected_tool_results: tool_results,
             }
@@ -1387,6 +1408,49 @@ mod tests {
     use super::*;
     use crate::testing::StubLlm;
 
+    #[test]
+    fn trace_response_cache_usage_is_optional_on_the_wire() {
+        // A trace recorded before the cache fields existed still loads, with
+        // zero cache usage.
+        let legacy: TraceResponse = serde_json::from_value(serde_json::json!({
+            "type": "text", "content": "hi", "input_tokens": 3, "output_tokens": 2
+        }))
+        .expect("legacy step deserializes");
+        assert!(matches!(
+            legacy,
+            TraceResponse::Text {
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                ..
+            }
+        ));
+        // Zero cache usage is omitted, so re-recording a cache-less provider
+        // produces byte-identical fixtures.
+        let wire = serde_json::to_value(&legacy).expect("serializes");
+        assert!(wire.get("cache_read_input_tokens").is_none(), "{wire}");
+        assert!(wire.get("cache_creation_input_tokens").is_none(), "{wire}");
+        // Non-zero cache usage round-trips.
+        let cached = TraceResponse::ToolCalls {
+            tool_calls: Vec::new(),
+            input_tokens: 10,
+            output_tokens: 4,
+            cache_read_input_tokens: 6,
+            cache_creation_input_tokens: 2,
+        };
+        let wire = serde_json::to_value(&cached).expect("serializes");
+        assert_eq!(wire["cache_read_input_tokens"], 6);
+        assert_eq!(wire["cache_creation_input_tokens"], 2);
+        let back: TraceResponse = serde_json::from_value(wire).expect("round-trips");
+        assert!(matches!(
+            back,
+            TraceResponse::ToolCalls {
+                cache_read_input_tokens: 6,
+                cache_creation_input_tokens: 2,
+                ..
+            }
+        ));
+    }
+
     fn make_recorder(stub: Arc<StubLlm>) -> RecordingLlm {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         RecordingLlm::new(
@@ -1494,6 +1558,7 @@ mod tests {
                 reasoning: None,
                 cache_read_input_tokens: 1,
                 cache_creation_input_tokens: 2,
+                usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             })
         }
 
@@ -1569,6 +1634,7 @@ mod tests {
                 content,
                 input_tokens,
                 output_tokens,
+                ..
             } => {
                 assert_eq!(content, "test response");
                 // StubLlm returns 0s for tokens, which is fine
@@ -2263,6 +2329,8 @@ mod tests {
                         }],
                         input_tokens: 50,
                         output_tokens: 20,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
                     },
                     expected_tool_results: Vec::new(),
                 },
@@ -2272,6 +2340,8 @@ mod tests {
                         content: "done".to_string(),
                         input_tokens: 80,
                         output_tokens: 10,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
                     },
                     expected_tool_results: vec![ExpectedToolResult {
                         tool_call_id: "call_1".to_string(),

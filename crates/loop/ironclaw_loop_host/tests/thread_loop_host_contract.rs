@@ -449,6 +449,7 @@ async fn model_port_records_resolved_prompt_with_fallback_model_at_the_host_boun
             output_tokens: 8,
             cache_read_input_tokens: 5,
             cache_creation_input_tokens: 3,
+            ..LoopModelUsage::default()
         },
         2,
     ));
@@ -586,6 +587,7 @@ async fn model_port_retains_usage_reported_by_failed_calls() {
         output_tokens: 2,
         cache_read_input_tokens: 8,
         cache_creation_input_tokens: 1,
+        ..LoopModelUsage::default()
     };
     let gateway = Arc::new(RecordingGateway::model_error_with_usage(
         HostManagedModelErrorKind::ProviderUnavailable,

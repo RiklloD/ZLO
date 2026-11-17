@@ -3423,6 +3423,118 @@ async fn production_loop_model_gateway_resolves_thread_refs_and_emits_milestones
     ));
 }
 
+/// `LLM_RESPONSE_CACHE_ENABLED`'s `CachedProvider` on the path production
+/// actually sends to it — system inference (compaction, curation, …) is the
+/// non-streaming caller; the interactive loop streams, and the cache never
+/// serves a streaming call. Two identical system inferences through the real
+/// guarded port, the production budget accountant, the real model gateway and
+/// the response cache reach the provider once. Both keep the call's token
+/// counts (they size the context), the replay is marked as served from the
+/// response cache, and the budget ledger is charged for the provider call only.
+#[tokio::test]
+async fn response_cache_replay_is_budgeted_once_and_keeps_its_context_counts() {
+    use ironclaw_host_api::resource::ModelUsageSource;
+    use ironclaw_loop_contracts::{
+        NoOpPolicyGuard, SystemInferenceIdentity, SystemInferencePort, SystemInferenceRequest,
+        SystemInferenceTaskId, SystemPromptSource, SystemTaskKind,
+    };
+    use ironclaw_loop_host::{
+        GovernorBackedAccountant, GuardedSystemInferencePort, ModelCost,
+        ModelGatewayBackedSystemInferencePort, StaticModelCostTable,
+    };
+    use ironclaw_resources::{
+        BudgetPeriod, InMemoryResourceGovernor, ResourceAccount, ResourceGovernor, ResourceLimits,
+    };
+
+    let fixture = ThreadFixture::new().await;
+    let user_id = UserId::new("user-production-gateway").unwrap();
+    let run_context = fixture
+        .run_context
+        .clone()
+        .with_actor(TurnActor::new(user_id.clone()));
+    let model_profile = run_context.resolved_run_profile.model_profile_id.clone();
+    let provider = Arc::new(RepeatingLlmProvider::default());
+    let cached = Arc::new(ironclaw_llm::CachedProvider::new(
+        provider.clone(),
+        ironclaw_llm::ResponseCacheConfig::default(),
+    ));
+    let gateway = Arc::new(LlmProviderModelGateway::with_provider_identity(
+        STATIC_PROVIDER_ID,
+        cached,
+        LlmModelProfilePolicy::new().allow_model_profile(model_profile.clone(), None),
+    ));
+    let account = ResourceAccount::user(run_context.scope.tenant_id.clone(), user_id);
+    let governor = Arc::new(InMemoryResourceGovernor::new());
+    governor
+        .set_limit(
+            account.clone(),
+            ResourceLimits::default()
+                .set_max_usd(Decimal::from(10_000))
+                .set_period(BudgetPeriod::Rolling24h),
+        )
+        .unwrap();
+    let cost = ModelCost {
+        input_per_token: Decimal::new(1, 2),
+        output_per_token: Decimal::new(1, 1),
+        max_output_tokens: 1024,
+    };
+    let port = GuardedSystemInferencePort::new(
+        Arc::new(ModelGatewayBackedSystemInferencePort::new(
+            gateway,
+            run_context.clone(),
+        )),
+        run_context,
+        Arc::new(GovernorBackedAccountant::new(
+            governor.clone() as Arc<dyn ResourceGovernor>,
+            Arc::new(StaticModelCostTable::new().with_entry(model_profile, cost)),
+        )),
+        Arc::new(NoOpPolicyGuard),
+    );
+    let request = SystemInferenceRequest {
+        task_id: SystemInferenceTaskId::new(),
+        identity: SystemInferenceIdentity {
+            task_kind: SystemTaskKind::Compaction,
+            prompt_source: SystemPromptSource::Static {
+                prompt_id: "compaction".to_string().try_into().unwrap(),
+            },
+            system_prompt: "summarize".to_string(),
+        },
+        input_text: "the same transcript".to_string(),
+        context_messages: Vec::new(),
+        max_input_tokens: 100,
+        deadline_ms: 5_000,
+        output_contract: None,
+    };
+
+    let served = port.call_system_inference(request.clone()).await.unwrap();
+    let replayed = port.call_system_inference(request).await.unwrap();
+
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        1,
+        "the identical second inference is a response-cache hit"
+    );
+    let served_usage = served.usage.expect("served usage");
+    let replayed_usage = replayed.usage.expect("replayed usage");
+    assert_eq!(served_usage.usage_source, ModelUsageSource::Provider);
+    assert_eq!(replayed_usage.usage_source, ModelUsageSource::ResponseCache);
+    assert_eq!(
+        (replayed_usage.input_tokens, replayed_usage.output_tokens),
+        (served_usage.input_tokens, served_usage.output_tokens),
+        "the replay keeps the call's counts for context accounting"
+    );
+    let snapshot = governor.account_snapshot(&account).unwrap().unwrap();
+    // One provider call: 1 input * $0.01 + 1 output * $0.10.
+    assert_eq!(snapshot.ledger.spent.usd, Decimal::new(11, 2));
+    assert_eq!(snapshot.ledger.spent.input_tokens, 1);
+    assert_eq!(snapshot.ledger.spent.output_tokens, 1);
+    assert_eq!(
+        snapshot.ledger.reserved.usd,
+        Decimal::ZERO,
+        "the replay's reservation is released, not held"
+    );
+}
+
 #[tokio::test]
 async fn production_loop_model_gateway_accepts_inline_prompt_messages() {
     let fixture = ThreadFixture::new().await;
@@ -5124,6 +5236,7 @@ impl LlmProvider for IgnoresModelOverrideProvider {
             reasoning: None,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         })
     }
 
@@ -5264,6 +5377,7 @@ impl LlmProvider for StreamingRecordingLlmProvider {
             reasoning: None,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         })
     }
 
@@ -5345,6 +5459,7 @@ impl LlmProvider for CacheUsageSequenceProvider {
             reasoning: None,
             cache_read_input_tokens,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         })
     }
 
@@ -5408,6 +5523,7 @@ impl RecordingLlmProvider {
                 reasoning: None,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
+                usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             }))),
         }
     }
@@ -5468,6 +5584,7 @@ impl LlmProvider for BarrierRecordingLlmProvider {
             reasoning: None,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
         })
     }
 
@@ -5504,6 +5621,7 @@ impl ToolAwareProvider {
                 reasoning: None,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
+                usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             })),
             tool_responses: Mutex::new(VecDeque::new()),
         }
@@ -5986,3 +6104,45 @@ impl LlmProvider for RecordingLlmProvider {
     }
 }
 // arch-exempt: large_file, LLM gateway contract coverage remains centralized, plan #6175
+
+/// Answers every text completion with the same one-token reply and records
+/// each request, so a test can count how many calls reached the provider.
+#[derive(Default)]
+struct RepeatingLlmProvider {
+    requests: Mutex<Vec<CompletionRequest>>,
+}
+
+#[async_trait]
+impl LlmProvider for RepeatingLlmProvider {
+    fn model_name(&self) -> &str {
+        "recording-model"
+    }
+
+    fn cost_per_token(&self) -> (Decimal, Decimal) {
+        (Decimal::ZERO, Decimal::ZERO)
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        self.requests.lock().unwrap().push(request);
+        Ok(CompletionResponse {
+            content: "cached answer".to_string(),
+            input_tokens: 1,
+            output_tokens: 1,
+            finish_reason: FinishReason::Stop,
+            reasoning: None,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
+        })
+    }
+
+    async fn complete_with_tools(
+        &self,
+        _request: ToolCompletionRequest,
+    ) -> Result<ToolCompletionResponse, LlmError> {
+        Err(LlmError::RequestFailed {
+            provider: "repeating".to_string(),
+            reason: "text-only test provider".to_string(),
+        })
+    }
+}

@@ -67,6 +67,7 @@ fn empty_registry_renders_every_family_header_and_a_zero_gate_counter() {
         "ironclaw_capability_invocations_total",
         "ironclaw_llm_requests_total",
         "ironclaw_llm_tokens_total",
+        "ironclaw_llm_response_cache_hits_total",
         "ironclaw_approval_gates_resolved_total",
     ] {
         assert!(
@@ -259,16 +260,16 @@ fn overflow_keeps_closed_outcome_and_kind_labels() {
                 provider_configured: true,
                 model: &model,
             },
-            Ok(LlmTokenUsage::default()),
+            Ok(LlmResponseRecord::Provider(LlmTokenUsage::default())),
             Duration::from_millis(5),
         );
     }
     metrics.record_llm_request(
         configured("late-model"),
-        Ok(LlmTokenUsage {
+        Ok(LlmResponseRecord::Provider(LlmTokenUsage {
             input: 3,
             ..LlmTokenUsage::default()
-        }),
+        })),
         Duration::from_millis(5),
     );
 
@@ -566,7 +567,7 @@ fn junk_model_names_on_failed_requests_cannot_claim_series() {
             provider_configured: true,
             model: "real-model",
         },
-        Ok(LlmTokenUsage::default()),
+        Ok(LlmResponseRecord::Provider(LlmTokenUsage::default())),
         Duration::from_millis(1),
     );
     // Once served, the pair's later failures are attributed to it.
@@ -713,4 +714,105 @@ async fn llm_labels_follow_the_routed_provider_and_the_failover_serving_model() 
     );
     assert!(!rendered.contains("primary-model"), "{rendered}");
     assert!(!rendered.contains("absent"), "{rendered}");
+}
+
+#[tokio::test]
+async fn response_cache_hits_count_as_hits_not_as_tokens() {
+    let metrics = Arc::new(OperatorMetrics::new());
+    let stub = Arc::new(StubLlm::new("cached").with_model_name("stub/cache-model"));
+    let cached = Arc::new(ironclaw_llm::CachedProvider::new(
+        stub.clone(),
+        ironclaw_llm::ResponseCacheConfig::default(),
+    ));
+    let metered = MetricsLlmProvider::new(cached, Arc::clone(&metrics));
+    let request = || CompletionRequest::new(vec![ChatMessage::user("same question")]);
+    let served = metered.complete(request()).await.expect("served");
+    let replayed = metered.complete(request()).await.expect("replayed");
+    assert_eq!(stub.calls(), 1, "the second call is a cache hit");
+    assert_eq!(
+        replayed.input_tokens, served.input_tokens,
+        "the hit keeps its counts"
+    );
+
+    let rendered = metrics.render_prometheus();
+    let provider = label_value(&metered.provider_id());
+    let series = |family: &str, kind: &str| {
+        format!("{family}{{provider=\"{provider}\",model=\"stub/cache-model\"{kind}}}")
+    };
+    assert_eq!(
+        line_value(
+            &rendered,
+            &series("ironclaw_llm_tokens_total", ",kind=\"input\"")
+        ),
+        Some(served.input_tokens.to_string()),
+        "tokens are counted once, for the provider call only:\n{rendered}"
+    );
+    assert_eq!(
+        line_value(
+            &rendered,
+            &series("ironclaw_llm_tokens_total", ",kind=\"output\"")
+        ),
+        Some(served.output_tokens.to_string()),
+        "{rendered}"
+    );
+    assert_eq!(
+        line_value(
+            &rendered,
+            &series("ironclaw_llm_response_cache_hits_total", "")
+        )
+        .as_deref(),
+        Some("1"),
+        "the hit is counted in its own family:\n{rendered}"
+    );
+    assert_eq!(
+        line_value(
+            &rendered,
+            &series("ironclaw_llm_requests_total", ",outcome=\"success\"")
+        )
+        .as_deref(),
+        Some("2"),
+        "both requests were answered:\n{rendered}"
+    );
+}
+
+#[test]
+fn response_cache_hit_series_fold_past_the_llm_series_ceiling() {
+    let metrics = OperatorMetrics::new();
+    for index in 0..=MAX_LLM_SERIES {
+        let model = format!("model-{index}");
+        metrics.record_llm_request(
+            LlmRequestLabels {
+                provider: "vendor",
+                provider_configured: true,
+                model: &model,
+            },
+            Ok(LlmResponseRecord::ResponseCacheHit),
+            Duration::from_millis(1),
+        );
+    }
+    let rendered = metrics.render_prometheus();
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_llm_response_cache_hits_total{provider=\"__other__\",model=\"__other__\"}"
+        )
+        .as_deref(),
+        Some("1"),
+        "{rendered}"
+    );
+    assert_eq!(
+        line_value(
+            &rendered,
+            "ironclaw_metrics_series_overflow_total{family=\"llm_response_cache_hits\"}"
+        )
+        .as_deref(),
+        Some("1"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered
+            .lines()
+            .any(|line| line.starts_with("ironclaw_llm_tokens_total{")),
+        "a hit adds no token series:\n{rendered}"
+    );
 }

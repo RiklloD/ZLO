@@ -244,6 +244,7 @@ impl RawTraceContribution {
                     content,
                     input_tokens,
                     output_tokens,
+                    ..
                 } => {
                     events.push(RawTraceContributionEvent {
                         event_id: Uuid::new_v4(),
@@ -264,6 +265,7 @@ impl RawTraceContribution {
                     tool_calls,
                     input_tokens,
                     output_tokens,
+                    ..
                 } => {
                     for tool_call in tool_calls {
                         required_tools.insert(tool_call.name.clone());
