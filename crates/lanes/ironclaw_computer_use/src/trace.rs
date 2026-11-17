@@ -48,5 +48,8 @@ async fn append(path: &Path, mut line: String) -> std::io::Result<()> {
         .append(true)
         .open(path)
         .await?;
-    file.write_all(line.as_bytes()).await
+    file.write_all(line.as_bytes()).await?;
+    // A tokio file may still hold the write when `write_all` returns, and
+    // dropping it does not wait: flush so the line is on disk on return.
+    file.flush().await
 }
