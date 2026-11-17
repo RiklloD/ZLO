@@ -23,6 +23,11 @@ pub(super) struct V2MutationLease {
 pub(super) struct V2PreparationLease {
     pub(super) incarnation_id: InstallationIncarnationId,
     pub(super) expected_manifest_ref: ExtensionManifestRef,
+    /// Random identity of this acquisition, so a release or in-process repair
+    /// clears exactly the lease it took. Absent on leases written before the
+    /// id existed: such a legacy lease is cleared only by startup repair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) lease_id: Option<uuid::Uuid>,
 }
 
 impl V2MutationLease {
@@ -43,12 +48,14 @@ impl V2MutationLease {
     pub(super) fn preparation(
         incarnation_id: InstallationIncarnationId,
         expected_manifest_ref: ExtensionManifestRef,
+        lease_id: uuid::Uuid,
     ) -> Self {
         Self {
             member: None,
             preparation: Some(V2PreparationLease {
                 incarnation_id,
                 expected_manifest_ref,
+                lease_id: Some(lease_id),
             }),
         }
     }

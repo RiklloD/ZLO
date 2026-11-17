@@ -1031,3 +1031,129 @@ async fn lease_repair_never_clears_a_newer_lease_with_the_same_identity() {
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn lease_identity_survives_two_acquisitions_with_the_same_timestamp() {
+    let store = installation_store().await;
+    let pending = pending_installation("fixture", Some("hash-one"));
+    let installation_id = pending.installation_id().clone();
+    let incarnation = pending.incarnation_id().cloned().expect("incarnation");
+    let expected_ref = pending.manifest_ref().clone();
+    store
+        .upsert_manifest_and_installation(
+            pending_manifest_record("fixture", Some("hash-one")),
+            pending,
+        )
+        .await
+        .expect("seed pending");
+    // A frozen clock: both acquisitions record the same instant.
+    let frozen = Utc::now();
+    let first = store
+        .take_v2_preparation_lease_at(&installation_id, &incarnation, &expected_ref, frozen)
+        .await
+        .expect("take first lease");
+    store
+        .clear_v2_preparation_lease(&first)
+        .await
+        .expect("release first lease");
+    let second = store
+        .take_v2_preparation_lease_at(&installation_id, &incarnation, &expected_ref, frozen)
+        .await
+        .expect("take a second lease at the same instant");
+
+    // A late repair for the first lease must not clear the second.
+    store
+        .clear_v2_preparation_lease(&first)
+        .await
+        .expect("stale release is a no-op");
+    assert!(
+        store
+            .get_installation(&installation_id)
+            .await
+            .expect("load leased installation")
+            .is_none(),
+        "a stale release must not clear a newer lease taken at the same instant"
+    );
+    store
+        .clear_v2_preparation_lease(&second)
+        .await
+        .expect("matching release");
+    assert!(
+        store
+            .get_installation(&installation_id)
+            .await
+            .expect("load released installation")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn a_legacy_lease_without_an_id_is_cleared_only_by_startup_repair() {
+    let backend = Arc::new(FaultInjecting::new(InMemoryBackend::new()));
+    let root = "legacy-lease";
+    let store = store_over(Arc::clone(&backend), root).await;
+    let pending = pending_installation("fixture", Some("hash-one"));
+    let installation_id = pending.installation_id().clone();
+    let incarnation = pending.incarnation_id().cloned().expect("incarnation");
+    let expected_ref = pending.manifest_ref().clone();
+    store
+        .upsert_manifest_and_installation(
+            pending_manifest_record("fixture", Some("hash-one")),
+            pending,
+        )
+        .await
+        .expect("seed pending");
+    let token = store
+        .take_v2_preparation_lease(&installation_id, &incarnation, &expected_ref)
+        .await
+        .expect("take lease");
+
+    // Rewrite the stored lease into the pre-id shape an older build wrote.
+    let path = store
+        .v2_scoped_path(&store.v2_installation_path(&installation_id).unwrap())
+        .unwrap();
+    cas_update(
+        store.scoped_filesystem.as_ref(),
+        &ResourceScope::system(),
+        &path,
+        decode_v2_installation_body,
+        entry_for_v2_installation,
+        |current: Option<V2InstallationRecord>| async move {
+            let mut record = current.expect("leased record");
+            record
+                .lease
+                .as_mut()
+                .and_then(|lease| lease.preparation.as_mut())
+                .expect("preparation lease")
+                .lease_id = None;
+            Ok::<_, ExtensionInstallationError>(CasApply::new(record, ()))
+        },
+    )
+    .await
+    .expect("write the legacy lease shape");
+
+    // No in-process release can name a legacy lease.
+    store
+        .clear_v2_preparation_lease(&token)
+        .await
+        .expect("a release that does not match is a no-op");
+    assert!(
+        store
+            .get_installation(&installation_id)
+            .await
+            .expect("load leased installation")
+            .is_none(),
+        "only startup repair may clear a lease without an id"
+    );
+    drop(store);
+
+    let reopened = store_over(backend, root).await;
+    assert!(
+        reopened
+            .get_installation(&installation_id)
+            .await
+            .expect("load after restart repair")
+            .is_some(),
+        "startup repair clears the legacy lease"
+    );
+}

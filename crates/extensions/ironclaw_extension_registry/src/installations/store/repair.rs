@@ -217,7 +217,8 @@ impl ExtensionInstallationStore {
 
     /// Clear exactly the preparation lease `token` names. A no-op when the
     /// record no longer holds that lease — including a newer lease with the
-    /// same incarnation and manifest, which `taken_at` tells apart.
+    /// same incarnation and manifest (told apart by the persisted lease id),
+    /// and a legacy lease without an id, which only startup repair clears.
     pub(super) async fn clear_v2_preparation_lease(
         &self,
         token: &PreparationLeaseToken,
@@ -338,14 +339,18 @@ impl ExtensionInstallationStore {
 }
 
 /// Identity of one preparation lease: which aggregate, the incarnation and
-/// manifest it covers, and the `updated_at` stamp its take committed. A newer
-/// lease with the same incarnation and manifest has a later stamp, so a late
-/// release or repair for this lease can never clear that one.
+/// manifest it covers, and the random lease id its take persisted. A newer
+/// lease with the same incarnation and manifest has a different id (even if
+/// taken at the same instant), so a late release or repair for this lease
+/// can never clear that one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PreparationLeaseToken {
     pub(super) installation_id: ExtensionInstallationId,
     pub(super) incarnation_id: InstallationIncarnationId,
     pub(super) expected_manifest_ref: ExtensionManifestRef,
+    /// The persisted identity the release matches on.
+    pub(super) lease_id: uuid::Uuid,
+    /// When the lease was taken; diagnostics only, never identity.
     pub(super) taken_at: DateTime<Utc>,
 }
 
@@ -412,10 +417,10 @@ async fn clear_preparation_lease_at(
                     .as_ref()
                     .and_then(|lease| lease.preparation.as_ref())
                     .is_some_and(|preparation| {
-                        preparation.incarnation_id == token.incarnation_id
+                        preparation.lease_id == Some(token.lease_id)
+                            && preparation.incarnation_id == token.incarnation_id
                             && preparation.expected_manifest_ref == token.expected_manifest_ref
-                    })
-                    && record.updated_at == token.taken_at;
+                    });
                 if !lease_matches {
                     return Ok(CasApply::no_op(record, ()));
                 }

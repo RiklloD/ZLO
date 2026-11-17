@@ -217,6 +217,24 @@ impl ExtensionInstallationStore {
         incarnation_id: &InstallationIncarnationId,
         expected_manifest_ref: &ExtensionManifestRef,
     ) -> Result<PreparationLeaseToken, ExtensionInstallationError> {
+        self.take_v2_preparation_lease_at(
+            installation_id,
+            incarnation_id,
+            expected_manifest_ref,
+            Utc::now(),
+        )
+        .await
+    }
+
+    /// [`Self::take_v2_preparation_lease`] with the lease's timestamp given,
+    /// so identity can be shown not to depend on the clock.
+    pub(super) async fn take_v2_preparation_lease_at(
+        &self,
+        installation_id: &ExtensionInstallationId,
+        incarnation_id: &InstallationIncarnationId,
+        expected_manifest_ref: &ExtensionManifestRef,
+        now: DateTime<Utc>,
+    ) -> Result<PreparationLeaseToken, ExtensionInstallationError> {
         let path = self.v2_scoped_path(&self.v2_installation_path(installation_id)?)?;
         let token_installation_id = installation_id.clone();
         let token_incarnation_id = incarnation_id.clone();
@@ -224,6 +242,7 @@ impl ExtensionInstallationStore {
         let installation_id = installation_id.clone();
         let incarnation_id = incarnation_id.clone();
         let expected_manifest_ref = expected_manifest_ref.clone();
+        let lease_id = uuid::Uuid::new_v4();
         let taken_at = cas_update(
             self.scoped_filesystem.as_ref(),
             &ResourceScope::system(),
@@ -267,8 +286,9 @@ impl ExtensionInstallationStore {
                     record.lease = Some(V2MutationLease::preparation(
                         incarnation_id,
                         expected_manifest_ref,
+                        lease_id,
                     ));
-                    let taken_at = Utc::now();
+                    let taken_at = now;
                     record.updated_at = taken_at;
                     Ok(CasApply::new(record, taken_at))
                 }
@@ -280,6 +300,7 @@ impl ExtensionInstallationStore {
             installation_id: token_installation_id,
             incarnation_id: token_incarnation_id,
             expected_manifest_ref: token_manifest_ref,
+            lease_id,
             taken_at,
         })
     }

@@ -101,9 +101,10 @@ children change (the embedded definition stays readable), and commit the
 record lease-free last. A failed update restores the prior aggregate;
 startup uses the compatibility snapshot to roll back an interrupted lease.
 A preparation finalize or checkpoint that is rejected after taking its lease
-releases that exact lease (matched on incarnation, manifest, and the
-`updated_at` stamp its take committed, so a newer lease with the same identity
-is never cleared). If that release fails, the caller still receives the
+releases that exact lease (matched on incarnation, manifest, and the random
+`lease_id` its take persisted, so a newer lease with the same incarnation and
+manifest is never cleared, even one taken at the same instant). A lease
+written before `lease_id` existed is cleared only by startup repair. If that release fails, the caller still receives the
 original rejection, wrapped as `RejectedWithLeaseCleanupPending` with the
 release failure as its source (classify via `rejection()`), and the store
 schedules a bounded in-process repair (five retries, ~1.5 s of backoff) so the
