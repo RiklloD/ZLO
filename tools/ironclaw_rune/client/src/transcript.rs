@@ -279,6 +279,10 @@ pub struct Transcript {
     /// Question forms sent from this view: answered (`true`) or dismissed.
     question_sends: HashMap<String, bool>,
     pending_user: Vec<PendingUser>,
+    /// Row keys of server messages that replaced an optimistic bubble
+    /// (`message_id` → `pending:N`): the copy takes the bubble's key, so the
+    /// view keeps one element instead of fading one out and another in.
+    sent_keys: HashMap<String, String>,
     /// Command results, each placed after the last durable message it saw.
     notes: Vec<(u64, Row)>,
     latest_run: Option<String>,
@@ -354,6 +358,10 @@ struct PendingUser {
     chips: Vec<AttachmentChip>,
     /// Newest durable sequence when it was sent; its server copy is newer.
     after: Option<u64>,
+}
+
+fn pending_key(id: u64) -> String {
+    format!("pending:{id}")
 }
 
 /// The native agent's checklist capability: its result is a plan, drawn as
@@ -595,6 +603,7 @@ impl Transcript {
     fn reconcile_pending(&mut self) {
         let mut claimed: HashSet<&str> = HashSet::new();
         let durable = &self.durable;
+        let sent_keys = &mut self.sent_keys;
         self.pending_user.retain(|p| {
             let newer = |m: &&TimelineMessage| {
                 m.kind == MessageKind::User
@@ -616,6 +625,7 @@ impl Transcript {
             match found {
                 Some(m) => {
                     claimed.insert(m.message_id.as_str());
+                    sent_keys.insert(m.message_id.clone(), pending_key(p.id));
                     false
                 }
                 None => true,
@@ -625,7 +635,11 @@ impl Transcript {
 
     /// Show a message immediately while the send is in flight.
     pub fn push_pending_user(&mut self, text: &str, files: &[String]) -> u64 {
-        self.tick += 1;
+        // Unique across every transcript (main and side chats): the row key
+        // `pending:N` outlives the send once the server copy takes it, and
+        // scroll requests resolve keys window-wide.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let chips = files
             .iter()
             .enumerate()
@@ -638,13 +652,21 @@ impl Transcript {
             })
             .collect();
         self.pending_user.push(PendingUser {
-            id: self.tick,
+            id,
             text: text.to_string(),
             acked: false,
             chips,
             after: self.durable.iter().map(|m| m.sequence).max(),
         });
-        self.tick
+        id
+    }
+
+    /// The row key of durable message `message_id`.
+    pub fn key_of_message(&self, message_id: &str) -> String {
+        self.sent_keys
+            .get(message_id)
+            .cloned()
+            .unwrap_or_else(|| format!("msg:{message_id}"))
     }
 
     pub fn ack_pending_user(&mut self, id: u64) {
@@ -1282,7 +1304,7 @@ impl Transcript {
             {
                 continue;
             }
-            let key = format!("msg:{}", message.message_id);
+            let key = self.key_of_message(&message.message_id);
             if message.kind == MessageKind::User
                 && let Some((title, body)) = delegated_result(&text)
             {
@@ -1433,7 +1455,7 @@ impl Transcript {
         rows.extend(notes.map(|(_, note)| note.clone()));
         for p in &self.pending_user {
             rows.push(Row::User {
-                key: format!("pending:{}", p.id),
+                key: pending_key(p.id),
                 text: p.text.clone(),
                 pending: !p.acked,
                 attachments: p.chips.clone(),
@@ -2477,6 +2499,12 @@ mod tests {
         t.set_timeline(page);
         let rows = t.rows();
         assert_eq!(user(&rows), 2, "the server copy replaces it, no duplicate");
-        assert!(matches!(rows.last(), Some(Row::User { key, .. }) if key == "msg:m3"));
+        // It takes the bubble's key: the view keeps the one element (no
+        // second bubble fading in while the first fades out).
+        assert!(
+            matches!(rows.last(), Some(Row::User { key, pending: false, .. }) if *key == format!("pending:{id}"))
+        );
+        assert_eq!(t.key_of_message("m3"), format!("pending:{id}"));
+        assert_eq!(t.key_of_message("m1"), "msg:m1");
     }
 }

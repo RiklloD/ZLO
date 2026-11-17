@@ -52,8 +52,13 @@ pub(in crate::workspace) fn shelves(s: &State) -> Shelves<'_> {
         .into_iter()
         .filter(|r| !tree.is_nested(&r.thread_id))
         .collect();
+    // A thread that was listed when its run started keeps its card where it
+    // was; only runs that start elsewhere go to the Working shelf.
     let in_state = |st: InboxState| -> Vec<&InboxRow> {
-        rows.iter().copied().filter(|r| r.state == st).collect()
+        rows.iter()
+            .copied()
+            .filter(|r| inbox.shown_state(r) == st)
+            .collect()
     };
     let unfold = !query.is_empty() || inbox.state.is_some();
     let working_open = inbox.show_working || unfold;

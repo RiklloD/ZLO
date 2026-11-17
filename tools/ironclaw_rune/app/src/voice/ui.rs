@@ -1,7 +1,10 @@
-//! The composer's voice controls: the mic, the talk-mode button, and a pill
-//! that says what voice is doing (listening, thinking, speaking) with a
-//! one-click exit. Right-clicking the mic flips read-aloud for the thread.
-//! Every composer (thread, new thread, quick) draws the same controls.
+//! The composer's voice controls: one mic, and a pill that says what voice
+//! is doing (listening, thinking, speaking) with a one-click exit. A click
+//! dictates; right-clicking the mic offers talk mode and, in a thread,
+//! read-aloud. (A second, talk-mode button beside the mic read as a second
+//! dictation button: both showed "Listening".) Every composer (thread, new
+//! thread, quick) draws the same controls; in the quick composer, which has
+//! no menu, a right-click on the mic toggles talk mode.
 //!
 //! Rune port of the GPUI `voice/ui.rs`. Area A (chat composer) and area B
 //! (new-thread and quick composers) place [`composer_controls`] in their
@@ -36,21 +39,24 @@ impl Controls {
         let status = super::status(s);
         let ours = super::targets(s, composer);
         let prefs = &s.voice.prefs;
+        let talk = super::talk_mode(s);
         let tip = if ours && status == Status::Dictating {
             "Stop dictating".to_string()
+        } else if ours && talk {
+            "Leave talk mode".to_string()
         } else if prefs.hotkey_enabled {
             let key = super::HOTKEYS
                 .iter()
                 .find(|(k, _)| *k == prefs.hotkey)
                 .map_or("the key", |(_, label)| *label);
-            format!("Dictate (or hold {key})")
+            format!("Dictate (or hold {key}) · right-click for talk mode")
         } else {
-            "Dictate".to_string()
+            "Dictate · right-click for talk mode".to_string()
         };
         Self {
             status,
             ours,
-            talk: super::talk_mode(s),
+            talk,
             tip,
             notice: s.voice.notice.clone(),
         }
@@ -58,6 +64,11 @@ impl Controls {
 
     fn dictating(&self) -> bool {
         self.ours && self.status == Status::Dictating
+    }
+
+    /// Talk mode is on and speaking into this composer.
+    fn talking(&self) -> bool {
+        self.ours && self.talk
     }
 }
 
@@ -92,8 +103,9 @@ pub fn press(s: &mut State, press: Press, composer: Composer, thread: Option<Str
 /// A handler for one [`Press`], in the drawing window's state type.
 pub type OnPress<S> = Box<dyn Fn(&mut S)>;
 
-/// Mic and talk buttons for `composer`, with the state pill when voice is
-/// busy with this composer. `thread` enables the read-aloud menu.
+/// The mic for `composer`, with the state pill when voice is busy with this
+/// composer. Its right-click menu holds talk mode, and read-aloud when
+/// `thread` is set.
 pub fn composer_controls(
     s: &State,
     k: &Kit,
@@ -109,32 +121,50 @@ pub fn composer_controls(
         let thread = owned_thread.clone();
         Box::new(move |s: &mut State| press(s, p, target.clone(), thread.clone()))
     };
+    let talking = controls.talking();
+    let talk_target = composer.clone();
+    let talk_thread = thread.map(str::to_string);
     let menu = |mic: El| -> El {
-        let Some(thread) = thread else { return mic };
-        let reads = s.voice.prefs.reads(thread);
-        let menu_thread = thread.to_string();
         let mic = mic.on_secondary_press(|s: &mut State, at: PointerPress, _: &mut Tx| {
             s.voice.mic_menu = Some(at);
         });
-        rune_kit::context_menu("voice-mic-menu", mic, s.voice.mic_menu)
-            .item(
-                MenuItem::new(if reads {
-                    "Stop reading replies in this thread"
-                } else {
-                    "Read replies aloud in this thread"
-                })
-                .icon(if reads {
-                    &icons::VOLUME_OFF
-                } else {
-                    &icons::VOLUME_2
-                })
-                .on_select(move |s: &mut State| {
-                    s.voice.mic_menu = None;
-                    super::toggle_read_aloud(s, &menu_thread);
-                }),
-            )
-            .on_close(|s: &mut State| s.voice.mic_menu = None)
-            .build(k, layer)
+        let menu = rune_kit::context_menu("voice-mic-menu", mic, s.voice.mic_menu).item(
+            MenuItem::new(if talking {
+                "Leave talk mode"
+            } else {
+                "Talk mode: speak, hear the reply, speak again"
+            })
+            .icon(&icons::AUDIO_LINES)
+            .on_select(move |s: &mut State| {
+                s.voice.mic_menu = None;
+                press(s, Press::Talk, talk_target.clone(), talk_thread.clone());
+            }),
+        );
+        let Some(thread) = thread else {
+            return menu
+                .on_close(|s: &mut State| s.voice.mic_menu = None)
+                .build(k, layer);
+        };
+        let reads = s.voice.prefs.reads(thread);
+        let menu_thread = thread.to_string();
+        menu.item(
+            MenuItem::new(if reads {
+                "Stop reading replies in this thread"
+            } else {
+                "Read replies aloud in this thread"
+            })
+            .icon(if reads {
+                &icons::VOLUME_OFF
+            } else {
+                &icons::VOLUME_2
+            })
+            .on_select(move |s: &mut State| {
+                s.voice.mic_menu = None;
+                super::toggle_read_aloud(s, &menu_thread);
+            }),
+        )
+        .on_close(|s: &mut State| s.voice.mic_menu = None)
+        .build(k, layer)
     };
     draw(&controls, &s.palette, on, menu)
 }
@@ -147,31 +177,30 @@ pub fn draw<S: 'static>(
     on: impl Fn(Press) -> OnPress<S>,
     wrap_mic: impl FnOnce(El) -> El,
 ) -> El {
-    let dictating = c.dictating();
+    let (dictating, talking) = (c.dictating(), c.talking());
     let mic_label = if dictating {
         "Stop dictating"
+    } else if talking {
+        "Leave talk mode"
     } else {
         "Dictate"
     };
-    let mic_press = on(Press::Mic);
-    let mic = round_button(p, "voice-mic", &icons::MIC, dictating, mic_label)
-        .help(c.tip.clone())
-        .on_press(move |s: &mut S| mic_press(s));
-    let mic = wrap_mic(mic);
-    let talk_press = on(Press::Talk);
-    let talk_button = round_button(
+    // In talk mode the one mic is talk mode's: a click leaves it.
+    let mic_press = on(if talking { Press::Talk } else { Press::Mic });
+    let mic = round_button(
         p,
-        "voice-talk",
-        &icons::AUDIO_LINES,
-        c.talk && c.ours,
-        "Talk mode",
+        "voice-mic",
+        if talking {
+            &icons::AUDIO_LINES
+        } else {
+            &icons::MIC
+        },
+        dictating || talking,
+        mic_label,
     )
-    .help(if c.talk {
-        "Leave talk mode"
-    } else {
-        "Talk mode: speak, hear the reply, speak again"
-    })
-    .on_press(move |s: &mut S| talk_press(s));
+    .help(c.tip.clone())
+    .on_press(move |s: &mut S| mic_press(s));
+    let mic = wrap_mic(mic);
     // Speaking shows everywhere (a reply read aloud has no composer); the
     // rest only on the composer voice is typing into.
     let pill = match c.status {
@@ -188,7 +217,7 @@ pub fn draw<S: 'static>(
     if let Some(pill) = pill {
         out = out.child(pill);
     }
-    out.child(talk_button).child(mic)
+    out.child(mic)
 }
 
 /// The composer's round icon button (GPUI `chat::round_button`, its
