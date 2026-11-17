@@ -588,15 +588,18 @@ def has_cfg_test_module_declaration(
     declared = False
     for candidate in sorted(candidates):
         resolved = candidate.resolve()
-        if resolved == target:
-            continue
         try:
-            scan, strict_contexts = _declaration_scan(resolved)
+            scan, _strict_contexts = _declaration_scan(resolved)
         except (OSError, UnicodeError):
             continue
-        for _name, module_candidates, test_context in module_declarations(
-            scan, strict_contexts
-        ):
+        declarations, unresolved = module_items(scan, test_support_is_test=False)
+        # Fail closed: a module holding an edge the resolver cannot resolve is
+        # production, and so is everything under it.
+        if _is_poisoned(target, resolved, unresolved):
+            return False
+        if resolved == target:
+            continue
+        for _name, module_candidates, test_context in declarations:
             if target not in {c.resolve() for c in module_candidates}:
                 continue
             declared = True
@@ -895,54 +898,251 @@ def default_module_candidates(
     return module_dir / f"{name}.rs", module_dir / name / "mod.rs"
 
 
+def _attribute_string_value(attribute: str, key: str) -> str | None:
+    """The ``"..."`` value of a whole-word ``key = "..."`` inside one raw attribute."""
+    match = re.search(rf'(?<![A-Za-z0-9_]){key}\s*=\s*"([^"]*)"', attribute)
+    return match.group(1) if match else None
+
+
+def _matching_close(code: str, start: int, open_char: str, close_char: str) -> int | None:
+    depth = 0
+    for index in range(start, len(code)):
+        char = code[index]
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth = max(depth - 1, 0)
+            if depth == 0:
+                return index
+    return None
+
+
+def _inclusion_item(
+    macro: str, arguments: str, file_dir: pathlib.Path, module_dir: pathlib.Path
+) -> tuple | None:
+    """The edge one ``include!``-family call makes (``ratchet_support::inclusion_item``)."""
+    if len(arguments) >= 2 and arguments[0] == '"' and arguments[-1] == '"' and '"' not in arguments[1:-1]:
+        path = arguments[1:-1]
+        if macro == "include" or path.endswith(".rs"):
+            return ("inclusion", (file_dir / path,), f'`{macro}!("{path}")`')
+        return None
+    pieces = arguments.split('"')
+    last_literal = pieces[-2] if arguments.count('"') >= 2 else None
+    # The text after the last `.` of the last literal piece, when it is a file
+    # extension (`".md"` alone is one; `"../dir/"` names none).
+    extension = last_literal.rpartition(".")[2] if last_literal and "." in last_literal else ""
+    names_other_file = bool(extension) and "/" not in extension and extension != "rs"
+    if macro != "include" and names_other_file:
+        return None
+    return ("unresolvable", module_dir, f"`{macro}!({' '.join(arguments.split())})` is not a literal path")
+
+
+_MODULE_ITEMS: dict[tuple[pathlib.Path, tuple[str, ...], bool], tuple] = {}
+
+
+def module_items(
+    scan: "SourceScan", test_support_is_test: bool = True
+) -> tuple[
+    list[tuple[str, tuple[pathlib.Path, ...], bool]],
+    list[tuple[pathlib.Path, str, str]],
+]:
+    """Every module edge of one file: ``(declarations, unresolved)``.
+
+    One token walk over the lexed code (comments and strings blanked IN PLACE,
+    so an attribute's raw text is read back from the same offsets). Every
+    ``mod`` item counts, however many share a line. Attributes since the last
+    ``;`` / ``{`` / ``}`` gate the next item or the block it opens; a block
+    stack carries ``(test-only, module dir)``. Fail closed (GPT review of the
+    gate audit §9 sweep): a literal ``include!`` / ``include_str!`` of a ``.rs``
+    file and a ``#[path]`` inside ``cfg_attr`` are UNGATED declarations of their
+    target; an edge that cannot be resolved is recorded in ``unresolved`` as
+    ``(module dir, why, kind)`` and makes that module production. Same
+    algorithm as ``ratchet_support::module_items``.
+
+    ``declarations`` are ``(name, candidate files, gated)``, unresolvable
+    ``mod`` declarations included (``kind == "mod"`` in ``unresolved`` too, so
+    the full scan can still refuse them).
+    """
+    key = (scan.path, scan.lines, test_support_is_test)
+    cached = _MODULE_ITEMS.get(key)
+    if cached is not None:
+        return cached
+    code = "\n".join(scan.code)
+    raw = "\n".join(scan.lines)
+    root = root_module_directory(scan.path)
+    file_dir = scan.path.parent
+    declarations: list[tuple[str, tuple[pathlib.Path, ...], bool]] = []
+    unresolved: list[tuple[pathlib.Path, str, str]] = []
+    stack: list[tuple[bool, pathlib.Path]] = []
+    pending_test = False
+    pending_path: str | None = None
+    pending_cfg_attr_paths: list[str | None] = []
+    pending_inline: str | None = None
+
+    def is_ident(char: str) -> bool:
+        return char.isascii() and (char.isalnum() or char == "_")
+
+    def skip_ws(index: int) -> int:
+        while index < len(code) and code[index].isspace():
+            index += 1
+        return index
+
+    def read_ident(index: int) -> int:
+        while index < len(code) and is_ident(code[index]):
+            index += 1
+        return index
+
+    def path_candidates(module_dir: pathlib.Path, value: str) -> tuple[pathlib.Path, ...]:
+        directory = module_dir
+        if directory == root:
+            directory = file_dir
+        return (directory / value,)
+
+    def existing(candidates: tuple[pathlib.Path, ...]) -> bool:
+        return any(candidate.is_file() for candidate in candidates)
+
+    i = 0
+    while i < len(code):
+        top_test, top_dir = stack[-1] if stack else (False, root)
+        char = code[i]
+        if char == "#":
+            j = skip_ws(i + 1)
+            inner = j < len(code) and code[j] == "!"
+            if inner:
+                j = skip_ws(j + 1)
+            if j < len(code) and code[j] == "[":
+                end = _matching_close(code, j, "[", "]")
+                if end is None:
+                    break
+                if not inner:
+                    attribute = raw[i : end + 1]
+                    if attribute_is_test_only(" ".join(attribute.split()), test_support_is_test):
+                        pending_test = True
+                    body = attribute[1:].lstrip().lstrip("[").lstrip()
+                    if body.startswith("cfg_attr"):
+                        if re.search(r"(?<![A-Za-z0-9_])path(?![A-Za-z0-9_])", attribute):
+                            pending_cfg_attr_paths.append(_attribute_string_value(attribute, "path"))
+                    elif body.startswith("path"):
+                        pending_path = _attribute_string_value(attribute, "path")
+                i = end + 1
+                continue
+            i += 1
+            continue
+        if char == "{":
+            inline = pending_inline
+            pending_inline = None
+            if inline is not None:
+                directory = top_dir / inline
+                if pending_path is not None or pending_cfg_attr_paths:
+                    unresolved.append(
+                        (directory, f"`#[path]` on inline `mod {inline} {{ … }}`", "path")
+                    )
+            else:
+                directory = top_dir
+            stack.append((pending_test or top_test, directory))
+            pending_test, pending_path, pending_cfg_attr_paths = False, None, []
+            i += 1
+            continue
+        if char in "};":
+            if char == "}" and stack:
+                stack.pop()
+            pending_test, pending_path, pending_cfg_attr_paths = False, None, []
+            pending_inline = None
+            i += 1
+            continue
+        if not (char.isascii() and (char.isalpha() or char == "_")) or (i > 0 and is_ident(code[i - 1])):
+            i += 1
+            continue
+        end = read_ident(i)
+        ident = code[i:end]
+        if ident == "r" and end < len(code) and code[end] == "#":
+            i = read_ident(end + 1)
+            continue
+        if ident == "mod":
+            name_start = skip_ws(end)
+            name_end = read_ident(name_start)
+            after = skip_ws(name_end)
+            if name_end > name_start and after < len(code):
+                name = code[name_start:name_end]
+                if code[after] == ";":
+                    for value in pending_cfg_attr_paths:
+                        if value is None:
+                            unresolved.append(
+                                (top_dir, f"`cfg_attr` `path` on `mod {name};` has no literal value", "path")
+                            )
+                            continue
+                        candidates = path_candidates(top_dir, value)
+                        declarations.append((f'#[cfg_attr(path = "{value}")] mod {name}', candidates, False))
+                        if not existing(candidates):
+                            unresolved.append(
+                                (root, f'`#[cfg_attr(…, path = "{value}")] mod {name};` resolves to no file', "path")
+                            )
+                    if pending_path is not None:
+                        candidates = path_candidates(top_dir, pending_path)
+                    else:
+                        candidates = default_module_candidates(top_dir, name)
+                    declarations.append((name, candidates, pending_test or top_test))
+                    if not existing(candidates):
+                        unresolved.append((top_dir, f"`mod {name};` resolves to no file", "mod"))
+                    pending_test, pending_path, pending_cfg_attr_paths = False, None, []
+                    pending_inline = None
+                    i = after + 1
+                    continue
+                if code[after] == "{":
+                    pending_inline = name
+                    i = after
+                    continue
+            i = end
+            continue
+        if ident in ("include", "include_str", "include_bytes"):
+            bang = skip_ws(end)
+            if bang < len(code) and code[bang] == "!":
+                open_index = skip_ws(bang + 1)
+                pairs = {"(": ")", "[": "]", "{": "}"}
+                if open_index < len(code) and code[open_index] in pairs:
+                    close = _matching_close(code, open_index, code[open_index], pairs[code[open_index]])
+                    if close is not None:
+                        item = _inclusion_item(
+                            ident, raw[open_index + 1 : close].strip(), file_dir, top_dir
+                        )
+                        if item is not None and item[0] == "inclusion":
+                            declarations.append((item[2], item[1], False))
+                            if not existing(item[1]):
+                                unresolved.append((root, f"{item[2]} resolves to no file", "include"))
+                        elif item is not None:
+                            unresolved.append((item[1], item[2], "include"))
+                        i = close + 1
+                        continue
+        i = end
+    result = (declarations, unresolved)
+    _MODULE_ITEMS[key] = result
+    return result
+
+
+def unresolved_module_edges(scan: "SourceScan") -> list[str]:
+    """Why each edge of ``scan`` that could not be resolved was given up on."""
+    return [why for _directory, why, _kind in module_items(scan, False)[1]]
+
+
+def _is_poisoned(target: pathlib.Path, declaring: pathlib.Path, unresolved) -> bool:
+    return any(
+        target == declaring or directory == target or directory in target.parents
+        for directory, _why, _kind in unresolved
+    )
+
+
 def module_declarations(
     scan: SourceScan,
-    test_contexts: tuple[bool, ...] | list[bool] | None = None,
+    test_support_is_test: bool = True,
 ) -> list[tuple[str, tuple[pathlib.Path, ...], bool]]:
-    """Every out-of-line ``mod name;`` in ``scan``: name, candidate files, test context.
+    """Every module edge in ``scan``: name, candidate files, test-only gated.
 
-    Matches lexed code, so commented-out or string-embedded declarations are
-    not modules. ``test_contexts`` overrides the scan's own (loose) contexts.
+    ``module_items``' declarations: every out-of-line ``mod name;`` on any
+    line, plus the ungated edges of literal ``include!``-family calls and of
+    ``#[cfg_attr(…, path = "…")]``. Matches lexed code, so commented-out or
+    string-embedded declarations are not modules.
     """
-    pending_path: str | None = None
-    pending_path_directory: pathlib.Path | None = None
-    declarations: list[tuple[str, tuple[pathlib.Path, ...], bool]] = []
-
-    for raw, code, local_test_context, module_dir in zip(
-        scan.lines,
-        scan.code,
-        scan.test_contexts if test_contexts is None else test_contexts,
-        scan.module_directories,
-    ):
-        raw_attributes, _ = split_leading_attributes(raw)
-        code_attributes, item = split_leading_attributes(code)
-        for attribute in raw_attributes[: len(code_attributes)]:
-            path_attr = PATH_ATTR_PATTERN.match(attribute)
-            if path_attr:
-                pending_path = path_attr.group(1)
-                pending_path_directory = module_dir
-        if code_attributes and not item.strip():
-            continue
-
-        module = OUT_OF_LINE_MOD_PATTERN.match(item)
-        if module:
-            if pending_path is not None:
-                path_directory = pending_path_directory or module_dir
-                if path_directory == root_module_directory(scan.path):
-                    path_directory = scan.path.parent
-                candidates: tuple[pathlib.Path, ...] = (path_directory / pending_path,)
-            else:
-                candidates = default_module_candidates(module_dir, module.group(1))
-            declarations.append((module.group(1), candidates, local_test_context))
-            pending_path = None
-            pending_path_directory = None
-            continue
-
-        if item.strip() and not item.startswith("#["):
-            pending_path = None
-            pending_path_directory = None
-
-    return declarations
+    return module_items(scan, test_support_is_test)[0]
 
 
 def module_edges(
@@ -950,19 +1150,29 @@ def module_edges(
     inherited_test_only: bool,
 ) -> list[tuple[pathlib.Path, bool]]:
     edges: list[tuple[pathlib.Path, bool]] = []
-    for name, candidates, local_test_context in module_declarations(scan):
+    declarations, unresolved = module_items(scan)
+    for name, candidates, local_test_context in declarations:
         for candidate in candidates:
             if candidate.is_file():
+                resolved = candidate.resolve()
                 edges.append(
                     (
-                        candidate.resolve(),
-                        inherited_test_only
-                        or local_test_context
-                        or is_test_only_path(candidate.as_posix()),
+                        resolved,
+                        # An edge into a module the resolver gave up on is
+                        # production, whatever gates it (fail closed).
+                        not _is_poisoned(resolved, scan.path, unresolved)
+                        and (
+                            inherited_test_only
+                            or local_test_context
+                            or is_test_only_path(candidate.as_posix())
+                        ),
                     )
                 )
                 break
         else:
+            if not name.isidentifier():
+                # An inclusion with no file is already recorded as unresolved.
+                continue
             raise RuntimeError(
                 f"{scan.path}: could not resolve `mod {name};`; "
                 f"tried {[str(candidate) for candidate in candidates]}"
@@ -1579,6 +1789,70 @@ class CheckNoPanicsTests(unittest.TestCase):
                     expected,
                 )
 
+    # Mirrors `unprovable_module_edges_fail_closed` in
+    # crates/app/ironclaw_architecture_tests/tests/reborn_ratchet_support_scanners.rs.
+    UNPROVABLE_LIB = (
+        "#[cfg(test)]\nmod hidden;\nmod first; mod hidden;\n"
+        "#[cfg(test)] mod gated_a; pub mod shipped_b; #[cfg(test)] mod gated_c;\n"
+        '#[cfg(test)]\nmod included;\ninclude!("included.rs");\n'
+        "#[cfg(test)]\nmod read_as_text;\n"
+        '#[cfg(test)]\nmod t {\n    const SRC: &str = include_str!("read_as_text.rs");\n}\n'
+        "#[cfg(test)]\nmod swapped;\n"
+        '#[cfg_attr(not(test), path = "swapped.rs")]\nmod real;\n'
+        "pub mod generated;\n"
+        'const PROMPT: &[u8] = include_bytes!(concat!("prompts/", "op", ".md"));\n'
+    )
+    UNPROVABLE_FILES = {
+        "src/lib.rs": UNPROVABLE_LIB,
+        "src/generated.rs": 'include!(concat!(env!("OUT_DIR"), "/gen.rs"));\n'
+        "#[cfg(test)]\nmod helper;\n",
+        **{
+            f"src/{name}.rs": "pub fn f() {}\n"
+            for name in (
+                "hidden", "first", "gated_a", "shipped_b", "gated_c", "included",
+                "read_as_text", "swapped", "real",
+            )
+        },
+        "src/generated/helper.rs": "pub fn f() {}\n",
+    }
+    UNPROVABLE_SHIPPED = (
+        "hidden", "first", "shipped_b", "included", "read_as_text", "swapped",
+        "real", "generated", "generated/helper",
+    )
+
+    def test_unprovable_module_edges_fail_closed(self) -> None:
+        # GPT review of the §9 sweep: every `mod` item on a line, `include!` /
+        # `include_str!` of a `.rs` file, and `#[path]` inside `cfg_attr` are
+        # production edges; an edge the resolver cannot resolve makes the
+        # containing module production, with the reason recorded.
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as directory:
+            root = pathlib.Path(directory)
+            for relative, text in self.UNPROVABLE_FILES.items():
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative).write_text(text, encoding="utf-8")
+            for name in self.UNPROVABLE_SHIPPED:
+                with self.subTest(shipped=name):
+                    self.assertFalse(
+                        _is_test_only_path(f"src/{name}.rs", root, frozenset())
+                    )
+            for name in ("gated_a", "gated_c"):
+                with self.subTest(gated=name):
+                    self.assertTrue(_is_test_only_path(f"src/{name}.rs", root, frozenset()))
+            unresolved = unresolved_module_edges(RustScanner().scan(root / "src/generated.rs"))
+            self.assertEqual(len(unresolved), 1, unresolved)
+            # A non-literal inclusion of a known non-Rust file is no edge.
+            self.assertEqual(unresolved_module_edges(RustScanner().scan(root / "src/lib.rs")), [])
+            self.assertIn("include!", unresolved[0])
+
+            # Through the full-scan caller: the same edges are production.
+            production, tests = discover_reachable_rust_files([root / "src/lib.rs"])
+            for name in ("hidden", "first", "shipped_b", "included", "swapped", "real", "generated"):
+                with self.subTest(reachable=name):
+                    self.assertIn((root / f"src/{name}.rs").resolve(), production)
+            self.assertIn((root / "src/generated/helper.rs").resolve(), production)
+            self.assertIn((root / "src/gated_a.rs").resolve(), tests)
+            self.assertIn((root / "src/gated_c.rs").resolve(), tests)
+
     def test_cfg_path_declaration_walks_ancestor_modules(self) -> None:
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as directory:
             root = pathlib.Path(directory)
@@ -1592,6 +1866,10 @@ class CheckNoPanicsTests(unittest.TestCase):
             )
 
             target = root / "src/outer/inner/fixture_tests.rs"
+            # The declared file exists, as it must for the crate to build;
+            # a declaration that resolves to no file is unresolvable and
+            # fails closed.
+            target.write_text("pub fn f() {}\n", encoding="utf-8")
             self.assertTrue(
                 has_cfg_test_module_declaration(target.as_posix(), root)
             )
@@ -1610,6 +1888,10 @@ class CheckNoPanicsTests(unittest.TestCase):
             )
 
             target = root / "src/with_attrs/tests.rs"
+            # The declared file exists, as it must for the crate to build;
+            # a declaration that resolves to no file is unresolvable and
+            # fails closed.
+            target.write_text("pub fn f() {}\n", encoding="utf-8")
             self.assertTrue(
                 has_cfg_test_module_declaration(target.as_posix(), root)
             )

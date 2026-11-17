@@ -38,6 +38,7 @@ use ratchet_support::{
     balanced_angle_close, cfg_test_only_files, implemented_trait_names, is_rust_identifier,
     production_line_count, production_rust_files, strip_cfg_test_blocks,
     strip_comments_and_strings, strip_line_anchored_cfg_test_items, try_nested_workspace_roots,
+    unresolved_module_edges,
 };
 
 // ---------------------------------------------------------------------------
@@ -561,5 +562,86 @@ fn declaration_inside_an_inline_module_resolves_under_its_directory() {
     assert!(
         production.contains(&src.join("host/tests/deep.rs")),
         "nothing declares the flat-spelled decoy, so it is not test-only: {production:?}"
+    );
+}
+
+/// Fail closed on every edge the resolver cannot prove test-only (GPT review
+/// of the §9 sweep): a production edge it misses would classify a shipped file
+/// as test code.
+///
+/// 1. **Every `mod` item on a line**, not only the first: `mod first; mod
+///    hidden;` declares `hidden` ungated even though another line gates it.
+/// 2. **`include!` / `include_str!` of a `.rs` file** is a production edge to
+///    the file, whatever the surrounding cfg.
+/// 3. **`#[path]` inside `cfg_attr`** is a production edge to that path.
+/// 4. **An edge the resolver cannot resolve** (`include!(concat!(env!(…)))`)
+///    makes the whole containing module production, with the reason recorded.
+#[test]
+fn unprovable_module_edges_fail_closed() {
+    let tree = tempfile::tempdir().expect("temp tree");
+    let src = tree.path().join("src");
+    write_tree(
+        &src,
+        &[
+            (
+                "lib.rs",
+                "#[cfg(test)]\nmod hidden;\nmod first; mod hidden;\n\
+                 #[cfg(test)] mod gated_a; pub mod shipped_b; #[cfg(test)] mod gated_c;\n\
+                 #[cfg(test)]\nmod included;\ninclude!(\"included.rs\");\n\
+                 #[cfg(test)]\nmod read_as_text;\n\
+                 #[cfg(test)]\nmod t {\n    const SRC: &str = include_str!(\"read_as_text.rs\");\n}\n\
+                 #[cfg(test)]\nmod swapped;\n\
+                 #[cfg_attr(not(test), path = \"swapped.rs\")]\nmod real;\n\
+                 pub mod generated;\n\
+                 const PROMPT: &[u8] = include_bytes!(concat!(\"prompts/\", \"op\", \".md\"));\n",
+            ),
+            ("hidden.rs", "pub fn f() {}\n"),
+            ("first.rs", "pub fn f() {}\n"),
+            ("gated_a.rs", "pub fn f() {}\n"),
+            ("shipped_b.rs", "pub fn f() {}\n"),
+            ("gated_c.rs", "pub fn f() {}\n"),
+            ("included.rs", "pub fn f() {}\n"),
+            ("read_as_text.rs", "pub fn f() {}\n"),
+            ("swapped.rs", "pub fn f() {}\n"),
+            ("real.rs", "pub fn f() {}\n"),
+            (
+                "generated.rs",
+                "include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n#[cfg(test)]\nmod helper;\n",
+            ),
+            ("generated/helper.rs", "pub fn f() {}\n"),
+        ],
+    );
+    let test_only = cfg_test_only_files(&src);
+    let production = production_rust_files(&src);
+    for shipped in [
+        "hidden.rs",
+        "first.rs",
+        "shipped_b.rs",
+        "included.rs",
+        "read_as_text.rs",
+        "swapped.rs",
+        "real.rs",
+        "generated.rs",
+        "generated/helper.rs",
+    ] {
+        assert!(
+            production.contains(&src.join(shipped)) && !test_only.contains(&src.join(shipped)),
+            "{shipped} has an edge the resolver cannot prove test-only; it must count as \
+             production: test-only {test_only:?}"
+        );
+    }
+    // Negative: the gated items sharing a line with ungated ones stay test-only.
+    for gated in ["gated_a.rs", "gated_c.rs"] {
+        assert!(
+            test_only.contains(&src.join(gated)),
+            "{gated} is declared only behind `#[cfg(test)]`: {test_only:?}"
+        );
+    }
+    // Negative: a non-literal inclusion of a known non-Rust file is no edge.
+    let unresolved = unresolved_module_edges(&src);
+    assert_eq!(unresolved.len(), 1, "{unresolved:?}");
+    assert!(
+        unresolved[0].0 == src.join("generated.rs") && unresolved[0].1.contains("include!"),
+        "the unresolvable edge is recorded with its file and construct: {unresolved:?}"
     );
 }

@@ -963,8 +963,36 @@ fn rust_and_python_loc_counters_agree() {
              #[cfg(test)] fn single() {}\n\
              #[cfg(test)] // note\nfn noted() {\n}\n\
              pub mod inline_tests {\n    pub fn shipped() {}\n}\n\
-             #[cfg(test)]\nmod t {\n    #[test]\n    fn x() {}\n}\n",
+             #[cfg(test)]\nmod t {\n    #[test]\n    fn x() {}\n}\n\
+             pub mod unprovable;\n",
         ),
+        // Edges the resolvers cannot prove test-only fail closed (GPT review of
+        // the §9 sweep); same shapes as `unprovable_module_edges_fail_closed`.
+        (
+            "src/unprovable/mod.rs",
+            "#[cfg(test)]\nmod hidden;\nmod first; mod hidden;\n\
+             #[cfg(test)] mod gated_a; pub mod shipped_b; #[cfg(test)] mod gated_c;\n\
+             #[cfg(test)]\nmod included;\ninclude!(\"included.rs\");\n\
+             #[cfg(test)]\nmod read_as_text;\n\
+             #[cfg(test)]\nmod t {\n    const SRC: &str = include_str!(\"read_as_text.rs\");\n}\n\
+             #[cfg(test)]\nmod swapped;\n\
+             #[cfg_attr(not(test), path = \"swapped.rs\")]\nmod real;\n\
+             pub mod generated;\n",
+        ),
+        ("src/unprovable/hidden.rs", "pub fn f() {}\n"),
+        ("src/unprovable/first.rs", "pub fn f() {}\n"),
+        ("src/unprovable/gated_a.rs", "pub fn f() {}\n"),
+        ("src/unprovable/shipped_b.rs", "pub fn f() {}\n"),
+        ("src/unprovable/gated_c.rs", "pub fn f() {}\n"),
+        ("src/unprovable/included.rs", "pub fn f() {}\n"),
+        ("src/unprovable/read_as_text.rs", "pub fn f() {}\n"),
+        ("src/unprovable/swapped.rs", "pub fn f() {}\n"),
+        ("src/unprovable/real.rs", "pub fn f() {}\n"),
+        (
+            "src/unprovable/generated.rs",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n#[cfg(test)]\nmod helper;\n",
+        ),
+        ("src/unprovable/generated/helper.rs", "pub fn f() {}\n"),
         ("src/probe_tests.rs", "pub fn shipped() {}\n"),
         ("src/helpers.rs", "pub fn h() {}\n"),
         ("src/one_line_tests.rs", "pub fn h() {}\n"),
@@ -991,9 +1019,13 @@ fn rust_and_python_loc_counters_agree() {
         "Rust and Python counters disagree on the fixture tree"
     );
     // Not vacuous: shipped files and lines count, gated ones do not.
-    // lib.rs 7 (a, probe_tests, shipped_tests, tests, inline_tests x3) +
-    // probe_tests 1 + shipped_tests 1 + tests/ 2 + contract_tests 1.
-    assert_eq!(rust, 12, "fixture count");
+    // lib.rs 8 (a, probe_tests, shipped_tests, tests, inline_tests x3,
+    // unprovable) + probe_tests 1 + shipped_tests 1 + tests/ 2 +
+    // contract_tests 1 = 13; unprovable/: mod.rs 5 (`mod first; mod hidden;`,
+    // `include!`, the `cfg_attr` line, `mod real;`, `pub mod generated;`) +
+    // seven files reached through an unprovable edge 7 + generated.rs 1 +
+    // its poisoned `helper.rs` 1 = 14. The gated `gated_a` / `gated_c` add 0.
+    assert_eq!(rust, 27, "fixture count");
 
     let root = workspace_root();
     for crate_name in [
@@ -1018,6 +1050,82 @@ fn rust_and_python_loc_counters_agree() {
              two gates measuring different trees"
         );
     }
+}
+
+/// Every module edge in `crates/` the shared resolver could not resolve, with
+/// why. Each one makes its whole containing module production
+/// (`ratchet_support::module_graph`, fail-closed), so the list is pinned: a new
+/// entry is a reviewed decision, and a stale one means the construct is gone.
+///
+/// Measured 2026-11-17. None of these modules has a directory or child file,
+/// so failing closed on them reclassifies nothing today: the eight
+/// `include_bytes!(concat!(…, $path))` arms are macro-built package-asset
+/// tables (prompt/schema files, extension unknown to the resolver), and the
+/// webui one is the build-script-generated asset table in `OUT_DIR`.
+const UNRESOLVED_MODULE_EDGES: &[(&str, &str)] = &[
+    (
+        "crates/ironclaw_extension_support/src/packages/github.rs",
+        r#"`include_bytes!(concat!("../../../packages/github/prompts/github/", $path))` is not a literal path"#,
+    ),
+    (
+        "crates/ironclaw_extension_support/src/packages/github.rs",
+        r#"`include_bytes!(concat!("../../../packages/github/schemas/github/", $path))` is not a literal path"#,
+    ),
+    (
+        "crates/ironclaw_extension_support/src/packages/gmail.rs",
+        r#"`include_bytes!(concat!("../../../packages/gmail/prompts/gmail/", $path))` is not a literal path"#,
+    ),
+    (
+        "crates/ironclaw_extension_support/src/packages/gmail.rs",
+        r#"`include_bytes!(concat!("../../../packages/gmail/schemas/gmail/", $path))` is not a literal path"#,
+    ),
+    (
+        "crates/ironclaw_extension_support/src/packages/nearai.rs",
+        r#"`include_bytes!(concat!( "../../../packages/nearai-mcp/prompts/nearai/", $path ))` is not a literal path"#,
+    ),
+    (
+        "crates/ironclaw_extension_support/src/packages/nearai.rs",
+        r#"`include_bytes!(concat!( "../../../packages/nearai-mcp/schemas/nearai/", $path ))` is not a literal path"#,
+    ),
+    (
+        "crates/ironclaw_extension_support/src/packages/notion.rs",
+        r#"`include_bytes!(concat!( "../../../packages/notion-mcp/prompts/notion/", $path ))` is not a literal path"#,
+    ),
+    (
+        "crates/ironclaw_extension_support/src/packages/notion.rs",
+        r#"`include_bytes!(concat!( "../../../packages/notion-mcp/schemas/notion/", $path ))` is not a literal path"#,
+    ),
+    (
+        "crates/ironclaw_webui/src/webui_v2/static_assets/assets.rs",
+        r#"`include!(concat!(env!("OUT_DIR"), "/assets_generated.rs"))` is not a literal path"#,
+    ),
+];
+
+#[test]
+fn unresolved_module_edges_are_pinned() {
+    let root = workspace_root();
+    let found: Vec<(String, String)> =
+        ratchet_support::unresolved_module_edges(&root.join("crates"))
+            .into_iter()
+            .map(|(file, why)| {
+                (
+                    file.strip_prefix(&root)
+                        .unwrap_or(&file)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    why,
+                )
+            })
+            .collect();
+    let expected: Vec<(String, String)> = UNRESOLVED_MODULE_EDGES
+        .iter()
+        .map(|(file, why)| (resolve_crate_relative(&root, file), (*why).to_string()))
+        .collect();
+    assert_eq!(
+        found, expected,
+        "the module edges the resolver gives up on changed. Each makes its module production \
+         (fail closed); pin a new one here with its reason, or remove a stale one"
+    );
 }
 
 #[test]

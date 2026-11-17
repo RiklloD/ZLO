@@ -269,6 +269,22 @@ class ProductionLocTests(unittest.TestCase):
                 self.write("src/lib.rs", source)
                 self.assertEqual(count_loc(["src"]), expected)
 
+    def test_unprovable_module_edges_fail_closed(self) -> None:
+        # GPT review of the §9 sweep, through the LOC caller: files reachable
+        # through an edge the resolver cannot prove test-only count.
+        for relative, text in panics.CheckNoPanicsTests.UNPROVABLE_FILES.items():
+            self.write(relative, text)
+        counted = {
+            path.as_posix()
+            for path in rust_files(["src"])
+            if production_lines(path)
+        }
+        for name in panics.CheckNoPanicsTests.UNPROVABLE_SHIPPED:
+            with self.subTest(shipped=name):
+                self.assertIn(f"src/{name}.rs", counted)
+        self.assertNotIn("src/gated_a.rs", counted)
+        self.assertNotIn("src/gated_c.rs", counted)
+
     def test_arc_dyn_counts_production_code_only(self) -> None:
         self.write(
             "src/lib.rs",
