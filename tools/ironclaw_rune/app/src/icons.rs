@@ -35,6 +35,11 @@ pub static ARROW_UP: Icon = Icon {
     view: 24.0,
     body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m5 12 7-7 7 7" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M12 19V5" />"##,
 };
+pub static ARROW_UP_RIGHT: Icon = Icon {
+    name: "arrow-up-right",
+    view: 24.0,
+    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M7 7h10v10" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M7 17 17 7" />"##,
+};
 pub static AUDIO_LINES: Icon = Icon {
     name: "audio-lines",
     view: 24.0,

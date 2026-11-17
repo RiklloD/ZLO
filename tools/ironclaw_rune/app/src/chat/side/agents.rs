@@ -54,22 +54,21 @@ fn status_dot(color: Color, live: bool) -> El {
     }
 }
 
+/// The Agents tab's fork button, for the dock's title row.
+pub(super) fn actions(k: &Kit) -> Vec<El> {
+    vec![
+        ui::ibtn(&icons::GIT_FORK, "Fork this conversation")
+            .on_press(bridge::fork)
+            .build(k)
+            .key("agents-fork"),
+    ]
+}
+
 pub(super) fn view(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let mut tasks: Vec<TaskView> = bridge::tasks(s).to_vec();
     tasks.sort_by_key(|t| (!t.status.is_live(), -t.created_at));
-    let mut list = col().w_full().child(
-        ui::heading(s, format!("Subagents · {}", tasks.len()))
-            .child(ui::grow())
-            .child(
-                ui::btn("Fork")
-                    .icon(&icons::GIT_FORK)
-                    .help("Fork this conversation")
-                    .on_press(bridge::fork)
-                    .build(k)
-                    .key("agents-fork"),
-            ),
-    );
+    let mut list = col().w_full().pt(4.);
     if tasks.is_empty() {
         list = list.child(ui::empty(
             s,

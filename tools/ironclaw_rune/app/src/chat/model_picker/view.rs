@@ -26,8 +26,11 @@ const POPOVER_HEIGHT: f32 = 300.;
 /// row's 2 px slack, the card's 8 px bottom padding and its rim, then an
 /// 8 px gap. Rune anchors from the pill's edge, so the gap is this less 28.
 const BELOW_OFFSET: f32 = 47.;
-/// Opening above, the gap between the pill and the panel (from its top).
+/// Opening above, the gap between the pill and the panel (from its top),
+/// until the composer card has a layout to clear.
 const ABOVE_OFFSET: f32 = 34.;
+/// Opening above, the gap between the composer card's top and the panel.
+const ABOVE_GAP: f32 = 8.;
 const PILL_H: f32 = 28.;
 /// A rail icon plus the rail's gap: one slot of travel when dragging.
 const RAIL_STEP: f32 = 34.;
@@ -39,7 +42,7 @@ pub fn pills(s: &State, thread_id: &str, cx: &mut Cx<State>, k: &Kit, layer: &mu
 }
 
 /// The pills of the picker `slot` finds (the chat's, or the draft screen's).
-pub fn pills_for(s: &State, slot: Slot, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
+pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let Some(m) = slot.get(s) else { return el() };
     if m.route.as_ref().is_none_or(|r| r.providers.is_empty()) && m.current.is_none() {
         return el();
@@ -90,7 +93,7 @@ pub fn pills_for(s: &State, slot: Slot, _cx: &mut Cx<State>, k: &Kit, layer: &mu
             m.toggle();
         }
     });
-    let (placement, gap) = placement(m);
+    let (placement, gap) = placement(m, &slot, cx);
     if m.open {
         let closing = slot.clone();
         layer.push(scrim("model-scrim", move |s: &mut State| {
@@ -110,7 +113,7 @@ pub fn pills_for(s: &State, slot: Slot, _cx: &mut Cx<State>, k: &Kit, layer: &mu
         .gap(2.)
         .center_y()
         .child(pill);
-    if let Some(effort) = effort_pill(s, m, &slot, k, layer) {
+    if let Some(effort) = effort_pill(s, m, &slot, (placement, gap), k, layer) {
         out = out.child(effort);
     }
     out
@@ -127,9 +130,23 @@ fn close(s: &mut State, slot: &Slot) {
 /// in a thread the composer sits at the bottom and it opens above. A
 /// compact (side chat) picker opens above and is kept inside the window by
 /// the anchor.
-fn placement(m: &ModelPickerState) -> (Placement, f32) {
+///
+/// Opening above, the panel clears the whole composer card, not just the
+/// pill: hung off the pill alone it covered the text being typed. The card
+/// is the chat's (`ChatState::composer_key`); before it has been laid out
+/// the panel sits [`ABOVE_OFFSET`] from the pill's top.
+fn placement(m: &ModelPickerState, slot: &Slot, cx: &Cx<State>) -> (Placement, f32) {
     if m.compact || m.thread_id.is_some() {
-        (Placement::TopStart, ABOVE_OFFSET - PILL_H)
+        let pill = cx.window_layout(&slot.key("model-pill"));
+        let card = match slot {
+            Slot::Chat(id) => cx.window_layout(&format!("composer:{id}")),
+            Slot::Fixed(_) => None,
+        };
+        let gap = match (pill, card) {
+            (Some(pill), Some(card)) if card[1] <= pill[1] => pill[1] - card[1] + ABOVE_GAP,
+            _ => ABOVE_OFFSET - PILL_H,
+        };
+        (Placement::TopStart, gap)
     } else {
         (Placement::BottomStart, BELOW_OFFSET - PILL_H)
     }
@@ -595,6 +612,7 @@ fn effort_pill(
     s: &State,
     m: &ModelPickerState,
     slot: &Slot,
+    (placement, gap): (Placement, f32),
     k: &Kit,
     layer: &mut Vec<El>,
 ) -> Option<El> {
@@ -643,7 +661,6 @@ fn effort_pill(
     });
     // rune-kit's menu: a radio list under its heading; Escape and a press
     // outside close it, and it holds focus while open.
-    let (placement, gap) = placement(m);
     let closing = slot.clone();
     let mut menu = rune_kit::Menu::new(slot.key("effort"))
         .trigger(pill)

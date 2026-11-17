@@ -26,13 +26,34 @@ use crate::design::{motion, panels};
 use crate::icons;
 use crate::state::State;
 
-/// Width of one titlebar toggle's slot (GPUI `panels::TOGGLE_SIZE + 16`).
-const SLOT: f32 = panels::TOGGLE_SIZE + 16.;
+/// Room between titlebar buttons, toggles and tabs alike.
+const TAB_GAP: f32 = 2.;
+/// Padding either side of the toggle cluster, and before a column's tabs.
+const CLUSTER_PAD: f32 = 8.;
+/// The toggle cluster's width: three toggles, their gaps and its padding.
+const CLUSTER: f32 = 3. * panels::TOGGLE_SIZE + 2. * TAB_GAP + 2. * CLUSTER_PAD;
+/// A column's title row: one small button tall, plus air.
+const TITLE_H: f32 = 32.;
 
 /// How long a closed dock's column stays drawn: the layout spring
 /// (`tok::motion::DEFAULT`, 0.3 s) has the clip within a point of shut by
 /// then.
 pub(super) const CLOSE_HOLD: f64 = 0.6;
+
+/// The right pane's narrowest: all its tabs (the side chat's too) beside
+/// the toggle cluster, none scrolled out of reach.
+const SIDE_MIN: f32 = CLUSTER + CLUSTER_PAD + 7. * (panels::TOGGLE_SIZE + TAB_GAP) - TAB_GAP;
+
+/// A dock's narrowest width with `room` left for it: the work panel's
+/// [`WIDTH_MIN`]; the right pane's [`SIDE_MIN`] where the window has the
+/// room, else down to [`WIDTH_MIN`] (its tabs then scroll), so a narrow
+/// window never pushes the pane and its toggles past its edge.
+fn min_width(dock: Dock, room: f32) -> f32 {
+    match dock {
+        Dock::Work => WIDTH_MIN,
+        Dock::Side => SIDE_MIN.min(room).max(WIDTH_MIN),
+    }
+}
 
 /// The window's width, read from the workspace shell's `window` element's
 /// last layout. The first frame has none and assumes the default window.
@@ -66,9 +87,10 @@ fn rest_width(s: &State, dock: Dock, viewport: f32) -> f32 {
         Dock::Work => s.prefs.work_width,
         Dock::Side => s.prefs.side_width,
     };
-    let normal = if saved > 0. { saved } else { WIDTH_DEFAULT }
-        .clamp(WIDTH_MIN, WIDTH_MAX.min(room.max(WIDTH_MIN)));
-    let wide = (viewport * WIDE_SHARE).clamp(WIDTH_MIN, room.max(WIDTH_MIN));
+    let normal = if saved > 0. { saved } else { WIDTH_DEFAULT };
+    let min = min_width(dock, room);
+    let normal = normal.clamp(min, WIDTH_MAX.min(room.max(min)));
+    let wide = (viewport * WIDE_SHARE).clamp(min, room.max(min));
     if side(s).is_some_and(|x| x.wide[dock.ix()]) {
         wide
     } else {
@@ -142,7 +164,7 @@ fn dock(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, dock: Dock)
         // A tinted sheet, a step darker than the transcript, so the column
         // reads as its own layer.
         .fill(p.surface.alpha(0.45))
-        .child(title(s, dock, tab))
+        .child(title(s, k, dock, tab))
         .child(ui::fill_col().child(body))
         .child(
             el().pin(Some(0.), Some(0.), None, Some(0.))
@@ -191,8 +213,9 @@ fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32) -> El {
                 }
                 Phase::Move => {
                     // The same room `rest_width` leaves, so release does not jump.
-                    let max = (right - KEEP).clamp(WIDTH_MIN, WIDTH_MAX);
-                    let to = (right - d.window_point()[0]).clamp(WIDTH_MIN, max);
+                    let min = min_width(dock, right - KEEP);
+                    let max = (right - KEEP).clamp(min, WIDTH_MAX);
+                    let to = (right - d.window_point()[0]).clamp(min, max);
                     if let Some(x) = side_mut(s)
                         && x.drag.is_some()
                     {
@@ -211,35 +234,72 @@ fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32) -> El {
         })
 }
 
-/// The dock's title row: the tab's name, and for coding tabs the worktree
-/// branch and the project folder (click to pick another).
-fn title(s: &State, dock: Dock, tab: Tab) -> El {
+/// The dock's title row: the tab's name (with its count), for coding tabs
+/// the worktree branch and the project folder (click to pick another), then
+/// at the right the tab's own buttons and the widen button. Every tab's
+/// actions live here, in the same place and at the same size.
+fn title(s: &State, k: &Kit, dock: Dock, tab: Tab) -> El {
     let p = &s.palette;
-    let mut title = row()
+    let mut name = row()
+        .key(format!("side-{}-title", dock.key()))
+        .gap(6.)
+        .items_center()
+        .child(text(tab.label()).font(xs_med()).color(p.text));
+    if let Some(n) = super::tab_count(s, tab) {
+        name = name.child(text(n.to_string()).font(xs()).color(p.text_faint));
+    }
+    let title = row()
         .w_full()
-        .px(12.)
-        .pt(8.)
-        .pb(4.)
+        .h(TITLE_H)
+        .pl(12.)
+        .pr(8.)
         .gap(8.)
         .items_center()
         // The tab's name never gives way: the folder path beside it is the
         // part that truncates.
-        .child(
-            row()
-                .key(format!("side-{}-title", dock.key()))
-                .child(text(tab.label()).font(xs_med()).color(p.text)),
-        );
-    let Some(x) = side(s) else { return title };
+        .child(name);
+    let wide = side(s).is_some_and(|x| x.wide[dock.ix()]);
+    let widen = ui::ibtn(
+        if wide {
+            &icons::MINIMIZE
+        } else {
+            &icons::MAXIMIZE
+        },
+        if wide { "Narrow" } else { "Widen" },
+    )
+    .on_press(move |s: &mut State| {
+        if let Some(x) = side_mut(s) {
+            x.wide[dock.ix()] = !x.wide[dock.ix()];
+        }
+    })
+    .build(k)
+    .key(format!("side-{}-wide", dock.key()));
+    let mut actions = row()
+        .key(format!("side-{}-actions", dock.key()))
+        .gap(2.)
+        .items_center();
+    for action in super::tab_actions(s, k, tab) {
+        actions = actions.child(action);
+    }
+    let actions = actions.child(widen);
+    let Some(x) = side(s) else {
+        return title.child(ui::grow()).child(actions);
+    };
+    let mut title = title;
     if tab.coding() {
         if let Some(wt) = &x.worktree {
             title = title.child(
+                // Gives way, as the folder does: the name and the actions
+                // keep their room.
                 row()
                     .key(format!("side-{}-worktree", dock.key()))
                     .gap(2.)
                     .items_center()
                     .max_w(160.)
+                    .min_w(0.)
+                    .shrink()
                     .child(icon(&icons::GIT_BRANCH, 12.).color(p.text_muted))
-                    .child(ui::line(wt.branch.clone(), xs(), p.text_muted))
+                    .child(ui::line(wt.branch.clone(), xs(), p.text_muted).shrink())
                     .help(format!(
                         "Own git worktree {} on branch {}",
                         wt.path, wt.branch
@@ -264,8 +324,10 @@ fn title(s: &State, dock: Dock, tab: Tab) -> El {
     }
     if tab == Tab::SideChat {
         title = title.child(session::chat_actions(s));
+    } else {
+        title = title.child(ui::grow());
     }
-    title
+    title.child(actions)
 }
 
 /// A git or shell tab while the backend is on another computer.
@@ -336,24 +398,22 @@ pub(super) fn no_folder(s: &State, k: &Kit, tab: Tab) -> El {
     col
 }
 
-/// The thread's end of the window titlebar, Zeron's three toggles: the
-/// session card, the work panel, the right pane. Each dock's toggle sits at
-/// its column's top right, and when it opens its tabs slide in to the
-/// toggle's left on the column's tint, so the column reads as one
-/// full-height sheet. Closed, the toggles sit side by side.
+/// The thread's end of the window titlebar. Its three toggles (the session
+/// card, the work panel, the right pane) sit together at the window's top
+/// right and never move: opening or closing a column leaves every toggle
+/// under the pointer. Each open column's tabs ride the titlebar above it,
+/// on the column's tint, so the column reads as one full-height sheet; the
+/// right pane's tabs stop short of the toggles.
 pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let viewport = viewport(cx);
     let (sw, ww) = dock_widths(s, viewport);
-    // The block spans both columns, and always room for both toggles.
-    let block = (ww + sw).max(sw.max(SLOT) + SLOT);
-    // The work toggle sits at the work column's right, never on the right
-    // pane's toggle.
-    let work_right = sw.max(SLOT);
+    // The block spans both columns, and always has room for the toggles.
+    let block = (ww + sw).max(CLUSTER);
     let mut thread = row()
         .key("side-titlebar-thread")
-        .gap(4.)
-        .pr(8.)
+        .gap(TAB_GAP)
+        .pr(4.)
         .items_center();
     if let Some(shown) = bridge::computer_share(s) {
         thread = thread.child(
@@ -367,7 +427,6 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
             .key("side-computer-share"),
         );
     }
-    thread = thread.child(session::toggle(s, k, layer));
     // A column's tint, `width` wide (0 while shut) and `right` from the
     // block's right edge.
     let tint = |dock: Dock, right: f32, width: f32| {
@@ -409,20 +468,25 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         },
     )
     .on_press(|s: &mut State| super::toggle_right_pane(s));
-    let toggle_at = |key: &str, right: f32, t: El| {
-        row()
-            .key(key.to_string())
-            .pin(None, Some(0.), Some(right + 8.), Some(0.))
-            .items_center()
-            .child(t)
-    };
+    let toggles = row()
+        .key("side-toggles")
+        .pin(None, Some(0.), Some(0.), Some(0.))
+        .px(CLUSTER_PAD)
+        .gap(TAB_GAP)
+        .items_center()
+        .child(session::toggle(s, k, layer))
+        .child(active(s, work_toggle, work_open))
+        .child(active(s, side_toggle, side_open));
     // The tabs' widths open, for the strips still drawn while they shut.
     let sw_open = width(s, Dock::Side, viewport);
     let ww_open = width(s, Dock::Work, viewport);
-    let work_head = (sw + ww - work_right - SLOT).max(0.);
-    let work_full = (sw + ww_open - work_right - SLOT).max(0.);
-    let side_head = (sw - SLOT).max(0.);
-    let side_full = (sw_open - SLOT).max(0.);
+    // The work panel's strip ends at the right pane, or at the toggles when
+    // it is the column at the window's edge.
+    let (work_right, work_room) = if sw > 0. {
+        (sw, 0.)
+    } else {
+        (CLUSTER, CLUSTER)
+    };
     let strip = el()
         .key("side-titlebar-block")
         .h_full()
@@ -432,26 +496,24 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         .child(tint(Dock::Side, 0., sw))
         .child(header(
             s,
-            k,
             Dock::Work,
-            work_right + SLOT,
-            work_head,
-            work_full,
-        ))
-        .child(header(s, k, Dock::Side, SLOT, side_head, side_full))
-        .child(toggle_at(
-            "side-work-toggle-slot",
             work_right,
-            active(s, work_toggle, work_open),
+            (ww - work_room).max(0.),
+            (ww_open - work_room).max(0.),
         ))
-        .child(toggle_at(
-            "side-pane-toggle-slot",
-            0.,
-            active(s, side_toggle, side_open),
-        ));
+        .child(header(
+            s,
+            Dock::Side,
+            CLUSTER,
+            (sw - CLUSTER).max(0.),
+            (sw_open - CLUSTER).max(0.),
+        ))
+        .child(toggles);
     row()
         .key("side-titlebar")
         .h_full()
+        // Its toggles are all pinned: this keeps the row a button tall.
+        .min_h(panels::TOGGLE_SIZE)
         .items_center()
         .child(thread)
         .child(strip)
@@ -467,11 +529,11 @@ pub(super) fn active(s: &State, toggle: El, on: bool) -> El {
     })
 }
 
-/// A dock's titlebar strip: its tabs and widen button in a clip `width`
-/// wide (0 while shut) with its right edge `right` from the block's right.
-/// The strip inside keeps its open width `full` and rides the clip's left
-/// edge, as the column below rides its own clip.
-fn header(s: &State, k: &Kit, dock: Dock, right: f32, width: f32, full: f32) -> El {
+/// A dock's titlebar strip: its tabs in a clip `width` wide (0 while shut)
+/// with its right edge `right` from the block's right. The strip inside
+/// keeps its open width `full` and rides the clip's left edge, as the
+/// column below rides its own clip.
+fn header(s: &State, dock: Dock, right: f32, width: f32, full: f32) -> El {
     let clip = el()
         .key(format!("side-{}-header", dock.key()))
         .pin(None, Some(0.), Some(right), Some(0.))
@@ -480,15 +542,13 @@ fn header(s: &State, k: &Kit, dock: Dock, right: f32, width: f32, full: f32) -> 
     if !dock_drawn(s, dock) {
         return clip;
     }
-    let wide = side(s).is_some_and(|x| x.wide[dock.ix()]);
     clip.child(
         row()
             .key(format!("side-{}-header-row", dock.key()))
             .absolute(0., 0.)
             .w(full)
             .h_full()
-            .pl(8.)
-            .gap(4.)
+            .pl(CLUSTER_PAD)
             .items_center()
             .transition(Transition::none())
             .child(
@@ -496,37 +556,18 @@ fn header(s: &State, k: &Kit, dock: Dock, right: f32, width: f32, full: f32) -> 
                     .grow(1.)
                     .min_w(0.)
                     .scroll_x()
-                    .child(tabs(s, k, dock)),
-            )
-            .child(
-                ui::ibtn(
-                    if wide {
-                        &icons::MINIMIZE
-                    } else {
-                        &icons::MAXIMIZE
-                    },
-                    if wide { "Narrow" } else { "Widen" },
-                )
-                .on_press(move |s: &mut State| {
-                    if let Some(x) = side_mut(s) {
-                        x.wide[dock.ix()] = !x.wide[dock.ix()];
-                    }
-                })
-                .build(k)
-                .key(format!("side-{}-wide", dock.key())),
+                    .child(tabs(s, dock)),
             ),
     )
 }
 
-/// A dock's tab icons, each with its attention dot. One selection pill
-/// glides between them on [`motion::PILL`] (GPUI's `flip` pill, Zeron's
-/// tab slide); the cells carry no fill of their own.
-fn tabs(s: &State, k: &Kit, dock: Dock) -> El {
-    /// A small icon button's side (rune-kit `ControlSize::Small`) and the
-    /// strip's gap: where each cell starts.
-    const CELL: f32 = 20.;
-    /// Room between icons so each reads as its own target.
-    const GAP: f32 = 6.;
+/// A dock's tabs: the same buttons as the titlebar toggles beside them
+/// (size, wash, muted ink that brightens on hover), each with its
+/// attention dot where the session toggle has its own. One selection pill,
+/// the toggles' active wash, glides between them on [`motion::PILL`]
+/// (GPUI's `flip` pill, Zeron's tab slide).
+fn tabs(s: &State, dock: Dock) -> El {
+    const CELL: f32 = panels::TOGGLE_SIZE;
     let p = &s.palette;
     let current = dock_tab(s, dock);
     let has_chat = side(s).is_some_and(|x| x.chat.is_some());
@@ -536,29 +577,27 @@ fn tabs(s: &State, k: &Kit, dock: Dock) -> El {
         .copied()
         .filter(|t| *t != Tab::SideChat || has_chat)
         .collect();
-    let mut strip = row().gap(GAP).items_center();
+    let mut strip = row().gap(TAB_GAP).items_center();
     if let Some(ix) = shown.iter().position(|t| *t == current) {
         strip = strip.child(
             el().key(format!("side-{}-tab-pill", dock.key()))
-                .absolute(ix as f32 * (CELL + GAP), 0.)
+                .absolute(ix as f32 * (CELL + TAB_GAP), 0.)
                 .size(CELL, CELL)
-                .radius(crate::design::CONTROL_RADIUS)
+                .radius(panels::TOGGLE_RADIUS)
                 .fill(p.active)
                 .a11y_hidden()
                 .motion(motion::PILL),
         );
     }
     for t in shown {
-        let mut cell = el()
-            .key(format!("side-tab-{}", t.id()))
-            .radius(crate::design::CONTROL_RADIUS)
-            .child(
-                ui::ibtn(t.icon(), t.label())
-                    .on_press(move |s: &mut State| super::show(s, t))
-                    .build(k),
-            );
+        let on = t == current;
+        let glyph = icon(t.icon(), panels::GLYPH_PX)
+            .color(if on { p.text } else { p.text_muted })
+            .group_color(p.text);
+        let mut cell = panels::toggle_with(s, &format!("side-tab-{}", t.id()), t.label(), glyph)
+            .on_press(move |s: &mut State| super::show(s, t));
         if badge(s, t) {
-            cell = cell.child(ui::dot(p.accent, 6.).absolute(20., 3.));
+            cell = cell.child(ui::dot(p.accent, 6.).absolute(19., 3.));
         }
         strip = strip.child(cell);
     }
@@ -608,6 +647,109 @@ mod tests {
             false,
         );
         assert!(s.chat.as_ref().is_some_and(|c| c.side.folder.is_none()));
+    }
+
+    /// The titlebar's toggles hold their place whichever columns are open:
+    /// a click that opens or closes one never moves another out from under
+    /// the pointer. Each column's tabs stop short of the toggles.
+    #[test]
+    fn the_titlebar_toggles_never_move() {
+        use super::super::toggle_work_panel;
+        const TOGGLES: [&str; 3] = [
+            "side-session-toggle",
+            "side-work-toggle",
+            "side-pane-toggle",
+        ];
+        let mut s = crate::chat::fixtures::test_state();
+        crate::scenes::chat(&mut s);
+        s.prefs.side_open = false;
+        s.prefs.work_open = false;
+        let mut rt = Runtime::new(s, crate::view, (1440., 900.), Env::new(true, 1.));
+        let mut t = 0.;
+        let mut settle = |rt: &mut Runtime<State>| {
+            for _ in 0..90 {
+                t += 1. / 60.;
+                rt.frame(t);
+                rt.update(|s, tx| {
+                    poll(s, t, tx);
+                });
+            }
+        };
+        let place = |rt: &Runtime<State>| -> Vec<[f32; 2]> {
+            TOGGLES
+                .iter()
+                .map(|k| {
+                    let (r, _) = rt.presented(k).expect("toggle drawn");
+                    [r[0], r[1]]
+                })
+                .collect()
+        };
+        settle(&mut rt);
+        let closed = place(&rt);
+        assert!(
+            closed.windows(2).all(|w| w[0][0] < w[1][0]),
+            "session, work, pane from left to right: {closed:?}"
+        );
+        for (step, flip) in [
+            ("pane open", toggle_right_pane as fn(&mut State)),
+            ("both open", toggle_work_panel),
+            ("work only", toggle_right_pane),
+            ("both closed", toggle_work_panel),
+        ] {
+            rt.update(|s, _| flip(s));
+            settle(&mut rt);
+            assert_eq!(place(&rt), closed, "{step}: the toggles moved");
+            if let Some((tabs, _)) = rt.presented("side-side-header") {
+                let (pane, _) = rt.presented("side-session-toggle").expect("drawn");
+                assert!(
+                    tabs[0] + tabs[2] <= pane[0],
+                    "{step}: the pane's tabs run under the toggles"
+                );
+            }
+        }
+        // The tabs and toggles are buttons the keyboard reaches.
+        rt.update(|s, _| toggle_right_pane(s));
+        settle(&mut rt);
+        let elements = rt.elements();
+        for key in TOGGLES.iter().copied().chain(["side-tab-activity"]) {
+            let e = elements
+                .iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .expect("drawn");
+            assert!(e.focusable, "{key} is not focusable");
+        }
+    }
+
+    /// In a narrow window with both columns open the right pane gives up
+    /// its roomy minimum before it pushes the toggles past the window's
+    /// edge.
+    #[test]
+    fn a_narrow_window_keeps_the_toggles_inside() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::scenes::chat(&mut s);
+        s.prefs.side_open = true;
+        s.prefs.work_open = true;
+        let width = 820.;
+        let mut rt = Runtime::new(s, crate::view, (width, 760.), Env::new(true, 1.));
+        let mut t = 0.;
+        for _ in 0..90 {
+            t += 1. / 60.;
+            rt.frame(t);
+            rt.update(|s, tx| {
+                poll(s, t, tx);
+            });
+        }
+        for key in [
+            "side-session-toggle",
+            "side-work-toggle",
+            "side-pane-toggle",
+        ] {
+            let (r, _) = rt.presented(key).expect("toggle drawn");
+            assert!(
+                r[0] >= 0. && r[0] + r[2] <= width,
+                "{key} at {r:?} is outside the {width} pt window"
+            );
+        }
     }
 
     /// A closed dock stays drawn (so the clip, not a fade, hides it) until

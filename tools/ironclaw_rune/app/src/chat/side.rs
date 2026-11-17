@@ -706,6 +706,43 @@ fn badge(s: &State, tab: Tab) -> bool {
     }
 }
 
+/// Whether `tab` shows its own body, not the remote or no-folder notice
+/// [`body`] puts in its place.
+fn tab_ready(s: &State, tab: Tab) -> bool {
+    if crate::remote::backend_is_remote(s) {
+        !tab.local_only() || side(s).is_some_and(|x| remote_repo::offered(x, tab))
+    } else {
+        !(tab.coding() && side(s).is_some_and(|x| x.folder.is_none()))
+    }
+}
+
+/// The tab's own buttons, drawn at the right of the dock's title row before
+/// the widen button (`dock::title`), so every tab keeps its actions in one
+/// place. Tabs whose controls belong to their content (Changes' git bar,
+/// Console's prompt, Browser's address bar) keep them there.
+fn tab_actions(s: &State, k: &Kit, tab: Tab) -> Vec<El> {
+    if !tab_ready(s, tab) {
+        return Vec::new();
+    }
+    match tab {
+        Tab::Files => project::actions(s, k),
+        Tab::Outputs => outputs::actions(s, k),
+        Tab::History => history::actions(k),
+        Tab::Routines => routines::actions(k),
+        Tab::Agents => agents::actions(k),
+        _ => Vec::new(),
+    }
+}
+
+/// The count shown beside the tab's name in the dock's title row.
+fn tab_count(s: &State, tab: Tab) -> Option<usize> {
+    match tab {
+        Tab::Agents => Some(bridge::tasks(s).len()),
+        Tab::Routines => routines::count(s),
+        _ => None,
+    }
+}
+
 /// The dock's body for its tab.
 fn body(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> El {
     let _ = cx;

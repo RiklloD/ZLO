@@ -280,17 +280,18 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         },
         move |s, i| commit_row(s, i, graph_w),
     );
-    ui::fill_col()
-        .child(
-            row().w_full().px(8.).justify_end().child(
-                ui::ibtn(&icons::REFRESH_CW, "Refresh")
-                    .label("Refresh history")
-                    .on_press(refresh)
-                    .build(k)
-                    .key("history-refresh"),
-            ),
-        )
-        .child(list)
+    ui::fill_col().child(list)
+}
+
+/// The History tab's refresh button, for the dock's title row.
+pub(super) fn actions(k: &Kit) -> Vec<El> {
+    vec![
+        ui::ibtn(&icons::REFRESH_CW, "Refresh")
+            .label("Refresh history")
+            .on_press(refresh)
+            .build(k)
+            .key("history-refresh"),
+    ]
 }
 
 /// The loaded commits, when there are any.

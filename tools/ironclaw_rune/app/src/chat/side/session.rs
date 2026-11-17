@@ -159,7 +159,7 @@ pub(super) fn chat_actions(s: &State) -> El {
                 .key("side-chat-new"),
         )
         .child(
-            ui::ibtn(&icons::MAXIMIZE, "Open as the main chat")
+            ui::ibtn(&icons::ARROW_UP_RIGHT, "Open as the main chat")
                 .label("Open side chat as the main chat")
                 .on_press(move |s: &mut State| crate::workspace::open_thread(s, id.clone()))
                 .build(&k)

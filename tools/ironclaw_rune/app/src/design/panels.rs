@@ -14,7 +14,7 @@
 //! - [`card_glyph`]`(key, open, size, color) -> El`
 //! - [`toggle`]`(s, key, open, right, label) -> El` (caller adds `.on_press`)
 //! - [`toggle_with`]`(s, key, label, glyph) -> El`
-//! - consts [`GLYPH`], [`REVEAL`], [`TOGGLE_SIZE`], [`GLYPH_PX`]
+//! - consts [`GLYPH`], [`REVEAL`], [`TOGGLE_SIZE`], [`TOGGLE_RADIUS`], [`GLYPH_PX`]
 
 use rune::{Color, El, Spring, el};
 
@@ -29,6 +29,8 @@ pub const GLYPH: Spring = Spring::new(0.28, 0.0);
 pub const REVEAL: Spring = Spring::new(0.24, 0.0);
 /// Titlebar button target and its glyph.
 pub const TOGGLE_SIZE: f32 = 28.;
+/// Its corner radius, and the active wash's under it.
+pub const TOGGLE_RADIUS: f32 = 7.;
 const GLYPH_SIZE: f32 = 16.;
 /// The glyph size [`toggle_with`] callers draw at.
 pub const GLYPH_PX: f32 = GLYPH_SIZE;
@@ -119,7 +121,7 @@ pub fn toggle_with(s: &State, key: &str, label: &str, glyph: El) -> El {
         .label(label.to_string())
         .help(label.to_string())
         .size(TOGGLE_SIZE, TOGGLE_SIZE)
-        .radius(7.)
+        .radius(TOGGLE_RADIUS)
         .center()
         .cursor(rune::Cursor::Pointer)
         .hover(wash)
@@ -127,5 +129,9 @@ pub fn toggle_with(s: &State, key: &str, label: &str, glyph: El) -> El {
         .hover_motion(st.hover, st.hover)
         .hover_group()
         .no_window_drag()
+        // Reachable from the keyboard (Space presses it), with the kit's
+        // focus ring, as rune-kit's own buttons.
+        .focusable(true)
+        .focus_ring(2., 2.5, super::kit(p).c.border_focus)
         .child(glyph)
 }
