@@ -49,11 +49,13 @@ pub struct ComputerUseConfig {
     pub live_preview: bool,
     /// One JSON line per tool call (tool, ok, code, seconds; never arguments).
     pub trace_path: Option<PathBuf>,
-    /// The ZLO data folder. Window captures (screenshots) and each
-    /// session's native-cursor observation file live in private directories
-    /// under it (`cache/computer-use/{captures,cursor}`), validated from here
-    /// down and never in the shared temp dir. `None` turns window capture
-    /// and cursor following off.
+    /// The ZLO data folder, as resolved by the host's boot configuration
+    /// (with the legacy-folder migration applied) and passed in by
+    /// composition — the lane never derives it from the environment. Window
+    /// captures (screenshots) and each session's native-cursor observation
+    /// file live in private directories under it
+    /// (`cache/computer-use/{captures,cursor}`), validated from here down.
+    /// `None` (the default) turns window capture and cursor following off.
     pub zlo_home: Option<PathBuf>,
 }
 
@@ -64,11 +66,7 @@ impl ComputerUseConfig {
             fork: is_fork(&binary),
             live_preview: true,
             trace_path: None,
-            zlo_home: crate::private_dir::default_zlo_home(
-                std::env::var_os("ZLO_HOME").map(PathBuf::from),
-                std::env::var_os("IRONCLAW_REBORN_HOME").map(PathBuf::from),
-                std::env::var_os("HOME").map(PathBuf::from),
-            ),
+            zlo_home: None,
             binary,
             args: vec!["mcp".to_string()],
             env: vec![(IN_PROCESS_ENV.0.to_string(), IN_PROCESS_ENV.1.to_string())],
@@ -80,6 +78,13 @@ impl ComputerUseConfig {
             max_frame_bytes: 16 * 1024 * 1024,
             max_sessions: 4,
         }
+    }
+
+    /// Root the private capture and cursor directories at the host-resolved
+    /// ZLO home.
+    pub fn with_zlo_home(mut self, zlo_home: PathBuf) -> Self {
+        self.zlo_home = Some(zlo_home);
+        self
     }
 
     /// `None` when computer use is off: no engine found, or turned off.
@@ -126,16 +131,6 @@ impl ComputerUseConfig {
             },
         };
         let mut config = Self::new(binary);
-        let path = |name: &str| {
-            lookup(name)
-                .filter(|value| !value.trim().is_empty())
-                .map(PathBuf::from)
-        };
-        config.zlo_home = crate::private_dir::default_zlo_home(
-            path("ZLO_HOME"),
-            path("IRONCLAW_REBORN_HOME"),
-            path("HOME"),
-        );
         if let Some(raw) = lookup("COMPUTER_USE_LIVE_PREVIEW") {
             config.live_preview = match raw.trim().to_ascii_lowercase().as_str() {
                 "" | "1" | "true" | "yes" | "on" => true,

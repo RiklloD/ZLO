@@ -9,7 +9,7 @@ use super::*;
 use super::assembly_support::{
     AllowAllCapabilitySurfaceResolver, append_trusted_laptop_access_audit, bool_env_flag,
     build_generic_channel_connection_facade, build_webui_auth_interaction_service,
-    optional_nonzero_u32_env, unattended_denied_capability_ids,
+    computer_use_config_for_boot, optional_nonzero_u32_env, unattended_denied_capability_ids,
 };
 use super::skill_context::{filesystem_skill_context_runtime, filesystem_skill_context_source};
 use super::startup_guards::{
@@ -214,11 +214,15 @@ pub(super) async fn assemble_runtime(
             reason: format!("suggestion generation observer wiring failed: {error}"),
         })?;
     // Computer use is on when the engine is bundled or configured; a thread's Stop ends its session.
-    let computer_use = ironclaw_computer_use::ComputerUse::from_env().map_err(|error| {
-        RebornRuntimeError::MalformedConfig {
+    let computer_use = ironclaw_computer_use::ComputerUseConfig::from_env()
+        .map_err(|error| RebornRuntimeError::MalformedConfig {
             reason: error.to_string(),
-        }
-    })?;
+        })?
+        .map(|config| {
+            Arc::new(ironclaw_computer_use::ComputerUse::new(
+                computer_use_config_for_boot(boot.as_ref(), config),
+            ))
+        });
     #[cfg(any(test, feature = "test-support"))]
     let computer_use = computer_use_override.or(computer_use);
     if let Some(computer_use) = &computer_use {

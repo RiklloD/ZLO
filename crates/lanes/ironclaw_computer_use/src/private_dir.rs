@@ -22,20 +22,6 @@ pub(crate) const CAPTURE_DIR: [&str; 3] = ["cache", "computer-use", "captures"];
 /// Where cursor observation files live, relative to `ZLO_HOME`.
 pub(crate) const CURSOR_DIR: [&str; 3] = ["cache", "computer-use", "cursor"];
 
-/// The ZLO data folder: `$ZLO_HOME`, else the legacy `$IRONCLAW_REBORN_HOME`,
-/// else `$HOME/.zlo` — the same explicit-variable precedence as
-/// `ironclaw_config`. Only absolute paths count; `None` turns capture off.
-pub(crate) fn default_zlo_home(
-    zlo_home: Option<PathBuf>,
-    legacy_home: Option<PathBuf>,
-    home: Option<PathBuf>,
-) -> Option<PathBuf> {
-    let absolute = |path: Option<PathBuf>| path.filter(|path| path.is_absolute());
-    absolute(zlo_home)
-        .or_else(|| absolute(legacy_home))
-        .or_else(|| absolute(home).map(|home| home.join(".zlo")))
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PrivateDirError {
     #[error("directory unavailable: {0}")]

@@ -1,28 +1,9 @@
 //! Private directory checks: ancestry validation from `ZLO_HOME` down, and
 //! descriptor-relative use that a later path swap cannot redirect.
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::*;
-
-#[test]
-fn the_zlo_home_resolves_with_config_precedence() {
-    let some = |path: &str| Some(PathBuf::from(path));
-    assert_eq!(
-        default_zlo_home(some("/zlo"), some("/legacy"), some("/home/u")),
-        some("/zlo")
-    );
-    assert_eq!(
-        default_zlo_home(None, some("/legacy"), some("/home/u")),
-        some("/legacy")
-    );
-    assert_eq!(
-        default_zlo_home(None, None, some("/home/u")),
-        some("/home/u/.zlo")
-    );
-    assert_eq!(default_zlo_home(some("relative"), None, None), None);
-    assert_eq!(default_zlo_home(None, None, None), None);
-}
 
 #[test]
 fn capture_names_match_only_our_patterns() {

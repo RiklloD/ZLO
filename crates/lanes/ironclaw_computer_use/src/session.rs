@@ -387,11 +387,6 @@ impl ComputerUse {
         }
     }
 
-    /// `None` unless `COMPUTER_USE_ENABLED` turns it on.
-    pub fn from_env() -> Result<Option<Arc<Self>>, ComputerUseError> {
-        Ok(ComputerUseConfig::from_env()?.map(|config| Arc::new(Self::new(config))))
-    }
-
     pub fn config(&self) -> &ComputerUseConfig {
         &self.config
     }

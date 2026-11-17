@@ -649,3 +649,24 @@ fn weak_model_arguments_are_repaired_against_the_tool_schema() {
         json!({"app": "Mail", "text_limit": "max", "window_title": "Inbox"})
     );
 }
+
+#[test]
+fn the_lane_never_derives_the_zlo_home_from_the_environment() {
+    // The resolved home (with the legacy-folder migration applied) comes from
+    // composition; the lane's own config leaves it unset, so capture and
+    // cursor files stay off until it is passed in.
+    let lookup = |name: &str| match name {
+        "ZLO_HOME" => Some("/zlo-from-env".to_string()),
+        "IRONCLAW_REBORN_HOME" => Some("/legacy-from-env".to_string()),
+        "HOME" => Some("/home-from-env".to_string()),
+        _ => None,
+    };
+    let config = ComputerUseConfig::from_lookup(lookup, Some(PathBuf::from("/bin/sh")))
+        .unwrap()
+        .expect("bundled engine turns computer use on");
+    assert_eq!(config.zlo_home, None);
+    assert_eq!(ComputerUseConfig::new("/bin/sh").zlo_home, None);
+
+    let passed = ComputerUseConfig::new("/bin/sh").with_zlo_home(PathBuf::from("/resolved/zlo"));
+    assert_eq!(passed.zlo_home.as_deref(), Some(Path::new("/resolved/zlo")));
+}
