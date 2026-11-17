@@ -95,7 +95,7 @@ use ironclaw_resources::{
 };
 use ironclaw_sandbox::{
     ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptExecutionRequest,
-    ScriptExecutionResult, ScriptExecutor, ScriptRuntime, ScriptRuntimeConfig,
+    ScriptExecutionResult, ScriptExecutionSlot, ScriptExecutor, ScriptRuntime, ScriptRuntimeConfig,
 };
 use ironclaw_secrets::{SecretMaterial, SecretStore, SecretStorePort};
 use ironclaw_trust::{
@@ -773,7 +773,11 @@ impl ScriptExecutor for RecordingScriptExecutor {
 pub(crate) struct ExitFailureScriptBackend;
 
 impl ScriptBackend for ExitFailureScriptBackend {
-    fn execute(&self, _request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String> {
+    fn execute(
+        &self,
+        _request: ScriptBackendRequest,
+        _slot: ScriptExecutionSlot,
+    ) -> Result<ScriptBackendOutput, String> {
         Ok(ScriptBackendOutput {
             exit_code: 2,
             stdout: Vec::new(),
@@ -786,7 +790,11 @@ impl ScriptBackend for ExitFailureScriptBackend {
 pub(crate) struct EchoScriptBackend;
 
 impl ScriptBackend for EchoScriptBackend {
-    fn execute(&self, request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String> {
+    fn execute(
+        &self,
+        request: ScriptBackendRequest,
+        _slot: ScriptExecutionSlot,
+    ) -> Result<ScriptBackendOutput, String> {
         let value = serde_json::from_str(&request.stdin_json).map_err(|error| error.to_string())?;
         Ok(ScriptBackendOutput::json(value))
     }

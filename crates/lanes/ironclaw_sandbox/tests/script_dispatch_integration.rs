@@ -119,7 +119,11 @@ impl RecordingScriptBackend {
 }
 
 impl ScriptBackend for RecordingScriptBackend {
-    fn execute(&self, request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String> {
+    fn execute(
+        &self,
+        request: ScriptBackendRequest,
+        _slot: ScriptExecutionSlot,
+    ) -> Result<ScriptBackendOutput, String> {
         self.requests.lock().unwrap().push(request);
         self.output.lock().unwrap().clone()
     }

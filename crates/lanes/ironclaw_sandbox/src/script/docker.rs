@@ -7,7 +7,8 @@
 //! and every step that cannot finish in time is abandoned rather than waited
 //! on. Nothing here blocks without a deadline once the timeout fires, so a
 //! wedged Docker CLI cannot hold the calling thread (and with it the resource
-//! reservation) indefinitely.
+//! reservation) indefinitely. A container whose removal cannot be verified
+//! keeps its lane slot in the orphan reaper (`super::orphans`) until it is.
 
 use std::{
     fmt,
@@ -18,11 +19,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{ScriptBackend, ScriptBackendOutput, ScriptBackendRequest};
-
-/// Docker label every script container carries, so an operator (or a later
-/// sweep) can find script-lane containers left behind by a failed teardown.
-pub(crate) const SCRIPT_CONTAINER_LABEL: &str = "ironclaw.lane=script";
+use super::orphans::{
+    HOST_LABEL_KEY, INSTANCE_LABEL_KEY, LANE_LABEL_KEY, LANE_LABEL_VALUE, LabelledContainer,
+    OrphanBounds, OrphanReaper, PID_LABEL_KEY, ScriptInstance, process_alive,
+    reap_previous_instances, remove_verified,
+};
+use super::{ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptExecutionSlot};
 
 /// Prefix of the host-assigned container name (`<prefix><uuid>`).
 const SCRIPT_CONTAINER_NAME_PREFIX: &str = "ironclaw-script-";
@@ -71,6 +73,10 @@ pub(crate) trait DockerCli: Send + Sync {
     fn spawn_run(&self, args: &[String]) -> io::Result<Box<dyn ScriptChild>>;
     /// Stop and remove the named container, giving up after `bound`.
     fn force_remove(&self, container_name: &str, bound: Duration) -> Result<(), String>;
+    /// Whether a container with exactly this name exists (running or not).
+    fn container_exists(&self, container_name: &str, bound: Duration) -> Result<bool, String>;
+    /// Every container carrying the script lane label, with its labels.
+    fn list_script_containers(&self, bound: Duration) -> Result<Vec<LabelledContainer>, String>;
 }
 
 /// Docker CLI backend for V1 script execution.
@@ -83,6 +89,8 @@ pub(crate) trait DockerCli: Send + Sync {
 pub struct DockerScriptBackend {
     cli: Arc<dyn DockerCli>,
     bounds: TeardownBounds,
+    instance: ScriptInstance,
+    reaper: Arc<OrphanReaper>,
 }
 
 impl fmt::Debug for DockerScriptBackend {
@@ -95,15 +103,50 @@ impl fmt::Debug for DockerScriptBackend {
 
 impl Default for DockerScriptBackend {
     fn default() -> Self {
+        Self::from_parts(
+            Arc::new(SystemDockerCli),
+            TeardownBounds::DEFAULT,
+            OrphanBounds::default_bounds(),
+            ScriptInstance::current(),
+        )
+    }
+}
+
+impl DockerScriptBackend {
+    fn from_parts(
+        cli: Arc<dyn DockerCli>,
+        bounds: TeardownBounds,
+        orphan_bounds: OrphanBounds,
+        instance: ScriptInstance,
+    ) -> Self {
+        let reaper = Arc::new(OrphanReaper::new(Arc::clone(&cli), orphan_bounds));
         Self {
-            cli: Arc::new(SystemDockerCli),
-            bounds: TeardownBounds::DEFAULT,
+            cli,
+            bounds,
+            instance,
+            reaper,
         }
+    }
+
+    /// Startup sweep: remove script containers left on this host by earlier
+    /// instances whose process is gone. Call once when the lane is composed,
+    /// before admitting work. Returns how many were removed and verified gone.
+    pub fn reap_previous_instances(&self) -> Result<usize, String> {
+        reap_previous_instances(
+            self.cli.as_ref(),
+            &self.instance,
+            self.bounds.force_remove,
+            &process_alive,
+        )
     }
 }
 
 impl ScriptBackend for DockerScriptBackend {
-    fn execute(&self, request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String> {
+    fn execute(
+        &self,
+        request: ScriptBackendRequest,
+        slot: ScriptExecutionSlot,
+    ) -> Result<ScriptBackendOutput, String> {
         if request.runner != "docker" {
             return Err(format!(
                 "DockerScriptBackend cannot execute runner {}",
@@ -120,14 +163,34 @@ impl ScriptBackend for DockerScriptBackend {
             "{SCRIPT_CONTAINER_NAME_PREFIX}{}",
             uuid::Uuid::new_v4().simple()
         );
-        execute_docker_request(
+        let outcome = execute_docker_request(
             self.cli.as_ref(),
             self.bounds,
             &request,
             &image,
             &container_name,
-        )
+            &self.instance,
+        );
+        match outcome {
+            DockerOutcome::Finished(result) => result,
+            DockerOutcome::TimedOut { removed: true } => Err(timeout_message(&request)),
+            DockerOutcome::TimedOut { removed: false } => {
+                // The container may still be running: its slot stays held by
+                // the reaper until removal is verified.
+                self.reaper.adopt(container_name, slot);
+                Err(timeout_message(&request))
+            }
+        }
     }
+}
+
+enum DockerOutcome {
+    Finished(Result<ScriptBackendOutput, String>),
+    TimedOut { removed: bool },
+}
+
+fn timeout_message(request: &ScriptBackendRequest) -> String {
+    format!("script timed out after {} ms", request.max_wall_clock_ms)
 }
 
 pub(crate) fn validate_docker_image_reference(image: &str) -> Result<(), String> {
@@ -193,18 +256,21 @@ fn execute_docker_request(
     request: &ScriptBackendRequest,
     image: &str,
     container_name: &str,
-) -> Result<ScriptBackendOutput, String> {
+    instance: &ScriptInstance,
+) -> DockerOutcome {
     let started = Instant::now();
-    let mut child = cli
-        .spawn_run(&docker_run_args(request, image, container_name))
-        .map_err(|error| error.to_string())?;
+    let mut child = match cli.spawn_run(&docker_run_args(request, image, container_name, instance))
+    {
+        Ok(child) => child,
+        Err(error) => return DockerOutcome::Finished(Err(error.to_string())),
+    };
 
-    let stdout = child
-        .take_stdout()
-        .ok_or_else(|| "Docker child stdout was not captured".to_string())?;
-    let stderr = child
-        .take_stderr()
-        .ok_or_else(|| "Docker child stderr was not captured".to_string())?;
+    let Some(stdout) = child.take_stdout() else {
+        return DockerOutcome::Finished(Err("Docker child stdout was not captured".to_string()));
+    };
+    let Some(stderr) = child.take_stderr() else {
+        return DockerOutcome::Finished(Err("Docker child stderr was not captured".to_string()));
+    };
     let stdout_limit = request.max_stdout_bytes;
     let stderr_limit = request.max_stderr_bytes;
     let stdout_reader = PipeThread::spawn("stdout", move || read_bounded(stdout, stdout_limit));
@@ -222,11 +288,13 @@ fn execute_docker_request(
 
     let timeout = Duration::from_millis(request.max_wall_clock_ms);
     let exit_code = loop {
-        if let Some(code) = child.try_wait().map_err(|error| error.to_string())? {
-            break code;
+        match child.try_wait() {
+            Ok(Some(code)) => break code,
+            Ok(None) => {}
+            Err(error) => return DockerOutcome::Finished(Err(error.to_string())),
         }
         if started.elapsed() >= timeout {
-            tear_down_timed_out_script(
+            let removed = tear_down_timed_out_script(
                 cli,
                 bounds,
                 child,
@@ -234,22 +302,36 @@ fn execute_docker_request(
                 [Some(stdout_reader), Some(stderr_reader)],
                 stdin_writer,
             );
-            return Err(format!(
-                "script timed out after {} ms",
-                request.max_wall_clock_ms
-            ));
+            return DockerOutcome::TimedOut { removed };
         }
         thread::sleep(POLL_INTERVAL);
     };
 
-    // The child exited, so its pipe ends are closed unless something else
-    // still holds them; join with the same bound instead of trusting that.
+    DockerOutcome::Finished(collect_output(
+        bounds,
+        started,
+        exit_code,
+        stdout_reader,
+        stderr_reader,
+        stdin_writer,
+    ))
+}
+
+/// The child exited, so its pipe ends are closed unless something else still
+/// holds them; join with the same bound instead of trusting that.
+fn collect_output(
+    bounds: TeardownBounds,
+    started: Instant,
+    exit_code: i32,
+    stdout_reader: PipeThread<Vec<u8>>,
+    stderr_reader: PipeThread<Vec<u8>>,
+    stdin_writer: Option<PipeThread<()>>,
+) -> Result<ScriptBackendOutput, String> {
     if let Some(stdin_writer) = stdin_writer {
         stdin_writer.join(bounds.pipe_join)?;
     }
     let stdout = stdout_reader.join(bounds.pipe_join)?;
     let stderr = stderr_reader.join(bounds.pipe_join)?;
-
     Ok(ScriptBackendOutput {
         exit_code,
         stdout,
@@ -260,6 +342,7 @@ fn execute_docker_request(
 
 /// Bounded teardown of a timed-out script. Every step is best-effort and
 /// bounded; failures are traced at debug level and never extend the wait.
+/// Returns whether the container's removal was verified.
 fn tear_down_timed_out_script(
     cli: &dyn DockerCli,
     bounds: TeardownBounds,
@@ -267,7 +350,7 @@ fn tear_down_timed_out_script(
     container_name: &str,
     readers: [Option<PipeThread<Vec<u8>>>; 2],
     stdin_writer: Option<PipeThread<()>>,
-) {
+) -> bool {
     if let Err(error) = child.kill() {
         tracing::debug!(%error, "killing a timed-out script's docker child failed");
     }
@@ -277,8 +360,11 @@ fn tear_down_timed_out_script(
     // the CLI observes the exit), so the container is removed by name whether
     // or not the kill worked. This is also what unblocks a CLI that survived
     // its kill: once the container is gone, `docker run` returns.
-    if let Err(error) = cli.force_remove(container_name, bounds.force_remove) {
-        tracing::debug!(%error, "force-removing a timed-out script container failed");
+    let removed = remove_verified(cli, container_name, bounds.force_remove);
+    if !removed {
+        tracing::debug!(
+            "a timed-out script container's removal is unverified; handing it to the reaper"
+        );
     }
     if !exited {
         exited = wait_for_exit(child.as_mut(), bounds.reap);
@@ -302,6 +388,7 @@ fn tear_down_timed_out_script(
     {
         tracing::debug!(%error, "timed-out script input pipe did not drain");
     }
+    removed
 }
 
 /// Poll `try_wait` until the child exits or `bound` elapses.
@@ -327,6 +414,7 @@ pub(crate) fn docker_run_args(
     request: &ScriptBackendRequest,
     image: &str,
     container_name: &str,
+    instance: &ScriptInstance,
 ) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
@@ -334,13 +422,17 @@ pub(crate) fn docker_run_args(
         "-i".to_string(),
         "--name".to_string(),
         container_name.to_string(),
-        "--label".to_string(),
-        SCRIPT_CONTAINER_LABEL.to_string(),
+    ];
+    for label in instance.labels() {
+        args.push("--label".to_string());
+        args.push(label);
+    }
+    args.extend([
         "--network".to_string(),
         "none".to_string(),
         image.to_string(),
         request.command.clone(),
-    ];
+    ]);
     args.extend(request.args.clone());
     args
 }
@@ -381,30 +473,101 @@ impl DockerCli for SystemDockerCli {
     }
 
     fn force_remove(&self, container_name: &str, bound: Duration) -> Result<(), String> {
-        let mut child = Command::new("docker")
-            .args(["rm", "-f", container_name])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("spawning docker rm failed: {error}"))?;
-        let deadline = Instant::now() + bound;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) if status.success() => return Ok(()),
-                Ok(Some(status)) => return Err(format!("docker rm exited with {status}")),
-                Ok(None) => {}
-                Err(error) => return Err(format!("polling docker rm failed: {error}")),
-            }
-            if Instant::now() >= deadline {
-                if let Err(error) = child.kill() {
-                    tracing::debug!(%error, "killing a stuck docker rm failed");
-                }
-                return Err("docker rm did not finish in time".to_string());
-            }
-            thread::sleep(POLL_INTERVAL);
+        let output = run_docker_bounded(&["rm", "-f", container_name], bound)?;
+        if output.success {
+            Ok(())
+        } else {
+            Err("docker rm exited unsuccessfully".to_string())
         }
     }
+
+    fn container_exists(&self, container_name: &str, bound: Duration) -> Result<bool, String> {
+        let filter = format!("name=^/{container_name}$");
+        let output = run_docker_bounded(&["ps", "-a", "-q", "--filter", &filter], bound)?;
+        if !output.success {
+            return Err("docker ps exited unsuccessfully".to_string());
+        }
+        Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+    }
+
+    fn list_script_containers(&self, bound: Duration) -> Result<Vec<LabelledContainer>, String> {
+        let filter = format!("label={LANE_LABEL_KEY}={LANE_LABEL_VALUE}");
+        let format = format!(
+            "{{{{.Names}}}}\t{{{{.Label \"{INSTANCE_LABEL_KEY}\"}}}}\t{{{{.Label \"{HOST_LABEL_KEY}\"}}}}\t{{{{.Label \"{PID_LABEL_KEY}\"}}}}"
+        );
+        let output = run_docker_bounded(
+            &["ps", "-a", "--filter", &filter, "--format", &format],
+            bound,
+        )?;
+        if !output.success {
+            return Err("docker ps exited unsuccessfully".to_string());
+        }
+        Ok(parse_labelled_containers(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+}
+
+/// Parse `docker ps --format` lines of `name\tinstance\thost\tpid`.
+pub(crate) fn parse_labelled_containers(listing: &str) -> Vec<LabelledContainer> {
+    let non_empty = |value: &str| (!value.is_empty()).then(|| value.to_string());
+    listing
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let name = fields.next()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(LabelledContainer {
+                name: name.to_string(),
+                instance: fields.next().and_then(|value| non_empty(value.trim())),
+                host: fields.next().and_then(|value| non_empty(value.trim())),
+                pid: fields.next().and_then(|value| value.trim().parse().ok()),
+            })
+        })
+        .collect()
+}
+
+struct BoundedOutput {
+    success: bool,
+    stdout: Vec<u8>,
+}
+
+/// Run a short `docker` command, giving up (and killing it) after `bound`.
+fn run_docker_bounded(args: &[&str], bound: Duration) -> Result<BoundedOutput, String> {
+    let mut child = Command::new("docker")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("spawning docker failed: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "docker stdout was not captured".to_string())?;
+    let reader = PipeThread::spawn("stdout", move || read_bounded(stdout, 1024 * 1024));
+    let deadline = Instant::now() + bound;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => return Err(format!("polling docker failed: {error}")),
+        }
+        if Instant::now() >= deadline {
+            if let Err(error) = child.kill() {
+                tracing::debug!(%error, "killing a stuck docker command failed");
+            }
+            return Err("docker command did not finish in time".to_string());
+        }
+        thread::sleep(POLL_INTERVAL);
+    };
+    let stdout = reader.join(bound)?;
+    Ok(BoundedOutput {
+        success: status.success(),
+        stdout,
+    })
 }
 
 struct SystemScriptChild(std::process::Child);

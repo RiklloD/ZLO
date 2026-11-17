@@ -6,8 +6,16 @@
 //! secrets, or network by default.
 
 pub mod docker;
+mod orphans;
 
-use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
+use std::{
+    panic::AssertUnwindSafe,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 
@@ -24,11 +32,13 @@ use ironclaw_host_api::{
     resource::{
         CapabilityHostResult, ResourceEstimate, ResourceReceipt, ResourceReservation,
         ResourceScope, ResourceUsage, RuntimeResourceBudget, RuntimeResourceError,
+        RuntimeResourceErrorKind,
     },
     runtime::RuntimeKind,
 };
 use serde_json::Value;
 use thiserror::Error;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Script runner limits owned by the host runtime, not by extension manifests.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +51,12 @@ pub struct ScriptRuntimeConfig {
     /// releasing the reservation, and reporting the timeout. Must exceed the
     /// backend's own bounded teardown (the sum of `docker::TeardownBounds`).
     pub teardown_grace_ms: u64,
+    /// Upper bound on script executions the lane owns at once. A slot is held
+    /// by the worker until the backend really returns (past a timeout), and
+    /// by an orphaned container until its removal is verified. A call that
+    /// finds no free slot is refused with a resource limit error, never
+    /// queued.
+    pub max_concurrent_executions: usize,
 }
 
 impl Default for ScriptRuntimeConfig {
@@ -49,7 +65,8 @@ impl Default for ScriptRuntimeConfig {
             max_stdout_bytes: 1024 * 1024,
             max_stderr_bytes: 64 * 1024,
             max_wall_clock_ms: 30_000,
-            teardown_grace_ms: 15_000,
+            teardown_grace_ms: 20_000,
+            max_concurrent_executions: 8,
         }
     }
 }
@@ -61,6 +78,7 @@ impl ScriptRuntimeConfig {
             max_stderr_bytes: 16 * 1024,
             max_wall_clock_ms: 5_000,
             teardown_grace_ms: 200,
+            max_concurrent_executions: 4,
         }
     }
 }
@@ -137,9 +155,41 @@ impl ScriptBackendOutput {
     }
 }
 
+/// One unit of the script lane's bounded concurrency.
+///
+/// The runtime admits a call only with a free slot and hands the slot to the
+/// backend with the request. Dropping it frees the unit. A backend that still
+/// owns work after returning (an orphaned container it is still removing)
+/// keeps the slot alive until that work is verified gone, so admission stays
+/// bounded by what is really running.
+#[derive(Debug)]
+pub struct ScriptExecutionSlot {
+    _permit: Option<OwnedSemaphorePermit>,
+}
+
+impl ScriptExecutionSlot {
+    /// A slot outside any lane's admission control, for driving a backend
+    /// directly (tests, tooling). The runtime never uses it.
+    pub fn unmetered() -> Self {
+        Self { _permit: None }
+    }
+
+    fn admitted(permit: OwnedSemaphorePermit) -> Self {
+        Self {
+            _permit: Some(permit),
+        }
+    }
+}
+
 /// Backend interface for sandboxed script execution.
 pub trait ScriptBackend: Send + Sync {
-    fn execute(&self, request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String>;
+    /// Run one script. `slot` is this execution's lane capacity; drop it when
+    /// the work is done, or keep it with any work that outlives this call.
+    fn execute(
+        &self,
+        request: ScriptBackendRequest,
+        slot: ScriptExecutionSlot,
+    ) -> Result<ScriptBackendOutput, String>;
 }
 
 /// Full resource-governed script execution result.
@@ -236,10 +286,17 @@ impl From<RuntimeResourceError> for ScriptError {
 /// and bounds the wait at `max_wall_clock_ms + teardown_grace_ms`. A backend
 /// still running at that deadline is abandoned on its blocking thread; the
 /// reservation is released and the call reports [`ScriptError::Timeout`].
+///
+/// Admission is bounded by `max_concurrent_executions` slots. The slot moves
+/// into the blocking job and is released only when the backend returns (or
+/// later, by work the backend keeps), never at the timeout, so stuck
+/// backends cannot be replaced by fresh ones without bound. A job that only
+/// gets a blocking thread after its call timed out refuses to start.
 #[derive(Debug, Clone)]
 pub struct ScriptRuntime<B> {
     config: ScriptRuntimeConfig,
     backend: Arc<B>,
+    slots: Arc<Semaphore>,
 }
 
 impl<B> ScriptRuntime<B>
@@ -247,9 +304,11 @@ where
     B: ScriptBackend + 'static,
 {
     pub fn new(config: ScriptRuntimeConfig, backend: B) -> Self {
+        let slots = Arc::new(Semaphore::new(config.max_concurrent_executions));
         Self {
             config,
             backend: Arc::new(backend),
+            slots,
         }
     }
 
@@ -266,6 +325,9 @@ where
         Budget: RuntimeResourceBudget + ?Sized,
     {
         let backend_request = self.prepare_backend_request(&request)?;
+        // Admission before reservation: a full lane is refused outright and
+        // never holds budget it cannot use.
+        let slot = self.admit()?;
         let reservation = reserve_or_use_existing(
             budget,
             request.scope.clone(),
@@ -273,7 +335,7 @@ where
             request.resource_reservation.clone(),
         )?;
 
-        let output = match self.execute_backend_off_worker(backend_request).await {
+        let output = match self.execute_backend_off_worker(backend_request, slot).await {
             Ok(output) => output,
             Err(error) => return Err(release_after_failure(budget, reservation.id, error)),
         };
@@ -330,25 +392,58 @@ where
         })
     }
 
+    fn admit(&self) -> Result<ScriptExecutionSlot, ScriptError> {
+        Arc::clone(&self.slots)
+            .try_acquire_owned()
+            .map(ScriptExecutionSlot::admitted)
+            .map_err(|_full| {
+                ScriptError::Resource(RuntimeResourceError::new(
+                    RuntimeResourceErrorKind::LimitExceeded,
+                    format!(
+                        "script lane is at its concurrency limit of {}",
+                        self.config.max_concurrent_executions
+                    ),
+                ))
+            })
+    }
+
     /// Run the synchronous backend on the blocking pool with an outer deadline.
     async fn execute_backend_off_worker(
         &self,
         request: ScriptBackendRequest,
+        slot: ScriptExecutionSlot,
     ) -> Result<ScriptBackendOutput, ScriptError> {
         let limit_ms = request.max_wall_clock_ms;
         let deadline =
             Duration::from_millis(limit_ms.saturating_add(self.config.teardown_grace_ms));
+        let start_by = Instant::now() + deadline;
+        let abandoned = Arc::new(AtomicBool::new(false));
         let backend = Arc::clone(&self.backend);
-        let task = tokio::task::spawn_blocking(move || backend.execute(request));
-        match tokio::time::timeout(deadline, task).await {
+        let job_abandoned = Arc::clone(&abandoned);
+        let task = tokio::task::spawn_blocking(move || {
+            // The job may only get a thread after the call gave up on it
+            // (a saturated blocking pool). It must not start a script whose
+            // reservation is already released; dropping `slot` frees it.
+            if job_abandoned.load(Ordering::SeqCst) || Instant::now() >= start_by {
+                tracing::debug!("refusing to start a script job whose call already timed out");
+                return Err("script job expired before it started".to_string());
+            }
+            backend.execute(request, slot)
+        });
+        let outcome = tokio::time::timeout(deadline, task).await;
+        if outcome.is_err() {
+            abandoned.store(true, Ordering::SeqCst);
+        }
+        match outcome {
             Ok(Ok(Ok(output))) => Ok(output),
             Ok(Ok(Err(reason))) => Err(ScriptError::Backend { reason }),
             Ok(Err(join_error)) => Err(ScriptError::Backend {
                 reason: format!("script backend task failed: {join_error}"),
             }),
             Err(_elapsed) => {
-                // Dropping the join handle detaches the blocking thread; the
-                // backend's own teardown bounds decide when it finishes.
+                // Dropping the join handle detaches the blocking thread. The
+                // job keeps its slot until the backend really returns, and a
+                // job that has not started yet will refuse to.
                 tracing::debug!(
                     limit_ms,
                     deadline_ms = deadline.as_millis() as u64,

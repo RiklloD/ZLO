@@ -124,6 +124,14 @@ worker. It waits at most `max_wall_clock_ms + teardown_grace_ms`; a backend
 still running then is abandoned on its blocking thread, the reservation is
 released, and the call reports `ScriptError::Timeout`.
 
+Admission is bounded by `ScriptRuntimeConfig::max_concurrent_executions`
+slots. A call that finds no free slot is refused before reserving, with
+`ScriptError::Resource` (`LimitExceeded`); it is never queued. The slot
+(`ScriptExecutionSlot`) moves into the blocking job and is passed to the
+backend, so it is released only when the backend really returns — never at
+the timeout — or later, by work the backend keeps. A job that only gets a
+blocking thread after its call timed out refuses to start the script.
+
 Actual usage currently records:
 
 - wall-clock milliseconds reported by the backend
@@ -137,7 +145,9 @@ Actual usage currently records:
 `DockerScriptBackend` invokes Docker only when the manifest resolves to `runner = "docker"` with an image. It uses normalized fields only:
 
 ```text
-docker run --rm -i --name ironclaw-script-<uuid> --label ironclaw.lane=script \
+docker run --rm -i --name ironclaw-script-<uuid> \
+  --label ironclaw.lane=script --label ironclaw.instance=<uuid per process> \
+  --label ironclaw.host=<hostname> --label ironclaw.pid=<pid> \
   --network none <image> <command> <args...>
 ```
 
@@ -148,6 +158,16 @@ bounded steps: kill the CLI child, wait a bounded time for it to exit,
 stop the container), wait again, then join the pipe threads with a deadline,
 abandoning any that never close. It then returns its timeout error; no step
 waits without a bound.
+
+Removal is verified (`docker ps -a --filter name=^/<name>$`). When it cannot
+be verified, the container may still be running: the backend hands the
+container and its lane slot to an orphan reaper, which retries removal with
+capped backoff and releases the slot only after verified removal, so capacity
+is never re-admitted over a live container. At composition time,
+`DockerScriptBackend::reap_previous_instances` removes lane containers left on
+this host by earlier instances whose process is gone; containers of a live
+process (including another IronClaw on the same host), of another host, or
+without full labels are left alone.
 
 V1 default restrictions:
 

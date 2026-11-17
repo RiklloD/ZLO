@@ -58,7 +58,8 @@ use ironclaw_network::{
 use ironclaw_processes::{ProcessInvocationStatePort, ProcessInvocationStatus};
 use ironclaw_resources::{InMemoryResourceGovernor, ResourceAccount, ResourceTally};
 use ironclaw_sandbox::{
-    ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptRuntime, ScriptRuntimeConfig,
+    ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptExecutionSlot, ScriptRuntime,
+    ScriptRuntimeConfig,
 };
 use ironclaw_secrets::{SecretMaterial, SecretStore, SecretStorePort};
 use ironclaw_trust::{
@@ -915,7 +916,11 @@ impl StuckScriptBackend {
 }
 
 impl ScriptBackend for StuckScriptBackend {
-    fn execute(&self, _request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String> {
+    fn execute(
+        &self,
+        _request: ScriptBackendRequest,
+        _slot: ScriptExecutionSlot,
+    ) -> Result<ScriptBackendOutput, String> {
         let release = self.release.lock().unwrap();
         // Either outcome (released or 10 s elapsed) is "the stall ended".
         let ended = release.recv_timeout(std::time::Duration::from_secs(10));
@@ -926,7 +931,11 @@ impl ScriptBackend for StuckScriptBackend {
 struct FailingScriptBackend;
 
 impl ScriptBackend for FailingScriptBackend {
-    fn execute(&self, _request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String> {
+    fn execute(
+        &self,
+        _request: ScriptBackendRequest,
+        _slot: ScriptExecutionSlot,
+    ) -> Result<ScriptBackendOutput, String> {
         Err(format!(
             "BACKEND_PROVIDER_ERROR_SECRET_3067 /private/tmp/backend-path sk-live {}",
             concat!("ghp_", "012345678901234567890123456789012345")
@@ -935,7 +944,11 @@ impl ScriptBackend for FailingScriptBackend {
 }
 
 impl ScriptBackend for EchoScriptBackend {
-    fn execute(&self, request: ScriptBackendRequest) -> Result<ScriptBackendOutput, String> {
+    fn execute(
+        &self,
+        request: ScriptBackendRequest,
+        _slot: ScriptExecutionSlot,
+    ) -> Result<ScriptBackendOutput, String> {
         let value = serde_json::from_str(&request.stdin_json).map_err(|error| error.to_string())?;
         Ok(ScriptBackendOutput::json(value))
     }

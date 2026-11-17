@@ -8,11 +8,12 @@ use std::{ffi::OsString, fs, sync::Mutex};
 #[cfg(unix)]
 use super::DockerScriptBackend;
 use super::{
-    SCRIPT_CONTAINER_LABEL, docker_run_args, read_bounded, validate_docker_image_reference,
+    docker_run_args, parse_labelled_containers, read_bounded, validate_docker_image_reference,
 };
-#[cfg(unix)]
-use crate::script::ScriptBackend;
 use crate::script::ScriptBackendRequest;
+use crate::script::orphans::{LabelledContainer, ScriptInstance};
+#[cfg(unix)]
+use crate::script::{ScriptBackend, ScriptExecutionSlot};
 use ironclaw_host_api::{
     ids::{CapabilityId, InvocationId, TenantId, UserId},
     resource::ResourceScope,
@@ -81,7 +82,7 @@ fn docker_backend_disables_ambient_network_before_image_and_manifest_args() {
     }
 
     let output = DockerScriptBackend::default()
-        .execute(sample_docker_request())
+        .execute(sample_docker_request(), ScriptExecutionSlot::unmetered())
         .unwrap();
 
     assert_eq!(output.exit_code, 0);
@@ -95,19 +96,11 @@ fn docker_backend_disables_ambient_network_before_image_and_manifest_args() {
         "container must carry a host-assigned name: {}",
         args[4]
     );
-    assert_eq!(
-        &args[5..10],
-        &[
-            "--label",
-            SCRIPT_CONTAINER_LABEL,
-            "--network",
-            "none",
-            "alpine:latest"
-        ]
-    );
-    assert_eq!(args[10], "script-echo");
-    assert_eq!(args[11], "--json");
-    assert_eq!(args[12], "--network=host");
+    assert_script_labels(&args[5..13]);
+    assert_eq!(&args[13..16], &["--network", "none", "alpine:latest"]);
+    assert_eq!(args[16], "script-echo");
+    assert_eq!(args[17], "--json");
+    assert_eq!(args[18], "--network=host");
     let image_index = args
         .iter()
         .position(|arg| *arg == "alpine:latest")
@@ -133,7 +126,12 @@ fn docker_backend_disables_ambient_network_before_image_and_manifest_args() {
 fn docker_run_args_disable_ambient_network_before_image_and_manifest_args() {
     let request = sample_docker_request();
 
-    let args = docker_run_args(&request, "alpine:latest", "ironclaw-script-test");
+    let args = docker_run_args(
+        &request,
+        "alpine:latest",
+        "ironclaw-script-test",
+        &ScriptInstance::current(),
+    );
 
     assert_eq!(&args[..3], &["run", "--rm", "-i"]);
     assert_eq!(args[3], "--name");
@@ -142,19 +140,11 @@ fn docker_run_args_disable_ambient_network_before_image_and_manifest_args() {
         "container must carry a host-assigned name: {}",
         args[4]
     );
-    assert_eq!(
-        &args[5..10],
-        &[
-            "--label",
-            SCRIPT_CONTAINER_LABEL,
-            "--network",
-            "none",
-            "alpine:latest"
-        ]
-    );
-    assert_eq!(args[10], "script-echo");
-    assert_eq!(args[11], "--json");
-    assert_eq!(args[12], "--network=host");
+    assert_script_labels(&args[5..13]);
+    assert_eq!(&args[13..16], &["--network", "none", "alpine:latest"]);
+    assert_eq!(args[16], "script-echo");
+    assert_eq!(args[17], "--json");
+    assert_eq!(args[18], "--network=host");
     let image_index = args
         .iter()
         .position(|arg| arg == "alpine:latest")
@@ -174,6 +164,42 @@ fn docker_run_args_disable_ambient_network_before_image_and_manifest_args() {
     assert!(network_index < image_index);
     assert!(image_index < command_index);
     assert!(command_index < manifest_arg_index);
+}
+
+/// The four `--label` pairs: lane, instance, host, pid.
+fn assert_script_labels<S: AsRef<str>>(labels: &[S]) {
+    let labels: Vec<&str> = labels.iter().map(AsRef::as_ref).collect();
+    assert_eq!(labels[0], "--label");
+    assert_eq!(labels[1], "ironclaw.lane=script");
+    assert_eq!(labels[2], "--label");
+    assert!(labels[3].starts_with("ironclaw.instance="), "{}", labels[3]);
+    assert_eq!(labels[4], "--label");
+    assert!(labels[5].starts_with("ironclaw.host="), "{}", labels[5]);
+    assert_eq!(labels[6], "--label");
+    assert_eq!(labels[7], format!("ironclaw.pid={}", std::process::id()));
+}
+
+#[test]
+fn docker_ps_listing_parses_names_and_labels() {
+    let listing = "ironclaw-script-a\tinst-1\thost-a\t42\nironclaw-script-b\t\t\t\n\n";
+
+    assert_eq!(
+        parse_labelled_containers(listing),
+        vec![
+            LabelledContainer {
+                name: "ironclaw-script-a".to_string(),
+                instance: Some("inst-1".to_string()),
+                host: Some("host-a".to_string()),
+                pid: Some(42),
+            },
+            LabelledContainer {
+                name: "ironclaw-script-b".to_string(),
+                instance: None,
+                host: None,
+                pid: None,
+            },
+        ]
+    );
 }
 
 fn sample_docker_request() -> ScriptBackendRequest {
@@ -223,7 +249,7 @@ mod teardown {
         io::{self, Cursor, Read, Write},
         sync::{
             Arc, Mutex,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
             mpsc,
         },
         time::{Duration, Instant},
@@ -245,9 +271,24 @@ mod teardown {
     use serde_json::json;
 
     use super::super::{DockerCli, DockerScriptBackend, ScriptChild, TeardownBounds};
+    use crate::script::orphans::{
+        LabelledContainer, OrphanBounds, OrphanReaper, ScriptInstance, reap_previous_instances,
+    };
     use crate::script::{
         ScriptError, ScriptExecutionRequest, ScriptInvocation, ScriptRuntime, ScriptRuntimeConfig,
     };
+
+    fn test_backend(cli: Arc<WedgedDockerCli>) -> DockerScriptBackend {
+        DockerScriptBackend::from_parts(
+            cli,
+            TEST_BOUNDS,
+            OrphanBounds {
+                backoff: vec![Duration::from_millis(20)],
+                command: Duration::from_millis(50),
+            },
+            ScriptInstance::current(),
+        )
+    }
 
     const TEST_BOUNDS: TeardownBounds = TeardownBounds {
         reap: Duration::from_millis(50),
@@ -267,6 +308,10 @@ mod teardown {
         kill_attempts: Arc<Mutex<u32>>,
         // Held so the stalled stdout stays open until the test ends.
         stall_handles: Mutex<Vec<mpsc::Sender<()>>>,
+        /// `docker rm -f` calls that fail (leaving the container) before
+        /// removal starts working.
+        rm_failures_left: AtomicUsize,
+        listing: Mutex<Vec<LabelledContainer>>,
     }
 
     impl WedgedDockerCli {
@@ -279,7 +324,14 @@ mod teardown {
                 spawned_args: Mutex::new(Vec::new()),
                 kill_attempts: Arc::new(Mutex::new(0)),
                 stall_handles: Mutex::new(Vec::new()),
+                rm_failures_left: AtomicUsize::new(0),
+                listing: Mutex::new(Vec::new()),
             })
+        }
+
+        fn with_rm_failures(self: Arc<Self>, failures: usize) -> Arc<Self> {
+            self.rm_failures_left.store(failures, Ordering::SeqCst);
+            self
         }
     }
 
@@ -302,8 +354,32 @@ mod teardown {
                 .lock()
                 .unwrap()
                 .push(container_name.to_string());
+            if self
+                .rm_failures_left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err("injected docker rm failure".to_string());
+            }
             self.removed.store(true, Ordering::SeqCst);
             Ok(())
+        }
+
+        fn container_exists(
+            &self,
+            _container_name: &str,
+            _bound: Duration,
+        ) -> Result<bool, String> {
+            Ok(!self.removed.load(Ordering::SeqCst))
+        }
+
+        fn list_script_containers(
+            &self,
+            _bound: Duration,
+        ) -> Result<Vec<LabelledContainer>, String> {
+            Ok(self.listing.lock().unwrap().clone())
         }
     }
 
@@ -362,20 +438,30 @@ mod teardown {
     async fn run_timed_out_script(
         cli: Arc<WedgedDockerCli>,
     ) -> (Result<(), ScriptError>, Duration, ResourceTally) {
-        let runtime = ScriptRuntime::new(
+        run_script(&timeout_runtime(test_backend(cli), 4)).await
+    }
+
+    fn timeout_runtime(
+        backend: DockerScriptBackend,
+        max_concurrent_executions: usize,
+    ) -> ScriptRuntime<DockerScriptBackend> {
+        ScriptRuntime::new(
             ScriptRuntimeConfig {
                 max_wall_clock_ms: 50,
                 // Generous: the backend's own bounded teardown must return
                 // first, so the assertion is about the backend, not the
                 // runtime's outer deadline.
                 teardown_grace_ms: 10_000,
+                max_concurrent_executions,
                 ..ScriptRuntimeConfig::for_testing()
             },
-            DockerScriptBackend {
-                cli,
-                bounds: TEST_BOUNDS,
-            },
-        );
+            backend,
+        )
+    }
+
+    async fn run_script(
+        runtime: &ScriptRuntime<DockerScriptBackend>,
+    ) -> (Result<(), ScriptError>, Duration, ResourceTally) {
         let governor = InMemoryResourceGovernor::new();
         let scope = sample_scope();
         let account = ResourceAccount::tenant(scope.tenant_id.clone());
@@ -460,10 +546,100 @@ mod teardown {
         );
     }
 
-    /// Worst case: two reap waits (before and after the force-remove), one
-    /// force-remove, and three pipe joins.
+    /// Worst case: two reap waits (before and after the force-remove), a
+    /// force-remove plus its verification, and three pipe joins.
     fn worst_case(bounds: TeardownBounds) -> Duration {
-        bounds.reap * 2 + bounds.force_remove + bounds.pipe_join * 3
+        bounds.reap * 2 + bounds.force_remove * 2 + bounds.pipe_join * 3
+    }
+
+    fn held(reaper: &OrphanReaper) -> usize {
+        OrphanReaper::held(&reaper.held).len()
+    }
+
+    #[tokio::test]
+    async fn unverified_container_removal_keeps_the_slot_until_the_reaper_verifies_it() {
+        // Teardown's rm fails, then the reaper's first two attempts fail too.
+        let cli = WedgedDockerCli::new(false, true).with_rm_failures(3);
+        let backend = test_backend(Arc::clone(&cli));
+        let reaper = Arc::clone(&backend.reaper);
+        let runtime = timeout_runtime(backend, 1);
+
+        let (first, _, reserved) = run_script(&runtime).await;
+        assert!(
+            matches!(first, Err(ScriptError::Backend { .. })),
+            "{first:?}"
+        );
+        assert_eq!(reserved, ResourceTally::default());
+        assert_eq!(held(&reaper), 1, "the unverified container is the reaper's");
+
+        // The container may still be running, so its slot is not re-admitted.
+        let (second, _, _) = run_script(&runtime).await;
+        assert!(
+            matches!(second, Err(ScriptError::Resource(_))),
+            "{second:?}"
+        );
+        assert_eq!(cli.spawned_args.lock().unwrap().len(), 1);
+
+        // The reaper retries until removal is verified, then frees the slot.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while held(&reaper) > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the reaper never verified removal"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(cli.removed_names.lock().unwrap().len() >= 4);
+        let (third, _, _) = run_script(&runtime).await;
+        assert!(
+            matches!(third, Err(ScriptError::Backend { .. })),
+            "the freed slot admits the next call: {third:?}"
+        );
+        assert_eq!(cli.spawned_args.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn startup_reaper_removes_only_dead_previous_instances_on_this_host() {
+        let current = ScriptInstance {
+            instance: "current".to_string(),
+            host: "this-host".to_string(),
+            pid: 100,
+        };
+        const LIVE_PID: u32 = 200;
+        let container =
+            |name: &str, instance: Option<&str>, host: Option<&str>, pid: Option<u32>| {
+                LabelledContainer {
+                    name: name.to_string(),
+                    instance: instance.map(str::to_string),
+                    host: host.map(str::to_string),
+                    pid,
+                }
+            };
+        let cli = WedgedDockerCli::new(false, true);
+        *cli.listing.lock().unwrap() = vec![
+            container("dead-previous", Some("old"), Some("this-host"), Some(300)),
+            container("ours", Some("current"), Some("this-host"), Some(100)),
+            container("other-host", Some("old"), Some("elsewhere"), Some(300)),
+            container(
+                "live-sibling",
+                Some("other"),
+                Some("this-host"),
+                Some(LIVE_PID),
+            ),
+            container("unlabelled", None, None, None),
+        ];
+
+        let removed =
+            reap_previous_instances(cli.as_ref(), &current, Duration::from_millis(50), &|pid| {
+                pid == LIVE_PID
+            })
+            .unwrap();
+
+        assert_eq!(removed, 1);
+        assert_eq!(
+            *cli.removed_names.lock().unwrap(),
+            vec!["dead-previous".to_string()]
+        );
     }
 
     fn script_package() -> ExtensionPackage {
