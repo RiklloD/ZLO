@@ -20,7 +20,7 @@ use zlo_client::product_wire::{
 use zlo_client::schedules::{ScheduleInfo, ScheduleSecret};
 
 use super::common::{
-    Btn, SM, Tone, XS, actions, button, button_xs, card, empty_state, error_line, glyph, header,
+    Btn, Tone, XS, actions, button, button_xs, card, empty_state, error_line, glyph, header,
     icon_button, label, notice_line, page_body, refresh_button, tag,
 };
 use crate::icons;
@@ -460,13 +460,8 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
         .map(|sch| schedule_rows::render_schedule(s, k, sch))
         .collect();
     let nothing = this.loaded && rows.is_empty() && schedules.is_empty();
-    let section = |title: &str| {
-        col()
-            .px(8.)
-            .pt(16.)
-            .pb(8.)
-            .child(label(title, SM, 600., p.text_muted))
-    };
+    // The same section label every settings page uses.
+    let section = |title: &str| crate::pages::common::controls::section_title(p, title, 16.);
 
     let mut body = col().w_full().child(header(p, "Automations", head_actions));
     if let Some(e) = &this.error {

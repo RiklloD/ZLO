@@ -246,11 +246,7 @@ fn view(s: &State, k: &Kit, panel: &LogsPanel) -> El {
     let p = &s.palette;
     let levels = row().gap(2.).children(LEVELS.iter().map(|(level, label)| {
         let level = *level;
-        let look = if panel.level == level {
-            Look::Primary
-        } else {
-            Look::Ghost
-        };
+        let look = crate::pages::common::choice_look(panel.level == level);
         button_sized(*label, look, Size::XSmall)
             .on_press(move |s: &mut State| set_level(s, level))
             .build(k)

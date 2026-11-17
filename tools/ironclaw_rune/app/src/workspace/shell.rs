@@ -143,8 +143,11 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
         .padding(32.)
         .child(tw("Can't connect to IronClaw", 16., SEMIBOLD, p.text))
         .child(
-            el().w(520.)
-                .child(t(message.to_string(), SM, p.text_muted).wrap()),
+            el().w(520.).child(
+                t(message.to_string(), SM, p.text_muted)
+                    .wrap()
+                    .align(rune::Align::Center),
+            ),
         );
     if let Some(secs) = retry_in {
         c = c.child(t(format!("Trying again in {secs} s"), XS, p.text_faint));

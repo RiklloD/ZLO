@@ -32,7 +32,7 @@ use super::prefs::Prefs;
 
 /// Popovers and menus: a hair under critical, settles without a wobble
 /// (GPUI `Spring::new(0.78, 300)`).
-pub const POP: Spring = Spring::new(0.30, 0.08);
+pub const POP: Spring = Spring::new(0.22, 0.06);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Style {
@@ -70,10 +70,10 @@ impl Style {
             row_height: super::ROW_HEIGHT,
             font_size: 16.,
             elevation: 1.,
-            hover: Curve::tween(0.160, TAILWIND),
-            enter: Spring::new(0.46, 0.0),
+            hover: Curve::tween(0.110, TAILWIND),
+            enter: Spring::new(0.32, 0.0),
             enter_rise: 8.,
-            slide: Spring::new(0.30, 0.0),
+            slide: Spring::new(0.22, 0.0),
         }
     }
 

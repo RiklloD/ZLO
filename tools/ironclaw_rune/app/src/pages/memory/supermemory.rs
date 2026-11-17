@@ -236,11 +236,7 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
             .map(|(id, name)| (Some(id.clone()), name.clone())),
     );
     for (ix, (id, name)) in choices.enumerate() {
-        let look = if m.profile == id {
-            Look::Primary
-        } else {
-            Look::Ghost
-        };
+        let look = crate::pages::common::choice_look(m.profile == id);
         profile_picker = profile_picker.child(press_button(
             k,
             &format!("sm-profile-{ix}"),

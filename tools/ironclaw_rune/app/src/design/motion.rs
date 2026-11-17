@@ -39,15 +39,15 @@ pub const TAILWIND: Easing = Easing::cubic(0.4, 0., 0.2, 1.);
 /// The working glyph's wave period.
 pub const GRADIENT_SPIN_MS: u64 = 750;
 /// Segmented-control highlight slide: Zeron's 150 ms tab slide.
-pub const TAB_SLIDE: Spring = Spring::new(0.15, 0.0);
+pub const TAB_SLIDE: Spring = Spring::new(0.14, 0.0);
 // ---- Springs replacing GPUI's per-frame helpers ------------------------
 
 /// A resorted row settling in its new place (GPUI `flip::ROW_SECS`).
-pub const ROW_RESORT: Spring = Spring::new(0.32, 0.0);
+pub const ROW_RESORT: Spring = Spring::new(0.26, 0.0);
 /// A selection pill moving between tabs or rows (GPUI `flip::PILL_SECS`).
-pub const PILL: Spring = Spring::new(0.30, 0.0);
+pub const PILL: Spring = Spring::new(0.22, 0.0);
 /// The composer reaching its dock (GPUI `dock::DOCK_SECS`, critically damped).
-pub const DOCK: Spring = Spring::new(0.42, 0.0);
+pub const DOCK: Spring = Spring::new(0.34, 0.0);
 /// `El::matched` id both composers carry, so the new-thread composer flies
 /// to the chat's dock on the first message and back (GPUI `dock.rs`). Put
 /// `.matched(COMPOSER_MATCH).motion(DOCK)` on the hero and docked composer

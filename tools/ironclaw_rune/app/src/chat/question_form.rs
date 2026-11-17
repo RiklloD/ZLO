@@ -422,9 +422,9 @@ fn render_field(
                 let mut chip = small_button(
                     &option.label,
                     if selected {
-                        ButtonVariant::Contrast
+                        ButtonVariant::Neutral
                     } else {
-                        ButtonVariant::Outline
+                        ButtonVariant::GhostMuted
                     },
                 )
                 .disabled(!open)
@@ -453,9 +453,9 @@ fn render_field(
                     small_button(
                         label,
                         if chosen {
-                            ButtonVariant::Contrast
+                            ButtonVariant::Neutral
                         } else {
-                            ButtonVariant::Outline
+                            ButtonVariant::GhostMuted
                         },
                     )
                     .disabled(!open)

@@ -3,9 +3,9 @@
 //! is live. Read-only — the framework switch is boot configuration and
 //! per-hook enablement has no backend yet. Port of GPUI `pages/hooks.rs`.
 
-use crate::pages::common::controls::{header_with, outlined_tag, refresh_icon, rule, spinner};
+use crate::pages::common::controls::{header_with, outlined_tag, refresh_icon, spinner};
 use crate::pages::common::ts::{sm, sm_medium, xs};
-use crate::pages::common::{Tone, empty_state, error_line, page_body};
+use crate::pages::common::{Tone, empty_state, error_line, page_body, rows_card};
 use rune::{Cx, El, col, row, text};
 use rune_kit::Kit;
 use zlo_client::hooks_catalog::{HookCatalog, HookCatalogEntry, HookSource, HookTrustClassView};
@@ -86,22 +86,19 @@ fn render_hook(s: &State, k: &Kit, hook: &HookCatalogEntry) -> El {
     if let Some(note) = &hook.note {
         info = info.child(text(note.clone()).font(xs()).color(p.text_muted).wrap());
     }
-    col()
+    row()
         .key(format!("hook-{}", hook.id))
         .w_full()
-        .child(
-            row()
-                .w_full()
-                .gap(12.)
-                .py(8.)
-                .child(info)
-                .child(if hook.enabled {
-                    outlined_tag(p, Tone::Success, "On")
-                } else {
-                    outlined_tag(p, Tone::Secondary, "Off")
-                }),
-        )
-        .child(rule(p))
+        .gap(16.)
+        .px(16.)
+        .py(12.)
+        .items_start()
+        .child(info.gap(1.))
+        .child(if hook.enabled {
+            outlined_tag(p, Tone::Success, "On")
+        } else {
+            outlined_tag(p, Tone::Secondary, "Off")
+        })
 }
 
 pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
@@ -132,7 +129,14 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
             if catalog.hooks.is_empty() {
                 c = c.child(empty_state(p, "No hooks are installed."));
             }
-            c.children(catalog.hooks.iter().map(|hook| render_hook(s, k, hook)))
+            if catalog.hooks.is_empty() {
+                c
+            } else {
+                c.child(rows_card(
+                    p,
+                    catalog.hooks.iter().map(|hook| render_hook(s, k, hook)),
+                ))
+            }
         }
     };
     let mut body = col().w_full().child(header_with(p, "Hooks", actions));

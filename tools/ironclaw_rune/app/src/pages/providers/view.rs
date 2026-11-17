@@ -18,7 +18,6 @@ use crate::design::brands::provider_logo;
 use crate::icons;
 use crate::state::State;
 
-const TILE_WIDTH: f32 = 196.;
 const LOGO: f32 = 22.;
 const TILE_LOGO: f32 = 20.;
 
@@ -113,11 +112,7 @@ fn render_task_models(s: &State, k: &Kit) -> El {
             ),
     );
     if ps.titles_open {
-        let off = if current.is_none() {
-            Look::Primary
-        } else {
-            Look::Outline
-        };
+        let off = crate::pages::common::choice_look(current.is_none());
         let mut list = col().w_full().gap(8.).pt(8.).child(
             row().child(
                 button_sized("Off", off, Size::Small)
@@ -137,11 +132,7 @@ fn render_task_models(s: &State, k: &Kit) -> El {
                 };
                 button_sized(
                     model,
-                    if selected {
-                        Look::Primary
-                    } else {
-                        Look::Outline
-                    },
+                    crate::pages::common::choice_look(selected),
                     Size::Small,
                 )
                 .on_press(move |s: &mut State| super::set_title_model(s, Some(choice.clone())))
@@ -298,11 +289,7 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                         let (id, m) = (pv.id.clone(), model.clone());
                         button_sized(
                             model.clone(),
-                            if selected {
-                                Look::Primary
-                            } else {
-                                Look::Outline
-                            },
+                            crate::pages::common::choice_look(selected),
                             Size::Small,
                         )
                         .on_press(move |s: &mut State| {
@@ -516,30 +503,24 @@ fn render_quick_switch(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
 
 fn render_tabs(s: &State, k: &Kit) -> El {
     let ps = &s.pages.providers;
-    let tab = |key: &'static str, label: &'static str, which: Tab| {
-        button_sized(
-            label,
-            if ps.tab == which {
-                Look::Primary
-            } else {
-                Look::Ghost
-            },
-            Size::Small,
-        )
-        .on_press(move |s: &mut State| {
-            let p = &mut s.pages.providers;
-            p.tab = which;
-            p.adding = None;
-        })
-        .build(k)
-        .key(key)
-    };
     row()
         .w_full()
         .gap(8.)
         .center_y()
-        .child(tab("tab-accounts", "Accounts & API keys", Tab::Accounts))
-        .child(tab("tab-cli", "CLI agents", Tab::Cli))
+        .child(crate::pages::common::tab_bar(
+            k,
+            "provider-tabs",
+            &[
+                (Tab::Accounts, "Accounts & API keys"),
+                (Tab::Cli, "CLI agents"),
+            ],
+            ps.tab,
+            |s: &mut State, which| {
+                let p = &mut s.pages.providers;
+                p.tab = which;
+                p.adding = None;
+            },
+        ))
         .child(el().grow(1.))
         .child(
             col().w(220.).child(
@@ -563,7 +544,8 @@ fn render_tile(s: &State, ix: usize, pv: &LlmProviderView) -> El {
         .role("button")
         .label(display_name(&pv.id))
         .focusable(true)
-        .w(TILE_WIDTH)
+        .w_full()
+        .min_w(0.)
         .padding(12.)
         .radius(12.)
         .border(1., if open { p.accent } else { p.border })
@@ -642,7 +624,10 @@ fn render_accounts(s: &State, k: &Kit) -> El {
                     .font(xs_medium())
                     .color(p.text_muted),
                 )
-                .child(row().w_full().flex_wrap().gap(8.).children(tiles)),
+                // Three equal columns that fill the page's width, so
+                // names and descriptions get the room instead of a ragged
+                // right edge.
+                .child(el().w_full().equal_columns(3).gap(8.).children(tiles)),
         );
     }
     let mut c = col().w_full().gap(16.);
