@@ -22,6 +22,11 @@ cd "${ROOT_DIR}"
 # shellcheck source=../preflight-gates.sh
 source scripts/preflight-gates.sh
 
+# `main` selects and exports PYTHON before any layer runs; this self-test calls
+# the layers directly, so it selects the same way (`set -u` would otherwise
+# abort the first layer that names it).
+PYTHON="${PYTHON:-$(select_python)}"
+
 pass=0
 fail() { echo "FAIL: $*"; exit 1; }
 ok() { echo "OK: $*"; pass=$((pass + 1)); }

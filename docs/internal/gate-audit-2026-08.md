@@ -556,7 +556,7 @@ ships a positive and a negative fixture that fails on the pre-fix code.
 | Preflight Python choice / macOS self-tests | **Fixed** | Versioned `python3.X` with `tomllib` first, then bare `python3` with it, then ≥ 3.10. Four self-tests are reported SKIPPED with the reason when their prerequisite is missing (wasm freshness: PATH `python3` without `tomllib`; integration batch runner: `/usr/bin/python3` without it; apt install: GNU `timeout`; docker entrypoint: GNU `readlink -m`). CI's invocation is unchanged. Self-test cases 4 and 5 in `test-preflight-gates.sh`. |
 | `test-pre-commit-safety.sh` coupled to the real budget | **Decoupled** | Its fixtures stage `crates/**.rs`, which runs the real-tree budget gate. The self-test now exports `BUDGET_FILE` at a permissive fixture budget (the gate's existing override); the real tree stays guarded by C10/C11. Verified by tripping the real budget: the old self-test goes red, the new one stays green. The branch wired this self-test into CI (commit C) while it was red until commit D, so it should be squash-merged for bisectability. |
 
-**Residuals, recorded not fixed.** (1) Files under a `src/**/tests/` directory
+**Residuals, recorded not fixed** (✎ all three closed 2026-11-17 — §9.1 below). (1) Files under a `src/**/tests/` directory
 stay test-only by directory in both counters (a `pub mod tests;` *directory*
 module would still be dropped); no such ungated module exists in `crates/`.
 (2) A single-line `#[cfg(test)] mod x_tests;` (attribute and item on one line)
@@ -567,3 +567,42 @@ not occur in `crates/`. (3) Other arch-test walkers still filter by basename
 `reborn_sealed_evidence_mint_ratchet`, `reborn_registration_pipeline_boundary`,
 `reborn_deployment_mode_branching_ratchet`); they do not consume
 `production_rust_files` and are a follow-up sweep.
+
+### 9.1 Residual sweep (2026-11-17)
+
+The three residuals above, closed on one rule: **a file is test code only
+when every `mod` declaration that reaches it is test-gated** (directly, or
+through a gated parent), whatever its name or directory; only a crate-level
+`tests/` / `examples/` / `benches/` (beside a `Cargo.toml`, a separate cargo
+target) is excluded by directory. Rust: `ratchet_support::production_rust_files`
+/ `cfg_test_only_files`; Python: `check_no_panics.is_test_only_path`. Every fix
+landed with a fixture that failed on the pre-fix code, in both directions.
+
+| Residual | Status | What changed |
+|---|---|---|
+| (1) `src/**/tests/` test-only by directory | **Fixed, both counters** | Rust drops the `tests`-directory seed and filter; Python drops `"tests" in parts`. Both prune only crate-level target dirs (`is_pruned_dir` / `is_in_crate_target_directory`). A shipped `pub mod tests;` directory module now counts; a gated one is excluded through its declaration chain. Fixtures: `src_tests_directory_is_classified_by_declaration_not_by_directory`, `test_src_tests_directory_is_classified_by_declaration`, `test_tests_directory_and_single_line_gate_in_reachability`, and the `* tests directory module` declaration cases. |
+| (2) one-line `#[cfg(test)] mod x_tests;` read as ungated | **Fixed, both trackers** | Attributes are read per attribute, not one per line (`split_leading_attributes`, the same algorithm in both): a leading attribute run gates the item on its own line, for item contexts, out-of-line declarations, inline module directories, and `#[path]`. A gating line with a trailing comment is also gated now. Fixtures: `single_line_gated_declaration_is_test_only`, `single_line_test_attribute_gates_its_item_in_the_line_count`, `test_single_line_*`, and the `single-line *` declaration cases (incl. `cfg(not(test))` and non-cfg negatives). |
+| Python name rule (found while closing 1) | **Fixed** | `is_test_only_path` applied the declaration rule only to `tests.rs` / `*_test.rs` / `*_tests.rs` names, so a production-named file reachable only through `#[cfg(test)] mod …;` counted in the composition budget, while the Rust counter (contracts ceiling) already excluded it. It now classifies every file. Fixture: `test_gated_production_named_file_does_not_count` + the `gated / ungated production-named file` declaration cases. |
+| Rust resolver ignored inline modules (found by the new parity test) | **Fixed** | `cfg_test_only_files` resolved `mod x;` beside the declaring file even inside `mod inline { … }`; it now tracks module directories per line (port of `line_module_directories`). The real case: `ironclaw_composition`'s `runtime/capability_host/tests/tests/display_preview.rs` (26 lines), which the old directory rule had masked. Fixture: `declaration_inside_an_inline_module_resolves_under_its_directory`. |
+| "The two counters agree" was a measured claim | **Pinned** | `rust_and_python_loc_counters_agree` (`reborn_dependency_boundaries.rs`) runs `production_loc.py` (fail-closed on a missing Python ≥ 3.10) against the Rust counter on a fixture holding every classification shape and on the six contracts crates plus `ironclaw_composition`. |
+| (3) seven walkers filter by basename | **Migrated** | Each walker got a fixture first (an ungated `probe_tests.rs` that slipped past, a gated `helpers.rs` that was counted — both failed on the old walk), then moved to `production_rust_files`; walkers that excluded `test_support` by name now exclude only the feature-gated `src/test_support` root (`is_test_support_root` / `in_test_support_root`), the LOC counters' rule. `reborn_deployment_mode_branching_ratchet` (`branching_files`), `reborn_contracts_vendor_census` (`census_files`), `reborn_manifest_reparse_gate` (`production_reparse_counts`), `reborn_struct_test_support_ratchet` (`scan_tree`), `reborn_sealed_evidence_mint_ratchet` (`collect_production_rs`; the test-seam walk's name filter is gone, it is the production walk), `reborn_registration_pipeline_boundary` (`cfg_test_only_files` in `collect_hits`), `reborn_extension_specificity` (`scan_src`; frontend files keep their `*.test.ts` / `__tests__` conventions). |
+| Violations the migrated walkers found | **1, fixed** | `reborn_extension_specificity`: `crates/app/ironclaw_composition/src/factory/test_support.rs` (a nested, `test-support`-gated module the `test_support.rs` name rule skipped) named `web-access` in a comment; reworded. No allowlist or baseline grew. |
+| Re-pins | **Measured, zero headroom** | Composition budget: 34,002 → **33,502 LOC** (`loc_ceiling` 33,852 → 33,352), 687 → **682 `Arc<dyn>`** (`arc_dyn_ceiling` 672 → 667). No code moved: −488 LOC / −2 sites are `src/approval_test_support.rs` and `src/factory/capability_host_tests/approval_gates.rs`, both reachable only through `#[cfg(test)]`; the rest is slack the prior pins carried. WS0 records re-measured from `ae0989c37` under the same rule: 29,858 / 457,082 = 653 bp → **29,331 / 456,262 = 642 bp** (`ceiling_bp` 653 → 642, still locked to WS0), 618 → **616** `Arc<dyn>`. Contracts size ceilings, panic baseline (1,688 files, 51 invariants) and the struct ratchet: unchanged. Rationale in `composition-budget.toml` and `reborn_restructure_baselines.rs`. |
+| Resolvers read one `mod` per line and ignored `include!` / `cfg_attr(path)` (GPT review, P1 fail-open) | **Fixed, fail closed, both languages** | One token walk per file (`ratchet_support::module_items` / `check_no_panics.module_items`, same algorithm, on source with comments and strings blanked in place) reads every `mod` item however many share a line; a literal `include!` / `include_str!` / `include_bytes!` of a `.rs` file and a `#[path]` inside `cfg_attr` are ungated edges to their target; an edge it cannot resolve (non-literal `include!`, a `mod` with no file, `#[path]` on an inline module) makes the whole containing module production, recorded with its reason. The real tree's nine such edges are pinned in `unresolved_module_edges_are_pinned` (eight macro-built `include_bytes!(concat!(…, $path))` package-asset arms, webui's `OUT_DIR` asset table); none has a child module, so nothing is reclassified. Fixtures (watched failing first): `unprovable_module_edges_fail_closed` (Rust), `test_unprovable_module_edges_fail_closed` (panic gate, both `is_test_only_path` and the full-scan reachability, and the LOC counter), and the same shapes in the cross-language parity fixture. Baselines unchanged: composition 33,502 LOC / 682 `Arc<dyn>`, panic gate 1,688 files with an identical production/test split. |
+| `test-preflight-gates.sh`: `PYTHON: unbound variable` | **Fixed** | The self-test sources the script and calls its layers directly, but only `main` selected `PYTHON`; it now selects the same way after sourcing. |
+
+**Residuals, recorded not fixed.** (1) Line-level `#[cfg]` on a struct field or
+`let` is not test context in either tracker (`composition-budget.toml` already
+records the cost). (2) Multi-line attributes (`#[cfg(all(\n test, …))]`) are
+not evaluated by the LINE trackers (the fail-closed direction); the module
+resolvers now read them whole. (3) `reborn_sealed_evidence_mint_ratchet`'s
+slowest rules (~55 s each on `main` too) resolve `owning_crate` per file; untouched here.
+(4) Six walkers outside the seven §9 named still filter by name or directory
+(found by `rg '"tests"|_tests\.rs|"/tests/"' crates/app/ironclaw_architecture_tests/tests`):
+`reborn_authorized_seal_ratchet` (`tests`/`examples`/`benches` at any depth),
+`reborn_dependency_boundaries::is_rust_test_source_path` (provider tool-name
+scan), `reborn_conversations_threads_attachments` (directory walk),
+`reborn_web_push_vocabulary_retired` (`/tests/`),
+`reborn_composition_boundaries::is_under_tests_dir` (registrar gate, on top of
+`cfg_test_only_files`), and `reborn_extension_output_audit` (`tests` stem).
+Same migration, next sweep.

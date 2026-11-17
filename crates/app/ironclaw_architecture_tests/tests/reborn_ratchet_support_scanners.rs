@@ -32,9 +32,13 @@
 #[allow(dead_code)]
 mod ratchet_support;
 
+use std::path::Path;
+
 use ratchet_support::{
-    balanced_angle_close, implemented_trait_names, is_rust_identifier, strip_cfg_test_blocks,
+    balanced_angle_close, cfg_test_only_files, implemented_trait_names, is_rust_identifier,
+    production_line_count, production_rust_files, strip_cfg_test_blocks,
     strip_comments_and_strings, strip_line_anchored_cfg_test_items, try_nested_workspace_roots,
+    unresolved_module_edges,
 };
 
 // ---------------------------------------------------------------------------
@@ -337,4 +341,307 @@ fn nested_workspace_roots_reports_an_unreadable_subtree_instead_of_skipping_it()
             eprintln!("SKIPPED: running as a user that can read a 0000 directory");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// cfg_test_only_files / production_rust_files — the one file classification
+// (gate audit 2026-08 §9 residuals 1 and 2)
+
+fn write_tree(root: &Path, files: &[(&str, &str)]) {
+    for (relative, contents) in files {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("fixture dir");
+        }
+        std::fs::write(&path, contents).expect("fixture file");
+    }
+}
+
+/// Residual 1: a `src/**/tests/` directory was test-only BY DIRECTORY, so a
+/// `pub mod tests;` directory module that ships was dropped from every count.
+/// A module directory is classified like any other file — by its declarations
+/// — and only a crate-level `tests/` / `examples/` / `benches/` directory (the
+/// one beside a `Cargo.toml`, which cargo compiles as separate targets) is
+/// excluded by directory.
+#[test]
+fn src_tests_directory_is_classified_by_declaration_not_by_directory() {
+    let tree = tempfile::tempdir().expect("temp tree");
+    let root = tree.path();
+    write_tree(
+        root,
+        &[
+            ("Cargo.toml", "[package]\nname = \"fixture\"\n"),
+            ("build.rs", "fn main() {}\n"),
+            ("src/lib.rs", "pub mod tests;\n#[cfg(test)]\nmod gated;\n"),
+            // Ungated directory module: ships, so it and its child count.
+            ("src/tests/mod.rs", "pub mod shipped;\n"),
+            ("src/tests/shipped.rs", "pub fn shipped() {}\n"),
+            // Gated directory module: test-only, transitively.
+            ("src/gated/mod.rs", "mod tests;\n"),
+            ("src/gated/tests/mod.rs", "mod helpers;\n"),
+            ("src/gated/tests/helpers.rs", "pub fn helper() {}\n"),
+            // Crate-level targets: never production, whatever they declare.
+            ("tests/integration.rs", "mod common;\n"),
+            ("tests/common/mod.rs", "pub fn shared() {}\n"),
+            ("examples/demo.rs", "fn main() {}\n"),
+            ("benches/bench.rs", "fn main() {}\n"),
+        ],
+    );
+    let src = root.join("src");
+
+    for (walk_root, label) in [(src.as_path(), "src"), (root, "crate dir")] {
+        let production = production_rust_files(walk_root);
+        for shipped in ["src/lib.rs", "src/tests/mod.rs", "src/tests/shipped.rs"] {
+            assert!(
+                production.contains(&root.join(shipped)),
+                "{shipped} is reachable through an ungated `pub mod tests;` and ships; the \
+                 {label} walk dropped it: {production:?}"
+            );
+        }
+        for test_only in [
+            "src/gated/mod.rs",
+            "src/gated/tests/mod.rs",
+            "src/gated/tests/helpers.rs",
+        ] {
+            assert!(
+                !production.contains(&root.join(test_only)),
+                "{test_only} is reachable only through `#[cfg(test)] mod gated;`; the {label} \
+                 walk counted it: {production:?}"
+            );
+            assert!(
+                cfg_test_only_files(walk_root).contains(&root.join(test_only)),
+                "{test_only} must be in the test-only set of the {label} walk"
+            );
+        }
+    }
+
+    // From the crate directory: crate-level targets are excluded by directory,
+    // the build script is compiled code and counts.
+    let production = production_rust_files(root);
+    for target in [
+        "tests/integration.rs",
+        "tests/common/mod.rs",
+        "examples/demo.rs",
+        "benches/bench.rs",
+    ] {
+        assert!(
+            !production.contains(&root.join(target)),
+            "{target} is a separate cargo target, not production: {production:?}"
+        );
+    }
+    assert!(
+        production.contains(&root.join("build.rs")),
+        "{production:?}"
+    );
+}
+
+/// Residual 2: `#[cfg(test)] mod x_tests;` written on ONE line was read as
+/// ungated — the tracker took one attribute per line — so the file counted as
+/// production. A leading attribute run on the item's own line gates it exactly
+/// as the same attributes on lines above would.
+#[test]
+fn single_line_gated_declaration_is_test_only() {
+    let tree = tempfile::tempdir().expect("temp tree");
+    let src = tree.path().join("src");
+    write_tree(
+        &src,
+        &[
+            (
+                "lib.rs",
+                "#[cfg(test)] mod one_tests;\n\
+                 #[cfg(test)] pub(crate) mod helper;\n\
+                 #[allow(dead_code)] #[cfg(all(test, unix))] mod stacked;\n\
+                 #[cfg(test)] // a trailing note\nmod noted;\n\
+                 #[cfg(not(test))] mod shipped_tests;\n\
+                 #[allow(dead_code)] mod also_shipped;\n\
+                 #[cfg(any(test, feature = \"test-support\"))] pub mod fixtures_tests;\n",
+            ),
+            ("one_tests.rs", "pub fn t() {}\n"),
+            ("helper.rs", "pub fn h() {}\n"),
+            ("stacked.rs", "pub fn s() {}\n"),
+            ("noted.rs", "pub fn n() {}\n"),
+            ("shipped_tests.rs", "pub fn shipped() {}\n"),
+            ("also_shipped.rs", "pub fn shipped() {}\n"),
+            ("fixtures_tests.rs", "pub fn shared() {}\n"),
+        ],
+    );
+    let test_only = cfg_test_only_files(&src);
+    let production = production_rust_files(&src);
+    for gated in ["one_tests.rs", "helper.rs", "stacked.rs", "noted.rs"] {
+        assert!(
+            test_only.contains(&src.join(gated)) && !production.contains(&src.join(gated)),
+            "{gated} is declared only behind a same-line test-only cfg: test-only \
+             {test_only:?}, production {production:?}"
+        );
+    }
+    // Negative: a cfg a release build satisfies, a non-cfg attribute, and the
+    // strict `test-support` reading (a real build) all leave the file shipped.
+    for shipped in [
+        "shipped_tests.rs",
+        "also_shipped.rs",
+        "fixtures_tests.rs",
+        "lib.rs",
+    ] {
+        assert!(
+            production.contains(&src.join(shipped)),
+            "{shipped} ships and must count: {production:?}"
+        );
+    }
+}
+
+/// The same single-line forms, at line granularity: the item and its body are
+/// test context, a non-test attribute on the line changes nothing.
+#[test]
+fn single_line_test_attribute_gates_its_item_in_the_line_count() {
+    assert_eq!(production_line_count("#[cfg(test)] fn f() {}\n"), 0);
+    assert_eq!(
+        production_line_count("#[cfg(test)] mod t {\n    fn x() {}\n}\npub fn kept() {}\n"),
+        1
+    );
+    assert_eq!(
+        production_line_count("#[test] fn t() {\n    body();\n}\n"),
+        0
+    );
+    assert_eq!(production_line_count("#[cfg(test)] use std::fmt;\n"), 0);
+    assert_eq!(
+        production_line_count("#[cfg(test)] // why\nfn gated() {\n}\n"),
+        0,
+        "a trailing comment does not un-gate the attribute line"
+    );
+    // Negative: production items behind ordinary attributes still count.
+    assert_eq!(production_line_count("#[inline] pub fn g() {}\n"), 1);
+    assert_eq!(
+        production_line_count("#[cfg(not(test))] fn real() {\n}\n#[derive(Debug)] struct S;\n"),
+        3
+    );
+    // A `]` inside a string in the attribute does not end it early.
+    assert_eq!(
+        production_line_count("#[doc = \"]\"] #[cfg(test)] fn f() {}\n"),
+        0
+    );
+}
+
+/// A declaration inside an inline module resolves under that module's
+/// directory, as rustc does: `#[cfg(test)] mod tests { mod deep; }` in
+/// `tests.rs` names `tests/tests/deep.rs`. The resolver used to look beside the
+/// file only, found nothing, and counted the gated child as production (the
+/// old `tests/`-directory rule hid it; found by the Rust/Python parity test on
+/// `ironclaw_composition`'s `capability_host/tests/tests/display_preview.rs`).
+#[test]
+fn declaration_inside_an_inline_module_resolves_under_its_directory() {
+    let tree = tempfile::tempdir().expect("temp tree");
+    let src = tree.path().join("src");
+    write_tree(
+        &src,
+        &[
+            ("lib.rs", "pub mod host;\n"),
+            (
+                "host.rs",
+                "#[cfg(test)]\nmod tests;\npub mod outer {\n    pub mod shipped;\n}\n",
+            ),
+            (
+                "host/tests.rs",
+                "#[cfg(test)]\nmod tests {\n    mod deep;\n}\n",
+            ),
+            ("host/tests/tests/deep.rs", "pub fn deep() {}\n"),
+            ("host/outer/shipped.rs", "pub fn shipped() {}\n"),
+            // Decoy at the flat spelling: must not be taken as the target.
+            ("host/tests/deep.rs", "pub fn orphan() {}\n"),
+        ],
+    );
+    let test_only = cfg_test_only_files(&src);
+    assert!(
+        test_only.contains(&src.join("host/tests/tests/deep.rs")),
+        "the gated inline module's child is test-only: {test_only:?}"
+    );
+    let production = production_rust_files(&src);
+    assert!(
+        production.contains(&src.join("host/outer/shipped.rs")),
+        "an ungated inline module's child ships: {production:?}"
+    );
+    assert!(
+        production.contains(&src.join("host/tests/deep.rs")),
+        "nothing declares the flat-spelled decoy, so it is not test-only: {production:?}"
+    );
+}
+
+/// Fail closed on every edge the resolver cannot prove test-only (GPT review
+/// of the §9 sweep): a production edge it misses would classify a shipped file
+/// as test code.
+///
+/// 1. **Every `mod` item on a line**, not only the first: `mod first; mod
+///    hidden;` declares `hidden` ungated even though another line gates it.
+/// 2. **`include!` / `include_str!` of a `.rs` file** is a production edge to
+///    the file, whatever the surrounding cfg.
+/// 3. **`#[path]` inside `cfg_attr`** is a production edge to that path.
+/// 4. **An edge the resolver cannot resolve** (`include!(concat!(env!(…)))`)
+///    makes the whole containing module production, with the reason recorded.
+#[test]
+fn unprovable_module_edges_fail_closed() {
+    let tree = tempfile::tempdir().expect("temp tree");
+    let src = tree.path().join("src");
+    write_tree(
+        &src,
+        &[
+            (
+                "lib.rs",
+                "#[cfg(test)]\nmod hidden;\nmod first; mod hidden;\n\
+                 #[cfg(test)] mod gated_a; pub mod shipped_b; #[cfg(test)] mod gated_c;\n\
+                 #[cfg(test)]\nmod included;\ninclude!(\"included.rs\");\n\
+                 #[cfg(test)]\nmod read_as_text;\n\
+                 #[cfg(test)]\nmod t {\n    const SRC: &str = include_str!(\"read_as_text.rs\");\n}\n\
+                 #[cfg(test)]\nmod swapped;\n\
+                 #[cfg_attr(not(test), path = \"swapped.rs\")]\nmod real;\n\
+                 pub mod generated;\n\
+                 const PROMPT: &[u8] = include_bytes!(concat!(\"prompts/\", \"op\", \".md\"));\n",
+            ),
+            ("hidden.rs", "pub fn f() {}\n"),
+            ("first.rs", "pub fn f() {}\n"),
+            ("gated_a.rs", "pub fn f() {}\n"),
+            ("shipped_b.rs", "pub fn f() {}\n"),
+            ("gated_c.rs", "pub fn f() {}\n"),
+            ("included.rs", "pub fn f() {}\n"),
+            ("read_as_text.rs", "pub fn f() {}\n"),
+            ("swapped.rs", "pub fn f() {}\n"),
+            ("real.rs", "pub fn f() {}\n"),
+            (
+                "generated.rs",
+                "include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n#[cfg(test)]\nmod helper;\n",
+            ),
+            ("generated/helper.rs", "pub fn f() {}\n"),
+        ],
+    );
+    let test_only = cfg_test_only_files(&src);
+    let production = production_rust_files(&src);
+    for shipped in [
+        "hidden.rs",
+        "first.rs",
+        "shipped_b.rs",
+        "included.rs",
+        "read_as_text.rs",
+        "swapped.rs",
+        "real.rs",
+        "generated.rs",
+        "generated/helper.rs",
+    ] {
+        assert!(
+            production.contains(&src.join(shipped)) && !test_only.contains(&src.join(shipped)),
+            "{shipped} has an edge the resolver cannot prove test-only; it must count as \
+             production: test-only {test_only:?}"
+        );
+    }
+    // Negative: the gated items sharing a line with ungated ones stay test-only.
+    for gated in ["gated_a.rs", "gated_c.rs"] {
+        assert!(
+            test_only.contains(&src.join(gated)),
+            "{gated} is declared only behind `#[cfg(test)]`: {test_only:?}"
+        );
+    }
+    // Negative: a non-literal inclusion of a known non-Rust file is no edge.
+    let unresolved = unresolved_module_edges(&src);
+    assert_eq!(unresolved.len(), 1, "{unresolved:?}");
+    assert!(
+        unresolved[0].0 == src.join("generated.rs") && unresolved[0].1.contains("include!"),
+        "the unresolvable edge is recorded with its file and construct: {unresolved:?}"
+    );
 }

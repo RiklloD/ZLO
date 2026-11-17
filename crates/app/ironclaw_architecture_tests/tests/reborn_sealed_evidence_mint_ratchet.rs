@@ -97,8 +97,7 @@ use ratchet_support::impl_census::{
     file_implements, header_implements, impl_headers, implementor_names, is_ident_char, starts_word,
 };
 use ratchet_support::{
-    cfg_test_only_files, crate_path, strip_cfg_test_blocks, strip_comments_and_strings,
-    workspace_root,
+    crate_path, strip_cfg_test_blocks, strip_comments_and_strings, workspace_root,
 };
 
 /// The retired cargo feature. It must not come back under any spelling that a
@@ -208,44 +207,36 @@ fn read_source(path: &Path) -> String {
     })
 }
 
-/// Walk production Rust sources under a member root. Test trees are skipped for
-/// the *call-site* rules (a test standing in for the host is the sanctioned
-/// `ProtocolAuthEvidence::test_verified` seam, and test doubles are not
-/// inventoried — the same convention `reborn_authorized_seal_ratchet` relies
-/// on). The implementor rule below re-uses the same walk for the same reason.
+/// Production Rust sources under a member root, appended to `out`. Test code
+/// is skipped for the *call-site* rules (a test standing in for the host is the
+/// sanctioned `ProtocolAuthEvidence::test_verified` seam, and test doubles are
+/// not inventoried — the same convention `reborn_authorized_seal_ratchet`
+/// relies on). The implementor rule below re-uses the same walk for the same
+/// reason.
+///
+/// "Test code" is `ratchet_support::production_rust_files`: a file is test
+/// code only when every `mod` declaration reaching it is test-gated, whatever
+/// its name or directory, and crate-level `tests/` / `examples/` / `benches/`
+/// are separate cargo targets. Until 2026-11-17 this walk skipped any
+/// `tests/` / `examples/` / `benches/` directory by name and kept every
+/// in-`src` test file, while the test-seam walk dropped `*_tests.rs` by name
+/// (gate audit 2026-08 §9).
 ///
 /// An unreadable directory or entry fails: a subtree that silently vanishes
 /// from the walk is the same fail-open as an unreadable file.
 fn collect_production_rs(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = fs::read_dir(dir).unwrap_or_else(|error| {
+    if let Err(error) = fs::read_dir(dir) {
         panic!(
             "failed to read {} — a directory this census cannot read must fail the gate, \
              not vanish from the walk: {error}",
             dir.display()
-        )
-    });
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|error| {
-            panic!("failed to read an entry in {}: {error}", dir.display())
-        });
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            // `node_modules` holds vendored frontend packages after a pnpm
-            // install; nothing there is workspace source.
-            if matches!(
-                name,
-                "tests" | "examples" | "benches" | "target" | "node_modules"
-            ) {
-                continue;
-            }
-            collect_production_rs(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
-            && path.file_name().and_then(|n| n.to_str()) != Some(SELF_FILE)
-        {
-            out.push(path);
-        }
+        );
     }
+    out.extend(
+        ratchet_support::production_rust_files(dir)
+            .into_iter()
+            .filter(|path| path.file_name().and_then(|n| n.to_str()) != Some(SELF_FILE)),
+    );
 }
 
 /// Every top-level directory the root manifest's `[workspace] members` list
@@ -307,47 +298,41 @@ fn member_roots(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Every production Rust source across every workspace member root.
+///
+/// Memoized per root for this test binary: the cfg classification reads every
+/// file under each member root, and eight rules below ask for the same set.
 fn collect_workspace_production_rs(root: &Path) -> Vec<PathBuf> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<BTreeMap<PathBuf, Vec<PathBuf>>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(files) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(root)
+    {
+        return files.clone();
+    }
     let mut files = Vec::new();
     for member_root in member_roots(root) {
         collect_production_rs(&member_root, &mut files);
     }
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(root.to_path_buf(), files.clone());
     files
 }
 
 /// The file set for the test-seam call-site scan (closed path #12): the
-/// production walk minus the two test shapes a directory walk cannot see —
-/// files whose *name* marks them as test modules (`tests.rs`, `*_tests.rs`,
-/// e.g. `channel_host/e2e_tests.rs`), and production-named files reachable
-/// only through a `#[cfg(test)] mod …;` declaration
-/// ([`cfg_test_only_files`]'s census). The `mark_*` scans above skip neither,
-/// and need not: no mint function has a test caller inside `src/**`. The test
-/// seam's legitimate callers are *exactly* such in-src test code, so scanning
-/// it with the plain walk would flag every sanctioned use; scanning it with
-/// this one flags only text a production build could compile.
+/// production walk, which already drops every file reachable only through
+/// test-gated `mod` declarations (`channel_host/e2e_tests.rs`, a
+/// `#[cfg(test)] mod fixture;`), whatever its name. The seam's legitimate
+/// callers are *exactly* such in-src test code, so scanning them would flag
+/// every sanctioned use; scanning this set flags only text a production build
+/// could compile — including a shipped (ungated) `*_tests.rs`, which the
+/// name rule this replaced skipped.
 fn collect_test_seam_scan_files(root: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    for member_root in member_roots(root) {
-        let test_only = cfg_test_only_files(&member_root);
-        let mut member_files = Vec::new();
-        collect_production_rs(&member_root, &mut member_files);
-        files.extend(
-            member_files
-                .into_iter()
-                .filter(|path| !is_test_module_file_name(path) && !test_only.contains(path)),
-        );
-    }
-    files
-}
-
-/// Whether `path`'s file name is one of the conventional in-src test-module
-/// shapes (`src/inbound/tests.rs`, `src/channel_host/e2e_tests.rs`).
-fn is_test_module_file_name(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    name == "tests.rs" || name.ends_with("_tests.rs")
+    collect_workspace_production_rs(root)
 }
 
 /// The crate that owns `path`, by crate-directory basename.
@@ -1683,6 +1668,49 @@ fn an_unreadable_directory_fails_the_walk() {
     fs::write(&not_a_directory, "// fixture\n").expect("fixture file");
     let mut out = Vec::new();
     collect_production_rs(&not_a_directory, &mut out);
+}
+
+/// Test code is decided by cfg gating, not by file name (gate audit 2026-08
+/// §9): an ungated `probe_tests.rs` ships — a `test_verified` call or a mint in
+/// it is a production call — while a production-named `helpers.rs` reachable
+/// only through `#[cfg(test)]` is test code for both walks.
+#[test]
+fn the_census_walks_classify_test_files_by_cfg_not_by_name() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    let src = root.join("crates/fixture/src");
+    fs::create_dir_all(&src).expect("src");
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/fixture\"]\n",
+    )
+    .expect("workspace manifest");
+    fs::write(
+        root.join("crates/fixture/Cargo.toml"),
+        "[package]\nname = \"fixture\"\n",
+    )
+    .expect("crate manifest");
+    fs::write(
+        src.join("lib.rs"),
+        "pub mod probe_tests;\n#[cfg(test)]\nmod helpers;\n",
+    )
+    .expect("lib.rs");
+    fs::write(src.join("probe_tests.rs"), "pub fn f() {}\n").expect("probe_tests.rs");
+    fs::write(src.join("helpers.rs"), "pub fn f() {}\n").expect("helpers.rs");
+
+    for (label, files) in [
+        ("production walk", collect_workspace_production_rs(root)),
+        ("test-seam walk", collect_test_seam_scan_files(root)),
+    ] {
+        assert!(
+            files.contains(&src.join("probe_tests.rs")),
+            "{label}: an ungated `pub mod probe_tests;` ships: {files:?}"
+        );
+        assert!(
+            !files.contains(&src.join("helpers.rs")),
+            "{label}: `helpers.rs` is reachable only through `#[cfg(test)]`: {files:?}"
+        );
+    }
 }
 
 /// The census resolves its scan roots from the root manifest's member list, so

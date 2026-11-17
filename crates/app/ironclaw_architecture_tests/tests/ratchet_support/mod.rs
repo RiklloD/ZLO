@@ -4,8 +4,10 @@
 //! ratchet gets the same guarantees: comment/string stripping, restricted
 //! visibility (`pub(crate)`/`pub(super)`/`pub(in …)`), optional `unsafe`/`auto`
 //! modifiers, occurrence-preserving scans (same-file duplicates stay visible),
-//! and a production-scoped walk (skips `target/`, `tests/`, `examples/`,
-//! `benches/`). The scanners are line-based, not cfg-aware: a pub-visible
+//! and a production-scoped walk (`production_rust_files`: skips `target/`,
+//! `node_modules/`, crate-level `tests/` / `examples/` / `benches/`, and files
+//! reachable only through test-only `mod` declarations). The type-definition
+//! scanners are line-based, not cfg-aware: a pub-visible
 //! definition in an inline `#[cfg(test)]` module in src IS inventoried — keep
 //! test doubles under `tests/` (or justify an allowlist entry in review).
 
@@ -731,37 +733,45 @@ fn trailing_attribute_run_is_test_only(before: &str) -> bool {
     false
 }
 
-/// Directories a production scan never counts.
-const NON_PRODUCTION_DIRS: &[&str] = &["target", "node_modules", "tests"];
+/// Directories pruned from **every** walk at any depth — build output,
+/// vendored packages, and git metadata, which hold no first-party Rust source.
+const PRUNED_DIRS: &[&str] = &["target", "node_modules", ".git"];
 
-/// The one member of [`NON_PRODUCTION_DIRS`] every walk still descends into.
-const WALKED_FOR_DECLARATIONS: &str = "tests";
+/// Directory names cargo compiles as **separate targets** when they sit beside
+/// a `Cargo.toml` (integration tests, examples, benches). Only there are they
+/// excluded by directory; a `src/**/tests/` module directory is classified by
+/// its declarations like any other file (gate audit 2026-08 §9 residual 1).
+const CRATE_TARGET_DIRS: &[&str] = &["tests", "examples", "benches"];
 
-/// Whether a directory is pruned from **every** walk — build output and
-/// vendored packages, which hold no first-party Rust source at any depth.
-///
-/// Derived from [`NON_PRODUCTION_DIRS`] rather than spelled again, because two
-/// lists that disagree about what a walk covers is the exact failure this module
-/// already carries scars from ([`production_rust_files`]). The single carve-out
-/// is `tests/`, which is excluded from *counting*, not from *walking*:
-/// [`cfg_test_only_files`] has to read files under `src/**/tests/` because
-/// test-only-ness propagates *through* them into production-named children, so
-/// pruning them would drop those `mod` declarations — the fail-open direction.
-fn is_pruned_dir(name: &str) -> bool {
-    NON_PRODUCTION_DIRS.contains(&name) && name != WALKED_FOR_DECLARATIONS
+/// Whether the walk skips `dir` outright: a [`PRUNED_DIRS`] name anywhere, or
+/// a [`CRATE_TARGET_DIRS`] name whose parent is a package directory.
+#[allow(dead_code)]
+pub(crate) fn is_pruned_dir(dir: &Path) -> bool {
+    let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    PRUNED_DIRS.contains(&name)
+        || (CRATE_TARGET_DIRS.contains(&name)
+            && dir
+                .parent()
+                .is_some_and(|parent| parent.join("Cargo.toml").is_file()))
 }
 
-/// **The** definition of "a production Rust file under `src`", as absolute
-/// paths, sorted: the fatal walk, the `tests/` / build-output directory
-/// exclusions, and the [`cfg_test_only_files`] subtraction, composed once.
+/// **The** definition of "a production Rust file under `root`", as absolute
+/// paths, sorted: the fatal walk (pruning [`is_pruned_dir`]) minus the
+/// [`cfg_test_only_files`] subtraction, composed once. `root` may be a crate's
+/// `src`, a crate directory, or a tree of crates (`crates/`): crate-level
+/// `tests/` / `examples/` / `benches/` are recognized by their `Cargo.toml`
+/// sibling, not by the walk root.
 ///
-/// A file NAME never makes a file test-only. `tests.rs` / `*_tests.rs` /
-/// `*_test.rs` are excluded only when [`cfg_test_only_files`] finds them
-/// reachable solely through test-only `mod` declarations — until 2026-11-12 any
-/// such basename was dropped, so a `pub mod foo_tests;` holding a
-/// `TcpListener::bind` was invisible to every gate built on this walk (gate
-/// audit 2026-08 §6.2). Same rule as `scripts/check_no_panics.py`'s
-/// `is_test_only_path`.
+/// Neither a file NAME nor a directory name inside `src` makes a file
+/// test-only. `tests.rs` / `*_tests.rs` / `src/**/tests/*.rs` are excluded only
+/// when [`cfg_test_only_files`] finds them reachable solely through test-only
+/// `mod` declarations — until 2026-11-12 any such basename was dropped, so a
+/// `pub mod foo_tests;` holding a `TcpListener::bind` was invisible to every
+/// gate built on this walk (gate audit 2026-08 §6.2), and until 2026-11-17 a
+/// `src/**/tests/` directory was dropped by directory (§9). Same rule as
+/// `scripts/check_no_panics.py`'s `is_test_only_path`.
 ///
 /// Ratchets used to each spell this two-step recipe themselves, and they had
 /// already drifted: `reborn_extension_host_port_inversion.rs` skipped
@@ -769,48 +779,48 @@ fn is_pruned_dir(name: &str) -> bool {
 /// exactly the failure mode a shrink-only list cannot survive — two gates
 /// disagreeing about what production code *is* means one of them is measuring
 /// a different tree than the row it enforces was written against. Raised by
-/// @serrrfirat on #7003 (and independently on #7004).
+/// @serrrfirat on #7003 (and independently on #7004). Since 2026-11-17 every
+/// walker in this directory that filters test code goes through it (§9).
 ///
 /// I/O errors are **fatal**, not skipped: a scan that silently swallows a
 /// failed `read_dir` walks a smaller tree and passes a shrink-only list
 /// vacuously.
-///
-/// ⚠ Other ratchets in this directory still carry their own walkers. Adopting
-/// this helper across them is tracked separately — see the module note in
-/// `reborn_extension_manager_split.rs`.
 #[allow(dead_code)]
-pub(crate) fn production_rust_files(src: &Path) -> Vec<PathBuf> {
-    let test_only = cfg_test_only_files(src);
+pub(crate) fn production_rust_files(root: &Path) -> Vec<PathBuf> {
+    let test_only = cfg_test_only_files(root);
     let mut all = Vec::new();
-    all_rust_files(src, &mut all);
+    all_rust_files(root, &mut all);
     let mut out: Vec<PathBuf> = all
         .into_iter()
-        .filter(|path| {
-            !test_only.contains(path)
-                && path
-                    .strip_prefix(src)
-                    .map(|relative| {
-                        !relative.components().any(|component| {
-                            NON_PRODUCTION_DIRS
-                                .iter()
-                                .any(|skip| component.as_os_str() == *skip)
-                        })
-                    })
-                    .unwrap_or(true)
-        })
+        .filter(|path| !test_only.contains(path))
         .collect();
     out.sort();
     out
 }
 
-/// Every `.rs` file under `src` (outside `tests/` directories, which the walks
-/// exclude by directory) that is test-only: every `mod` declaration that
-/// includes it is gated by a test-only cfg (`#[cfg(test)]`,
-/// `#[cfg(all(test, …))]`, an enclosing gated inline module — the
-/// [`test_context_lines`] tracker, strict about `feature = "test-support"`),
-/// or sits in a file that is itself test-only (transitively). A file with no
-/// declaration, or with any one ungated declaration, is production — whatever
-/// its name. The name conventions (`tests.rs`, `*_tests.rs`) are NOT a rule:
+/// Whether `path` lies in the feature-gated `src/test_support` root of the
+/// package that owns it — [`is_test_support_root`] with the package's `src`
+/// found from the path itself (the nearest ancestor `src` beside a
+/// `Cargo.toml`), so walks rooted above a crate apply the same exclusion as
+/// walks rooted at its `src`.
+#[allow(dead_code)]
+pub(crate) fn in_test_support_root(path: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .find(|ancestor| {
+            ancestor.file_name().is_some_and(|name| name == "src")
+                && ancestor
+                    .parent()
+                    .is_some_and(|parent| parent.join("Cargo.toml").is_file())
+        })
+        .is_some_and(|src| is_test_support_root(src, path))
+}
+
+/// Every `.rs` file under `src` (as walked by [`all_rust_files`]) that is
+/// test-only, by [`module_graph`]: every edge that includes it is test-gated,
+/// or sits in a file that is itself test-only (transitively), and nothing the
+/// resolver could not prove touches it. A file with no edge, or with any one
+/// ungated edge, is production — whatever its name. The name conventions (`tests.rs`, `*_tests.rs`) are NOT a rule:
 /// e.g. a `#[cfg(test)] mod e2e_tests;` whose `e2e_tests.rs` declares
 /// `mod fixture;` makes `fixture.rs` test-only through the chain, while a
 /// `pub mod foo_tests;` keeps `foo_tests.rs` production. A scan that counts a
@@ -819,106 +829,129 @@ pub(crate) fn production_rust_files(src: &Path) -> Vec<PathBuf> {
 /// errors are fatal, same as the walkers.
 #[allow(dead_code)]
 pub(crate) fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
+    module_graph(src).test_only
+}
+
+/// Every edge under `src` the resolver could not resolve, as `(file holding
+/// it, what and why)`. Each one makes its whole containing module production
+/// ([`module_graph`]); the list is how a reviewer sees what was given up on.
+#[allow(dead_code)]
+pub(crate) fn unresolved_module_edges(src: &Path) -> Vec<(PathBuf, String)> {
+    module_graph(src).unresolved
+}
+
+/// The resolved module graph of a tree: which files are test-only, and which
+/// edges could not be resolved.
+struct ModuleGraph {
+    test_only: BTreeSet<PathBuf>,
+    unresolved: Vec<(PathBuf, String)>,
+}
+
+/// One edge [`module_items`] reads from a file.
+#[derive(Debug)]
+enum ModuleItem {
+    /// An out-of-line `mod name;`: test-only-`gated` (its own cfg or an
+    /// enclosing gated block, strict about `test-support`), the module
+    /// directory it resolves under, and its plain `#[path]` if any.
+    Declaration {
+        name: String,
+        gated: bool,
+        dir: PathBuf,
+        path: Option<String>,
+    },
+    /// A file compiled (or read) in for every build: a literal `include!` /
+    /// `include_str!` / `include_bytes!` of a `.rs` file, or the `path` of a
+    /// `#[cfg_attr(…, path = "…")]`. Candidates in resolution order.
+    Inclusion {
+        candidates: Vec<PathBuf>,
+        what: String,
+    },
+    /// An edge that cannot be resolved; its module `dir` (and the file)
+    /// become production.
+    Unresolvable { dir: PathBuf, why: String },
+}
+
+/// The test-only set and the unresolved edges of every `.rs` file under `src`
+/// (as walked by [`all_rust_files`]). A file is test-only when every edge that
+/// includes it is gated by a test-only cfg (`#[cfg(test)]`,
+/// `#[cfg(all(test, …))]`, an enclosing gated inline module — strict about
+/// `feature = "test-support"`) or sits in a file that is itself test-only
+/// (transitively). A file with no edge, or with any one ungated edge, is
+/// production — whatever its name.
+///
+/// **Fail closed on whatever cannot be proven test-only** (GPT review of the
+/// gate audit 2026-08 §9 sweep). [`module_items`] reads *every* module item
+/// on a line (`mod first; mod hidden;`), an `include!` / `include_str!` of a
+/// `.rs` file and a `#[path]` inside `cfg_attr` are production edges whatever
+/// the surrounding cfg, and an edge it cannot resolve (`include!(concat!(…))`,
+/// a `mod x;` with no file) makes its whole containing module production,
+/// recorded in `unresolved`. Python twin: `check_no_panics.module_items`.
+fn module_graph(src: &Path) -> ModuleGraph {
     let mut all = Vec::new();
     all_rust_files(src, &mut all);
 
-    // file -> (declared module name, test-only-gated) for out-of-line decls,
-    // plus any `#[path = "…"]` overrides (read from raw source — the path
-    // lives in a string literal the stripper blanks).
-    let mut decls: BTreeMap<PathBuf, Vec<(String, bool)>> = BTreeMap::new();
-    let mut path_overrides: BTreeMap<PathBuf, BTreeMap<String, String>> = BTreeMap::new();
+    // target -> every (including file, gated) edge; poisoned module dirs.
+    let mut included_by: BTreeMap<PathBuf, Vec<(PathBuf, bool)>> = BTreeMap::new();
+    let mut poisoned: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut unresolved: Vec<(PathBuf, String)> = Vec::new();
     for file in &all {
         let source = std::fs::read_to_string(file)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", file.display()));
-        let gated = test_context_lines(&source, false);
-        let found: Vec<(String, bool)> = strip_comments_and_strings(&source)
-            .lines()
-            .enumerate()
-            .filter_map(|(index, line)| {
-                out_of_line_mod_name(line)
-                    .map(|name| (name, gated.get(index).copied().unwrap_or(false)))
-            })
-            .collect();
-        if !found.is_empty() {
-            decls.insert(file.clone(), found);
-        }
-        let overrides = explicit_mod_paths(&source);
-        if !overrides.is_empty() {
-            path_overrides.insert(file.clone(), overrides);
-        }
-    }
-
-    let resolve = |declaring: &Path, name: &str| -> Option<PathBuf> {
-        if let Some(explicit) = path_overrides
-            .get(declaring)
-            .and_then(|overrides| overrides.get(name))
-        {
-            // `#[path]` on an out-of-line mod resolves relative to the
-            // declaring file's directory (mod.rs/lib.rs owners) or its module
-            // directory (2018-style files); accept whichever exists.
-            let parent = declaring.parent()?;
-            return [
-                parent.join(explicit),
-                parent.join(declaring.file_stem()?).join(explicit),
-            ]
-            .into_iter()
-            .find(|candidate| candidate.is_file());
-        }
-        let file_name = declaring.file_name().and_then(|n| n.to_str())?;
-        let base = if matches!(file_name, "mod.rs" | "lib.rs" | "main.rs") {
-            declaring.parent()?.to_path_buf()
-        } else {
-            declaring.parent()?.join(declaring.file_stem()?)
-        };
-        [
-            base.join(format!("{name}.rs")),
-            base.join(name).join("mod.rs"),
-        ]
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-    };
-
-    let under_tests_dir = |path: &Path| -> bool {
-        path.strip_prefix(src)
-            .map(|relative| {
-                relative
-                    .components()
-                    .any(|component| component.as_os_str() == "tests")
-            })
-            .unwrap_or(false)
-    };
-
-    // target -> every (declaring file, gated) that includes it.
-    let mut declared_by: BTreeMap<PathBuf, Vec<(PathBuf, bool)>> = BTreeMap::new();
-    for (declaring, mods) in &decls {
-        for (name, gated) in mods {
-            if let Some(target) = resolve(declaring, name) {
-                declared_by
-                    .entry(target)
-                    .or_default()
-                    .push((declaring.clone(), *gated));
+        for item in module_items(file, &source) {
+            match item {
+                ModuleItem::Declaration {
+                    name,
+                    gated,
+                    dir,
+                    path,
+                } => match resolve_declaration(file, &name, &dir, path.as_deref()) {
+                    Some(target) => included_by
+                        .entry(target)
+                        .or_default()
+                        .push((file.clone(), gated)),
+                    None => {
+                        unresolved
+                            .push((file.clone(), format!("`mod {name};` resolves to no file")));
+                        poisoned.push((file.clone(), dir));
+                    }
+                },
+                ModuleItem::Inclusion { candidates, what } => {
+                    match candidates.into_iter().find(|candidate| candidate.is_file()) {
+                        Some(target) => included_by
+                            .entry(target)
+                            .or_default()
+                            .push((file.clone(), false)),
+                        None => {
+                            unresolved.push((file.clone(), format!("{what} resolves to no file")));
+                            poisoned.push((file.clone(), root_module_directory(file)));
+                        }
+                    }
+                }
+                ModuleItem::Unresolvable { dir, why } => {
+                    unresolved.push((file.clone(), why));
+                    poisoned.push((file.clone(), dir));
+                }
             }
         }
     }
+    let is_poisoned = |path: &Path| {
+        poisoned
+            .iter()
+            .any(|(file, dir)| path == file.as_path() || path.starts_with(dir))
+    };
 
-    // Seed: files under `tests/` directories (excluded by directory
-    // everywhere, and test-only-ness propagates *through* them). Fixpoint: a
-    // file is test-only once every declaration of it is gated or sits in a
-    // test-only file. Monotone, so it terminates.
-    let mut test_only: BTreeSet<PathBuf> = all
-        .iter()
-        .filter(|file| under_tests_dir(file))
-        .cloned()
-        .collect();
+    // Fixpoint: a file is test-only once every edge to it is gated or sits in
+    // a test-only file. Monotone, so it terminates.
+    let mut test_only: BTreeSet<PathBuf> = BTreeSet::new();
     loop {
         let mut grew = false;
-        for (target, declarations) in &declared_by {
-            if test_only.contains(target) {
+        for (target, edges) in &included_by {
+            if test_only.contains(target) || is_poisoned(target) {
                 continue;
             }
-            if declarations
+            if edges
                 .iter()
-                .all(|(declaring, gated)| *gated || test_only.contains(declaring))
+                .all(|(including, gated)| *gated || test_only.contains(including))
             {
                 test_only.insert(target.clone());
                 grew = true;
@@ -928,17 +961,350 @@ pub(crate) fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
             break;
         }
     }
+    unresolved.sort();
+    ModuleGraph {
+        test_only,
+        unresolved,
+    }
+}
 
-    // The directory-excluded ones are already dropped by every walk.
-    test_only
-        .into_iter()
-        .filter(|file| !under_tests_dir(file))
-        .collect()
+/// The file an out-of-line `mod name;` names: its `#[path]` (relative to the
+/// declaring file's directory, its module directory, or the enclosing inline
+/// module's directory — whichever exists), else `<dir>/name.rs` or
+/// `<dir>/name/mod.rs` under the line's module directory.
+fn resolve_declaration(
+    declaring: &Path,
+    name: &str,
+    dir: &Path,
+    path: Option<&str>,
+) -> Option<PathBuf> {
+    let candidates = match path {
+        Some(explicit) => path_attribute_candidates(declaring, dir, explicit),
+        None => vec![
+            dir.join(format!("{name}.rs")),
+            dir.join(name).join("mod.rs"),
+        ],
+    };
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn path_attribute_candidates(declaring: &Path, dir: &Path, explicit: &str) -> Vec<PathBuf> {
+    let parent = declaring
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let mut candidates = vec![parent.join(explicit)];
+    if let Some(stem) = declaring.file_stem() {
+        candidates.push(parent.join(stem).join(explicit));
+    }
+    candidates.push(dir.join(explicit));
+    candidates
+}
+
+/// The `"…"` value of a `key = "…"` pair inside one raw attribute, `key` a
+/// whole word (`path`, not `xpath`).
+fn attribute_string_value(attribute: &str, key: &str) -> Option<String> {
+    let mut search = 0;
+    while let Some(found) = attribute[search..].find(key) {
+        let at = search + found;
+        search = at + key.len();
+        let before_ok = attribute[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_'));
+        let rest = attribute[at + key.len()..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        if !before_ok {
+            continue;
+        }
+        let rest = rest.trim_start().strip_prefix('"')?;
+        return rest.find('"').map(|end| rest[..end].to_string());
+    }
+    None
+}
+
+/// Whether one raw attribute mentions `key` as a whole word.
+fn attribute_mentions(attribute: &str, key: &str) -> bool {
+    attribute.match_indices(key).any(|(at, _)| {
+        let before = attribute[..at].chars().next_back();
+        let after = attribute[at + key.len()..].chars().next();
+        before.is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_'))
+            && after.is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_'))
+    })
+}
+
+/// Every module edge in one file, by one token walk over the source with
+/// comments and string literals blanked IN PLACE
+/// ([`blank_comments_and_strings`], so attribute text can be read back from the
+/// raw source at the same offsets). Every `mod` item counts, however many
+/// share a line. The walk keeps a block stack of `(test-only, module dir)`;
+/// attributes seen since the last `;` / `{` / `}` gate the next item (or the
+/// block it opens). Same algorithm as `scripts/check_no_panics.py::module_items`.
+fn module_items(file: &Path, source: &str) -> Vec<ModuleItem> {
+    let code = blank_comments_and_strings(source);
+    let bytes = code.as_bytes();
+    let root = root_module_directory(file);
+    let file_dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut items = Vec::new();
+    let mut stack: Vec<(bool, PathBuf)> = Vec::new();
+    let mut pending_test = false;
+    let mut pending_path: Option<String> = None;
+    let mut pending_cfg_attr_paths: Vec<Option<String>> = Vec::new();
+    let mut pending_inline: Option<String> = None;
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let skip_ws = |mut j: usize| {
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        j
+    };
+    let read_ident = |j: usize| {
+        let mut k = j;
+        while k < bytes.len() && is_ident(bytes[k]) {
+            k += 1;
+        }
+        k
+    };
+    let mut i = 0;
+    while i < bytes.len() {
+        let (top_test, top_dir) = stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| (false, root.clone()));
+        let byte = bytes[i];
+        if byte == b'#' {
+            let mut j = skip_ws(i + 1);
+            let inner = bytes.get(j) == Some(&b'!');
+            if inner {
+                j = skip_ws(j + 1);
+            }
+            if bytes.get(j) == Some(&b'[') {
+                let Some(end) = matching_close(bytes, j, b'[', b']') else {
+                    break;
+                };
+                if !inner {
+                    let attribute = &source[i..=end];
+                    pending_test |= attribute_line_is_test_only(attribute, false);
+                    let body = attribute[1..]
+                        .trim_start()
+                        .trim_start_matches('[')
+                        .trim_start();
+                    if body.starts_with("cfg_attr") {
+                        if attribute_mentions(attribute, "path") {
+                            pending_cfg_attr_paths.push(attribute_string_value(attribute, "path"));
+                        }
+                    } else if body.starts_with("path") {
+                        pending_path = attribute_string_value(attribute, "path");
+                    }
+                }
+                i = end + 1;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'{' => {
+                let inline = pending_inline.take();
+                let has_path = !pending_cfg_attr_paths.is_empty() || pending_path.is_some();
+                let dir = match inline {
+                    Some(name) => {
+                        let dir = top_dir.join(&name);
+                        if has_path {
+                            // `#[path]` re-roots the inline module's children;
+                            // not modelled, so they are not provable.
+                            items.push(ModuleItem::Unresolvable {
+                                dir: dir.clone(),
+                                why: format!("`#[path]` on inline `mod {name} {{ … }}`"),
+                            });
+                        }
+                        dir
+                    }
+                    None => top_dir,
+                };
+                stack.push((pending_test || top_test, dir));
+                pending_test = false;
+                pending_path = None;
+                pending_cfg_attr_paths.clear();
+                i += 1;
+                continue;
+            }
+            b'}' | b';' => {
+                if byte == b'}' {
+                    stack.pop();
+                }
+                pending_test = false;
+                pending_path = None;
+                pending_cfg_attr_paths.clear();
+                pending_inline = None;
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        if !(byte.is_ascii_alphabetic() || byte == b'_') || (i > 0 && is_ident(bytes[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let end = read_ident(i);
+        let ident = &code[i..end];
+        // `r#mod` is an identifier, not the keyword.
+        if ident == "r" && bytes.get(end) == Some(&b'#') {
+            i = read_ident(end + 1);
+            continue;
+        }
+        if ident == "mod" {
+            let name_start = skip_ws(end);
+            let name_end = read_ident(name_start);
+            let after = skip_ws(name_end);
+            if name_end > name_start {
+                let name = code[name_start..name_end].to_string();
+                match bytes.get(after) {
+                    Some(b';') => {
+                        for value in pending_cfg_attr_paths.drain(..) {
+                            items.push(match value {
+                                Some(value) => ModuleItem::Inclusion {
+                                    candidates: path_attribute_candidates(file, &top_dir, &value),
+                                    what: format!(
+                                        "`#[cfg_attr(…, path = \"{value}\")] mod {name};`"
+                                    ),
+                                },
+                                None => ModuleItem::Unresolvable {
+                                    dir: top_dir.clone(),
+                                    why: format!(
+                                        "`cfg_attr` `path` on `mod {name};` has no literal value"
+                                    ),
+                                },
+                            });
+                        }
+                        items.push(ModuleItem::Declaration {
+                            name,
+                            gated: pending_test || top_test,
+                            dir: top_dir,
+                            path: pending_path.take(),
+                        });
+                        pending_test = false;
+                        pending_inline = None;
+                        i = after + 1;
+                        continue;
+                    }
+                    Some(b'{') => {
+                        pending_inline = Some(name);
+                        i = after;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            i = end;
+            continue;
+        }
+        if matches!(ident, "include" | "include_str" | "include_bytes") {
+            let bang = skip_ws(end);
+            if bytes.get(bang) == Some(&b'!') {
+                let open = skip_ws(bang + 1);
+                let close = match bytes.get(open) {
+                    Some(b'(') => matching_close(bytes, open, b'(', b')'),
+                    Some(b'[') => matching_close(bytes, open, b'[', b']'),
+                    Some(b'{') => matching_close(bytes, open, b'{', b'}'),
+                    _ => None,
+                };
+                if let Some(close) = close {
+                    if let Some(item) =
+                        inclusion_item(ident, source[open + 1..close].trim(), &file_dir, &top_dir)
+                    {
+                        items.push(item);
+                    }
+                    i = close + 1;
+                    continue;
+                }
+            }
+        }
+        i = end;
+    }
+    items
+}
+
+/// The edge one `include!`-family call makes, from its raw argument text: a
+/// literal `.rs` path is an [`ModuleItem::Inclusion`] (resolved against the
+/// file's directory, as rustc does); a non-literal `include!` — or a
+/// non-literal `include_str!` / `include_bytes!` whose last literal piece does
+/// not end in a non-`.rs` extension — is [`ModuleItem::Unresolvable`]; a
+/// non-Rust file is no edge.
+fn inclusion_item(
+    macro_name: &str,
+    arguments: &str,
+    file_dir: &Path,
+    dir: &Path,
+) -> Option<ModuleItem> {
+    let literal = arguments
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .filter(|inner| !inner.contains('"'));
+    if let Some(path) = literal {
+        return (macro_name == "include" || path.ends_with(".rs")).then(|| ModuleItem::Inclusion {
+            candidates: vec![file_dir.join(path)],
+            what: format!("`{macro_name}!(\"{path}\")`"),
+        });
+    }
+    let last_literal = arguments
+        .rsplit('"')
+        .nth(1)
+        .filter(|_| arguments.matches('"').count() >= 2);
+    // The text after the last `.` of the last literal piece, when it is a
+    // file extension (`".md"` alone is one; `"../dir/"` names none).
+    let names_other_file = last_literal
+        .and_then(|piece| piece.rsplit_once('.'))
+        .is_some_and(|(_, extension)| {
+            !extension.is_empty() && !extension.contains('/') && extension != "rs"
+        });
+    if macro_name != "include" && names_other_file {
+        return None;
+    }
+    Some(ModuleItem::Unresolvable {
+        dir: dir.to_path_buf(),
+        why: format!(
+            "`{macro_name}!({})` is not a literal path",
+            arguments.split_whitespace().collect::<Vec<_>>().join(" ")
+        ),
+    })
+}
+
+/// The index of the `close` byte matching the `open` byte at `start`, on code
+/// whose comments and strings are already blanked.
+fn matching_close(bytes: &[u8], start: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, byte) in bytes[start..].iter().enumerate() {
+        if *byte == open {
+            depth += 1;
+        } else if *byte == close {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some(start + offset);
+            }
+        }
+    }
+    None
+}
+
+/// The directory a file's top-level out-of-line `mod x;` resolves under:
+/// its own directory for `lib.rs` / `main.rs` / `mod.rs`, else `<dir>/<stem>`.
+fn root_module_directory(file: &Path) -> PathBuf {
+    let parent = file.parent().map(Path::to_path_buf).unwrap_or_default();
+    match file.file_name().and_then(|name| name.to_str()) {
+        Some("lib.rs" | "main.rs" | "mod.rs") => parent,
+        _ => match file.file_stem() {
+            Some(stem) => parent.join(stem),
+            None => parent,
+        },
+    }
 }
 
 /// Every `.rs` file under `dir`, with no test-*shape* exclusions (the caller
-/// decides). Prunes only the directories [`is_pruned_dir`] names — build output
-/// and vendored packages. I/O errors are fatal.
+/// decides). Prunes only what [`is_pruned_dir`] names — build output, vendored
+/// packages, and crate-level cargo targets. I/O errors are fatal.
 fn all_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = std::fs::read_dir(dir)
         .unwrap_or_else(|error| panic!("read_dir {}: {error}", dir.display()));
@@ -948,11 +1314,7 @@ fn all_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
         });
         let path = entry.path();
         if path.is_dir() {
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(is_pruned_dir)
-            {
+            if is_pruned_dir(&path) {
                 continue;
             }
             all_rust_files(&path, out);
@@ -1182,14 +1544,41 @@ pub(crate) fn implemented_trait_names(source: &str) -> BTreeSet<String> {
 /// lexer — good enough for rustfmt'd source; it intentionally errs on the side
 /// of stripping (a mis-lex would surface loudly as a frozen-set mismatch).
 pub(crate) fn strip_comments_and_strings(source: &str) -> String {
+    lex_comments_and_strings(source, false)
+}
+
+/// [`strip_comments_and_strings`] with every stripped character replaced IN
+/// PLACE by spaces of the same UTF-8 length (newlines kept), so byte offsets
+/// in the result index the same text in `source` — what a token walk needs to
+/// read an attribute's raw text (its blanked string values) back.
+#[allow(dead_code)]
+pub(crate) fn blank_comments_and_strings(source: &str) -> String {
+    lex_comments_and_strings(source, true)
+}
+
+/// The one lexer behind both: `blank` keeps positions, otherwise stripped text
+/// is dropped (newlines kept where the line structure needs them).
+fn lex_comments_and_strings(source: &str, blank: bool) -> String {
     let chars: Vec<char> = source.chars().collect();
     let mut out = String::with_capacity(source.len());
+    // A character the lexer removes: blanked in place, or dropped keeping only
+    // a newline.
+    let drop = |out: &mut String, c: char| {
+        if c == '\n' {
+            out.push('\n');
+        } else if blank {
+            for _ in 0..c.len_utf8() {
+                out.push(' ');
+            }
+        }
+    };
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
         // Line comment.
         if c == '/' && chars.get(i + 1) == Some(&'/') {
             while i < chars.len() && chars[i] != '\n' {
+                drop(&mut out, chars[i]);
                 i += 1;
             }
             continue;
@@ -1197,18 +1586,22 @@ pub(crate) fn strip_comments_and_strings(source: &str) -> String {
         // Block comment (Rust block comments nest).
         if c == '/' && chars.get(i + 1) == Some(&'*') {
             let mut depth = 1usize;
+            drop(&mut out, '/');
+            drop(&mut out, '*');
             i += 2;
             while i < chars.len() && depth > 0 {
                 if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
                     depth += 1;
+                    drop(&mut out, '/');
+                    drop(&mut out, '*');
                     i += 2;
                 } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
                     depth -= 1;
+                    drop(&mut out, '*');
+                    drop(&mut out, '/');
                     i += 2;
                 } else {
-                    if chars[i] == '\n' {
-                        out.push('\n');
-                    }
+                    drop(&mut out, chars[i]);
                     i += 1;
                 }
             }
@@ -1223,15 +1616,19 @@ pub(crate) fn strip_comments_and_strings(source: &str) -> String {
             }
             if chars.get(j) == Some(&'"') {
                 let hashes = j - hash_start;
+                for &prefix in &chars[i..=j] {
+                    drop(&mut out, prefix);
+                }
                 let mut k = j + 1;
                 while k < chars.len() {
                     if chars[k] == '"' && (0..hashes).all(|h| chars.get(k + 1 + h) == Some(&'#')) {
+                        for &closing in &chars[k..k + 1 + hashes] {
+                            drop(&mut out, closing);
+                        }
                         k += 1 + hashes;
                         break;
                     }
-                    if chars[k] == '\n' {
-                        out.push('\n');
-                    }
+                    drop(&mut out, chars[k]);
                     k += 1;
                 }
                 i = k;
@@ -1240,40 +1637,52 @@ pub(crate) fn strip_comments_and_strings(source: &str) -> String {
         }
         // Plain string literal (handles escapes).
         if c == '"' {
+            drop(&mut out, '"');
             i += 1;
             while i < chars.len() {
                 if chars[i] == '\\' {
                     // A `\<newline>` continuation still ends a source line:
                     // dropping it undercounts lines and shifts every later
                     // offender's reported line number.
-                    if chars.get(i + 1) == Some(&'\n') {
-                        out.push('\n');
+                    drop(&mut out, '\\');
+                    if let Some(&next) = chars.get(i + 1) {
+                        drop(&mut out, next);
                     }
                     i += 2;
                     continue;
                 }
                 if chars[i] == '"' {
+                    drop(&mut out, '"');
                     i += 1;
                     break;
                 }
-                if chars[i] == '\n' {
-                    out.push('\n');
-                }
+                drop(&mut out, chars[i]);
                 i += 1;
             }
             continue;
         }
         // Char literal vs lifetime: only consume when it closes as a literal.
+        // (Stripped without its newlines either way; blanked in place.)
         if c == '\'' {
             if chars.get(i + 1) == Some(&'\\') {
                 let mut k = i + 2;
                 while k < chars.len() && chars[k] != '\'' {
                     k += 1;
                 }
+                if blank {
+                    for &literal in &chars[i..(k + 1).min(chars.len())] {
+                        drop(&mut out, literal);
+                    }
+                }
                 i = k + 1;
                 continue;
             }
             if chars.get(i + 2) == Some(&'\'') {
+                if blank {
+                    for &literal in &chars[i..i + 3] {
+                        drop(&mut out, literal);
+                    }
+                }
                 i += 3;
                 continue;
             }
@@ -1549,12 +1958,67 @@ fn line_opens_item(code: &str) -> bool {
     }
 }
 
+/// Split the run of complete `#[…]` attributes that opens `text` (after
+/// leading whitespace) from the rest of the line: `#[cfg(test)] mod x;` is
+/// `(["#[cfg(test)]"], "mod x;")`. Brackets inside a string literal do not end
+/// an attribute; an attribute left open at the end of the line ends the run
+/// (multi-line attributes are not split). Inner attributes (`#![…]`) are not
+/// item attributes and are left in place. Mirrored by
+/// `scripts/check_no_panics.py::split_leading_attributes` — the same algorithm,
+/// so both trackers see the same attributes on the same line.
+#[allow(dead_code)]
+pub(crate) fn split_leading_attributes(text: &str) -> (Vec<&str>, &str) {
+    let mut attributes = Vec::new();
+    let mut rest = text.trim_start();
+    while rest.starts_with("#[") {
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut end = None;
+        for (index, ch) in rest.char_indices() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => in_string = true,
+                '[' => depth += 1,
+                ']' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { break };
+        attributes.push(&rest[..=end]);
+        rest = rest[end + 1..].trim_start();
+    }
+    (attributes, rest)
+}
+
 /// Per line of `source`: whether it is **test** context — inside an item gated
-/// by a test-only attribute (or inside such an item's block), or the gating
-/// attribute line itself. Comments and string literals are stripped first with
-/// line structure preserved, so a brace or a `#[cfg(test)]` inside a literal
-/// or comment moves nothing. A module merely *named* `tests` is not test
-/// context unless gated (it ships in release builds otherwise).
+/// by a test-only attribute (or inside such an item's block), or a line whose
+/// leading attribute run holds a test-only attribute. Comments and string
+/// literals are stripped first with line structure preserved, so a brace or a
+/// `#[cfg(test)]` inside a literal or comment moves nothing. A module merely
+/// *named* `tests` is not test context unless gated (it ships in release
+/// builds otherwise).
+///
+/// Attributes are read per attribute, not per line ([`split_leading_attributes`]):
+/// `#[cfg(test)] mod x_tests;` on one line gates `x_tests` exactly as the same
+/// attribute on the line above would — until 2026-11-17 the one-line form read
+/// as ungated (gate audit 2026-08 §9 residual 2), as did a gating line with a
+/// trailing comment.
 #[allow(dead_code)]
 pub(crate) fn test_context_lines(source: &str, test_support_is_test: bool) -> Vec<bool> {
     let code = strip_comments_and_strings(source);
@@ -1565,20 +2029,27 @@ pub(crate) fn test_context_lines(source: &str, test_support_is_test: bool) -> Ve
     let mut pending_attr = false;
     let mut pending_block: Option<bool> = None;
     for (index, line) in code_lines.iter().enumerate() {
-        let stripped = line.trim();
         let current = block_stack.last().copied().unwrap_or(false);
-        let is_attr = stripped.starts_with("#[");
-        let test_attr = is_attr
+        let (code_attributes, rest) = split_leading_attributes(line);
+        // The test check reads the RAW attribute (the stripper blanks the
+        // `"test-support"` value); the code split only says how many there are.
+        let test_attr = !code_attributes.is_empty()
             && raw.get(index).is_some_and(|raw_line| {
-                attribute_line_is_test_only(raw_line, test_support_is_test)
+                split_leading_attributes(raw_line)
+                    .0
+                    .iter()
+                    .take(code_attributes.len())
+                    .any(|attribute| attribute_line_is_test_only(attribute, test_support_is_test))
             });
         if test_attr {
             pending_attr = true;
         }
-        if line_opens_item(line) {
+        if line_opens_item(rest) {
             pending_block = Some(pending_attr || current);
             pending_attr = false;
-        } else if !stripped.is_empty() && !is_attr && pending_attr {
+        } else if !rest.trim().is_empty() && !rest.starts_with("#[") && pending_attr {
+            // An attribute still open at the end of the line (`#[allow(`)
+            // keeps the pending gate, as a whole attribute line does.
             pending_attr = false;
         }
         contexts[index] = current || pending_block.unwrap_or(false) || test_attr;
@@ -1595,7 +2066,7 @@ pub(crate) fn test_context_lines(source: &str, test_support_is_test: bool) -> Ve
                 _ => {}
             }
         }
-        if stripped.ends_with(';') {
+        if line.trim().ends_with(';') {
             pending_block = None;
         }
     }

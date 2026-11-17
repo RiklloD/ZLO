@@ -77,7 +77,10 @@ use serde_json::Value;
 // (`crates/<family>/ironclaw_*`, PROPOSAL §5) turns every row into a term that
 // matches nothing — and a census whose rows match nothing reports a clean
 // family it never checked (CHECKLIST WS10).
-use ratchet_support::{crate_path, resolve_crate_relative, strip_cfg_test_blocks, workspace_root};
+use ratchet_support::{
+    crate_path, is_test_support_root, production_rust_files, resolve_crate_relative,
+    strip_cfg_test_blocks, workspace_root,
+};
 
 /// LLM-vendor vocabulary, lower-case. Deliberately a **literal list**, not
 /// derived from manifests: the whole finding behind D-E is that the
@@ -376,30 +379,18 @@ fn contracts_family_src_roots(metadata: &Value) -> Vec<PathBuf> {
     roots
 }
 
-fn is_test_path(relative: &str) -> bool {
-    let name = relative.rsplit('/').next().unwrap_or(relative);
-    relative.contains("/tests/")
-        || relative.contains("/test_support/")
-        || name == "tests.rs"
-        || name == "test.rs"
-        || name == "test_support.rs"
-        || name.ends_with("_tests.rs")
-        || name.ends_with("_test.rs")
-        || name.starts_with("test_")
-}
-
-fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = std::fs::read_dir(dir)
-        .unwrap_or_else(|error| panic!("read_dir {}: {error}", dir.display()));
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|error| panic!("entry under {}: {error}", dir.display()));
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rs(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
+/// The production Rust files of one contracts `src` tree the census reads:
+/// `ratchet_support::production_rust_files` (a file is test code only when
+/// every `mod` declaration reaching it is test-gated, whatever its name) minus
+/// the feature-gated `src/test_support` root — the same file rule as the LOC
+/// counters. Until 2026-11-17 this census dropped files by NAME (`tests.rs`,
+/// `*_test.rs`, `test_*.rs`, any `tests/` or `test_support/` directory), so an
+/// ungated `test_probe.rs` naming a vendor was invisible (gate audit 2026-08 §9).
+fn census_files(src: &Path) -> Vec<PathBuf> {
+    production_rust_files(src)
+        .into_iter()
+        .filter(|file| !is_test_support_root(src, file))
+        .collect()
 }
 
 /// `relative path -> (term -> occurrences)` over production code + string
@@ -418,17 +409,12 @@ fn scan_contracts_family() -> (BTreeMap<String, BTreeMap<String, usize>>, usize)
         .collect();
 
     for src in contracts_family_src_roots(&metadata) {
-        let mut files = Vec::new();
-        collect_rs(&src, &mut files);
-        for file in files {
+        for file in census_files(&src) {
             let relative = file
                 .strip_prefix(&root)
                 .unwrap_or(&file)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if is_test_path(&relative) {
-                continue;
-            }
             scanned += 1;
             let raw = std::fs::read_to_string(&file)
                 .unwrap_or_else(|error| panic!("read {}: {error}", file.display()));
@@ -848,4 +834,48 @@ pub fn tail_after_cfg_block_groq() {}
         .len(),
         1
     );
+}
+
+/// Test code is decided by cfg gating, not by file name (gate audit 2026-08
+/// §9): an ungated `probe_tests.rs` / `test_probe.rs` ships and is censused; a
+/// production-named `helpers.rs` reachable only through `#[cfg(test)]` is not.
+/// The feature-gated `src/test_support` root stays out, as in the LOC counters.
+#[test]
+fn reborn_vendor_census_classifies_test_files_by_cfg_not_by_name() {
+    let tree = tempfile::tempdir().expect("temp tree");
+    let crate_dir = tree.path().join("fixture_contracts");
+    let src = crate_dir.join("src");
+    std::fs::create_dir_all(src.join("test_support")).expect("src");
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\n",
+    )
+    .expect("manifest");
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub mod probe_tests;\npub mod test_probe;\n#[cfg(test)]\nmod helpers;\n\
+         #[cfg(feature = \"test-support\")]\npub mod test_support;\n",
+    )
+    .expect("lib.rs");
+    for name in [
+        "probe_tests.rs",
+        "test_probe.rs",
+        "helpers.rs",
+        "test_support/mod.rs",
+    ] {
+        std::fs::write(src.join(name), "pub fn f() {}\n").expect("fixture file");
+    }
+    let files = census_files(&src);
+    for shipped in ["probe_tests.rs", "test_probe.rs", "lib.rs"] {
+        assert!(
+            files.contains(&src.join(shipped)),
+            "{shipped} ships: {files:?}"
+        );
+    }
+    for excluded in ["helpers.rs", "test_support/mod.rs"] {
+        assert!(
+            !files.contains(&src.join(excluded)),
+            "{excluded} is not production: {files:?}"
+        );
+    }
 }

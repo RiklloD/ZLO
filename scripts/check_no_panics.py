@@ -364,6 +364,67 @@ def cfg_possible_values(
     return {False, True}
 
 
+def split_leading_attributes(text: str) -> tuple[list[str], str]:
+    """Split the run of complete ``#[...]`` attributes opening ``text``.
+
+    ``#[cfg(test)] mod x;`` is ``(["#[cfg(test)]"], "mod x;")``. Brackets inside a
+    string literal do not end an attribute; an attribute still open at the end
+    of the line ends the run (multi-line attributes are not split). The Rust
+    counter (``ratchet_support::split_leading_attributes``) runs the same
+    algorithm, so both trackers see the same attributes on the same line.
+    """
+    attributes: list[str] = []
+    rest = text.lstrip()
+    while rest.startswith("#["):
+        depth = 0
+        in_string = False
+        escaped = False
+        end = None
+        for index, ch in enumerate(rest):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth = max(depth - 1, 0)
+                if depth == 0:
+                    end = index
+                    break
+        if end is None:
+            break
+        attributes.append(rest[: end + 1])
+        rest = rest[end + 1 :].lstrip()
+    return attributes, rest
+
+
+def leading_attributes_are_test_only(
+    code: str, raw: str, test_support_is_test: bool = True
+) -> tuple[bool, bool, str]:
+    """``(has attributes, one is test-only, code after them)`` for one line.
+
+    The count comes from the lexed ``code`` (comments and strings blanked); the
+    test check reads the matching ``raw`` attributes, whose cfg string values
+    (``"test-support"``) the lexer blanks.
+    """
+    code_attributes, rest = split_leading_attributes(code)
+    if not code_attributes:
+        return False, False, rest
+    raw_attributes, _ = split_leading_attributes(raw)
+    test_only = any(
+        attribute_is_test_only(attribute, test_support_is_test)
+        for attribute in raw_attributes[: len(code_attributes)]
+    )
+    return True, test_only, rest
+
+
 def attribute_is_test_only(line: str, test_support_is_test: bool = True) -> bool:
     if TEST_ATTR_PATTERN.match(line):
         return True
@@ -413,22 +474,26 @@ def line_test_contexts_from_code(
     pending_block_context: bool | None = None
 
     for idx, code in enumerate(code_lines):
-        stripped = code.strip()
         current_context = block_stack[-1] if block_stack else False
 
-        if stripped.startswith("#[") and attribute_is_test_only(
-            raw_lines[idx].strip(), test_support_is_test
-        ):
+        # Attributes are read per attribute, not per line: a one-line
+        # `#[cfg(test)] mod x_tests;` gates `x_tests` exactly as the attribute
+        # on the line above would (gate audit 2026-08 §9 residual 2), and the
+        # gating attribute line itself is test context (as in the Rust twin).
+        _has_attributes, test_attribute, rest = leading_attributes_are_test_only(
+            code, raw_lines[idx], test_support_is_test
+        )
+        if test_attribute:
             pending_test_attr = True
 
-        item_found, item_is_test = is_test_item(code, pending_test_attr)
+        item_found, item_is_test = is_test_item(rest, pending_test_attr)
         if item_found:
             pending_block_context = item_is_test or current_context
             pending_test_attr = False
-        elif stripped and not stripped.startswith("#[") and pending_test_attr:
+        elif rest.strip() and not rest.startswith("#[") and pending_test_attr:
             pending_test_attr = False
 
-        contexts[idx] = current_context or bool(pending_block_context)
+        contexts[idx] = current_context or bool(pending_block_context) or test_attribute
 
         for ch in code:
             if ch == "{":
@@ -440,7 +505,7 @@ def line_test_contexts_from_code(
             elif ch == "}" and block_stack:
                 block_stack.pop()
 
-        if stripped.endswith(";"):
+        if code.strip().endswith(";"):
             pending_block_context = None
 
     return contexts
@@ -502,10 +567,10 @@ def has_cfg_test_module_declaration(
       ``#[cfg(any(test, feature = "test-support"))] pub mod contract_tests;``
       is a shared fixture module other crates compile, so it stays in scope.
 
-    No declaration, or any one ungated declaration, means production. A
-    single-line ``#[cfg(test)] mod x_tests;`` is not recognized as gated (the
-    tracker reads one attribute per line; the form does not occur in
-    ``crates/``), which errs toward counting the file.
+    No declaration, or any one ungated declaration, means production. The
+    attribute may share the item's line (``#[cfg(test)] mod x_tests;``): the
+    tracker reads attributes per attribute (``split_leading_attributes``), not
+    one per line — until 2026-11-17 that form read as ungated.
     """
     target = (repository_root / pathlib.Path(path)).resolve()
     if target in _visiting:
@@ -523,15 +588,18 @@ def has_cfg_test_module_declaration(
     declared = False
     for candidate in sorted(candidates):
         resolved = candidate.resolve()
-        if resolved == target:
-            continue
         try:
-            scan, strict_contexts = _declaration_scan(resolved)
+            scan, _strict_contexts = _declaration_scan(resolved)
         except (OSError, UnicodeError):
             continue
-        for _name, module_candidates, test_context in module_declarations(
-            scan, strict_contexts
-        ):
+        declarations, unresolved = module_items(scan, test_support_is_test=False)
+        # Fail closed: a module holding an edge the resolver cannot resolve is
+        # production, and so is everything under it.
+        if _is_poisoned(target, resolved, unresolved):
+            return False
+        if resolved == target:
+            continue
+        for _name, module_candidates, test_context in declarations:
             if target not in {c.resolve() for c in module_candidates}:
                 continue
             declared = True
@@ -569,8 +637,9 @@ def line_module_directories(
     for code in code_lines:
         current = block_stack[-1] if block_stack else root
         directories.append(current)
-        module = INLINE_MOD_PATTERN.match(code)
-        if module is not None and OUT_OF_LINE_MOD_PATTERN.match(code) is None:
+        item = split_leading_attributes(code)[1]
+        module = INLINE_MOD_PATTERN.match(item)
+        if module is not None and OUT_OF_LINE_MOD_PATTERN.match(item) is None:
             pending_inline = current / module.group(1)
 
         for char in code:
@@ -624,10 +693,15 @@ def line_item_contexts(code_lines: tuple[str, ...]) -> list[str]:
 def is_test_only_path(path: str) -> bool:
     """Return True for files that live in Rust test-only locations.
 
-    Files under ``src/**/tests/*.rs`` and ``src/**/tests.rs`` are Rust test
-    sub-modules, typically included behind ``#[cfg(test)]`` and never compiled
-    in production. Top-level ``tests/*.rs`` integration test files are already
-    outside ``src/`` / ``crates/`` and therefore never checked.
+    A file is test-only when it sits in a crate-level cargo target directory
+    (``tests/`` / ``examples/`` / ``benches/`` beside a ``Cargo.toml``,
+    ``is_in_crate_target_directory``), or when every module declaration that
+    includes it is test-only (``has_cfg_test_module_declaration``) — whatever
+    its name or directory. ``tests.rs``, ``*_tests.rs`` and ``src/**/tests/``
+    are conventions, not rules: until 2026-11-12 the names were exempt without
+    a gated declaration, and until 2026-11-17 a ``src/**/tests/`` directory was
+    exempt by directory (gate audit 2026-08 §9). Classifying every file this
+    way is the same rule ``ratchet_support::production_rust_files`` applies.
 
     ``src/**/test_support.rs`` is the repo-wide convention for a
     ``#[cfg(feature = "test-support")] pub mod test_support;`` module
@@ -650,11 +724,30 @@ def is_test_only_path(path: str) -> bool:
     ``changed_rust_files``). Top-level ``tests/**`` integration tests and their
     support trees are never scanned at all, so they need no exemption here.
 
-    A ``tests.rs`` / ``*_test.rs`` / ``*_tests.rs`` is test-only only when
-    ``has_cfg_test_module_declaration`` finds its real parent declaration
-    gated.
     """
     return _is_test_only_path(path, pathlib.Path("."), frozenset())
+
+
+CRATE_TARGET_DIRECTORIES = frozenset({"tests", "examples", "benches"})
+
+
+def is_in_crate_target_directory(path: str, repository_root: pathlib.Path) -> bool:
+    """Whether ``path`` lies under a crate-level ``tests/``/``examples/``/``benches/``.
+
+    Cargo compiles those directories as separate targets only when they sit
+    beside a ``Cargo.toml``; a ``src/**/tests/`` directory is an ordinary module
+    directory, classified by its declarations like any other file (gate audit
+    2026-08 §9 residual 1: it used to be test-only by directory, so a shipped
+    ``pub mod tests;`` directory module was dropped). Same rule as
+    ``ratchet_support::is_pruned_dir``.
+    """
+    parts = pathlib.PurePosixPath(path).parts
+    for index, part in enumerate(parts):
+        if part in CRATE_TARGET_DIRECTORIES:
+            parent = repository_root.joinpath(*parts[:index])
+            if (parent / "Cargo.toml").is_file():
+                return True
+    return False
 
 
 def _is_test_only_path(
@@ -664,17 +757,9 @@ def _is_test_only_path(
 ) -> bool:
     posix_path = pathlib.PurePosixPath(path)
     parts = posix_path.parts
-    if (
-        "tests" in parts
-        or (
-            (
-                posix_path.name == "tests.rs"
-                or posix_path.name.endswith("_test.rs")
-                or posix_path.name.endswith("_tests.rs")
-            )
-            and has_cfg_test_module_declaration(path, repository_root, visiting)
-        )
-    ):
+    if is_in_crate_target_directory(path, repository_root):
+        return True
+    if has_cfg_test_module_declaration(path, repository_root, visiting):
         return True
     # Exempt only the canonical feature-gated module root: `.../src/test_support.rs`
     # or `.../src/test_support/**`. The component immediately after `src` must be
@@ -813,51 +898,251 @@ def default_module_candidates(
     return module_dir / f"{name}.rs", module_dir / name / "mod.rs"
 
 
+def _attribute_string_value(attribute: str, key: str) -> str | None:
+    """The ``"..."`` value of a whole-word ``key = "..."`` inside one raw attribute."""
+    match = re.search(rf'(?<![A-Za-z0-9_]){key}\s*=\s*"([^"]*)"', attribute)
+    return match.group(1) if match else None
+
+
+def _matching_close(code: str, start: int, open_char: str, close_char: str) -> int | None:
+    depth = 0
+    for index in range(start, len(code)):
+        char = code[index]
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth = max(depth - 1, 0)
+            if depth == 0:
+                return index
+    return None
+
+
+def _inclusion_item(
+    macro: str, arguments: str, file_dir: pathlib.Path, module_dir: pathlib.Path
+) -> tuple | None:
+    """The edge one ``include!``-family call makes (``ratchet_support::inclusion_item``)."""
+    if len(arguments) >= 2 and arguments[0] == '"' and arguments[-1] == '"' and '"' not in arguments[1:-1]:
+        path = arguments[1:-1]
+        if macro == "include" or path.endswith(".rs"):
+            return ("inclusion", (file_dir / path,), f'`{macro}!("{path}")`')
+        return None
+    pieces = arguments.split('"')
+    last_literal = pieces[-2] if arguments.count('"') >= 2 else None
+    # The text after the last `.` of the last literal piece, when it is a file
+    # extension (`".md"` alone is one; `"../dir/"` names none).
+    extension = last_literal.rpartition(".")[2] if last_literal and "." in last_literal else ""
+    names_other_file = bool(extension) and "/" not in extension and extension != "rs"
+    if macro != "include" and names_other_file:
+        return None
+    return ("unresolvable", module_dir, f"`{macro}!({' '.join(arguments.split())})` is not a literal path")
+
+
+_MODULE_ITEMS: dict[tuple[pathlib.Path, tuple[str, ...], bool], tuple] = {}
+
+
+def module_items(
+    scan: "SourceScan", test_support_is_test: bool = True
+) -> tuple[
+    list[tuple[str, tuple[pathlib.Path, ...], bool]],
+    list[tuple[pathlib.Path, str, str]],
+]:
+    """Every module edge of one file: ``(declarations, unresolved)``.
+
+    One token walk over the lexed code (comments and strings blanked IN PLACE,
+    so an attribute's raw text is read back from the same offsets). Every
+    ``mod`` item counts, however many share a line. Attributes since the last
+    ``;`` / ``{`` / ``}`` gate the next item or the block it opens; a block
+    stack carries ``(test-only, module dir)``. Fail closed (GPT review of the
+    gate audit §9 sweep): a literal ``include!`` / ``include_str!`` of a ``.rs``
+    file and a ``#[path]`` inside ``cfg_attr`` are UNGATED declarations of their
+    target; an edge that cannot be resolved is recorded in ``unresolved`` as
+    ``(module dir, why, kind)`` and makes that module production. Same
+    algorithm as ``ratchet_support::module_items``.
+
+    ``declarations`` are ``(name, candidate files, gated)``, unresolvable
+    ``mod`` declarations included (``kind == "mod"`` in ``unresolved`` too, so
+    the full scan can still refuse them).
+    """
+    key = (scan.path, scan.lines, test_support_is_test)
+    cached = _MODULE_ITEMS.get(key)
+    if cached is not None:
+        return cached
+    code = "\n".join(scan.code)
+    raw = "\n".join(scan.lines)
+    root = root_module_directory(scan.path)
+    file_dir = scan.path.parent
+    declarations: list[tuple[str, tuple[pathlib.Path, ...], bool]] = []
+    unresolved: list[tuple[pathlib.Path, str, str]] = []
+    stack: list[tuple[bool, pathlib.Path]] = []
+    pending_test = False
+    pending_path: str | None = None
+    pending_cfg_attr_paths: list[str | None] = []
+    pending_inline: str | None = None
+
+    def is_ident(char: str) -> bool:
+        return char.isascii() and (char.isalnum() or char == "_")
+
+    def skip_ws(index: int) -> int:
+        while index < len(code) and code[index].isspace():
+            index += 1
+        return index
+
+    def read_ident(index: int) -> int:
+        while index < len(code) and is_ident(code[index]):
+            index += 1
+        return index
+
+    def path_candidates(module_dir: pathlib.Path, value: str) -> tuple[pathlib.Path, ...]:
+        directory = module_dir
+        if directory == root:
+            directory = file_dir
+        return (directory / value,)
+
+    def existing(candidates: tuple[pathlib.Path, ...]) -> bool:
+        return any(candidate.is_file() for candidate in candidates)
+
+    i = 0
+    while i < len(code):
+        top_test, top_dir = stack[-1] if stack else (False, root)
+        char = code[i]
+        if char == "#":
+            j = skip_ws(i + 1)
+            inner = j < len(code) and code[j] == "!"
+            if inner:
+                j = skip_ws(j + 1)
+            if j < len(code) and code[j] == "[":
+                end = _matching_close(code, j, "[", "]")
+                if end is None:
+                    break
+                if not inner:
+                    attribute = raw[i : end + 1]
+                    if attribute_is_test_only(" ".join(attribute.split()), test_support_is_test):
+                        pending_test = True
+                    body = attribute[1:].lstrip().lstrip("[").lstrip()
+                    if body.startswith("cfg_attr"):
+                        if re.search(r"(?<![A-Za-z0-9_])path(?![A-Za-z0-9_])", attribute):
+                            pending_cfg_attr_paths.append(_attribute_string_value(attribute, "path"))
+                    elif body.startswith("path"):
+                        pending_path = _attribute_string_value(attribute, "path")
+                i = end + 1
+                continue
+            i += 1
+            continue
+        if char == "{":
+            inline = pending_inline
+            pending_inline = None
+            if inline is not None:
+                directory = top_dir / inline
+                if pending_path is not None or pending_cfg_attr_paths:
+                    unresolved.append(
+                        (directory, f"`#[path]` on inline `mod {inline} {{ … }}`", "path")
+                    )
+            else:
+                directory = top_dir
+            stack.append((pending_test or top_test, directory))
+            pending_test, pending_path, pending_cfg_attr_paths = False, None, []
+            i += 1
+            continue
+        if char in "};":
+            if char == "}" and stack:
+                stack.pop()
+            pending_test, pending_path, pending_cfg_attr_paths = False, None, []
+            pending_inline = None
+            i += 1
+            continue
+        if not (char.isascii() and (char.isalpha() or char == "_")) or (i > 0 and is_ident(code[i - 1])):
+            i += 1
+            continue
+        end = read_ident(i)
+        ident = code[i:end]
+        if ident == "r" and end < len(code) and code[end] == "#":
+            i = read_ident(end + 1)
+            continue
+        if ident == "mod":
+            name_start = skip_ws(end)
+            name_end = read_ident(name_start)
+            after = skip_ws(name_end)
+            if name_end > name_start and after < len(code):
+                name = code[name_start:name_end]
+                if code[after] == ";":
+                    for value in pending_cfg_attr_paths:
+                        if value is None:
+                            unresolved.append(
+                                (top_dir, f"`cfg_attr` `path` on `mod {name};` has no literal value", "path")
+                            )
+                            continue
+                        candidates = path_candidates(top_dir, value)
+                        declarations.append((f'#[cfg_attr(path = "{value}")] mod {name}', candidates, False))
+                        if not existing(candidates):
+                            unresolved.append(
+                                (root, f'`#[cfg_attr(…, path = "{value}")] mod {name};` resolves to no file', "path")
+                            )
+                    if pending_path is not None:
+                        candidates = path_candidates(top_dir, pending_path)
+                    else:
+                        candidates = default_module_candidates(top_dir, name)
+                    declarations.append((name, candidates, pending_test or top_test))
+                    if not existing(candidates):
+                        unresolved.append((top_dir, f"`mod {name};` resolves to no file", "mod"))
+                    pending_test, pending_path, pending_cfg_attr_paths = False, None, []
+                    pending_inline = None
+                    i = after + 1
+                    continue
+                if code[after] == "{":
+                    pending_inline = name
+                    i = after
+                    continue
+            i = end
+            continue
+        if ident in ("include", "include_str", "include_bytes"):
+            bang = skip_ws(end)
+            if bang < len(code) and code[bang] == "!":
+                open_index = skip_ws(bang + 1)
+                pairs = {"(": ")", "[": "]", "{": "}"}
+                if open_index < len(code) and code[open_index] in pairs:
+                    close = _matching_close(code, open_index, code[open_index], pairs[code[open_index]])
+                    if close is not None:
+                        item = _inclusion_item(
+                            ident, raw[open_index + 1 : close].strip(), file_dir, top_dir
+                        )
+                        if item is not None and item[0] == "inclusion":
+                            declarations.append((item[2], item[1], False))
+                            if not existing(item[1]):
+                                unresolved.append((root, f"{item[2]} resolves to no file", "include"))
+                        elif item is not None:
+                            unresolved.append((item[1], item[2], "include"))
+                        i = close + 1
+                        continue
+        i = end
+    result = (declarations, unresolved)
+    _MODULE_ITEMS[key] = result
+    return result
+
+
+def unresolved_module_edges(scan: "SourceScan") -> list[str]:
+    """Why each edge of ``scan`` that could not be resolved was given up on."""
+    return [why for _directory, why, _kind in module_items(scan, False)[1]]
+
+
+def _is_poisoned(target: pathlib.Path, declaring: pathlib.Path, unresolved) -> bool:
+    return any(
+        target == declaring or directory == target or directory in target.parents
+        for directory, _why, _kind in unresolved
+    )
+
+
 def module_declarations(
     scan: SourceScan,
-    test_contexts: tuple[bool, ...] | list[bool] | None = None,
+    test_support_is_test: bool = True,
 ) -> list[tuple[str, tuple[pathlib.Path, ...], bool]]:
-    """Every out-of-line ``mod name;`` in ``scan``: name, candidate files, test context.
+    """Every module edge in ``scan``: name, candidate files, test-only gated.
 
-    Matches lexed code, so commented-out or string-embedded declarations are
-    not modules. ``test_contexts`` overrides the scan's own (loose) contexts.
+    ``module_items``' declarations: every out-of-line ``mod name;`` on any
+    line, plus the ungated edges of literal ``include!``-family calls and of
+    ``#[cfg_attr(…, path = "…")]``. Matches lexed code, so commented-out or
+    string-embedded declarations are not modules.
     """
-    pending_path: str | None = None
-    pending_path_directory: pathlib.Path | None = None
-    declarations: list[tuple[str, tuple[pathlib.Path, ...], bool]] = []
-
-    for raw, code, local_test_context, module_dir in zip(
-        scan.lines,
-        scan.code,
-        scan.test_contexts if test_contexts is None else test_contexts,
-        scan.module_directories,
-    ):
-        path_attr = PATH_ATTR_PATTERN.match(raw)
-        if path_attr and code.lstrip().startswith("#["):
-            pending_path = path_attr.group(1)
-            pending_path_directory = module_dir
-            continue
-
-        module = OUT_OF_LINE_MOD_PATTERN.match(code)
-        if module:
-            if pending_path is not None:
-                path_directory = pending_path_directory or module_dir
-                if path_directory == root_module_directory(scan.path):
-                    path_directory = scan.path.parent
-                candidates: tuple[pathlib.Path, ...] = (path_directory / pending_path,)
-            else:
-                candidates = default_module_candidates(module_dir, module.group(1))
-            declarations.append((module.group(1), candidates, local_test_context))
-            pending_path = None
-            pending_path_directory = None
-            continue
-
-        stripped = code.strip()
-        if stripped and not stripped.startswith("#["):
-            pending_path = None
-            pending_path_directory = None
-
-    return declarations
+    return module_items(scan, test_support_is_test)[0]
 
 
 def module_edges(
@@ -865,19 +1150,29 @@ def module_edges(
     inherited_test_only: bool,
 ) -> list[tuple[pathlib.Path, bool]]:
     edges: list[tuple[pathlib.Path, bool]] = []
-    for name, candidates, local_test_context in module_declarations(scan):
+    declarations, unresolved = module_items(scan)
+    for name, candidates, local_test_context in declarations:
         for candidate in candidates:
             if candidate.is_file():
+                resolved = candidate.resolve()
                 edges.append(
                     (
-                        candidate.resolve(),
-                        inherited_test_only
-                        or local_test_context
-                        or is_test_only_path(candidate.as_posix()),
+                        resolved,
+                        # An edge into a module the resolver gave up on is
+                        # production, whatever gates it (fail closed).
+                        not _is_poisoned(resolved, scan.path, unresolved)
+                        and (
+                            inherited_test_only
+                            or local_test_context
+                            or is_test_only_path(candidate.as_posix())
+                        ),
                     )
                 )
                 break
         else:
+            if not name.isidentifier():
+                # An inclusion with no file is already recorded as unresolved.
+                continue
             raise RuntimeError(
                 f"{scan.path}: could not resolve `mod {name};`; "
                 f"tried {[str(candidate) for candidate in candidates]}"
@@ -1310,8 +1605,17 @@ class CheckNoPanicsTests(unittest.TestCase):
                 self.assertEqual(contexts[2], expected)
 
     def test_test_only_path_detection(self) -> None:
-        self.assertTrue(is_test_only_path("src/channels/web/tests/multi_tenant.rs"))
-        self.assertTrue(is_test_only_path("crates/foo/src/tests/helpers.rs"))
+        # A `src/**/tests/` directory is NOT test-only by directory (gate audit
+        # §9 residual 1); with no gated declaration the file ships. The
+        # declaration-based halves are `test_src_tests_directory_*` below.
+        self.assertFalse(is_test_only_path("src/channels/web/tests/multi_tenant.rs"))
+        self.assertFalse(is_test_only_path("crates/foo/src/tests/helpers.rs"))
+        # A crate-level `tests/` beside a real `Cargo.toml` is a cargo target.
+        self.assertTrue(
+            is_test_only_path(
+                "crates/app/ironclaw_architecture_tests/tests/reborn_crate_inventory.rs"
+            )
+        )
         self.assertFalse(is_test_only_path("crates/foo/src/tests.rs"))
         self.assertFalse(is_test_only_path("crates/foo/src/nested/tests.rs"))
         self.assertFalse(is_test_only_path("crates/foo/src/auth_test.rs"))
@@ -1415,6 +1719,60 @@ class CheckNoPanicsTests(unittest.TestCase):
                 "src/sub/probe_tests.rs",
                 True,
             ),
+            # §9 residual 2: attribute and item on one line.
+            "single-line gate": (
+                {"src/lib.rs": "#[cfg(test)] mod probe_tests;\n"},
+                "src/probe_tests.rs",
+                True,
+            ),
+            "single-line stacked gate": (
+                {"src/lib.rs": "#[allow(dead_code)] #[cfg(all(test, unix))] pub(crate) mod probe_tests;\n"},
+                "src/probe_tests.rs",
+                True,
+            ),
+            "single-line gated inline parent": (
+                {"src/lib.rs": "#[cfg(test)] mod sub {\n    mod probe_tests;\n}\n"},
+                "src/sub/probe_tests.rs",
+                True,
+            ),
+            "single-line release cfg": (
+                {"src/lib.rs": "#[cfg(not(test))] mod probe_tests;\n"},
+                "src/probe_tests.rs",
+                False,
+            ),
+            "single-line non-cfg attribute": (
+                {"src/lib.rs": "#[allow(dead_code)] mod probe_tests;\n"},
+                "src/probe_tests.rs",
+                False,
+            ),
+            # One rule for every file: the name never decides.
+            "gated production-named file": (
+                {"src/lib.rs": "#[cfg(test)]\nmod helpers;\n"},
+                "src/helpers.rs",
+                True,
+            ),
+            "ungated production-named file": (
+                {"src/lib.rs": "pub mod helpers;\n"},
+                "src/helpers.rs",
+                False,
+            ),
+            # §9 residual 1: a `src/**/tests/` module directory.
+            "gated tests directory module": (
+                {
+                    "src/lib.rs": "#[cfg(test)]\nmod tests;\n",
+                    "src/tests/mod.rs": "mod helpers;\n",
+                },
+                "src/tests/helpers.rs",
+                True,
+            ),
+            "ungated tests directory module": (
+                {
+                    "src/lib.rs": "pub mod tests;\n",
+                    "src/tests/mod.rs": "pub mod helpers;\n",
+                },
+                "src/tests/helpers.rs",
+                False,
+            ),
         }
         for name, (files, target, expected) in cases.items():
             with self.subTest(name), tempfile.TemporaryDirectory(dir=REPO_ROOT) as directory:
@@ -1431,6 +1789,70 @@ class CheckNoPanicsTests(unittest.TestCase):
                     expected,
                 )
 
+    # Mirrors `unprovable_module_edges_fail_closed` in
+    # crates/app/ironclaw_architecture_tests/tests/reborn_ratchet_support_scanners.rs.
+    UNPROVABLE_LIB = (
+        "#[cfg(test)]\nmod hidden;\nmod first; mod hidden;\n"
+        "#[cfg(test)] mod gated_a; pub mod shipped_b; #[cfg(test)] mod gated_c;\n"
+        '#[cfg(test)]\nmod included;\ninclude!("included.rs");\n'
+        "#[cfg(test)]\nmod read_as_text;\n"
+        '#[cfg(test)]\nmod t {\n    const SRC: &str = include_str!("read_as_text.rs");\n}\n'
+        "#[cfg(test)]\nmod swapped;\n"
+        '#[cfg_attr(not(test), path = "swapped.rs")]\nmod real;\n'
+        "pub mod generated;\n"
+        'const PROMPT: &[u8] = include_bytes!(concat!("prompts/", "op", ".md"));\n'
+    )
+    UNPROVABLE_FILES = {
+        "src/lib.rs": UNPROVABLE_LIB,
+        "src/generated.rs": 'include!(concat!(env!("OUT_DIR"), "/gen.rs"));\n'
+        "#[cfg(test)]\nmod helper;\n",
+        **{
+            f"src/{name}.rs": "pub fn f() {}\n"
+            for name in (
+                "hidden", "first", "gated_a", "shipped_b", "gated_c", "included",
+                "read_as_text", "swapped", "real",
+            )
+        },
+        "src/generated/helper.rs": "pub fn f() {}\n",
+    }
+    UNPROVABLE_SHIPPED = (
+        "hidden", "first", "shipped_b", "included", "read_as_text", "swapped",
+        "real", "generated", "generated/helper",
+    )
+
+    def test_unprovable_module_edges_fail_closed(self) -> None:
+        # GPT review of the §9 sweep: every `mod` item on a line, `include!` /
+        # `include_str!` of a `.rs` file, and `#[path]` inside `cfg_attr` are
+        # production edges; an edge the resolver cannot resolve makes the
+        # containing module production, with the reason recorded.
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as directory:
+            root = pathlib.Path(directory)
+            for relative, text in self.UNPROVABLE_FILES.items():
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative).write_text(text, encoding="utf-8")
+            for name in self.UNPROVABLE_SHIPPED:
+                with self.subTest(shipped=name):
+                    self.assertFalse(
+                        _is_test_only_path(f"src/{name}.rs", root, frozenset())
+                    )
+            for name in ("gated_a", "gated_c"):
+                with self.subTest(gated=name):
+                    self.assertTrue(_is_test_only_path(f"src/{name}.rs", root, frozenset()))
+            unresolved = unresolved_module_edges(RustScanner().scan(root / "src/generated.rs"))
+            self.assertEqual(len(unresolved), 1, unresolved)
+            # A non-literal inclusion of a known non-Rust file is no edge.
+            self.assertEqual(unresolved_module_edges(RustScanner().scan(root / "src/lib.rs")), [])
+            self.assertIn("include!", unresolved[0])
+
+            # Through the full-scan caller: the same edges are production.
+            production, tests = discover_reachable_rust_files([root / "src/lib.rs"])
+            for name in ("hidden", "first", "shipped_b", "included", "swapped", "real", "generated"):
+                with self.subTest(reachable=name):
+                    self.assertIn((root / f"src/{name}.rs").resolve(), production)
+            self.assertIn((root / "src/generated/helper.rs").resolve(), production)
+            self.assertIn((root / "src/gated_a.rs").resolve(), tests)
+            self.assertIn((root / "src/gated_c.rs").resolve(), tests)
+
     def test_cfg_path_declaration_walks_ancestor_modules(self) -> None:
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as directory:
             root = pathlib.Path(directory)
@@ -1444,6 +1866,10 @@ class CheckNoPanicsTests(unittest.TestCase):
             )
 
             target = root / "src/outer/inner/fixture_tests.rs"
+            # The declared file exists, as it must for the crate to build;
+            # a declaration that resolves to no file is unresolvable and
+            # fails closed.
+            target.write_text("pub fn f() {}\n", encoding="utf-8")
             self.assertTrue(
                 has_cfg_test_module_declaration(target.as_posix(), root)
             )
@@ -1462,6 +1888,10 @@ class CheckNoPanicsTests(unittest.TestCase):
             )
 
             target = root / "src/with_attrs/tests.rs"
+            # The declared file exists, as it must for the crate to build;
+            # a declaration that resolves to no file is unresolvable and
+            # fails closed.
+            target.write_text("pub fn f() {}\n", encoding="utf-8")
             self.assertTrue(
                 has_cfg_test_module_declaration(target.as_posix(), root)
             )
@@ -1695,6 +2125,27 @@ class CheckNoPanicsTests(unittest.TestCase):
             self.assertIn(child, production)
             self.assertNotIn(shared, tests)
             self.assertNotIn(child, tests)
+
+    def test_tests_directory_and_single_line_gate_in_reachability(self) -> None:
+        # Gate audit §9 residuals 1 and 2, through the full-scan caller: an
+        # ungated `pub mod tests;` directory module ships (its panic is
+        # production), while a one-line `#[cfg(test)] mod x;` is test-only.
+        with tempfile.TemporaryDirectory() as directory:
+            source_root = pathlib.Path(directory)
+            (source_root / "lib.rs").write_text(
+                "pub mod tests;\n#[cfg(test)] mod gated;\n", encoding="utf-8"
+            )
+            (source_root / "tests").mkdir()
+            (source_root / "tests" / "mod.rs").write_text(
+                'pub fn shipped() { panic!("ships"); }\n', encoding="utf-8"
+            )
+            (source_root / "gated.rs").write_text(
+                'fn fixture() { panic!("test-only"); }\n', encoding="utf-8"
+            )
+            production, tests = discover_reachable_rust_files([source_root / "lib.rs"])
+            self.assertIn((source_root / "tests" / "mod.rs").resolve(), production)
+            self.assertIn((source_root / "gated.rs").resolve(), tests)
+            self.assertNotIn((source_root / "gated.rs").resolve(), production)
 
     def test_pure_rename_contributes_no_added_lines(self) -> None:
         """A relocated file must not read as wholly new.

@@ -67,9 +67,14 @@ const WS0_MEASURED_FROM: &str = "origin/main @ ae0989c37 (2026-07-30)";
 /// 653 bp** (it read 43936 / 667978 = 658 bp under the old whole-file rule).
 /// A record must be measured by the rule the gate enforces, or the
 /// comparisons below compare two different quantities.
-const WS0_COMPOSITION_SRC_LOC: usize = 29_858;
-const WS0_COMPOSITION_DENOMINATOR_LOC: usize = 457_082;
-const WS0_COMPOSITION_SHARE_BP: usize = 653;
+///
+/// ✎ **Re-expressed 2026-11-17** (gate audit 2026-08 §9): the counter now
+/// classifies every file by its module declarations, not only test-NAMED ones,
+/// and a `src/**/tests/` directory by declaration rather than by name. The same
+/// `ae0989c37` tree, re-measured with it, reads **29331 / 456262 = 642 bp**.
+const WS0_COMPOSITION_SRC_LOC: usize = 29_331;
+const WS0_COMPOSITION_DENOMINATOR_LOC: usize = 456_262;
+const WS0_COMPOSITION_SHARE_BP: usize = 642;
 
 /// Composition's **absolute** production LOC on `origin/main` @ `676d86ce02`
 /// (2026-08-04), from the same `--print` run: "composition absolute: 44021 LOC
@@ -250,14 +255,20 @@ const WS0_COMPOSITION_SHARE_BP: usize = 653;
 /// ✎ Re-measured 33_969 -> 34_002 on 2026-11-14 (review round 4): the
 /// settings providers' fail-closed override lookup and explicit-vs-inherited
 /// Full access; per-item breakdown in the manifest.
-const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 34_002;
+/// ✎ Re-measured 34_002 -> 33_502 on 2026-11-17 (gate audit 2026-08 §9): no
+/// code moved; the counter stopped counting two production-NAMED files that
+/// only `#[cfg(test)]` declarations reach (-488) and the record drops the 12
+/// lines of slack it carried; per-file breakdown in the manifest.
+const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 33_502;
 
 /// Composition dispatch, from the same `--print` run: "composition dispatch:
 /// 827 Arc<dyn> (governed prod, excl slack/extension_host)".
 ///
 /// ✎ Re-expressed 827 -> 618 on 2026-11-11: the WS0 tree re-measured with the
 /// new counter, which counts `Arc<dyn` in lexed production code only.
-const WS0_COMPOSITION_ARC_DYN_SITES: usize = 618;
+/// ✎ Re-expressed 618 -> 616 on 2026-11-17: the same tree under the
+/// every-file declaration rule (gate audit 2026-08 §9).
+const WS0_COMPOSITION_ARC_DYN_SITES: usize = 616;
 
 /// Integration-coverage floor, read from `tests/integration/coverage-floor.toml`
 /// `[global].floor_percent` at the WS0 commit (captured there from PR #6886's
