@@ -376,12 +376,24 @@ pub fn tab_bar<T: Copy + PartialEq + 'static>(
     let labels: Vec<&str> = tabs.iter().map(|(_, l)| *l).collect();
     let values: Vec<T> = tabs.iter().map(|(t, _)| *t).collect();
     let selected = values.iter().position(|t| *t == current).unwrap_or(0);
-    segmented(k, &labels, selected, false, move |s, ix, _| {
-        if let Some(t) = values.get(ix) {
-            on_pick(s, *t);
-        }
-    })
-    .key(key.to_string())
+    // Equal segments at the widest label's width while the page has room,
+    // sharing the column's width when it does not (a narrow window, a large
+    // UI font): the bar never runs off the page.
+    let seg = SegmentedControl::new(&labels, Some(selected))
+        .width(None)
+        .on_pick(move |s: &mut State, ix, _: &mut Tx| {
+            if let Some(t) = values.get(ix) {
+                on_pick(s, *t);
+            }
+        })
+        .build(k);
+    let widest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
+    let natural = labels.len() as f32 * (widest * 7.4 + 28.) * crate::design::styles::type_scale();
+    el().key(key.to_string())
+        .w_full()
+        .max_w(natural)
+        .min_w(0.)
+        .child(seg)
 }
 
 /// An icon at `size` in `color`.

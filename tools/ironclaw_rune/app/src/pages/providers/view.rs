@@ -21,7 +21,7 @@ use crate::state::State;
 const LOGO: f32 = 22.;
 const TILE_LOGO: f32 = 20.;
 
-pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
+pub fn page(s: &State, cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let ps = &s.pages.providers;
     let actions = vec![
@@ -63,8 +63,8 @@ pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     body = body
         .child(section_title(p, "Add a provider", 24.))
         .child(render_tabs(s, k))
-        .child(col().w_full().pt(12.).child(match ps.tab {
-            Tab::Accounts => render_accounts(s, k),
+        .child(col().key(ADD_KEY).w_full().pt(12.).child(match ps.tab {
+            Tab::Accounts => render_accounts(s, k, tile_columns(cx)),
             Tab::Cli => render_cli(s, k),
         }));
     page_body("providers-page", body)
@@ -151,6 +151,10 @@ fn render_task_models(s: &State, k: &Kit) -> El {
     }
     card
 }
+
+/// The narrowest a connected provider's logo and name get before its
+/// status and actions wrap below them, at the 16 pt UI font.
+const IDENTITY_MIN: f32 = 200.;
 
 fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
     let p = &s.palette;
@@ -244,34 +248,45 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
         );
     }
 
+    // The name keeps at least IDENTITY_MIN; when the status and actions do
+    // not fit beside it (a narrow window, a large UI font) they wrap under
+    // it instead of drawing over the name.
+    let identity = row()
+        .w(0.)
+        .grow(1.)
+        .min_w(IDENTITY_MIN * crate::design::styles::type_scale())
+        .gap(12.)
+        .center_y()
+        .child(provider_logo(
+            s,
+            &[pv.id.as_str(), pv.adapter.as_str()],
+            LOGO,
+        ))
+        .child(
+            col()
+                .grow(1.)
+                .min_w(0.)
+                .child(
+                    text(display_name(&pv.id))
+                        .font(body_semibold())
+                        .color(p.text)
+                        .truncate(),
+                )
+                .child(
+                    text(pv.description.clone())
+                        .font(xs())
+                        .color(p.text_muted)
+                        .truncate(),
+                ),
+        );
     let mut card = card(p).key(format!("provider-{}", pv.id)).child(
         row()
             .w_full()
+            .flex_wrap()
             .gap(12.)
             .center_y()
-            .child(provider_logo(
-                s,
-                &[pv.id.as_str(), pv.adapter.as_str()],
-                LOGO,
-            ))
-            .child(
-                col()
-                    .grow(1.)
-                    .min_w(0.)
-                    .child(
-                        text(display_name(&pv.id))
-                            .font(body_semibold())
-                            .color(p.text),
-                    )
-                    .child(
-                        text(pv.description.clone())
-                            .font(xs())
-                            .color(p.text_muted)
-                            .truncate(),
-                    ),
-            )
-            .child(status)
-            .child(actions),
+            .child(identity)
+            .child(row().gap(8.).center_y().child(status).child(actions)),
     );
 
     if let Some(models) = ps.models.get(&pv.id) {
@@ -503,8 +518,10 @@ fn render_quick_switch(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
 
 fn render_tabs(s: &State, k: &Kit) -> El {
     let ps = &s.pages.providers;
+    // The search wraps under the tabs when the page is too narrow for both.
     row()
         .w_full()
+        .flex_wrap()
         .gap(8.)
         .center_y()
         .child(crate::pages::common::tab_bar(
@@ -589,7 +606,24 @@ fn matches(query: &str, pv: &LlmProviderView) -> bool {
         || pv.description.to_lowercase().contains(query)
 }
 
-fn render_accounts(s: &State, k: &Kit) -> El {
+/// The "Add a provider" column, whose last layout picks the tile columns.
+const ADD_KEY: &str = "providers-add";
+/// The narrowest a provider tile gets before the grid drops a column, at
+/// the 16 pt UI font (scaled with it).
+const TILE_MIN: f32 = 200.;
+const TILE_GAP: f32 = 8.;
+
+/// One to three tile columns, as many as fit at [`TILE_MIN`] in the width
+/// the column had last frame (three before the first layout).
+fn tile_columns(cx: &Cx<State>) -> usize {
+    let Some(width) = cx.window_layout(ADD_KEY).map(|r| r[2]) else {
+        return 3;
+    };
+    let min = TILE_MIN * crate::design::styles::type_scale();
+    (((width + TILE_GAP) / (min + TILE_GAP)).floor() as usize).clamp(1, 3)
+}
+
+fn render_accounts(s: &State, k: &Kit, columns: usize) -> El {
     let p = &s.palette;
     let ps = &s.pages.providers;
     let Some(llm) = ps.llm.as_ref() else {
@@ -624,10 +658,15 @@ fn render_accounts(s: &State, k: &Kit) -> El {
                     .font(xs_medium())
                     .color(p.text_muted),
                 )
-                // Three equal columns that fill the page's width, so
-                // names and descriptions get the room instead of a ragged
-                // right edge.
-                .child(el().w_full().equal_columns(3).gap(8.).children(tiles)),
+                // Equal columns that fill the page's width (as many as
+                // fit, see `tile_columns`), so names and descriptions get
+                // the room instead of a ragged right edge.
+                .child(
+                    el().w_full()
+                        .equal_columns(columns)
+                        .gap(TILE_GAP)
+                        .children(tiles),
+                ),
         );
     }
     let mut c = col().w_full().gap(16.);
