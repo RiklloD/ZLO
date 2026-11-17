@@ -207,13 +207,12 @@ pub trait RootFilesystem: Send + Sync {
     /// [`FilesystemError::VersionMismatch`]. Default impl is `Unsupported`,
     /// same as [`put`](Self::put): backends opt in natively.
     ///
-    /// Version tokens are not generation-stable: a path's version restarts at
-    /// 1 on a fresh put after a prior delete. An `expected_version` captured
-    /// before a delete+recreate cycle can match a different incarnation of
-    /// the same path (ABA). This method is a sound standalone precondition
-    /// only for paths that are never recreated; callers that do recreate
-    /// paths must pair every successful delete with an unconditional
-    /// postcondition recheck.
+    /// Version tokens never repeat for a path, across delete + recreate
+    /// included (CONTRACT.md invariant 9): a recreated record starts above the
+    /// highest version any deleted incarnation held, so an `expected_version`
+    /// captured before a delete+recreate cycle never matches the new
+    /// incarnation. (Paths deleted before the version-floor migration may
+    /// restart once; see the invariant.)
     ///
     /// Takes a bare [`RecordVersion`] rather than [`put`](Self::put)'s
     /// [`CasExpectation`]: `Absent`/`Any` are meaningless preconditions for a

@@ -185,6 +185,45 @@ boundary. The current rule is codified in
    persistence behavior must keep the scope keys in the path, not
    exclusively in `Entry::indexed`.
 
+9. **Versions never repeat for a path (2026-11-17).** A `RecordVersion`
+   is the CAS token, so it must never return to a value a path already
+   held — across delete + recreate included, or a token captured against a
+   deleted incarnation authorizes a CAS write or a `delete_if_version`
+   against the new one (ABA). Every delete keeps the removed record's
+   version as the path's high-water mark — `InMemoryBackend`'s
+   `version_floors`, the `root_filesystem_version_floors` table on libSQL
+   and PostgreSQL (`migrations/V35__root_filesystem_version_floors.sql`) —
+   written in the same transaction (libSQL) or the same statement
+   (PostgreSQL) as the delete; every create (`put` `Absent`/`Any`,
+   `create_subtree_atomic`, `write_file`, `append_file`) starts above it.
+   Marks are never removed (a recreated path keeps raising its own), in
+   keeping with "LLM data is never deleted". Values stay opaque: compare
+   them only for equality; a never-deleted path still starts at the first
+   version. Backends without record versions (`DiskFilesystem`, always 0,
+   no `Version` CAS) are outside this invariant; `HsmBackend` inherits its
+   inner backend's. Gate: `versions_never_repeat_across_delete_and_recreate_contract`
+   in `tests/db_root_filesystem_contract.rs`, on all three backends.
+
+   *PostgreSQL concurrency:* writers there are concurrent under READ
+   COMMITTED, and a create's version is computed from its statement
+   snapshot. It therefore starts above both the mark and any row the
+   snapshot still sees, which covers a create racing a single concurrent
+   delete of the same path (the snapshot still sees the row being deleted).
+   The residual is a create statement during which two *other* transactions
+   both write and then delete the same path; that needs three concurrent
+   writers on one path and is not closed by this invariant. In-memory
+   (one mutex) and libSQL (one writer lane) serialize writers, so they have
+   no such window.
+
+   *Compatibility / rollback:* the floors table is additive (created by the
+   ordinary migration run; no existing row changes; old binaries ignore
+   it). A path deleted *before* the upgrade has no mark, so its first
+   recreate after the upgrade may restart at version 1 once — exactly the
+   pre-upgrade behaviour, reachable only with a token captured before the
+   upgrade against a record already deleted then; every delete after the
+   upgrade records its mark. Rolling back is leaving the table (unused) or
+   dropping it, which returns recreates to restarting at 1.
+
 ## Legacy bytes plane (transitional)
 
 `read_file` / `write_file` / `append_file` / `list_dir` / `list_dir_page` / `stat` /

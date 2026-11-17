@@ -819,7 +819,13 @@ impl RootFilesystem for PostgresRootFilesystem {
             r#"
                 INSERT INTO root_filesystem_entries
                     (path, contents, is_dir, content_type, kind, indexed, version)
-                VALUES ($1, $2, FALSE, 'application/octet-stream', NULL, '{}'::jsonb, 1)
+                VALUES ($1, $2, FALSE, 'application/octet-stream', NULL, '{}'::jsonb,
+                    (SELECT GREATEST(
+        COALESCE((SELECT floor.version FROM root_filesystem_version_floors AS floor
+                  WHERE floor.path = $1), 0),
+        COALESCE((SELECT live.version FROM root_filesystem_entries AS live
+                  WHERE live.path = $1), 0)
+    ) + 1))
                 ON CONFLICT (path) DO UPDATE SET
                     contents = EXCLUDED.contents,
                     is_dir = FALSE,
@@ -863,7 +869,13 @@ impl RootFilesystem for PostgresRootFilesystem {
             r#"
                 INSERT INTO root_filesystem_entries
                     (path, contents, is_dir, content_type, kind, indexed, version)
-                VALUES ($1, $2, FALSE, 'application/octet-stream', NULL, '{}'::jsonb, 1)
+                VALUES ($1, $2, FALSE, 'application/octet-stream', NULL, '{}'::jsonb,
+                    (SELECT GREATEST(
+        COALESCE((SELECT floor.version FROM root_filesystem_version_floors AS floor
+                  WHERE floor.path = $1), 0),
+        COALESCE((SELECT live.version FROM root_filesystem_entries AS live
+                  WHERE live.path = $1), 0)
+    ) + 1))
                 ON CONFLICT (path) DO UPDATE SET
                     contents = root_filesystem_entries.contents || EXCLUDED.contents,
                     is_dir = FALSE,
@@ -1704,8 +1716,8 @@ async fn postgres_create_subtree_with_transaction(
         let body = item.entry.body;
         let path = item.path.as_str();
         let (child_lower, child_upper) = descendant_path_range(&item.path);
-        let rows = transaction
-            .execute(
+        let row = transaction
+            .query_opt(
                 PUT_ABSENT_SQL,
                 &[
                     &path,
@@ -1725,14 +1737,17 @@ async fn postgres_create_subtree_with_transaction(
                     error,
                 )
             })?;
-        if rows == 0 {
+        let Some(row) = row else {
             return Err(FilesystemError::VersionMismatch {
                 path: item.path,
                 expected: None,
                 found: None,
             });
-        }
-        versions.push(RecordVersion::from_backend(1));
+        };
+        versions.push(record_version_from_i64(
+            &item.path,
+            row.get::<_, i64>("version"),
+        )?);
     }
     Ok(versions)
 }
@@ -1743,13 +1758,19 @@ async fn postgres_create_subtree_with_transaction(
 const PUT_ABSENT_SQL: &str = r#"
     INSERT INTO root_filesystem_entries
         (path, contents, is_dir, content_type, kind, indexed, version)
-    SELECT $1, $2, FALSE, $3, $4, $5, 1
+    SELECT $1, $2, FALSE, $3, $4, $5, (SELECT GREATEST(
+        COALESCE((SELECT floor.version FROM root_filesystem_version_floors AS floor
+                  WHERE floor.path = $1), 0),
+        COALESCE((SELECT live.version FROM root_filesystem_entries AS live
+                  WHERE live.path = $1), 0)
+    ) + 1)
     WHERE NOT EXISTS (
         SELECT 1 FROM root_filesystem_entries
         WHERE path >= $6 AND path < $7
         LIMIT 1
     )
     ON CONFLICT (path) DO NOTHING
+    RETURNING version
     "#;
 
 /// `CasExpectation::Version` put: update the file row at the expected version,
@@ -1777,7 +1798,12 @@ const PUT_VERSION_SQL: &str = r#"
 const PUT_ANY_SQL: &str = r#"
     INSERT INTO root_filesystem_entries
         (path, contents, is_dir, content_type, kind, indexed, version)
-    SELECT $1, $2, FALSE, $3, $4, $5, 1
+    SELECT $1, $2, FALSE, $3, $4, $5, (SELECT GREATEST(
+        COALESCE((SELECT floor.version FROM root_filesystem_version_floors AS floor
+                  WHERE floor.path = $1), 0),
+        COALESCE((SELECT live.version FROM root_filesystem_entries AS live
+                  WHERE live.path = $1), 0)
+    ) + 1)
     WHERE NOT EXISTS (
         SELECT 1 FROM root_filesystem_entries
         WHERE path >= $6 AND path < $7
@@ -1835,7 +1861,7 @@ async fn postgres_put_with_client(
             // half-open range excludes `path` itself, so it never sees the row
             // being inserted. ON CONFLICT DO NOTHING also yields 0 rows when an
             // explicit directory already occupies `path` — disambiguated below.
-            let rows = cached_execute(
+            let row = cached_query_opt(
                 client,
                 PUT_ABSENT_SQL,
                 &[
@@ -1850,10 +1876,10 @@ async fn postgres_put_with_client(
             )
             .await
             .map_err(|error| db_error(path.clone(), FilesystemOperation::WriteFile, error))?;
-            if rows == 0 {
+            let Some(row) = row else {
                 return Err(diagnose_put_failure(client, path, None).await?);
-            }
-            Ok(RecordVersion::from_backend(1))
+            };
+            record_version_from_i64(path, row.get::<_, i64>("version"))
         }
         CasExpectation::Version(expected) => {
             let expected_raw = record_version_to_i64(path, expected)?;
@@ -2060,18 +2086,37 @@ async fn postgres_stat_with_client(
         sensitive: false,
     })
 }
+const DELETE_SUBTREE_KEEPING_VERSION_FLOORS_SQL: &str = r#"
+    WITH removed AS (
+        DELETE FROM root_filesystem_entries
+        WHERE path = $1 OR (path >= $2 AND path < $3)
+        RETURNING path, version, is_dir
+    ),
+    floored AS (
+        INSERT INTO root_filesystem_version_floors (path, version)
+        SELECT path, version FROM removed WHERE NOT is_dir
+        ON CONFLICT (path) DO UPDATE
+            SET version = GREATEST(root_filesystem_version_floors.version, EXCLUDED.version)
+        RETURNING 1
+    )
+    SELECT COUNT(*) AS deleted FROM removed
+    "#;
+
 async fn postgres_delete_with_client(
     client: &deadpool_postgres::Object,
     path: &VirtualPath,
 ) -> Result<(), FilesystemError> {
     let (prefix_lower, prefix_upper) = descendant_path_range(path);
-    let deleted = cached_execute(
+    // One statement: the removed records' versions become their paths'
+    // high-water marks atomically with the delete (CONTRACT.md invariant 9).
+    let deleted: i64 = cached_query_opt(
         client,
-        "DELETE FROM root_filesystem_entries WHERE path = $1 OR (path >= $2 AND path < $3)",
+        DELETE_SUBTREE_KEEPING_VERSION_FLOORS_SQL,
         &[&path.as_str(), &prefix_lower, &prefix_upper],
     )
     .await
-    .map_err(|error| db_error(path.clone(), FilesystemOperation::Delete, error))?;
+    .map_err(|error| db_error(path.clone(), FilesystemOperation::Delete, error))?
+    .map_or(0, |row| row.get::<_, i64>("deleted"));
     if deleted == 0 {
         return Err(not_found(path.clone(), FilesystemOperation::Delete));
     }
@@ -2116,7 +2161,9 @@ async fn postgres_delete_with_client(
 /// `SELECT ... FOR UPDATE` can follow a concurrent delete+recreate to the
 /// new path row after waiting. Comparing the current row's `created_at` with
 /// the initial candidate prevents the DELETE from removing that replacement,
-/// even when its per-incarnation version restarted at the expected value. The
+/// even if a replacement's version ever equalled the expected value (paths
+/// deleted before the version-floor migration can restart once; invariant
+/// 9 otherwise keeps versions from repeating). The
 /// Rust classifier then treats "expected row was deleted and a later
 /// incarnation now exists" as NotFound, while still reporting
 /// VersionMismatch for ordinary updates that preserve `created_at`. This
@@ -2172,7 +2219,14 @@ const DELETE_IF_VERSION_ATOMIC_SQL: &str = r#"
               WHERE candidate_version = $2
                 AND candidate_created_at IS NOT DISTINCT FROM created_at
           )
-        RETURNING TRUE AS ok
+        RETURNING path, version
+    ),
+    floored AS (
+        INSERT INTO root_filesystem_version_floors (path, version)
+        SELECT path, version FROM deleted
+        ON CONFLICT (path) DO UPDATE
+            SET version = GREATEST(root_filesystem_version_floors.version, EXCLUDED.version)
+        RETURNING 1
     )
     SELECT
         EXISTS (SELECT 1 FROM deleted) AS was_deleted,
@@ -2741,6 +2795,8 @@ const POSTGRES_ROOT_FILESYSTEM_SCHEMA: &str = concat!(
     include_str!("../migrations/V33__root_filesystem_ordered_index_rows.sql"),
     "\n",
     include_str!("../migrations/V34__root_filesystem_ordered_index_path_collation.sql"),
+    "\n",
+    include_str!("../migrations/V35__root_filesystem_version_floors.sql"),
 );
 
 #[cfg(test)]

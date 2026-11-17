@@ -554,7 +554,7 @@ Rules:
 - requires `delete` permission at the `ScopedFilesystem` layer, same as `delete`
 - backends without CAS-delete support return `Unsupported` by default — fail-closed, never a silent unconditional delete
 
-**ABA caller invariant.** Version tokens are not generation-stable: a path's version restarts at 1 on a fresh `put` after a prior delete, so a token captured before a delete+recreate cycle can match a different incarnation of the same path (ABA). `delete_if_version` is a sound standalone precondition only for paths that are never recreated; callers that recreate paths must pair every successful delete with an unconditional postcondition recheck.
+**Version tokens never repeat for a path (2026-11-17).** A record's version strictly increases for its path across delete + recreate: every delete keeps the removed record's version as the path's high-water mark (in-memory map; libSQL/PostgreSQL `root_filesystem_version_floors`, written in the same transaction/statement as the delete), and every create starts above it. A token captured before a delete+recreate cycle therefore never authorizes a CAS `put` or a `delete_if_version` against a later incarnation. Values stay opaque and are compared only for equality; a never-deleted path still starts at the first version. Pinned on every backend by `versions_never_repeat_across_delete_and_recreate_contract` (`tests/db_root_filesystem_contract.rs`). Before this, versions restarted at 1 after a delete and callers that recreated paths had to recheck after every successful delete; that caveat is retired, except for paths deleted before the migration (they have no mark and may restart once — the crate `CONTRACT.md` invariant 9 records why that is acceptable).
 
 ---
 

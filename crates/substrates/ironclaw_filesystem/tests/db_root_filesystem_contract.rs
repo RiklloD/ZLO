@@ -622,41 +622,129 @@ async fn libsql_delete_if_version_rejects_out_of_range_expected_version() {
     assert_eq!(got.entry.body, vec![1]);
 }
 
-/// Round-B review: the ABA hazard `delete_if_version`'s trait doc warns
-/// about (version tokens are not generation-stable) was previously pinned
-/// only for the in-memory backend. libSQL shares the same "version
-/// restarts at 1 after a full delete" precondition — pin it here too so a
-/// future change to libSQL's version-assignment (e.g. a sequence that
-/// doesn't reset) can't silently invalidate the trait doc's warning for
-/// this backend without a test noticing.
-#[tokio::test]
-async fn libsql_delete_if_version_is_vulnerable_to_aba_across_delete_recreate_cycles() {
-    let filesystem = libsql_root().await;
-    let path = VirtualPath::new("/secrets/leases/CAS-DEL-ABA").unwrap();
+/// Versions never repeat for a path across delete + recreate (CONTRACT.md
+/// invariant 9): every backend keeps the deleted record's version as a
+/// high-water mark and starts the next incarnation above it, so a version
+/// token captured before a delete can never authorize a CAS write or a
+/// conditional delete against a later incarnation (ABA). Driven through
+/// every create path and both delete paths.
+async fn versions_never_repeat_across_delete_and_recreate_contract<F: RootFilesystem>(
+    filesystem: &F,
+    base: &str,
+) {
+    let path = VirtualPath::new(format!("{base}/aba/record")).unwrap();
+    fn stale<T: std::fmt::Debug>(found: Result<T, FilesystemError>, what: &str) {
+        match found {
+            Err(FilesystemError::VersionMismatch { .. }) => {}
+            other => panic!("{what}: a stale token must fail CAS, got {other:?}"),
+        }
+    }
 
-    let v1_first = filesystem
+    // Two writes, then a subtree delete; the recreate starts above both.
+    let v1 = filesystem
         .put(&path, Entry::bytes(vec![1]), CasExpectation::Absent)
         .await
         .unwrap();
-    filesystem.delete_if_version(&path, v1_first).await.unwrap();
-    assert!(filesystem.get(&path).await.unwrap().is_none());
-
-    let v1_second = filesystem
-        .put(&path, Entry::bytes(vec![2]), CasExpectation::Absent)
+    let v2 = filesystem
+        .put(&path, Entry::bytes(vec![2]), CasExpectation::Version(v1))
         .await
         .unwrap();
-    assert_eq!(
-        v1_first, v1_second,
-        "version must restart after a full delete, or this ABA hazard doesn't apply"
+    filesystem.delete(&path).await.unwrap();
+    let v3 = filesystem
+        .put(&path, Entry::bytes(vec![3]), CasExpectation::Absent)
+        .await
+        .unwrap();
+    assert!(
+        v3 > v2,
+        "recreate after delete reused a version: {v2} -> {v3}"
+    );
+    assert_eq!(filesystem.get(&path).await.unwrap().unwrap().version, v3);
+    for old in [v1, v2] {
+        stale(
+            filesystem
+                .put(&path, Entry::bytes(vec![9]), CasExpectation::Version(old))
+                .await,
+            "put(Version) after delete+recreate",
+        );
+        stale(
+            filesystem.delete_if_version(&path, old).await,
+            "delete_if_version after delete+recreate",
+        );
+    }
+    assert_eq!(filesystem.read_file(&path).await.unwrap(), vec![3]);
+
+    // Conditional delete, then recreate through `Any`.
+    filesystem.delete_if_version(&path, v3).await.unwrap();
+    let v4 = filesystem
+        .put(&path, Entry::bytes(vec![4]), CasExpectation::Any)
+        .await
+        .unwrap();
+    assert!(v4 > v3, "recreate after delete_if_version reused a version");
+    stale(
+        filesystem
+            .put(&path, Entry::bytes(vec![9]), CasExpectation::Version(v3))
+            .await,
+        "put(Version) after delete_if_version+recreate",
     );
 
-    // The stale `v1_first` token wrongly authorizes deleting the second
-    // incarnation's live data — documented hazard, not a regression.
-    filesystem.delete_if_version(&path, v1_first).await.unwrap();
+    // A parent's subtree delete keeps the child's high-water mark too, and
+    // the legacy byte-plane creators start above it.
+    filesystem
+        .delete(&VirtualPath::new(format!("{base}/aba")).unwrap())
+        .await
+        .unwrap();
+    filesystem.write_file(&path, b"5").await.unwrap();
+    let v5 = filesystem.get(&path).await.unwrap().unwrap().version;
+    assert!(v5 > v4, "write_file recreate reused a version");
+    filesystem.delete(&path).await.unwrap();
+    filesystem.append_file(&path, b"6").await.unwrap();
+    let v6 = filesystem.get(&path).await.unwrap().unwrap().version;
+    assert!(v6 > v5, "append_file recreate reused a version");
+
+    // Atomic subtree creation starts each entry above its own mark.
+    filesystem.delete(&path).await.unwrap();
+    let versions = filesystem
+        .create_subtree_atomic(
+            &VirtualPath::new(format!("{base}/aba")).unwrap(),
+            vec![AtomicSubtreeEntry {
+                path: path.clone(),
+                entry: Entry::bytes(vec![7]),
+            }],
+        )
+        .await
+        .unwrap();
     assert!(
-        filesystem.get(&path).await.unwrap().is_none(),
-        "stale version token wrongly matched and deleted the second incarnation"
+        versions[0] > v6,
+        "create_subtree_atomic recreate reused a version"
     );
+    stale(
+        filesystem.delete_if_version(&path, v6).await,
+        "delete_if_version after subtree recreate",
+    );
+
+    // A path that was never written still starts at the first version.
+    let fresh = VirtualPath::new(format!("{base}/aba-fresh/record")).unwrap();
+    assert_eq!(
+        filesystem
+            .put(&fresh, Entry::bytes(vec![1]), CasExpectation::Absent)
+            .await
+            .unwrap(),
+        v1,
+        "a never-deleted path still starts at the first version"
+    );
+}
+
+#[tokio::test]
+async fn libsql_versions_never_repeat_across_delete_and_recreate() {
+    let filesystem = libsql_root().await;
+    versions_never_repeat_across_delete_and_recreate_contract(&*filesystem, "/secrets/leases")
+        .await;
+}
+
+#[tokio::test]
+async fn in_memory_versions_never_repeat_across_delete_and_recreate() {
+    let filesystem = InMemoryBackend::new();
+    versions_never_repeat_across_delete_and_recreate_contract(&filesystem, "/secrets/leases").await;
 }
 
 /// Round-C review (PR #5749): no test drove `delete_if_version` against an
@@ -2786,6 +2874,14 @@ mod postgres_tests {
     }
 
     #[tokio::test]
+    async fn postgres_versions_never_repeat_across_delete_and_recreate() {
+        let Some((fs, prefix)) = postgres_root().await else {
+            return;
+        };
+        super::versions_never_repeat_across_delete_and_recreate_contract(&fs, &prefix).await;
+    }
+
+    #[tokio::test]
     async fn postgres_list_dir_page_uses_stable_name_keyset() {
         let Some((fs, prefix)) = postgres_root().await else {
             return;
@@ -3126,43 +3222,6 @@ mod postgres_tests {
         let got = fs.get(&path).await.unwrap().unwrap();
         assert_eq!(got.version, v1);
         assert_eq!(got.entry.body, vec![1]);
-    }
-
-    /// Round-B review: mirrors the libSQL/in-memory ABA-hazard pin. Postgres
-    /// shares the same "version restarts at 1 after a full delete"
-    /// precondition (see `put`'s Absent-insert path); pin it here too so a
-    /// future change to Postgres's version-assignment can't silently
-    /// invalidate the trait doc's ABA warning for this backend.
-    #[tokio::test]
-    async fn postgres_delete_if_version_is_vulnerable_to_aba_across_delete_recreate_cycles() {
-        let Some((fs, prefix)) = postgres_root().await else {
-            return;
-        };
-        let path = vpath(&prefix, "cas_delete_aba");
-
-        let v1_first = fs
-            .put(&path, Entry::bytes(vec![1]), CasExpectation::Absent)
-            .await
-            .unwrap();
-        fs.delete_if_version(&path, v1_first).await.unwrap();
-        assert!(fs.get(&path).await.unwrap().is_none());
-
-        let v1_second = fs
-            .put(&path, Entry::bytes(vec![2]), CasExpectation::Absent)
-            .await
-            .unwrap();
-        assert_eq!(
-            v1_first, v1_second,
-            "version must restart after a full delete, or this ABA hazard doesn't apply"
-        );
-
-        // The stale `v1_first` token wrongly authorizes deleting the second
-        // incarnation's live data — documented hazard, not a regression.
-        fs.delete_if_version(&path, v1_first).await.unwrap();
-        assert!(
-            fs.get(&path).await.unwrap().is_none(),
-            "stale version token wrongly matched and deleted the second incarnation"
-        );
     }
 
     /// Round-C review (PR #5749): mirrors `postgres_put_rejects_existing_directory`
