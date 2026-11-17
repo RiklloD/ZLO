@@ -22,10 +22,12 @@
 use std::io::Write as _;
 use std::sync::Arc;
 
+use ironclaw_filesystem::FilesystemError;
 use ironclaw_filesystem::{
     InMemoryBackend, IsolatedPostgresDatabase, IsolatedPostgresProvisioner, LibSqlRootFilesystem,
     PostgresRootFilesystem, PostgresUnreachable, RootFilesystem,
 };
+use ironclaw_host_api::path::VirtualPath;
 use ironclaw_memory::{MemoryDocumentPath, content_sha256};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -762,6 +764,178 @@ async fn reembed_budget_charges_inputs_at_dispatch(fs: Arc<dyn RootFilesystem>) 
     );
 }
 
+/// A delegating filesystem that runs `on_chunk_cas` once, right before the
+/// first `Version`-CAS `put` to a chunk path — the instant after the
+/// backfill's attach has read the chunk and before its write lands.
+/// An interleaving barrier, not a fault fake (filesystem CONTRACT.md).
+struct ChunkCasBarrier {
+    inner: Arc<dyn RootFilesystem>,
+    on_chunk_cas: Mutex<Option<DuringCallFuture>>,
+    fired: std::sync::atomic::AtomicBool,
+}
+
+type DuringCallFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+#[async_trait]
+impl RootFilesystem for ChunkCasBarrier {
+    fn capabilities(&self) -> ironclaw_filesystem::BackendCapabilities {
+        self.inner.capabilities()
+    }
+    async fn put(
+        &self,
+        path: &VirtualPath,
+        entry: ironclaw_filesystem::Entry,
+        cas: ironclaw_filesystem::CasExpectation,
+    ) -> Result<ironclaw_filesystem::RecordVersion, FilesystemError> {
+        if matches!(cas, ironclaw_filesystem::CasExpectation::Version(_))
+            && path.as_str().contains(".chunks/")
+        {
+            let pending = self.on_chunk_cas.lock().unwrap().take();
+            if let Some(pending) = pending {
+                pending.await;
+                self.fired.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        self.inner.put(path, entry, cas).await
+    }
+    async fn get(
+        &self,
+        path: &VirtualPath,
+    ) -> Result<Option<ironclaw_filesystem::VersionedEntry>, FilesystemError> {
+        self.inner.get(path).await
+    }
+    async fn list_dir(
+        &self,
+        path: &VirtualPath,
+    ) -> Result<Vec<ironclaw_filesystem::DirEntry>, FilesystemError> {
+        self.inner.list_dir(path).await
+    }
+    async fn list_dir_page(
+        &self,
+        path: &VirtualPath,
+        after: Option<&str>,
+        max_entries: usize,
+    ) -> Result<Vec<ironclaw_filesystem::DirEntry>, FilesystemError> {
+        self.inner.list_dir_page(path, after, max_entries).await
+    }
+    async fn query(
+        &self,
+        path: &VirtualPath,
+        filter: &ironclaw_filesystem::Filter,
+        page: ironclaw_filesystem::Page,
+    ) -> Result<Vec<ironclaw_filesystem::VersionedEntry>, FilesystemError> {
+        self.inner.query(path, filter, page).await
+    }
+    async fn query_ordered(
+        &self,
+        path: &VirtualPath,
+        filter: &ironclaw_filesystem::Filter,
+        page: &ironclaw_filesystem::OrderedPage,
+    ) -> Result<Vec<ironclaw_filesystem::VersionedEntry>, FilesystemError> {
+        self.inner.query_ordered(path, filter, page).await
+    }
+    async fn ensure_index(
+        &self,
+        path: &VirtualPath,
+        spec: &ironclaw_filesystem::IndexSpec,
+    ) -> Result<(), FilesystemError> {
+        self.inner.ensure_index(path, spec).await
+    }
+    async fn stat(
+        &self,
+        path: &VirtualPath,
+    ) -> Result<ironclaw_filesystem::FileStat, FilesystemError> {
+        self.inner.stat(path).await
+    }
+    async fn delete(&self, path: &VirtualPath) -> Result<(), FilesystemError> {
+        self.inner.delete(path).await
+    }
+    async fn delete_if_version(
+        &self,
+        path: &VirtualPath,
+        expected_version: ironclaw_filesystem::RecordVersion,
+    ) -> Result<(), FilesystemError> {
+        self.inner.delete_if_version(path, expected_version).await
+    }
+}
+
+/// `memory.write` (production `NativeMemoryService::write`) reindexes a
+/// document AFTER the backfill's attach re-read the chunk and BEFORE its
+/// CAS put: the reindex deletes the chunk and recreates it. The recreated
+/// chunk's version is above the deleted one's (filesystem CONTRACT.md
+/// invariant 9), so the attach's CAS fails, its re-read sees the document
+/// changed, and nothing is written — the new chunk keeps its body, label
+/// and vector.
+async fn reembed_attach_loses_a_rewrite_between_its_read_and_its_put(fs: Arc<dyn RootFilesystem>) {
+    let barrier = Arc::new(ChunkCasBarrier {
+        inner: Arc::clone(&fs),
+        on_chunk_cas: Mutex::new(None),
+        fired: std::sync::atomic::AtomicBool::new(false),
+    });
+    let shared: Arc<dyn RootFilesystem> = barrier.clone();
+    let repo = Repo::new(Arc::clone(&shared));
+    write_text_only(&repo, &doc("notes/window.md"), &["alpha old"]).await;
+    let service = Arc::new(
+        ironclaw_memory_native::NativeMemoryService::from_filesystem_with_embedder(
+            Arc::clone(&shared),
+            None,
+            Some(Arc::new(ScriptedEmbedder::new("model-b:2", 8)) as Arc<dyn MemoryEmbedder>),
+        ),
+    );
+    let writer = Arc::clone(&service);
+    *barrier.on_chunk_cas.lock().unwrap() = Some(Box::pin(async move {
+        writer
+            .write(
+                memory_invocation(),
+                ironclaw_memory::MemoryServiceWriteRequest {
+                    target: "notes/window.md".to_string(),
+                    content: "beta new".to_string(),
+                    append: false,
+                    old_string: None,
+                    new_string: None,
+                    replace_all: false,
+                    metadata: None,
+                    timezone: None,
+                    expected_content_hash: None,
+                },
+            )
+            .await
+            .expect("the concurrent memory.write succeeds");
+    }));
+
+    let embedder = Arc::new(ScriptedEmbedder::new("model-b:2", 8));
+    let (report, _) = run_job(&shared, &embedder, &fast(None)).await;
+    assert!(
+        barrier.fired.load(std::sync::atomic::Ordering::SeqCst),
+        "the rewrite ran inside the attach window"
+    );
+    assert_eq!(
+        (report.embedded, report.superseded),
+        (0, 1),
+        "the attach lost the race and wrote nothing"
+    );
+    assert_eq!(
+        text_hits(&repo, "beta").await,
+        vec![("notes/window.md".to_string(), "beta new".to_string())],
+        "the recreated chunk's body survives"
+    );
+    assert!(
+        text_hits(&repo, "alpha").await.is_empty(),
+        "the old chunk was not written back over the new one"
+    );
+    assert_eq!(
+        vector_hits(&repo, embedding("model-b:2", vec![0.0, 1.0])).await,
+        vec!["notes/window.md"],
+        "the recreated chunk keeps the vector its own write gave it"
+    );
+    assert!(
+        vector_hits(&repo, embedding("model-b:2", vec![1.0, 0.0]))
+            .await
+            .is_empty(),
+        "the old text's vector was not attached"
+    );
+}
+
 // -- Backends -----------------------------------------------------------------
 
 enum Guard {
@@ -937,6 +1111,7 @@ backend_suite!(in_memory:
     reembed_background_task_backfills_and_reports,
     reembed_never_overwrites_a_chunk_rewritten_mid_batch,
     reembed_budget_charges_inputs_at_dispatch,
+    reembed_attach_loses_a_rewrite_between_its_read_and_its_put,
 );
 backend_suite!(libsql:
     only_the_query_space_ranks_in_cosine_order,
@@ -948,6 +1123,7 @@ backend_suite!(libsql:
     reembed_background_task_backfills_and_reports,
     reembed_never_overwrites_a_chunk_rewritten_mid_batch,
     reembed_budget_charges_inputs_at_dispatch,
+    reembed_attach_loses_a_rewrite_between_its_read_and_its_put,
 );
 backend_suite!(postgres:
     only_the_query_space_ranks_in_cosine_order,
@@ -959,4 +1135,5 @@ backend_suite!(postgres:
     reembed_background_task_backfills_and_reports,
     reembed_never_overwrites_a_chunk_rewritten_mid_batch,
     reembed_budget_charges_inputs_at_dispatch,
+    reembed_attach_loses_a_rewrite_between_its_read_and_its_put,
 );

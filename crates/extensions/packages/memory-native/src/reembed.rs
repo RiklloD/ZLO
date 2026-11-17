@@ -22,8 +22,9 @@
 //!   permanent failure; vectors already attached stay.
 //! - **Attach.** Each vector is inserted into the chunk's *current* record
 //!   (re-read, then CAS on its version) only while the document's content
-//!   hash and the chunk's identity digest still match what was embedded —
-//!   versions alone restart when a rewrite recreates chunk paths. Nothing
+//!   hash and the chunk's identity digest still match what was embedded;
+//!   the CAS then cannot match a chunk a rewrite recreated meanwhile,
+//!   since versions never repeat for a path (filesystem invariant 9). Nothing
 //!   else on the chunk changes, vectors of other spaces stay (never deleted,
 //!   just not queried), and a chunk a concurrent write replaced is left to
 //!   that write's own indexing (`superseded`).

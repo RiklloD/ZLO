@@ -8,10 +8,13 @@
 //! it re-reads the document and the chunk, and adds the one vector key only
 //! while both are still what was embedded — the document's content hash
 //! unchanged and the chunk's identity digest (body, indexed content,
-//! document path, chunk index, scope projection) equal. A version alone is
-//! not enough: a rewrite deletes and recreates chunk paths, so versions
-//! restart and a stale CAS could match a new chunk (ABA). The scanned record
-//! is never written back.
+//! document path, chunk index, scope projection) equal, then CASes on the
+//! version it just read. Two windows, two guards: the identity check covers
+//! a rewrite between the scan and the re-read; the CAS covers one between
+//! the re-read and the put, because a recreated chunk's version is always
+//! above the deleted one's (filesystem CONTRACT.md invariant 9), so the
+//! stale version fails instead of matching the new chunk. The scanned
+//! record is never written back.
 
 use std::collections::BTreeMap;
 
