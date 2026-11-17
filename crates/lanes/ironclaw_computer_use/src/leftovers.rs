@@ -42,6 +42,12 @@ impl Leftovers {
         Self::with_remover(Arc::new(FsRemover), DEFAULT_BACKOFF.to_vec())
     }
 
+    /// Deletes through `remover` (e.g. descriptor-relative) with the default
+    /// backoff.
+    pub(crate) fn with_default_backoff(remover: Arc<dyn FileRemover>) -> Self {
+        Self::with_remover(remover, DEFAULT_BACKOFF.to_vec())
+    }
+
     pub(crate) fn with_remover(remover: Arc<dyn FileRemover>, backoff: Vec<Duration>) -> Self {
         Self {
             remover,

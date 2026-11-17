@@ -50,8 +50,7 @@ fn fake(tune: impl FnOnce(&mut ComputerUseConfig)) -> Fake {
     config.args = vec![script.display().to_string(), log.display().to_string()];
     config.stop_hold = Duration::from_millis(300);
     config.call_timeout = Duration::from_secs(5);
-    config.cursor_dir = dir.path().join("cursor");
-    config.capture_dir = Some(dir.path().join("captures"));
+    config.zlo_home = Some(dir.path().to_path_buf());
     config.trace_path = Some(dir.path().join("trace.jsonl"));
     tune(&mut config);
     Fake {

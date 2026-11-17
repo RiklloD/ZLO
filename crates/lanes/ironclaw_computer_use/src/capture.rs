@@ -13,8 +13,7 @@
 
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -27,8 +26,8 @@ use tokio::sync::watch;
 use crate::leftovers::Leftovers;
 use crate::live::{Live, WatchedWindow, desk};
 use crate::private_dir::{
-    create_capture_file, current_uid, ensure_private_dir, is_capture_file_name,
-    is_legacy_capture_file_name, read_capture_file,
+    CAPTURE_DIR, PrivateDir, PrivateDirRemover, current_uid, is_capture_file_name,
+    is_legacy_capture_file_name, new_capture_file_name,
 };
 
 pub(crate) const MAX_FPS: f64 = 10.0;
@@ -126,80 +125,74 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 pub(crate) struct Capture {
     producers: Mutex<HashMap<ProducerKey, Arc<Producer>>>,
-    /// The per-user capture directory; `None` turns window capture off.
-    capture_dir: Option<PathBuf>,
-    /// The uid the capture directory and its files must belong to.
-    owner_uid: u32,
+    /// The validated, descriptor-held capture directory, or why there is
+    /// none (window capture is then off).
+    dir: Result<Arc<PrivateDir>, String>,
     leftovers: Arc<Leftovers>,
-    next_file: AtomicU64,
 }
 
 impl Capture {
-    /// Captures go to `capture_dir`, a per-user directory (see
+    /// Captures go to `$ZLO_HOME/cache/computer-use/captures` (see
     /// [`crate::private_dir`]). At startup, stale captures of an earlier
-    /// process are deleted there — only after the directory checks out — and
-    /// in the shared temp dir where earlier builds wrote them, limited to
-    /// regular files this user owns.
-    pub(crate) fn new(capture_dir: Option<PathBuf>, leftovers: Arc<Leftovers>) -> Self {
+    /// process are deleted there, fd-relative and only once the directory
+    /// checks out, and in the shared temp dir where earlier builds wrote
+    /// them, limited to regular files this user owns.
+    pub(crate) fn new(zlo_home: Option<&Path>) -> Self {
         let owner_uid = current_uid();
-        leftovers.sweep_stale(
+        Leftovers::new().sweep_stale(
             &std::env::temp_dir(),
             &is_legacy_capture_file_name,
             STALE_CAPTURE_AGE,
             Some(owner_uid),
         );
-        Self::in_dir(capture_dir, leftovers, STALE_CAPTURE_AGE, owner_uid)
+        let dir = match zlo_home {
+            Some(zlo_home) => PrivateDir::open(zlo_home, &CAPTURE_DIR, owner_uid)
+                .map(Arc::new)
+                .map_err(|error| error.to_string()),
+            None => Err("no ZLO home".to_string()),
+        };
+        let leftovers = match &dir {
+            Ok(dir) => {
+                Leftovers::with_default_backoff(Arc::new(PrivateDirRemover(Arc::clone(dir))))
+            }
+            Err(reason) => {
+                tracing::debug!(%reason, "computer-use window capture is off");
+                Leftovers::new()
+            }
+        };
+        Self::with(dir, Arc::new(leftovers), STALE_CAPTURE_AGE)
     }
 
-    pub(crate) fn in_dir(
-        capture_dir: Option<PathBuf>,
+    pub(crate) fn with(
+        dir: Result<Arc<PrivateDir>, String>,
         leftovers: Arc<Leftovers>,
         stale: Duration,
-        owner_uid: u32,
     ) -> Self {
-        if let Some(dir) = &capture_dir {
-            // Never sweep a directory that fails the checks: it may be a
-            // symlink to, or a directory of, someone else's files.
-            match ensure_private_dir(dir, owner_uid, false) {
-                Ok(true) => {
-                    leftovers.sweep_stale(dir, &is_capture_file_name, stale, Some(owner_uid))
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::debug!(%error, "computer-use capture directory refused; not swept");
-                }
+        if let Ok(dir) = &dir {
+            for name in dir.stale_files(&is_capture_file_name, stale) {
+                leftovers.remove_soon(&dir.path().join(name));
             }
         }
         Self {
             producers: Mutex::new(HashMap::new()),
-            capture_dir,
-            owner_uid,
+            dir,
             leftovers,
-            next_file: AtomicU64::new(0),
         }
     }
 
-    /// Where the next window capture is written: a fresh file created
-    /// exclusively (mode 0600) in the validated capture directory. Retries
-    /// any screenshot an earlier capture could not delete first. Refuses —
-    /// no capture at all — when the directory is missing or fails a check.
-    fn next_capture_path(&self) -> Result<PathBuf, String> {
+    /// The directory and a fresh unpredictable file name for the next window
+    /// capture. Retries any screenshot an earlier capture could not delete
+    /// first. Refuses — no capture at all — when there is no directory or the
+    /// held one no longer checks out.
+    fn next_capture(&self) -> Result<(Arc<PrivateDir>, String), String> {
         self.leftovers.sweep();
         let dir = self
-            .capture_dir
+            .dir
             .as_ref()
-            .ok_or_else(|| "window capture is off: no per-user capture directory".to_string())?;
-        ensure_private_dir(dir, self.owner_uid, true)
+            .map_err(|reason| format!("window capture is off: {reason}"))?;
+        dir.verify()
             .map_err(|error| format!("window capture refused: {error}"))?;
-        let path = dir.join(format!(
-            "{}_{}.jpg",
-            std::process::id(),
-            self.next_file.fetch_add(1, Ordering::Relaxed)
-        ));
-        create_capture_file(&path).map_err(|error| {
-            format!("window capture refused: capture file not created: {error}")
-        })?;
-        Ok(path)
+        Ok((Arc::clone(dir), new_capture_file_name()))
     }
 
     /// Delete a finished capture; a failed delete is retried, then swept.
@@ -459,7 +452,10 @@ async fn screencapture(
     window_id: u32,
     max_width: u32,
 ) -> Result<(Vec<u8>, u32, u32), String> {
-    let path = capture.next_capture_path()?;
+    let (dir, name) = capture.next_capture()?;
+    // The tool writes by path into the validated directory; we read back
+    // fd-relative and check the file before trusting it.
+    let path = dir.path().join(&name);
     let run = tokio::process::Command::new("/usr/sbin/screencapture")
         .arg("-x")
         .arg("-o")
@@ -475,12 +471,14 @@ async fn screencapture(
         Err(_elapsed) => Err("screencapture timed out".to_string()),
         Ok(Err(error)) => Err(format!("screencapture failed: {error}")),
         Ok(Ok(done)) => {
-            let read_path = path.clone();
-            let bytes = tokio::task::spawn_blocking(move || read_capture_file(&read_path))
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_default(); // silent-ok: a missing or unreadable file is reported below
+            let read_dir = Arc::clone(&dir);
+            let read_name = name.clone();
+            let bytes =
+                tokio::task::spawn_blocking(move || read_dir.read_owned_file(&read_name, true))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default(); // silent-ok: a missing or unreadable file is reported below
             if !done.status.success() || bytes.len() < 1000 {
                 let stderr = String::from_utf8_lossy(&done.stderr);
                 let mut message: String = stderr.trim().chars().take(200).collect();
@@ -515,18 +513,20 @@ async fn screencapture(
     result
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
     use super::*;
     use crate::leftovers::{FileRemover, Leftovers};
 
-    struct FailingOnce(AtomicU64);
+    /// Fails the first four deletions (one attempt + three retries), then
+    /// deletes for real.
+    struct FailingFirst4(AtomicU64);
 
-    impl FileRemover for FailingOnce {
+    impl FileRemover for FailingFirst4 {
         fn remove(&self, path: &Path) -> std::io::Result<()> {
-            // Fails the first four calls (one attempt + three retries).
             if self.0.fetch_add(1, Ordering::SeqCst) < 4 {
                 return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
             }
@@ -534,8 +534,8 @@ mod tests {
         }
     }
 
-    fn capture_in(dir: PathBuf, stale: Duration, owner_uid: u32) -> Capture {
-        Capture::in_dir(Some(dir), Arc::new(Leftovers::new()), stale, owner_uid)
+    fn open_dir(zlo_home: &Path) -> Arc<PrivateDir> {
+        Arc::new(PrivateDir::open(zlo_home, &CAPTURE_DIR, current_uid()).unwrap())
     }
 
     fn screenshot(path: &Path) {
@@ -544,26 +544,22 @@ mod tests {
 
     #[tokio::test]
     async fn an_undeletable_capture_is_swept_by_the_next_capture() {
-        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
         let leftovers = Arc::new(Leftovers::with_remover(
-            Arc::new(FailingOnce(AtomicU64::new(0))),
+            Arc::new(FailingFirst4(AtomicU64::new(0))),
             vec![Duration::from_millis(1); 3],
         ));
-        let capture = Capture::in_dir(
-            Some(dir.path().join("captures")),
-            leftovers,
-            STALE_CAPTURE_AGE,
-            current_uid(),
-        );
+        let capture = Capture::with(Ok(open_dir(home.path())), leftovers, STALE_CAPTURE_AGE);
 
-        let first = capture.next_capture_path().unwrap();
+        let (dir, name) = capture.next_capture().unwrap();
+        let first = dir.path().join(&name);
         screenshot(&first);
         capture.discard_capture(&first).await;
         assert!(first.exists(), "the injected failure kept the screenshot");
 
-        let second = capture.next_capture_path().unwrap();
+        let (_, second) = capture.next_capture().unwrap();
 
-        assert_ne!(first, second);
+        assert_ne!(name, second);
         assert!(
             !first.exists(),
             "the next capture must delete the leftover screenshot"
@@ -571,16 +567,30 @@ mod tests {
     }
 
     #[test]
-    fn startup_deletes_stale_captures_in_a_valid_capture_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let captures = dir.path().join("captures");
-        ensure_private_dir(&captures, current_uid(), true).unwrap();
-        let leftover = captures.join("4242_7.jpg");
-        screenshot(&leftover);
-        let unrelated = captures.join("notes.jpg");
-        screenshot(&unrelated);
+    fn capture_names_are_fresh_and_unpredictable() {
+        let home = tempfile::tempdir().unwrap();
+        let capture = Capture::new(Some(home.path()));
 
-        let _capture = capture_in(captures, Duration::ZERO, current_uid());
+        let (_, first) = capture.next_capture().unwrap();
+        let (_, second) = capture.next_capture().unwrap();
+
+        assert_ne!(first, second);
+        assert!(is_capture_file_name(&first), "{first}");
+    }
+
+    #[test]
+    fn startup_deletes_stale_captures_fd_relative() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = open_dir(home.path());
+        let leftover = dir.path().join(new_capture_file_name());
+        screenshot(&leftover);
+        let unrelated = dir.path().join("notes.jpg");
+        screenshot(&unrelated);
+        let leftovers = Arc::new(Leftovers::with_default_backoff(Arc::new(
+            PrivateDirRemover(Arc::clone(&dir)),
+        )));
+
+        let _capture = Capture::with(Ok(dir), leftovers, Duration::ZERO);
 
         assert!(!leftover.exists());
         assert!(
@@ -589,142 +599,29 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn capture_files_are_created_exclusively_and_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let capture = capture_in(
-            dir.path().join("captures"),
-            STALE_CAPTURE_AGE,
-            current_uid(),
-        );
-
-        let path = capture.next_capture_path().unwrap();
-
-        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(path.parent().unwrap()), 0o700);
-        assert_eq!(mode(&path), 0o600);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_planted_file_at_the_capture_path_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let captures = dir.path().join("captures");
-        ensure_private_dir(&captures, current_uid(), true).unwrap();
-        let capture = capture_in(captures.clone(), STALE_CAPTURE_AGE, current_uid());
-        let victim = dir.path().join("victim");
+    fn a_refused_capture_directory_turns_capture_off_and_is_never_swept() {
+        let home = tempfile::tempdir().unwrap();
+        // A symlink planted where the capture directory goes.
+        let elsewhere = home.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let victim = elsewhere.join(new_capture_file_name());
         screenshot(&victim);
-        std::os::unix::fs::symlink(
-            &victim,
-            captures.join(format!("{}_0.jpg", std::process::id())),
-        )
-        .unwrap();
+        std::fs::create_dir_all(home.path().join("cache/computer-use")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.path().join("cache/computer-use/captures"))
+            .unwrap();
 
-        let refused = capture.next_capture_path();
+        let capture = Capture::new(Some(home.path()));
 
-        assert!(refused.is_err(), "{refused:?}");
-        assert_eq!(std::fs::read(&victim).unwrap(), b"a screenshot");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_directory_owned_by_another_user_is_refused_and_never_swept() {
-        let dir = tempfile::tempdir().unwrap();
-        let captures = dir.path().join("captures");
-        ensure_private_dir(&captures, current_uid(), true).unwrap();
-        let theirs = captures.join("4242_7.jpg");
-        screenshot(&theirs);
-        // Ownership seam: expect a uid that does not own the directory.
-        let other_user = current_uid().wrapping_add(1);
-
-        let capture = capture_in(captures, Duration::ZERO, other_user);
-
-        assert!(theirs.exists(), "a refused directory is never swept");
-        let refused = capture.next_capture_path();
-        assert!(
-            refused
-                .as_ref()
-                .is_err_and(|error| error.contains("another user")),
-            "{refused:?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_symlink_in_place_of_the_directory_is_refused_and_not_followed() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("elsewhere");
-        std::fs::create_dir(&target).unwrap();
-        let victim = target.join("4242_7.jpg");
-        screenshot(&victim);
-        let captures = dir.path().join("captures");
-        std::os::unix::fs::symlink(&target, &captures).unwrap();
-
-        let capture = capture_in(captures, Duration::ZERO, current_uid());
-
-        assert!(
-            victim.exists(),
-            "the sweep must not follow a symlinked directory"
-        );
-        let refused = capture.next_capture_path();
-        assert!(
-            refused
-                .as_ref()
-                .is_err_and(|error| error.contains("symlink")),
-            "{refused:?}"
-        );
-        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_symlinked_file_in_the_directory_is_not_followed_by_the_sweep() {
-        let dir = tempfile::tempdir().unwrap();
-        let captures = dir.path().join("captures");
-        ensure_private_dir(&captures, current_uid(), true).unwrap();
-        let victim = dir.path().join("victim.jpg");
-        screenshot(&victim);
-        let link = captures.join("4242_7.jpg");
-        std::os::unix::fs::symlink(&victim, &link).unwrap();
-
-        let _capture = capture_in(captures, Duration::ZERO, current_uid());
-
-        assert!(victim.exists(), "the link target must not be touched");
-        assert!(
-            std::fs::symlink_metadata(&link).is_ok(),
-            "a symlink is not a capture file and is left alone"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_too_open_directory_we_own_is_narrowed_to_0700() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let captures = dir.path().join("captures");
-        std::fs::create_dir(&captures).unwrap();
-        std::fs::set_permissions(&captures, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let capture = capture_in(captures.clone(), STALE_CAPTURE_AGE, current_uid());
-
-        capture.next_capture_path().unwrap();
-
-        let mode = std::fs::metadata(&captures).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
+        assert!(victim.exists(), "a refused directory is never swept");
+        let refused = capture.next_capture();
+        assert!(refused.is_err(), "{:?}", refused.map(|(_, name)| name));
     }
 
     #[test]
-    fn without_a_capture_directory_window_capture_is_off() {
-        let capture = Capture::in_dir(
-            None,
-            Arc::new(Leftovers::new()),
-            STALE_CAPTURE_AGE,
-            current_uid(),
-        );
+    fn without_a_zlo_home_window_capture_is_off() {
+        let capture = Capture::new(None);
 
-        let refused = capture.next_capture_path();
-
-        assert!(refused.is_err(), "{refused:?}");
+        assert!(capture.next_capture().is_err());
     }
 }

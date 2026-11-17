@@ -4024,14 +4024,15 @@ dependencies = [
  "ironclaw_host_api",
  "ironclaw_mcp",
  "ironclaw_product_contracts",
- "libc",
  "regex",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

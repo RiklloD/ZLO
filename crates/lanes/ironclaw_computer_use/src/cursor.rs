@@ -5,7 +5,7 @@
 //! writes it, `OPEN_COMPUTER_USE_VISUAL_CURSOR_OBSERVATION_FILE`), so the
 //! viewer's cursor moves with it.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,6 +15,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::live::Live;
+use crate::private_dir::PrivateDir;
 use crate::target::TargetState;
 use crate::windows::main_display_height;
 
@@ -79,8 +80,31 @@ struct Observation {
     tip: Option<(f64, f64)>,
 }
 
-async fn read_observation(path: &Path) -> Option<Observation> {
-    let bytes = tokio::fs::read(path).await.ok()?; // silent-ok: no observation yet
+/// A session's cursor observation file inside the private cursor directory.
+/// The engine writes it by path; we read it descriptor-relative, without
+/// following a symlink, and only if it is a regular file owned by us.
+#[derive(Debug, Clone)]
+pub(crate) struct CursorFile {
+    dir: Arc<PrivateDir>,
+    name: String,
+}
+
+impl CursorFile {
+    pub(crate) fn new(dir: Arc<PrivateDir>, name: String) -> Self {
+        Self { dir, name }
+    }
+
+    pub(crate) fn path(&self) -> PathBuf {
+        self.dir.path().join(&self.name)
+    }
+}
+
+async fn read_observation(file: &CursorFile) -> Option<Observation> {
+    let read = file.clone();
+    let bytes = tokio::task::spawn_blocking(move || read.dir.read_owned_file(&read.name, false))
+        .await
+        .ok()? // silent-ok: a failed read task is "no observation this tick"
+        .ok()?; // silent-ok: no observation yet
     let value: Value = serde_json::from_slice(&bytes).ok()?; // silent-ok: a half-written file is read again next tick
     let point = value
         .get("restingTipPosition")
@@ -115,14 +139,14 @@ struct Follow {
     pid: i64,
     window_id: u32,
     kind: &'static str,
-    path: PathBuf,
+    file: CursorFile,
     before: Option<Value>,
 }
 
 impl Follow {
     /// Publishes the latest position; returns it.
     async fn publish(&self, last: Option<(f64, f64)>, last_final: bool) -> Option<(f64, f64)> {
-        let observation = read_observation(&self.path).await?;
+        let observation = read_observation(&self.file).await?;
         if observation.timestamp == self.before {
             return last;
         }
@@ -143,17 +167,17 @@ impl CursorWatch {
         key: ComputerUseSession,
         target: &TargetState,
         kind: &'static str,
-        path: PathBuf,
+        file: CursorFile,
     ) -> Option<Self> {
         let (pid, window_id) = (target.pid?, target.window_id?);
-        let before = read_observation(&path).await.and_then(|o| o.timestamp);
+        let before = read_observation(&file).await.and_then(|o| o.timestamp);
         let follow = Follow {
             live,
             key,
             pid,
             window_id,
             kind,
-            path,
+            file,
             before,
         };
         let (stop, mut stopped) = oneshot::channel();

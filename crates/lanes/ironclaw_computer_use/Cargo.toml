@@ -28,10 +28,13 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
 tracing = "0.1"
+# Unpredictable capture file names.
+uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
-# getuid and O_NOFOLLOW for the per-user capture directory checks.
-libc = "0.2"
+# Descriptor-relative file operations (openat/mkdirat/unlinkat/fstat/fchmod)
+# for the private capture and cursor directories.
+rustix = { version = "1", features = ["fs", "process"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CGWindowListCopyWindowInfo: which window an app's state belongs to.

@@ -49,13 +49,12 @@ pub struct ComputerUseConfig {
     pub live_preview: bool,
     /// One JSON line per tool call (tool, ok, code, seconds; never arguments).
     pub trace_path: Option<PathBuf>,
-    /// Where each session's native-cursor observation file lives.
-    pub cursor_dir: PathBuf,
-    /// The per-user directory window captures (screenshots) are written to:
-    /// `$ZLO_HOME/cache/computer-use/captures` by default, never the shared
-    /// temp dir. `None` turns window capture off (the live view falls back to
-    /// the agent's in-memory screenshot).
-    pub capture_dir: Option<PathBuf>,
+    /// The ZLO data folder. Window captures (screenshots) and each
+    /// session's native-cursor observation file live in private directories
+    /// under it (`cache/computer-use/{captures,cursor}`), validated from here
+    /// down and never in the shared temp dir. `None` turns window capture
+    /// and cursor following off.
+    pub zlo_home: Option<PathBuf>,
 }
 
 impl ComputerUseConfig {
@@ -65,10 +64,10 @@ impl ComputerUseConfig {
             fork: is_fork(&binary),
             live_preview: true,
             trace_path: None,
-            cursor_dir: std::env::temp_dir().join("ironclaw-ocu"),
-            capture_dir: crate::private_dir::default_capture_dir(
-                std::env::var_os("ZLO_HOME"),
-                std::env::var_os("HOME"),
+            zlo_home: crate::private_dir::default_zlo_home(
+                std::env::var_os("ZLO_HOME").map(PathBuf::from),
+                std::env::var_os("IRONCLAW_REBORN_HOME").map(PathBuf::from),
+                std::env::var_os("HOME").map(PathBuf::from),
             ),
             binary,
             args: vec!["mcp".to_string()],
@@ -127,9 +126,15 @@ impl ComputerUseConfig {
             },
         };
         let mut config = Self::new(binary);
-        config.capture_dir = crate::private_dir::default_capture_dir(
-            lookup("ZLO_HOME").filter(|value| !value.trim().is_empty()),
-            lookup("HOME").filter(|value| !value.trim().is_empty()),
+        let path = |name: &str| {
+            lookup(name)
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from)
+        };
+        config.zlo_home = crate::private_dir::default_zlo_home(
+            path("ZLO_HOME"),
+            path("IRONCLAW_REBORN_HOME"),
+            path("HOME"),
         );
         if let Some(raw) = lookup("COMPUTER_USE_LIVE_PREVIEW") {
             config.live_preview = match raw.trim().to_ascii_lowercase().as_str() {
