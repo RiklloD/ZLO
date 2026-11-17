@@ -20,7 +20,7 @@ use std::{
 
 use super::ScriptExecutionSlot;
 use super::docker::{DockerCli, ScriptChild, TeardownBounds};
-use super::orphans::{Orphan, OrphanReaper, remove_verified};
+use super::orphans::{Orphan, OrphanReaper, remaining, remove_verified};
 
 /// How often the guard polls for `--rm` to finish removing an exited
 /// container before falling back to `docker rm -f`.
@@ -35,6 +35,11 @@ pub(crate) struct ContainerGuard {
     cli: Arc<dyn DockerCli>,
     reaper: Arc<OrphanReaper>,
     bounds: TeardownBounds,
+    /// The one absolute deadline for all cleanup of this execution, set the
+    /// first time cleanup starts (timeout teardown or drop). Every later step
+    /// gets only the time left; whatever is unsettled when it passes goes to
+    /// the reaper.
+    cleanup_deadline: Option<Instant>,
 }
 
 impl ContainerGuard {
@@ -55,7 +60,21 @@ impl ContainerGuard {
             cli,
             reaper,
             bounds,
+            cleanup_deadline: None,
         }
+    }
+
+    /// The cleanup deadline, started now (`bounds.total` from now) if it
+    /// has not been yet.
+    pub(crate) fn cleanup_deadline(&mut self) -> Instant {
+        *self
+            .cleanup_deadline
+            .get_or_insert_with(|| Instant::now() + self.bounds.total)
+    }
+
+    /// `cap`, cut to what is left of the cleanup deadline.
+    pub(crate) fn step_bound(&mut self, cap: Duration) -> Duration {
+        cap.min(remaining(self.cleanup_deadline()))
     }
 
     /// The CLI child, for taking its pipes. `None` only after `Drop` began.
@@ -104,21 +123,19 @@ impl ContainerGuard {
     /// Force-remove the container by name and record whether that was
     /// verified.
     pub(crate) fn force_remove(&mut self) -> bool {
-        self.removal_verified = remove_verified(
-            self.cli.as_ref(),
-            &self.container_name,
-            self.bounds.force_remove,
-        );
+        let deadline = Instant::now() + self.step_bound(self.bounds.force_remove);
+        self.removal_verified = remove_verified(self.cli.as_ref(), &self.container_name, deadline);
         self.removal_verified
     }
 
-    /// Settle both halves within the teardown bounds.
+    /// Settle both halves, inside what is left of the cleanup deadline.
     fn settle(&mut self) {
         if !self.child_waited {
             if let Err(error) = self.kill() {
                 tracing::debug!(%error, "killing a script's docker child failed");
             }
-            self.wait_for_exit(self.bounds.reap);
+            let bound = self.step_bound(self.bounds.reap);
+            self.wait_for_exit(bound);
         }
         if !self.removal_verified {
             self.removal_verified = self.await_removal();
@@ -126,14 +143,16 @@ impl ContainerGuard {
     }
 
     /// `--rm` removes the container shortly after it exits: give it until the
-    /// reap bound, then force-remove.
-    fn await_removal(&self) -> bool {
-        let deadline = Instant::now() + self.bounds.reap;
+    /// reap bound, then force-remove — all inside the cleanup deadline.
+    fn await_removal(&mut self) -> bool {
+        let cleanup = self.cleanup_deadline();
+        let poll_until = Instant::now() + self.step_bound(self.bounds.reap);
         loop {
-            match self
-                .cli
-                .container_exists(&self.container_name, self.bounds.force_remove)
-            {
+            let bound = self.step_bound(self.bounds.force_remove);
+            if bound.is_zero() {
+                return false;
+            }
+            match self.cli.container_exists(&self.container_name, bound) {
                 Ok(false) => return true,
                 Ok(true) => {}
                 Err(error) => {
@@ -141,16 +160,12 @@ impl ContainerGuard {
                     break;
                 }
             }
-            if Instant::now() >= deadline {
+            if Instant::now() >= poll_until {
                 break;
             }
-            thread::sleep(REMOVAL_POLL);
+            thread::sleep(REMOVAL_POLL.min(remaining(poll_until)));
         }
-        remove_verified(
-            self.cli.as_ref(),
-            &self.container_name,
-            self.bounds.force_remove,
-        )
+        remove_verified(self.cli.as_ref(), &self.container_name, cleanup)
     }
 }
 

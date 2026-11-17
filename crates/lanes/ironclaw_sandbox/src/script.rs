@@ -5,7 +5,10 @@
 //! extensions do not receive raw Docker flags, host paths, ambient environment,
 //! secrets, or network by default.
 
+#[cfg(test)]
+mod cleanup_tests;
 pub mod docker;
+mod janitor;
 mod lifecycle;
 mod orphans;
 

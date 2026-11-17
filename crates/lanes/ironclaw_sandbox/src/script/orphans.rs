@@ -3,8 +3,9 @@
 //! A timed-out script's container is force-removed by name. When that removal
 //! cannot be verified, the container may still be running, so its lane slot
 //! (the execution's concurrency unit) is not released: the [`OrphanReaper`]
-//! takes the container and its slot, retries removal with capped backoff, and
-//! drops the slot only once `docker` confirms the container is gone.
+//! takes the container, its slot, and any unwaited CLI child, retries with
+//! capped backoff, and drops the slot only once `docker` confirms the
+//! container is gone and the child has been waited.
 //!
 //! Every script container carries labels naming the lane, the process
 //! instance that started it, the host, and that process's pid. At startup,
@@ -15,9 +16,12 @@
 use std::{
     collections::BTreeMap,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError},
+    sync::{
+        Arc, LazyLock, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use super::ScriptExecutionSlot;
@@ -99,12 +103,38 @@ impl OrphanBounds {
     }
 }
 
-/// Remove `name` and confirm it is gone. `false` means "may still exist".
-pub(crate) fn remove_verified(cli: &dyn DockerCli, name: &str, bound: Duration) -> bool {
-    if let Err(error) = cli.force_remove(name, bound) {
+/// What starts a background worker; injectable so a failed spawn can be
+/// tested. Production uses [`thread_spawner`].
+pub(crate) type WorkerSpawner =
+    Arc<dyn Fn(&'static str, Box<dyn FnOnce() + Send>) -> std::io::Result<()> + Send + Sync>;
+
+pub(crate) fn thread_spawner() -> WorkerSpawner {
+    Arc::new(|name, work| {
+        thread::Builder::new()
+            .name(name.to_string())
+            .spawn(work)
+            .map(drop)
+    })
+}
+
+/// Time left until `deadline` (zero once past).
+pub(crate) fn remaining(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
+/// Remove `name` and confirm it is gone, both within `deadline`. `false`
+/// means "may still exist".
+pub(crate) fn remove_verified(cli: &dyn DockerCli, name: &str, deadline: Instant) -> bool {
+    if remaining(deadline).is_zero() {
+        return false;
+    }
+    if let Err(error) = cli.force_remove(name, remaining(deadline)) {
         tracing::debug!(%error, "force-removing a script container failed");
     }
-    match cli.container_exists(name, bound) {
+    if remaining(deadline).is_zero() {
+        return false;
+    }
+    match cli.container_exists(name, remaining(deadline)) {
         Ok(exists) => !exists,
         Err(error) => {
             tracing::debug!(%error, "verifying a script container's removal failed");
@@ -124,31 +154,52 @@ pub(crate) struct Orphan {
     pub(crate) container_gone: bool,
 }
 
-/// Holds orphaned containers' lane slots until each container is verified
-/// gone and its CLI child waited. One thread per orphan retries both with
-/// backoff that grows to a capped interval and never gives up ownership; a
-/// panic in one attempt is caught and counts as a failed attempt, so it can
-/// neither drop the slot nor stop the retries. Orphans are bounded by lane
-/// capacity, since each holds a slot.
+/// An orphan as the reaper holds it: slot and child stay owned here for as
+/// long as the orphan is unsettled, whether or not a worker is running.
+pub(super) struct HeldOrphan {
+    _slot: ScriptExecutionSlot,
+    pub(super) child: Option<Box<dyn ScriptChild>>,
+    container_gone: bool,
+    attempt: usize,
+    next_attempt: Instant,
+}
+
+pub(super) type HeldOrphans = BTreeMap<String, HeldOrphan>;
+
+pub(super) struct ReaperState {
+    held: Mutex<HeldOrphans>,
+    worker_running: AtomicBool,
+}
+
+/// Holds orphaned containers — their lane slot and any unwaited CLI child —
+/// until each container is verified gone and its child waited. One worker
+/// thread retries every orphan with backoff that grows to a capped interval
+/// and never gives up ownership; a panic in an attempt counts as a failed
+/// attempt. If the worker cannot be started, the orphans stay held here and
+/// the next adoption retries the spawn. Orphans are bounded by lane capacity,
+/// since each holds a slot.
 pub(crate) struct OrphanReaper {
     cli: Arc<dyn DockerCli>,
     bounds: OrphanBounds,
-    pub(super) held: Arc<Mutex<BTreeMap<String, ScriptExecutionSlot>>>,
+    pub(super) state: Arc<ReaperState>,
+    spawner: WorkerSpawner,
 }
 
 impl OrphanReaper {
-    pub(crate) fn new(cli: Arc<dyn DockerCli>, bounds: OrphanBounds) -> Self {
+    pub(crate) fn new(
+        cli: Arc<dyn DockerCli>,
+        bounds: OrphanBounds,
+        spawner: WorkerSpawner,
+    ) -> Self {
         Self {
             cli,
             bounds,
-            held: Arc::new(Mutex::new(BTreeMap::new())),
+            state: Arc::new(ReaperState {
+                held: Mutex::new(BTreeMap::new()),
+                worker_running: AtomicBool::new(false),
+            }),
+            spawner,
         }
-    }
-
-    pub(super) fn held(
-        held: &Mutex<BTreeMap<String, ScriptExecutionSlot>>,
-    ) -> MutexGuard<'_, BTreeMap<String, ScriptExecutionSlot>> {
-        held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Take ownership of an orphan. Its slot stays held (lane capacity stays
@@ -158,47 +209,117 @@ impl OrphanReaper {
         let Orphan {
             container_name,
             slot,
-            mut child,
-            mut container_gone,
+            child,
+            container_gone,
         } = orphan;
-        Self::held(&self.held).insert(container_name.clone(), slot);
+        lock_held(&self.state).insert(
+            container_name,
+            HeldOrphan {
+                _slot: slot,
+                child,
+                container_gone,
+                attempt: 0,
+                next_attempt: Instant::now() + self.bounds.delay(0),
+            },
+        );
+        self.ensure_worker();
+    }
+
+    fn ensure_worker(&self) {
+        if self.state.worker_running.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let state = Arc::clone(&self.state);
         let cli = Arc::clone(&self.cli);
         let bounds = self.bounds.clone();
-        let held = Arc::clone(&self.held);
-        let spawned = thread::Builder::new()
-            .name("ironclaw-script-orphan-reaper".to_string())
-            .spawn(move || {
-                let mut attempt = 0_usize;
-                loop {
-                    thread::sleep(bounds.delay(attempt));
-                    let settled = catch_unwind(AssertUnwindSafe(|| {
-                        settle_orphan(
-                            cli.as_ref(),
-                            &container_name,
-                            bounds.command,
-                            &mut child,
-                            &mut container_gone,
-                        )
-                    }))
-                    .unwrap_or_else(|_panic| {
-                        tracing::debug!(attempt, "a script orphan reaper attempt panicked");
-                        false
-                    });
-                    if settled {
-                        tracing::debug!(attempt, "settled an orphaned script container");
-                        // Releases the slot.
-                        Self::held(&held).remove(&container_name);
-                        return;
-                    }
-                    attempt = attempt.saturating_add(1);
-                    tracing::debug!(attempt, "orphaned script container not settled; retrying");
+        let spawned = (self.spawner)(
+            "ironclaw-script-orphan-reaper",
+            Box::new(move || {
+                // A worker that dies anyway must not leave the flag set, or
+                // no later adoption would start a new one.
+                if catch_unwind(AssertUnwindSafe(|| {
+                    run_reaper(&state, cli.as_ref(), &bounds)
+                }))
+                .is_err()
+                {
+                    state.worker_running.store(false, Ordering::SeqCst);
                 }
-            });
+            }),
+        );
         if let Err(error) = spawned {
-            // Without a reaper thread the slot stays held: capacity fails
-            // closed rather than re-admitting over a live container.
-            tracing::debug!(%error, "spawning the script orphan reaper failed; slot stays held");
+            // Slots and children stay held; the next adoption retries.
+            self.state.worker_running.store(false, Ordering::SeqCst);
+            tracing::debug!(%error, "spawning the script orphan reaper failed; orphans stay held");
         }
+    }
+}
+
+pub(super) fn lock_held(state: &ReaperState) -> MutexGuard<'_, HeldOrphans> {
+    state.held.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn run_reaper(state: &ReaperState, cli: &dyn DockerCli, bounds: &OrphanBounds) {
+    loop {
+        let (due, next_wake) = {
+            let held = lock_held(state);
+            if held.is_empty() {
+                // Cleared under the lock, so a concurrent `adopt` either sees
+                // the worker still running or starts a new one.
+                state.worker_running.store(false, Ordering::SeqCst);
+                return;
+            }
+            let now = Instant::now();
+            let due: Vec<String> = held
+                .iter()
+                .filter(|(_, orphan)| orphan.next_attempt <= now)
+                .map(|(name, _)| name.clone())
+                .collect();
+            let next_wake = held
+                .values()
+                .map(|orphan| orphan.next_attempt)
+                .min()
+                .unwrap_or(now);
+            (due, next_wake)
+        };
+        if due.is_empty() {
+            thread::sleep(remaining(next_wake).max(Duration::from_millis(1)));
+            continue;
+        }
+        for name in due {
+            attempt_orphan(state, cli, bounds, &name);
+        }
+    }
+}
+
+/// One attempt for one orphan. The child is taken out of the map for the
+/// attempt (the lock is not held across Docker calls) and always put back.
+fn attempt_orphan(state: &ReaperState, cli: &dyn DockerCli, bounds: &OrphanBounds, name: &str) {
+    let Some((mut child, mut container_gone, attempt)) = lock_held(state)
+        .get_mut(name)
+        .map(|orphan| (orphan.child.take(), orphan.container_gone, orphan.attempt))
+    else {
+        return;
+    };
+    let deadline = Instant::now() + bounds.command;
+    let settled = catch_unwind(AssertUnwindSafe(|| {
+        settle_orphan(cli, name, deadline, &mut child, &mut container_gone)
+    }))
+    .unwrap_or_else(|_panic| {
+        tracing::debug!(attempt, "a script orphan reaper attempt panicked");
+        false
+    });
+    let mut held = lock_held(state);
+    if settled {
+        tracing::debug!(attempt, "settled an orphaned script container");
+        // Releases the slot.
+        held.remove(name);
+        return;
+    }
+    if let Some(orphan) = held.get_mut(name) {
+        orphan.child = child;
+        orphan.container_gone = container_gone;
+        orphan.attempt = attempt.saturating_add(1);
+        orphan.next_attempt = Instant::now() + bounds.delay(orphan.attempt);
     }
 }
 
@@ -207,12 +328,12 @@ impl OrphanReaper {
 fn settle_orphan(
     cli: &dyn DockerCli,
     container_name: &str,
-    bound: Duration,
+    deadline: Instant,
     child: &mut Option<Box<dyn ScriptChild>>,
     container_gone: &mut bool,
 ) -> bool {
     if !*container_gone {
-        *container_gone = remove_verified(cli, container_name, bound);
+        *container_gone = remove_verified(cli, container_name, deadline);
     }
     if let Some(running) = child.as_deref_mut() {
         match running.try_wait() {
@@ -251,7 +372,7 @@ pub(crate) fn reap_previous_instances(
         if !(previous_instance_here && owner_gone) {
             continue;
         }
-        if remove_verified(cli, &container.name, bound) {
+        if remove_verified(cli, &container.name, Instant::now() + bound) {
             removed += 1;
         } else {
             tracing::debug!("a previous instance's script container could not be removed");

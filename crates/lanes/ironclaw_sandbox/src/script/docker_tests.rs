@@ -294,6 +294,7 @@ mod teardown {
     }
 
     const TEST_BOUNDS: TeardownBounds = TeardownBounds {
+        total: Duration::from_millis(400),
         reap: Duration::from_millis(50),
         force_remove: Duration::from_millis(50),
         pipe_join: Duration::from_millis(50),
@@ -546,19 +547,13 @@ mod teardown {
     fn teardown_bounds_fit_inside_the_default_runtime_grace() {
         let grace = Duration::from_millis(ScriptRuntimeConfig::default().teardown_grace_ms);
         assert!(
-            worst_case(TeardownBounds::DEFAULT) < grace,
+            TeardownBounds::DEFAULT.total < grace,
             "the runtime must not abandon a backend that is still inside its bounded teardown"
         );
     }
 
-    /// Worst case: two reap waits (before and after the force-remove), a
-    /// force-remove plus its verification, and three pipe joins.
-    fn worst_case(bounds: TeardownBounds) -> Duration {
-        bounds.reap * 2 + bounds.force_remove * 2 + bounds.pipe_join * 3
-    }
-
     fn held(reaper: &OrphanReaper) -> usize {
-        OrphanReaper::held(&reaper.held).len()
+        crate::script::orphans::lock_held(&reaper.state).len()
     }
 
     #[tokio::test]
@@ -926,6 +921,7 @@ mod teardown {
                     backoff: vec![Duration::from_millis(5)],
                     command: Duration::from_millis(50),
                 },
+                crate::script::orphans::thread_spawner(),
             ));
             let panicking = PanicOnceChild {
                 panicked: false,

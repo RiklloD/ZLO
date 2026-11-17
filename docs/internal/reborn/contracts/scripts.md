@@ -171,7 +171,17 @@ an orphan reaper, which retries with backoff growing to a capped interval,
 never drops ownership, catches a panic in any attempt as a failed attempt,
 and releases the slot only once the container is gone and the child waited
 — so capacity is never re-admitted over a live container and no CLI child is
-left as a zombie. At composition time,
+left as a zombie.
+
+All cleanup of one execution — timeout teardown, the guard's drop, pipe
+joins, every `docker rm`/`ps` — shares one absolute deadline
+(`TeardownBounds::total`, below `teardown_grace_ms`), started once; each step
+gets only the time left, and whatever is unsettled when it passes goes to the
+reaper. Every `docker` helper process is owned until waited: one that misses
+its bound is killed and handed to a single janitor rather than dropped. The
+reaper and the janitor each run one worker; if a worker cannot be started,
+the orphans (slot and child) or helper children stay held and the next
+hand-off retries the spawn. At composition time,
 `DockerScriptBackend::reap_previous_instances` removes lane containers left on
 this host by earlier instances whose process is gone; containers of a live
 process (including another IronClaw on the same host), of another host, or
