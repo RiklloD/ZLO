@@ -801,6 +801,29 @@ pub fn pending_effort(picker: &ModelPickerState) -> Option<String> {
 mod tests {
     use super::{effort_label, hidden_summary, pretty_model};
 
+    /// In a thread the panel opens above the composer and clears the whole
+    /// card: hung off the pill alone, it covered the text being typed.
+    #[test]
+    fn the_panel_opens_clear_of_the_composer() {
+        use rune::{Env, Runtime};
+        let mut s = crate::chat::fixtures::test_state();
+        super::scene(&mut s, false);
+        let mut rt = Runtime::new(s, crate::view, (1440., 900.), Env::new(true, 1.));
+        let mut t = 0.;
+        for _ in 0..60 {
+            t += 1. / 60.;
+            rt.frame(t);
+        }
+        let (panel, _) = rt.presented("model-popover").expect("panel drawn");
+        let (card, _) = rt.presented("composer:t1").expect("composer drawn");
+        assert!(
+            panel[1] + panel[3] <= card[1],
+            "the panel (bottom {:.1}) overlaps the composer (top {:.1})",
+            panel[1] + panel[3],
+            card[1]
+        );
+    }
+
     #[test]
     fn the_hidden_footer_counts_both_kinds() {
         assert_eq!(
