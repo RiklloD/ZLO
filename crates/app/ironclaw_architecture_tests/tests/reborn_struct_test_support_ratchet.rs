@@ -15,7 +15,7 @@ mod ratchet_support;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use ratchet_support::{try_resolve_crate_relative, workspace_root};
+use ratchet_support::{production_rust_files, try_resolve_crate_relative, workspace_root};
 use syn::parse::Parser;
 use syn::spanned::Spanned;
 use syn::{Attribute, Fields, ImplItem, Item, Meta, Token};
@@ -735,32 +735,15 @@ fn scan_items(items: &[Item], in_test_module: bool, occurrences: &mut Vec<Occurr
     }
 }
 
-fn should_skip(path: &Path) -> bool {
-    let display = path.to_string_lossy().replace('\\', "/");
-    display.contains("/target/")
-        || display.contains("/tests/")
-        || display.contains("/examples/")
-        || display.contains("/benches/")
-        || display.ends_with("/tests.rs")
-        || display.ends_with("_tests.rs")
-}
-
-fn scan_dir(root: &Path, dir: &Path, out: &mut BTreeMap<(String, String, String), usize>) {
-    let entries = std::fs::read_dir(dir)
-        .unwrap_or_else(|err| panic!("failed to read {}: {err}", dir.display()));
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|err| panic!("failed to read directory entry: {err}"));
-        let path = entry.path();
-        if path.is_dir() {
-            if !should_skip(&path) {
-                scan_dir(root, &path, out);
-            }
-            continue;
-        }
-        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") || should_skip(&path) {
-            continue;
-        }
-
+/// `(category, item kind, root-relative path) -> occurrences` over the
+/// production files under `dir` — `ratchet_support::production_rust_files`, so
+/// a file is test code only when every `mod` declaration reaching it is
+/// test-gated, whatever its name or directory. Until 2026-11-17 this walk
+/// skipped `tests.rs` / `*_tests.rs` names and any `tests/`, `examples/`,
+/// `benches/` directory instead (gate audit 2026-08 §9).
+fn scan_tree(root: &Path, dir: &Path) -> BTreeMap<(String, String, String), usize> {
+    let mut out = BTreeMap::new();
+    for path in production_rust_files(dir) {
         let contents = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
         let relative = path
@@ -777,6 +760,7 @@ fn scan_dir(root: &Path, dir: &Path, out: &mut BTreeMap<(String, String, String)
             .or_default() += 1;
         }
     }
+    out
 }
 
 fn format_count(key: &(String, String, String), count: usize) -> String {
@@ -786,8 +770,7 @@ fn format_count(key: &(String, String, String), count: usize) -> String {
 #[test]
 fn reborn_production_struct_test_support_and_dead_code_members_do_not_grow() {
     let root = workspace_root();
-    let mut found = BTreeMap::new();
-    scan_dir(&root, &root.join("crates"), &mut found);
+    let found = scan_tree(&root, &root.join("crates"));
 
     // Frozen paths are compared against paths DISCOVERED on disk, so each is
     // resolved through the crate inventory first: after the family move
@@ -971,5 +954,38 @@ fn reborn_struct_member_scanner_self_test() {
         ],
         "scanner should only count attributes attached to production struct fields \
          and impl methods"
+    );
+}
+
+/// Test code is decided by cfg gating, not by file name (gate audit 2026-08
+/// §9): a struct in an ungated `probe_tests.rs` ships and its test-support
+/// member counts; the same struct in a production-named `helpers.rs` reachable
+/// only through `#[cfg(test)]` is test code and does not.
+#[test]
+fn reborn_struct_member_walk_classifies_test_files_by_cfg_not_by_name() {
+    let tree = tempfile::tempdir().expect("temp tree");
+    let crate_dir = tree.path().join("crates/fixture");
+    let src = crate_dir.join("src");
+    std::fs::create_dir_all(&src).expect("src");
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\n",
+    )
+    .expect("manifest");
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub mod probe_tests;\n#[cfg(test)]\nmod helpers;\n",
+    )
+    .expect("lib.rs");
+    let member = "pub struct S {\n    #[cfg(test)]\n    pub seam: u8,\n}\n";
+    std::fs::write(src.join("probe_tests.rs"), member).expect("probe_tests.rs");
+    std::fs::write(src.join("helpers.rs"), member).expect("helpers.rs");
+
+    let found = scan_tree(tree.path(), &tree.path().join("crates"));
+    let paths: Vec<&str> = found.keys().map(|key| key.2.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["crates/fixture/src/probe_tests.rs"],
+        "only the ungated `probe_tests.rs` ships a test-support member: {found:?}"
     );
 }

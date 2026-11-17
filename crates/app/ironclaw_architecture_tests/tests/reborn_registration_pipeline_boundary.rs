@@ -57,9 +57,11 @@
 mod ratchet_support;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use ratchet_support::{find_workspace_root, strip_cfg_test_blocks, workspace_root};
+use ratchet_support::{
+    cfg_test_only_files, find_workspace_root, strip_cfg_test_blocks, workspace_root,
+};
 
 /// Registration-pipeline vocabulary. Naming any of these outside the owning
 /// files below means a registration concept has entered generic code.
@@ -402,7 +404,9 @@ fn scan_tree(root: &Path, scopes: &ResolvedScopes) -> Result<ScanOutcome, String
             .collect(),
         ..ScanOutcome::default()
     };
-    collect_hits(&root.join("crates"), root, scopes, &mut outcome)?;
+    let crates = root.join("crates");
+    let test_only = cfg_test_only_files(&crates);
+    collect_hits(&crates, root, scopes, &test_only, &mut outcome)?;
     Ok(outcome)
 }
 
@@ -414,26 +418,20 @@ fn is_excluded(relative: &str, excluded: &[String]) -> bool {
     excluded.iter().any(|prefix| relative.starts_with(prefix))
 }
 
-/// Scannable: `src/` Rust files only, skipping test-named files. Whole `tests/`
-/// directories never enter because the walk only descends into `src/`.
+/// Scannable: `src/` Rust files only. Test code is decided by cfg gating, not
+/// by name ([`cfg_test_only_files`], applied in [`collect_hits`]): until
+/// 2026-11-17 this skipped `tests.rs` / `*_tests.rs` names and any `tests/`
+/// directory, so registration vocabulary in a shipped `*_tests.rs` was
+/// invisible (gate audit 2026-08 §9).
 fn is_scannable(relative: &str) -> bool {
-    if !relative.ends_with(".rs") {
-        return false;
-    }
-    if !relative.contains("/src/") {
-        return false;
-    }
-    let file = relative.rsplit('/').next().unwrap_or_default();
-    if file == "tests.rs" || file.ends_with("_tests.rs") {
-        return false;
-    }
-    !relative.contains("/tests/")
+    relative.ends_with(".rs") && relative.contains("/src/")
 }
 
 fn collect_hits(
     dir: &Path,
     root: &Path,
     scopes: &ResolvedScopes,
+    test_only: &BTreeSet<PathBuf>,
     outcome: &mut ScanOutcome,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|error| read_failure(dir, error))?;
@@ -441,22 +439,22 @@ fn collect_hits(
         let entry = entry.map_err(|error| entry_failure(dir, error))?;
         let path = entry.path();
         if path.is_dir() {
-            // Same exclusions as the manifest walk: build output and vendored
-            // frontend packages are not production source, and counting them
-            // would inflate `scanned_files` past its floor with files nothing
-            // in this workspace wrote.
-            let name = entry.file_name();
-            if matches!(name.to_string_lossy().as_ref(), "target" | "node_modules") {
+            // The shared walk's pruning: build output and vendored frontend
+            // packages are not production source (counting them would inflate
+            // `scanned_files` past its floor with files nothing in this
+            // workspace wrote), and crate-level `tests/` / `examples/` /
+            // `benches/` are separate cargo targets.
+            if ratchet_support::is_pruned_dir(&path) {
                 continue;
             }
-            collect_hits(&path, root, scopes, outcome)?;
+            collect_hits(&path, root, scopes, test_only, outcome)?;
             continue;
         }
         let Ok(relative) = path.strip_prefix(root) else {
             continue;
         };
         let relative = relative.to_string_lossy().replace('\\', "/");
-        if !is_scannable(&relative) {
+        if !is_scannable(&relative) || test_only.contains(&path) {
             continue;
         }
         for prefix in &scopes.owned {
@@ -665,6 +663,46 @@ fn fail_closed_when_the_scan_visits_nothing() {
     assert!(outcome.hits.is_empty());
 }
 
+/// Test code is decided by cfg gating, not by file name (gate audit 2026-08
+/// §9): registration vocabulary in an ungated `probe_tests.rs` ships and is a
+/// leak; in a production-named `helpers.rs` reachable only through
+/// `#[cfg(test)]` it is test code. Same for a `src/**/tests/` module directory.
+#[test]
+fn scan_classifies_test_files_by_cfg_not_by_name() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    write_crate(root, "crates/ironclaw_assistant", &[]);
+    let src = root.join("crates/ironclaw_assistant/src");
+    let leak = "pub fn f(_: PreparationRequirement) {}\n";
+    for (relative, contents) in [
+        (
+            "lib.rs",
+            "pub mod probe_tests;\n#[cfg(test)]\nmod helpers;\npub mod tests;\n",
+        ),
+        ("probe_tests.rs", leak),
+        ("helpers.rs", leak),
+        ("tests/mod.rs", leak),
+    ] {
+        let path = src.join(relative);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(path, contents).expect("fixture file");
+    }
+    let scopes = ResolvedScopes {
+        owned: Vec::new(),
+        excluded: Vec::new(),
+    };
+    let outcome = scan_tree(root, &scopes).expect("readable tree scans");
+    let leaked: Vec<&str> = outcome.hits.iter().map(|(path, _)| path.as_str()).collect();
+    assert_eq!(
+        leaked,
+        vec![
+            "crates/ironclaw_assistant/src/probe_tests.rs",
+            "crates/ironclaw_assistant/src/tests/mod.rs",
+        ],
+        "ungated files ship their vocabulary; the gated `helpers.rs` does not"
+    );
+}
+
 /// An owned scope that no longer names anything on disk is an error. This is
 /// the WS6/WS7 shape: the scope survives as text while meaning nothing.
 #[test]
@@ -721,8 +759,14 @@ fn an_unreadable_path_fails_the_scan_rather_than_disappearing_from_it() {
         excluded: Vec::new(),
     };
     let mut outcome = ScanOutcome::default();
-    let error = collect_hits(&not_a_directory, temp.path(), &scopes, &mut outcome)
-        .expect_err("the hit walk must refuse an unreadable directory");
+    let error = collect_hits(
+        &not_a_directory,
+        temp.path(),
+        &scopes,
+        &BTreeSet::new(),
+        &mut outcome,
+    )
+    .expect_err("the hit walk must refuse an unreadable directory");
     assert!(
         error.contains("must fail this gate, not vanish from the scan"),
         "expected an I/O refusal naming the path, got: {error}"
@@ -739,7 +783,7 @@ fn an_unreadable_path_fails_the_scan_rather_than_disappearing_from_it() {
         std::os::unix::fs::symlink(src.join("gone"), src.join("lifecycle.rs"))
             .expect("dangling source");
         let mut outcome = ScanOutcome::default();
-        let error = collect_hits(&src, temp.path(), &scopes, &mut outcome)
+        let error = collect_hits(&src, temp.path(), &scopes, &BTreeSet::new(), &mut outcome)
             .expect_err("an unreadable source must refuse");
         assert!(
             error.contains("lifecycle.rs") && error.contains("must fail this gate"),

@@ -7,8 +7,9 @@
 //! such as the WebUI services projection or the generic host loader — fails
 //! this gate until its file and category are enumerated below.
 //!
-//! Pattern mirrors `reborn_extension_specificity.rs`: scan production Rust with
-//! test files and `#[cfg(test)]` blocks stripped, collect the reparse call
+//! Pattern mirrors `reborn_extension_specificity.rs`: scan production Rust
+//! (`ratchet_support::production_rust_files`, test files decided by cfg
+//! gating) with `#[cfg(test)]` blocks stripped, collect the reparse call
 //! sites, and hold them to an EXACT, categorized allowlist. Adding a reparse
 //! (new file, or one more call in an existing file) fails until the allowlist
 //! is updated with a justification; removing one — moving a projection onto the
@@ -21,7 +22,10 @@ mod ratchet_support;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use ratchet_support::{resolve_crate_relative, strip_line_anchored_cfg_test_items, workspace_root};
+use ratchet_support::{
+    in_test_support_root, production_rust_files, resolve_crate_relative,
+    strip_line_anchored_cfg_test_items, workspace_root,
+};
 
 /// Why a reparse site is *not* a projection reparse. Every allowlisted entry
 /// names one of these.
@@ -52,29 +56,6 @@ const ALLOWLIST: &[(&str, usize, ReparseCategory, &str)] = &[
     ),
 ];
 
-fn is_test_source_path(path: &Path) -> bool {
-    let mut components = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().to_string());
-    if components.any(|component| {
-        component == "tests"
-            || component == "__tests__"
-            || component == "test-utils"
-            || component == "test_support"
-    }) {
-        return true;
-    }
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_default();
-    name == "tests.rs"
-        || name == "test_support.rs"
-        || name.ends_with("_tests.rs")
-        || name.contains(".test.")
-        || name.contains(".spec.")
-}
-
 /// Count reparse calls in a production source file, ignoring comment lines so a
 /// doc-comment mention of the API is not a false positive.
 fn count_reparse_calls(source: &str) -> usize {
@@ -92,36 +73,6 @@ fn count_reparse_calls(source: &str) -> usize {
         .sum()
 }
 
-/// Walk `dir` for `.rs` files, skipping build output, `.git`, and vendored
-/// frontend packages.
-///
-/// An unreadable directory or entry is an error, not a silently skipped
-/// subtree: the `files.len() >= 500` floor only detects a scan that went almost
-/// entirely dark, so one unreadable crate tree would leave the count healthy
-/// while the gate reported zero reparse sites for files it never opened
-/// (CHECKLIST WS0, #6963).
-fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|error| read_failure(dir, error))?;
-    for entry in entries {
-        let entry = entry
-            .map_err(|error| format!("failed to read an entry in {}: {error}", dir.display()))?;
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().map(|n| n.to_string_lossy().to_string());
-            if matches!(
-                name.as_deref(),
-                Some("target") | Some(".git") | Some("node_modules")
-            ) {
-                continue;
-            }
-            collect_rust_files(&path, out)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
-
 fn read_failure(path: &Path, error: std::io::Error) -> String {
     format!(
         "failed to read {} — an unreadable path must fail this gate, not vanish from the \
@@ -130,46 +81,114 @@ fn read_failure(path: &Path, error: std::io::Error) -> String {
     )
 }
 
+/// `(production files scanned, workspace-relative path -> reparse calls)`
+/// under `scan_root`, paths relative to `root`.
+fn production_reparse_counts(root: &Path, scan_root: &Path) -> (usize, BTreeMap<String, usize>) {
+    // `production_rust_files` fails the gate on an unreadable directory (a
+    // subtree that vanished would report zero reparse sites for files it never
+    // opened, CHECKLIST WS0 / #6963) and classifies test code by cfg gating:
+    // until 2026-11-17 this walk dropped files by NAME (`tests.rs`,
+    // `*_tests.rs`, any `tests/` or `test_support/` directory), so an ungated
+    // `*_tests.rs` could reparse unseen (gate audit 2026-08 §9). The
+    // feature-gated `src/test_support` root stays out, as in the LOC counters.
+    let files: Vec<PathBuf> = production_rust_files(scan_root)
+        .into_iter()
+        .filter(|path| !in_test_support_root(path))
+        .collect();
+    let mut found = BTreeMap::new();
+    for path in &files {
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("{}", read_failure(path, error)));
+        let count = count_reparse_calls(&source);
+        if count > 0 {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            found.insert(rel, count);
+        }
+    }
+    (files.len(), found)
+}
+
+/// Test code is decided by cfg gating, not by file name (gate audit 2026-08
+/// §9): an ungated `probe_tests.rs` ships and its reparse counts; a
+/// production-named `helpers.rs` reachable only through `#[cfg(test)]` is test
+/// code. The feature-gated `src/test_support` root stays out, as in the LOC
+/// counters, and crate-level `tests/` is a separate cargo target.
+#[test]
+fn reparse_scan_classifies_test_files_by_cfg_not_by_name() {
+    let tree = tempfile::tempdir().expect("temp tree");
+    let crate_dir = tree.path().join("crates/fixture");
+    let src = crate_dir.join("src");
+    std::fs::create_dir_all(src.join("test_support")).expect("src");
+    std::fs::create_dir_all(crate_dir.join("tests")).expect("tests");
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\n",
+    )
+    .expect("manifest");
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub mod probe_tests;\n#[cfg(test)]\nmod helpers;\n\
+         #[cfg(feature = \"test-support\")]\npub mod test_support;\n",
+    )
+    .expect("lib.rs");
+    let reparse = "pub fn f(t: &str) { let _m = ExtensionManifest::parse(t); }\n";
+    for name in [
+        "src/probe_tests.rs",
+        "src/helpers.rs",
+        "src/test_support/mod.rs",
+        "tests/it.rs",
+    ] {
+        std::fs::write(crate_dir.join(name), reparse).expect("fixture file");
+    }
+    let (_, found) = production_reparse_counts(tree.path(), &tree.path().join("crates"));
+    assert_eq!(
+        found.keys().cloned().collect::<Vec<_>>(),
+        vec!["crates/fixture/src/probe_tests.rs".to_string()],
+        "only the ungated `probe_tests.rs` ships a reparse"
+    );
+}
+
 /// The walk refuses an unreadable path rather than shrinking around it. The
 /// floor cannot cover this: one unreadable crate tree leaves the file count far
 /// above 500 while the reparse census silently loses everything under it.
 #[test]
+#[should_panic(expected = "read_dir")]
 fn an_unreadable_path_fails_the_walk_rather_than_disappearing_from_it() {
     let temp = tempfile::tempdir().expect("tempdir");
     let not_a_directory = temp.path().join("regular-file");
     std::fs::write(&not_a_directory, "// fixture\n").expect("fixture file");
+    let _ = production_reparse_counts(temp.path(), &not_a_directory);
+}
 
-    let mut files = Vec::new();
-    let error = collect_rust_files(&not_a_directory, &mut files)
-        .expect_err("an unreadable directory must refuse");
-    assert!(
-        error.contains("must fail this gate, not vanish from the scan"),
-        "expected an I/O refusal naming the path, got: {error}"
-    );
-
-    // Generated trees stay excluded, so a `pnpm install` cannot inflate the
-    // scan with vendored sources.
+/// Generated trees stay excluded, so a `pnpm install` cannot inflate the scan
+/// with vendored sources.
+#[test]
+fn the_walk_skips_generated_trees() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let reparse = "pub fn f(t: &str) { let _m = ExtensionManifest::parse(t); }\n";
     for generated in ["target", "node_modules", ".git"] {
         let vendored = temp.path().join(format!("tree/{generated}/pkg"));
         std::fs::create_dir_all(&vendored).expect("vendored tree");
-        std::fs::write(vendored.join("lib.rs"), "// vendored\n").expect("vendored source");
+        std::fs::write(vendored.join("lib.rs"), reparse).expect("vendored source");
     }
-    std::fs::write(temp.path().join("tree/real.rs"), "// real\n").expect("real source");
-    let mut files = Vec::new();
-    collect_rust_files(&temp.path().join("tree"), &mut files).expect("a readable tree walks");
+    std::fs::write(temp.path().join("tree/real.rs"), reparse).expect("real source");
+    let (scanned, found) = production_reparse_counts(temp.path(), &temp.path().join("tree"));
+    assert_eq!(scanned, 1, "the walk must skip generated trees: {found:?}");
     assert_eq!(
-        files,
-        vec![temp.path().join("tree/real.rs")],
-        "the walk must skip generated trees and keep everything else"
+        found.keys().cloned().collect::<Vec<_>>(),
+        vec!["tree/real.rs".to_string()]
     );
 }
 
 #[test]
 fn manifest_reparse_stays_within_the_compiler_and_bundled_paths() {
     let root = workspace_root();
-    let mut files = Vec::new();
     // The scan used to cover `["crates", "src"]`; `src` was the v1 monolith and
-    // is long gone. `collect_rust_files` skips a missing directory silently, so
+    // is long gone. The old walk skipped a missing directory silently, so
     // the dead entry was invisible — and the same silence is what a wrong root
     // produces. The scan root must exist (CHECKLIST WS0, #6963).
     let crates_dir = root.join("crates");
@@ -179,33 +198,12 @@ fn manifest_reparse_stays_within_the_compiler_and_bundled_paths() {
          scanning nothing",
         crates_dir.display()
     );
-    collect_rust_files(&crates_dir, &mut files)
-        .expect("the manifest-reparse walk must not hit an I/O error");
+    let (scanned, found) = production_reparse_counts(&root, &crates_dir);
     assert!(
-        files.len() >= 500,
-        "manifest-reparse scan collected only {} file(s) — the walk is broken, not the \
-         workspace; an empty scan reports zero reparse sites and passes.",
-        files.len()
+        scanned >= 500,
+        "manifest-reparse scan collected only {scanned} file(s) — the walk is broken, not the \
+         workspace; an empty scan reports zero reparse sites and passes."
     );
-
-    // Production (test-stripped) reparse counts, keyed by workspace-relative path.
-    let mut found: BTreeMap<String, usize> = BTreeMap::new();
-    for path in &files {
-        if is_test_source_path(path) {
-            continue;
-        }
-        let source = std::fs::read_to_string(path)
-            .unwrap_or_else(|error| panic!("{}", read_failure(path, error)));
-        let count = count_reparse_calls(&source);
-        if count > 0 {
-            let rel = path
-                .strip_prefix(&root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            found.insert(rel, count);
-        }
-    }
 
     // ALLOWLIST paths keep their readable flat `crates/<crate>/…` spelling and
     // are RESOLVED through the crate inventory before being matched against a

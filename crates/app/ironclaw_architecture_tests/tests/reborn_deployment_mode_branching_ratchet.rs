@@ -45,8 +45,10 @@
 //!
 //! Scanner semantics: comments and string literals are stripped before
 //! matching, so this file's own doc comment and fixtures do not self-trip.
-//! Skips `tests/`, `examples/`, `benches/` trees and `*tests.rs` files —
-//! test fixtures naming a profile are not production branching.
+//! Scans `ratchet_support::production_rust_files`: files reachable only
+//! through test-gated `mod` declarations are skipped whatever their name —
+//! test fixtures naming a profile are not production branching, and a shipped
+//! `*_tests.rs` is.
 
 #![deny(clippy::let_underscore_must_use)]
 #[allow(dead_code)]
@@ -59,7 +61,9 @@ use std::path::Path;
 // the crate inventory, so the family move (PROPOSAL section 5) repoints them
 // without editing the literals. Identity on today's tree - pinned by
 // `reborn_crate_inventory.rs` (CHECKLIST WS10).
-use ratchet_support::{crate_path, strip_comments_and_strings, workspace_root};
+use ratchet_support::{
+    crate_path, production_rust_files, strip_comments_and_strings, workspace_root,
+};
 
 /// Production files under composition `src/` allowed to name a
 /// `RebornCompositionProfile` variant, each with the reason it is still here.
@@ -82,56 +86,33 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ),
 ];
 
-fn is_scanned_file(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    name.ends_with(".rs") && !name.ends_with("tests.rs")
-}
-
-fn collect(dir: &Path, root: &Path, found: &mut BTreeSet<String>) {
-    let entries =
-        std::fs::read_dir(dir).unwrap_or_else(|err| panic!("read {}: {err}", dir.display()));
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|err| panic!("read dir entry: {err}"));
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("");
-            // `*_tests` covers the inline test trees composition keeps beside
-            // production modules (e.g. `factory/standalone_host_tests/`).
-            if matches!(name, "tests" | "examples" | "benches" | "target")
-                || name.ends_with("_tests")
-            {
-                continue;
-            }
-            collect(&path, root, found);
-            continue;
-        }
-        if !is_scanned_file(&path) {
-            continue;
-        }
-        let source = std::fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-        if !strip_comments_and_strings(&source).contains("RebornCompositionProfile::") {
-            continue;
-        }
-        let relative = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        found.insert(relative);
-    }
+/// `src`-relative paths of the production files under `src` that name a
+/// `RebornCompositionProfile` variant. Production is
+/// `ratchet_support::production_rust_files` — a file is test code only when
+/// every `mod` declaration reaching it is test-gated, whatever its name; until
+/// 2026-11-17 this walker skipped `*tests.rs` names and `*_tests/` directories
+/// instead (gate audit 2026-08 §9).
+fn branching_files(src: &Path) -> BTreeSet<String> {
+    production_rust_files(src)
+        .into_iter()
+        .filter(|path| {
+            let source = std::fs::read_to_string(path)
+                .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+            strip_comments_and_strings(&source).contains("RebornCompositionProfile::")
+        })
+        .map(|path| {
+            path.strip_prefix(src)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect()
 }
 
 #[test]
 fn deployment_mode_branching_allowlist_is_frozen_and_only_shrinks() {
     let root = crate_path(&workspace_root(), "crates/ironclaw_composition/src");
-    let mut found = BTreeSet::new();
-    collect(&root, &root, &mut found);
+    let found = branching_files(&root);
 
     let allowed: BTreeSet<String> = ALLOWLIST
         .iter()
@@ -226,4 +207,34 @@ fn scanner_strips_comments_and_strings() {
     // lifetime is preserved.
     assert!(!strip_comments_and_strings("let c = '\"';").contains('"'));
     assert!(strip_comments_and_strings("fn f<'a>(x: &'a str) {}").contains("'a"));
+}
+
+/// Test code is decided by cfg gating, not by file name (gate audit 2026-08
+/// §9): an ungated `probe_tests.rs` ships and its branching counts; a
+/// production-named `helpers.rs` reachable only through `#[cfg(test)] mod
+/// helpers;` is test code and does not.
+#[test]
+fn branching_scan_classifies_test_files_by_cfg_not_by_name() {
+    let tree = tempfile::tempdir().expect("temp tree");
+    let src = tree.path().join("src");
+    std::fs::create_dir_all(&src).expect("src");
+    let branch =
+        "pub fn f(p: P) -> u8 { match p { RebornCompositionProfile::Standalone => 1, _ => 0 } }\n";
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub mod probe_tests;\n#[cfg(test)]\nmod helpers;\n",
+    )
+    .expect("lib.rs");
+    std::fs::write(src.join("probe_tests.rs"), branch).expect("probe_tests.rs");
+    std::fs::write(src.join("helpers.rs"), branch).expect("helpers.rs");
+
+    let found = branching_files(&src);
+    assert!(
+        found.contains("probe_tests.rs"),
+        "an ungated `pub mod probe_tests;` ships; its branching must be found: {found:?}"
+    );
+    assert!(
+        !found.contains("helpers.rs"),
+        "`helpers.rs` is reachable only through `#[cfg(test)]`; it is test code: {found:?}"
+    );
 }

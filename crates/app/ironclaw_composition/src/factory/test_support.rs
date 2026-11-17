@@ -789,8 +789,8 @@ fn active_extension_grant_constraints_for_test(
 fn active_extension_network_policy_for_test(
     capability: &ironclaw_extension_host::ActiveExtensionCapability,
 ) -> NetworkPolicy {
-    // Delegate to the production manifest-egress policy builder (gsuite +
-    // web-access declare their egress in their manifests now — no per-provider
+    // Delegate to the production manifest-egress policy builder (the bundled
+    // packages declare their egress in their manifests now — no per-provider
     // special-case, and no first-party dependency in this test-support seam).
     ironclaw_extension_host::capability_surface::extension_network_policy(capability)
 }

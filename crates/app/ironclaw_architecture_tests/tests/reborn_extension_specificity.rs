@@ -21,9 +21,12 @@
 //! - **Legacy-layer / v1 crates** — the v1 enclave is being strangled
 //!   wholesale, not policed term-by-term (same footing as
 //!   `reborn_retired_taxonomy.rs`).
-//! - **Test code** — tests may name concrete products (overview §8); `tests/`
-//!   directories, `tests.rs` / `*_tests.rs` files, and `#[cfg(test)]` blocks
-//!   inside `src/` are stripped before matching.
+//! - **Test code** — tests may name concrete products (overview §8). Rust test
+//!   code is decided by cfg gating (`ratchet_support::production_rust_files`:
+//!   a file reachable only through test-gated `mod` declarations, whatever
+//!   its name, plus the feature-gated `src/test_support` root), and
+//!   `#[cfg(test)]` items inside production files are stripped before
+//!   matching. Frontend test files keep their naming conventions.
 //!
 //! Term-collision carve-outs (`TERM_COLLISIONS`, `PATH_TERM_COLLISIONS`):
 //! some inventory-derived identifiers are *also* vocabulary of a different
@@ -72,8 +75,8 @@ use serde_json::Value;
 // ~215 literals below without a lockstep edit. On today's tree resolution is
 // the identity - pinned by `reborn_crate_inventory.rs`.
 use ratchet_support::{
-    crate_dir, crate_directories, crate_path, strip_line_anchored_cfg_test_items,
-    try_resolve_crate_relative, workspace_root,
+    crate_dir, crate_directories, crate_path, is_test_support_root, production_rust_files,
+    strip_line_anchored_cfg_test_items, try_resolve_crate_relative, workspace_root,
 };
 
 /// Resolve a listed path through the crate inventory, falling back to the
@@ -1051,6 +1054,12 @@ fn scan_dir(
         let Some(kind) = scannable_kind(&path) else {
             continue;
         };
+        // Rust test code is decided by cfg gating, not by name: `scan_src`
+        // reads Rust from `production_rust_files`, so this walk (and its
+        // name/directory conventions) covers only frontend and TOML files.
+        if kind == FileKind::Rust {
+            continue;
+        }
         let matched = scan_file(&path, kind, terms);
         if matched.is_empty() {
             continue;
@@ -1064,12 +1073,46 @@ fn scan_dir(
     }
 }
 
+/// Scan one generic crate's `src` tree into `hits`: Rust from
+/// `ratchet_support::production_rust_files` (a file is test code only when
+/// every `mod` declaration reaching it is test-gated, whatever its name or
+/// directory) minus the feature-gated `src/test_support` root — the LOC
+/// counters' file rule — and the frontend/TOML files through [`scan_dir`].
+/// Until 2026-11-17 Rust files were dropped by NAME (`tests.rs`, `*_tests.rs`,
+/// `test_support.rs`, any `tests/` or `test_support/` directory), so a vendor
+/// name in a shipped `*_tests.rs` was invisible (gate audit 2026-08 §9).
+fn scan_src(
+    root: &Path,
+    src: &Path,
+    terms: &BTreeSet<String>,
+    hits: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    if src.is_dir() {
+        for path in production_rust_files(src) {
+            if is_test_support_root(src, &path) {
+                continue;
+            }
+            let matched = scan_file(&path, FileKind::Rust, terms);
+            if matched.is_empty() {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            hits.entry(relative).or_default().extend(matched);
+        }
+    }
+    scan_dir(root, src, terms, hits);
+}
+
 fn collect_workspace_hits(root: &Path, terms: &BTreeSet<String>) -> BTreeSet<(String, String)> {
     let metadata = cargo_metadata(root);
     let mut hits: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for scan_root in generic_scan_roots(&metadata, root) {
         let src = scan_root.crate_dir.join("src");
-        scan_dir(root, &src, terms, &mut hits);
+        scan_src(root, &src, terms, &mut hits);
         // `build.rs` is generic-crate code that ships in the build, and it sat
         // outside every scan root: a vendor name there was invisible to this
         // gate (proven by sabotage, 2026-08-13).
@@ -2208,4 +2251,49 @@ fn term_collision_carve_outs_stay_documented_and_narrow() {
             "compound extension forms must survive the carve-outs; missing `{compound}`"
         );
     }
+}
+
+/// Rust test code is decided by cfg gating, not by file name (gate audit
+/// 2026-08 §9): a vendor term in an ungated `probe_tests.rs` (or a shipped
+/// `src/**/tests/` module) is generic production code naming a product; in a
+/// production-named `helpers.rs` reachable only through `#[cfg(test)]` it is
+/// test code, which may name products. Frontend test files keep their own
+/// conventions (`*.test.ts`, `__tests__/`).
+#[test]
+fn rust_scan_classifies_test_files_by_cfg_not_by_name() {
+    let tree = tempfile::tempdir().expect("temp tree");
+    let root = tree.path();
+    let crate_dir = root.join("crates/generic");
+    let src = crate_dir.join("src");
+    std::fs::create_dir_all(src.join("tests")).expect("src");
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"generic\"\n",
+    )
+    .expect("manifest");
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub mod probe_tests;\n#[cfg(test)]\nmod helpers;\npub mod tests;\n",
+    )
+    .expect("lib.rs");
+    let named = "pub fn route() -> &'static str { \"acmevendor\" }\n";
+    for relative in [
+        "probe_tests.rs",
+        "helpers.rs",
+        "tests/mod.rs",
+        "widget.test.ts",
+    ] {
+        std::fs::write(src.join(relative), named).expect("fixture file");
+    }
+    let terms: BTreeSet<String> = ["acmevendor".to_string()].into_iter().collect();
+    let mut hits = BTreeMap::new();
+    scan_src(root, &src, &terms, &mut hits);
+    assert_eq!(
+        hits.keys().cloned().collect::<Vec<_>>(),
+        vec![
+            "crates/generic/src/probe_tests.rs".to_string(),
+            "crates/generic/src/tests/mod.rs".to_string(),
+        ],
+        "ungated Rust files ship; the gated `helpers.rs` and the frontend test file do not"
+    );
 }

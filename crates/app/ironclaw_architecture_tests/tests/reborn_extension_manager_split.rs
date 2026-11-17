@@ -221,6 +221,8 @@ fn crate_src(root: &Path, name: &str) -> PathBuf {
 /// `ratchet_support`, not in a crate split — the two this reviewer named are
 /// the pair that shared the `cfg_test_only_files` recipe, and they are the two
 /// converted here.
+/// ✎ 2026-11-17: the seven §9 walkers that filtered test code by file name now
+/// use it too; six more are listed in gate audit 2026-08 §9.1 (residual 4).
 fn production_files(dir: &Path) -> Vec<PathBuf> {
     production_rust_files(dir)
         .into_iter()
