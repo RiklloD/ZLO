@@ -51,6 +51,7 @@ fn fake(tune: impl FnOnce(&mut ComputerUseConfig)) -> Fake {
     config.stop_hold = Duration::from_millis(300);
     config.call_timeout = Duration::from_secs(5);
     config.cursor_dir = dir.path().join("cursor");
+    config.capture_dir = Some(dir.path().join("captures"));
     config.trace_path = Some(dir.path().join("trace.jsonl"));
     tune(&mut config);
     Fake {

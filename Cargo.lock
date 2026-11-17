@@ -4024,6 +4024,7 @@ dependencies = [
  "ironclaw_host_api",
  "ironclaw_mcp",
  "ironclaw_product_contracts",
+ "libc",
  "regex",
  "serde",
  "serde_json",

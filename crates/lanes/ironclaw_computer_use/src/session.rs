@@ -356,11 +356,15 @@ impl ComputerUse {
     pub fn new(config: ComputerUseConfig) -> Self {
         let live = Arc::new(Live::new(config.live_preview));
         let leftovers = Arc::new(Leftovers::new());
+        let capture = Arc::new(Capture::new(
+            config.capture_dir.clone(),
+            Arc::clone(&leftovers),
+        ));
         Self {
             config,
             sessions: Mutex::new(HashMap::new()),
             live,
-            capture: Arc::new(Capture::new(Arc::clone(&leftovers))),
+            capture,
             leftovers,
         }
     }

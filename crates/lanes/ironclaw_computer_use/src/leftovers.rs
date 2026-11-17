@@ -110,11 +110,18 @@ impl Leftovers {
         }
     }
 
-    /// Delete files in `dir` whose name starts with `prefix` and ends with
-    /// `suffix` and that were last modified more than `older_than` ago:
-    /// leftovers of an earlier process. Younger files may belong to a capture
-    /// in flight in another process and are left alone.
-    pub(crate) fn sweep_stale(&self, dir: &Path, prefix: &str, suffix: &str, older_than: Duration) {
+    /// Delete regular files in `dir` whose name `matches` and that were last
+    /// modified more than `older_than` ago: leftovers of an earlier process.
+    /// Younger files may belong to a capture in flight in another process.
+    /// Symlinks and other non-regular entries are never followed or touched,
+    /// and with `owner_uid` only files that user owns are considered.
+    pub(crate) fn sweep_stale(
+        &self,
+        dir: &Path,
+        matches: &dyn Fn(&str) -> bool,
+        older_than: Duration,
+        owner_uid: Option<u32>,
+    ) {
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return,
@@ -127,12 +134,27 @@ impl Leftovers {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if !name.starts_with(prefix) || !name.ends_with(suffix) {
+            if !matches(name) {
                 continue;
             }
-            let stale = entry
-                .metadata()
-                .and_then(|metadata| metadata.modified())
+            let path = entry.path();
+            // lstat: a symlink is reported as a symlink, never its target.
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue; // silent-ok: vanished or unreadable entry; nothing to delete
+            };
+            if !metadata.file_type().is_file() {
+                continue;
+            }
+            #[cfg(unix)]
+            if let Some(owner_uid) = owner_uid
+                && std::os::unix::fs::MetadataExt::uid(&metadata) != owner_uid
+            {
+                continue;
+            }
+            #[cfg(not(unix))]
+            let _ = owner_uid;
+            let stale = metadata
+                .modified()
                 .map(|modified| now.duration_since(modified).unwrap_or_default() >= older_than)
                 // An unreadable timestamp: treat as stale rather than keep a
                 // screenshot forever.
@@ -140,7 +162,6 @@ impl Leftovers {
             if !stale {
                 continue;
             }
-            let path = entry.path();
             if let Err(error) = self.try_remove(&path) {
                 self.defer(&path, &error);
             }
@@ -255,7 +276,12 @@ mod tests {
         let unrelated = screenshot(dir.path(), "notes.jpg");
         let leftovers = Leftovers::new();
 
-        leftovers.sweep_stale(dir.path(), "ironclaw_cu_", ".jpg", Duration::ZERO);
+        leftovers.sweep_stale(
+            dir.path(),
+            &|name| name.starts_with("ironclaw_cu_") && name.ends_with(".jpg"),
+            Duration::ZERO,
+            None,
+        );
 
         assert!(!capture.exists());
         assert!(unrelated.exists());
@@ -269,9 +295,9 @@ mod tests {
 
         leftovers.sweep_stale(
             dir.path(),
-            "ironclaw_cu_",
-            ".jpg",
+            &|name| name.starts_with("ironclaw_cu_") && name.ends_with(".jpg"),
             Duration::from_secs(3600),
+            None,
         );
 
         assert!(in_flight.exists());

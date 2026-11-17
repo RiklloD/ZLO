@@ -29,6 +29,10 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
 tracing = "0.1"
 
+[target.'cfg(unix)'.dependencies]
+# getuid and O_NOFOLLOW for the per-user capture directory checks.
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # CGWindowListCopyWindowInfo: which window an app's state belongs to.
 core-foundation-sys = "0.8"

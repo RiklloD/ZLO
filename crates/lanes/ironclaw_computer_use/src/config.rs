@@ -51,6 +51,11 @@ pub struct ComputerUseConfig {
     pub trace_path: Option<PathBuf>,
     /// Where each session's native-cursor observation file lives.
     pub cursor_dir: PathBuf,
+    /// The per-user directory window captures (screenshots) are written to:
+    /// `$ZLO_HOME/cache/computer-use/captures` by default, never the shared
+    /// temp dir. `None` turns window capture off (the live view falls back to
+    /// the agent's in-memory screenshot).
+    pub capture_dir: Option<PathBuf>,
 }
 
 impl ComputerUseConfig {
@@ -61,6 +66,10 @@ impl ComputerUseConfig {
             live_preview: true,
             trace_path: None,
             cursor_dir: std::env::temp_dir().join("ironclaw-ocu"),
+            capture_dir: crate::private_dir::default_capture_dir(
+                std::env::var_os("ZLO_HOME"),
+                std::env::var_os("HOME"),
+            ),
             binary,
             args: vec!["mcp".to_string()],
             env: vec![(IN_PROCESS_ENV.0.to_string(), IN_PROCESS_ENV.1.to_string())],
@@ -118,6 +127,10 @@ impl ComputerUseConfig {
             },
         };
         let mut config = Self::new(binary);
+        config.capture_dir = crate::private_dir::default_capture_dir(
+            lookup("ZLO_HOME").filter(|value| !value.trim().is_empty()),
+            lookup("HOME").filter(|value| !value.trim().is_empty()),
+        );
         if let Some(raw) = lookup("COMPUTER_USE_LIVE_PREVIEW") {
             config.live_preview = match raw.trim().to_ascii_lowercase().as_str() {
                 "" | "1" | "true" | "yes" | "on" => true,
