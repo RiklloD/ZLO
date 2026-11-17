@@ -859,7 +859,12 @@ impl RootFilesystem for PostgresRootFilesystem {
         // migration cleanup pass — see RootFilesystem::append_file's
         // deprecation note). New callers must use `append`/`tail` for
         // log-shaped mounts or `get`+`put` read-modify-write.
-        cached_execute(
+        // The directory check above is advisory: a `create_dir_all` can land
+        // between it and this statement. The conflict arm therefore refuses
+        // a directory row itself (as `write_file` does) instead of turning it
+        // into a file — which would also carry the directory row's version
+        // past invariant 9.
+        let rows = cached_execute(
             &client,
             r#"
                 INSERT INTO root_filesystem_entries
@@ -874,11 +879,15 @@ impl RootFilesystem for PostgresRootFilesystem {
                     indexed = EXCLUDED.indexed,
                     version = root_filesystem_entries.version + 1,
                     updated_at = NOW()
+                WHERE root_filesystem_entries.is_dir = FALSE
                 "#,
             &[&path.as_str(), &bytes],
         )
         .await
         .map_err(|error| db_error(path.clone(), FilesystemOperation::AppendFile, error))?;
+        if rows == 0 {
+            return Err(directory_append_error(path.clone()));
+        }
         Ok(())
     }
 
@@ -1165,9 +1174,15 @@ impl RootFilesystem for PostgresRootFilesystem {
         let rows = transaction
             .query(
                 r#"
-                INSERT INTO root_filesystem_entries (path, contents, is_dir)
-                SELECT prefix.path, ''::bytea, TRUE
+                INSERT INTO root_filesystem_entries (path, contents, is_dir, version)
+                -- Every entry this creates takes its path lock and starts
+                -- above the path's mark like any other create (invariant 9);
+                -- ORDER BY runs the volatile allocations in path order, the
+                -- global lock order.
+                SELECT prefix.path, ''::bytea, TRUE,
+                       root_filesystem_next_record_version(prefix.path)
                 FROM UNNEST($1::text[]) AS prefix(path)
+                ORDER BY prefix.path
                 ON CONFLICT (path) DO UPDATE
                     SET is_dir = root_filesystem_entries.is_dir
                     WHERE root_filesystem_entries.is_dir = FALSE

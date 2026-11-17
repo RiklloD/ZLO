@@ -6,28 +6,46 @@ use ironclaw_filesystem::{
 };
 use ironclaw_host_api::path::VirtualPath;
 
+/// `None` (skip) only when no PostgreSQL URL is set and
+/// `IRONCLAW_REQUIRE_POSTGRES` is unset (or `IRONCLAW_SKIP_POSTGRES_TESTS`
+/// asks for it); a malformed URL, pool or migration fails the test.
 async fn postgres_pool(application_name: Option<&str>) -> Option<deadpool_postgres::Pool> {
+    let require = std::env::var_os("IRONCLAW_REQUIRE_POSTGRES").is_some();
     if std::env::var("IRONCLAW_SKIP_POSTGRES_TESTS").is_ok() {
+        assert!(
+            !require,
+            "IRONCLAW_REQUIRE_POSTGRES and IRONCLAW_SKIP_POSTGRES_TESTS conflict"
+        );
         return None;
     }
-    let url = std::env::var("IRONCLAW_FILESYSTEM_POSTGRES_URL")
+    let Ok(url) = std::env::var("IRONCLAW_FILESYSTEM_POSTGRES_URL")
         .or_else(|_| std::env::var("DATABASE_URL"))
-        .ok()?;
-    let mut config = url.parse::<tokio_postgres::Config>().ok()?;
+    else {
+        assert!(
+            !require,
+            "IRONCLAW_REQUIRE_POSTGRES is set but no PostgreSQL URL is configured"
+        );
+        return None;
+    };
+    let mut config = url
+        .parse::<tokio_postgres::Config>()
+        .expect("the configured PostgreSQL URL must parse");
     if let Some(application_name) = application_name {
         config.application_name(application_name);
     }
     let manager = deadpool_postgres::Manager::new(config, tokio_postgres::NoTls);
-    deadpool_postgres::Pool::builder(manager)
-        .max_size(4)
-        .build()
-        .ok()
+    Some(
+        deadpool_postgres::Pool::builder(manager)
+            .max_size(4)
+            .build()
+            .expect("the PostgreSQL pool must build"),
+    )
 }
 
 async fn postgres_root(application_name: &str) -> Option<(PostgresRootFilesystem, String)> {
     let pool = postgres_pool(Some(application_name)).await?;
     let fs = PostgresRootFilesystem::new(pool);
-    fs.run_migrations().await.ok()?;
+    fs.run_migrations().await.expect("migrations");
     let prefix = format!("/secrets/leases/pgtest_{}", uuid::Uuid::new_v4().simple());
     Some((fs, prefix))
 }

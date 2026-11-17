@@ -207,25 +207,34 @@ boundary. The current rule is codified in
    *PostgreSQL concurrency:* writers there run concurrently under READ
    COMMITTED, so a version computed from a statement snapshot could repeat
    (two writers suffice: A updates v1→v2 uncommitted, B's create computes 2,
-   A deletes and commits, B inserts v2). Every record create, CAS update and
-   delete therefore takes a transaction-scoped advisory lock on its path
-   (`pg_advisory_xact_lock` on a seeded 64-bit hash of the full virtual
-   path, `migrations/V36__root_filesystem_record_path_locks.sql`), and a
-   create computes its version only after the lock is granted — inside the
+   A deletes and commits, B inserts v2). Every entry write — record create,
+   CAS update, delete, and the directory rows `create_dir_all` creates —
+   therefore takes a transaction-scoped advisory lock on its path, and no
+   writer bypasses it: `pg_advisory_xact_lock(1229080147, hashtext(path))`,
+   the two-int form under this filesystem's namespace `0x49524653` ("IRFS"),
+   which PostgreSQL keeps apart from every one-bigint advisory key
+   (`migrations/V36__root_filesystem_record_path_locks.sql` lists the other
+   advisory-lock users and why a collision only over-serializes). A create
+   computes its version only after the lock is granted — inside the
    VOLATILE `root_filesystem_next_record_version`, whose query takes a fresh
    snapshot after the wait. The lock lives until the writer's transaction
    ends, so an open `StorageTxn` keeps a path serialized through all its
-   statements. Deadlock-free for every single statement: each takes the
-   path lock before any row lock, and multi-path statements take path
-   locks in sorted path order (subtree `delete` locks every removed path
-   `ORDER BY path`; `create_subtree_atomic` inserts in path order). A
-   multi-statement `StorageTxn` that writes several paths in different
-   orders can still deadlock, exactly as it already could on row locks;
-   PostgreSQL detects that and aborts one transaction. A hash collision
-   only makes two unrelated paths wait for each other. Cost: one advisory
-   lock per record write, taken inside the write statement — no extra
-   round trip. Pinned by `tests/postgres_recreate_version_race.rs`, which
-   replays that two-writer schedule. In-memory (one mutex) and libSQL (one
+   statements. A conflict with a directory row is refused inside the write
+   statement itself (`write_file`, `append_file`, `put`), never by a
+   pre-check alone, so a directory row is never turned into a file.
+   Deadlock-free for every single statement: each takes the path lock before
+   any row lock, and multi-path statements take path locks in sorted path
+   order (subtree `delete` locks every removed path `ORDER BY path`;
+   `create_subtree_atomic` inserts in path order; `create_dir_all`
+   allocates its prefixes `ORDER BY path`). A multi-statement `StorageTxn`
+   that writes several paths in different orders can still deadlock, exactly
+   as it already could on row locks; PostgreSQL detects that and aborts one
+   transaction. A hash collision only makes two unrelated paths wait for
+   each other. Cost: one advisory lock per entry write, taken inside the
+   write statement — no extra round trip. Pinned by
+   `tests/postgres_recreate_version_race.rs`, which replays that two-writer
+   schedule and a `create_dir_all` landing between `append_file`'s
+   directory pre-check and its insert. In-memory (one mutex) and libSQL (one
    writer lane) already serialize writers.
 
    *Floor growth:* one row per distinct deleted path, kept forever (no

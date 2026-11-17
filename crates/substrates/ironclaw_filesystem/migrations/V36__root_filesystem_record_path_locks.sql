@@ -15,10 +15,16 @@
 -- lock is held to the end of the writer's transaction (an open StorageTxn
 -- keeps it through its later statements), never across a commit.
 --
--- The key is a 64-bit hash of the full virtual path (the path carries the
--- mount), seeded so it does not share a key space with other
--- `hashtextextended(_, 0)` users. A collision only makes two unrelated paths
--- wait for each other; it never weakens the invariant. Cost: one advisory lock
+-- The key is the two-int advisory-lock form: namespace 1229080147
+-- (0x49524653, "IRFS" — this filesystem's record-path locks) plus the
+-- 32-bit `hashtext` of the full virtual path (the path carries the mount).
+-- PostgreSQL keeps one-bigint and two-int advisory keys apart, so the
+-- bigint users (this crate's migration and projection locks, the trigger
+-- poller) can never collide with it; of the other two-int users, the auth
+-- keepalive leader uses a fixed different namespace ("KEEP"), and the hooks
+-- backend derives both halves from a hash, so it can share a key by chance.
+-- Any collision — that one, or two paths with one `hashtext` — only makes
+-- unrelated writers wait for each other; it never weakens the invariant. Cost: one advisory lock
 -- per record write, taken inside the write statement — no extra round trip.
 --
 -- Compatibility: additive (two functions, no table or row change). Old
@@ -32,7 +38,7 @@ LANGUAGE plpgsql
 VOLATILE
 AS $$
 BEGIN
-    PERFORM pg_advisory_xact_lock(hashtextextended(record_path, 7240371));
+    PERFORM pg_advisory_xact_lock(1229080147, hashtext(record_path));
     RETURN TRUE;
 END;
 $$;
