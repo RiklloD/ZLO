@@ -234,7 +234,6 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             list
         }
     };
-    let current = panel.path.clone();
     let mut bar = row().w_full().px(8.).gap(4.).items_center();
     if let Some(parent) = parent {
         bar = bar.child(
@@ -245,22 +244,34 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .key("outputs-up"),
         );
     }
-    bar = bar
-        .child(
-            ui::line(folder, xs(), p.text_muted)
-                .grow(1.)
-                .min_w(0.)
-                .px(4.),
-        )
-        .child(
-            ui::ibtn(&icons::REFRESH_CW, "Refresh")
-                .on_press(move |s: &mut State| browse(s, current.clone()))
-                .build(k)
-                .key("outputs-refresh"),
-        );
+    bar = bar.child(
+        ui::line(folder, xs(), p.text_muted)
+            .grow(1.)
+            .min_w(0.)
+            .px(4.),
+    );
     ui::fill_col()
         .child(bar)
         .child(ui::scroll("outputs-list", body))
+}
+
+/// The Outputs tab's refresh button, for the dock's title row, while the
+/// listing shows.
+pub(super) fn actions(s: &State, k: &Kit) -> Vec<El> {
+    let Some(panel) = side(s)
+        .filter(|x| x.outputs.opened.is_none())
+        .and_then(|x| x.outputs.files.as_ref())
+    else {
+        return Vec::new();
+    };
+    let current = panel.path.clone();
+    vec![
+        ui::ibtn(&icons::REFRESH_CW, "Refresh")
+            .label("Refresh outputs")
+            .on_press(move |s: &mut State| browse(s, current.clone()))
+            .build(k)
+            .key("outputs-refresh"),
+    ]
 }
 
 /// A fixture listing for scenes.

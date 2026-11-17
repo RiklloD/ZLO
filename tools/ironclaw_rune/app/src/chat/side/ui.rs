@@ -145,8 +145,10 @@ pub fn fill_col() -> El {
 
 /// gpui-kit's `Button::new(..).icon(..).ghost().xsmall()` with a tooltip.
 pub fn ibtn(icon: &'static Icon, tip: &str) -> IconButton {
+    // Muted ink, as the titlebar's toggles and tabs: the pane's own buttons
+    // sit quieter than its content.
     IconButton::new(icon)
-        .variant(IconButtonVariant::Ghost)
+        .variant(IconButtonVariant::GhostMuted)
         .control_size(ControlSize::Small)
         .label(tip)
         .help(tip)

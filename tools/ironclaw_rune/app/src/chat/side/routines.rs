@@ -246,6 +246,26 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
         .collect()
 }
 
+/// The Routines tab's refresh button, for the dock's title row.
+pub(super) fn actions(k: &Kit) -> Vec<El> {
+    vec![
+        ui::ibtn(&icons::REFRESH_CW, "Refresh")
+            .label("Refresh routines")
+            .on_press(load)
+            .build(k)
+            .key("routines-refresh"),
+    ]
+}
+
+/// How many routines and schedules the tab lists, once loaded.
+pub(super) fn count(s: &State) -> Option<usize> {
+    let state = &side(s)?.routines;
+    match &state.list {
+        Some(Ok(list)) => Some(list.len() + state.schedules.len()),
+        _ => None,
+    }
+}
+
 pub(super) fn view(s: &State, k: &Kit) -> El {
     let Some(x) = side(s) else {
         return ui::loading(k);
@@ -258,20 +278,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     };
     let p = &s.palette;
     let schedule_rows = schedule_rows(s, k, state);
-    let mut out = col().w_full().child(
-        ui::heading(
-            s,
-            format!("Routines · {}", list.len() + schedule_rows.len()),
-        )
-        .child(ui::grow())
-        .child(
-            ui::ibtn(&icons::REFRESH_CW, "Refresh")
-                .label("Refresh routines")
-                .on_press(load)
-                .build(k)
-                .key("routines-refresh"),
-        ),
-    );
+    let mut out = col().w_full().pt(4.);
     if state.scheduler_off {
         out = out.child(ui::error_line(
             s,

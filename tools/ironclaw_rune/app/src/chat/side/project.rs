@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rune::{El, col, el, icon, row};
+use rune::{El, col, icon, row};
 use rune_kit::Kit;
 
 use super::preview::{self, Opened};
@@ -347,7 +347,6 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let Some(root) = root(s, x) else {
         return ui::loading(k);
     };
-    let remote = crate::remote::backend_is_remote(s);
     if let Some(e) = x.project.error.clone() {
         return ui::error_line(s, e);
     }
@@ -415,52 +414,60 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             }
         }));
     }
-    let bar = row()
-        .w_full()
-        .px(8.)
-        .gap(4.)
-        .items_center()
-        .child(ui::grow())
-        .child(
-            ui::ibtn(
-                if show_ignored {
-                    &icons::EYE
-                } else {
-                    &icons::EYE_OFF
-                },
-                if show_ignored {
-                    "Hide ignored files"
-                } else {
-                    "Show ignored files"
-                },
-            )
-            .on_press(|s: &mut State| {
-                if let Some(x) = side_mut(s) {
-                    x.project.show_ignored = !x.project.show_ignored;
-                }
-            })
-            .build(k)
-            .key("project-ignored"),
+    ui::fill_col().child(ui::scroll("project-tree", list))
+}
+
+/// The Files tab's buttons, for the dock's title row: show ignored files,
+/// show the folder in Finder (not for a remote workspace), refresh. None
+/// while a file is open (its preview has its own toolbar) or the tree has
+/// not loaded.
+pub(super) fn actions(s: &State, k: &Kit) -> Vec<El> {
+    let Some(x) = side(s) else { return Vec::new() };
+    if x.project.opened.is_some() || x.project.error.is_some() {
+        return Vec::new();
+    }
+    let Some(root) = root(s, x) else {
+        return Vec::new();
+    };
+    let show_ignored = x.project.show_ignored;
+    let mut out = vec![
+        ui::ibtn(
+            if show_ignored {
+                &icons::EYE
+            } else {
+                &icons::EYE_OFF
+            },
+            if show_ignored {
+                "Hide ignored files"
+            } else {
+                "Show ignored files"
+            },
         )
-        // A remote workspace is not on this Mac's disk.
-        .child(if remote {
-            el()
-        } else {
+        .on_press(|s: &mut State| {
+            if let Some(x) = side_mut(s) {
+                x.project.show_ignored = !x.project.show_ignored;
+            }
+        })
+        .build(k)
+        .key("project-ignored"),
+    ];
+    // A remote workspace is not on this Mac's disk.
+    if !crate::remote::backend_is_remote(s) {
+        out.push(
             ui::ibtn(&icons::EXTERNAL_LINK, "Show in Finder")
                 .on_press(move |_: &mut State| ui::open_path(&root, true))
                 .build(k)
-                .key("project-reveal")
-        })
-        .child(
-            ui::ibtn(&icons::REFRESH_CW, "Refresh")
-                .label("Refresh files")
-                .on_press(refresh)
-                .build(k)
-                .key("project-refresh"),
+                .key("project-reveal"),
         );
-    ui::fill_col()
-        .child(bar)
-        .child(ui::scroll("project-tree", list))
+    }
+    out.push(
+        ui::ibtn(&icons::REFRESH_CW, "Refresh")
+            .label("Refresh files")
+            .on_press(refresh)
+            .build(k)
+            .key("project-refresh"),
+    );
+    out
 }
 
 /// Visible rows under `dir`: its entries, and the open folders' below them.
