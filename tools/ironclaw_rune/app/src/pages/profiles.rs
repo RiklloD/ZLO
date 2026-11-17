@@ -897,7 +897,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
         }
         if let Some(n) = &ps.notice {
             b = b.child(
-                el().px(8.0)
+                el().pb(4.0)
                     .child(styled(n.clone(), sm(), p.text_muted).wrap()),
             );
         }

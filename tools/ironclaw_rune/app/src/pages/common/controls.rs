@@ -164,26 +164,10 @@ pub fn rule(p: &Palette) -> El {
     el().w_full().h(1.).fill(p.border).a11y_hidden()
 }
 
-/// gpui-kit `Tag::*().small()`: a small tinted pill with a rim.
+/// gpui-kit `Tag::*().small()`. The app has one status tag; this is
+/// [`super::tag`] under its older name.
 pub fn outlined_tag(p: &Palette, tone: Tone, label: impl Into<String>) -> El {
-    let c = match tone {
-        Tone::Success => p.success,
-        Tone::Warning => p.warning,
-        Tone::Danger => p.danger,
-        Tone::Secondary => p.text_muted,
-    };
-    let (fill, ink) = match tone {
-        Tone::Secondary => (p.hover, p.text_muted),
-        _ => (c.alpha(0.14), c),
-    };
-    row()
-        .h(20.)
-        .px(6.)
-        .center_y()
-        .radius(4.)
-        .fill(fill)
-        .border(1., c.alpha(0.25))
-        .child(styled(label, ts::xs(), ink).single_line())
+    super::tag(p, &label.into(), tone)
 }
 
 /// GPUI `design::kit::row` as the pickers draw it: a hoverable list row,

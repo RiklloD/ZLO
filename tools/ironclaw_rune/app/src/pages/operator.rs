@@ -15,7 +15,7 @@ mod logs;
 mod setup;
 mod status;
 
-use crate::pages::common::controls::{Look, Size, button_sized, header_with, muted, refresh_icon};
+use crate::pages::common::controls::{header_with, muted, refresh_icon};
 use crate::pages::common::ts::{body_semibold, sm};
 use crate::pages::common::{glyph, page_body};
 use rune::{Cx, El, TextEdit, col, row, text};
@@ -134,24 +134,7 @@ fn top(s: &State, k: &Kit) -> El {
             .build(k)
             .key("refresh-operator"),
     ];
-    let tabs = row()
-        .gap(4.)
-        .pb(16.)
-        .children(TABS.iter().map(|(tab, label)| {
-            let tab = *tab;
-            button_sized(
-                *label,
-                if o.tab == tab {
-                    Look::Primary
-                } else {
-                    Look::Ghost
-                },
-                Size::Small,
-            )
-            .on_press(move |s: &mut State| show(s, tab))
-            .build(k)
-            .key(format!("operator-tab-{label}"))
-        }));
+    let tabs = crate::pages::common::tab_bar(k, "operator-tabs", &TABS, o.tab, show).pb(16.);
     col()
         .w_full()
         .child(header_with(p, "Operator", actions))

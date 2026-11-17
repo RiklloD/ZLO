@@ -45,14 +45,14 @@ pub fn para(s: impl Into<String>, size: f32, color: Color) -> El {
 }
 
 /// Title row with page-level actions on the right: Zeron's 20 px medium
-/// page title, inset 8 px like its section labels.
+/// page title, flush with the cards and text below it so every page keeps
+/// one left edge.
 pub fn header(p: &Palette, title: &str, actions: El) -> El {
     row()
         .key("page-header")
         .w_full()
         .justify_between()
         .center_y()
-        .px(8.)
         .pb(8.)
         .child(label(title, XL, 500., p.text))
         .child(actions)
@@ -64,14 +64,14 @@ pub fn actions(items: impl IntoIterator<Item = El>) -> El {
 }
 
 /// A settings group's label, Zeron's `section_label`: 16 px semibold text,
-/// inset 8 px, 32 px above the group, with an optional line of explanation.
+/// flush with the page's left edge, 32 px above the group, with an optional
+/// line of explanation.
 pub fn group_header(p: &Palette, title: &str, note: Option<&str>) -> El {
     let mut d = col()
         .key(format!("group-{title}"))
         .w_full()
         .pt(32.)
         .pb(8.)
-        .px(8.)
         .gap(2.)
         .child(
             label(title, BASE, 600., p.text)
@@ -238,7 +238,8 @@ pub enum Tone {
     Secondary,
 }
 
-/// A small status tag.
+/// A small status tag: a tinted pill, no rim, one line. Every status in the
+/// app (Active, Paused, Needs setup, Ready, On) wears this one look.
 pub fn tag(p: &Palette, s: &str, tone: Tone) -> El {
     let ink = match tone {
         Tone::Success => p.success,
@@ -252,7 +253,7 @@ pub fn tag(p: &Palette, s: &str, tone: Tone) -> El {
         .center_y()
         .radius(crate::design::CONTROL_RADIUS)
         .fill(ink.alpha(if tone == Tone::Secondary { 0.12 } else { 0.15 }))
-        .child(label(s, XS, 500., ink))
+        .child(label(s, XS, 500., ink).single_line())
 }
 
 /// GPUI button flavours.
@@ -264,6 +265,8 @@ pub enum Btn {
     Ghost,
     Outline,
     Danger,
+    /// A ghost with muted ink: the unpicked side of a [`choice`].
+    Quiet,
 }
 
 /// A small labelled button (GPUI `Button::new(..).label(..).small()`);
@@ -276,6 +279,7 @@ pub fn button(s: &str, kind: Btn) -> Button {
             Btn::Ghost => ButtonVariant::Ghost,
             Btn::Outline => ButtonVariant::Outline,
             Btn::Danger => ButtonVariant::Danger,
+            Btn::Quiet => ButtonVariant::GhostMuted,
         })
         .control_size(ControlSize::Regular)
 }
@@ -294,9 +298,17 @@ pub fn loading(b: Button, on: bool) -> Button {
     }
 }
 
-/// A primary button while `on`, else ghost (the pages' choice chips).
+/// The pages' choice chips: the picked one sits on the neutral raised
+/// plate, the rest are quiet ghosts. Picking is not an action, so it never
+/// wears the accent (that stays for the page's one primary button). For a
+/// fixed set of a few options prefer [`tab_bar`] / [`segmented`].
 pub fn choice(s: &str, on: bool) -> Button {
-    button(s, if on { Btn::Primary } else { Btn::Ghost })
+    button(s, choice_look(on))
+}
+
+/// [`choice`]'s look, for callers that build their own button.
+pub fn choice_look(on: bool) -> Btn {
+    if on { Btn::Secondary } else { Btn::Quiet }
 }
 
 /// A ghost icon button with a tooltip that also names it.
@@ -348,6 +360,40 @@ pub fn segmented(
     };
     // A row keeps it at its own width inside stretching columns.
     row().child(seg)
+}
+
+/// A page's tab bar (Operator's tabs, Memory's stores, Files' mounts, a
+/// provider list's kinds): the kit's segmented control, so every switch
+/// between views of one page looks and moves the same way. The accent stays
+/// for the page's one primary action.
+pub fn tab_bar<T: Copy + PartialEq + 'static>(
+    k: &Kit,
+    key: &str,
+    tabs: &[(T, &str)],
+    current: T,
+    on_pick: impl Fn(&mut State, T) + Clone + 'static,
+) -> El {
+    let labels: Vec<&str> = tabs.iter().map(|(_, l)| *l).collect();
+    let values: Vec<T> = tabs.iter().map(|(t, _)| *t).collect();
+    let selected = values.iter().position(|t| *t == current).unwrap_or(0);
+    // Equal segments at the widest label's width while the page has room,
+    // sharing the column's width when it does not (a narrow window, a large
+    // UI font): the bar never runs off the page.
+    let seg = SegmentedControl::new(&labels, Some(selected))
+        .width(None)
+        .on_pick(move |s: &mut State, ix, _: &mut Tx| {
+            if let Some(t) = values.get(ix) {
+                on_pick(s, *t);
+            }
+        })
+        .build(k);
+    let widest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
+    let natural = labels.len() as f32 * (widest * 7.4 + 28.) * crate::design::styles::type_scale();
+    el().key(key.to_string())
+        .w_full()
+        .max_w(natural)
+        .min_w(0.)
+        .child(seg)
 }
 
 /// An icon at `size` in `color`.

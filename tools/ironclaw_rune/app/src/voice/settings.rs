@@ -331,7 +331,7 @@ fn page_body(key: &'static str, content: El) -> El {
 }
 
 fn header(s: &State, title: &'static str) -> El {
-    row().justify_between().items_center().px(8.).pb(8.).child(
+    row().justify_between().items_center().pb(8.).child(
         text(title)
             .font(TextStyle::new(crate::design::styles::rem(20.), 500.))
             .color(s.palette.text),
@@ -342,7 +342,7 @@ fn header(s: &State, title: &'static str) -> El {
 /// explanation.
 fn group_header(s: &State, title: &'static str, note: Option<&'static str>) -> El {
     let p = &s.palette;
-    let mut out = col().pt(32.).pb(8.).px(8.).gap(2.).child(
+    let mut out = col().pt(32.).pb(8.).gap(2.).child(
         text(title)
             .font(TextStyle {
                 line_height: 22.,

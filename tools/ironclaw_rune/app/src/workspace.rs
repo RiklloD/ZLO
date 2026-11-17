@@ -507,6 +507,15 @@ pub fn settings_groups(s: &State) -> Vec<(&'static str, Vec<NavItem>)> {
     ]
 }
 
+/// A settings page's name for the breadcrumb, also when the sidebar hides
+/// it (Projects behind its feature flag).
+pub fn page_label(page: Page) -> &'static str {
+    match page {
+        Page::Projects => "Projects",
+        _ => "Settings",
+    }
+}
+
 pub fn settings_pages(s: &State) -> Vec<NavItem> {
     settings_groups(s)
         .into_iter()

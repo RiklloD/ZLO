@@ -163,11 +163,7 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
 fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
     let p = &s.palette;
     let auth = MCP_AUTH.iter().enumerate().map(|(ix, label)| {
-        let look = if ix == form.auth {
-            Look::Primary
-        } else {
-            Look::Outline
-        };
+        let look = crate::pages::common::choice_look(ix == form.auth);
         button_sized(*label, look, Size::Small)
             .on_press(move |s: &mut State| {
                 if let Some(f) = s.pages.extensions.mcp.as_mut() {

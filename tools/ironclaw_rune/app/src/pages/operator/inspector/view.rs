@@ -81,11 +81,7 @@ fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
             };
             button_sized(
                 label,
-                if selected {
-                    Look::Primary
-                } else {
-                    Look::Outline
-                },
+                crate::pages::common::choice_look(selected),
                 Size::XSmall,
             )
             .on_press(move |s: &mut State| super::select_run(s, id.clone()))

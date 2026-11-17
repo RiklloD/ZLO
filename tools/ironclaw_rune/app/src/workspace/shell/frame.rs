@@ -153,7 +153,7 @@ fn breadcrumb(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut V
             let label = settings_pages(s)
                 .into_iter()
                 .find(|(p, _, _)| *p == page)
-                .map_or("Settings", |(_, _, l)| l);
+                .map_or_else(|| super::super::page_label(page), |(_, _, l)| l);
             ("Settings".into(), label.into())
         }
     };

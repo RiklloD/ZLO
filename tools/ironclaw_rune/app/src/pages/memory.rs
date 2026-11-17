@@ -362,26 +362,17 @@ fn set_tab(s: &mut State, tab: Tab) {
 }
 
 fn tabs(s: &State, k: &Kit) -> El {
-    let tab = |key: &str, title: &str, which: Tab| {
-        let look = if s.pages.memory.tab == which {
-            Look::Primary
-        } else {
-            Look::Ghost
-        };
-        press_button(k, key, title, look, None, false, move |s: &mut State| {
-            set_tab(s, which)
-        })
-    };
-    row()
-        .key("memory-tabs")
-        .gap(8.0)
-        .pb(12.0)
-        .child(tab("memory-tab-local", "Local (on this Mac)", Tab::Local))
-        .child(tab(
-            "memory-tab-supermemory",
-            "Supermemory (remote)",
-            Tab::Supermemory,
-        ))
+    crate::pages::common::tab_bar(
+        k,
+        "memory-tabs",
+        &[
+            (Tab::Local, "Local (on this Mac)"),
+            (Tab::Supermemory, "Supermemory (remote)"),
+        ],
+        s.pages.memory.tab,
+        set_tab,
+    )
+    .pb(12.0)
 }
 
 /// A text field with a trailing button, GPUI's `h_flex(Input, Button)`.

@@ -14,7 +14,7 @@
 //! a dock never shifts a sibling's identity (an unkeyed wrapper after a
 //! conditional child would remount, and the toggle inside it fly in anew).
 
-use rune::{Color, Cursor, Cx, El, Phase, Transition, col, el, icon, row};
+use rune::{Color, Cursor, Cx, El, Phase, Transition, col, el, icon, row, text};
 use rune_kit::Kit;
 
 use super::ui::{self, xs, xs_med};
@@ -222,7 +222,13 @@ fn title(s: &State, dock: Dock, tab: Tab) -> El {
         .pb(4.)
         .gap(8.)
         .items_center()
-        .child(ui::line(tab.label(), xs_med(), p.text));
+        // The tab's name never gives way: the folder path beside it is the
+        // part that truncates.
+        .child(
+            row()
+                .key(format!("side-{}-title", dock.key()))
+                .child(text(tab.label()).font(xs_med()).color(p.text)),
+        );
     let Some(x) = side(s) else { return title };
     if tab.coding() {
         if let Some(wt) = &x.worktree {
@@ -519,7 +525,8 @@ fn tabs(s: &State, k: &Kit, dock: Dock) -> El {
     /// A small icon button's side (rune-kit `ControlSize::Small`) and the
     /// strip's gap: where each cell starts.
     const CELL: f32 = 20.;
-    const GAP: f32 = 2.;
+    /// Room between icons so each reads as its own target.
+    const GAP: f32 = 6.;
     let p = &s.palette;
     let current = dock_tab(s, dock);
     let has_chat = side(s).is_some_and(|x| x.chat.is_some());
