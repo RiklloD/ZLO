@@ -63,14 +63,19 @@ enforce = true
 # 2026-11-11 (counting-rule change): 658 -> 653 — the WS0 tree (ae0989c37)
 # re-measured under the new rule reads 29858 / 457082 LOC = 653 bp; still
 # locked to the WS0 baseline share exactly.
-ceiling_bp = 653
+# 2026-11-17 (gate audit §9, one file rule): 653 -> 642 — the same WS0 tree
+# re-measured with the counter that now classifies EVERY file by its module
+# declarations (a `#[cfg(test)]`-only `helpers.rs` no longer counts; a
+# `src/**/tests/` directory is classified by declaration, not by name) reads
+# 29331 / 456262 LOC = 642 bp; still locked to the WS0 baseline share exactly.
+ceiling_bp = 642
 tolerance_bp = 30
 
 # Informational — the observed share when this file was last updated. Lets a
 # reviewer see the baseline and lets the gate emit a down-ratchet nudge. Not
 # consulted for the pass/fail decision.
-observed_bp = 542
-observed_date = "2026-11-12"
+observed_bp = 525
+observed_date = "2026-11-17"
 
 # --- Absolute mass (production LOC) ---------------------------------------
 # The BINDING mass bound. Same numerator as the share metric — production `.rs`
@@ -371,7 +376,20 @@ observed_date = "2026-11-12"
 # `ProfileApprovalSettingsProvider::full_access_source` (explicit profile
 # Full access vs Full access inherited from global auto-approve); the rest of
 # the growth was absorbed by the ceiling's remaining slack.
-loc_ceiling = 33852
+# ✎ 2026-11-17 (gate audit §9, one file rule): 33852 -> 33352, observed
+# 34002 -> 33502, zero hidden headroom. No production code moved: the counter
+# (`scripts/check_no_panics.py::is_test_only_path`) used to apply the
+# declaration rule only to `tests.rs` / `*_tests.rs` / `*_test.rs` NAMES, so a
+# production-named file reachable only through `#[cfg(test)] mod …;` counted.
+# It now classifies every file by its declarations, like the Rust counter
+# already did. The -488 LOC on this tree (33990 measured with the old counter)
+# is exactly two such files: `src/approval_test_support.rs` (227,
+# `#[cfg(test)] mod approval_test_support;` in lib.rs) and
+# `src/factory/capability_host_tests/approval_gates.rs` (261, a child of the
+# gated `capability_host_tests`). The ceiling is lowered by the full -650
+# (488 + the 12 + 150 the prior ceiling carried above 33990), so the next
+# added line trips the gate.
+loc_ceiling = 33352
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -382,8 +400,8 @@ loc_tolerance = 150
 loc_nudge_slack = 200
 # Informational — observed when this file was last updated. Not consulted for
 # the pass/fail decision.
-loc_observed = 34002
-loc_observed_date = "2026-11-14"
+loc_observed = 33502
+loc_observed_date = "2026-11-17"
 
 # --- Dispatch (Arc<dyn>) ratchet ------------------------------------------
 # A companion metric for the "reduce traits & dispatch" goal (issue #6168 / the
@@ -482,6 +500,10 @@ loc_observed_date = "2026-11-14"
 # recognized as test code by the counter).
 # ✎ 2026-11-14 (review round 3): 682 -> 672, observed 697 -> 687 — the
 # down-ratchet for the same eviction (-10 sites).
-arc_dyn_ceiling = 672
+# ✎ 2026-11-17 (gate audit §9, one file rule): 672 -> 667, observed 687 ->
+# 682, zero hidden headroom. -2 sites are the two `#[cfg(test)]`-only files in
+# the loc_ceiling note (684 measured with the old counter); the other -3 are
+# the slack the prior ceiling carried above that measurement.
+arc_dyn_ceiling = 667
 arc_dyn_tolerance = 15
-arc_dyn_observed = 687
+arc_dyn_observed = 682

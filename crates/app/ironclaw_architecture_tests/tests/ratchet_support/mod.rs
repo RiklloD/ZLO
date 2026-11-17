@@ -4,8 +4,10 @@
 //! ratchet gets the same guarantees: comment/string stripping, restricted
 //! visibility (`pub(crate)`/`pub(super)`/`pub(in …)`), optional `unsafe`/`auto`
 //! modifiers, occurrence-preserving scans (same-file duplicates stay visible),
-//! and a production-scoped walk (skips `target/`, `tests/`, `examples/`,
-//! `benches/`). The scanners are line-based, not cfg-aware: a pub-visible
+//! and a production-scoped walk (`production_rust_files`: skips `target/`,
+//! `node_modules/`, crate-level `tests/` / `examples/` / `benches/`, and files
+//! reachable only through test-only `mod` declarations). The type-definition
+//! scanners are line-based, not cfg-aware: a pub-visible
 //! definition in an inline `#[cfg(test)]` module in src IS inventoried — keep
 //! test doubles under `tests/` (or justify an allowlist entry in review).
 
@@ -731,37 +733,45 @@ fn trailing_attribute_run_is_test_only(before: &str) -> bool {
     false
 }
 
-/// Directories a production scan never counts.
-const NON_PRODUCTION_DIRS: &[&str] = &["target", "node_modules", "tests"];
+/// Directories pruned from **every** walk at any depth — build output,
+/// vendored packages, and git metadata, which hold no first-party Rust source.
+const PRUNED_DIRS: &[&str] = &["target", "node_modules", ".git"];
 
-/// The one member of [`NON_PRODUCTION_DIRS`] every walk still descends into.
-const WALKED_FOR_DECLARATIONS: &str = "tests";
+/// Directory names cargo compiles as **separate targets** when they sit beside
+/// a `Cargo.toml` (integration tests, examples, benches). Only there are they
+/// excluded by directory; a `src/**/tests/` module directory is classified by
+/// its declarations like any other file (gate audit 2026-08 §9 residual 1).
+const CRATE_TARGET_DIRS: &[&str] = &["tests", "examples", "benches"];
 
-/// Whether a directory is pruned from **every** walk — build output and
-/// vendored packages, which hold no first-party Rust source at any depth.
-///
-/// Derived from [`NON_PRODUCTION_DIRS`] rather than spelled again, because two
-/// lists that disagree about what a walk covers is the exact failure this module
-/// already carries scars from ([`production_rust_files`]). The single carve-out
-/// is `tests/`, which is excluded from *counting*, not from *walking*:
-/// [`cfg_test_only_files`] has to read files under `src/**/tests/` because
-/// test-only-ness propagates *through* them into production-named children, so
-/// pruning them would drop those `mod` declarations — the fail-open direction.
-fn is_pruned_dir(name: &str) -> bool {
-    NON_PRODUCTION_DIRS.contains(&name) && name != WALKED_FOR_DECLARATIONS
+/// Whether the walk skips `dir` outright: a [`PRUNED_DIRS`] name anywhere, or
+/// a [`CRATE_TARGET_DIRS`] name whose parent is a package directory.
+#[allow(dead_code)]
+pub(crate) fn is_pruned_dir(dir: &Path) -> bool {
+    let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    PRUNED_DIRS.contains(&name)
+        || (CRATE_TARGET_DIRS.contains(&name)
+            && dir
+                .parent()
+                .is_some_and(|parent| parent.join("Cargo.toml").is_file()))
 }
 
-/// **The** definition of "a production Rust file under `src`", as absolute
-/// paths, sorted: the fatal walk, the `tests/` / build-output directory
-/// exclusions, and the [`cfg_test_only_files`] subtraction, composed once.
+/// **The** definition of "a production Rust file under `root`", as absolute
+/// paths, sorted: the fatal walk (pruning [`is_pruned_dir`]) minus the
+/// [`cfg_test_only_files`] subtraction, composed once. `root` may be a crate's
+/// `src`, a crate directory, or a tree of crates (`crates/`): crate-level
+/// `tests/` / `examples/` / `benches/` are recognized by their `Cargo.toml`
+/// sibling, not by the walk root.
 ///
-/// A file NAME never makes a file test-only. `tests.rs` / `*_tests.rs` /
-/// `*_test.rs` are excluded only when [`cfg_test_only_files`] finds them
-/// reachable solely through test-only `mod` declarations — until 2026-11-12 any
-/// such basename was dropped, so a `pub mod foo_tests;` holding a
-/// `TcpListener::bind` was invisible to every gate built on this walk (gate
-/// audit 2026-08 §6.2). Same rule as `scripts/check_no_panics.py`'s
-/// `is_test_only_path`.
+/// Neither a file NAME nor a directory name inside `src` makes a file
+/// test-only. `tests.rs` / `*_tests.rs` / `src/**/tests/*.rs` are excluded only
+/// when [`cfg_test_only_files`] finds them reachable solely through test-only
+/// `mod` declarations — until 2026-11-12 any such basename was dropped, so a
+/// `pub mod foo_tests;` holding a `TcpListener::bind` was invisible to every
+/// gate built on this walk (gate audit 2026-08 §6.2), and until 2026-11-17 a
+/// `src/**/tests/` directory was dropped by directory (§9). Same rule as
+/// `scripts/check_no_panics.py`'s `is_test_only_path`.
 ///
 /// Ratchets used to each spell this two-step recipe themselves, and they had
 /// already drifted: `reborn_extension_host_port_inversion.rs` skipped
@@ -769,42 +779,45 @@ fn is_pruned_dir(name: &str) -> bool {
 /// exactly the failure mode a shrink-only list cannot survive — two gates
 /// disagreeing about what production code *is* means one of them is measuring
 /// a different tree than the row it enforces was written against. Raised by
-/// @serrrfirat on #7003 (and independently on #7004).
+/// @serrrfirat on #7003 (and independently on #7004). Since 2026-11-17 every
+/// walker in this directory that filters test code goes through it (§9).
 ///
 /// I/O errors are **fatal**, not skipped: a scan that silently swallows a
 /// failed `read_dir` walks a smaller tree and passes a shrink-only list
 /// vacuously.
-///
-/// ⚠ Other ratchets in this directory still carry their own walkers. Adopting
-/// this helper across them is tracked separately — see the module note in
-/// `reborn_extension_manager_split.rs`.
 #[allow(dead_code)]
-pub(crate) fn production_rust_files(src: &Path) -> Vec<PathBuf> {
-    let test_only = cfg_test_only_files(src);
+pub(crate) fn production_rust_files(root: &Path) -> Vec<PathBuf> {
+    let test_only = cfg_test_only_files(root);
     let mut all = Vec::new();
-    all_rust_files(src, &mut all);
+    all_rust_files(root, &mut all);
     let mut out: Vec<PathBuf> = all
         .into_iter()
-        .filter(|path| {
-            !test_only.contains(path)
-                && path
-                    .strip_prefix(src)
-                    .map(|relative| {
-                        !relative.components().any(|component| {
-                            NON_PRODUCTION_DIRS
-                                .iter()
-                                .any(|skip| component.as_os_str() == *skip)
-                        })
-                    })
-                    .unwrap_or(true)
-        })
+        .filter(|path| !test_only.contains(path))
         .collect();
     out.sort();
     out
 }
 
-/// Every `.rs` file under `src` (outside `tests/` directories, which the walks
-/// exclude by directory) that is test-only: every `mod` declaration that
+/// Whether `path` lies in the feature-gated `src/test_support` root of the
+/// package that owns it — [`is_test_support_root`] with the package's `src`
+/// found from the path itself (the nearest ancestor `src` beside a
+/// `Cargo.toml`), so walks rooted above a crate apply the same exclusion as
+/// walks rooted at its `src`.
+#[allow(dead_code)]
+pub(crate) fn in_test_support_root(path: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .find(|ancestor| {
+            ancestor.file_name().is_some_and(|name| name == "src")
+                && ancestor
+                    .parent()
+                    .is_some_and(|parent| parent.join("Cargo.toml").is_file())
+        })
+        .is_some_and(|src| is_test_support_root(src, path))
+}
+
+/// Every `.rs` file under `src` (as walked by [`all_rust_files`]) that is
+/// test-only: every `mod` declaration that
 /// includes it is gated by a test-only cfg (`#[cfg(test)]`,
 /// `#[cfg(all(test, …))]`, an enclosing gated inline module — the
 /// [`test_context_lines`] tracker, strict about `feature = "test-support"`),
@@ -822,21 +835,33 @@ pub(crate) fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
     let mut all = Vec::new();
     all_rust_files(src, &mut all);
 
-    // file -> (declared module name, test-only-gated) for out-of-line decls,
-    // plus any `#[path = "…"]` overrides (read from raw source — the path
-    // lives in a string literal the stripper blanks).
-    let mut decls: BTreeMap<PathBuf, Vec<(String, bool)>> = BTreeMap::new();
+    // file -> (declared module name, test-only-gated, module directory of the
+    // declaring line) for out-of-line decls, plus any `#[path = "…"]`
+    // overrides (read from raw source — the path lives in a string literal
+    // the stripper blanks).
+    let mut decls: BTreeMap<PathBuf, Vec<(String, bool, PathBuf)>> = BTreeMap::new();
     let mut path_overrides: BTreeMap<PathBuf, BTreeMap<String, String>> = BTreeMap::new();
     for file in &all {
         let source = std::fs::read_to_string(file)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", file.display()));
         let gated = test_context_lines(&source, false);
-        let found: Vec<(String, bool)> = strip_comments_and_strings(&source)
-            .lines()
+        let code = strip_comments_and_strings(&source);
+        let code_lines: Vec<&str> = code.lines().collect();
+        let directories = line_module_directories(file, &code_lines);
+        let found: Vec<(String, bool, PathBuf)> = code_lines
+            .iter()
             .enumerate()
             .filter_map(|(index, line)| {
-                out_of_line_mod_name(line)
-                    .map(|name| (name, gated.get(index).copied().unwrap_or(false)))
+                out_of_line_mod_name(split_leading_attributes(line).1).map(|name| {
+                    (
+                        name,
+                        gated.get(index).copied().unwrap_or(false),
+                        directories
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_else(|| root_module_directory(file)),
+                    )
+                })
             })
             .collect();
         if !found.is_empty() {
@@ -848,51 +873,40 @@ pub(crate) fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
         }
     }
 
-    let resolve = |declaring: &Path, name: &str| -> Option<PathBuf> {
+    let resolve = |declaring: &Path, name: &str, module_dir: &Path| -> Option<PathBuf> {
         if let Some(explicit) = path_overrides
             .get(declaring)
             .and_then(|overrides| overrides.get(name))
         {
             // `#[path]` on an out-of-line mod resolves relative to the
             // declaring file's directory (mod.rs/lib.rs owners) or its module
-            // directory (2018-style files); accept whichever exists.
+            // directory (2018-style files, or an enclosing inline module);
+            // accept whichever exists.
             let parent = declaring.parent()?;
             return [
                 parent.join(explicit),
                 parent.join(declaring.file_stem()?).join(explicit),
+                module_dir.join(explicit),
             ]
             .into_iter()
             .find(|candidate| candidate.is_file());
         }
-        let file_name = declaring.file_name().and_then(|n| n.to_str())?;
-        let base = if matches!(file_name, "mod.rs" | "lib.rs" | "main.rs") {
-            declaring.parent()?.to_path_buf()
-        } else {
-            declaring.parent()?.join(declaring.file_stem()?)
-        };
+        // The line's module directory: the file's own for a top-level decl,
+        // `<that>/<inline>/…` inside `mod inline { … }` — the real parent
+        // module, as `scripts/check_no_panics.py::module_declarations` resolves.
         [
-            base.join(format!("{name}.rs")),
-            base.join(name).join("mod.rs"),
+            module_dir.join(format!("{name}.rs")),
+            module_dir.join(name).join("mod.rs"),
         ]
         .into_iter()
         .find(|candidate| candidate.is_file())
     };
 
-    let under_tests_dir = |path: &Path| -> bool {
-        path.strip_prefix(src)
-            .map(|relative| {
-                relative
-                    .components()
-                    .any(|component| component.as_os_str() == "tests")
-            })
-            .unwrap_or(false)
-    };
-
     // target -> every (declaring file, gated) that includes it.
     let mut declared_by: BTreeMap<PathBuf, Vec<(PathBuf, bool)>> = BTreeMap::new();
     for (declaring, mods) in &decls {
-        for (name, gated) in mods {
-            if let Some(target) = resolve(declaring, name) {
+        for (name, gated, module_dir) in mods {
+            if let Some(target) = resolve(declaring, name, module_dir) {
                 declared_by
                     .entry(target)
                     .or_default()
@@ -901,15 +915,9 @@ pub(crate) fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
         }
     }
 
-    // Seed: files under `tests/` directories (excluded by directory
-    // everywhere, and test-only-ness propagates *through* them). Fixpoint: a
-    // file is test-only once every declaration of it is gated or sits in a
-    // test-only file. Monotone, so it terminates.
-    let mut test_only: BTreeSet<PathBuf> = all
-        .iter()
-        .filter(|file| under_tests_dir(file))
-        .cloned()
-        .collect();
+    // Fixpoint: a file is test-only once every declaration of it is gated or
+    // sits in a test-only file. Monotone, so it terminates.
+    let mut test_only: BTreeSet<PathBuf> = BTreeSet::new();
     loop {
         let mut grew = false;
         for (target, declarations) in &declared_by {
@@ -929,16 +937,94 @@ pub(crate) fn cfg_test_only_files(src: &Path) -> BTreeSet<PathBuf> {
         }
     }
 
-    // The directory-excluded ones are already dropped by every walk.
     test_only
-        .into_iter()
-        .filter(|file| !under_tests_dir(file))
-        .collect()
+}
+
+/// The directory a file's top-level out-of-line `mod x;` resolves under:
+/// its own directory for `lib.rs` / `main.rs` / `mod.rs`, else `<dir>/<stem>`.
+fn root_module_directory(file: &Path) -> PathBuf {
+    let parent = file.parent().map(Path::to_path_buf).unwrap_or_default();
+    match file.file_name().and_then(|name| name.to_str()) {
+        Some("lib.rs" | "main.rs" | "mod.rs") => parent,
+        _ => match file.file_stem() {
+            Some(stem) => parent.join(stem),
+            None => parent,
+        },
+    }
+}
+
+/// Per (comment/string-stripped) line of `file`: the module directory an
+/// out-of-line `mod x;` on that line resolves under — [`root_module_directory`]
+/// at top level, `<that>/<name>` inside an inline `mod name { … }`. Port of
+/// `scripts/check_no_panics.py::line_module_directories`.
+fn line_module_directories(file: &Path, code_lines: &[&str]) -> Vec<PathBuf> {
+    let root = root_module_directory(file);
+    let mut directories = Vec::with_capacity(code_lines.len());
+    let mut stack: Vec<PathBuf> = Vec::new();
+    let mut pending_inline: Option<PathBuf> = None;
+    for line in code_lines {
+        let current = stack.last().cloned().unwrap_or_else(|| root.clone());
+        directories.push(current.clone());
+        let item = split_leading_attributes(line).1;
+        if out_of_line_mod_name(item).is_none()
+            && let Some(name) = inline_mod_name(item)
+        {
+            pending_inline = Some(current.join(name));
+        }
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    let opened = pending_inline
+                        .take()
+                        .unwrap_or_else(|| stack.last().cloned().unwrap_or_else(|| root.clone()));
+                    stack.push(opened);
+                }
+                '}' => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+        if line.trim().ends_with(';') {
+            pending_inline = None;
+        }
+    }
+    directories
+}
+
+/// For a code line opening a module item (`mod name`, optionally
+/// `pub`/`pub(..)`/`crate`), the module name — whether inline or not.
+fn inline_mod_name(code: &str) -> Option<String> {
+    let mut rest = code.trim_start();
+    if let Some(after) = rest.strip_prefix("pub") {
+        let after_trim = after.trim_start();
+        if let Some(group) = after_trim.strip_prefix('(') {
+            rest = group[group.find(')')? + 1..].trim_start();
+        } else if after.starts_with(char::is_whitespace) {
+            rest = after_trim;
+        } else {
+            return None;
+        }
+    } else if let Some(after) = rest.strip_prefix("crate")
+        && after.starts_with(char::is_whitespace)
+    {
+        rest = after.trim_start();
+    }
+    let after_mod = rest.strip_prefix("mod")?;
+    if !after_mod.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let name: String = after_mod
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (!name.is_empty()).then_some(name)
 }
 
 /// Every `.rs` file under `dir`, with no test-*shape* exclusions (the caller
-/// decides). Prunes only the directories [`is_pruned_dir`] names — build output
-/// and vendored packages. I/O errors are fatal.
+/// decides). Prunes only what [`is_pruned_dir`] names — build output, vendored
+/// packages, and crate-level cargo targets. I/O errors are fatal.
 fn all_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = std::fs::read_dir(dir)
         .unwrap_or_else(|error| panic!("read_dir {}: {error}", dir.display()));
@@ -948,11 +1034,7 @@ fn all_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
         });
         let path = entry.path();
         if path.is_dir() {
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(is_pruned_dir)
-            {
+            if is_pruned_dir(&path) {
                 continue;
             }
             all_rust_files(&path, out);
@@ -1549,12 +1631,67 @@ fn line_opens_item(code: &str) -> bool {
     }
 }
 
+/// Split the run of complete `#[…]` attributes that opens `text` (after
+/// leading whitespace) from the rest of the line: `#[cfg(test)] mod x;` is
+/// `(["#[cfg(test)]"], "mod x;")`. Brackets inside a string literal do not end
+/// an attribute; an attribute left open at the end of the line ends the run
+/// (multi-line attributes are not split). Inner attributes (`#![…]`) are not
+/// item attributes and are left in place. Mirrored by
+/// `scripts/check_no_panics.py::split_leading_attributes` — the same algorithm,
+/// so both trackers see the same attributes on the same line.
+#[allow(dead_code)]
+pub(crate) fn split_leading_attributes(text: &str) -> (Vec<&str>, &str) {
+    let mut attributes = Vec::new();
+    let mut rest = text.trim_start();
+    while rest.starts_with("#[") {
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut end = None;
+        for (index, ch) in rest.char_indices() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => in_string = true,
+                '[' => depth += 1,
+                ']' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { break };
+        attributes.push(&rest[..=end]);
+        rest = rest[end + 1..].trim_start();
+    }
+    (attributes, rest)
+}
+
 /// Per line of `source`: whether it is **test** context — inside an item gated
-/// by a test-only attribute (or inside such an item's block), or the gating
-/// attribute line itself. Comments and string literals are stripped first with
-/// line structure preserved, so a brace or a `#[cfg(test)]` inside a literal
-/// or comment moves nothing. A module merely *named* `tests` is not test
-/// context unless gated (it ships in release builds otherwise).
+/// by a test-only attribute (or inside such an item's block), or a line whose
+/// leading attribute run holds a test-only attribute. Comments and string
+/// literals are stripped first with line structure preserved, so a brace or a
+/// `#[cfg(test)]` inside a literal or comment moves nothing. A module merely
+/// *named* `tests` is not test context unless gated (it ships in release
+/// builds otherwise).
+///
+/// Attributes are read per attribute, not per line ([`split_leading_attributes`]):
+/// `#[cfg(test)] mod x_tests;` on one line gates `x_tests` exactly as the same
+/// attribute on the line above would — until 2026-11-17 the one-line form read
+/// as ungated (gate audit 2026-08 §9 residual 2), as did a gating line with a
+/// trailing comment.
 #[allow(dead_code)]
 pub(crate) fn test_context_lines(source: &str, test_support_is_test: bool) -> Vec<bool> {
     let code = strip_comments_and_strings(source);
@@ -1565,20 +1702,27 @@ pub(crate) fn test_context_lines(source: &str, test_support_is_test: bool) -> Ve
     let mut pending_attr = false;
     let mut pending_block: Option<bool> = None;
     for (index, line) in code_lines.iter().enumerate() {
-        let stripped = line.trim();
         let current = block_stack.last().copied().unwrap_or(false);
-        let is_attr = stripped.starts_with("#[");
-        let test_attr = is_attr
+        let (code_attributes, rest) = split_leading_attributes(line);
+        // The test check reads the RAW attribute (the stripper blanks the
+        // `"test-support"` value); the code split only says how many there are.
+        let test_attr = !code_attributes.is_empty()
             && raw.get(index).is_some_and(|raw_line| {
-                attribute_line_is_test_only(raw_line, test_support_is_test)
+                split_leading_attributes(raw_line)
+                    .0
+                    .iter()
+                    .take(code_attributes.len())
+                    .any(|attribute| attribute_line_is_test_only(attribute, test_support_is_test))
             });
         if test_attr {
             pending_attr = true;
         }
-        if line_opens_item(line) {
+        if line_opens_item(rest) {
             pending_block = Some(pending_attr || current);
             pending_attr = false;
-        } else if !stripped.is_empty() && !is_attr && pending_attr {
+        } else if !rest.trim().is_empty() && !rest.starts_with("#[") && pending_attr {
+            // An attribute still open at the end of the line (`#[allow(`)
+            // keeps the pending gate, as a whole attribute line does.
             pending_attr = false;
         }
         contexts[index] = current || pending_block.unwrap_or(false) || test_attr;
@@ -1595,7 +1739,7 @@ pub(crate) fn test_context_lines(source: &str, test_support_is_test: bool) -> Ve
                 _ => {}
             }
         }
-        if stripped.ends_with(';') {
+        if line.trim().ends_with(';') {
             pending_block = None;
         }
     }

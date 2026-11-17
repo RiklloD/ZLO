@@ -14,10 +14,11 @@ This helper applies the panic gate's definition instead
 (``scripts/check_no_panics.py`` — one self-tested lexer and test-context
 tracker, not a second one):
 
-* a file is test-only when ``is_test_only_path`` says so — under a ``tests``
-  directory, or a ``tests.rs`` / ``*_test.rs`` / ``*_tests.rs`` whose real
-  parent module declares it (lexed code, comments and strings excluded) only
-  behind a test-only cfg, or the feature-gated ``src/test_support`` root;
+* a file is test-only when ``is_test_only_path`` says so — under a
+  crate-level ``tests/`` / ``examples/`` / ``benches/`` directory (beside a
+  ``Cargo.toml``), or any file whose real parent module declares it (lexed
+  code, comments and strings excluded) only behind a test-only cfg, whatever
+  its name or directory, or the feature-gated ``src/test_support`` root;
 * inside every other file, a line is production unless the lexer places it in
   a test context: an item under a test-only cfg (``#[cfg(test)]``,
   ``#[cfg(all(test, ...))]``, ``feature = "test-support"``) or a ``#[test]``
@@ -94,16 +95,9 @@ def production_lines(path: pathlib.Path) -> list[str]:
     lines = path.read_text(encoding="utf-8").splitlines()
     code, _comments = panics.lex_lines(lines)
     contexts = panics.line_test_contexts_from_code(code, lines)
-    kept = []
-    for raw, code_line, in_test in zip(lines, code, contexts):
-        if in_test:
-            continue
-        # The tracker marks the gated item, not the gating attribute line
-        # before it; the `#[cfg(test)]` / `#[test]` line belongs to the test.
-        if code_line.strip().startswith("#[") and panics.attribute_is_test_only(raw.strip()):
-            continue
-        kept.append(code_line)
-    return kept
+    # The tracker marks the gating attribute line as test context too, so a
+    # `#[cfg(test)]` / `#[test]` line belongs to the test it gates.
+    return [code_line for code_line, in_test in zip(code, contexts) if not in_test]
 
 
 def count_loc(paths: list[str], exclude: str | None = None) -> int:
@@ -203,6 +197,77 @@ class ProductionLocTests(unittest.TestCase):
         )
         self.write("src/probe_tests.rs", "pub fn shipped() {}\n")
         self.assertEqual(count_loc(["src"]), 3)
+
+    def test_gated_production_named_file_does_not_count(self) -> None:
+        # One rule with the Rust counter: a file's NAME never decides. A
+        # `helpers.rs` reachable only through `#[cfg(test)] mod helpers;` is
+        # test code; the same file declared ungated ships.
+        self.write("src/lib.rs", "pub fn a() {}\n#[cfg(test)]\nmod helpers;\n")
+        self.write("src/helpers.rs", "pub fn h() {}\npub fn i() {}\n")
+        self.assertEqual(count_loc(["src"]), 1)
+        self.write("src/lib.rs", "pub fn a() {}\npub mod helpers;\n")
+        self.assertEqual(count_loc(["src"]), 4)
+
+    def test_src_tests_directory_is_classified_by_declaration(self) -> None:
+        # Gate audit §9 residual 1: `src/**/tests/` was test-only BY DIRECTORY,
+        # so a shipped `pub mod tests;` directory module was dropped. Only a
+        # crate-level `tests/` (beside `Cargo.toml`) is excluded by directory.
+        self.write("Cargo.toml", "[package]\nname = \"fixture\"\n")
+        self.write("build.rs", "fn main() {}\n")
+        self.write("src/lib.rs", "pub mod tests;\n#[cfg(test)]\nmod gated;\n")
+        self.write("src/tests/mod.rs", "pub mod shipped;\n")
+        self.write("src/tests/shipped.rs", "pub fn shipped() {}\n")
+        self.write("src/gated/mod.rs", "mod tests;\n")
+        self.write("src/gated/tests/mod.rs", "mod helpers;\n")
+        self.write("src/gated/tests/helpers.rs", "pub fn helper() {}\n")
+        self.write("tests/integration.rs", "mod common;\n")
+        self.write("tests/common/mod.rs", "pub fn shared() {}\n")
+        self.write("examples/demo.rs", "fn main() {}\n")
+        self.write("benches/bench.rs", "fn main() {}\n")
+        # lib.rs `pub mod tests;` + tests/mod.rs + tests/shipped.rs.
+        self.assertEqual(count_loc(["src"]), 3)
+        # From the crate directory: + build.rs; cargo targets excluded.
+        self.assertEqual(count_loc(["."]), 4)
+
+    def test_single_line_gated_declaration_is_test_only(self) -> None:
+        # Gate audit §9 residual 2: `#[cfg(test)] mod x_tests;` on ONE line read
+        # as ungated (one attribute per line), so the file counted.
+        self.write(
+            "src/lib.rs",
+            "#[cfg(test)] mod one_tests;\n"
+            "#[cfg(test)] pub(crate) mod helper;\n"
+            "#[allow(dead_code)] #[cfg(all(test, unix))] mod stacked;\n"
+            "#[cfg(test)] // a trailing note\n"
+            "mod noted;\n"
+            "#[cfg(not(test))] mod shipped_tests;\n"
+            "#[allow(dead_code)] mod also_shipped;\n"
+            '#[cfg(any(test, feature = "test-support"))] pub mod fixtures_tests;\n',
+        )
+        for name in (
+            "one_tests", "helper", "stacked", "noted",
+            "shipped_tests", "also_shipped", "fixtures_tests",
+        ):
+            self.write(f"src/{name}.rs", "pub fn f() {}\n")
+        # lib.rs: the two ungated declarations count (the test-support one is
+        # test context at LINE level, as in the Rust counter); files: the
+        # three shipped ones count, the four gated ones do not.
+        self.assertEqual(count_loc(["src"]), 2 + 3)
+
+    def test_single_line_test_attribute_gates_its_item(self) -> None:
+        cases = {
+            "#[cfg(test)] fn f() {}\n": 0,
+            "#[cfg(test)] mod t {\n    fn x() {}\n}\npub fn kept() {}\n": 1,
+            "#[test] fn t() {\n    body();\n}\n": 0,
+            "#[cfg(test)] use std::fmt;\n": 0,
+            "#[cfg(test)] // why\nfn gated() {\n}\n": 0,
+            "#[inline] pub fn g() {}\n": 1,
+            "#[cfg(not(test))] fn real() {\n}\n#[derive(Debug)] struct S;\n": 3,
+            '#[doc = "]"] #[cfg(test)] fn f() {}\n': 0,
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.write("src/lib.rs", source)
+                self.assertEqual(count_loc(["src"]), expected)
 
     def test_arc_dyn_counts_production_code_only(self) -> None:
         self.write(

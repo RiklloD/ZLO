@@ -861,6 +861,165 @@ fn production_line_count_is_relocation_neutral() {
     assert_eq!(production_line_count(shipped), 5);
 }
 
+/// Production lines of a crate's `src` under the one counting rule, as the
+/// contracts ceiling below measures it: [`production_rust_files`] minus the
+/// feature-gated `src/test_support` root, summed by [`production_line_count`].
+fn rust_production_loc(src: &std::path::Path) -> usize {
+    production_rust_files(src)
+        .iter()
+        .filter(|path| !ratchet_support::is_test_support_root(src, path))
+        .map(|path| {
+            production_line_count(
+                &std::fs::read_to_string(path)
+                    .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display())),
+            )
+        })
+        .sum()
+}
+
+/// A Python >= 3.10 for `scripts/ci/lib/production_loc.py`: `$PYTHON`, else
+/// the newest versioned `python3.X`, else `python3` — the order
+/// `scripts/preflight-gates.sh` uses. Fail-closed: no interpreter is a failure,
+/// not a skip, the same footing as `reborn_rust_and_python_crate_inventories_agree`.
+fn production_loc_python() -> String {
+    let mut candidates: Vec<String> = std::env::var("PYTHON").into_iter().collect();
+    candidates.extend(
+        [
+            "python3.15",
+            "python3.14",
+            "python3.13",
+            "python3.12",
+            "python3.11",
+            "python3.10",
+            "python3",
+        ]
+        .iter()
+        .map(|name| (*name).to_string()),
+    );
+    candidates
+        .into_iter()
+        .find(|candidate| {
+            std::process::Command::new(candidate)
+                .args([
+                    "-c",
+                    "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)",
+                ])
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no Python >= 3.10 found (set PYTHON=…): the Rust and Python LOC counters \
+                 cannot be cross-checked"
+            )
+        })
+}
+
+/// `production_loc.py loc <path>`, run from `cwd` (the counter resolves module
+/// declarations relative to its working directory).
+fn python_production_loc(python: &str, cwd: &std::path::Path, path: &str) -> usize {
+    let script = workspace_root().join("scripts/ci/lib/production_loc.py");
+    let output = std::process::Command::new(python)
+        .arg(&script)
+        .args(["loc", path])
+        .current_dir(cwd)
+        .output()
+        .unwrap_or_else(|error| panic!("cannot run {python} {}: {error}", script.display()));
+    assert!(
+        output.status.success(),
+        "production_loc.py loc {path} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or_else(|error| panic!("production_loc.py printed a non-count: {error}"))
+}
+
+/// The two LOC counters — this crate's (contracts size ceiling) and
+/// `scripts/ci/lib/production_loc.py` (composition budget) — apply ONE rule.
+/// Until 2026-11-17 that was a measured claim (gate audit 2026-08 §9); this
+/// pins it, on a fixture holding every classification shape and on the real
+/// crates both gates govern.
+#[test]
+fn rust_and_python_loc_counters_agree() {
+    let python = production_loc_python();
+
+    let tree = tempfile::tempdir().expect("temp tree");
+    let files: &[(&str, &str)] = &[
+        ("Cargo.toml", "[package]\nname = \"fixture\"\n"),
+        (
+            "src/lib.rs",
+            "pub fn a() {}\n\
+             pub mod probe_tests;\n\
+             #[cfg(test)]\nmod helpers;\n\
+             #[cfg(test)] mod one_line_tests;\n\
+             #[allow(dead_code)] #[cfg(all(test, unix))] pub(crate) mod stacked;\n\
+             #[cfg(not(test))] mod shipped_tests;\n\
+             pub mod tests;\n\
+             #[cfg(test)]\nmod gated;\n\
+             #[cfg(feature = \"test-support\")]\npub mod test_support;\n\
+             #[cfg(any(test, feature = \"test-support\"))]\npub mod contract_tests;\n\
+             #[cfg(test)] fn single() {}\n\
+             #[cfg(test)] // note\nfn noted() {\n}\n\
+             pub mod inline_tests {\n    pub fn shipped() {}\n}\n\
+             #[cfg(test)]\nmod t {\n    #[test]\n    fn x() {}\n}\n",
+        ),
+        ("src/probe_tests.rs", "pub fn shipped() {}\n"),
+        ("src/helpers.rs", "pub fn h() {}\n"),
+        ("src/one_line_tests.rs", "pub fn h() {}\n"),
+        ("src/stacked.rs", "pub fn h() {}\n"),
+        ("src/shipped_tests.rs", "pub fn shipped() {}\n"),
+        ("src/tests/mod.rs", "pub mod child;\n"),
+        ("src/tests/child.rs", "pub fn shipped() {}\n"),
+        ("src/gated/mod.rs", "mod tests;\n"),
+        ("src/gated/tests/mod.rs", "mod deep;\n"),
+        ("src/gated/tests/deep.rs", "pub fn deep() {}\n"),
+        ("src/test_support.rs", "pub fn fixture() {}\n"),
+        ("src/contract_tests.rs", "pub fn shared() {}\n"),
+        ("tests/integration.rs", "fn main() {}\n"),
+    ];
+    for (relative, contents) in files {
+        let path = tree.path().join(relative);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("fixture dir");
+        std::fs::write(path, contents).expect("fixture file");
+    }
+    let rust = rust_production_loc(&tree.path().join("src"));
+    let py = python_production_loc(&python, tree.path(), "src");
+    assert_eq!(
+        rust, py,
+        "Rust and Python counters disagree on the fixture tree"
+    );
+    // Not vacuous: shipped files and lines count, gated ones do not.
+    // lib.rs 7 (a, probe_tests, shipped_tests, tests, inline_tests x3) +
+    // probe_tests 1 + shipped_tests 1 + tests/ 2 + contract_tests 1.
+    assert_eq!(rust, 12, "fixture count");
+
+    let root = workspace_root();
+    for crate_name in [
+        "ironclaw_common",
+        "ironclaw_extension_contracts",
+        "ironclaw_host_api",
+        "ironclaw_loop_contracts",
+        "ironclaw_product_contracts",
+        "ironclaw_prompt_envelope",
+        "ironclaw_composition",
+    ] {
+        let src = crate_dir(&root, crate_name).join("src");
+        let relative = src
+            .strip_prefix(&root)
+            .expect("crate under the workspace root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert_eq!(
+            rust_production_loc(&src),
+            python_production_loc(&python, &root, &relative),
+            "{crate_name}: the contracts ceiling's counter and `production_loc.py` disagree — \
+             two gates measuring different trees"
+        );
+    }
+}
+
 #[test]
 fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
     /// `(crate, production line ceiling)` — captured 2026-08-05 by running this
@@ -6996,9 +7155,9 @@ fn collect_forbidden_uses_detects_violation() {
 ///
 /// - [`production_rust_files`] drops every file reachable only through
 ///   test-gated `mod` declarations (whatever its name — a `pub mod
-///   foo_tests;` ships and is scanned) and the `target`/`node_modules`/`tests`
-///   directory names, so no test fixture and no build output can satisfy a
-///   probe;
+///   foo_tests;` ships and is scanned, and so does a `pub mod tests;`
+///   directory module) and the `target`/`node_modules` directories, so no test
+///   fixture and no build output can satisfy a probe;
 /// - [`strip_comments_and_strings`] blanks comment and string bodies (newlines
 ///   preserved), so prose and literals cannot either.
 ///
@@ -7111,9 +7270,11 @@ fn a_marker_in_non_production_text_does_not_prove_a_lane_exists() {
     // Reachable only through the `#[cfg(test)]` decl above — production-looking
     // name, test-only file.
     std::fs::write(src.join("fixture.rs"), format!("{MARKER} {{}}\n")).expect("write fixture.rs");
-    // A gated `tests.rs` (excluded by its declaration, not its name), and a
-    // `tests/` directory.
-    std::fs::write(src.join("tests.rs"), format!("{MARKER} {{}}\n")).expect("write tests.rs");
+    // A gated `tests.rs` (excluded by its declaration, not its name), and its
+    // `tests/` module directory (excluded through that chain, not by the
+    // directory name — gate audit 2026-08 §9).
+    std::fs::write(src.join("tests.rs"), format!("mod more;\n{MARKER} {{}}\n"))
+        .expect("write tests.rs");
     std::fs::write(
         src.join("tests").join("more.rs"),
         format!("{MARKER} {{}}\n"),

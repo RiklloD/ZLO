@@ -364,6 +364,67 @@ def cfg_possible_values(
     return {False, True}
 
 
+def split_leading_attributes(text: str) -> tuple[list[str], str]:
+    """Split the run of complete ``#[...]`` attributes opening ``text``.
+
+    ``#[cfg(test)] mod x;`` is ``(["#[cfg(test)]"], "mod x;")``. Brackets inside a
+    string literal do not end an attribute; an attribute still open at the end
+    of the line ends the run (multi-line attributes are not split). The Rust
+    counter (``ratchet_support::split_leading_attributes``) runs the same
+    algorithm, so both trackers see the same attributes on the same line.
+    """
+    attributes: list[str] = []
+    rest = text.lstrip()
+    while rest.startswith("#["):
+        depth = 0
+        in_string = False
+        escaped = False
+        end = None
+        for index, ch in enumerate(rest):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth = max(depth - 1, 0)
+                if depth == 0:
+                    end = index
+                    break
+        if end is None:
+            break
+        attributes.append(rest[: end + 1])
+        rest = rest[end + 1 :].lstrip()
+    return attributes, rest
+
+
+def leading_attributes_are_test_only(
+    code: str, raw: str, test_support_is_test: bool = True
+) -> tuple[bool, bool, str]:
+    """``(has attributes, one is test-only, code after them)`` for one line.
+
+    The count comes from the lexed ``code`` (comments and strings blanked); the
+    test check reads the matching ``raw`` attributes, whose cfg string values
+    (``"test-support"``) the lexer blanks.
+    """
+    code_attributes, rest = split_leading_attributes(code)
+    if not code_attributes:
+        return False, False, rest
+    raw_attributes, _ = split_leading_attributes(raw)
+    test_only = any(
+        attribute_is_test_only(attribute, test_support_is_test)
+        for attribute in raw_attributes[: len(code_attributes)]
+    )
+    return True, test_only, rest
+
+
 def attribute_is_test_only(line: str, test_support_is_test: bool = True) -> bool:
     if TEST_ATTR_PATTERN.match(line):
         return True
@@ -413,22 +474,26 @@ def line_test_contexts_from_code(
     pending_block_context: bool | None = None
 
     for idx, code in enumerate(code_lines):
-        stripped = code.strip()
         current_context = block_stack[-1] if block_stack else False
 
-        if stripped.startswith("#[") and attribute_is_test_only(
-            raw_lines[idx].strip(), test_support_is_test
-        ):
+        # Attributes are read per attribute, not per line: a one-line
+        # `#[cfg(test)] mod x_tests;` gates `x_tests` exactly as the attribute
+        # on the line above would (gate audit 2026-08 §9 residual 2), and the
+        # gating attribute line itself is test context (as in the Rust twin).
+        _has_attributes, test_attribute, rest = leading_attributes_are_test_only(
+            code, raw_lines[idx], test_support_is_test
+        )
+        if test_attribute:
             pending_test_attr = True
 
-        item_found, item_is_test = is_test_item(code, pending_test_attr)
+        item_found, item_is_test = is_test_item(rest, pending_test_attr)
         if item_found:
             pending_block_context = item_is_test or current_context
             pending_test_attr = False
-        elif stripped and not stripped.startswith("#[") and pending_test_attr:
+        elif rest.strip() and not rest.startswith("#[") and pending_test_attr:
             pending_test_attr = False
 
-        contexts[idx] = current_context or bool(pending_block_context)
+        contexts[idx] = current_context or bool(pending_block_context) or test_attribute
 
         for ch in code:
             if ch == "{":
@@ -440,7 +505,7 @@ def line_test_contexts_from_code(
             elif ch == "}" and block_stack:
                 block_stack.pop()
 
-        if stripped.endswith(";"):
+        if code.strip().endswith(";"):
             pending_block_context = None
 
     return contexts
@@ -502,10 +567,10 @@ def has_cfg_test_module_declaration(
       ``#[cfg(any(test, feature = "test-support"))] pub mod contract_tests;``
       is a shared fixture module other crates compile, so it stays in scope.
 
-    No declaration, or any one ungated declaration, means production. A
-    single-line ``#[cfg(test)] mod x_tests;`` is not recognized as gated (the
-    tracker reads one attribute per line; the form does not occur in
-    ``crates/``), which errs toward counting the file.
+    No declaration, or any one ungated declaration, means production. The
+    attribute may share the item's line (``#[cfg(test)] mod x_tests;``): the
+    tracker reads attributes per attribute (``split_leading_attributes``), not
+    one per line — until 2026-11-17 that form read as ungated.
     """
     target = (repository_root / pathlib.Path(path)).resolve()
     if target in _visiting:
@@ -569,8 +634,9 @@ def line_module_directories(
     for code in code_lines:
         current = block_stack[-1] if block_stack else root
         directories.append(current)
-        module = INLINE_MOD_PATTERN.match(code)
-        if module is not None and OUT_OF_LINE_MOD_PATTERN.match(code) is None:
+        item = split_leading_attributes(code)[1]
+        module = INLINE_MOD_PATTERN.match(item)
+        if module is not None and OUT_OF_LINE_MOD_PATTERN.match(item) is None:
             pending_inline = current / module.group(1)
 
         for char in code:
@@ -624,10 +690,15 @@ def line_item_contexts(code_lines: tuple[str, ...]) -> list[str]:
 def is_test_only_path(path: str) -> bool:
     """Return True for files that live in Rust test-only locations.
 
-    Files under ``src/**/tests/*.rs`` and ``src/**/tests.rs`` are Rust test
-    sub-modules, typically included behind ``#[cfg(test)]`` and never compiled
-    in production. Top-level ``tests/*.rs`` integration test files are already
-    outside ``src/`` / ``crates/`` and therefore never checked.
+    A file is test-only when it sits in a crate-level cargo target directory
+    (``tests/`` / ``examples/`` / ``benches/`` beside a ``Cargo.toml``,
+    ``is_in_crate_target_directory``), or when every module declaration that
+    includes it is test-only (``has_cfg_test_module_declaration``) — whatever
+    its name or directory. ``tests.rs``, ``*_tests.rs`` and ``src/**/tests/``
+    are conventions, not rules: until 2026-11-12 the names were exempt without
+    a gated declaration, and until 2026-11-17 a ``src/**/tests/`` directory was
+    exempt by directory (gate audit 2026-08 §9). Classifying every file this
+    way is the same rule ``ratchet_support::production_rust_files`` applies.
 
     ``src/**/test_support.rs`` is the repo-wide convention for a
     ``#[cfg(feature = "test-support")] pub mod test_support;`` module
@@ -650,11 +721,30 @@ def is_test_only_path(path: str) -> bool:
     ``changed_rust_files``). Top-level ``tests/**`` integration tests and their
     support trees are never scanned at all, so they need no exemption here.
 
-    A ``tests.rs`` / ``*_test.rs`` / ``*_tests.rs`` is test-only only when
-    ``has_cfg_test_module_declaration`` finds its real parent declaration
-    gated.
     """
     return _is_test_only_path(path, pathlib.Path("."), frozenset())
+
+
+CRATE_TARGET_DIRECTORIES = frozenset({"tests", "examples", "benches"})
+
+
+def is_in_crate_target_directory(path: str, repository_root: pathlib.Path) -> bool:
+    """Whether ``path`` lies under a crate-level ``tests/``/``examples/``/``benches/``.
+
+    Cargo compiles those directories as separate targets only when they sit
+    beside a ``Cargo.toml``; a ``src/**/tests/`` directory is an ordinary module
+    directory, classified by its declarations like any other file (gate audit
+    2026-08 §9 residual 1: it used to be test-only by directory, so a shipped
+    ``pub mod tests;`` directory module was dropped). Same rule as
+    ``ratchet_support::is_pruned_dir``.
+    """
+    parts = pathlib.PurePosixPath(path).parts
+    for index, part in enumerate(parts):
+        if part in CRATE_TARGET_DIRECTORIES:
+            parent = repository_root.joinpath(*parts[:index])
+            if (parent / "Cargo.toml").is_file():
+                return True
+    return False
 
 
 def _is_test_only_path(
@@ -664,17 +754,9 @@ def _is_test_only_path(
 ) -> bool:
     posix_path = pathlib.PurePosixPath(path)
     parts = posix_path.parts
-    if (
-        "tests" in parts
-        or (
-            (
-                posix_path.name == "tests.rs"
-                or posix_path.name.endswith("_test.rs")
-                or posix_path.name.endswith("_tests.rs")
-            )
-            and has_cfg_test_module_declaration(path, repository_root, visiting)
-        )
-    ):
+    if is_in_crate_target_directory(path, repository_root):
+        return True
+    if has_cfg_test_module_declaration(path, repository_root, visiting):
         return True
     # Exempt only the canonical feature-gated module root: `.../src/test_support.rs`
     # or `.../src/test_support/**`. The component immediately after `src` must be
@@ -832,13 +914,17 @@ def module_declarations(
         scan.test_contexts if test_contexts is None else test_contexts,
         scan.module_directories,
     ):
-        path_attr = PATH_ATTR_PATTERN.match(raw)
-        if path_attr and code.lstrip().startswith("#["):
-            pending_path = path_attr.group(1)
-            pending_path_directory = module_dir
+        raw_attributes, _ = split_leading_attributes(raw)
+        code_attributes, item = split_leading_attributes(code)
+        for attribute in raw_attributes[: len(code_attributes)]:
+            path_attr = PATH_ATTR_PATTERN.match(attribute)
+            if path_attr:
+                pending_path = path_attr.group(1)
+                pending_path_directory = module_dir
+        if code_attributes and not item.strip():
             continue
 
-        module = OUT_OF_LINE_MOD_PATTERN.match(code)
+        module = OUT_OF_LINE_MOD_PATTERN.match(item)
         if module:
             if pending_path is not None:
                 path_directory = pending_path_directory or module_dir
@@ -852,8 +938,7 @@ def module_declarations(
             pending_path_directory = None
             continue
 
-        stripped = code.strip()
-        if stripped and not stripped.startswith("#["):
+        if item.strip() and not item.startswith("#["):
             pending_path = None
             pending_path_directory = None
 
@@ -1310,8 +1395,17 @@ class CheckNoPanicsTests(unittest.TestCase):
                 self.assertEqual(contexts[2], expected)
 
     def test_test_only_path_detection(self) -> None:
-        self.assertTrue(is_test_only_path("src/channels/web/tests/multi_tenant.rs"))
-        self.assertTrue(is_test_only_path("crates/foo/src/tests/helpers.rs"))
+        # A `src/**/tests/` directory is NOT test-only by directory (gate audit
+        # §9 residual 1); with no gated declaration the file ships. The
+        # declaration-based halves are `test_src_tests_directory_*` below.
+        self.assertFalse(is_test_only_path("src/channels/web/tests/multi_tenant.rs"))
+        self.assertFalse(is_test_only_path("crates/foo/src/tests/helpers.rs"))
+        # A crate-level `tests/` beside a real `Cargo.toml` is a cargo target.
+        self.assertTrue(
+            is_test_only_path(
+                "crates/app/ironclaw_architecture_tests/tests/reborn_crate_inventory.rs"
+            )
+        )
         self.assertFalse(is_test_only_path("crates/foo/src/tests.rs"))
         self.assertFalse(is_test_only_path("crates/foo/src/nested/tests.rs"))
         self.assertFalse(is_test_only_path("crates/foo/src/auth_test.rs"))
@@ -1414,6 +1508,60 @@ class CheckNoPanicsTests(unittest.TestCase):
                 {"src/lib.rs": "#[cfg(test)]\nmod sub {\n    mod probe_tests;\n}\n"},
                 "src/sub/probe_tests.rs",
                 True,
+            ),
+            # §9 residual 2: attribute and item on one line.
+            "single-line gate": (
+                {"src/lib.rs": "#[cfg(test)] mod probe_tests;\n"},
+                "src/probe_tests.rs",
+                True,
+            ),
+            "single-line stacked gate": (
+                {"src/lib.rs": "#[allow(dead_code)] #[cfg(all(test, unix))] pub(crate) mod probe_tests;\n"},
+                "src/probe_tests.rs",
+                True,
+            ),
+            "single-line gated inline parent": (
+                {"src/lib.rs": "#[cfg(test)] mod sub {\n    mod probe_tests;\n}\n"},
+                "src/sub/probe_tests.rs",
+                True,
+            ),
+            "single-line release cfg": (
+                {"src/lib.rs": "#[cfg(not(test))] mod probe_tests;\n"},
+                "src/probe_tests.rs",
+                False,
+            ),
+            "single-line non-cfg attribute": (
+                {"src/lib.rs": "#[allow(dead_code)] mod probe_tests;\n"},
+                "src/probe_tests.rs",
+                False,
+            ),
+            # One rule for every file: the name never decides.
+            "gated production-named file": (
+                {"src/lib.rs": "#[cfg(test)]\nmod helpers;\n"},
+                "src/helpers.rs",
+                True,
+            ),
+            "ungated production-named file": (
+                {"src/lib.rs": "pub mod helpers;\n"},
+                "src/helpers.rs",
+                False,
+            ),
+            # §9 residual 1: a `src/**/tests/` module directory.
+            "gated tests directory module": (
+                {
+                    "src/lib.rs": "#[cfg(test)]\nmod tests;\n",
+                    "src/tests/mod.rs": "mod helpers;\n",
+                },
+                "src/tests/helpers.rs",
+                True,
+            ),
+            "ungated tests directory module": (
+                {
+                    "src/lib.rs": "pub mod tests;\n",
+                    "src/tests/mod.rs": "pub mod helpers;\n",
+                },
+                "src/tests/helpers.rs",
+                False,
             ),
         }
         for name, (files, target, expected) in cases.items():
@@ -1695,6 +1843,27 @@ class CheckNoPanicsTests(unittest.TestCase):
             self.assertIn(child, production)
             self.assertNotIn(shared, tests)
             self.assertNotIn(child, tests)
+
+    def test_tests_directory_and_single_line_gate_in_reachability(self) -> None:
+        # Gate audit §9 residuals 1 and 2, through the full-scan caller: an
+        # ungated `pub mod tests;` directory module ships (its panic is
+        # production), while a one-line `#[cfg(test)] mod x;` is test-only.
+        with tempfile.TemporaryDirectory() as directory:
+            source_root = pathlib.Path(directory)
+            (source_root / "lib.rs").write_text(
+                "pub mod tests;\n#[cfg(test)] mod gated;\n", encoding="utf-8"
+            )
+            (source_root / "tests").mkdir()
+            (source_root / "tests" / "mod.rs").write_text(
+                'pub fn shipped() { panic!("ships"); }\n', encoding="utf-8"
+            )
+            (source_root / "gated.rs").write_text(
+                'fn fixture() { panic!("test-only"); }\n', encoding="utf-8"
+            )
+            production, tests = discover_reachable_rust_files([source_root / "lib.rs"])
+            self.assertIn((source_root / "tests" / "mod.rs").resolve(), production)
+            self.assertIn((source_root / "gated.rs").resolve(), tests)
+            self.assertNotIn((source_root / "gated.rs").resolve(), production)
 
     def test_pure_rename_contributes_no_added_lines(self) -> None:
         """A relocated file must not read as wholly new.
