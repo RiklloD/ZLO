@@ -159,11 +159,19 @@ stop the container), wait again, then join the pipe threads with a deadline,
 abandoning any that never close. It then returns its timeout error; no step
 waits without a bound.
 
-Removal is verified (`docker ps -a --filter name=^/<name>$`). When it cannot
-be verified, the container may still be running: the backend hands the
-container and its lane slot to an orphan reaper, which retries removal with
-capped backoff and releases the slot only after verified removal, so capacity
-is never re-admitted over a live container. At composition time,
+From the moment `docker run` is spawned, a container guard owns the
+container name, the lane slot, and the CLI child. Every exit path — normal
+exit, error (a failed poll, a missing pipe), timeout, or a panic unwinding
+through the backend — settles through the guard's drop: the CLI child is
+waited (killed first if still running) and the container is verified gone
+(`docker ps -a --filter name=^/<name>$`, after giving `--rm` until the reap
+bound and then `docker rm -f`). Only when both are confirmed is the slot
+released. Otherwise the container, any unwaited CLI child, and the slot go to
+an orphan reaper, which retries with backoff growing to a capped interval,
+never drops ownership, catches a panic in any attempt as a failed attempt,
+and releases the slot only once the container is gone and the child waited
+— so capacity is never re-admitted over a live container and no CLI child is
+left as a zombie. At composition time,
 `DockerScriptBackend::reap_previous_instances` removes lane containers left on
 this host by earlier instances whose process is gone; containers of a live
 process (including another IronClaw on the same host), of another host, or

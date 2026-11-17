@@ -14,13 +14,14 @@
 
 use std::{
     collections::BTreeMap,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError},
     thread,
     time::Duration,
 };
 
 use super::ScriptExecutionSlot;
-use super::docker::DockerCli;
+use super::docker::{DockerCli, ScriptChild};
 
 pub(crate) const LANE_LABEL_KEY: &str = "ironclaw.lane";
 pub(crate) const LANE_LABEL_VALUE: &str = "script";
@@ -86,6 +87,16 @@ impl OrphanBounds {
             command: Duration::from_secs(5),
         }
     }
+
+    /// Wait before retry `attempt`: the backoff list, then its last (largest)
+    /// value forever — the interval is capped, the retries are not.
+    pub(crate) fn delay(&self, attempt: usize) -> Duration {
+        self.backoff
+            .get(attempt)
+            .or(self.backoff.last())
+            .copied()
+            .unwrap_or(Duration::from_secs(1))
+    }
 }
 
 /// Remove `name` and confirm it is gone. `false` means "may still exist".
@@ -102,7 +113,23 @@ pub(crate) fn remove_verified(cli: &dyn DockerCli, name: &str, bound: Duration) 
     }
 }
 
-/// Holds orphaned containers' lane slots until their removal is verified.
+/// A script container (and possibly its unwaited CLI child) whose cleanup
+/// is not yet confirmed, with the lane slot it keeps held.
+pub(crate) struct Orphan {
+    pub(crate) container_name: String,
+    pub(crate) slot: ScriptExecutionSlot,
+    /// The `docker run` CLI child if it has not been waited yet; the reaper
+    /// owns it until it is, so it never lingers as a zombie.
+    pub(crate) child: Option<Box<dyn ScriptChild>>,
+    pub(crate) container_gone: bool,
+}
+
+/// Holds orphaned containers' lane slots until each container is verified
+/// gone and its CLI child waited. One thread per orphan retries both with
+/// backoff that grows to a capped interval and never gives up ownership; a
+/// panic in one attempt is caught and counts as a failed attempt, so it can
+/// neither drop the slot nor stop the retries. Orphans are bounded by lane
+/// capacity, since each holds a slot.
 pub(crate) struct OrphanReaper {
     cli: Arc<dyn DockerCli>,
     bounds: OrphanBounds,
@@ -124,9 +151,16 @@ impl OrphanReaper {
         held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Take `container_name` and its slot. The slot stays held (lane capacity
-    /// stays reduced) until a retry verifies the container is gone.
-    pub(crate) fn adopt(&self, container_name: String, slot: ScriptExecutionSlot) {
+    /// Take ownership of an orphan. Its slot stays held (lane capacity stays
+    /// reduced) until a retry confirms the container is gone and the child
+    /// is waited.
+    pub(crate) fn adopt(&self, orphan: Orphan) {
+        let Orphan {
+            container_name,
+            slot,
+            mut child,
+            mut container_gone,
+        } = orphan;
         Self::held(&self.held).insert(container_name.clone(), slot);
         let cli = Arc::clone(&self.cli);
         let bounds = self.bounds.clone();
@@ -136,21 +170,28 @@ impl OrphanReaper {
             .spawn(move || {
                 let mut attempt = 0_usize;
                 loop {
-                    let delay = bounds
-                        .backoff
-                        .get(attempt)
-                        .or(bounds.backoff.last())
-                        .copied()
-                        .unwrap_or(Duration::from_secs(1));
-                    thread::sleep(delay);
-                    if remove_verified(cli.as_ref(), &container_name, bounds.command) {
-                        tracing::debug!(attempt, "removed an orphaned script container");
+                    thread::sleep(bounds.delay(attempt));
+                    let settled = catch_unwind(AssertUnwindSafe(|| {
+                        settle_orphan(
+                            cli.as_ref(),
+                            &container_name,
+                            bounds.command,
+                            &mut child,
+                            &mut container_gone,
+                        )
+                    }))
+                    .unwrap_or_else(|_panic| {
+                        tracing::debug!(attempt, "a script orphan reaper attempt panicked");
+                        false
+                    });
+                    if settled {
+                        tracing::debug!(attempt, "settled an orphaned script container");
                         // Releases the slot.
                         Self::held(&held).remove(&container_name);
                         return;
                     }
                     attempt = attempt.saturating_add(1);
-                    tracing::debug!(attempt, "orphaned script container still present; retrying");
+                    tracing::debug!(attempt, "orphaned script container not settled; retrying");
                 }
             });
         if let Err(error) = spawned {
@@ -159,6 +200,34 @@ impl OrphanReaper {
             tracing::debug!(%error, "spawning the script orphan reaper failed; slot stays held");
         }
     }
+}
+
+/// One reaper attempt: remove the container (until verified) and wait the
+/// child (killing it if it is still running). `true` once both are done.
+fn settle_orphan(
+    cli: &dyn DockerCli,
+    container_name: &str,
+    bound: Duration,
+    child: &mut Option<Box<dyn ScriptChild>>,
+    container_gone: &mut bool,
+) -> bool {
+    if !*container_gone {
+        *container_gone = remove_verified(cli, container_name, bound);
+    }
+    if let Some(running) = child.as_deref_mut() {
+        match running.try_wait() {
+            Ok(Some(_)) => *child = None,
+            Ok(None) => {
+                if let Err(error) = running.kill() {
+                    tracing::debug!(%error, "killing an orphaned script's docker child failed");
+                }
+            }
+            Err(error) => {
+                tracing::debug!(%error, "waiting an orphaned script's docker child failed");
+            }
+        }
+    }
+    *container_gone && child.is_none()
 }
 
 /// Remove lane containers left by earlier instances on this host whose

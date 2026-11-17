@@ -57,7 +57,9 @@ fn docker_backend_disables_ambient_network_before_image_and_manifest_args() {
     let docker_path = fake_bin.path().join("docker");
     fs::write(
         &docker_path,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$IRONCLAW_DOCKER_ARGS_FILE\"\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+        // `run` records its arguments and echoes JSON; the container guard's
+        // removal check (`ps`) finds no container.
+        "#!/bin/sh\nif [ \"$1\" != run ]; then exit 0; fi\nprintf '%s\\n' \"$@\" > \"$IRONCLAW_DOCKER_ARGS_FILE\"\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
     )
     .unwrap();
     let mut permissions = fs::metadata(&docker_path).unwrap().permissions();
@@ -272,7 +274,8 @@ mod teardown {
 
     use super::super::{DockerCli, DockerScriptBackend, ScriptChild, TeardownBounds};
     use crate::script::orphans::{
-        LabelledContainer, OrphanBounds, OrphanReaper, ScriptInstance, reap_previous_instances,
+        LabelledContainer, Orphan, OrphanBounds, OrphanReaper, ScriptInstance,
+        reap_previous_instances,
     };
     use crate::script::{
         ScriptError, ScriptExecutionRequest, ScriptInvocation, ScriptRuntime, ScriptRuntimeConfig,
@@ -510,7 +513,9 @@ mod teardown {
             ResourceTally::default(),
             "the reservation must be released after a wedged teardown"
         );
-        assert_eq!(*cli.kill_attempts.lock().unwrap(), 1);
+        // Teardown's kill, then the guard's before handing the never-exiting
+        // child to the reaper.
+        assert!(*cli.kill_attempts.lock().unwrap() >= 1);
         let spawned = cli.spawned_args.lock().unwrap();
         let name_index = spawned[0].iter().position(|arg| arg == "--name").unwrap();
         assert_eq!(
@@ -640,6 +645,329 @@ mod teardown {
             *cli.removed_names.lock().unwrap(),
             vec!["dead-previous".to_string()]
         );
+    }
+
+    /// Every exit path of a spawned script settles through the container
+    /// guard: the slot is released only once the container is verified gone
+    /// and the CLI child waited; otherwise the reaper holds it.
+    mod lifecycle {
+        use std::sync::atomic::AtomicBool;
+
+        use super::*;
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum ChildMode {
+            /// `try_wait` errors (a client hiccup) until the child is killed.
+            PollError,
+            /// Exits at once with `{"ok":true}`; the container lingers.
+            ExitsOk,
+            /// The first `try_wait` panics, unwinding through the backend.
+            PanicOnFirstPoll,
+            /// Exits only after this many polls following a kill.
+            SlowExitAfterKill(usize),
+        }
+
+        #[derive(Default)]
+        struct Counters {
+            spawned: AtomicUsize,
+            waited: AtomicUsize,
+            leaked_unwaited: AtomicUsize,
+        }
+
+        /// A CLI whose container exists until a `docker rm -f` succeeds.
+        struct ScriptedCli {
+            mode: ChildMode,
+            container_present: Arc<AtomicBool>,
+            rm_failures_left: AtomicUsize,
+            counters: Arc<Counters>,
+        }
+
+        impl ScriptedCli {
+            fn new(mode: ChildMode, rm_failures: usize) -> Arc<Self> {
+                Arc::new(Self {
+                    mode,
+                    container_present: Arc::new(AtomicBool::new(false)),
+                    rm_failures_left: AtomicUsize::new(rm_failures),
+                    counters: Arc::new(Counters::default()),
+                })
+            }
+        }
+
+        impl DockerCli for ScriptedCli {
+            fn spawn_run(&self, _args: &[String]) -> io::Result<Box<dyn ScriptChild>> {
+                self.counters.spawned.fetch_add(1, Ordering::SeqCst);
+                self.container_present.store(true, Ordering::SeqCst);
+                Ok(Box::new(ScriptedChild {
+                    mode: self.mode,
+                    killed: false,
+                    polls: 0,
+                    polls_after_kill: 0,
+                    waited: false,
+                    counters: Arc::clone(&self.counters),
+                }))
+            }
+
+            fn force_remove(&self, _name: &str, _bound: Duration) -> Result<(), String> {
+                if self
+                    .rm_failures_left
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_ok()
+                {
+                    return Err("injected docker rm failure".to_string());
+                }
+                self.container_present.store(false, Ordering::SeqCst);
+                Ok(())
+            }
+
+            fn container_exists(&self, _name: &str, _bound: Duration) -> Result<bool, String> {
+                Ok(self.container_present.load(Ordering::SeqCst))
+            }
+
+            fn list_script_containers(
+                &self,
+                _bound: Duration,
+            ) -> Result<Vec<LabelledContainer>, String> {
+                Ok(Vec::new())
+            }
+        }
+
+        struct ScriptedChild {
+            mode: ChildMode,
+            killed: bool,
+            polls: usize,
+            polls_after_kill: usize,
+            waited: bool,
+            counters: Arc<Counters>,
+        }
+
+        impl ScriptedChild {
+            fn exit(&mut self, code: i32) -> io::Result<Option<i32>> {
+                if !self.waited {
+                    self.waited = true;
+                    self.counters.waited.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(Some(code))
+            }
+        }
+
+        impl ScriptChild for ScriptedChild {
+            fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+                Some(Box::new(io::sink()))
+            }
+
+            fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+                Some(Box::new(Cursor::new(br#"{"ok":true}"#.to_vec())))
+            }
+
+            fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
+                Some(Box::new(Cursor::new(Vec::new())))
+            }
+
+            fn try_wait(&mut self) -> io::Result<Option<i32>> {
+                self.polls += 1;
+                if self.waited {
+                    return Ok(Some(0));
+                }
+                match self.mode {
+                    ChildMode::ExitsOk => self.exit(0),
+                    ChildMode::PollError if self.killed => self.exit(137),
+                    ChildMode::PollError => Err(io::Error::other("injected poll failure")),
+                    ChildMode::PanicOnFirstPoll if self.polls == 1 => {
+                        panic!("injected panic after spawn")
+                    }
+                    ChildMode::PanicOnFirstPoll => self.exit(137),
+                    ChildMode::SlowExitAfterKill(_) if !self.killed => Ok(None),
+                    ChildMode::SlowExitAfterKill(polls) => {
+                        self.polls_after_kill += 1;
+                        if self.polls_after_kill >= polls {
+                            self.exit(137)
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                }
+            }
+
+            fn kill(&mut self) -> io::Result<()> {
+                self.killed = true;
+                Ok(())
+            }
+        }
+
+        impl Drop for ScriptedChild {
+            fn drop(&mut self) {
+                // Dropping a std Child does not wait it: this is a zombie.
+                if !self.waited {
+                    self.counters.leaked_unwaited.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+
+        fn backend(cli: Arc<ScriptedCli>) -> DockerScriptBackend {
+            DockerScriptBackend::from_parts(
+                cli,
+                TEST_BOUNDS,
+                OrphanBounds {
+                    backoff: vec![Duration::from_millis(5), Duration::from_millis(20)],
+                    command: Duration::from_millis(50),
+                },
+                ScriptInstance::current(),
+            )
+        }
+
+        async fn wait_until_released(reaper: &OrphanReaper) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while held(reaper) > 0 {
+                assert!(
+                    Instant::now() < deadline,
+                    "the reaper never settled the orphan"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        /// Drive `mode` through the runtime with a single-slot lane and
+        /// assert the slot stays held until the reaper settles the orphan.
+        async fn slot_held_until_reaped(
+            mode: ChildMode,
+            rm_failures: usize,
+        ) -> (Result<(), ScriptError>, Arc<ScriptedCli>) {
+            let cli = ScriptedCli::new(mode, rm_failures);
+            let backend = backend(Arc::clone(&cli));
+            let reaper = Arc::clone(&backend.reaper);
+            let runtime = timeout_runtime(backend, 1);
+
+            let (first, _, reserved) = run_script(&runtime).await;
+            assert_eq!(reserved, ResourceTally::default());
+            assert_eq!(held(&reaper), 1, "the unsettled container is the reaper's");
+            let (second, _, _) = run_script(&runtime).await;
+            assert!(
+                matches!(second, Err(ScriptError::Resource(_))),
+                "capacity must stay held while the container may run: {second:?}"
+            );
+
+            wait_until_released(&reaper).await;
+            assert!(!cli.container_present.load(Ordering::SeqCst));
+            let (third, _, _) = run_script(&runtime).await;
+            assert!(
+                !matches!(third, Err(ScriptError::Resource(_))),
+                "the settled slot admits the next call: {third:?}"
+            );
+            (first, cli)
+        }
+
+        #[tokio::test]
+        async fn a_polling_failure_keeps_the_slot_until_the_container_is_verified_gone() {
+            let (first, cli) = slot_held_until_reaped(ChildMode::PollError, 3).await;
+            assert!(
+                matches!(first, Err(ScriptError::Backend { .. })),
+                "{first:?}"
+            );
+            assert_eq!(cli.counters.leaked_unwaited.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn a_normal_exit_with_the_container_still_present_keeps_the_slot() {
+            let (first, _cli) = slot_held_until_reaped(ChildMode::ExitsOk, 2).await;
+            assert!(first.is_ok(), "the script itself succeeded: {first:?}");
+        }
+
+        #[tokio::test]
+        async fn a_panic_after_spawn_keeps_the_slot_until_settled() {
+            let (first, cli) = slot_held_until_reaped(ChildMode::PanicOnFirstPoll, 2).await;
+            assert!(
+                matches!(first, Err(ScriptError::Backend { .. })),
+                "{first:?}"
+            );
+            assert_eq!(cli.counters.leaked_unwaited.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn repeated_timeouts_leave_no_unwaited_cli_children() {
+            // Each killed CLI exits only well after the guard's bounded waits,
+            // so the reaper must own and wait every one of them.
+            let cli = ScriptedCli::new(ChildMode::SlowExitAfterKill(40), 0);
+            let backend = backend(Arc::clone(&cli));
+            let reaper = Arc::clone(&backend.reaper);
+            let runtime = timeout_runtime(backend, 8);
+
+            for _ in 0..5 {
+                let (result, _, _) = run_script(&runtime).await;
+                assert!(
+                    matches!(result, Err(ScriptError::Backend { .. })),
+                    "{result:?}"
+                );
+            }
+            wait_until_released(&reaper).await;
+
+            let counters = &cli.counters;
+            assert_eq!(counters.spawned.load(Ordering::SeqCst), 5);
+            assert_eq!(
+                counters.waited.load(Ordering::SeqCst),
+                5,
+                "every CLI child is waited"
+            );
+            assert_eq!(
+                counters.leaked_unwaited.load(Ordering::SeqCst),
+                0,
+                "no zombies"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_panicking_reaper_attempt_does_not_stop_the_retries() {
+            // The orphan's child panics on its first reaper poll.
+            let cli = ScriptedCli::new(ChildMode::SlowExitAfterKill(1), 0);
+            let reaper = Arc::new(OrphanReaper::new(
+                cli.clone(),
+                OrphanBounds {
+                    backoff: vec![Duration::from_millis(5)],
+                    command: Duration::from_millis(50),
+                },
+            ));
+            let panicking = PanicOnceChild {
+                panicked: false,
+                inner: cli.spawn_run(&[]).unwrap(),
+            };
+            reaper.adopt(Orphan {
+                container_name: "orphan".to_string(),
+                slot: crate::script::ScriptExecutionSlot::unmetered(),
+                child: Some(Box::new(panicking)),
+                container_gone: false,
+            });
+
+            wait_until_released(&reaper).await;
+            assert_eq!(cli.counters.waited.load(Ordering::SeqCst), 1);
+        }
+
+        struct PanicOnceChild {
+            panicked: bool,
+            inner: Box<dyn ScriptChild>,
+        }
+
+        impl ScriptChild for PanicOnceChild {
+            fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+                self.inner.take_stdin()
+            }
+            fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+                self.inner.take_stdout()
+            }
+            fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
+                self.inner.take_stderr()
+            }
+            fn try_wait(&mut self) -> io::Result<Option<i32>> {
+                if !self.panicked {
+                    self.panicked = true;
+                    panic!("injected reaper attempt panic");
+                }
+                self.inner.try_wait()
+            }
+            fn kill(&mut self) -> io::Result<()> {
+                self.inner.kill()
+            }
+        }
     }
 
     fn script_package() -> ExtensionPackage {

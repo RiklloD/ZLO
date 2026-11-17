@@ -6,6 +6,7 @@
 //! secrets, or network by default.
 
 pub mod docker;
+mod lifecycle;
 mod orphans;
 
 use std::{

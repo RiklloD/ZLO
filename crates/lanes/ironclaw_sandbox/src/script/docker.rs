@@ -19,10 +19,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::lifecycle::ContainerGuard;
 use super::orphans::{
     HOST_LABEL_KEY, INSTANCE_LABEL_KEY, LANE_LABEL_KEY, LANE_LABEL_VALUE, LabelledContainer,
     OrphanBounds, OrphanReaper, PID_LABEL_KEY, ScriptInstance, process_alive,
-    reap_previous_instances, remove_verified,
+    reap_previous_instances,
 };
 use super::{ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptExecutionSlot};
 
@@ -163,34 +164,30 @@ impl ScriptBackend for DockerScriptBackend {
             "{SCRIPT_CONTAINER_NAME_PREFIX}{}",
             uuid::Uuid::new_v4().simple()
         );
-        let outcome = execute_docker_request(
-            self.cli.as_ref(),
+        // A spawn failure means no `docker run` process, so no container:
+        // the slot is simply released.
+        let child = self
+            .cli
+            .spawn_run(&docker_run_args(
+                &request,
+                &image,
+                &container_name,
+                &self.instance,
+            ))
+            .map_err(|error| error.to_string())?;
+        // From here on every exit path — success, error, timeout, panic —
+        // goes through the guard's drop, which releases the slot only once the
+        // container is verified gone and the CLI child waited.
+        let mut guard = ContainerGuard::new(
+            container_name,
+            slot,
+            child,
+            Arc::clone(&self.cli),
+            Arc::clone(&self.reaper),
             self.bounds,
-            &request,
-            &image,
-            &container_name,
-            &self.instance,
         );
-        match outcome {
-            DockerOutcome::Finished(result) => result,
-            DockerOutcome::TimedOut { removed: true } => Err(timeout_message(&request)),
-            DockerOutcome::TimedOut { removed: false } => {
-                // The container may still be running: its slot stays held by
-                // the reaper until removal is verified.
-                self.reaper.adopt(container_name, slot);
-                Err(timeout_message(&request))
-            }
-        }
+        execute_docker_request(&mut guard, self.bounds, &request)
     }
-}
-
-enum DockerOutcome {
-    Finished(Result<ScriptBackendOutput, String>),
-    TimedOut { removed: bool },
-}
-
-fn timeout_message(request: &ScriptBackendRequest) -> String {
-    format!("script timed out after {} ms", request.max_wall_clock_ms)
 }
 
 pub(crate) fn validate_docker_image_reference(image: &str) -> Result<(), String> {
@@ -251,33 +248,28 @@ impl<T: Send + 'static> PipeThread<T> {
 }
 
 fn execute_docker_request(
-    cli: &dyn DockerCli,
+    guard: &mut ContainerGuard,
     bounds: TeardownBounds,
     request: &ScriptBackendRequest,
-    image: &str,
-    container_name: &str,
-    instance: &ScriptInstance,
-) -> DockerOutcome {
+) -> Result<ScriptBackendOutput, String> {
     let started = Instant::now();
-    let mut child = match cli.spawn_run(&docker_run_args(request, image, container_name, instance))
-    {
-        Ok(child) => child,
-        Err(error) => return DockerOutcome::Finished(Err(error.to_string())),
-    };
-
-    let Some(stdout) = child.take_stdout() else {
-        return DockerOutcome::Finished(Err("Docker child stdout was not captured".to_string()));
-    };
-    let Some(stderr) = child.take_stderr() else {
-        return DockerOutcome::Finished(Err("Docker child stderr was not captured".to_string()));
-    };
+    let child = guard
+        .child()
+        .ok_or_else(|| "Docker child already released".to_string())?;
+    let stdout = child
+        .take_stdout()
+        .ok_or_else(|| "Docker child stdout was not captured".to_string())?;
+    let stderr = child
+        .take_stderr()
+        .ok_or_else(|| "Docker child stderr was not captured".to_string())?;
+    let stdin = child.take_stdin();
     let stdout_limit = request.max_stdout_bytes;
     let stderr_limit = request.max_stderr_bytes;
     let stdout_reader = PipeThread::spawn("stdout", move || read_bounded(stdout, stdout_limit));
     let stderr_reader = PipeThread::spawn("stderr", move || read_bounded(stderr, stderr_limit));
 
     let stdin_json = request.stdin_json.clone();
-    let stdin_writer = child.take_stdin().map(|mut stdin| {
+    let stdin_writer = stdin.map(|mut stdin| {
         PipeThread::spawn("stdin", move || {
             stdin
                 .write_all(stdin_json.as_bytes())
@@ -288,33 +280,32 @@ fn execute_docker_request(
 
     let timeout = Duration::from_millis(request.max_wall_clock_ms);
     let exit_code = loop {
-        match child.try_wait() {
-            Ok(Some(code)) => break code,
-            Ok(None) => {}
-            Err(error) => return DockerOutcome::Finished(Err(error.to_string())),
+        if let Some(code) = guard.try_wait().map_err(|error| error.to_string())? {
+            break code;
         }
         if started.elapsed() >= timeout {
-            let removed = tear_down_timed_out_script(
-                cli,
+            tear_down_timed_out_script(
+                guard,
                 bounds,
-                child,
-                container_name,
                 [Some(stdout_reader), Some(stderr_reader)],
                 stdin_writer,
             );
-            return DockerOutcome::TimedOut { removed };
+            return Err(format!(
+                "script timed out after {} ms",
+                request.max_wall_clock_ms
+            ));
         }
         thread::sleep(POLL_INTERVAL);
     };
 
-    DockerOutcome::Finished(collect_output(
+    collect_output(
         bounds,
         started,
         exit_code,
         stdout_reader,
         stderr_reader,
         stdin_writer,
-    ))
+    )
 }
 
 /// The child exited, so its pipe ends are closed unless something else still
@@ -342,36 +333,34 @@ fn collect_output(
 
 /// Bounded teardown of a timed-out script. Every step is best-effort and
 /// bounded; failures are traced at debug level and never extend the wait.
-/// Returns whether the container's removal was verified.
+/// Whatever is left unsettled (a container not verified gone, a child not
+/// waited) is the guard's to hand to the reaper when it drops.
 fn tear_down_timed_out_script(
-    cli: &dyn DockerCli,
+    guard: &mut ContainerGuard,
     bounds: TeardownBounds,
-    mut child: Box<dyn ScriptChild>,
-    container_name: &str,
     readers: [Option<PipeThread<Vec<u8>>>; 2],
     stdin_writer: Option<PipeThread<()>>,
-) -> bool {
-    if let Err(error) = child.kill() {
+) {
+    if let Err(error) = guard.kill() {
         tracing::debug!(%error, "killing a timed-out script's docker child failed");
     }
-    let mut exited = wait_for_exit(child.as_mut(), bounds.reap);
+    let mut exited = guard.wait_for_exit(bounds.reap);
 
     // Killing the CLI does not stop the container (`--rm` only applies once
     // the CLI observes the exit), so the container is removed by name whether
     // or not the kill worked. This is also what unblocks a CLI that survived
     // its kill: once the container is gone, `docker run` returns.
-    let removed = remove_verified(cli, container_name, bounds.force_remove);
-    if !removed {
+    if !guard.force_remove() {
         tracing::debug!(
             "a timed-out script container's removal is unverified; handing it to the reaper"
         );
     }
     if !exited {
-        exited = wait_for_exit(child.as_mut(), bounds.reap);
+        exited = guard.wait_for_exit(bounds.reap);
     }
     if !exited {
         tracing::debug!(
-            "abandoning a timed-out script's docker child that did not exit after kill and force-remove"
+            "a timed-out script's docker child did not exit after kill and force-remove; handing it to the reaper"
         );
     }
 
@@ -387,26 +376,6 @@ fn tear_down_timed_out_script(
         && let Err(error) = stdin_writer.join(bounds.pipe_join)
     {
         tracing::debug!(%error, "timed-out script input pipe did not drain");
-    }
-    removed
-}
-
-/// Poll `try_wait` until the child exits or `bound` elapses.
-fn wait_for_exit(child: &mut dyn ScriptChild, bound: Duration) -> bool {
-    let deadline = Instant::now() + bound;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return true,
-            Ok(None) => {}
-            Err(error) => {
-                tracing::debug!(%error, "polling a timed-out script's docker child failed");
-                return false;
-            }
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        thread::sleep(POLL_INTERVAL);
     }
 }
 
