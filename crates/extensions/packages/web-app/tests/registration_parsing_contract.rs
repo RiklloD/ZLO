@@ -18,6 +18,7 @@
 //! The rule under test: a registration this half cannot use fails **that
 //! registration**, never the delivery and never its siblings, and is reported
 //! for pruning on the same path an expired endpoint takes.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::sync::Mutex;
 

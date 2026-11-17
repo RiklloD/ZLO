@@ -6,6 +6,7 @@
 //! document's mutator semantics every producer and sink rely on, the cadence
 //! each transport admits, and the single-seam binding shape
 //! (`ChannelSurfaces.reply` is one `ReplySink`, whatever the transport).
+#![deny(clippy::let_underscore_must_use)]
 
 use std::sync::Arc;
 use std::time::Duration;

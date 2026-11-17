@@ -2,6 +2,7 @@
 //! host allowlist (composition reads them back for enrollment validation),
 //! so their structure — https-only hosts, the VAPID credential handle, the
 //! `vapid_authorization` injection — must not drift.
+#![deny(clippy::let_underscore_must_use)]
 
 const MANIFEST: &str = ironclaw_web_app_extension::MANIFEST;
 

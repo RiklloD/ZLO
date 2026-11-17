@@ -3,6 +3,7 @@
 //! SQLite WAL permits concurrent readers but still admits only one writer.
 //! This runtime makes that constraint explicit: adapters share an eight-slot
 //! reader pool and a one-slot writer pool for one `libsql::Database`.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::{
     fmt,

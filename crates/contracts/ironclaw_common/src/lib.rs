@@ -12,6 +12,7 @@
 //! assigned home by a *pinned rule*, not by preference — the measurements are
 //! in `AGENTS.md`. Do not add a fourth, and do not treat their presence as
 //! precedent for new domain data.
+#![deny(clippy::let_underscore_must_use)]
 
 mod attachment;
 pub mod attachment_format;

@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::{resolution::Resolution, turn::LoopResultRef};
 use ironclaw_loop_contracts::{
     CapabilityProgress, MODEL_VISIBLE_TOOL_OBSERVATION_SCHEMA_VERSION, ModelVisibleToolObservation,

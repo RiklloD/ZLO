@@ -20,6 +20,7 @@
 //!
 //! Run with output:
 //!     cargo test -p ironclaw_skills --test host_picks_wrong_skills -- --nocapture
+#![deny(clippy::let_underscore_must_use)]
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

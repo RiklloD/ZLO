@@ -28,6 +28,7 @@
 //! orchestration, built-in tool migration intent), `CLAUDE.md` for the
 //! per-file guardrails, and `docs/internal/reborn/contracts/host-api.md` (in the
 //! staging-track docs) for the broader Reborn vocabulary.
+#![deny(clippy::let_underscore_must_use)]
 
 mod clock;
 mod decision;

@@ -16,6 +16,7 @@
 //!
 //!     NEARAI_SELFCREATE_STORES=~/.cache/nearai-bench/persistent-agent-state \
 //!       cargo test -p ironclaw_skills --test agent_authored_skills_pass_the_lint -- --nocapture
+#![deny(clippy::let_underscore_must_use)]
 
 use std::path::PathBuf;
 

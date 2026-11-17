@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};

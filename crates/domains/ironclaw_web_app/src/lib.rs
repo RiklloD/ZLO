@@ -12,6 +12,7 @@
 //!   back by the host egress injector.
 //! - **Storage** rides the scoped filesystem plane through the shared
 //!   bounded CAS path; composition chooses backends.
+#![deny(clippy::let_underscore_must_use)]
 
 pub mod crypto;
 pub mod error;

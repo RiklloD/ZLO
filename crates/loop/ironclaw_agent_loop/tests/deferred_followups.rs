@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use chrono::{TimeZone, Utc};
 use ironclaw_agent_loop::{
     executor::{AgentLoopExecutor, CanonicalAgentLoopExecutor},

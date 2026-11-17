@@ -8,6 +8,7 @@
 //! cross-tenant isolation regression that mirrors
 //! `filesystem_run_state_store_isolates_two_tenants_with_same_user_project_ids`
 //! and the other migrated consumer crates' isolation tests.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::sync::Arc;
 

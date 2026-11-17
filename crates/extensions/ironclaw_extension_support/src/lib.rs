@@ -4,6 +4,7 @@
 //! composition own declaration, authorization, accounting, lifecycle, and
 //! loop-facing adapter wiring.
 #![forbid(unsafe_code)]
+#![deny(clippy::let_underscore_must_use)]
 
 pub mod coding;
 mod gsuite;

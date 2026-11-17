@@ -36,6 +36,7 @@
 //! Tool authority is a separate, unrelated mechanism owned by
 //! `ironclaw_authorization` / `ironclaw_capabilities`; nothing in this crate
 //! filters tools.
+#![deny(clippy::let_underscore_must_use)]
 
 /// Hot-swappable skill-activation strategies (profile `skill.activation.v1`).
 ///

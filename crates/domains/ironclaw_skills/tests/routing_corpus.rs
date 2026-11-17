@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 

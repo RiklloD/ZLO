@@ -5,6 +5,7 @@
 //! once selection is `ExplicitOnly` -- but the lint itself became MORE relevant, not less:
 //! under model-decided selection the description is the model's only signal in the listing, so
 //! a generic or over-long one degrades routing for every later request.
+#![deny(clippy::let_underscore_must_use)]
 
 use ironclaw_skills::parse_skill_md;
 

@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::trust::TrustPolicyInput;
 use std::collections::BTreeSet;
 

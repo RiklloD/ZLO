@@ -47,6 +47,7 @@
 //! exact policy that gated an invocation. [`EffectiveRuntimePolicy::was_reduced`]
 //! flags the case where deployment or tenant/org policy narrowed the requested
 //! profile.
+#![deny(clippy::let_underscore_must_use)]
 
 mod planner;
 mod resolver;

@@ -4,6 +4,7 @@
 //! are intentionally neutral: runtime/composition code may build route mounts,
 //! while host ingress code decides how to layer authentication, rate limits,
 //! body limits, and static routing around them.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::future::Future;
 use std::pin::Pin;

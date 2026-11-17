@@ -2,6 +2,7 @@
 //!
 //! Covers: no skills, skill unavailable, missing/denied trust, hidden capability,
 //! deterministic ordering/rebuild, and redaction of non-model-safe metadata.
+#![deny(clippy::let_underscore_must_use)]
 
 use ironclaw_loop_contracts::{
     InstalledSkillSnapshot, NoopSkillContextSource, SkillActivationState, SkillContextBudget,

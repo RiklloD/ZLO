@@ -2,6 +2,7 @@
 //!
 //! These two moved verbatim from `ironclaw_host_api`'s `host_api_contract.rs`
 //! with the `ProductSurface` membrane they pin; the assertions are unchanged.
+#![deny(clippy::let_underscore_must_use)]
 
 use serde_json::json;
 

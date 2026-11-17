@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 // arch-exempt: large_file, whole-path delivery regressions reuse the existing conversation-store contract harness, plan #6175
 use std::sync::{Arc, Mutex};
 

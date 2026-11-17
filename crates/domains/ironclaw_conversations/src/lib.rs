@@ -26,6 +26,7 @@
 //! `RootFilesystem` choice (libSQL-backed, PostgreSQL-backed, in-memory, or
 //! local-disk) is made at the filesystem layer — the consumer-store level
 //! no longer carries per-backend impls.
+#![deny(clippy::let_underscore_must_use)]
 
 mod conversation_state_store;
 mod error;

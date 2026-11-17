@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 #[test]
 fn authorization_crate_stays_below_workflow_and_runtime_crates() {
     let manifest_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");

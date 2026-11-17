@@ -22,6 +22,7 @@
 //! Failures cross the boundary as [`ExtractionError`], never as a `String`.
 //! Its `Display` renders the *classification only* — read [`ExtractionError`]'s
 //! own docs before putting any part of it in front of a model.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::io::Read;
 
