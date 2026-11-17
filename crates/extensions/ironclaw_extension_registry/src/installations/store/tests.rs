@@ -1157,3 +1157,24 @@ async fn a_legacy_lease_without_an_id_is_cleared_only_by_startup_repair() {
         "startup repair clears the legacy lease"
     );
 }
+
+#[test]
+fn a_lease_written_by_a_newer_build_with_extra_fields_still_decodes() {
+    // Leases are transient: an older reader must still be able to parse (and
+    // so startup-repair) a lease that a newer build extended.
+    let lease = V2MutationLease::preparation(
+        InstallationIncarnationId::new("incarnation-1").expect("incarnation id"),
+        ExtensionManifestRef::new(
+            ExtensionId::new("fixture").expect("extension id"),
+            Some(ManifestHash::new("hash-one").expect("hash")),
+        ),
+        uuid::Uuid::new_v4(),
+    );
+    let mut wire = serde_json::to_value(&lease).expect("encode lease");
+    wire["future_lease_field"] = serde_json::json!(true);
+    wire["preparation"]["future_preparation_field"] = serde_json::json!("x");
+
+    let decoded: V2MutationLease = serde_json::from_value(wire).expect("tolerant decode");
+
+    assert_eq!(decoded, lease);
+}

@@ -104,7 +104,16 @@ A preparation finalize or checkpoint that is rejected after taking its lease
 releases that exact lease (matched on incarnation, manifest, and the random
 `lease_id` its take persisted, so a newer lease with the same incarnation and
 manifest is never cleared, even one taken at the same instant). A lease
-written before `lease_id` existed is cleared only by startup repair. If that release fails, the caller still receives the
+written before `lease_id` existed is cleared only by startup repair.
+
+Rollback past the release that introduced `lease_id` (1.2.0 and earlier
+parse a lease with `deny_unknown_fields`): a crash that left a new-style
+lease persisted would make the older build's startup repair fail to parse the
+record. Before rolling back, start the new build once and stop it with no
+lifecycle operation in flight — its startup repair clears every lease it
+finds — then roll back. From this release on, `V2MutationLease` and
+`V2PreparationLease` accept unknown fields, so later lease additions do not
+need this step. If that release fails, the caller still receives the
 original rejection, wrapped as `RejectedWithLeaseCleanupPending` with the
 release failure as its source (classify via `rejection()`), and the store
 schedules a bounded in-process repair (five retries, ~1.5 s of backoff) so the

@@ -9,8 +9,13 @@ use super::*;
 /// complete it. There is no expiry: a lease orphaned by a crash is resolved
 /// by startup repair (restore from the compatibility snapshot, or finish the
 /// removal).
+///
+/// Unlike the record itself, a lease tolerates unknown fields: it is
+/// transient, so a field a newer build adds (as `lease_id` was) must not stop
+/// an older build from parsing — and startup-repairing — a lease a crash left
+/// behind. Unknown lease fields are dropped on rewrite, which is harmless for
+/// a lease that is about to be cleared.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct V2MutationLease {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) member: Option<UserId>,
@@ -18,8 +23,8 @@ pub(super) struct V2MutationLease {
     pub(super) preparation: Option<V2PreparationLease>,
 }
 
+/// Tolerates unknown fields for the same reason as [`V2MutationLease`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct V2PreparationLease {
     pub(super) incarnation_id: InstallationIncarnationId,
     pub(super) expected_manifest_ref: ExtensionManifestRef,
