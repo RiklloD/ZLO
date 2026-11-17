@@ -13,8 +13,7 @@
 
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -24,7 +23,12 @@ use image::{DynamicImage, ImageFormat, imageops::FilterType};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
+use crate::leftovers::Leftovers;
 use crate::live::{Live, WatchedWindow, desk};
+use crate::private_dir::{
+    CAPTURE_DIR, PrivateDir, PrivateDirRemover, current_uid, is_capture_file_name,
+    is_legacy_capture_file_name, new_capture_file_name,
+};
 
 pub(crate) const MAX_FPS: f64 = 10.0;
 /// A producer with no reader for this long stops.
@@ -36,6 +40,9 @@ const SCREENCAPTURE_TIMEOUT: Duration = Duration::from_secs(4);
 const LONG_POLL: Duration = Duration::from_millis(1000);
 const MAX_PRODUCERS: usize = 6;
 const JPEG_QUALITY: u8 = 72;
+/// A capture file older than this at startup is a leftover of an earlier
+/// process (a capture lives at most `SCREENCAPTURE_TIMEOUT` plus decoding).
+const STALE_CAPTURE_AGE: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Method {
@@ -118,13 +125,79 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 pub(crate) struct Capture {
     producers: Mutex<HashMap<ProducerKey, Arc<Producer>>>,
+    /// The validated, descriptor-held capture directory, or why there is
+    /// none (window capture is then off).
+    dir: Result<Arc<PrivateDir>, String>,
+    leftovers: Arc<Leftovers>,
 }
 
 impl Capture {
-    pub(crate) fn new() -> Self {
+    /// Captures go to `$ZLO_HOME/cache/computer-use/captures` (see
+    /// [`crate::private_dir`]). At startup, stale captures of an earlier
+    /// process are deleted there, fd-relative and only once the directory
+    /// checks out, and in the shared temp dir where earlier builds wrote
+    /// them, limited to regular files this user owns.
+    pub(crate) fn new(zlo_home: Option<&Path>) -> Self {
+        let owner_uid = current_uid();
+        Leftovers::new().sweep_stale(
+            &std::env::temp_dir(),
+            &is_legacy_capture_file_name,
+            STALE_CAPTURE_AGE,
+            Some(owner_uid),
+        );
+        let dir = match zlo_home {
+            Some(zlo_home) => PrivateDir::open(zlo_home, &CAPTURE_DIR, owner_uid)
+                .map(Arc::new)
+                .map_err(|error| error.to_string()),
+            None => Err("no ZLO home".to_string()),
+        };
+        let leftovers = match &dir {
+            Ok(dir) => {
+                Leftovers::with_default_backoff(Arc::new(PrivateDirRemover(Arc::clone(dir))))
+            }
+            Err(reason) => {
+                tracing::debug!(%reason, "computer-use window capture is off");
+                Leftovers::new()
+            }
+        };
+        Self::with(dir, Arc::new(leftovers), STALE_CAPTURE_AGE)
+    }
+
+    pub(crate) fn with(
+        dir: Result<Arc<PrivateDir>, String>,
+        leftovers: Arc<Leftovers>,
+        stale: Duration,
+    ) -> Self {
+        if let Ok(dir) = &dir {
+            for name in dir.stale_files(&is_capture_file_name, stale) {
+                leftovers.remove_soon(&dir.path().join(name));
+            }
+        }
         Self {
             producers: Mutex::new(HashMap::new()),
+            dir,
+            leftovers,
         }
+    }
+
+    /// The directory and a fresh unpredictable file name for the next window
+    /// capture. Retries any screenshot an earlier capture could not delete
+    /// first. Refuses — no capture at all — when there is no directory or the
+    /// held one no longer checks out.
+    fn next_capture(&self) -> Result<(Arc<PrivateDir>, String), String> {
+        self.leftovers.sweep();
+        let dir = self
+            .dir
+            .as_ref()
+            .map_err(|reason| format!("window capture is off: {reason}"))?;
+        dir.verify()
+            .map_err(|error| format!("window capture refused: {error}"))?;
+        Ok((Arc::clone(dir), new_capture_file_name()))
+    }
+
+    /// Delete a finished capture; a failed delete is retried, then swept.
+    async fn discard_capture(&self, path: &Path) {
+        self.leftovers.remove(path).await;
     }
 
     /// The newest picture of `window` after `after_seq`, waiting briefly for
@@ -236,7 +309,7 @@ async fn produce(
             // Never keep (or show) what was on screen around a takeover.
             producer.latest.send_replace(None);
         } else {
-            match capture_window(&live, window.window_id, *width).await {
+            match capture_window(&capture, &live, window.window_id, *width).await {
                 Some((jpeg, w, h, method)) => {
                     let (held_after, epoch_after) = live.lease(&desk);
                     if held_after || epoch_after != epoch {
@@ -281,6 +354,7 @@ async fn produce(
 /// per window, so one failing window never pushes the others onto the
 /// fallback.
 async fn capture_window(
+    capture: &Capture,
     live: &Live,
     window_id: u32,
     max_width: u32,
@@ -291,7 +365,7 @@ async fn capture_window(
             .failed_until
             .is_none_or(|until| Instant::now() >= until)
     {
-        match screencapture(window_id, max_width).await {
+        match screencapture(capture, window_id, max_width).await {
             Ok((jpeg, w, h)) => {
                 live.set_health(window_id, |health| {
                     health.method = Some("window");
@@ -371,19 +445,17 @@ fn looks_blank(image: &DynamicImage) -> bool {
     hi.saturating_sub(lo) < 3
 }
 
-fn temp_path() -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
-        "ironclaw_cu_{}_{}.jpg",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
 /// macOS window capture by CGWindowID: works for covered windows, needs
 /// Screen Recording for the IronClaw process.
-async fn screencapture(window_id: u32, max_width: u32) -> Result<(Vec<u8>, u32, u32), String> {
-    let path = temp_path();
+async fn screencapture(
+    capture: &Capture,
+    window_id: u32,
+    max_width: u32,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let (dir, name) = capture.next_capture()?;
+    // The tool writes by path into the validated directory; we read back
+    // fd-relative and check the file before trusting it.
+    let path = dir.path().join(&name);
     let run = tokio::process::Command::new("/usr/sbin/screencapture")
         .arg("-x")
         .arg("-o")
@@ -399,7 +471,14 @@ async fn screencapture(window_id: u32, max_width: u32) -> Result<(Vec<u8>, u32, 
         Err(_elapsed) => Err("screencapture timed out".to_string()),
         Ok(Err(error)) => Err(format!("screencapture failed: {error}")),
         Ok(Ok(done)) => {
-            let bytes = tokio::fs::read(&path).await.unwrap_or_default(); // silent-ok: a missing file is reported below
+            let read_dir = Arc::clone(&dir);
+            let read_name = name.clone();
+            let bytes =
+                tokio::task::spawn_blocking(move || read_dir.read_owned_file(&read_name, true))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default(); // silent-ok: a missing or unreadable file is reported below
             if !done.status.success() || bytes.len() < 1000 {
                 let stderr = String::from_utf8_lossy(&done.stderr);
                 let mut message: String = stderr.trim().chars().take(200).collect();
@@ -428,12 +507,121 @@ async fn screencapture(window_id: u32, max_width: u32) -> Result<(Vec<u8>, u32, 
             }
         }
     };
-    // The capture file may not exist when screencapture failed; any other
-    // failure leaves a screenshot on disk, which deserves a trace.
-    if let Err(error) = tokio::fs::remove_file(&path).await
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::debug!(%error, "computer-use capture file cleanup failed");
-    }
+    // The capture file may not exist when screencapture failed. Any other
+    // delete failure is retried, then swept by the next capture.
+    capture.discard_capture(&path).await;
     result
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use super::*;
+    use crate::leftovers::{FileRemover, Leftovers};
+
+    /// Fails the first four deletions (one attempt + three retries), then
+    /// deletes for real.
+    struct FailingFirst4(AtomicU64);
+
+    impl FileRemover for FailingFirst4 {
+        fn remove(&self, path: &Path) -> std::io::Result<()> {
+            if self.0.fetch_add(1, Ordering::SeqCst) < 4 {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::remove_file(path)
+        }
+    }
+
+    fn open_dir(zlo_home: &Path) -> Arc<PrivateDir> {
+        Arc::new(PrivateDir::open(zlo_home, &CAPTURE_DIR, current_uid()).unwrap())
+    }
+
+    fn screenshot(path: &Path) {
+        std::fs::write(path, b"a screenshot").unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_undeletable_capture_is_swept_by_the_next_capture() {
+        let home = tempfile::tempdir().unwrap();
+        let leftovers = Arc::new(Leftovers::with_remover(
+            Arc::new(FailingFirst4(AtomicU64::new(0))),
+            vec![Duration::from_millis(1); 3],
+        ));
+        let capture = Capture::with(Ok(open_dir(home.path())), leftovers, STALE_CAPTURE_AGE);
+
+        let (dir, name) = capture.next_capture().unwrap();
+        let first = dir.path().join(&name);
+        screenshot(&first);
+        capture.discard_capture(&first).await;
+        assert!(first.exists(), "the injected failure kept the screenshot");
+
+        let (_, second) = capture.next_capture().unwrap();
+
+        assert_ne!(name, second);
+        assert!(
+            !first.exists(),
+            "the next capture must delete the leftover screenshot"
+        );
+    }
+
+    #[test]
+    fn capture_names_are_fresh_and_unpredictable() {
+        let home = tempfile::tempdir().unwrap();
+        let capture = Capture::new(Some(home.path()));
+
+        let (_, first) = capture.next_capture().unwrap();
+        let (_, second) = capture.next_capture().unwrap();
+
+        assert_ne!(first, second);
+        assert!(is_capture_file_name(&first), "{first}");
+    }
+
+    #[test]
+    fn startup_deletes_stale_captures_fd_relative() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = open_dir(home.path());
+        let leftover = dir.path().join(new_capture_file_name());
+        screenshot(&leftover);
+        let unrelated = dir.path().join("notes.jpg");
+        screenshot(&unrelated);
+        let leftovers = Arc::new(Leftovers::with_default_backoff(Arc::new(
+            PrivateDirRemover(Arc::clone(&dir)),
+        )));
+
+        let _capture = Capture::with(Ok(dir), leftovers, Duration::ZERO);
+
+        assert!(!leftover.exists());
+        assert!(
+            unrelated.exists(),
+            "only our capture naming pattern is swept"
+        );
+    }
+
+    #[test]
+    fn a_refused_capture_directory_turns_capture_off_and_is_never_swept() {
+        let home = tempfile::tempdir().unwrap();
+        // A symlink planted where the capture directory goes.
+        let elsewhere = home.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let victim = elsewhere.join(new_capture_file_name());
+        screenshot(&victim);
+        std::fs::create_dir_all(home.path().join("cache/computer-use")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.path().join("cache/computer-use/captures"))
+            .unwrap();
+
+        let capture = Capture::new(Some(home.path()));
+
+        assert!(victim.exists(), "a refused directory is never swept");
+        let refused = capture.next_capture();
+        assert!(refused.is_err(), "{:?}", refused.map(|(_, name)| name));
+    }
+
+    #[test]
+    fn without_a_zlo_home_window_capture_is_off() {
+        let capture = Capture::new(None);
+
+        assert!(capture.next_capture().is_err());
+    }
 }

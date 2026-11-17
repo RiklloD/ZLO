@@ -415,12 +415,13 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
         expected_pending_manifest_ref: &ExtensionManifestRef,
         finalized_manifest: ExtensionManifestRecord,
     ) -> Result<ExtensionInstallation, ExtensionInstallationError> {
-        self.take_v2_preparation_lease(
-            installation_id,
-            incarnation_id,
-            expected_pending_manifest_ref,
-        )
-        .await?;
+        let lease = self
+            .take_v2_preparation_lease(
+                installation_id,
+                incarnation_id,
+                expected_pending_manifest_ref,
+            )
+            .await?;
         let core = match self
             .finish_v2_preparation(
                 installation_id,
@@ -435,25 +436,12 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
                 // The lease was committed by take_v2_preparation_lease above;
                 // finish_v2_preparation's real validation rejected the
                 // finalize, so the aggregate would otherwise be stranded
-                // under a held lease (is_visible() requires lease.is_none())
-                // until the next store-construction repair pass. Release it
-                // here so the aggregate stays visible immediately.
-                // silent-ok: best-effort release racing a concurrent repair
-                // or retry; the matching lease is cleared, while a newer lease
-                // is preserved, and the original rejection remains the error
-                // the caller must see.
-                #[expect(
-                    clippy::let_underscore_must_use,
-                    reason = "best-effort lease release; the original rejection is the error the caller must see, and repair clears a stranded lease"
-                )]
-                let _ = self
-                    .clear_v2_preparation_lease(
-                        installation_id,
-                        incarnation_id,
-                        expected_pending_manifest_ref,
-                    )
-                    .await;
-                return Err(rejection);
+                // under a held lease (is_visible() requires lease.is_none()).
+                // Release exactly that lease; if the release fails, the
+                // rejection carries the cause and an in-process repair runs.
+                return Err(self
+                    .release_preparation_lease_after_rejection(lease, rejection)
+                    .await);
             }
         };
         let installation = self.reconstruct_v2_installation(&core).await?;
@@ -514,12 +502,13 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
                 },
             );
         }
-        self.take_v2_preparation_lease(
-            installation_id,
-            incarnation_id,
-            expected_pending_manifest_ref,
-        )
-        .await?;
+        let lease = self
+            .take_v2_preparation_lease(
+                installation_id,
+                incarnation_id,
+                expected_pending_manifest_ref,
+            )
+            .await?;
         let core = match self
             .finish_v2_preparation_checkpoint(
                 installation_id,
@@ -532,19 +521,10 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
             Ok(core) => core,
             Err(rejection) => {
                 // The lease was committed above. Keep the pending aggregate
-                // immediately visible if the checkpoint CAS fails.
-                #[expect(
-                    clippy::let_underscore_must_use,
-                    reason = "best-effort lease release; the original rejection is the error the caller must see, and repair clears a stranded lease"
-                )]
-                let _ = self
-                    .clear_v2_preparation_lease(
-                        installation_id,
-                        incarnation_id,
-                        expected_pending_manifest_ref,
-                    )
-                    .await;
-                return Err(rejection);
+                // visible if the checkpoint CAS fails.
+                return Err(self
+                    .release_preparation_lease_after_rejection(lease, rejection)
+                    .await);
             }
         };
         let installation = self.reconstruct_v2_installation(&core).await?;

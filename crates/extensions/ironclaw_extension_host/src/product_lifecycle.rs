@@ -3330,18 +3330,20 @@ pub(crate) fn map_extension_error(error: ExtensionError) -> ProductOperationFail
 pub(crate) fn map_extension_installation_error(
     error: ExtensionInstallationError,
 ) -> ProductOperationFailure {
-    match error {
+    // Classify on the rejection that decided the outcome: a failed lease
+    // release rides along as context and must not reclassify it.
+    match error.rejection() {
         // #4091: a store IO/backend outage is retryable backend trouble, not a
         // malformed lifecycle request — surface it in the same Transient class
         // credential-cleanup failures already use so callers retry the
         // operation instead of abandoning it.
-        error @ (ExtensionInstallationError::StoreUnavailable { .. }
-        | ExtensionInstallationError::MembershipMutationInProgress { .. }) => {
+        ExtensionInstallationError::StoreUnavailable { .. }
+        | ExtensionInstallationError::MembershipMutationInProgress { .. } => {
             ProductOperationFailure::Transient {
                 reason: error.to_string(),
             }
         }
-        error => ProductOperationFailure::InvalidBindingRequest {
+        _ => ProductOperationFailure::InvalidBindingRequest {
             reason: error.to_string(),
         },
     }
@@ -4019,6 +4021,23 @@ mod tests {
                 ProductOperationFailure::InvalidBindingRequest { .. }
             ),
             "a malformed installation record is the caller's to fix"
+        );
+        // A store outage whose lease release also failed is still the outage.
+        assert!(
+            matches!(
+                map_extension_installation_error(
+                    ExtensionInstallationError::RejectedWithLeaseCleanupPending {
+                        rejection: Box::new(ExtensionInstallationError::StoreUnavailable {
+                            reason: "backend unreachable".to_string(),
+                        }),
+                        cleanup: Box::new(ExtensionInstallationError::StoreUnavailable {
+                            reason: "lease release failed".to_string(),
+                        }),
+                    }
+                ),
+                ProductOperationFailure::Transient { .. }
+            ),
+            "an attached lease-cleanup failure must not reclassify the rejection"
         );
     }
 

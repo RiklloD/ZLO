@@ -57,10 +57,10 @@ pub use sandbox_process::{
 };
 
 pub use script::{
-    DockerScriptBackend, ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptError,
-    ScriptExecutionRequest, ScriptExecutionResult, ScriptExecutor, ScriptHostHttpError,
+    ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptError, ScriptExecutionRequest,
+    ScriptExecutionResult, ScriptExecutionSlot, ScriptExecutor, ScriptHostHttpError,
     ScriptHostHttpResponse, ScriptInvocation, ScriptRuntime, ScriptRuntimeConfig,
-    ScriptRuntimeHttpAdapter,
+    ScriptRuntimeHttpAdapter, docker::DockerScriptBackend,
 };
 
 pub const DEFAULT_WORKSPACE_MOUNT: &str = "/workspace";

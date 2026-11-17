@@ -67,4 +67,37 @@ pub enum ExtensionInstallationError {
         extension_id: ExtensionId,
         handle: ExtensionCredentialHandle,
     },
+    /// An operation that held a preparation lease was rejected, and releasing
+    /// that lease also failed. Displays as the original rejection (the error
+    /// the caller must act on; classify it via [`Self::rejection`]); the
+    /// release failure is the [`std::error::Error::source`]. The store has
+    /// already scheduled a bounded, identity-checked in-process repair of the
+    /// lease, so the installation becomes visible again without a restart.
+    #[error("{rejection}")]
+    RejectedWithLeaseCleanupPending {
+        rejection: Box<ExtensionInstallationError>,
+        #[source]
+        cleanup: Box<ExtensionInstallationError>,
+    },
+}
+
+impl ExtensionInstallationError {
+    /// The error that decided the operation's outcome: the original rejection
+    /// when a lease release failure is attached as context, otherwise `self`.
+    /// Error classifiers (transient vs. invalid request) must match on this.
+    pub fn rejection(&self) -> &Self {
+        match self {
+            Self::RejectedWithLeaseCleanupPending { rejection, .. } => rejection.rejection(),
+            other => other,
+        }
+    }
+
+    /// The failed lease release attached to a rejection, if any (also exposed
+    /// as [`std::error::Error::source`]).
+    pub fn lease_cleanup_error(&self) -> Option<&Self> {
+        match self {
+            Self::RejectedWithLeaseCleanupPending { cleanup, .. } => Some(cleanup),
+            _ => None,
+        }
+    }
 }

@@ -420,13 +420,11 @@ pub fn package_visible_capability_ids(package: &ExtensionPackage) -> Vec<String>
 }
 
 fn map_extension_installation_error(error: ExtensionInstallationError) -> ProductOperationFailure {
-    match error {
-        error @ ExtensionInstallationError::StoreUnavailable { .. } => {
-            ProductOperationFailure::Transient {
-                reason: error.to_string(),
-            }
-        }
-        error => ProductOperationFailure::InvalidBindingRequest {
+    match error.rejection() {
+        ExtensionInstallationError::StoreUnavailable { .. } => ProductOperationFailure::Transient {
+            reason: error.to_string(),
+        },
+        _ => ProductOperationFailure::InvalidBindingRequest {
             reason: error.to_string(),
         },
     }

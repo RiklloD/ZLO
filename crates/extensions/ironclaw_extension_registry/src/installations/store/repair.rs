@@ -215,56 +215,71 @@ impl ExtensionInstallationStore {
         .map_err(|error| map_extension_state_cas_error(error, "installation"))
     }
 
+    /// Clear exactly the preparation lease `token` names. A no-op when the
+    /// record no longer holds that lease — including a newer lease with the
+    /// same incarnation and manifest (told apart by the persisted lease id),
+    /// and a legacy lease without an id, which only startup repair clears.
     pub(super) async fn clear_v2_preparation_lease(
         &self,
-        installation_id: &ExtensionInstallationId,
-        incarnation_id: &InstallationIncarnationId,
-        expected_manifest_ref: &ExtensionManifestRef,
+        token: &PreparationLeaseToken,
     ) -> Result<(), ExtensionInstallationError> {
-        let path = self.v2_scoped_path(&self.v2_installation_path(installation_id)?)?;
-        let installation_id = installation_id.clone();
-        let incarnation_id = incarnation_id.clone();
-        let expected_manifest_ref = expected_manifest_ref.clone();
-        cas_update(
-            self.scoped_filesystem.as_ref(),
-            &ResourceScope::system(),
-            &path,
-            decode_v2_installation_body,
-            entry_for_v2_installation,
-            move |current: Option<V2InstallationRecord>| {
-                let installation_id = installation_id.clone();
-                let incarnation_id = incarnation_id.clone();
-                let expected_manifest_ref = expected_manifest_ref.clone();
-                async move {
-                    let Some(mut record) = current else {
-                        return Err(ExtensionInstallationError::InstallationNotFound {
-                            installation_id,
-                        });
-                    };
-                    if record.installation_id != installation_id {
-                        return Err(invalid_installation_error(
-                            "v2 installation body identity did not match its key",
-                        ));
-                    }
-                    let lease_matches = record
-                        .lease
-                        .as_ref()
-                        .and_then(|lease| lease.preparation.as_ref())
-                        .is_some_and(|preparation| {
-                            preparation.incarnation_id == incarnation_id
-                                && preparation.expected_manifest_ref == expected_manifest_ref
-                        });
-                    if !lease_matches {
-                        return Ok(CasApply::no_op(record, ()));
-                    }
-                    record.lease = None;
-                    record.updated_at = Utc::now();
-                    Ok(CasApply::new(record, ()))
-                }
-            },
-        )
-        .await
-        .map_err(|error| map_extension_state_cas_error(error, "installation"))
+        let path = self.v2_scoped_path(&self.v2_installation_path(&token.installation_id)?)?;
+        clear_preparation_lease_at(self.scoped_filesystem.as_ref(), &path, token).await
+    }
+
+    /// Release the lease an operation took after that operation was rejected.
+    ///
+    /// The rejection stays the error the caller sees. If the release itself
+    /// fails, the failure is attached as the error's source and a bounded,
+    /// identity-checked repair is scheduled in-process, so the installation
+    /// does not stay hidden (`is_visible()` requires no lease) until the next
+    /// store-construction repair pass.
+    pub(super) async fn release_preparation_lease_after_rejection(
+        &self,
+        token: PreparationLeaseToken,
+        rejection: ExtensionInstallationError,
+    ) -> ExtensionInstallationError {
+        let cleanup = match self.clear_v2_preparation_lease(&token).await {
+            Ok(()) => return rejection,
+            Err(cleanup) => cleanup,
+        };
+        tracing::debug!(
+            installation_id = token.installation_id.as_str(),
+            error = %cleanup,
+            "releasing a rejected operation's preparation lease failed; scheduling repair"
+        );
+        self.schedule_preparation_lease_repair(token);
+        ExtensionInstallationError::RejectedWithLeaseCleanupPending {
+            rejection: Box::new(rejection),
+            cleanup: Box::new(cleanup),
+        }
+    }
+
+    fn schedule_preparation_lease_repair(&self, token: PreparationLeaseToken) {
+        let path = match self.v2_installation_path(&token.installation_id) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::debug!(%error, "cannot address a stranded preparation lease for repair");
+                return;
+            }
+        };
+        let path = match self.v2_scoped_path(&path) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::debug!(%error, "cannot address a stranded preparation lease for repair");
+                return;
+            }
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            // silent-ok: no async runtime to repair on; the store-construction
+            // repair pass (repair_interrupted_v2_leases) still clears it.
+            tracing::debug!("no async runtime for preparation lease repair; deferring to startup");
+            return;
+        };
+        let filesystem = Arc::clone(&self.scoped_filesystem);
+        runtime.spawn(async move {
+            repair_preparation_lease(filesystem.as_ref(), &path, &token).await;
+        });
     }
 
     pub(super) async fn repair_compatibility_views(
@@ -321,4 +336,100 @@ impl ExtensionInstallationStore {
         }
         Ok(())
     }
+}
+
+/// Identity of one preparation lease: which aggregate, the incarnation and
+/// manifest it covers, and the random lease id its take persisted. A newer
+/// lease with the same incarnation and manifest has a different id (even if
+/// taken at the same instant), so a late release or repair for this lease
+/// can never clear that one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PreparationLeaseToken {
+    pub(super) installation_id: ExtensionInstallationId,
+    pub(super) incarnation_id: InstallationIncarnationId,
+    pub(super) expected_manifest_ref: ExtensionManifestRef,
+    /// The persisted identity the release matches on.
+    pub(super) lease_id: uuid::Uuid,
+    /// When the lease was taken; diagnostics only, never identity.
+    pub(super) taken_at: DateTime<Utc>,
+}
+
+/// Retry delays for the in-process lease repair (five attempts, ~1.5 s total).
+const PREPARATION_LEASE_REPAIR_BACKOFF_MS: [u64; 5] = [50, 100, 200, 400, 800];
+
+async fn repair_preparation_lease(
+    filesystem: &ScopedFilesystem<dyn RootFilesystem>,
+    path: &ScopedPath,
+    token: &PreparationLeaseToken,
+) {
+    for (attempt, delay_ms) in PREPARATION_LEASE_REPAIR_BACKOFF_MS.into_iter().enumerate() {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        match clear_preparation_lease_at(filesystem, path, token).await {
+            Ok(()) => {
+                tracing::debug!(
+                    installation_id = token.installation_id.as_str(),
+                    attempt,
+                    "repaired a stranded preparation lease"
+                );
+                return;
+            }
+            Err(error) => tracing::debug!(
+                installation_id = token.installation_id.as_str(),
+                attempt,
+                %error,
+                "preparation lease repair attempt failed"
+            ),
+        }
+    }
+    tracing::debug!(
+        installation_id = token.installation_id.as_str(),
+        "preparation lease repair exhausted its retries; startup repair will clear it"
+    );
+}
+
+async fn clear_preparation_lease_at(
+    filesystem: &ScopedFilesystem<dyn RootFilesystem>,
+    path: &ScopedPath,
+    token: &PreparationLeaseToken,
+) -> Result<(), ExtensionInstallationError> {
+    let token = token.clone();
+    cas_update(
+        filesystem,
+        &ResourceScope::system(),
+        path,
+        decode_v2_installation_body,
+        entry_for_v2_installation,
+        move |current: Option<V2InstallationRecord>| {
+            let token = token.clone();
+            async move {
+                let Some(mut record) = current else {
+                    return Err(ExtensionInstallationError::InstallationNotFound {
+                        installation_id: token.installation_id,
+                    });
+                };
+                if record.installation_id != token.installation_id {
+                    return Err(invalid_installation_error(
+                        "v2 installation body identity did not match its key",
+                    ));
+                }
+                let lease_matches = record
+                    .lease
+                    .as_ref()
+                    .and_then(|lease| lease.preparation.as_ref())
+                    .is_some_and(|preparation| {
+                        preparation.lease_id == Some(token.lease_id)
+                            && preparation.incarnation_id == token.incarnation_id
+                            && preparation.expected_manifest_ref == token.expected_manifest_ref
+                    });
+                if !lease_matches {
+                    return Ok(CasApply::no_op(record, ()));
+                }
+                record.lease = None;
+                record.updated_at = Utc::now();
+                Ok(CasApply::new(record, ()))
+            }
+        },
+    )
+    .await
+    .map_err(|error| map_extension_state_cas_error(error, "installation"))
 }

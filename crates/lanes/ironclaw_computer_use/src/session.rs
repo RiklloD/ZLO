@@ -6,7 +6,6 @@
 //! call in flight and kills its process.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
@@ -20,10 +19,13 @@ use tokio::sync::watch;
 use crate::capture::{Capture, Refusal};
 use crate::catalog::computer_use_tool;
 use crate::config::ComputerUseConfig;
+use crate::cursor::CursorFile;
 use crate::cursor::{CursorWatch, pointer_before, pointer_kind};
 use crate::error::ComputerUseError;
 use crate::frame::{Frame, split_content};
+use crate::leftovers::Leftovers;
 use crate::live::{Desk, Live, QUIET, WindowTarget, describe, desk, now_ms};
+use crate::private_dir::{CURSOR_DIR, PrivateDir, PrivateDirRemover, current_uid};
 use crate::stdio::StdioServer;
 use crate::target::TargetState;
 use crate::windows::find_window;
@@ -213,12 +215,13 @@ struct Session {
     flags: Mutex<Flags>,
     /// Bumped by Stop; a call in flight watches it.
     stop: watch::Sender<u64>,
-    /// The native cursor's observation file for this session's process.
-    cursor_file: PathBuf,
+    /// The native cursor's observation file for this session's process;
+    /// `None` when there is no private cursor directory.
+    cursor_file: Option<CursorFile>,
 }
 
 impl Session {
-    fn new(cursor_file: PathBuf) -> Self {
+    fn new(cursor_file: Option<CursorFile>) -> Self {
         Self {
             server: tokio::sync::Mutex::new(None),
             flags: Mutex::new(Flags::default()),
@@ -273,10 +276,13 @@ impl Session {
     /// This session's own `OPEN_COMPUTER_USE_*` switches, so its cursor
     /// positions land in its own file.
     fn server_env(&self, config: &ComputerUseConfig, images: bool) -> Vec<(String, String)> {
-        let mut env = vec![(
-            "OPEN_COMPUTER_USE_VISUAL_CURSOR_OBSERVATION_FILE".to_string(),
-            self.cursor_file.display().to_string(),
-        )];
+        let mut env = Vec::new();
+        if let Some(cursor_file) = &self.cursor_file {
+            env.push((
+                "OPEN_COMPUTER_USE_VISUAL_CURSOR_OBSERVATION_FILE".to_string(),
+                cursor_file.path().display().to_string(),
+            ));
+        }
         if config.fork {
             // Action results: changed tree lines only, and no screenshot
             // capture or encoding for a model that never sees it.
@@ -347,22 +353,38 @@ pub struct ComputerUse {
     sessions: Mutex<HashMap<ComputerUseSession, Arc<Session>>>,
     live: Arc<Live>,
     capture: Arc<Capture>,
+    /// The validated, descriptor-held cursor directory, if any.
+    cursor_dir: Option<Arc<PrivateDir>>,
+    /// Cursor files whose delete failed, retried by sweeps (fd-relative).
+    cursor_leftovers: Arc<Leftovers>,
 }
 
 impl ComputerUse {
     pub fn new(config: ComputerUseConfig) -> Self {
         let live = Arc::new(Live::new(config.live_preview));
+        let capture = Arc::new(Capture::new(config.zlo_home.as_deref()));
+        let cursor_dir = config.zlo_home.as_deref().and_then(|zlo_home| {
+            PrivateDir::open(zlo_home, &CURSOR_DIR, current_uid())
+                .map(Arc::new)
+                .map_err(|error| {
+                    tracing::debug!(%error, "computer-use cursor directory refused; cursor following off");
+                })
+                .ok() // silent-ok: cursor following is optional; the refusal is traced above
+        });
+        let cursor_leftovers = Arc::new(match &cursor_dir {
+            Some(dir) => {
+                Leftovers::with_default_backoff(Arc::new(PrivateDirRemover(Arc::clone(dir))))
+            }
+            None => Leftovers::new(),
+        });
         Self {
             config,
             sessions: Mutex::new(HashMap::new()),
             live,
-            capture: Arc::new(Capture::new()),
+            capture,
+            cursor_dir,
+            cursor_leftovers,
         }
-    }
-
-    /// `None` unless `COMPUTER_USE_ENABLED` turns it on.
-    pub fn from_env() -> Result<Option<Arc<Self>>, ComputerUseError> {
-        Ok(ComputerUseConfig::from_env()?.map(|config| Arc::new(Self::new(config))))
     }
 
     pub fn config(&self) -> &ComputerUseConfig {
@@ -394,16 +416,16 @@ impl ComputerUse {
             return Some(Arc::clone(session));
         }
         let live = &self.live;
+        // Retry any cursor file an earlier delete left behind.
+        self.cursor_leftovers.sweep();
         sessions.retain(|key, session| {
             let keep = !session.idle_for(&self.config);
             if !keep {
                 live.ended(key);
-                // The file may never have been written; any other failure
-                // leaves a stale cursor file behind, which deserves a trace.
-                if let Err(error) = std::fs::remove_file(&session.cursor_file)
-                    && error.kind() != std::io::ErrorKind::NotFound
-                {
-                    tracing::debug!(%error, "computer-use cursor file cleanup failed");
+                // The file may never have been written; a failed delete is
+                // retried, then swept by the next session.
+                if let Some(cursor_file) = &session.cursor_file {
+                    self.cursor_leftovers.remove_soon(&cursor_file.path());
                 }
             }
             keep
@@ -411,12 +433,11 @@ impl ComputerUse {
         if sessions.len() >= self.config.max_sessions {
             return None;
         }
-        if let Err(error) = std::fs::create_dir_all(&self.config.cursor_dir) {
-            tracing::debug!(%error, "computer-use cursor directory unavailable");
-        }
-        let session = Arc::new(Session::new(
-            self.config.cursor_dir.join(safe_file_name(key)),
-        ));
+        let cursor_file = self
+            .cursor_dir
+            .as_ref()
+            .map(|dir| CursorFile::new(Arc::clone(dir), safe_file_name(key)));
+        let session = Arc::new(Session::new(cursor_file));
         sessions.insert(key.clone(), Arc::clone(&session));
         Some(session)
     }
@@ -509,13 +530,16 @@ impl ComputerUse {
             let by_element = arguments
                 .get("element_index")
                 .is_some_and(|index| !matches!(index, Value::String(text) if text.is_empty()));
-            if by_element && let Some(kind) = pointer_kind(tool, &arguments) {
+            if by_element
+                && let Some(kind) = pointer_kind(tool, &arguments)
+                && let Some(cursor_file) = session.cursor_file.clone()
+            {
                 watch = CursorWatch::start(
                     Arc::clone(&self.live),
                     key.clone(),
                     &target,
                     kind,
-                    session.cursor_file.clone(),
+                    cursor_file,
                 )
                 .await;
             }

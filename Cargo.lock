@@ -4025,12 +4025,14 @@ dependencies = [
  "ironclaw_mcp",
  "ironclaw_product_contracts",
  "regex",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4299,6 +4301,7 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "toml 1.1.4+spec-1.1.0",
+ "tracing",
  "url",
  "uuid",
 ]

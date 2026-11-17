@@ -233,3 +233,45 @@ impl CapabilitySurfaceProfileResolver for AllowAllCapabilitySurfaceResolver {
         Ok(CapabilitySurfacePolicy::allow_all())
     }
 }
+
+/// Computer use's private capture and cursor directories are rooted at the
+/// boot-resolved ZLO home (legacy-folder migration already applied); without
+/// a boot config they stay off.
+pub(super) fn computer_use_config_for_boot(
+    boot: Option<&ironclaw_config::RebornBootConfig>,
+    config: ironclaw_computer_use::ComputerUseConfig,
+) -> ironclaw_computer_use::ComputerUseConfig {
+    match boot {
+        Some(boot) => config.with_zlo_home(boot.home().path().to_path_buf()),
+        None => config,
+    }
+}
+
+#[cfg(test)]
+mod computer_use_home_tests {
+    use super::computer_use_config_for_boot;
+    use ironclaw_computer_use::ComputerUseConfig;
+    use ironclaw_config::{RebornBootConfig, RebornHome, RebornProfile};
+
+    #[test]
+    fn computer_use_gets_the_boot_resolved_zlo_home_or_none() {
+        let user_home = tempfile::tempdir().unwrap();
+        let zlo_home = tempfile::tempdir().unwrap();
+        let home = RebornHome::resolve_from_env_parts_without_migrating(
+            Some(zlo_home.path().into()),
+            Some(user_home.path().into()),
+            None,
+        )
+        .unwrap();
+        let boot = RebornBootConfig::new(home, RebornProfile::default());
+
+        let config = computer_use_config_for_boot(Some(&boot), ComputerUseConfig::new("/bin/sh"));
+        assert_eq!(config.zlo_home.as_deref(), Some(boot.home().path()));
+
+        let without_boot = computer_use_config_for_boot(None, ComputerUseConfig::new("/bin/sh"));
+        assert_eq!(
+            without_boot.zlo_home, None,
+            "no resolved home: capture stays off"
+        );
+    }
+}
