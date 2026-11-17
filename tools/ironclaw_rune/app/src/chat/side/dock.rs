@@ -44,12 +44,14 @@ pub(super) const CLOSE_HOLD: f64 = 0.6;
 /// the toggle cluster, none scrolled out of reach.
 const SIDE_MIN: f32 = CLUSTER + CLUSTER_PAD + 7. * (panels::TOGGLE_SIZE + TAB_GAP) - TAB_GAP;
 
-/// A dock's narrowest width: the work panel's [`WIDTH_MIN`], the right
-/// pane's [`SIDE_MIN`].
-fn min_width(dock: Dock) -> f32 {
+/// A dock's narrowest width with `room` left for it: the work panel's
+/// [`WIDTH_MIN`]; the right pane's [`SIDE_MIN`] where the window has the
+/// room, else down to [`WIDTH_MIN`] (its tabs then scroll), so a narrow
+/// window never pushes the pane and its toggles past its edge.
+fn min_width(dock: Dock, room: f32) -> f32 {
     match dock {
         Dock::Work => WIDTH_MIN,
-        Dock::Side => SIDE_MIN.max(WIDTH_MIN),
+        Dock::Side => SIDE_MIN.min(room).max(WIDTH_MIN),
     }
 }
 
@@ -85,9 +87,10 @@ fn rest_width(s: &State, dock: Dock, viewport: f32) -> f32 {
         Dock::Work => s.prefs.work_width,
         Dock::Side => s.prefs.side_width,
     };
-    let normal = if saved > 0. { saved } else { WIDTH_DEFAULT }
-        .clamp(min_width(dock), WIDTH_MAX.min(room.max(min_width(dock))));
-    let wide = (viewport * WIDE_SHARE).clamp(min_width(dock), room.max(min_width(dock)));
+    let normal = if saved > 0. { saved } else { WIDTH_DEFAULT };
+    let min = min_width(dock, room);
+    let normal = normal.clamp(min, WIDTH_MAX.min(room.max(min)));
+    let wide = (viewport * WIDE_SHARE).clamp(min, room.max(min));
     if side(s).is_some_and(|x| x.wide[dock.ix()]) {
         wide
     } else {
@@ -210,7 +213,7 @@ fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32) -> El {
                 }
                 Phase::Move => {
                     // The same room `rest_width` leaves, so release does not jump.
-                    let min = min_width(dock);
+                    let min = min_width(dock, right - KEEP);
                     let max = (right - KEEP).clamp(min, WIDTH_MAX);
                     let to = (right - d.window_point()[0]).clamp(min, max);
                     if let Some(x) = side_mut(s)
@@ -286,13 +289,17 @@ fn title(s: &State, k: &Kit, dock: Dock, tab: Tab) -> El {
     if tab.coding() {
         if let Some(wt) = &x.worktree {
             title = title.child(
+                // Gives way, as the folder does: the name and the actions
+                // keep their room.
                 row()
                     .key(format!("side-{}-worktree", dock.key()))
                     .gap(2.)
                     .items_center()
                     .max_w(160.)
+                    .min_w(0.)
+                    .shrink()
                     .child(icon(&icons::GIT_BRANCH, 12.).color(p.text_muted))
-                    .child(ui::line(wt.branch.clone(), xs(), p.text_muted))
+                    .child(ui::line(wt.branch.clone(), xs(), p.text_muted).shrink())
                     .help(format!(
                         "Own git worktree {} on branch {}",
                         wt.path, wt.branch
@@ -699,6 +706,49 @@ mod tests {
                     "{step}: the pane's tabs run under the toggles"
                 );
             }
+        }
+        // The tabs and toggles are buttons the keyboard reaches.
+        rt.update(|s, _| toggle_right_pane(s));
+        settle(&mut rt);
+        let elements = rt.elements();
+        for key in TOGGLES.iter().copied().chain(["side-tab-activity"]) {
+            let e = elements
+                .iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .expect("drawn");
+            assert!(e.focusable, "{key} is not focusable");
+        }
+    }
+
+    /// In a narrow window with both columns open the right pane gives up
+    /// its roomy minimum before it pushes the toggles past the window's
+    /// edge.
+    #[test]
+    fn a_narrow_window_keeps_the_toggles_inside() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::scenes::chat(&mut s);
+        s.prefs.side_open = true;
+        s.prefs.work_open = true;
+        let width = 820.;
+        let mut rt = Runtime::new(s, crate::view, (width, 760.), Env::new(true, 1.));
+        let mut t = 0.;
+        for _ in 0..90 {
+            t += 1. / 60.;
+            rt.frame(t);
+            rt.update(|s, tx| {
+                poll(s, t, tx);
+            });
+        }
+        for key in [
+            "side-session-toggle",
+            "side-work-toggle",
+            "side-pane-toggle",
+        ] {
+            let (r, _) = rt.presented(key).expect("toggle drawn");
+            assert!(
+                r[0] >= 0. && r[0] + r[2] <= width,
+                "{key} at {r:?} is outside the {width} pt window"
+            );
         }
     }
 

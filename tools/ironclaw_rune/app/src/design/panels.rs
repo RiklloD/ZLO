@@ -129,5 +129,9 @@ pub fn toggle_with(s: &State, key: &str, label: &str, glyph: El) -> El {
         .hover_motion(st.hover, st.hover)
         .hover_group()
         .no_window_drag()
+        // Reachable from the keyboard (Space presses it), with the kit's
+        // focus ring, as rune-kit's own buttons.
+        .focusable(true)
+        .focus_ring(2., 2.5, super::kit(p).c.border_focus)
         .child(glyph)
 }
