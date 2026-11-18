@@ -84,6 +84,8 @@ pub struct PluginsState {
     /// Bumped each time the slot list is replaced: replies asked before
     /// are dropped.
     slots_gen: Generation,
+    /// The latest slot-list request: only its reply is taken.
+    slots_asked: Generation,
 }
 
 impl PluginsState {
@@ -111,13 +113,14 @@ impl PluginsState {
 
 /// Read the slot list: on connect and after a plugin's lifecycle changed.
 pub fn refresh_slots(s: &mut State) {
-    let asked = s.plugins.slots_gen;
+    let asked = s.plugins.slots_asked.bump();
     jobs::run(
         s,
         "plugin slots",
         |c| async move { c.plugin_ui_slots().await },
         move |s, result, _| {
-            if s.plugins.slots_gen != asked {
+            // An earlier request answering late must not undo a later one.
+            if s.plugins.slots_asked != asked {
                 return;
             }
             match result {

@@ -338,7 +338,7 @@ impl Client {
             .send()
             .await?;
         let status = resp.status();
-        let text = resp.text().await?;
+        let text = read_capped(resp).await?;
         if status.is_success() {
             return Ok(text);
         }
@@ -351,6 +351,29 @@ impl Client {
             None => ClientError::from_status(status.as_u16(), &text),
         })
     }
+}
+
+/// Most bytes of a plugin reply the app reads. The backend caps a tree at
+/// 64 KB; this leaves room for the envelope and stops there, so a plugin
+/// cannot make the app buffer an unbounded body.
+const MAX_REPLY_BYTES: usize = 256 * 1024;
+
+async fn read_capped(mut resp: reqwest::Response) -> Result<String, ClientError> {
+    let too_large = || ClientError::Decode("the plugin's reply is too large".into());
+    if resp
+        .content_length()
+        .is_some_and(|n| n > MAX_REPLY_BYTES as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if body.len() + chunk.len() > MAX_REPLY_BYTES {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|e| ClientError::Decode(e.to_string()))
 }
 
 /// A sentence in an error body (`error`, `message` or `reason`), as the

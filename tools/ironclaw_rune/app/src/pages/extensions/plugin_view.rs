@@ -98,11 +98,10 @@ pub fn consent_sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
     let p = &s.palette;
     let ext = &s.pages.extensions;
     let Some(sheet) = &ext.consent else { return };
-    let Some(e) = ext.installed.iter().find(|e| e.id() == sheet.id) else {
-        return;
-    };
-    let name = &e.display_name;
-    let tampered = e.installation_state == PluginState::Tampered;
+    // Drawn from what the sheet captured when it opened, which is also
+    // what Allow grants.
+    let name = &sheet.name;
+    let tampered = sheet.tampered;
     let (title, lead) = if tampered {
         (
             format!("{name} changed"),
@@ -114,8 +113,8 @@ pub fn consent_sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
             format!("Before it runs, {name} asks to:"),
         )
     };
-    let requests = e
-        .consent
+    let requests = sheet
+        .shown
         .as_ref()
         .map(|c| c.requests.as_slice())
         .unwrap_or(&[]);
@@ -150,7 +149,7 @@ pub fn consent_sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
         });
         body = body.child(rows_card(p, rows));
     }
-    if let Some(digest) = e.consent.as_ref().map(|c| c.digest.as_str()) {
+    if let Some(digest) = sheet.shown.as_ref().map(|c| c.digest.as_str()) {
         let short: String = digest.chars().take(12).collect();
         body = body.child(
             text(format!("Package {short}"))
@@ -164,7 +163,7 @@ pub fn consent_sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
     }
     let mut buttons = row().w_full().gap(8.).center_y();
     if tampered {
-        let id = e.id().to_string();
+        let id = sheet.id.clone();
         buttons = buttons.child(
             button_sized("Remove", Look::Danger, Size::Small)
                 .on_press(move |s: &mut State| {
@@ -186,7 +185,7 @@ pub fn consent_sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .child(
             loading(
                 button_sized("Allow", Look::Primary, Size::Small)
-                    .disabled(e.consent.is_none())
+                    .disabled(sheet.shown.is_none())
                     .on_press(|s: &mut State| plugin::grant(s)),
                 sheet.granting,
             )

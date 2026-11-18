@@ -17,15 +17,24 @@ use std::collections::HashMap;
 
 use rune::TextEdit;
 use serde_json::Value;
-use zlo_client::plugins::{PluginSetting, SettingKind, SlotKind, plain_reason};
+use zlo_client::plugins::{
+    Consent, PluginSetting, PluginState, SettingKind, SlotKind, plain_reason,
+};
 
 use super::st;
 use crate::jobs::{self, Generation};
 use crate::state::State;
 
 /// The open consent sheet.
+///
+/// It holds what it showed — the name, whether the plugin was tampered and
+/// the consent it listed — so Allow grants exactly the digest the person
+/// read, whatever a refresh of the list did meanwhile.
 pub struct ConsentSheet {
     pub id: String,
+    pub name: String,
+    pub tampered: bool,
+    pub shown: Option<Consent>,
     pub granting: bool,
     pub error: Option<String>,
 }
@@ -87,8 +96,15 @@ pub fn lifecycle_changed(s: &mut State) {
 // --- consent ---
 
 pub fn open_consent(s: &mut State, id: String) {
-    st(s).consent = Some(ConsentSheet {
+    let ext = st(s);
+    let Some(plugin) = ext.installed.iter().find(|e| e.id() == id) else {
+        return;
+    };
+    ext.consent = Some(ConsentSheet {
         id,
+        name: plugin.display_name.clone(),
+        tampered: plugin.installation_state == PluginState::Tampered,
+        shown: plugin.consent.clone(),
         granting: false,
         error: None,
     });
@@ -103,15 +119,16 @@ pub fn grant(s: &mut State) {
     let Some(sheet) = ext.consent.as_mut() else {
         return;
     };
-    let id = sheet.id.clone();
-    let Some(plugin) = ext.installed.iter().find(|e| e.id() == id) else {
+    if sheet.granting {
         return;
-    };
-    let Some(digest) = plugin.consent.as_ref().map(|c| c.digest.clone()) else {
+    }
+    let id = sheet.id.clone();
+    // The digest the sheet showed, never the list's current one.
+    let Some(digest) = sheet.shown.as_ref().map(|c| c.digest.clone()) else {
         sheet.error = Some("This plugin sent nothing to allow. Refresh and try again.".into());
         return;
     };
-    let name = plugin.display_name.clone();
+    let name = sheet.name.clone();
     sheet.granting = true;
     sheet.error = None;
     let job_id = id.clone();
@@ -219,7 +236,7 @@ pub fn save(s: &mut State, setting_id: String, value: Value) {
         return;
     };
     let before = std::mem::replace(&mut setting.value, value.clone());
-    put(s, setting_id, value, Some(before));
+    put(s, setting_id, value, Some(before), None);
 }
 
 /// Save a text or number field from what is typed.
@@ -249,12 +266,12 @@ pub fn save_field(s: &mut State, setting_id: String) {
             }
         }
     } else {
-        Value::String(typed)
+        Value::String(typed.clone())
     };
     if d.saving.is_some() {
         return;
     }
-    put(s, setting_id, value, None);
+    put(s, setting_id, value, None, Some(typed));
 }
 
 /// A typed number as JSON: whole numbers stay integers.
@@ -267,8 +284,16 @@ pub fn parse_number(typed: &str) -> Option<Value> {
 }
 
 /// PUT one setting. `before` is the value to put back when it is refused
-/// (switches and choices, which showed the new one at once).
-fn put(s: &mut State, setting_id: String, value: Value, before: Option<Value>) {
+/// (switches and choices, which showed the new one at once). `typed` is a
+/// field's text as it was sent: the reply rewrites the field only if the
+/// person has not typed on since.
+fn put(
+    s: &mut State,
+    setting_id: String,
+    value: Value,
+    before: Option<Value>,
+    typed: Option<String>,
+) {
     let Some(d) = st(s).detail.as_mut() else {
         return;
     };
@@ -297,6 +322,7 @@ fn put(s: &mut State, setting_id: String, value: Value, before: Option<Value>) {
                     list[ix] = updated;
                     if let Some((_, edit)) = d.inputs.iter_mut().find(|(id, _)| *id == setting_id)
                         && edit.text != shown
+                        && typed.as_deref().is_none_or(|sent| edit.text.trim() == sent)
                     {
                         edit.replace_text(shown);
                     }

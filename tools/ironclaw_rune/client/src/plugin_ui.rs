@@ -22,6 +22,8 @@ const MAX_TEXT: usize = 4_000;
 const MAX_MARKDOWN: usize = 32_000;
 /// Widest gap accepted between children, in points.
 const MAX_GAP: f32 = 32.;
+/// Largest action payload kept, encoded.
+const MAX_PAYLOAD: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tone {
@@ -173,7 +175,7 @@ fn node(v: &Value, depth: usize, count: &mut usize) -> Result<Node, TreeError> {
             (Some(label), Some(action)) => Node::Button {
                 label,
                 action,
-                payload: obj.get("payload").cloned().unwrap_or(Value::Null),
+                payload: payload(obj.get("payload")),
                 style: match obj.get("style").and_then(Value::as_str) {
                     Some("primary") => ButtonStyle::Primary,
                     Some("ghost") => ButtonStyle::Ghost,
@@ -204,7 +206,7 @@ fn node(v: &Value, depth: usize, count: &mut usize) -> Result<Node, TreeError> {
                     subtitle: string(it.get("subtitle"), MAX_TEXT),
                     trailing,
                     action: string(it.get("action"), 200),
-                    payload: it.get("payload").cloned().unwrap_or(Value::Null),
+                    payload: payload(it.get("payload")),
                 });
             }
             Node::List { items }
@@ -231,6 +233,17 @@ fn tone(v: &Value) -> Option<Tone> {
 
 /// A string field, cut to `max` bytes on a character boundary, with control
 /// characters other than newlines and tabs dropped.
+/// A button's or list item's payload, sent back as it came. One over
+/// [`MAX_PAYLOAD`] is dropped (the action is still sent) rather than held
+/// in the tree and copied on every press.
+fn payload(v: Option<&Value>) -> Value {
+    let Some(v) = v else { return Value::Null };
+    match serde_json::to_vec(v) {
+        Ok(bytes) if bytes.len() <= MAX_PAYLOAD => v.clone(),
+        _ => Value::Null,
+    }
+}
+
 fn string(v: Option<&Value>, max: usize) -> Option<String> {
     let raw = v?.as_str()?;
     let mut out = String::with_capacity(raw.len().min(max));
@@ -265,6 +278,23 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn an_oversized_payload_is_dropped_and_the_button_kept() {
+        let big = "x".repeat(MAX_PAYLOAD + 1);
+        let tree = decode(&json!({
+            "type": "button", "label": "Go", "action": "go", "payload": { "blob": big }
+        }));
+        match tree {
+            Ok(Node::Button {
+                action, payload, ..
+            }) => {
+                assert_eq!(action, "go");
+                assert_eq!(payload, Value::Null);
+            }
+            other => panic!("expected a button, got {other:?}"),
+        }
+    }
 
     #[test]
     fn every_node_type_decodes() {

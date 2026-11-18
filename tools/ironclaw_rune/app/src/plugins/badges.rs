@@ -62,7 +62,8 @@ impl Badges {
         self.cache.clear();
         self.queue.clear();
         self.wanted.borrow_mut().clear();
-        self.running = 0;
+        // `running` stays: those requests are still on the wire and hold
+        // their places until each one answers.
         self.era += 1;
     }
 
@@ -174,10 +175,12 @@ fn start(s: &mut State) {
 
 fn landed(s: &mut State, era: u64, key: &BadgeKey, reply: Option<UiReply>) {
     let badges = &mut s.plugins.badges;
+    // Its place is free whichever era asked.
+    badges.running = badges.running.saturating_sub(1);
     if badges.era != era {
+        start(s);
         return;
     }
-    badges.running = badges.running.saturating_sub(1);
     if let Some(e) = badges.cache.get_mut(key) {
         e.pending = false;
         // A failed render keeps no chip; the plugin's reason is not shown
@@ -225,8 +228,20 @@ mod tests {
         assert_eq!(s.plugins.badges.queued(), 10 - IN_FLIGHT - 1);
         assert!(!s.plugins.badges.cache[&key(0)].pending);
 
+        // Clearing (the slot list was replaced) frees no place: the four
+        // requests are still running, so new wants wait behind them.
         s.plugins.badges.clear();
+        assert_eq!(s.plugins.badges.running(), IN_FLIGHT);
+        for n in 20..23 {
+            s.plugins.badges.wanted.borrow_mut().push((key(n), 1));
+        }
+        pump(&mut s);
+        assert_eq!(s.plugins.badges.running(), IN_FLIGHT);
+        assert_eq!(s.plugins.badges.queued(), 3);
+        // An earlier era's reply writes nothing but hands its place on.
         landed(&mut s, era, &key(1), None);
-        assert_eq!(s.plugins.badges.running(), 0, "an earlier era is dropped");
+        assert_eq!(s.plugins.badges.running(), IN_FLIGHT);
+        assert_eq!(s.plugins.badges.queued(), 2);
+        assert!(!s.plugins.badges.cache.contains_key(&key(1)));
     }
 }
