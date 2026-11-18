@@ -13,47 +13,51 @@
 //! - a deactivated or removed package's hooks are absent from the next run;
 //! - an in-flight run keeps the dispatcher it started with.
 //!
+//! Per-user visibility: a run installs only packages whose installation is
+//! visible to its user ([`InstallationOwnerSource`], the tool catalog's owner
+//! projection); a package with no installation row is visible to nobody.
+//!
 //! Every package-declared hook still installs only through
 //! [`HookRegistrar`], i.e. at the `Installed` tier with exactly that tier's
 //! restrictions (restricted sinks — no `Allow`; no `Validation` /
 //! `Authorization` phases; grants default-deny). Nothing here widens what an
 //! installed hook may decide.
 //!
-//! WASM bodies load their module bytes from the package's own root (the
-//! `[[hooks]].module` asset), bounded by [`MAX_HOOK_MODULE_BYTES`], into an
-//! in-memory map the hook WASM runtime resolves from. The map is a cache over
-//! the package files: it is pruned to the active set every run and refilled
-//! from the filesystem on a miss.
+//! WASM bodies compile from the package's `[[hooks]].module` assets, read
+//! once per package content identity by [`read_hook_module`] (bounded by
+//! [`MAX_HOOK_MODULE_BYTES`]) and held immutable next to the validated
+//! entries; a run installs from the handle it admitted, so a concurrent prune
+//! cannot invalidate it.
 //!
 //! Settings: when the package declares `[[settings]]`, the acting user's
 //! effective values are read through [`ExtensionSettingsReader`] for the
 //! run's scope and bound to the package's WASM hooks for that run (the
-//! `settings` member of their context blob). A settings read failure fails
-//! the run's host build — skipping a gate hook because its configuration
-//! could not be read would fail open.
+//! `settings` member of their context blob). On a read failure a gate or
+//! mutator fails the run's host build (skipping it would fail open); after-
+//! fact observers are skipped for that run only (failure isolation).
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use ironclaw_extension_contracts::runtime::ExtensionAssetPath;
+use ironclaw_extension_manager::installation_visibility::InstallationOwnerSource;
+use ironclaw_extension_manager::installation_visibility::installation_visible_to;
 use ironclaw_extension_registry::settings::{ExtensionSettingsReader, effective_setting_values};
 use ironclaw_extension_registry::{SharedExtensionRegistry, resolve_asset_under};
 use ironclaw_filesystem::RootFilesystem;
 use ironclaw_hooks::dispatch::HookDispatcherBuilder;
 use ironclaw_hooks::evaluator::PredicateEvaluator;
-use ironclaw_hooks::manifest::HookManifestEntry;
+use ironclaw_hooks::manifest::{HookManifestBody, HookManifestEntry, HookManifestKind};
 use ironclaw_hooks::registrar::HookRegistrar;
 use ironclaw_hooks::registry::HookRegistry;
-use ironclaw_hooks::wasm::{
-    WasmHookModuleRequest, WasmHookModuleResolver, WasmHookRuntime, WasmHookRuntimeError,
-};
+use ironclaw_hooks::wasm::{HookModuleBytes, PinnedHookModules, WasmHookRuntime};
 use ironclaw_host_api::ids::TenantId;
 use ironclaw_host_api::path::VirtualPath;
 use ironclaw_turn_runner::loop_driver_host::{
     HookDispatcherBuildRequest, RebornLoopDriverHostError,
 };
 
-use super::audit::emit_hook_quarantined;
+use super::audit::{emit_hook_quarantined, emit_hook_skipped_for_run};
 use super::factory::{ProjectedExtensionHooks, project_hook_entries};
 use super::projection::{
     HookProjection, MAX_INSTALLED_EXTENSIONS_CONSIDERED, MAX_TOTAL_HOOKS_PER_TENANT,
@@ -73,6 +77,8 @@ pub(crate) struct LiveHookSources {
     pub(crate) filesystem: Arc<dyn RootFilesystem>,
     /// Per-user setting values.
     pub(crate) settings: Arc<dyn ExtensionSettingsReader>,
+    /// Installation owners: which users each active package is visible to.
+    pub(crate) owners: Arc<dyn InstallationOwnerSource>,
 }
 
 type FirstPartyInstaller = Arc<
@@ -80,44 +86,6 @@ type FirstPartyInstaller = Arc<
         + Send
         + Sync,
 >;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ModuleKey {
-    extension_id: String,
-    version: String,
-    hook_local_id: String,
-}
-
-/// Module bytes for the active packages' WASM hooks, keyed by hook identity.
-#[derive(Default)]
-struct LoadedHookModules {
-    modules: RwLock<HashMap<ModuleKey, Arc<Vec<u8>>>>,
-}
-
-impl WasmHookModuleResolver for LoadedHookModules {
-    fn resolve_module(
-        &self,
-        request: &WasmHookModuleRequest<'_>,
-    ) -> Result<Vec<u8>, WasmHookRuntimeError> {
-        let key = ModuleKey {
-            extension_id: request.extension_id.as_str().to_string(),
-            version: request.extension_version.to_string(),
-            hook_local_id: request.hook_local_id.as_str().to_string(),
-        };
-        let modules = self.modules.read().map_err(|_| {
-            WasmHookRuntimeError::Compilation("hook module table is unavailable".to_string())
-        })?;
-        modules
-            .get(&key)
-            .map(|bytes| bytes.as_ref().clone())
-            .ok_or_else(|| {
-                WasmHookRuntimeError::Compilation(format!(
-                    "no module asset is loaded for hook `{}` of extension `{}`",
-                    key.hook_local_id, key.extension_id
-                ))
-            })
-    }
-}
 
 /// A package's hook set that passed projection + scratch validation, keyed by
 /// what would change it.
@@ -128,10 +96,18 @@ struct ValidationKey {
     root: String,
 }
 
+/// Entries that passed validation, with the exact module bytes they were
+/// validated against.
+#[derive(Clone)]
+struct ValidatedHookSet {
+    entries: Arc<Vec<HookManifestEntry>>,
+    modules: HookModuleBytes,
+}
+
 #[derive(Clone)]
 struct CachedValidation {
     key: ValidationKey,
-    outcome: Result<Arc<Vec<HookManifestEntry>>, String>,
+    outcome: Result<ValidatedHookSet, String>,
 }
 
 pub(super) struct LiveHookInstaller {
@@ -143,7 +119,6 @@ pub(super) struct LiveHookInstaller {
     pub(super) first_party: FirstPartyInstaller,
     /// Host-bundled sets validated once at composition (fail-closed there).
     pub(super) trusted: Vec<ProjectedExtensionHooks>,
-    modules: Arc<LoadedHookModules>,
     runtime: Arc<WasmHookRuntime>,
     validated: Mutex<HashMap<String, CachedValidation>>,
 }
@@ -158,13 +133,14 @@ impl LiveHookInstaller {
         first_party: FirstPartyInstaller,
         trusted: Vec<ProjectedExtensionHooks>,
     ) -> Result<Self, crate::error::RebornBuildError> {
-        let modules = Arc::new(LoadedHookModules::default());
         let runtime = Arc::new(
-            WasmHookRuntime::new(Arc::clone(&modules) as Arc<dyn WasmHookModuleResolver>).map_err(
-                |error| crate::error::RebornBuildError::InvalidConfig {
+            // Every install brings the bytes its run admitted (`registrar_for`);
+            // nothing resolves from shared mutable state.
+            WasmHookRuntime::new(Arc::new(PinnedHookModules::none())).map_err(|error| {
+                crate::error::RebornBuildError::InvalidConfig {
                     reason: format!("hook WASM runtime could not start: {error}"),
-                },
-            )?,
+                }
+            })?,
         );
         Ok(Self {
             third_party_enabled,
@@ -174,7 +150,6 @@ impl LiveHookInstaller {
             evaluator,
             first_party,
             trusted,
-            modules,
             runtime,
             validated: Mutex::new(HashMap::new()),
         })
@@ -182,6 +157,20 @@ impl LiveHookInstaller {
 
     fn registrar(&self) -> HookRegistrar {
         HookRegistrar::new(Arc::clone(&self.evaluator)).with_wasm_runtime(Arc::clone(&self.runtime))
+    }
+
+    /// A registrar whose WASM installs compile exactly `modules`.
+    fn registrar_for(
+        &self,
+        projection: &HookProjection,
+        modules: HookModuleBytes,
+    ) -> HookRegistrar {
+        self.registrar()
+            .with_module_resolver(Arc::new(PinnedHookModules::new(
+                projection.extension_id.as_str(),
+                projection.version.clone(),
+                modules,
+            )))
     }
 
     /// Mint one run's builder: first-party hooks, the host-bundled sets, then
@@ -216,6 +205,8 @@ impl LiveHookInstaller {
         }
 
         let snapshot = self.sources.active.snapshot();
+        // Owners are read once per run, lazily; unreadable fails closed.
+        let mut owners = None;
         let mut considered = 0usize;
         let mut hook_total = 0usize;
         let mut live = BTreeSet::new();
@@ -228,6 +219,27 @@ impl LiveHookInstaller {
             };
             let extension = projection.extension_id.as_str().to_string();
             let hook_count = projection.hooks.len();
+            // Cache retention follows activation, not this run's user.
+            live.insert(extension.clone());
+            if owners.is_none() {
+                owners = Some(self.sources.owners.installation_owners().await.map_err(
+                    |error| {
+                        replay_error(format!(
+                            "extension installation owners could not be read: {error}"
+                        ))
+                    },
+                )?);
+            }
+            let visible = owners.as_ref().is_some_and(|owners| {
+                installation_visible_to(owners, &projection.extension_id, &request.scope.user_id)
+            });
+            if !visible {
+                tracing::debug!(
+                    extension_id = %extension,
+                    "package hooks not installed: installation not visible to the run's user"
+                );
+                continue;
+            }
             if installed_ids.contains(&extension) {
                 self.quarantine(
                     &extension,
@@ -257,44 +269,20 @@ impl LiveHookInstaller {
                 self.quarantine(&extension, &reason, hook_count);
                 continue;
             }
-            live.insert(extension.clone());
-            let entries = match self.validated_entries(&projection).await? {
-                Ok(entries) => entries,
+            // This run holds the validated module bytes until its install.
+            let validated = match self.validated_entries(&projection).await? {
+                Ok(validated) => validated,
                 Err(reason) => {
                     debug_quarantine_cached(&extension, &reason);
                     continue;
                 }
             };
-            // A concurrent run that saw the package deactivated may have
-            // pruned its module bytes after this run validated it; reload
-            // them from the package root rather than fail the install.
-            if !self.modules_resident(&projection)? {
-                self.load_modules(&projection).await.map_err(|reason| {
-                    replay_error(format!(
-                        "hook modules for extension `{extension}` could not be reloaded: {reason}"
-                    ))
-                })?;
-            }
-            // Only WASM bodies read settings; predicate bodies never do.
-            let reads_settings = !projection.settings.is_empty()
-                && projection.hooks.iter().any(|hook| hook.module.is_some());
-            let settings = if !reads_settings {
-                None
-            } else {
-                let stored = self
-                    .sources
-                    .settings
-                    .stored_values(&request.scope, &projection.extension_id)
-                    .await
-                    .map_err(|error| {
-                        replay_error(format!(
-                            "settings for extension `{extension}` could not be read: {error}"
-                        ))
-                    })?;
-                let effective = effective_setting_values(&projection.settings, &stored);
-                Some(Arc::new(effective.into_iter().collect()))
-            };
-            let (next, _) = registrar
+            let (entries, settings) = self
+                .entries_with_settings(&request, &projection, &validated.entries)
+                .await?;
+            let installed_count = entries.len();
+            let (next, _) = self
+                .registrar_for(&projection, validated.modules)
                 .install_with_settings(
                     projection.extension_id.clone(),
                     &projection.version,
@@ -308,20 +296,83 @@ impl LiveHookInstaller {
                     ))
                 })?;
             builder = next;
-            hook_total += hook_count;
+            hook_total += installed_count;
         }
         self.prune(&live)?;
         Ok(builder)
     }
 
-    /// The validated entries for one package, from cache or by loading its
+    /// The entries this run installs for one package, with the user's
+    /// effective settings bound when its WASM hooks read them.
+    ///
+    /// Only WASM bodies read settings. On a read failure, after-fact observer
+    /// WASM hooks are dropped for this run (observer failure isolation) and
+    /// the rest install without settings; a gate or mutator WASM hook fails
+    /// the build closed, since skipping it would fail open.
+    async fn entries_with_settings(
+        &self,
+        request: &HookDispatcherBuildRequest,
+        projection: &HookProjection,
+        entries: &Arc<Vec<HookManifestEntry>>,
+    ) -> Result<
+        (
+            Arc<Vec<HookManifestEntry>>,
+            Option<Arc<serde_json::Map<String, serde_json::Value>>>,
+        ),
+        RebornLoopDriverHostError,
+    > {
+        let extension = projection.extension_id.as_str();
+        let wasm_kinds: Vec<HookManifestKind> = entries
+            .iter()
+            .filter(|entry| matches!(entry.body, HookManifestBody::Wasm { .. }))
+            .map(|entry| entry.kind)
+            .collect();
+        if projection.settings.is_empty() || wasm_kinds.is_empty() {
+            return Ok((Arc::clone(entries), None));
+        }
+        let error = match self
+            .sources
+            .settings
+            .stored_values(&request.scope, &projection.extension_id)
+            .await
+        {
+            Ok(stored) => {
+                let effective = effective_setting_values(&projection.settings, &stored);
+                return Ok((
+                    Arc::clone(entries),
+                    Some(Arc::new(effective.into_iter().collect())),
+                ));
+            }
+            Err(error) => error,
+        };
+        if wasm_kinds.iter().any(|kind| !kind.is_after_fact()) {
+            return Err(replay_error(format!(
+                "settings for extension `{extension}` could not be read: {error}"
+            )));
+        }
+        let kept: Vec<HookManifestEntry> = entries
+            .iter()
+            .filter(|entry| !matches!(entry.body, HookManifestBody::Wasm { .. }))
+            .cloned()
+            .collect();
+        let reason = format!("settings could not be read: {error}");
+        emit_hook_skipped_for_run(
+            &self.tenant_id,
+            extension,
+            &reason,
+            entries.len() - kept.len(),
+        );
+        Ok((Arc::new(kept), None))
+    }
+
+    /// The validated entries for one package, from cache or by reading its
     /// module assets and validating the whole set against a scratch builder.
     /// The outer `Result` is a host fault; the inner `Err` is a quarantine
     /// reason (cached until the package changes).
     async fn validated_entries(
         &self,
         projection: &HookProjection,
-    ) -> Result<Result<Arc<Vec<HookManifestEntry>>, String>, RebornLoopDriverHostError> {
+    ) -> Result<Result<ValidatedHookSet, String>, RebornLoopDriverHostError> {
         let extension = projection.extension_id.as_str().to_string();
         let key = ValidationKey {
             version: projection.version.clone(),
@@ -350,18 +401,15 @@ impl LiveHookInstaller {
         Ok(outcome)
     }
 
-    async fn validate(
-        &self,
-        projection: &HookProjection,
-    ) -> Result<Arc<Vec<HookManifestEntry>>, String> {
+    async fn validate(&self, projection: &HookProjection) -> Result<ValidatedHookSet, String> {
         let extension = projection.extension_id.as_str();
-        self.load_modules(projection).await?;
+        let modules = self.read_modules(projection).await?;
         let entries = project_hook_entries(extension, &projection.hooks)?;
         let scratch = HookDispatcherBuilder::new(HookRegistry::new());
-        // Validation only: the scratch builder is dropped; the per-run build
-        // installs the same entries into its own builder.
+        // Validation only: the scratch builder is dropped; each run installs
+        // the same entries, from the same bytes, into its own builder.
         let (_validated, _ids) = self
-            .registrar()
+            .registrar_for(projection, Arc::clone(&modules))
             .install(
                 projection.extension_id.clone(),
                 &projection.version,
@@ -371,92 +419,38 @@ impl LiveHookInstaller {
             .map_err(|error| {
                 format!("failed to install hooks declared by extension `{extension}`: {error}")
             })?;
-        Ok(Arc::new(entries))
+        Ok(ValidatedHookSet {
+            entries: Arc::new(entries),
+            modules,
+        })
     }
 
-    async fn load_modules(&self, projection: &HookProjection) -> Result<(), String> {
-        let extension = projection.extension_id.as_str();
-        let mut loaded = Vec::new();
+    /// Read every WASM hook module of `projection`, once.
+    async fn read_modules(&self, projection: &HookProjection) -> Result<HookModuleBytes, String> {
+        let mut modules = HashMap::new();
         for hook in &projection.hooks {
             let Some(module) = &hook.module else {
                 continue;
             };
-            let asset = ExtensionAssetPath::new(module.clone()).map_err(|error| {
-                format!("hook `{}` module path is invalid: {error}", hook.local_id)
-            })?;
-            let path = resolve_asset_under(&asset, &projection.root).map_err(|error| {
-                format!("hook `{}` module path is invalid: {error}", hook.local_id)
-            })?;
-            let bytes = self
-                .sources
-                .filesystem
-                .read_file_bounded(&path, MAX_HOOK_MODULE_BYTES)
-                .await
-                .map_err(|error| {
-                    format!(
-                        "hook `{}` module `{module}` could not be read (at most \
-                         {MAX_HOOK_MODULE_BYTES} bytes): {error}",
-                        hook.local_id
-                    )
-                })?
-                .ok_or_else(|| {
-                    format!(
-                        "hook `{}` module `{module}` exceeds {MAX_HOOK_MODULE_BYTES} bytes",
-                        hook.local_id
-                    )
-                })?;
-            loaded.push((
-                ModuleKey {
-                    extension_id: extension.to_string(),
-                    version: projection.version.clone(),
-                    hook_local_id: hook.local_id.clone(),
-                },
-                Arc::new(bytes),
-            ));
+            let bytes = read_hook_module(
+                self.sources.filesystem.as_ref(),
+                projection,
+                &hook.local_id,
+                module,
+            )
+            .await?;
+            modules.insert(hook.local_id.clone(), bytes);
         }
-        let mut modules = self
-            .modules
-            .modules
-            .write()
-            .map_err(|_| "hook module table is unavailable".to_string())?;
-        modules.retain(|key, _| key.extension_id != extension);
-        modules.extend(loaded);
-        Ok(())
+        Ok(Arc::new(modules))
     }
 
-    /// Whether every WASM hook of `projection` has its module bytes loaded.
-    fn modules_resident(
-        &self,
-        projection: &HookProjection,
-    ) -> Result<bool, RebornLoopDriverHostError> {
-        let modules = self
-            .modules
-            .modules
-            .read()
-            .map_err(|_| replay_error("hook module table is unavailable".to_string()))?;
-        Ok(projection
-            .hooks
-            .iter()
-            .filter(|hook| hook.module.is_some())
-            .all(|hook| {
-                modules.contains_key(&ModuleKey {
-                    extension_id: projection.extension_id.as_str().to_string(),
-                    version: projection.version.clone(),
-                    hook_local_id: hook.local_id.clone(),
-                })
-            }))
-    }
-
-    /// Drop cached validations and module bytes for packages that are no
-    /// longer active, so a deactivated package leaves nothing resident.
+    /// Drop cached validations (and with them the shared handle on their
+    /// module bytes) for packages that are no longer active, so a
+    /// deactivated package leaves nothing resident once its admitted runs
+    /// finish installing.
     fn prune(&self, live: &BTreeSet<String>) -> Result<(), RebornLoopDriverHostError> {
         self.lock_validated()?
             .retain(|extension, _| live.contains(extension));
-        self.modules
-            .modules
-            .write()
-            .map_err(|_| replay_error("hook module table is unavailable".to_string()))?
-            .retain(|key, _| live.contains(&key.extension_id));
         Ok(())
     }
 
@@ -476,6 +470,43 @@ impl LiveHookInstaller {
     }
 }
 
+/// Read the exact bytes one WASM hook will compile from: the package-relative
+/// `module` asset, resolved under the package root and bounded by
+/// [`MAX_HOOK_MODULE_BYTES`]. This is the only place hook module bytes enter
+/// the host; the returned buffer is what validation and every admitting run
+/// compile — nothing reads the file a second time.
+async fn read_hook_module(
+    filesystem: &dyn RootFilesystem,
+    projection: &HookProjection,
+    hook_local_id: &str,
+    module: &str,
+) -> Result<Arc<[u8]>, String> {
+    let asset = ExtensionAssetPath::new(module.to_string())
+        .map_err(|error| format!("hook `{hook_local_id}` module path is invalid: {error}"))?;
+    let path = resolve_asset_under(&asset, &projection.root)
+        .map_err(|error| format!("hook `{hook_local_id}` module path is invalid: {error}"))?;
+    let bytes = filesystem
+        .read_file_bounded(&path, MAX_HOOK_MODULE_BYTES)
+        .await
+        .map_err(|error| {
+            format!(
+                "hook `{hook_local_id}` module `{module}` could not be read (at most \
+                 {MAX_HOOK_MODULE_BYTES} bytes): {error}"
+            )
+        })?
+        .ok_or_else(|| {
+            format!(
+                "hook `{hook_local_id}` module `{module}` exceeds {MAX_HOOK_MODULE_BYTES} bytes"
+            )
+        })?;
+    // consent: digest-pinned consent verifies `bytes` here — against the
+    // asset hash the user consented to for this package version — before
+    // they are cached or compiled. A mismatch must return `Err` (the package
+    // is then quarantined like any other invalid hook set). Install/consent
+    // owns that check; this branch only guarantees it is the single read.
+    Ok(Arc::from(bytes))
+}
+
 fn debug_quarantine_cached(extension: &str, reason: &str) {
     tracing::debug!(
         extension_id = %extension,
@@ -488,14 +519,24 @@ fn replay_error(reason: String) -> RebornLoopDriverHostError {
     RebornLoopDriverHostError::InvalidRequest { reason }
 }
 
-/// Test seam: the extension ids whose module bytes are resident.
+/// Test seam: the extension ids whose module bytes the shared cache holds.
 #[cfg(test)]
 impl LiveHookInstaller {
     pub(super) fn resident_module_extensions(&self) -> BTreeSet<String> {
-        self.modules
-            .modules
-            .read()
-            .map(|modules| modules.keys().map(|key| key.extension_id.clone()).collect())
+        self.validated
+            .lock()
+            .map(|cache| {
+                cache
+                    .iter()
+                    .filter(|(_, cached)| {
+                        cached
+                            .outcome
+                            .as_ref()
+                            .is_ok_and(|validated| !validated.modules.is_empty())
+                    })
+                    .map(|(extension, _)| extension.clone())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }

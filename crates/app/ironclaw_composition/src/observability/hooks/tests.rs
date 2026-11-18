@@ -1176,6 +1176,7 @@ fn live_hook_sets_follow_activation_and_deactivation() {
             active: Arc::clone(&active),
             filesystem,
             settings: Arc::new(DefaultsOnlyExtensionSettings),
+            owners: StaticOwners::tenant_shared(&["live-ext"]),
         },
         Arc::new(ironclaw_hooks::evaluator::PredicateEvaluator::new()),
         Arc::new(install_first_party_hooks),
@@ -1209,4 +1210,427 @@ fn live_hook_sets_follow_activation_and_deactivation() {
     let after = futures::executor::block_on(installer.build(request())).expect("build");
     assert!(!bound(after), "a deactivated package's hook unregisters");
     assert!(installer.resident_module_extensions().is_empty());
+}
+
+// ---- live installer: per-user visibility, module pinning, failure policy ----
+
+/// Installation owners for the live-installer tests (the production source is
+/// the lifecycle manager's owner projection).
+struct StaticOwners(
+    std::collections::BTreeMap<
+        ironclaw_host_api::ids::ExtensionId,
+        ironclaw_extension_registry::InstallationOwner,
+    >,
+);
+
+impl StaticOwners {
+    fn rows(
+        rows: &[(&str, ironclaw_extension_registry::InstallationOwner)],
+    ) -> Arc<dyn ironclaw_extension_manager::installation_visibility::InstallationOwnerSource> {
+        Arc::new(Self(
+            rows.iter()
+                .map(|(id, owner)| {
+                    (
+                        ironclaw_host_api::ids::ExtensionId::new(*id).expect("extension id"),
+                        owner.clone(),
+                    )
+                })
+                .collect(),
+        ))
+    }
+
+    fn tenant_shared(
+        ids: &[&str],
+    ) -> Arc<dyn ironclaw_extension_manager::installation_visibility::InstallationOwnerSource> {
+        let rows: Vec<_> = ids
+            .iter()
+            .map(|id| (*id, ironclaw_extension_registry::InstallationOwner::Tenant))
+            .collect();
+        Self::rows(&rows)
+    }
+}
+
+#[async_trait::async_trait]
+impl ironclaw_extension_manager::installation_visibility::InstallationOwnerSource for StaticOwners {
+    async fn installation_owners(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<
+            ironclaw_host_api::ids::ExtensionId,
+            ironclaw_extension_registry::InstallationOwner,
+        >,
+        ironclaw_product_contracts::error::ProductOperationFailure,
+    > {
+        Ok(self.0.clone())
+    }
+}
+
+fn user_scope(user: &str) -> ironclaw_host_api::resource::ResourceScope {
+    ironclaw_host_api::resource::ResourceScope::local_default(
+        ironclaw_host_api::ids::UserId::new(user).expect("user id"),
+        ironclaw_host_api::ids::InvocationId::new(),
+    )
+    .expect("scope")
+}
+
+fn build_for(
+    scope: ironclaw_host_api::resource::ResourceScope,
+) -> ironclaw_turn_runner::loop_driver_host::HookDispatcherBuildRequest {
+    ironclaw_turn_runner::loop_driver_host::HookDispatcherBuildRequest { scope }
+}
+
+fn live_installer(
+    active: &Arc<ironclaw_extension_registry::SharedExtensionRegistry>,
+    filesystem: Arc<dyn ironclaw_filesystem::RootFilesystem>,
+    settings: Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsReader>,
+    owners: Arc<dyn ironclaw_extension_manager::installation_visibility::InstallationOwnerSource>,
+) -> super::live::LiveHookInstaller {
+    let tenant = ironclaw_host_api::ids::TenantId::new("tenant-live").expect("tenant");
+    let tenant_root = tenant_extension_root(&tenant).expect("root");
+    super::live::LiveHookInstaller::new(
+        true,
+        tenant,
+        tenant_root,
+        super::live::LiveHookSources {
+            active: Arc::clone(active),
+            filesystem,
+            settings,
+            owners,
+        },
+        Arc::new(ironclaw_hooks::evaluator::PredicateEvaluator::new()),
+        Arc::new(install_first_party_hooks),
+        Vec::new(),
+    )
+    .expect("installer builds")
+}
+
+/// Extension ids with an Installed binding at `point` in a minted builder.
+fn bound_extensions(
+    builder: HookDispatcherBuilder,
+    point: HookPointSpec,
+) -> std::collections::BTreeSet<String> {
+    builder
+        .build_arc()
+        .active_bindings_snapshot(point)
+        .iter()
+        .filter_map(|binding| {
+            binding
+                .owning_extension
+                .as_ref()
+                .map(|extension| extension.as_str().to_string())
+        })
+        .collect()
+}
+
+fn v2_package(id: &str, hooks_block: &str) -> ExtensionPackage {
+    registry_with_manifest(id, &manifest_toml(id, hooks_block))
+        .extensions()
+        .next()
+        .expect("fixture package")
+        .clone()
+}
+
+/// Per-user visibility (#5459 P1 applied to package hooks): a run installs
+/// only the hooks of active packages whose installation is visible to the
+/// run's user. A private install contributes to its members' runs only, a
+/// tenant-shared one to everyone's, and a package with no installation row
+/// to nobody's (fail closed).
+#[tokio::test]
+async fn live_hooks_follow_installation_visibility_per_run_user() {
+    use ironclaw_extension_registry::InstallationOwner;
+    use ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings;
+
+    let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+        ExtensionRegistry::new(),
+    ));
+    for id in ["alice-ext", "shared-ext", "orphan-ext"] {
+        active
+            .upsert(v2_package(
+                id,
+                &own_deny_hook("deny-run", &format!("{id}.run")),
+            ))
+            .expect("activate");
+    }
+    let installer = live_installer(
+        &active,
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+        Arc::new(DefaultsOnlyExtensionSettings),
+        StaticOwners::rows(&[
+            (
+                "alice-ext",
+                InstallationOwner::user(ironclaw_host_api::ids::UserId::new("alice").unwrap()),
+            ),
+            ("shared-ext", InstallationOwner::Tenant),
+        ]),
+    );
+
+    let alice = installer
+        .build(build_for(user_scope("alice")))
+        .await
+        .expect("alice's run builds");
+    assert_eq!(
+        bound_extensions(alice, HookPointSpec::BeforeCapability),
+        ["alice-ext", "shared-ext"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    );
+    let bob = installer
+        .build(build_for(user_scope("bob")))
+        .await
+        .expect("bob's run builds");
+    assert_eq!(
+        bound_extensions(bob, HookPointSpec::BeforeCapability),
+        ["shared-ext"].into_iter().map(String::from).collect(),
+        "another user's private package contributes no hooks to bob's run"
+    );
+}
+
+/// A v3 plugin manifest with WASM hooks and one setting.
+fn v3_plugin(id: &str, hooks_block: &str) -> ExtensionPackage {
+    let toml = format!(
+        r#"schema_version = "reborn.extension_manifest.v3"
+id = "{id}"
+name = "{id}"
+version = "0.1.0"
+description = "{id} plugin"
+trust = "third_party"
+
+[runtime]
+kind = "wasm"
+module = "wasm/tool.wasm"
+
+[[tools]]
+id = "{id}.run"
+description = "Run {id}"
+effects = []
+default_permission = "allow"
+visibility = "model"
+input_schema_ref = "schemas/run.input.v1.json"
+{hooks_block}
+[[settings]]
+id = "mode"
+kind = "switch"
+label = "Mode"
+default = true
+"#
+    );
+    let root = VirtualPath::new(format!("/system/extensions/{id}")).expect("root");
+    let record = ironclaw_extension_registry::ExtensionManifestRecord::from_toml(
+        toml,
+        ManifestSource::InstalledLocal,
+        &ironclaw_host_api::host_port::default_host_port_catalog().expect("catalog"),
+        None,
+        &ironclaw_extension_registry::HostApiContractRegistry::new(),
+        Some(root.clone()),
+    )
+    .expect("v3 manifest parses");
+    let manifest = ExtensionManifest::try_from(record.manifest().clone()).expect("manifest");
+    ExtensionPackage::from_manifest(manifest, root).expect("package")
+}
+
+const WASM_GATE_HOOK: &str = r#"
+[[hooks]]
+id = "gate"
+kind = "before_capability"
+module = "wasm/gate.wasm"
+body = { mode = "wasm", export = "evaluate" }
+"#;
+
+const WASM_OBSERVER_HOOK: &str = r#"
+[[hooks]]
+id = "observe"
+kind = "after_capability"
+module = "wasm/observe.wasm"
+body = { mode = "wasm", export = "evaluate" }
+"#;
+
+const PASS_GATE_WAT: &str = r#"(module
+  (import "ic:hooks/before-capability@1" "pass" (func $pass (result i32)))
+  (memory (export "memory") 1)
+  (func (export "evaluate") call $pass drop))"#;
+
+const NOOP_OBSERVER_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (func (export "evaluate")))"#;
+
+async fn plant_module(
+    filesystem: &ironclaw_filesystem::InMemoryBackend,
+    extension: &str,
+    module: &str,
+    wat_src: &str,
+) {
+    use ironclaw_filesystem::RootFilesystem;
+    filesystem
+        .write_file(
+            &VirtualPath::new(format!("/system/extensions/{extension}/wasm/{module}"))
+                .expect("module path"),
+            &wat::parse_str(wat_src).expect("wat"),
+        )
+        .await
+        .expect("write module");
+}
+
+/// A settings reader that parks inside `stored_values` until released, so a
+/// test can interleave another build at that exact await point.
+struct ParkedSettings {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl ironclaw_extension_registry::settings::ExtensionSettingsReader for ParkedSettings {
+    async fn stored_values(
+        &self,
+        _scope: &ironclaw_host_api::resource::ResourceScope,
+        _extension_id: &ironclaw_host_api::ids::ExtensionId,
+    ) -> Result<
+        std::collections::BTreeMap<String, serde_json::Value>,
+        ironclaw_extension_registry::settings::ExtensionSettingsError,
+    > {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(std::collections::BTreeMap::new())
+    }
+}
+
+/// A settings reader whose every read fails.
+struct UnreadableSettings;
+
+#[async_trait::async_trait]
+impl ironclaw_extension_registry::settings::ExtensionSettingsReader for UnreadableSettings {
+    async fn stored_values(
+        &self,
+        _scope: &ironclaw_host_api::resource::ResourceScope,
+        extension_id: &ironclaw_host_api::ids::ExtensionId,
+    ) -> Result<
+        std::collections::BTreeMap<String, serde_json::Value>,
+        ironclaw_extension_registry::settings::ExtensionSettingsError,
+    > {
+        Err(
+            ironclaw_extension_registry::settings::ExtensionSettingsError::Storage {
+                operation: "read",
+                reason: format!(
+                    "settings record for {} is unreadable",
+                    extension_id.as_str()
+                ),
+            },
+        )
+    }
+}
+
+/// Concurrent dispatcher builds: build A admits a package (validated, module
+/// bytes in hand) and parks in its settings read; meanwhile the package is
+/// deactivated and build B prunes the shared module cache. Build A must still
+/// install from the bytes it admitted rather than fail its run.
+#[tokio::test]
+async fn admitted_build_keeps_its_module_bytes_when_a_concurrent_build_prunes() {
+    let filesystem = Arc::new(ironclaw_filesystem::InMemoryBackend::new());
+    plant_module(&filesystem, "pinned-ext", "gate.wasm", PASS_GATE_WAT).await;
+    let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+        ExtensionRegistry::new(),
+    ));
+    let package = v3_plugin("pinned-ext", WASM_GATE_HOOK);
+    active.upsert(package.clone()).expect("activate");
+    let settings = Arc::new(ParkedSettings {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let installer = live_installer(
+        &active,
+        filesystem,
+        Arc::clone(&settings) as _,
+        StaticOwners::tenant_shared(&["pinned-ext"]),
+    );
+
+    let build_a = installer.build(build_for(user_scope("alice")));
+    let interleave = async {
+        settings.entered.notified().await;
+        // Deactivated while A is parked: B sees no package and prunes.
+        active.remove(&package.id);
+        let build_b = installer
+            .build(build_for(user_scope("bob")))
+            .await
+            .expect("build B");
+        assert!(bound_extensions(build_b, HookPointSpec::BeforeCapability).is_empty());
+        assert!(installer.resident_module_extensions().is_empty());
+        settings.release.notify_one();
+    };
+    let (a, ()) = tokio::join!(build_a, interleave);
+    let a = a.expect("build A installs from the module bytes it admitted");
+    assert!(
+        bound_extensions(a, HookPointSpec::BeforeCapability).contains("pinned-ext"),
+        "the admitted run keeps the package's gate"
+    );
+}
+
+/// Failure policy by hook kind when a package's settings cannot be read for
+/// the run's user: after-fact observers are skipped for that run (observer
+/// failure isolation) while the package's other hooks still install; a gate
+/// (or prompt mutator) that would run on unread settings fails the build
+/// closed instead of being skipped.
+#[tokio::test]
+async fn unreadable_settings_skip_observers_but_fail_gates_closed() {
+    let filesystem = Arc::new(ironclaw_filesystem::InMemoryBackend::new());
+    plant_module(
+        &filesystem,
+        "observer-ext",
+        "observe.wasm",
+        NOOP_OBSERVER_WAT,
+    )
+    .await;
+    plant_module(&filesystem, "gate-ext", "gate.wasm", PASS_GATE_WAT).await;
+
+    // Observer-only WASM: the run builds; the observer is absent, the
+    // package's predicate gate (which reads no settings) still installs.
+    let observer_block = format!(
+        "{WASM_OBSERVER_HOOK}{}",
+        own_deny_hook("deny-run", "observer-ext.run")
+    );
+    let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+        ExtensionRegistry::new(),
+    ));
+    active
+        .upsert(v3_plugin("observer-ext", &observer_block))
+        .expect("activate");
+    let installer = live_installer(
+        &active,
+        Arc::clone(&filesystem) as _,
+        Arc::new(UnreadableSettings),
+        StaticOwners::tenant_shared(&["observer-ext", "gate-ext"]),
+    );
+    let built = installer
+        .build(build_for(user_scope("alice")))
+        .await
+        .expect("an observer's unreadable settings must not abort the run");
+    let dispatcher = built.build_arc();
+    assert!(
+        dispatcher
+            .active_bindings_snapshot(HookPointSpec::AfterCapability)
+            .iter()
+            .all(|binding| binding.owning_extension.is_none()),
+        "the observer is skipped for this run"
+    );
+    assert!(
+        dispatcher
+            .active_bindings_snapshot(HookPointSpec::BeforeCapability)
+            .iter()
+            .any(|binding| binding
+                .owning_extension
+                .as_ref()
+                .is_some_and(|extension| extension.as_str() == "observer-ext")),
+        "the package's settings-free gate still installs"
+    );
+
+    // A WASM gate on unread settings: fail closed.
+    active
+        .upsert(v3_plugin("gate-ext", WASM_GATE_HOOK))
+        .expect("activate");
+    let Err(error) = installer.build(build_for(user_scope("alice"))).await else {
+        panic!("a gate on unreadable settings fails the build closed");
+    };
+    assert!(
+        error.to_string().contains("gate-ext"),
+        "the failure names the package: {error}"
+    );
 }

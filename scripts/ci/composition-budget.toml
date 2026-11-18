@@ -420,7 +420,16 @@ observed_date = "2026-11-17"
 # registry may not name the hook crate); settings grammar, validation and the
 # store live in `ironclaw_extension_registry`, the product source in
 # `ironclaw_extension_manager`.
-loc_ceiling = 34041
+# ✎ 2026-11-18 (same branch, review fixes): 34041 -> 34096, observed 34191
+# -> 34246, zero hidden headroom, pending the owner's sign-off. +55 in
+# `observability/hooks/live.rs` + `audit.rs`: per-user installation
+# visibility for package hooks (owner read, fail-closed visibility check),
+# per-kind settings-failure policy (observers skipped with an audit event,
+# gates/mutators fail closed), and the single consent-ready module read.
+# The generic parts moved to their owners instead of landing here: the
+# pinned-bytes module resolver and after-fact classification to
+# `ironclaw_hooks`, the owner/visibility port to `ironclaw_extension_manager`.
+loc_ceiling = 34096
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -431,7 +440,7 @@ loc_tolerance = 150
 loc_nudge_slack = 200
 # Informational — observed when this file was last updated. Not consulted for
 # the pass/fail decision.
-loc_observed = 34191
+loc_observed = 34246
 loc_observed_date = "2026-11-18"
 
 # --- Dispatch (Arc<dyn>) ratchet ------------------------------------------

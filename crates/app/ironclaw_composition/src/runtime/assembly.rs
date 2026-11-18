@@ -730,6 +730,7 @@ pub(super) async fn assemble_runtime(
                         as Arc<dyn ironclaw_filesystem::RootFilesystem>,
                     settings: Arc::clone(&local_runtime.extension_settings)
                         as Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsReader>,
+                    owners: local_runtime.extension_management.clone(),
                 }),
             )
             .map_err(|error| RebornRuntimeError::InvalidArgument {
