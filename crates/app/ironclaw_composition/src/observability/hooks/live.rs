@@ -64,6 +64,10 @@ use super::projection::{
     enforce_root_containment,
 };
 
+/// Most packages whose validated hook set (and module bytes, at most 2 MiB
+/// per module) stay cached at once, across all users.
+const MAX_CACHED_VALIDATIONS: usize = 64;
+
 /// Largest hook WASM module a package may ship, in bytes.
 pub(crate) const MAX_HOOK_MODULE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -391,13 +395,25 @@ impl LiveHookInstaller {
         if let Err(reason) = &outcome {
             self.quarantine(&extension, reason, projection.hooks.len());
         }
-        self.lock_validated()?.insert(
+        let mut cache = self.lock_validated()?;
+        // Users with disjoint private packages each add entries here, so the
+        // per-run admission caps do not bound the total. Past the cap an
+        // arbitrary other entry goes: a build that admitted it holds its own
+        // handle on the bytes, and the next build for it reads them again.
+        if cache.len() >= MAX_CACHED_VALIDATIONS
+            && !cache.contains_key(&extension)
+            && let Some(evicted) = cache.keys().next().cloned()
+        {
+            cache.remove(&evicted);
+        }
+        cache.insert(
             extension,
             CachedValidation {
                 key,
                 outcome: outcome.clone(),
             },
         );
+        drop(cache);
         Ok(outcome)
     }
 
