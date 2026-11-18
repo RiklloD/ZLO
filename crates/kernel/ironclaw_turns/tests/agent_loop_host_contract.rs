@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 // arch-exempt: large_file, model accounting assertions extend the existing whole-port contract fixture, plan #6089
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -6,6 +6,7 @@
 //! (`zlo <path> --help` must succeed). Flag-level coverage is
 //! deliberately out of scope (flags churn too fast; recorded as a
 //! follow-up), and there is no zh mirror of this page.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

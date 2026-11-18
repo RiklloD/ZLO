@@ -6,6 +6,7 @@
 //! replay, and busy rejection all behave exactly as they do for any other
 //! submission. The only thing it adds is the provenance stamp, and these tests
 //! assert that stamp at the durable-record seam rather than at the call.
+#![deny(clippy::let_underscore_must_use)]
 
 use async_trait::async_trait;
 use chrono::Utc;

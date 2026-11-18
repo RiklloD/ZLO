@@ -6,6 +6,7 @@
 //! `Unauthorized` rejection, the child-run exemption, `abort_prepared_turn`,
 //! the capacity cap — were pinned. Unbound turns lean on `submit_turn`
 //! admission, so these semantics are pinned FIRST, against unmodified code.
+#![deny(clippy::let_underscore_must_use)]
 
 use async_trait::async_trait;
 use chrono::Utc;

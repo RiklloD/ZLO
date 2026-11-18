@@ -177,7 +177,10 @@ impl GithubCopilotProvider {
             tracing::warn!(
                 "Copilot: 401 Unauthorized — refreshing the session token and retrying once"
             );
-            // silent-ok: draining the 401 body before retrying; its content is unused
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "draining the 401 body before retrying; its content is unused and the retry decides the outcome"
+            )]
             let _ = response.text().await;
             self.token_manager.invalidate().await;
             let refreshed = self

@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use ironclaw_host_api::turn::{RunProfileId, RunProfileRequest, RunProfileVersion};
 use ironclaw_loop_contracts::{
     AgentLoopDriverDescriptor, CapabilitySurfaceProfileId, CheckpointPolicy,

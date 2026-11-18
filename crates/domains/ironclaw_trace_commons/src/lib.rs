@@ -5,6 +5,7 @@
 //! sensitive JSON before submission (`redaction`), and the shared
 //! `ConversationMessage` type that the legacy monolith's `history` module now
 //! re-exports for backward compatibility.
+#![deny(clippy::let_underscore_must_use)]
 
 pub mod capture;
 pub mod client;

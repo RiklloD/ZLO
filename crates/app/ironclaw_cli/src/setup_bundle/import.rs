@@ -345,17 +345,44 @@ fn move_into_place(staging: &Path, data_folder: &Path, aside: Option<&Path>) -> 
         }
         Ok(())
     })();
-    if result.is_err() {
-        for name in moved_in.iter().rev() {
-            let _ = std::fs::rename(data_folder.join(name), staging.join(name)); // silent-ok: best-effort rollback; the original error is returned
-        }
-        if let Some(aside) = aside {
-            for name in moved_aside.iter().rev() {
-                let _ = std::fs::rename(aside.join(name), data_folder.join(name)); // silent-ok: best-effort rollback; the original error is returned
-            }
+    let Err(error) = result else {
+        return Ok(());
+    };
+    let mut undo: Vec<(PathBuf, PathBuf)> = moved_in
+        .iter()
+        .rev()
+        .map(|name| (data_folder.join(name), staging.join(name)))
+        .collect();
+    if let Some(aside) = aside {
+        undo.extend(
+            moved_aside
+                .iter()
+                .rev()
+                .map(|name| (aside.join(name), data_folder.join(name))),
+        );
+    }
+    let stuck = roll_back(&undo);
+    if stuck.is_empty() {
+        return Err(error);
+    }
+    Err(error.context(format!(
+        "the import failed and could not move these back: {}",
+        stuck.join(", ")
+    )))
+}
+
+/// Undo each `(from, to)` move by renaming `from` back to `to`, in order.
+/// Returns every `from` that could not be moved back, so the caller can say
+/// what the failed import left behind instead of dropping it.
+fn roll_back(moves: &[(PathBuf, PathBuf)]) -> Vec<String> {
+    let mut stuck = Vec::new();
+    for (from, to) in moves {
+        if let Err(error) = std::fs::rename(from, to) {
+            tracing::debug!(%error, from = %from.display(), "setup import rollback: rename failed");
+            stuck.push(from.display().to_string());
         }
     }
-    result
+    stuck
 }
 
 /// Folders an import makes are the owner's alone (0700).
@@ -547,4 +574,30 @@ pub(crate) fn open_archive(path: &Path) -> anyhow::Result<File> {
         anyhow::bail!("{} is not a regular file", path.display());
     }
     File::open(path).with_context(|| format!("could not open {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the rollback used to discard every rename result, so an
+    /// entry it could not put back vanished from the error without a word.
+    #[test]
+    fn roll_back_reports_entries_it_could_not_move_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let moved = dir.path().join("moved");
+        let restored = dir.path().join("restored");
+        std::fs::write(&moved, b"x").expect("write");
+        let missing = dir.path().join("missing");
+        let stuck_target = dir.path().join("stuck");
+
+        let stuck = roll_back(&[
+            (moved.clone(), restored.clone()),
+            (missing.clone(), stuck_target),
+        ]);
+
+        assert!(restored.is_file(), "a movable entry is put back");
+        assert!(!moved.exists());
+        assert_eq!(stuck, vec![missing.display().to_string()]);
+    }
 }

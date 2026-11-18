@@ -539,9 +539,12 @@ fn kill_group(child: &mut std::process::Child) {
             }
         }
     }
-    // silent-ok: best-effort kill and reap of a timed-out git; the timeout is reported by the caller.
-    let _ = child.kill();
-    let _ = child.wait();
+    if let Err(error) = child.kill() {
+        tracing::debug!(%error, "update: killing the timed-out git failed");
+    }
+    if let Err(error) = child.wait() {
+        tracing::debug!(%error, "update: reaping the timed-out git failed");
+    }
 }
 
 fn drain<R: Read + Send + 'static>(mut pipe: R) -> std::sync::mpsc::Receiver<String> {
@@ -558,7 +561,10 @@ fn drain<R: Read + Send + 'static>(mut pipe: R) -> std::sync::mpsc::Receiver<Str
                 }
             }
         }
-        // silent-ok: the receiver gave up after the drain grace; the output is no longer wanted.
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the receiver gave up after the drain grace; the output is no longer wanted."
+        )]
         let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
     });
     rx

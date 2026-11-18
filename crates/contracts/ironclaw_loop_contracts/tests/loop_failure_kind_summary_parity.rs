@@ -5,6 +5,7 @@
 //! scanned this crate's source through a cross-crate `include_str!` (§11.2.7,
 //! `reborn_cross_crate_include_scan.rs`). The scan reads the owning crate's own
 //! source now, so the include no longer escapes a crate root.
+#![deny(clippy::let_underscore_must_use)]
 
 use ironclaw_loop_contracts::LoopFailureKind;
 

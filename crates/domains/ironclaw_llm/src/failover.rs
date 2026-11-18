@@ -1156,20 +1156,28 @@ mod tests {
         let task_a = tokio::spawn(async move {
             // First request: primary fails once, fallback serves.
             let _ = failover_a.complete(make_request()).await.unwrap();
-            let _ = first_done_tx.send(());
+            first_done_tx
+                .send(())
+                .expect("the second task waits for this signal");
 
             // Wait until the second request finishes and updates global state.
-            let _ = second_done_rx.await;
+            second_done_rx
+                .await
+                .expect("the second task signals before finishing");
             failover_a.effective_model_name(None)
         });
 
         let failover_b = Arc::clone(&failover);
         let task_b = tokio::spawn(async move {
-            let _ = first_done_rx.await;
+            first_done_rx
+                .await
+                .expect("the first task signals after its request");
             // Second request: primary now succeeds.
             let _ = failover_b.complete(make_request()).await.unwrap();
             let model = failover_b.effective_model_name(None);
-            let _ = second_done_tx.send(());
+            second_done_tx
+                .send(())
+                .expect("the first task waits for this signal");
             model
         });
 
@@ -1413,14 +1421,20 @@ mod tests {
             FailoverProvider::with_cooldown(vec![p1.clone(), p2.clone()], config).unwrap();
 
         // Request 1: both tried, both fail, both enter cooldown.
-        let _ = failover.complete(make_request()).await;
+        assert!(
+            failover.complete(make_request()).await.is_err(),
+            "both providers always fail"
+        );
         assert_eq!(p1.call_count(), 1);
         assert_eq!(p2.call_count(), 1);
 
         // Request 2: all in cooldown, but the oldest-cooled one (p1, activated
         // first) should be tried.
         let prev_total = p1.call_count() + p2.call_count();
-        let _ = failover.complete(make_request()).await;
+        assert!(
+            failover.complete(make_request()).await.is_err(),
+            "both providers always fail"
+        );
         let new_total = p1.call_count() + p2.call_count();
         // Exactly one more call was made (to the oldest-cooled provider).
         assert_eq!(new_total, prev_total + 1);
@@ -1885,7 +1899,10 @@ mod tests {
                 .unwrap();
 
         // First call: fails, enters cooldown (threshold=1).
-        let _ = failover2.complete(make_request()).await;
+        assert!(
+            failover2.complete(make_request()).await.is_err(),
+            "the solo provider always fails"
+        );
         assert_eq!(solo2.call_count(), 1);
 
         // Second call: provider is in cooldown, but it's the only one,

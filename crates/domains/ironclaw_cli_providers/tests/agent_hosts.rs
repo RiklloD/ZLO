@@ -2,6 +2,7 @@
 //! scripts: session create then resume, fail-closed permissions, outcome,
 //! transcript and telemetry folding, steering, and Stop ending the whole
 //! process group. No real model is called.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

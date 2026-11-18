@@ -45,6 +45,10 @@ async fn queue_trace_envelope_as_held_retains_envelope_and_manual_review_sidecar
         holds[0].reason
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -146,6 +150,10 @@ async fn authorize_manual_review_hold_promotes_envelope_past_all_gates() {
             .expect("unknown submission is Ok(false)")
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -174,6 +182,10 @@ async fn manual_review_holds_for_scope_returns_only_manual_review_holds() {
     assert_eq!(holds[0].kind, TraceQueueHoldKind::ManualReview);
     assert!(holds[0].reason.contains("residual privacy risk is high"));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -387,6 +399,10 @@ async fn queue_flush_uses_refreshed_upload_claim_for_submit_and_status_sync() {
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -431,6 +447,10 @@ async fn queue_flush_uses_refreshed_upload_claim_for_submit_and_status_sync() {
         ]
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 /// Regression: an instance-only-enrolled scope has NO enabled per-scope
@@ -474,6 +494,10 @@ async fn status_sync_with_target_uses_resolved_instance_credential_context() {
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -517,6 +541,10 @@ async fn status_sync_with_target_uses_resolved_instance_credential_context() {
         "final credit from the remote update must land on the local record"
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -541,6 +569,10 @@ async fn queue_flush_classifies_upload_http_rejection_through_submit_call_site()
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -579,6 +611,10 @@ async fn queue_flush_classifies_upload_http_rejection_through_submit_call_site()
     assert!(!failure.reason.contains("token expired"));
     assert!(!failure.reason.contains("super-secret-token"));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -620,6 +656,10 @@ async fn queue_flush_classifies_status_sync_request_failure_through_call_site() 
     assert!(!failure.reason.contains("127.0.0.1"));
     assert!(!failure.reason.contains("super-secret-token"));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -647,6 +687,10 @@ async fn queue_flush_classifies_status_sync_auth_rejection_as_credential() {
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -679,6 +723,10 @@ async fn queue_flush_classifies_status_sync_auth_rejection_as_credential() {
     assert!(failure.reason.contains("status sync failed"));
     assert!(!failure.reason.contains("super-secret-token"));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -734,6 +782,10 @@ async fn queue_flush_classifies_typed_submission_provider_connection_loss_before
         assert!(failure.reason.contains("error_hash="));
         assert!(!failure.reason.contains("super-secret-token"));
 
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+        )]
         let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
     }
 }
@@ -813,6 +865,10 @@ async fn queue_flush_classifies_typed_status_sync_provider_io_errors_before_text
         );
         assert!(!failure.reason.contains("super-secret-token"));
 
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+        )]
         let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
     }
 }

@@ -49,6 +49,10 @@ async fn revoke_trace_submission_uses_refreshed_upload_claim() {
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
     write_local_trace_records_for_scope(
@@ -97,6 +101,10 @@ async fn revoke_trace_submission_uses_refreshed_upload_claim() {
         ]
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -120,6 +128,10 @@ async fn revoke_trace_submission_classifies_http_rejection_through_call_site() {
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
     write_local_trace_records_for_scope(
@@ -170,6 +182,10 @@ async fn revoke_trace_submission_classifies_http_rejection_through_call_site() {
     assert_eq!(records[0].status, NodeTraceSubmissionStatus::Submitted);
     assert!(records[0].revoked_at.is_none());
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -221,6 +237,10 @@ async fn policy_aware_submit_rejects_redirects_without_resending_bearer_token() 
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -293,6 +313,10 @@ async fn policy_aware_submit_uses_bounded_request_timeout() {
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -382,6 +406,10 @@ async fn policy_aware_direct_submit_uses_default_credential_provider() {
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -583,6 +611,10 @@ async fn submit_rejects_success_response_without_explicit_server_status() {
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -739,6 +771,10 @@ async fn fetch_trace_upload_claim_from_issuer_accepts_loopback_dev_issuer() {
         .expect("mock issuer listener binds");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -794,6 +830,10 @@ async fn fetch_claim_sends_subject_when_present() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 

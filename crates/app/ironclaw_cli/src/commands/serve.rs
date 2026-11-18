@@ -918,7 +918,10 @@ fn webui_shutdown_signal() -> tokio::sync::oneshot::Receiver<()> {
             target: "ironclaw::reborn::cli::serve",
             "shutdown signal (SIGTERM/SIGINT) received; signalling WebChat v2 graceful shutdown",
         );
-        // silent-ok: the receiver is gone only once the server has already stopped
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the receiver is gone only once the server has already stopped"
+        )]
         let _ = shutdown_tx.send(());
     });
     shutdown_rx
@@ -1215,7 +1218,10 @@ fn print_serve_banner(
         writeln!(stderr, "  readiness : {readiness:?}")?;
         writeln!(stderr)
     };
-    // silent-ok: a closed stderr only loses the informational banner (see above).
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "a closed stderr only loses the informational banner (see above)."
+    )]
     let _ = write_banner(&mut stderr);
 }
 

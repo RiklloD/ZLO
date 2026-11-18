@@ -6,6 +6,7 @@
 //! `reborn_sealed_evidence_mint_ratchet` bans that impl outside
 //! `ironclaw_extension_host`. Same convention as
 //! `ironclaw_host_api/tests/authorized_seal.rs`.
+#![deny(clippy::let_underscore_must_use)]
 
 use ironclaw_extension_contracts::verified_inbound::{
     mark_request_signature_verified, mark_shared_secret_header_verified,

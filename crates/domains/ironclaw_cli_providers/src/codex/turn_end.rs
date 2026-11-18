@@ -84,7 +84,11 @@ impl TurnEnd {
     /// Normal end: wake `stop`'s waiters.
     pub(super) fn finish(mut self) {
         if let Some(done) = self.done.take() {
-            let _ = done.send(true); // silent-ok: nobody waiting on this turn
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "nobody waiting on this turn"
+            )]
+            let _ = done.send(true);
         }
     }
 }
@@ -110,7 +114,11 @@ impl Drop for TurnEnd {
                     .await;
             });
         }
-        let _ = done.send(true); // silent-ok: nobody waiting on this turn
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "nobody waiting on this turn"
+        )]
+        let _ = done.send(true);
     }
 }
 

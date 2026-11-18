@@ -6,6 +6,7 @@
 //! - Validating inputs before processing
 //! - Enforcing safety policies
 //! - Detecting secret leakage in outputs
+#![deny(clippy::let_underscore_must_use)]
 
 mod credential_detect;
 mod display_redaction;

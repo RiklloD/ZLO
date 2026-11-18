@@ -28,54 +28,80 @@ use syn::parse::Parser;
 use syn::{AttrStyle, Meta, Token};
 
 /// Crates whose `let _ = <must_use>` discards were triaged (fix/let-underscore-must-use,
-/// then chore/triage-let-underscore-batch-1). Entries are crate *directory* names, as
+/// then chore/triage-let-underscore-batch-1 and -batch-2). Entries are crate *directory* names, as
 /// `crate_dir` resolves them (`memory-native`, `slack`, ...), not package names.
 const TRIAGED_CRATES: &[&str] = &[
+    "ironclaw_agent_loop",
     "ironclaw_approvals",
     "ironclaw_architecture_tests",
     "ironclaw_assistant",
     "ironclaw_attachments",
     "ironclaw_auth",
+    "ironclaw_authorization",
     "ironclaw_capabilities",
+    "ironclaw_cli",
+    "ironclaw_cli_providers",
+    "ironclaw_common",
     "ironclaw_composition",
     "ironclaw_computer_use",
     "ironclaw_config",
+    "ironclaw_conversations",
     "ironclaw_documents",
     "ironclaw_event_log",
     "ironclaw_event_projections",
     "ironclaw_event_store",
     "ironclaw_event_streams",
+    "ironclaw_extension_contracts",
     "ironclaw_extension_host",
     "ironclaw_extension_manager",
     "ironclaw_extension_registry",
+    "ironclaw_extension_support",
+    "ironclaw_extractors",
     "ironclaw_filesystem",
     "ironclaw_hooks",
     "ironclaw_host_api",
+    "ironclaw_host_ingress",
     "ironclaw_host_runtime",
     "ironclaw_identity",
+    "ironclaw_libsql_runtime",
+    "ironclaw_llm",
+    "ironclaw_loop_contracts",
     "ironclaw_loop_host",
     "ironclaw_mcp",
     "ironclaw_memory",
     "ironclaw_network",
     "ironclaw_notifications",
+    "ironclaw_observability",
     "ironclaw_openai_compat",
     "ironclaw_operator",
     "ironclaw_orchestrator",
+    "ironclaw_outbound",
     "ironclaw_processes",
+    "ironclaw_product_contracts",
+    "ironclaw_prompt_envelope",
     "ironclaw_resources",
+    "ironclaw_runtime_policy",
+    "ironclaw_safety",
     "ironclaw_sandbox",
     "ironclaw_secrets",
+    "ironclaw_skills",
+    "ironclaw_supermemory",
     "ironclaw_threads",
+    "ironclaw_trace_commons",
     "ironclaw_triggers",
+    "ironclaw_trust",
     "ironclaw_turn_runner",
+    "ironclaw_turns",
     "ironclaw_usage",
     "ironclaw_wasm",
     "ironclaw_wasm_limiter",
+    "ironclaw_web_app",
     "ironclaw_webui",
     "mem0",
     "memory-native",
     "slack",
     "telegram",
+    "web-app",
 ];
 
 const DENY_ATTRIBUTE: &str = "#![deny(clippy::let_underscore_must_use)]";
@@ -183,9 +209,13 @@ fn triaged_crates_deny_let_underscore_must_use_in_every_target_root() {
     for name in TRIAGED_CRATES {
         let directory = crate_dir(&root, name);
         let roots = target_roots(&directory);
+        // Non-vacuity per crate: a library or a binary root must be found
+        // (`ironclaw_cli` is binary-only).
         assert!(
-            roots.iter().any(|path| path.ends_with("src/lib.rs")),
-            "{name}: expected a src/lib.rs target root; the scan found {roots:?}"
+            roots
+                .iter()
+                .any(|path| path.ends_with("src/lib.rs") || path.ends_with("src/main.rs")),
+            "{name}: expected a src/lib.rs or src/main.rs target root; the scan found {roots:?}"
         );
         for path in roots {
             let source = fs::read_to_string(&path)

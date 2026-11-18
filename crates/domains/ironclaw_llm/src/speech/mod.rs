@@ -329,6 +329,10 @@ pub(crate) mod test_server {
                 }
                 sent += chunk;
             }
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "mock-server socket I/O; a broken exchange fails the client-side assertion instead"
+            )]
             let _ = socket.write_all(b"0\r\n\r\n").await;
             sent
         });
@@ -375,7 +379,15 @@ pub(crate) mod test_server {
                 "HTTP/1.1 {status} X\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n",
                 body.len()
             );
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "mock-server socket I/O; a broken exchange fails the client-side assertion instead"
+            )]
             let _ = socket.write_all(reply.as_bytes()).await;
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "mock-server socket I/O; a broken exchange fails the client-side assertion instead"
+            )]
             let _ = socket.write_all(&body).await;
             Recorded {
                 head,

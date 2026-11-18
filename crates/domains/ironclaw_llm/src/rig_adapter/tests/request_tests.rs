@@ -228,6 +228,10 @@ async fn anthropic_short_retention_places_explicit_cache_breakpoints() {
             },
         ],
     );
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+    )]
     let _ = adapter.complete_with_tools(request).await;
 
     let body: serde_json::Value = serde_json::from_str(&captured_request_body(captured_body).await)
@@ -299,6 +303,10 @@ async fn anthropic_long_retention_uses_1h_markers_without_block_conflicts() {
             }),
         }],
     );
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+    )]
     let _ = adapter.complete_with_tools(request).await;
 
     let body: serde_json::Value = serde_json::from_str(&captured_request_body(captured_body).await)
@@ -360,6 +368,10 @@ async fn anthropic_no_retention_emits_no_cache_control() {
             }),
         }],
     );
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+    )]
     let _ = adapter.complete_with_tools(request).await;
 
     let body = captured_request_body(captured_body).await;
@@ -409,6 +421,10 @@ async fn anthropic_new_model_family_keeps_short_retention_cache_control() {
         }],
     )
     .with_max_tokens(4096);
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+    )]
     let _ = adapter.complete_with_tools(request).await;
 
     let body: serde_json::Value = serde_json::from_str(&captured_request_body(captured_body).await)

@@ -268,8 +268,14 @@ fn persist_refreshed_tokens(
     let tmp_path = path.with_extension("json.tmp");
     std::fs::write(&tmp_path, updated)?;
     if let Err(e) = std::fs::rename(&tmp_path, path) {
-        // silent-ok: temp-file cleanup; the rename error is returned
-        let _ = std::fs::remove_file(&tmp_path);
+        // The temp file holds refreshed tokens; a leftover copy must not be silent.
+        if let Err(cleanup) = std::fs::remove_file(&tmp_path) {
+            tracing::debug!(
+                path = %tmp_path.display(),
+                error = %cleanup,
+                "could not remove the codex auth temp file after a failed rename"
+            );
+        }
         return Err(Box::new(e));
     }
     set_auth_file_permissions(path)?;

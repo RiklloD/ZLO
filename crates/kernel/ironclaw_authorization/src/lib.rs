@@ -5,6 +5,7 @@
 //! does not execute capabilities, reserve resources, prompt users, or reach into
 //! runtime internals. The first slices implement grant- and lease-backed gates
 //! for capability dispatch.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::{
     collections::HashMap,

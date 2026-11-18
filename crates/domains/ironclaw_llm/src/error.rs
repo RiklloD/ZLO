@@ -953,6 +953,10 @@ mod tests {
                 .write_all(headers.as_bytes())
                 .await
                 .expect("write headers");
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the client under test stops reading once the body exceeds its cap"
+            )]
             let _ = socket.write_all(&oversized_body).await;
         });
 

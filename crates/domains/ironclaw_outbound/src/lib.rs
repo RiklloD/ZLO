@@ -4,6 +4,7 @@
 //! and their status, reply publications, communication preferences and
 //! delivered-gate routes. It never owns transport delivery, transcript content, projection
 //! payloads, prompts, tool I/O, secrets, host paths, or backend detail strings.
+#![deny(clippy::let_underscore_must_use)]
 
 mod communication_preferences;
 mod delivered_gate_routes;

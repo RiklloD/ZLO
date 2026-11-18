@@ -430,6 +430,10 @@ mod tests {
     #[async_trait]
     impl CompletionStreamSink for RecordingCompletionStreamSink {
         async fn text_delta(&self, delta: String) {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a test that stopped observing deltas has dropped the receiver"
+            )]
             let _ = self.sender.send(delta);
         }
     }
@@ -713,7 +717,8 @@ mod tests {
         let w2 = StdArc::clone(&wrapper);
         let setter = thread::spawn(move || {
             for i in 0..ITERS {
-                let _ = w2.set_model(&format!("override-{i}"));
+                w2.set_model(&format!("override-{i}"))
+                    .expect("the test provider accepts every model name");
             }
         });
 

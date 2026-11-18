@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 // arch-exempt: large_file, centralized CLI and Dockerfile smoke contracts, plan #6058
 use std::io::BufRead;
 use std::{
@@ -2434,7 +2435,15 @@ fn serve_boots_without_user_id_env_var() {
         .expect("ironclaw-reborn serve should start");
     wait_for_serve_banner(&mut child);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 }
 
@@ -2475,7 +2484,15 @@ fn serve_boots_from_the_workspace_subdir_the_installed_service_now_uses_as_cwd()
         .expect("ironclaw-reborn serve should start");
     wait_for_serve_banner(&mut child);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 }
 
@@ -2558,7 +2575,15 @@ fn a_real_env_var_beats_the_config_default_end_to_end() {
         .expect("ironclaw-reborn serve should start");
     wait_for_serve_banner(&mut child);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 }
 
@@ -2607,7 +2632,15 @@ fn serve_with_env_auth_seeds_reborn_config_before_binding() {
             panic!("serve exited before binding with {status}; stderr: {stderr_text}");
         }
         if std::time::Instant::now() >= deadline {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.wait();
             panic!("serve did not reach listener banner; stderr: {stderr_text}");
         }
@@ -2639,7 +2672,15 @@ fn serve_with_env_auth_seeds_reborn_config_before_binding() {
     ) {
         Ok(status_line) => status_line,
         Err(error) => {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.wait();
             panic!("{error}");
         }
@@ -2658,13 +2699,29 @@ fn serve_with_env_auth_seeds_reborn_config_before_binding() {
     ) {
         Ok(status_line) => status_line,
         Err(error) => {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.wait();
             panic!("{error}");
         }
     };
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
     assert!(
         providers_status.contains(" 200 "),
@@ -2742,7 +2799,15 @@ fn serve_resolves_bearer_token_from_reborn_home_webui_token_file() {
             panic!("serve exited before binding with {status}; stderr: {stderr_text}");
         }
         if std::time::Instant::now() >= deadline {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.wait();
             panic!("serve did not reach listener banner; stderr: {stderr_text}");
         }
@@ -2762,7 +2827,15 @@ fn serve_resolves_bearer_token_from_reborn_home_webui_token_file() {
         }
     }
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 }
 
@@ -3093,7 +3166,15 @@ fn serve_mounts_cli_login_route_without_sso() {
     let (wrong_token_status, good_login) = match (wrong_token_status, good_login) {
         (Ok(a), Ok(b)) => (a, b),
         (result_a, result_b) => {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.wait();
             panic!("login probe failed: {result_a:?} / {result_b:?}");
         }
@@ -3124,7 +3205,15 @@ fn serve_mounts_cli_login_route_without_sso() {
     );
     let exchange = http_response(port, &exchange_request, "session exchange probe");
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 
     let exchange = exchange.expect("exchange probe must complete");
@@ -3187,7 +3276,15 @@ fn serve_does_not_mount_cli_login_route_when_token_is_env_sourced() {
         "cli login probe with env-sourced token",
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 
     let login_response = login_response.expect("login probe must complete");
@@ -3260,7 +3357,15 @@ fn serve_banner_reports_the_bound_port_and_prints_only_once_it_accepts_connectio
             break line.to_string();
         }
         if std::time::Instant::now() >= deadline {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.wait();
             panic!("the banner never printed its listen line; stderr: {text}");
         }
@@ -3275,7 +3380,15 @@ fn serve_banner_reports_the_bound_port_and_prints_only_once_it_accepts_connectio
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         std::time::Duration::from_secs(2),
     );
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 
     assert_ne!(
@@ -3326,7 +3439,15 @@ fn serve_keeps_serving_after_its_stderr_consumer_goes_away() {
             break;
         }
         if read == 0 || std::time::Instant::now() >= deadline {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.wait();
             panic!("serve did not reach its listener banner");
         }
@@ -3340,7 +3461,15 @@ fn serve_keeps_serving_after_its_stderr_consumer_goes_away() {
     );
     std::thread::sleep(std::time::Duration::from_millis(200));
     let exited = child.try_wait().expect("serve child status");
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 
     assert!(
@@ -3399,7 +3528,15 @@ fn serve_with_sso_does_not_double_mount_session_exchange() {
         "providers route probe",
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 
     let login_response = login_response.expect("cli login probe must complete");
@@ -5159,7 +5296,15 @@ fn onboard_then_serve_boots_in_degraded_mode_with_an_empty_environment() {
          {pre_banner_stderr}"
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 }
 
@@ -5244,7 +5389,15 @@ fn onboard_with_complete_llm_env_then_serve_boots_from_the_env_seeded_slot() {
          stderr: {pre_banner_stderr}"
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 }
 
@@ -5325,7 +5478,15 @@ fn onboard_login_link_then_bearer_authorizes_a_protected_request() {
     let login = match login {
         Ok(response) => response,
         Err(error) => {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.wait();
             panic!("login-link probe failed: {error}");
         }
@@ -5357,7 +5518,15 @@ fn onboard_login_link_then_bearer_authorizes_a_protected_request() {
     let exchange = match exchange {
         Ok(response) => response,
         Err(error) => {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.wait();
             panic!("session exchange probe failed: {error}");
         }
@@ -5397,7 +5566,15 @@ fn onboard_login_link_then_bearer_authorizes_a_protected_request() {
     );
     let operator_response = http_response(port, &operator_request, "operator-gated route probe");
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 
     let api_response = api_response.expect("authenticated protected-route probe must complete");
@@ -5488,6 +5665,10 @@ fn spawn_chat_completion_stub() -> (String, std::sync::mpsc::Receiver<Option<Str
             }
             let mut body = vec![0u8; content_length];
             if content_length > 0 {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "mock-server socket I/O; a broken exchange fails the CLI-side assertion instead"
+                )]
                 let _ = std::io::Read::read_exact(&mut reader, &mut body);
             }
             let is_chat_completion = request_line.starts_with("POST /v1/chat/completions");
@@ -5495,6 +5676,10 @@ fn spawn_chat_completion_stub() -> (String, std::sync::mpsc::Receiver<Option<Str
             // authenticated non-chat probe (e.g. a models-list preflight)
             // must not be able to satisfy an assertion meant for the chat call.
             if is_chat_completion {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the test may have stopped waiting for the captured header"
+                )]
                 let _ = auth_tx.send(auth_header);
             }
             // The reborn turn loop always drives the provider through its
@@ -5541,6 +5726,10 @@ fn spawn_chat_completion_stub() -> (String, std::sync::mpsc::Receiver<Option<Str
                     body_text
                 )
             };
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "mock-server socket I/O; a broken exchange fails the CLI-side assertion instead"
+            )]
             let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
         }
     });
@@ -5763,7 +5952,15 @@ fn stored_key_reaches_real_turn_via_product_surface() {
         eprintln!("full stderr:\n{}", stderr_all.lock().unwrap());
     }
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 
     let reply = turn_result.expect("real turn through the WebUI API must succeed");
@@ -5862,7 +6059,15 @@ fn stored_key_reaches_real_turn_across_fresh_boots() {
             eprintln!("boot {boot} full stderr:\n{}", stderr_all.lock().unwrap());
         }
 
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
         let _ = child.kill();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
         let _ = child.wait();
 
         turn_result.unwrap_or_else(|error| {
@@ -6045,7 +6250,15 @@ fn onboard_openai_key_then_serve_boots_with_env_var_unset() {
         .expect("ironclaw-reborn serve should start");
     let pre_banner_stderr = strip_ansi(&wait_for_serve_banner(&mut child));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 
     assert!(
@@ -6145,7 +6358,15 @@ fn onboard_nearai_then_serve_boots_with_cloud_base_url() {
         .expect("ironclaw-reborn serve should start");
     let pre_banner_stderr = strip_ansi(&wait_for_serve_banner(&mut child));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 
     assert!(
@@ -6249,7 +6470,15 @@ fn onboard_nearai_stored_key_then_serve_boots_with_cloud_base_url() {
         .expect("ironclaw-reborn serve should start");
     let pre_banner_stderr = strip_ansi(&wait_for_serve_banner(&mut child));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 
     assert!(
@@ -6330,7 +6559,15 @@ fn serve_boots_with_env_api_key_set_and_empty_secret_store() {
         .expect("ironclaw-reborn serve should start");
     wait_for_serve_banner(&mut child);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.kill();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown; the child may already have exited"
+    )]
     let _ = child.wait();
 }
 
@@ -6386,12 +6623,20 @@ fn serve_fails_closed_when_neither_env_nor_store_has_the_key() {
     let mut stdout_reader = child.stdout.take().expect("stdout should be piped");
     let stdout_thread = std::thread::spawn(move || {
         let mut buf = Vec::new();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the test asserts on whatever output was captured"
+        )]
         let _ = std::io::Read::read_to_end(&mut stdout_reader, &mut buf);
         buf
     });
     let mut stderr_reader = child.stderr.take().expect("stderr should be piped");
     let stderr_thread = std::thread::spawn(move || {
         let mut buf = Vec::new();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the test asserts on whatever output was captured"
+        )]
         let _ = std::io::Read::read_to_end(&mut stderr_reader, &mut buf);
         buf
     });
@@ -6402,7 +6647,15 @@ fn serve_fails_closed_when_neither_env_nor_store_has_the_key() {
             break status;
         }
         if std::time::Instant::now() >= deadline {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
             let _ = child.wait();
             panic!(
                 "serve did not exit within the deadline; expected a fail-closed exit with \

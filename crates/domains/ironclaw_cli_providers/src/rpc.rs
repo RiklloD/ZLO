@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use nix::errno::Errno;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
@@ -96,7 +97,11 @@ impl RpcClient {
                     break;
                 }
             }
-            let _ = stdin.shutdown().await; // silent-ok: the child may already be gone
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the child may already be gone"
+            )]
+            let _ = stdin.shutdown().await;
         });
 
         let reader_pending = Arc::clone(&pending);
@@ -114,7 +119,11 @@ impl RpcClient {
             }
             if let Ok(mut map) = reader_pending.lock() {
                 for (_, waiter) in map.drain() {
-                    let _ = waiter.send(Err(RpcError::Closed)); // silent-ok: requester may have timed out
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "requester may have timed out"
+                    )]
+                    let _ = waiter.send(Err(RpcError::Closed));
                 }
             }
         });
@@ -210,17 +219,22 @@ fn route(
         .unwrap_or(Value::Null);
     match (frame.get("method").and_then(Value::as_str), frame.get("id")) {
         (Some(method), Some(id)) => {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the driver stopped listening, the turn is over"
+            )]
             let _ = inbound.send(Inbound::Request {
                 id: id.clone(),
                 method: method.to_string(),
                 params,
-            }); // silent-ok: the driver stopped listening, the turn is over
+            });
         }
         (Some(method), None) => {
+            #[expect(clippy::let_underscore_must_use, reason = "as above")]
             let _ = inbound.send(Inbound::Notification {
                 method: method.to_string(),
                 params,
-            }); // silent-ok: as above
+            });
         }
         (None, Some(id)) => {
             let Some(id) = id.as_i64() else { return };
@@ -241,7 +255,8 @@ fn route(
                     .map(Value::take)
                     .unwrap_or(Value::Null)),
             };
-            let _ = waiter.send(result); // silent-ok: requester timed out
+            #[expect(clippy::let_underscore_must_use, reason = "requester timed out")]
+            let _ = waiter.send(result);
         }
         (None, None) => tracing::debug!("{name}: frame without method or id"),
     }
@@ -266,10 +281,21 @@ pub(crate) async fn end_group(child: &mut Child, pgid: i32, grace: Duration) {
         if let Err(error) = killpg(group, Signal::SIGKILL) {
             tracing::debug!(%error, "agent host: SIGKILL failed");
         }
-        let _ = child.wait().await; // silent-ok: reaping a killed child
+        if let Err(error) = child.wait().await {
+            tracing::debug!(%error, "agent host: reaping the killed child failed");
+        }
     }
     // Tool subprocesses can outlive the leader; the group goes with it.
-    let _ = killpg(group, Signal::SIGKILL); // silent-ok: usually nothing is left
+    kill_group(pgid, "agent host");
+}
+
+/// SIGKILL the process group `pgid`. An already-empty group (`ESRCH`) is the
+/// usual outcome at cleanup and stays quiet; any other failure is traced.
+pub(crate) fn kill_group(pgid: i32, context: &'static str) {
+    match killpg(Pid::from_raw(pgid), Signal::SIGKILL) {
+        Ok(()) | Err(Errno::ESRCH) => {}
+        Err(error) => tracing::debug!(%error, context, "process group SIGKILL failed"),
+    }
 }
 
 /// The binary `name`: `PATH` first, then the installers' usual homes (a

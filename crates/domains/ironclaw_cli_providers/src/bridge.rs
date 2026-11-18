@@ -473,12 +473,20 @@ impl CliBridge {
 
     /// Record the loopback MCP endpoint (first call wins).
     pub fn set_mcp_url(&self, url: String) {
-        let _ = self.mcp_url.set(url); // silent-ok: the gateway binds once per process
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "first call wins: the gateway binds once per process"
+        )]
+        let _ = self.mcp_url.set(url);
     }
 
     /// Record every approval in `store` from now on (first call wins).
     pub fn record_to(&self, store: Store) {
-        let _ = self.ledger.set(store); // silent-ok: the host wires one store per process
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "first call wins: the host wires one store per process"
+        )]
+        let _ = self.ledger.set(store);
     }
 
     /// Whether `thread`'s profile is on "Full access", so its CLI tool calls
@@ -588,7 +596,11 @@ impl CliBridge {
     }
 
     fn emit(&self, event: LiveEvent) {
-        let _ = self.events.send(event); // silent-ok: no stream is open for this thread
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a broadcast send fails only when no live stream is subscribed to this thread, the normal idle case"
+        )]
+        let _ = self.events.send(event);
     }
 
     pub fn turn_started(&self, thread: &ThreadId, run_id: &str) {
@@ -744,13 +756,21 @@ impl CliBridge {
         self.emit_tools(thread, done);
         let (gates, waiting) = turn.map(|t| (t.gates, t.questions)).unwrap_or_default();
         for gate in gates {
-            let _ = gate.answer.send((
-                ToolDecision::Deny("The turn ended.".into()),
-                CliApprovalDecision::TurnEnded,
-            )); // silent-ok: the waiter already gave up
+            if gate
+                .answer
+                .send((
+                    ToolDecision::Deny("The turn ended.".into()),
+                    CliApprovalDecision::TurnEnded,
+                ))
+                .is_err()
+            {
+                tracing::debug!("turn ended: the approval waiter was already gone");
+            }
         }
         for question in waiting {
-            let _ = question.answer.send(QuestionOutcome::TurnEnded); // silent-ok: the waiter already gave up
+            if question.answer.send(QuestionOutcome::TurnEnded).is_err() {
+                tracing::debug!("turn ended: the question waiter was already gone");
+            }
         }
         self.emit(LiveEvent::Ended {
             thread: thread.clone(),
@@ -954,15 +974,25 @@ impl CliBridge {
         let declined = pending.len() + waiting.len();
         // A question waiting on the form is answered by what they typed.
         for question in waiting {
-            let _ = question
+            if question
                 .answer
-                .send(QuestionOutcome::Replied(reason.clone())); // silent-ok: the waiter already gave up
+                .send(QuestionOutcome::Replied(reason.clone()))
+                .is_err()
+            {
+                tracing::debug!("decline: the question waiter was already gone");
+            }
         }
         for gate in pending {
-            let _ = gate.answer.send((
-                ToolDecision::Deny(reason.clone()),
-                CliApprovalDecision::Declined,
-            )); // silent-ok: the waiter already gave up
+            if gate
+                .answer
+                .send((
+                    ToolDecision::Deny(reason.clone()),
+                    CliApprovalDecision::Declined,
+                ))
+                .is_err()
+            {
+                tracing::debug!("decline: the approval waiter was already gone");
+            }
         }
         declined
     }

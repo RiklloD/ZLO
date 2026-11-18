@@ -16,6 +16,7 @@
 //! document per thread per 4-hour window (`customId` bucket) holding the turn in
 //! `[role: x]...[x:end]` form, injected context and inline images stripped
 //! before capture, writes to the primary container only.
+#![deny(clippy::let_underscore_must_use)]
 
 mod adapters;
 mod admin;

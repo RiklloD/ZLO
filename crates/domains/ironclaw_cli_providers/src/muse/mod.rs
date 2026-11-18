@@ -254,7 +254,11 @@ impl MuseRuntime {
                 sink.turn_finished(&thread_id, Some(run), outcome, now_ms())
                     .await;
             }
-            let _ = done_tx.send(true); // silent-ok: nobody waiting on this turn
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "nobody waiting on this turn"
+            )]
+            let _ = done_tx.send(true);
         });
         Ok(run_id)
     }
@@ -307,7 +311,11 @@ impl MuseRuntime {
             if let Err(error) = killpg(group, Signal::SIGKILL) {
                 tracing::debug!(%error, "muse: SIGKILL failed");
             }
-            let _ = done.wait_for(|d| *d).await; // silent-ok: sender dropped means the turn task ended
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "sender dropped means the turn task ended"
+            )]
+            let _ = done.wait_for(|d| *d).await;
         }
     }
 
@@ -359,7 +367,7 @@ fn connect(
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
     else {
-        let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // silent-ok: cleanup of a half-spawned child
+        crate::rpc::kill_group(pgid, "muse: half-spawned child");
         return Err(RuntimeError::Unavailable("muse stdio unavailable".into()));
     };
     tokio::spawn(async move {
@@ -828,7 +836,7 @@ async fn close_host(child: &mut Child, pgid: i32) {
     if tokio::time::timeout(DRAIN, child.wait()).await.is_err() {
         rpc::end_group(child, pgid, rpc::KILL_GRACE).await;
     } else {
-        let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // silent-ok: usually nothing is left
+        crate::rpc::kill_group(pgid, "muse: host group");
     }
 }
 

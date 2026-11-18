@@ -4,6 +4,7 @@
 //! the adapter-safe [`TurnCoordinator`] API with canonical refs resolved by the
 //! binding/session layer. Trusted workers use [`runner`] explicitly; runner
 //! transition APIs are intentionally not re-exported from this crate prelude.
+#![deny(clippy::let_underscore_must_use)]
 
 mod activation_streak;
 mod admission;

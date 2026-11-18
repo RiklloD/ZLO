@@ -30,6 +30,7 @@
 //!   every type here is defined here exactly once and no other crate
 //!   re-exports it. There is deliberately no second import path for anything
 //!   in this crate.
+#![deny(clippy::let_underscore_must_use)]
 
 pub mod account_setup;
 pub mod action;

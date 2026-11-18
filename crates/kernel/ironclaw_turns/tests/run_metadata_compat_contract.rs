@@ -18,6 +18,7 @@
 //! 3. `TurnRunProfile` rows persisted before the `resolved` snapshot existed
 //!    deserialize through `ResolvedRunProfile::legacy_compatibility` (the
 //!    lenient wire path had no direct pin until now).
+#![deny(clippy::let_underscore_must_use)]
 
 use chrono::Utc;
 use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, ThreadId};

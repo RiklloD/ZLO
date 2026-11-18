@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use chrono::{Duration, Utc};
 use ironclaw_authorization::*;
 use ironclaw_host_api::{

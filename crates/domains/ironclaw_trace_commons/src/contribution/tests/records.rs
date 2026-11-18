@@ -44,6 +44,10 @@ fn local_trace_records_load_legacy_json_without_history() {
     let serialized = serde_json::to_value(&records[0]).expect("record serializes");
     assert!(serialized.get("history").is_none());
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -103,6 +107,10 @@ fn status_sync_appends_safe_local_history_event() {
     assert_eq!(history[0]["delayed_credit_explanation_count"], 1);
     assert!(history[0].get("message").is_none());
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -157,6 +165,10 @@ fn duplicate_status_sync_does_not_append_duplicate_history() {
     assert_eq!(history.len(), 1);
     assert_eq!(records[0].credit_events.len(), 1);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -221,6 +233,10 @@ fn local_status_history_does_not_persist_unsafe_remote_fields() {
     assert!(!serialized.contains("/Users/alice/private"));
     assert!(!serialized.contains("sk-test-raw-token"));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]

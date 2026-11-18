@@ -8,6 +8,7 @@
 //! `ironclaw_web_app`; the `Authorization: vapid` header is computed
 //! host-side at the egress credential boundary. This crate is linked only by
 //! the binary's binding table, like every concrete channel package.
+#![deny(clippy::let_underscore_must_use)]
 
 mod channel;
 mod preference_targets;

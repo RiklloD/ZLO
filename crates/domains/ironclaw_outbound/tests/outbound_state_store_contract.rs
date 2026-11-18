@@ -1,5 +1,6 @@
 // Contract tests construct the store directly under test.
 #![allow(clippy::disallowed_methods)]
+#![deny(clippy::let_underscore_must_use)]
 // arch-exempt: large_file, cross-instance claim regressions share the existing outbound persistence harness, plan #6175
 
 use std::sync::Arc;

@@ -115,6 +115,10 @@ async fn mint_profile_attribution_token_requires_enrollment() {
         error.to_string().contains("not enrolled in Trace Commons"),
         "error must point at onboarding: {error}"
     );
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -132,6 +136,10 @@ async fn mint_profile_attribution_token_requires_issuer_url() {
         error.to_string().contains("issuer URL is not configured"),
         "error must name the missing issuer URL: {error}"
     );
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -206,6 +214,10 @@ async fn profile_attribution_claim_request_wire_shape_and_mock_issuer_roundtrip(
         .expect("mock issuer listener binds");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -265,6 +277,10 @@ async fn community_profile_put_sends_bearer_and_body() {
         .expect("mock profile listener binds");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -326,6 +342,10 @@ async fn community_profile_delete_sends_bearer_without_body() {
         .expect("mock profile listener binds");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -369,6 +389,10 @@ async fn community_profile_error_surfaces_bounded_error_field_without_token() {
         .expect("mock profile listener binds");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 

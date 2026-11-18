@@ -25,6 +25,10 @@ fn b64(value: &str, url_safe: bool) -> String {
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         for i in 0..4 {
             if i <= chunk.len() {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "writing into a String cannot fail"
+                )]
                 let _ = write!(
                     out,
                     "{}",

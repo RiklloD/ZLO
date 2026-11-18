@@ -1,4 +1,5 @@
 #![allow(clippy::disallowed_methods)] // test helper constructs OutboundStateStore directly (arch-simplification §4.3)
+#![deny(clippy::let_underscore_must_use)]
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 

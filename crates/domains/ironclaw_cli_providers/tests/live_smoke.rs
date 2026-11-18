@@ -7,6 +7,7 @@
 //!
 //! State, work and usage files go to a temp dir; only the agents' own logins
 //! are used.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};

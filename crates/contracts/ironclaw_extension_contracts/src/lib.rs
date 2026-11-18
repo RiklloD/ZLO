@@ -36,6 +36,7 @@
 //!   re-exports it. There is deliberately no second import path for anything
 //!   in this crate — the dual-path re-export is the defect the scan exists to
 //!   prevent.
+#![deny(clippy::let_underscore_must_use)]
 
 pub mod auth_prompt;
 pub mod channel;

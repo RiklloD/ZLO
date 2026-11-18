@@ -451,6 +451,7 @@ mod trace_binding_properties {
                 })
                 .collect();
             let mut resolved = value;
+            #[expect(clippy::let_underscore_must_use, reason = "the property is only that resolution never panics; either outcome is fine")]
             let _ = resolve_trace_result_bindings(&mut resolved, &observed);
         }
 

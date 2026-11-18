@@ -431,12 +431,14 @@ pub(crate) fn sanitize_private_url(raw_url: &str, label: &str) -> String {
     }
     url.set_query(None);
     url.set_fragment(None);
-    if !url.username().is_empty() {
-        // silent-ok: only fails for cannot-be-a-base URLs, which carry no userinfo
-        let _ = url.set_username("");
+    // Both setters fail only for URLs that cannot carry userinfo, which the
+    // scheme/host check above already excluded; fail closed regardless.
+    if !url.username().is_empty() && url.set_username("").is_err() {
+        return redacted_marker(label);
     }
-    // silent-ok: only fails for cannot-be-a-base URLs, which carry no userinfo
-    let _ = url.set_password(None);
+    if url.set_password(None).is_err() {
+        return redacted_marker(label);
+    }
     url.to_string()
 }
 

@@ -1,4 +1,5 @@
 //! Contract tests for [`MemoryPromptContextService`] and [`EmptyMemoryPromptContextService`].
+#![deny(clippy::let_underscore_must_use)]
 
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
 use ironclaw_host_api::turn::{TurnActor, TurnScope};

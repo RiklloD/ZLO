@@ -2281,6 +2281,10 @@ mod tests {
     #[async_trait::async_trait]
     impl CompletionStreamSink for RecordingCompletionStreamSink {
         async fn text_delta(&self, delta: String) {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a test that stopped observing deltas has dropped the receiver"
+            )]
             let _ = self.sender.send(delta);
         }
     }
@@ -2439,6 +2443,10 @@ data: [DONE]
                     .expect("write first chunk");
                 socket.flush().await.expect("flush first chunk");
 
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the test releases the server or drops the sender; either ends the wait"
+                )]
                 let _ = release_rx.await;
                 socket
                     .write_all(
@@ -2571,6 +2579,10 @@ data: [DONE]
                 .await
                 .expect("write error response headers");
             socket.flush().await.expect("flush error response");
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the test releases the server or drops the sender; either ends the wait"
+            )]
             let _ = release_rx.await;
         });
 
@@ -2588,6 +2600,10 @@ data: [DONE]
         .await
         .expect("provider should enforce the streaming deadline for error bodies");
 
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the server task may already have ended after the deadline fired"
+        )]
         let _ = release_tx.send(());
         server_task.await.expect("server task");
 
@@ -2663,6 +2679,10 @@ data: [DONE]
                 if index + 1 == events_before_late_content
                     && let Some(prefix_sent_tx) = prefix_sent_tx.take()
                 {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "the test may have stopped waiting for the prefix signal"
+                    )]
                     let _ = prefix_sent_tx.send(());
                 }
             }
@@ -3289,6 +3309,10 @@ data: [DONE]
                     body.len(),
                     body
                 );
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "mock-server socket I/O; a broken exchange fails the client-side assertion instead"
+                )]
                 let _ = socket.write_all(response.as_bytes()).await;
             }
         });
@@ -3733,9 +3757,17 @@ data: [DONE]
                         .expect("tool completion");
                 }
                 2 => {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+                    )]
                     let _ = provider.complete_streaming(completion, sink).await;
                 }
                 3 => {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+                    )]
                     let _ = provider
                         .complete_with_tools_streaming(tool_completion, sink)
                         .await;
@@ -4322,6 +4354,10 @@ data: [DONE]
                     body.len(),
                     body
                 );
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "mock-server socket I/O; a broken exchange fails the client-side assertion instead"
+                )]
                 let _ = socket.write_all(response.as_bytes()).await;
             }
         });

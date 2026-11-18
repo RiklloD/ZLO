@@ -8,6 +8,7 @@
 //! `zlo update enable` can turn self-update on without being told where the
 //! source is. For a build from a linked worktree it is the main checkout
 //! (where the followed branch lives), not the worktree.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

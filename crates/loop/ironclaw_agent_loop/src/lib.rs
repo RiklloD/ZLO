@@ -1,6 +1,7 @@
 //! Agent-loop framework state and strategy contracts for IronClaw Reborn.
 //!
 //! This crate owns the framework layer above `ironclaw_turns`.
+#![deny(clippy::let_underscore_must_use)]
 
 mod default_planner;
 pub mod executor;

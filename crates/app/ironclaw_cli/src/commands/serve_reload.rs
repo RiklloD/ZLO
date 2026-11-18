@@ -117,6 +117,10 @@ mod tests {
 
         let (reports, mut received) = tokio::sync::mpsc::unbounded_channel();
         let task = spawn_sighup_config_reload_with(reloader, move |report| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the test may have stopped reading reports"
+            )]
             let _ = reports.send(report.clone());
         })
         .expect("SIGHUP handler installs");

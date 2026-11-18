@@ -236,7 +236,8 @@ impl CodexRuntime {
         // The process is gone: free the session, then wake a preempting turn.
         drop(claim);
         self.compactor.finish(&thread.thread_id, id);
-        let _ = done.send(true); // silent-ok: nobody waits on this slot
+        #[expect(clippy::let_underscore_must_use, reason = "nobody waits on this slot")]
+        let _ = done.send(true);
         match result {
             Compacted::Done => {
                 note_compacted(&self.config, &session).await;
