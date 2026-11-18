@@ -2,9 +2,11 @@
 //! (`ironclaw_product_contracts::hooks_catalog`) from a [`HookCatalogSource`];
 //! every other request passes through untouched.
 //!
-//! The catalog is deployment-level configuration (which hooks a run would
-//! install), not user data, and carries no hook code, predicates, or secrets,
-//! so any authenticated caller may read it.
+//! The catalog carries no hook code, predicates, or secrets. Builtin hooks
+//! are deployment-level configuration any authenticated caller may read; an
+//! extension's hooks are listed only to users its installation is visible to
+//! (the source narrows by the caller), so the page never reveals another
+//! user's private plugin.
 
 use std::sync::Arc;
 
@@ -45,7 +47,7 @@ impl ProductSurface for HooksPageSurface {
         if request.view_id != HOOK_CATALOG_VIEW.id {
             return self.inner.query(caller, request).await;
         }
-        let catalog = serde_json::to_value(self.source.catalog().await)
+        let catalog = serde_json::to_value(self.source.catalog(&caller.user_id).await)
             .map_err(ProductSurfaceError::internal_from)?;
         Ok(ProductSurfaceQueryPage {
             items: vec![catalog],

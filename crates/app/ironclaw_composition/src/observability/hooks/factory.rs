@@ -396,8 +396,12 @@ where
         return Ok(Some(factory));
     }
 
+    // Without live sources there is no consent-bound path for third-party
+    // packages, so only trusted (builtin / host-bundled) sets replay here.
     let extension_install_sets = project_extension_hook_sets(
-        registry.projections(),
+        registry
+            .projections()
+            .filter(|projection| projection.source.allows_first_party()),
         &registrar,
         audit_root,
         &mut |extension_id, reason, hooks| {

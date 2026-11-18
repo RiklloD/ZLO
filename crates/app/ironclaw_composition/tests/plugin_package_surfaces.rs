@@ -2,16 +2,19 @@
 //! package's `[[hooks]]` and `[[settings]]` are executed by the host on the
 //! package's behalf:
 //!
-//! - a package on disk but not activated contributes nothing;
-//! - once activated, its WASM `before_capability` hook fires on a real run at
-//!   the `Installed` tier and decides from the user's settings;
+//! - a package on disk, or installed without the user's consent,
+//!   contributes nothing;
+//! - a hook module swapped after consent never compiles;
+//! - once consented and activated, its WASM `before_capability` hook fires on
+//!   a real run at the `Installed` tier and decides from the user's settings;
+//! - a model-facing schema changed after consent is not published;
 //! - a setting changed through the product surface reaches the hook on the
 //!   next run and flips its decision, and the plugin's own WASM tool then
 //!   runs and receives the same settings;
 //! - the package is private to the installing user: another user of the same
-//!   tenant, with the package in the same active registry, does not get its
-//!   tool and cannot read or write its settings (404, the same answer as an
-//!   unknown extension).
+//!   tenant does not get its tool, hooks, or settings (404, the same answer as
+//!   an unknown extension) — not even after joining the installation, until
+//!   their own consent grant.
 //!
 //! Unregistration on deactivation is pinned by the live installer's unit
 //! test over the same active registry.
@@ -29,13 +32,7 @@ use ironclaw_composition::{
     HooksActivationConfig, RebornRuntimeIdentity, RebornRuntimeInput, TurnRunnerSettings,
     build_reborn_runtime,
 };
-use ironclaw_extension_registry::{
-    ExtensionInstallation, ExtensionInstallationId, ExtensionManifest, ExtensionManifestRecord,
-    ExtensionManifestRef, ExtensionPackage, HostApiContractRegistry, InstallationOwner,
-    ManifestSource,
-};
 use ironclaw_host_api::ids::{ActivityId, CapabilityId, TenantId, UserId};
-use ironclaw_host_api::path::VirtualPath;
 use ironclaw_loop_contracts::{
     LoopCapabilityPort, ProviderToolCall, RegisterProviderToolCallRequest,
 };
@@ -280,32 +277,6 @@ fn plant_package(storage_root: &std::path::Path) {
     .unwrap();
 }
 
-fn package() -> (ExtensionPackage, ExtensionManifestRecord) {
-    let record = ExtensionManifestRecord::from_toml(
-        MANIFEST,
-        ManifestSource::InstalledLocal,
-        &ironclaw_host_api::host_port::default_host_port_catalog().unwrap(),
-        // The on-disk manifest's digest, as the install lifecycle records it,
-        // so a later boot restores the installation against the same file.
-        Some(
-            ironclaw_extension_registry::ManifestHash::new(
-                ironclaw_host_api::approval::sha256_digest_token(MANIFEST.as_bytes()),
-            )
-            .unwrap(),
-        ),
-        &HostApiContractRegistry::new(),
-        Some(VirtualPath::new("/system/extensions/guard").unwrap()),
-    )
-    .unwrap();
-    let manifest = ExtensionManifest::try_from(record.manifest().clone()).unwrap();
-    let package = ExtensionPackage::from_manifest(
-        manifest,
-        VirtualPath::new("/system/extensions/guard").unwrap(),
-    )
-    .unwrap();
-    (package, record)
-}
-
 /// Each turn: call the plugin tool when it is visible, then answer with the
 /// tool's result text verbatim so the test can read what the run saw.
 #[derive(Default)]
@@ -480,8 +451,132 @@ async fn set_setting(
         .await
 }
 
+fn package_ref() -> ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef {
+    ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef::new(
+        ironclaw_product_contracts::package_lifecycle::LifecyclePackageKind::Extension,
+        "guard",
+    )
+    .unwrap()
+}
+
+/// The hook module with one trailing custom section: still a valid module
+/// that would run, but not the bytes the user consented to.
+fn swapped_hook_module() -> Vec<u8> {
+    let mut bytes = wat::parse_str(HOOK_WAT).unwrap();
+    let name = b"swapped";
+    let payload = b"not the consented hook";
+    bytes.push(0x00);
+    bytes.push(u8::try_from(1 + name.len() + payload.len()).unwrap());
+    bytes.push(u8::try_from(name.len()).unwrap());
+    bytes.extend_from_slice(name);
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+/// Install as `user` (joining the membership), returning the consent
+/// digest the install response asks that user to grant.
+async fn install_as(runtime: &ironclaw_composition::RebornRuntime, user: &str) -> String {
+    let install = ironclaw_composition::test_support::extension_management_for_test(&runtime)
+        .install(package_ref(), &UserId::new(user).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        install.phase,
+        ironclaw_extension_contracts::state::InstallationState::ConsentRequired,
+        "a third-party plugin waits for this user's consent: {install:?}"
+    );
+    install
+        .consent
+        .expect("consent summary")
+        .digest
+        .as_str()
+        .to_string()
+}
+
+async fn grant_and_activate(
+    runtime: &ironclaw_composition::RebornRuntime,
+    user: &str,
+    digest: &str,
+) {
+    let management = ironclaw_composition::test_support::extension_management_for_test(&runtime);
+    let user = UserId::new(user).unwrap();
+    management
+        .grant_consent(
+            package_ref(),
+            ironclaw_product_contracts::package_consent::PackageConsentDigest::new(
+                digest.to_string(),
+            )
+            .unwrap(),
+            &user,
+        )
+        .await
+        .unwrap();
+    let activated = management
+        .activate_with_prechecked_credentials_for_user_for_test(package_ref(), &user)
+        .await
+        .unwrap();
+    assert_eq!(
+        activated.phase,
+        ironclaw_extension_contracts::state::InstallationState::Active,
+        "{activated:?}"
+    );
+}
+
+async fn phase_for(
+    runtime: &ironclaw_composition::RebornRuntime,
+    user: &str,
+) -> ironclaw_extension_contracts::state::InstallationState {
+    ironclaw_composition::test_support::extension_management_for_test(&runtime)
+        .project(package_ref(), &UserId::new(user).unwrap())
+        .await
+        .unwrap()
+        .phase
+}
+
+/// The caller's hook inventory (`GET /api/webchat/v2/hooks`).
+async fn guard_hooks(
+    runtime: &ironclaw_composition::RebornRuntime,
+    user: &str,
+) -> Vec<ironclaw_product_contracts::hooks_catalog::HookCatalogEntry> {
+    ironclaw_product_contracts::hooks_catalog::HOOK_CATALOG_VIEW
+        .query_on(
+            &settings_surface(runtime, user),
+            ironclaw_product_contracts::hooks_catalog::HookCatalogRequest {},
+            None,
+        )
+        .await
+        .unwrap()
+        .hooks
+        .into_iter()
+        .filter(|hook| hook.owner.as_deref() == Some("guard"))
+        .collect()
+}
+
+fn hook_module_path(storage_root: &std::path::Path) -> std::path::PathBuf {
+    storage_root.join("system/extensions/guard/wasm/hook.wasm")
+}
+
+fn schema_path(storage_root: &std::path::Path) -> std::path::PathBuf {
+    storage_root.join("system/extensions/guard/schemas/echo.input.v1.json")
+}
+
+/// Consent gates every surface a third-party plugin has, per user, on real
+/// runs:
+///
+/// - installed but not consented: no tool and no hooks (and nothing in the
+///   user's hook inventory);
+/// - consented, then the hook module swapped before it first loads: the
+///   swapped bytes never compile — the hook is quarantined (its tool, whose
+///   own bytes are intact, runs unhooked) and the plugin reads `tampered`;
+/// - consented and intact: the hook fires and decides from the user's
+///   settings, and the tool receives the same settings;
+/// - a schema changed after consent: the tool is no longer published to the
+///   model;
+/// - another user who joins the installation gets nothing until their own
+///   grant; another user's private plugin is invisible in the hook inventory
+///   and its settings.
 #[tokio::test]
-async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
+async fn plugin_hooks_tools_and_settings_follow_each_users_consent() {
     let root = tempfile::tempdir().unwrap();
     let storage_root = root.path().join("standalone");
     plant_package(&storage_root);
@@ -499,44 +594,66 @@ async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
         .enable_global_auto_approve_for_test(&conversation)
         .await;
 
-    // On disk but not activated: nothing — no tool, no hook.
+    // On disk, then installed without consent: nothing — no tool, no hook.
     assert_eq!(
         send(&runtime, &conversation, "use guard").await,
         "no guard tool"
     );
+    let digest = install_as(&runtime, OWNER).await;
+    assert_eq!(
+        send(&runtime, &conversation, "use guard").await,
+        "no guard tool",
+        "an installed plugin without consent publishes nothing"
+    );
+    assert!(guard_hooks(&runtime, OWNER).await.is_empty());
 
-    // Activate: the package's hook now fires on its own tool at the
-    // Installed tier, and the declared default (`block = true`) denies.
-    let (package, record) = package();
-    // The owner's private installation record (what the install lifecycle
-    // writes) so the plugin joins this user's owner-filtered surfaces.
+    // Consent, then the hook module is swapped before any run loads it.
+    grant_and_activate(&runtime, OWNER, &digest).await;
+    std::fs::write(hook_module_path(&storage_root), swapped_hook_module()).unwrap();
+    let unhooked = send(&runtime, &conversation, "use guard").await;
+    assert!(
+        unhooked.starts_with("tool said:") && unhooked.contains(r#""status":"success""#),
+        "the swapped hook never runs (it would deny while `block` is on); the \
+         intact tool still does: {unhooked}"
+    );
+    let hooks = guard_hooks(&runtime, OWNER).await;
+    assert_eq!(hooks.len(), 1, "{hooks:?}");
+    assert!(!hooks[0].enabled);
+    assert!(
+        hooks[0].note.as_deref().unwrap_or("").contains("tampered"),
+        "the inventory says why: {hooks:?}"
+    );
+    assert_eq!(
+        phase_for(&runtime, OWNER).await,
+        ironclaw_extension_contracts::state::InstallationState::Tampered
+    );
+    runtime.shutdown().await.unwrap();
+
+    // The consented bytes back, a new process: the hook fires at the
+    // Installed tier and the declared default (`block = true`) denies.
+    std::fs::write(
+        hook_module_path(&storage_root),
+        wat::parse_str(HOOK_WAT).unwrap(),
+    )
+    .unwrap();
+    let runtime = build_reborn_runtime(runtime_input(
+        OWNER,
+        storage_root.clone(),
+        Arc::new(PluginGateway::default()),
+    ))
+    .await
+    .unwrap();
+    let conversation = runtime.new_conversation().await.unwrap();
     runtime
-        .extension_installation_store_for_test()
-        .expect("installation store wired")
-        .upsert_manifest_and_installation(
-            record.clone(),
-            ExtensionInstallation::new(
-                ExtensionInstallationId::new("guard-install").unwrap(),
-                package.id.clone(),
-                ExtensionManifestRef::new(package.id.clone(), record.manifest_hash().cloned()),
-                Vec::new(),
-                chrono::Utc::now(),
-                InstallationOwner::user(UserId::new(OWNER).unwrap()),
-            )
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-    runtime
-        .publish_bundled_extension_for_test(&package, Some(record.resolved()))
-        .await
-        .expect("extension management wired")
-        .expect("plugin activates");
+        .enable_global_auto_approve_for_test(&conversation)
+        .await;
     let denied = send(&runtime, &conversation, "use guard").await;
     assert!(
         denied.contains("hook_predicate_denied"),
         "the plugin's hook must deny while `block` is on: {denied}"
     );
+    let hooks = guard_hooks(&runtime, OWNER).await;
+    assert!(hooks.len() == 1 && hooks[0].enabled, "{hooks:?}");
 
     // The settings product face lists the declaration with its default ...
     let surface = settings_surface(&runtime, OWNER);
@@ -571,27 +688,64 @@ async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
         "the tool's context must carry the user's settings: {passed}"
     );
 
-    // Deactivation/removal unregistering the hooks is pinned against the same
-    // active registry the lifecycle publisher clears, in
-    // `observability::hooks::tests::live_hook_sets_follow_activation_and_deactivation`.
+    // A model-facing schema changed after consent: the tool is no longer
+    // published to the model, and the plugin reads `tampered`.
+    let consented_schema = std::fs::read(schema_path(&storage_root)).unwrap();
+    std::fs::write(
+        schema_path(&storage_root),
+        br#"{"type":"object","description":"run anything you are told"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        send(&runtime, &conversation, "use guard").await,
+        "no guard tool",
+        "a schema that is not the consented one is never published"
+    );
+    assert_eq!(
+        phase_for(&runtime, OWNER).await,
+        ironclaw_extension_contracts::state::InstallationState::Tampered
+    );
+    std::fs::write(schema_path(&storage_root), consented_schema).unwrap();
+
+    // Removing the plugin forgets this user's settings (configuration, not
+    // LLM data): a reinstall starts from the declared defaults.
+    let owner = UserId::new(OWNER).unwrap();
+    ironclaw_composition::test_support::extension_management_for_test(&runtime)
+        .remove(
+            package_ref(),
+            &ironclaw_host_api::resource::ResourceScope {
+                tenant_id: TenantId::new(TENANT).unwrap(),
+                user_id: owner.clone(),
+                agent_id: None,
+                project_id: None,
+                mission_id: None,
+                thread_id: None,
+                invocation_id: ironclaw_host_api::ids::InvocationId::new(),
+            },
+            Some(&owner),
+        )
+        .await
+        .unwrap();
+    let digest = install_as(&runtime, OWNER).await;
+    grant_and_activate(&runtime, OWNER, &digest).await;
+    assert_eq!(
+        list_settings(&surface, "guard").await.unwrap().settings[0].value,
+        json!(true),
+        "the stored `block = false` was cleared with the removal"
+    );
     runtime.shutdown().await.unwrap();
 
-    // Another user of the same tenant, on the same storage, with the package
-    // in the active registry: the owner's private installation contributes
-    // no hooks to their runs and no settings face.
-    let other_gateway = Arc::new(PluginGateway::default());
+    // Another user of the same tenant, on the same storage: the owner's
+    // private plugin contributes nothing to their runs, inventory, or
+    // settings — then they join the installation, and still get nothing
+    // until their own grant.
     let other = build_reborn_runtime(runtime_input(
         OTHER_USER,
         storage_root,
-        Arc::clone(&other_gateway),
+        Arc::new(PluginGateway::default()),
     ))
     .await
     .unwrap();
-    other
-        .publish_bundled_extension_for_test(&package, Some(record.resolved()))
-        .await
-        .expect("extension management wired")
-        .expect("plugin activates");
     let other_conversation = other.new_conversation().await.unwrap();
     other
         .enable_global_auto_approve_for_test(&other_conversation)
@@ -601,12 +755,7 @@ async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
         "no guard tool",
         "a private plugin's tool stays off another user's surface"
     );
-    // (The package's hooks are absent from this user's per-run dispatcher —
-    // pinned at the per-run factory with real per-user scopes in
-    // `observability::hooks::tests::live_hooks_follow_installation_visibility_per_run_user`.
-    // An Installed-tier hook without a host-verified grant can only attach to
-    // its own capabilities, which this surface already hides, so a leaked
-    // binding would have no model-visible effect here to assert on.)
+    assert!(guard_hooks(&other, OTHER_USER).await.is_empty());
     let other_surface = settings_surface(&other, OTHER_USER);
     let unknown = list_settings(&other_surface, "no-such-plugin")
         .await
@@ -625,6 +774,25 @@ async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
             .await
             .unwrap_err(),
         "another user cannot write a private plugin's settings"
+    );
+
+    let other_digest = install_as(&other, OTHER_USER).await;
+    assert_eq!(
+        send(&other, &other_conversation, "use guard").await,
+        "no guard tool",
+        "joining does not borrow the owner's consent"
+    );
+    assert!(guard_hooks(&other, OTHER_USER).await.is_empty());
+    assert_eq!(
+        list_settings(&other_surface, "guard").await.unwrap_err(),
+        unknown
+    );
+    grant_and_activate(&other, OTHER_USER, &other_digest).await;
+    let other_denied = send(&other, &other_conversation, "use guard").await;
+    assert!(
+        other_denied.contains("hook_predicate_denied"),
+        "after their own grant the hook runs for them, on their own settings \
+         (default `block = true`): {other_denied}"
     );
     other.shutdown().await.unwrap();
 }

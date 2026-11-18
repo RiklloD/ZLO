@@ -7,8 +7,8 @@
 //! and per-hook enablement has no durable backend yet.
 //!
 //! Composition implements [`HookCatalogSource`] from the same inputs the
-//! per-run dispatcher factory replays; `ironclaw_assistant::memory_page`
-//! answers the view.
+//! per-run dispatcher factory uses, narrowed to the caller;
+//! `ironclaw_assistant::hooks_page` answers the view.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -79,8 +79,12 @@ pub struct HookCatalog {
     pub hooks: Vec<HookCatalogEntry>,
 }
 
-/// The deployment's hook inventory. Implemented by composition.
+/// The deployment's hook inventory as `caller` may see it. Implemented by
+/// composition. Builtin and host-bundled hooks are deployment-wide; an
+/// extension's hooks are listed only to a user its installation is visible
+/// to (and, for a third-party package, who consented to it) — the same
+/// per-user narrowing a run applies when it installs them.
 #[async_trait]
 pub trait HookCatalogSource: Send + Sync {
-    async fn catalog(&self) -> HookCatalog;
+    async fn catalog(&self, caller: &ironclaw_host_api::ids::UserId) -> HookCatalog;
 }

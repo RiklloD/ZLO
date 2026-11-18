@@ -271,7 +271,11 @@ const WS0_COMPOSITION_SHARE_BP: usize = 642;
 /// ✎ Re-measured 33_600 -> 34_191 on 2026-11-18 (t3/extension-hooks-settings):
 /// the live, activation-tracking package-hook installer and the settings
 /// surface wiring; breakdown in the manifest.
-const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 34_191;
+/// ✎ Re-measured 34_191 -> 34_603 on 2026-11-18 (plugins-integration): the
+/// merge of the plugin UI, hooks/settings and consent branches recorded the
+/// manifest at 34_606 without moving this record; the consent review fixes
+/// net -3 on top. Breakdown in the manifest.
+const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 34_603;
 
 /// Composition dispatch, from the same `--print` run: "composition dispatch:
 /// 827 Arc<dyn> (governed prod, excl slack/extension_host)".

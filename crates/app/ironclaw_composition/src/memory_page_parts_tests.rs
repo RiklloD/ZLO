@@ -163,7 +163,7 @@ async fn hook_catalog_reports_flags_and_the_memory_upkeep_hook() {
         None,
         true,
     ))
-    .catalog()
+    .catalog(&ironclaw_host_api::ids::UserId::new("hooks-viewer").unwrap())
     .await;
     assert!(on.framework_enabled && on.third_party_enabled);
     assert!(

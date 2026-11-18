@@ -1072,6 +1072,7 @@ pub(super) async fn build_backend_production(
         )
         .with_account_setup_registry(Arc::new(account_setups.clone()))
         .with_removal_cleanup_registry(removal_cleanup)
+        .with_settings_cleanup(Arc::clone(&extension_settings))
         .with_provider_instance_readiness(provider_instance_readiness)
         .with_channel_disconnect_slot(Arc::clone(&channel_disconnect_slot)),
     );

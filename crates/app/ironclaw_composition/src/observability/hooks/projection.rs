@@ -12,10 +12,8 @@
 use ironclaw_extension_registry::ExtensionRegistry;
 
 use crate::error::RebornBuildError;
-use ironclaw_extension_host::product_extension_host_api_contract_registry;
 
 use super::HooksActivationConfig;
-use super::audit::emit_hook_quarantined;
 
 /// Maximum number of *installed* extension packages whose `[[hooks]]` will be
 /// considered for projection in a single tenant build. Surplus extensions
@@ -59,6 +57,10 @@ pub(super) struct HookProjection {
     /// Content digest of the manifest record, when the package carries one;
     /// part of the live projection cache key.
     pub(super) manifest_digest: Option<String>,
+    /// The consented per-file hashes the package was published with (third-
+    /// party packages; `None` for host-bundled ones). Every hook module byte
+    /// is verified against these before it is cached or compiled.
+    pub(super) content_pins: Option<ironclaw_extension_registry::PackageContentPins>,
 }
 
 impl HookProjection {
@@ -85,6 +87,7 @@ impl HookProjection {
             hooks: package.manifest.hooks.clone(),
             settings: package.manifest.settings.clone(),
             manifest_digest: package.manifest_digest.clone(),
+            content_pins: package.content_pins.clone(),
         })
     }
 }
@@ -109,20 +112,14 @@ impl HookProjection {
 /// enforced by the DATA SHAPE, not by withholding a conversion. A developer
 /// cannot feed this to `HostRuntimeServices::new` because it simply is not, and
 /// cannot become, an `ExtensionRegistry`.
-pub struct HookProjectionRegistry(Vec<HookProjection>, Vec<(String, String)>);
+pub struct HookProjectionRegistry(Vec<HookProjection>);
 
 impl HookProjectionRegistry {
     /// Build the hook-only registry from the per-package projections that
     /// survived discovery + admission. The full packages are consumed here and
     /// only their hook metadata is retained.
     pub(super) fn from_projections(projections: Vec<HookProjection>) -> Self {
-        Self(projections, Vec::new())
-    }
-
-    /// Packages dropped at discovery/admission, as `(extension id, reason)`,
-    /// for the read-only hook inventory. They never reach the dispatcher.
-    pub(super) fn admission_quarantines(&self) -> &[(String, String)] {
-        &self.1
+        Self(projections)
     }
 
     /// Crate-private read-only view of the projected hook metadata, for the
@@ -221,164 +218,28 @@ pub(super) fn enforce_root_containment(
     Ok(())
 }
 
-/// Discovery input for [`build_hook_projection_registry`]: the tenant-scoped
-/// filesystem and the validated authenticated `tenant_id`. The discovery root
-/// is *computed* from the identity ([`tenant_extension_root`]) inside the
-/// builder — never supplied by the caller — which is the tenant-isolation
-/// contract (Step 2). The filesystem is the same tenant-scoped
-/// [`RootFilesystem`] already built in `build_runtime_substrate`.
-pub struct ThirdPartyDiscoveryInput<'a, F: ironclaw_filesystem::RootFilesystem> {
-    pub filesystem: &'a F,
-    pub tenant_id: &'a ironclaw_host_api::ids::TenantId,
-}
-
-/// Assemble the hook-projection registry (Step 3).
+/// Assemble the boot-time hook-projection registry: the hook metadata of the
+/// trusted (builtin / host-bundled) packages only.
 ///
-/// Always seeds with the `builtin` extension registry. When
-/// [`HooksActivationConfig::is_third_party_enabled`] is true AND a discovery
-/// input is supplied, discovers installed extensions under the tenant-derived
-/// root, applies the tenant-wide DoS caps + path-containment (defense in
-/// depth), and merges the surviving third-party packages into the projection
-/// registry. The resulting [`HookProjectionRegistry`] reaches ONLY the hook
-/// factory — never the capability path (see the newtype's docs).
-///
-/// **With the third-party sub-flag OFF, the path is byte-identical to #3938:**
-/// the projection registry is builtin-only and no discovery runs.
-///
-/// Per-extension hook *validity* quarantine is applied later, at install time
-/// in [`super::factory::project_extension_hook_sets`]; this function applies the
-/// *registry admission* caps + containment that decide which packages are even
-/// merged.
-pub async fn build_hook_projection_registry<F>(
+/// Third-party packages are deliberately absent. Their hooks follow the
+/// extension lifecycle and consent instead — they install per run from the
+/// active extension registry through [`super::live`], only for users whose
+/// own consent grant covers the package's files, and only from module bytes
+/// verified against that grant. A boot-time filesystem discovery of
+/// `/system/extensions` would be a second, ungated path for the same hooks,
+/// so there is none.
+pub async fn build_hook_projection_registry(
     builtin: ExtensionRegistry,
-    third_party_input: Option<ThirdPartyDiscoveryInput<'_, F>>,
-    config: HooksActivationConfig,
-) -> Result<HookProjectionRegistry, RebornBuildError>
-where
-    F: ironclaw_filesystem::RootFilesystem,
-{
-    // Seed the projection with the BUILTIN packages' hook metadata only. The
-    // builtin `ExtensionRegistry` is consumed here and dropped; only hook
-    // projections survive into the hook-only registry (structural containment).
-    let mut projections: Vec<HookProjection> = builtin
+    _config: HooksActivationConfig,
+) -> Result<HookProjectionRegistry, RebornBuildError> {
+    // The builtin `ExtensionRegistry` is consumed here and dropped; only hook
+    // projections survive into the hook-only registry (structural
+    // containment). A builtin registry entry from any other source is not
+    // trusted to contribute boot hooks.
+    let projections: Vec<HookProjection> = builtin
         .extensions()
+        .filter(|package| package.manifest.source.allows_first_party())
         .filter_map(HookProjection::from_package)
         .collect();
-    let mut quarantined: Vec<(String, String)> = Vec::new();
-    let mut seen_ids: std::collections::HashSet<String> = projections
-        .iter()
-        .map(|projection| projection.extension_id.as_str().to_string())
-        .collect();
-
-    if config.is_third_party_enabled()
-        && let Some(input) = third_party_input
-    {
-        let tenant_id = input.tenant_id;
-        let root = tenant_extension_root(tenant_id)?;
-        // Tolerant + BOUNDED discovery under the tenant-derived root.
-        //
-        // Bounded: the read/parse/validate work is capped to
-        // `MAX_INSTALLED_EXTENSIONS_CONSIDERED` extension directories — the
-        // count cap fires BEFORE the per-manifest read storm, so a tenant with
-        // thousands of extension dirs cannot force unbounded discovery work
-        // (Critical-1 DoS fix). The bounded surplus is reported as a quarantine,
-        // never read.
-        //
-        // Tolerant: a single malformed / oversized / id-mismatched package
-        // quarantines ONLY itself and discovery continues, so one bad package
-        // can no longer drop a tenant's entire legitimate third-party hook set
-        // (Critical-2 fail-open fix). The ONLY error that triggers the
-        // builtin-only fallback is failure to LIST THE ROOT itself (the
-        // extensions tree is unreadable) — surfaced as the outer `Err` below.
-        let contracts = product_extension_host_api_contract_registry().map_err(|error| {
-            RebornBuildError::InvalidConfig {
-                reason: format!("could not build extension host API contract registry: {error}"),
-            }
-        })?;
-        let discovery = ironclaw_host_runtime::discover_extensions_tolerant_bounded_with_contracts(
-            input.filesystem,
-            &root,
-            &contracts,
-            MAX_INSTALLED_EXTENSIONS_CONSIDERED,
-        )
-        .await;
-        let discovered = match discovery {
-            Ok(discovered) => discovered,
-            Err(error) => {
-                // Root unreadable: cannot make per-package decisions. Fail-safe
-                // to "no third-party hooks" — a missing/unreadable extensions
-                // tree must not block the runtime. This is the SOLE
-                // builtin-only fallback.
-                tracing::debug!(
-                    tenant_id = %tenant_id.as_str(),
-                    %error,
-                    "third-party extension root unreadable; proceeding builtin-only"
-                );
-                return Ok(HookProjectionRegistry::from_projections(projections));
-            }
-        };
-
-        // Per-package discovery quarantines (malformed manifest, oversized,
-        // id-mismatch, surplus beyond the discovery bound). Each drops only its
-        // own package; valid siblings are unaffected.
-        for quarantine in &discovered.quarantined {
-            emit_hook_quarantined(tenant_id, &quarantine.extension_id, &quarantine.reason, 0);
-            quarantined.push((quarantine.extension_id.clone(), quarantine.reason.clone()));
-        }
-
-        let mut hook_total = 0usize;
-        for package in discovered.registry.extensions() {
-            // Extract the hook-only projection; a package with no hooks yields
-            // `None` and is skipped — it never enters the hook-only registry.
-            let Some(projection) = HookProjection::from_package(package) else {
-                continue;
-            };
-            let extension_id_str = projection.extension_id.as_str().to_string();
-            let hook_count = projection.hooks.len();
-
-            // The extension-COUNT cap is already enforced by the bounded
-            // discovery above; here we enforce the per-tenant hook BUDGET and
-            // path containment.
-            if hook_total + hook_count > MAX_TOTAL_HOOKS_PER_TENANT {
-                emit_hook_quarantined(
-                    tenant_id,
-                    &extension_id_str,
-                    "exceeded MAX_TOTAL_HOOKS_PER_TENANT",
-                    hook_count,
-                );
-                quarantined.push((
-                    extension_id_str,
-                    "exceeded MAX_TOTAL_HOOKS_PER_TENANT".to_string(),
-                ));
-                continue;
-            }
-            if let Err(reason) = enforce_root_containment(&root, &projection.root) {
-                emit_hook_quarantined(tenant_id, &extension_id_str, &reason, hook_count);
-                quarantined.push((extension_id_str, reason));
-                continue;
-            }
-            // Dedup by extension id: a duplicate of a builtin/already-merged id
-            // is quarantined, not fatal. The hook budget is consumed only AFTER
-            // a successful merge, so a quarantined (duplicate) package does NOT
-            // consume budget (Refinement 3).
-            if !seen_ids.insert(extension_id_str.clone()) {
-                emit_hook_quarantined(
-                    tenant_id,
-                    &extension_id_str,
-                    "duplicate extension id collides with an already-projected package",
-                    hook_count,
-                );
-                quarantined.push((
-                    extension_id_str,
-                    "duplicate extension id collides with an already-projected package".to_string(),
-                ));
-                continue;
-            }
-
-            hook_total += hook_count;
-            projections.push(projection);
-        }
-    }
-
-    Ok(HookProjectionRegistry(projections, quarantined))
+    Ok(HookProjectionRegistry::from_projections(projections))
 }

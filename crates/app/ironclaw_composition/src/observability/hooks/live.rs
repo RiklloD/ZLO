@@ -17,6 +17,15 @@
 //! visible to its user ([`InstallationOwnerSource`], the tool catalog's owner
 //! projection); a package with no installation row is visible to nobody.
 //!
+//! Consent: a third-party package contributes hooks only when it was
+//! published with its consent grant's per-file pins, and only to runs of
+//! users whose own grant covers those files (the owner projection is
+//! consent-filtered by the lifecycle manager). Each hook module is read once
+//! and verified against its pin before it is cached or compiled; an unpinned
+//! package or a module that differs from the consented bytes contributes no
+//! hooks (quarantined and audited; the package's status reads `tampered`
+//! on the next lifecycle list).
+//!
 //! Every package-declared hook still installs only through
 //! [`HookRegistrar`], i.e. at the `Installed` tier with exactly that tier's
 //! restrictions (restricted sinks — no `Allow`; no `Validation` /
@@ -71,6 +80,34 @@ const MAX_CACHED_VALIDATIONS: usize = 64;
 /// Largest hook WASM module a package may ship, in bytes.
 pub(crate) const MAX_HOOK_MODULE_BYTES: usize = 2 * 1024 * 1024;
 
+/// Live quarantines by extension id (reason), readable by the hook inventory
+/// so a user sees why their plugin's hooks are off. Cleared when a package's
+/// hooks next validate or it leaves the active set.
+#[derive(Clone, Default)]
+pub(crate) struct LiveHookQuarantines(Arc<Mutex<HashMap<String, String>>>);
+
+impl LiveHookQuarantines {
+    fn record(&self, extension: &str, reason: Option<&str>) {
+        if let Ok(mut map) = self.0.lock() {
+            match reason {
+                Some(reason) => map.insert(extension.to_string(), reason.to_string()),
+                None => map.remove(extension),
+            };
+        }
+    }
+
+    fn retain(&self, live: &BTreeSet<String>) {
+        if let Ok(mut map) = self.0.lock() {
+            map.retain(|extension, _| live.contains(extension));
+        }
+    }
+
+    /// The recorded quarantine reason for `extension`, if any.
+    pub(crate) fn reason(&self, extension: &str) -> Option<String> {
+        self.0.lock().ok()?.get(extension).cloned()
+    }
+}
+
 /// The live inputs a run's hook set is derived from.
 #[derive(Clone)]
 pub(crate) struct LiveHookSources {
@@ -81,8 +118,11 @@ pub(crate) struct LiveHookSources {
     pub(crate) filesystem: Arc<dyn RootFilesystem>,
     /// Per-user setting values.
     pub(crate) settings: Arc<dyn ExtensionSettingsReader>,
-    /// Installation owners: which users each active package is visible to.
+    /// Installation owners: which users each active package is visible to
+    /// (consent-filtered in production).
     pub(crate) owners: Arc<dyn InstallationOwnerSource>,
+    /// Where live quarantines are recorded for the hook inventory.
+    pub(crate) quarantines: LiveHookQuarantines,
 }
 
 type FirstPartyInstaller = Arc<
@@ -98,6 +138,9 @@ struct ValidationKey {
     version: String,
     manifest_digest: Option<String>,
     root: String,
+    /// A new grant (new pins) revalidates from freshly read, re-verified
+    /// bytes.
+    content_pins: Option<ironclaw_extension_registry::PackageContentPins>,
 }
 
 /// Entries that passed validation, with the exact module bytes they were
@@ -273,6 +316,16 @@ impl LiveHookInstaller {
                 self.quarantine(&extension, &reason, hook_count);
                 continue;
             }
+            // A package that needs consent runs hooks only from the files its
+            // grant pinned; one published without pins is never trusted.
+            if projection.source.requires_consent() && projection.content_pins.is_none() {
+                self.quarantine(
+                    &extension,
+                    "no consent grant binds this package's files",
+                    hook_count,
+                );
+                continue;
+            }
             // This run holds the validated module bytes until its install.
             let validated = match self.validated_entries(&projection).await? {
                 Ok(validated) => validated,
@@ -382,6 +435,7 @@ impl LiveHookInstaller {
             version: projection.version.clone(),
             manifest_digest: projection.manifest_digest.clone(),
             root: projection.root.as_str().to_string(),
+            content_pins: projection.content_pins.clone(),
         };
         {
             let cache = self.lock_validated()?;
@@ -392,8 +446,9 @@ impl LiveHookInstaller {
             }
         }
         let outcome = self.validate(projection).await;
-        if let Err(reason) = &outcome {
-            self.quarantine(&extension, reason, projection.hooks.len());
+        match &outcome {
+            Err(reason) => self.quarantine(&extension, reason, projection.hooks.len()),
+            Ok(_) => self.sources.quarantines.record(&extension, None),
         }
         let mut cache = self.lock_validated()?;
         // Users with disjoint private packages each add entries here, so the
@@ -467,6 +522,7 @@ impl LiveHookInstaller {
     fn prune(&self, live: &BTreeSet<String>) -> Result<(), RebornLoopDriverHostError> {
         self.lock_validated()?
             .retain(|extension, _| live.contains(extension));
+        self.sources.quarantines.retain(live);
         Ok(())
     }
 
@@ -483,6 +539,7 @@ impl LiveHookInstaller {
 
     fn quarantine(&self, extension: &str, reason: &str, hooks: usize) {
         emit_hook_quarantined(&self.tenant_id, extension, reason, hooks);
+        self.sources.quarantines.record(extension, Some(reason));
     }
 }
 
@@ -515,11 +572,19 @@ async fn read_hook_module(
                 "hook `{hook_local_id}` module `{module}` exceeds {MAX_HOOK_MODULE_BYTES} bytes"
             )
         })?;
-    // consent: digest-pinned consent verifies `bytes` here — against the
-    // asset hash the user consented to for this package version — before
-    // they are cached or compiled. A mismatch must return `Err` (the package
-    // is then quarantined like any other invalid hook set). Install/consent
-    // owns that check; this branch only guarantees it is the single read.
+    // Consent binds the bytes that run: verify this exact buffer against the
+    // hash the grant pinned for this file before it is cached or compiled.
+    // A host-bundled package carries no pins and needs none; a package that
+    // needs consent and has no pin for the module is refused too.
+    ironclaw_extension_registry::verify_package_file(
+        &projection.extension_id,
+        projection.source,
+        projection.content_pins.as_ref(),
+        &projection.root,
+        &path,
+        &bytes,
+    )
+    .map_err(|error| format!("hook `{hook_local_id}` module `{module}` is tampered: {error}"))?;
     Ok(Arc::from(bytes))
 }
 
