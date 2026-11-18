@@ -1563,6 +1563,7 @@ mod tests {
                                 "else",
                                 "dependentRequired",
                                 "dependentSchemas",
+                                "oneOf",
                             ]
                             .contains(&key.as_str())
                         {
@@ -1588,6 +1589,7 @@ mod tests {
                 "properties": {
                     "not": { "type": "string", "description": "a field literally named not" },
                     "old_string": { "type": "string", "not": { "const": "null" } },
+                    "mode": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
                     "edits": {
                         "type": "array",
                         "items": {
@@ -1643,6 +1645,21 @@ mod tests {
             }),
         });
         assert!(json["parameters"]["properties"].get("not").is_some());
+
+        // Nested `oneOf` relaxes to `anyOf` rather than being lost.
+        let json = convert_tool_definition(&ToolDefinition {
+            name: "mode".to_string(),
+            description: "mode".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "mode": { "oneOf": [{ "type": "string" }, { "type": "integer" }] } },
+                "required": ["mode"]
+            }),
+        });
+        assert_eq!(
+            json["parameters"]["properties"]["mode"]["anyOf"],
+            serde_json::json!([{ "type": "string" }, { "type": "integer" }])
+        );
     }
 
     /// Caller-level regression test: drives `convert_tool_definition` end to

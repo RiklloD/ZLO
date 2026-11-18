@@ -86,7 +86,8 @@ const STRICT_UNSUPPORTED: &[&str] = &[
     "dependentSchemas",
 ];
 
-/// Remove [`STRICT_UNSUPPORTED`] keywords from every subschema. Field names
+/// Remove [`STRICT_UNSUPPORTED`] keywords from every subschema and relax
+/// `oneOf` to `anyOf`. Field names
 /// under `properties` / `$defs` / `definitions` are data and are never
 /// treated as keywords.
 fn strip_strict_unsupported_keywords(schema: &mut JsonValue) {
@@ -95,6 +96,14 @@ fn strip_strict_unsupported_keywords(schema: &mut JsonValue) {
     };
     for key in STRICT_UNSUPPORTED {
         obj.remove(*key);
+    }
+    // Strict mode only implements `anyOf`; `oneOf` relaxes to it (every value
+    // valid for `oneOf` is valid for `anyOf`). An existing `anyOf` already
+    // over-approximates, so a sibling `oneOf` is dropped.
+    if let Some(variants) = obj.remove("oneOf")
+        && !obj.contains_key("anyOf")
+    {
+        obj.insert("anyOf".to_string(), variants);
     }
     for (key, child) in obj.iter_mut() {
         match key.as_str() {

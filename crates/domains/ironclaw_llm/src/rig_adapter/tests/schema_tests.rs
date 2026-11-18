@@ -324,11 +324,9 @@ fn test_normalize_schema_strict_merge_first_write_wins_on_conflict() {
 }
 
 #[test]
-fn test_normalize_schema_strict_preserves_nested_oneof() {
-    // Nested combinators inside `properties` are FINE for the API. Only
-    // the top level is forbidden, so the nested oneOf must survive
-    // (its variants get recursively strict-normalized but the union
-    // itself is preserved). `filter` is marked required so strict mode
+fn test_normalize_schema_strict_relaxes_nested_oneof_to_anyof() {
+    // Strict mode only implements `anyOf`, so a nested oneOf is relaxed
+    // to anyOf at the same path (variants still strict-normalized). `filter` is marked required so strict mode
     // doesn't wrap it in an `anyOf` for nullability — that would move
     // the inner oneOf one level deeper and obscure what we're checking.
     let input = serde_json::json!({
@@ -347,9 +345,9 @@ fn test_normalize_schema_strict_preserves_nested_oneof() {
     let result = normalize_schema_strict(&input, &mut description);
 
     assert_eq!(result["type"], "object");
-    // Nested oneOf survives untouched at the same path.
-    let nested = &result["properties"]["filter"]["oneOf"];
-    assert!(nested.is_array(), "nested oneOf must be preserved");
+    assert!(result["properties"]["filter"].get("oneOf").is_none());
+    let nested = &result["properties"]["filter"]["anyOf"];
+    assert!(nested.is_array(), "nested union must survive as anyOf");
     assert_eq!(nested.as_array().unwrap().len(), 2);
     // The object variant inside the nested oneOf got strict-mode
     // normalized (additionalProperties: false, all keys required).
