@@ -429,7 +429,14 @@ observed_date = "2026-11-17"
 # The generic parts moved to their owners instead of landing here: the
 # pinned-bytes module resolver and after-fact classification to
 # `ironclaw_hooks`, the owner/visibility port to `ironclaw_extension_manager`.
-loc_ceiling = 34096
+# ✎ 2026-11-18 (t3/extension-consent-local-install): 33450 -> 33462,
+# observed 33600 -> 33612, zero hidden headroom. +12 wiring lines only: the
+# consent-blocked id set (decided by `ExtensionLifecycleManager`) is read and
+# handed to `build_backend_extension_host`, which drops those ids from the
+# generic host's boot hydration. No policy lives in composition.
+# ✎ 2026-11-18 (plugins-integration merge): the two entries above landed
+# together, 34096 + 12 = 34108, plus the bounded live hook validation cache.
+loc_ceiling = 34108
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to

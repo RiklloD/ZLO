@@ -1049,6 +1049,7 @@ mod tests {
                 visible_capability_ids: Vec::new(),
                 connection_required: Some(requirement),
             }),
+            consent: None,
         }
     }
 
@@ -1154,6 +1155,7 @@ mod tests {
                 visible_capability_ids: Vec::new(),
                 next_step: "pending".to_string(),
             }),
+            consent: None,
         };
         let activation = LifecycleProductResponse {
             package_ref: None,
@@ -1165,6 +1167,7 @@ mod tests {
                 visible_capability_ids: Vec::new(),
                 connection_required: None,
             }),
+            consent: None,
         };
 
         let setup_link = "https://webui.test/extensions?configure=telegram&setup=personal_account";
@@ -1213,6 +1216,7 @@ mod tests {
                 visible_capability_ids: Vec::new(),
                 next_step: "pending".to_string(),
             }),
+            consent: None,
         };
         let activation = LifecycleProductResponse {
             package_ref: None,
@@ -1224,6 +1228,7 @@ mod tests {
                 visible_capability_ids: Vec::new(),
                 connection_required: None,
             }),
+            consent: None,
         };
 
         let confirmed = install_response_with_activation(
@@ -1281,6 +1286,7 @@ mod tests {
                 visible_capability_ids: Vec::new(),
                 connection_required: Some(requirement.clone()),
             }),
+            consent: None,
         };
 
         let preview = channel_connection_display_preview(&channel_activation)
@@ -1300,6 +1306,7 @@ mod tests {
                 visible_capability_ids: vec!["github.search_issues".to_string()],
                 connection_required: None,
             }),
+            consent: None,
         };
         assert!(channel_connection_display_preview(&tool_activation).is_none());
     }
@@ -1491,6 +1498,7 @@ mod tests {
                 ],
                 count: 2,
             }),
+            consent: None,
         };
 
         let filtered = without_model_visible_connection_chrome(response);

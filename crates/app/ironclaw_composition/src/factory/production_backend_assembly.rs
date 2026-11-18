@@ -1308,8 +1308,16 @@ pub(super) async fn build_backend_production(
                 Arc::clone(&linked_sessions),
             ),
         );
+        let consent_blocked_extension_ids = extension_management
+            .consent_blocked_extension_ids()
+            .await
+            .map_err(|error| RebornBuildError::InvalidConfig {
+                reason: format!("extension consent state could not be read: {error}"),
+            })?;
         let backend_extension_host =
             build_backend_extension_host(BackendExtensionHostAssemblyInput {
+                consent_blocked_extension_ids,
+                package_consent: extension_management.consent_store(),
                 binder: services.extension_lane_tool_binder(),
                 native_factories: native_extension_factories,
                 channel_bindings: channel_extension_bindings.clone(),

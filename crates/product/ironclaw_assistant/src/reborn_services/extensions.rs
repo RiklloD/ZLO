@@ -1558,6 +1558,7 @@ mod tests {
                     extensions: vec![self.extension.clone()],
                     count: 1,
                 }),
+                consent: None,
             })
         }
 
@@ -1591,6 +1592,7 @@ mod tests {
                     extensions: self.extensions.clone(),
                     count: self.extensions.len(),
                 }),
+                consent: None,
             })
         }
 
@@ -1630,6 +1632,7 @@ mod tests {
                         extensions: vec![self.installed.clone()],
                         count: 1,
                     }),
+                    consent: None,
                 }),
                 LifecycleProductAction::ExtensionSearch { query } => {
                     assert!(query.is_empty(), "registry search uses the empty query");
@@ -1642,6 +1645,7 @@ mod tests {
                             extensions: self.registry.clone(),
                             count: self.registry.len(),
                         }),
+                        consent: None,
                     })
                 }
                 other => panic!("unexpected lifecycle action: {other:?}"),

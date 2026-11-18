@@ -530,6 +530,7 @@ mod tests {
                     extensions: Vec::new(),
                     count: 0,
                 }),
+                consent: None,
             })
         }
 
@@ -563,6 +564,7 @@ mod tests {
                     extensions: self.extensions.clone(),
                     count,
                 }),
+                consent: None,
             })
         }
 

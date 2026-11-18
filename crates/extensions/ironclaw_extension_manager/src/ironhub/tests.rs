@@ -3,6 +3,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signer, SigningKey};
 use hmac::{Hmac, KeyInit, Mac};
+use ironclaw_extension_contracts::state::InstallationState;
 use ironclaw_extension_registry::{ExtensionInstallationStorePort, InstallationOwner};
 use ironclaw_filesystem::{
     Fault, FaultInjecting, FilesystemOperation, InMemoryBackend, RootFilesystem,
@@ -22,6 +23,7 @@ use ironclaw_product_contracts::ironhub::{
     IronhubInstallDeliveryRequest, IronhubLinkError, IronhubLinkService, IronhubRegisterRequest,
 };
 use ironclaw_product_contracts::lifecycle_service::LifecycleProductSurfaceContext;
+use ironclaw_product_contracts::package_lifecycle::{LifecyclePackageKind, LifecyclePackageRef};
 use ironclaw_product_contracts::surface::ProductSurfaceCaller;
 use ironclaw_skills::ManagedSkillSource;
 use std::collections::{HashMap, VecDeque};
@@ -2122,6 +2124,29 @@ async fn fail_forced_tool_replacement(
     .execute(install_command(IronHubEntryKind::Tool, false))
     .await
     .expect("old tool installs through execute");
+    // A registry package is third-party: it waits for the user's consent
+    // before it activates. Grant it so the old tool is active, which is the
+    // state the replacement compensation must restore.
+    let old_ref = LifecyclePackageRef::new(LifecyclePackageKind::Extension, "installed-tool")
+        .expect("package ref");
+    let digest = services
+        .extension_management
+        .consent_summary(&old_ref)
+        .await
+        .expect("consent summary")
+        .expect("registry packages need consent")
+        .digest;
+    services
+        .extension_management
+        .grant_consent(old_ref.clone(), digest, &scope.user_id)
+        .await
+        .expect("consent granted");
+    let activated = services
+        .extension_management
+        .activate(old_ref, &scope.user_id)
+        .await
+        .expect("old tool activates after consent");
+    assert_eq!(activated.phase, InstallationState::Active);
 
     if tenant_shared {
         let store = services.extension_management.installation_store_handle();
