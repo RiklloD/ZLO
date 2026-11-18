@@ -43,12 +43,29 @@ the next run after deactivation or removal. In-flight runs keep their
 dispatcher. Third-party hooks still require `HOOKS_ENABLED` and
 `HOOKS_THIRD_PARTY_ENABLED`.
 
+Per-user visibility: the active registry is tenant-global, so each run
+installs only the packages whose installation is visible to the run's user —
+the same owner projection the tool catalog and the model-visible capability
+surface join (`ironclaw_extension_manager::installation_visibility`). A
+private install contributes to its members' runs only, a tenant-shared one to
+everyone's, and an active package with no installation row to nobody's (fail
+closed). An unreadable owner map fails the run's host build.
+
 Trust: every package hook installs through `HookRegistrar` at the
 `Installed` tier — restricted sinks (no `Allow`), no `Validation`/
 `Authorization` phases, grants default-deny, per-extension and per-tenant
-caps. WASM modules are read from the package root (≤ 2 MiB) and run in the
-hook WASM sandbox (fuel, memory, wall clock; no filesystem, network, clock or
-RNG imports).
+caps. WASM modules are read from the package root (≤ 2 MiB) once per package
+content identity (version, manifest digest, root) and held as immutable bytes
+next to the validated entries; a run that admits the package installs from
+those exact bytes through a registrar-scoped module resolver
+(`HookRegistrar::with_module_resolver`), so a concurrent run pruning the
+shared cache cannot invalidate them. They run in the hook WASM sandbox (fuel,
+memory, wall clock; no filesystem, network, clock or RNG imports).
+
+Consent seam: `live::read_hook_module` is the single read of hook module
+bytes and returns the buffer that is validated and compiled. Digest-pinned
+consent (install/consent lifecycle, not this surface) verifies those bytes
+against the consented asset hash there, before caching or compiling.
 
 WASM hook ABI: `ic:hooks/context@1` `ctx_size`/`ctx_read` expose a JSON
 context blob. When the package declares settings, the blob carries the acting
@@ -89,8 +106,12 @@ Delivery to the plugin — no ambient state:
   `"settings": { … }` next to `capability_id` (`ironclaw_host_runtime` WASM
   lane, via the `ExtensionSettingsReader` port). A read failure fails the
   invocation rather than running on defaults.
-- WASM hooks: the context blob's `settings` object (above). A read failure
-  fails the run's host build rather than skipping a gate.
+- WASM hooks: the context blob's `settings` object (above). On a read
+  failure the policy is per hook kind: a WASM gate (`before_capability`) or
+  mutator (`before_prompt`) fails the run's host build rather than being
+  skipped (fail closed); after-fact observers are skipped for that run only
+  (observer failure isolation), with a `hook.skipped_for_run` event on the
+  `security_audit` tracing target, and the package's other hooks install.
 
 Product face (`ironclaw_product_contracts::extension_settings`, answered by
 `ironclaw_assistant::extension_settings_page`, sourced from
@@ -105,8 +126,21 @@ Product face (`ironclaw_product_contracts::extension_settings`, answered by
   fit answers 400 with the standard validation body (`field: "value"`,
   `validation_code: "invalid_value"`) plus `"reason": "<plain text>"`; an
   unknown setting or inactive extension answers 404.
+- Both operations first check the installation owner for the caller: an
+  installation the caller may not see (another user's private plugin, or an
+  active package with no installation row) answers 404, indistinguishable
+  from an unknown extension.
 
 ## Known limits
+
+- A `[[tools]]` entry with no `origin_gate_matrix` parses, but the approval
+  gate treats a missing matrix as `Forbidden` for every origin
+  (`ironclaw_approvals::profile_gate_policy`), so the tool is refused with
+  `PolicyDenied` on every model call. Plugin authors must declare it (e.g.
+  `origin_gate_matrix = { loop_run = "gated_unless_granted", product =
+  "forbidden", automation = "forbidden" }`). Rejecting or defaulting a
+  missing matrix for third-party manifests is the install/consent lifecycle's
+  decision.
 
 - The schema is read from the active package; an installed-but-inactive
   extension's settings are not listed (404).

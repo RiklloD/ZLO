@@ -6,7 +6,12 @@
 //! - once activated, its WASM `before_capability` hook fires on a real run at
 //!   the `Installed` tier and decides from the user's settings;
 //! - a setting changed through the product surface reaches the hook on the
-//!   next run and flips its decision.
+//!   next run and flips its decision, and the plugin's own WASM tool then
+//!   runs and receives the same settings;
+//! - the package is private to the installing user: another user of the same
+//!   tenant, with the package in the same active registry, does not get its
+//!   tool and cannot read or write its settings (404, the same answer as an
+//!   unknown extension).
 //!
 //! Unregistration on deactivation is pinned by the live installer's unit
 //! test over the same active registry.
@@ -43,11 +48,14 @@ use ironclaw_product_contracts::extension_settings::{
     EXTENSION_SETTING_SET_COMMAND, EXTENSION_SETTINGS_VIEW, ExtensionSettingSetOutcome,
     ExtensionSettingSetRequest, ExtensionSettingsRequest,
 };
-use ironclaw_product_contracts::surface::{BoundProductSurface, ProductSurfaceCaller};
+use ironclaw_product_contracts::surface::{
+    BoundProductSurface, ProductSurfaceCaller, ProductSurfaceError,
+};
 use ironclaw_turns::TurnStatus;
 use serde_json::json;
 
 const OWNER: &str = "plugin-owner";
+const OTHER_USER: &str = "plugin-other-user";
 const TENANT: &str = "plugin-tenant";
 const TOOL_ID: &str = "guard.echo_context";
 const SEND_TIMEOUT: Duration = Duration::from_secs(20);
@@ -65,6 +73,7 @@ kind = "wasm"
 module = "wasm/echo.wasm"
 
 [[tools]]
+origin_gate_matrix = { loop_run = "gated_unless_granted", product = "forbidden", automation = "forbidden" }
 id = "guard.echo_context"
 description = "Return the invocation context."
 effects = []
@@ -276,7 +285,14 @@ fn package() -> (ExtensionPackage, ExtensionManifestRecord) {
         MANIFEST,
         ManifestSource::InstalledLocal,
         &ironclaw_host_api::host_port::default_host_port_catalog().unwrap(),
-        None,
+        // The on-disk manifest's digest, as the install lifecycle records it,
+        // so a later boot restores the installation against the same file.
+        Some(
+            ironclaw_extension_registry::ManifestHash::new(
+                ironclaw_host_api::approval::sha256_digest_token(MANIFEST.as_bytes()),
+            )
+            .unwrap(),
+        ),
         &HostApiContractRegistry::new(),
         Some(VirtualPath::new("/system/extensions/guard").unwrap()),
     )
@@ -320,6 +336,7 @@ impl HostManagedModelGateway for PluginGateway {
             *calls += 1;
             index
         };
+
         // After the plugin tool ran in this turn, answer with its result.
         let last_user = request
             .messages
@@ -376,14 +393,13 @@ impl HostManagedModelGateway for PluginGateway {
     }
 }
 
-#[tokio::test]
-async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
-    let root = tempfile::tempdir().unwrap();
-    let storage_root = root.path().join("standalone");
-    plant_package(&storage_root);
-
-    let input = RebornRuntimeInput::from_build_input(
-        ironclaw_composition::local_filesystem_build_input(OWNER, storage_root)
+fn runtime_input(
+    user: &str,
+    storage_root: std::path::PathBuf,
+    gateway: Arc<PluginGateway>,
+) -> RebornRuntimeInput {
+    RebornRuntimeInput::from_build_input(
+        ironclaw_composition::local_filesystem_build_input(user, storage_root)
             .with_runtime_policy(ironclaw_composition::standalone_runtime_policy().unwrap()),
     )
     .with_tool_disclosure(ToolDisclosureMode::Off)
@@ -394,39 +410,106 @@ async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
         reply_target_binding_id: "plugin-reply".to_string(),
     })
     .with_hooks_config(HooksActivationConfig::enabled().with_third_party_enabled(true))
-    .with_model_gateway_override(Arc::new(PluginGateway::default()))
+    .with_model_gateway_override(gateway)
     .with_runner_settings(
         TurnRunnerSettings::default()
             .set_heartbeat_interval(Duration::from_millis(25))
             .set_poll_interval(Duration::from_millis(10)),
+    )
+}
+
+async fn send(
+    runtime: &ironclaw_composition::RebornRuntime,
+    conversation: &ironclaw_composition::ConversationId,
+    text: &str,
+) -> String {
+    let reply = tokio::time::timeout(SEND_TIMEOUT, runtime.send_user_message(conversation, text))
+        .await
+        .expect("turn finishes in time")
+        .expect("turn runs");
+    assert_eq!(reply.status, TurnStatus::Completed, "reply: {reply:?}");
+    reply.text.unwrap_or_default()
+}
+
+fn settings_surface(
+    runtime: &ironclaw_composition::RebornRuntime,
+    user: &str,
+) -> BoundProductSurface {
+    let caller = ProductSurfaceCaller::new(
+        TenantId::new(TENANT).unwrap(),
+        UserId::new(user).unwrap(),
+        None,
+        None,
     );
-    let runtime = build_reborn_runtime(input).await.unwrap();
+    BoundProductSurface::new(runtime.product_surface(None).unwrap(), caller)
+}
+
+async fn list_settings(
+    surface: &BoundProductSurface,
+    extension_id: &str,
+) -> Result<
+    ironclaw_product_contracts::extension_settings::ExtensionSettingsResponse,
+    ProductSurfaceError,
+> {
+    EXTENSION_SETTINGS_VIEW
+        .query_on(
+            surface,
+            ExtensionSettingsRequest {
+                extension_id: extension_id.to_string(),
+            },
+            None,
+        )
+        .await
+}
+
+async fn set_setting(
+    surface: &BoundProductSurface,
+    extension_id: &str,
+    value: serde_json::Value,
+) -> Result<ExtensionSettingSetOutcome, ProductSurfaceError> {
+    EXTENSION_SETTING_SET_COMMAND
+        .invoke_on(
+            surface,
+            ExtensionSettingSetRequest {
+                extension_id: extension_id.to_string(),
+                setting_id: "block".to_string(),
+                value,
+            },
+            ActivityId::new(),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
+    let root = tempfile::tempdir().unwrap();
+    let storage_root = root.path().join("standalone");
+    plant_package(&storage_root);
+
+    let gateway = Arc::new(PluginGateway::default());
+    let runtime = build_reborn_runtime(runtime_input(
+        OWNER,
+        storage_root.clone(),
+        Arc::clone(&gateway),
+    ))
+    .await
+    .unwrap();
     let conversation = runtime.new_conversation().await.unwrap();
     runtime
         .enable_global_auto_approve_for_test(&conversation)
         .await;
-    let send = |text: &'static str| {
-        let runtime = &runtime;
-        let conversation = &conversation;
-        async move {
-            let reply =
-                tokio::time::timeout(SEND_TIMEOUT, runtime.send_user_message(conversation, text))
-                    .await
-                    .expect("turn finishes in time")
-                    .expect("turn runs");
-            assert_eq!(reply.status, TurnStatus::Completed, "reply: {reply:?}");
-            reply.text.unwrap_or_default()
-        }
-    };
 
     // On disk but not activated: nothing — no tool, no hook.
-    assert_eq!(send("use guard").await, "no guard tool");
+    assert_eq!(
+        send(&runtime, &conversation, "use guard").await,
+        "no guard tool"
+    );
 
     // Activate: the package's hook now fires on its own tool at the
     // Installed tier, and the declared default (`block = true`) denies.
     let (package, record) = package();
-    // The user's installation record (what the install lifecycle writes) so
-    // the plugin's tool joins this user's owner-filtered surface.
+    // The owner's private installation record (what the install lifecycle
+    // writes) so the plugin joins this user's owner-filtered surfaces.
     runtime
         .extension_installation_store_for_test()
         .expect("installation store wired")
@@ -435,7 +518,7 @@ async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
             ExtensionInstallation::new(
                 ExtensionInstallationId::new("guard-install").unwrap(),
                 package.id.clone(),
-                ExtensionManifestRef::new(package.id.clone(), None),
+                ExtensionManifestRef::new(package.id.clone(), record.manifest_hash().cloned()),
                 Vec::new(),
                 chrono::Utc::now(),
                 InstallationOwner::user(UserId::new(OWNER).unwrap()),
@@ -449,89 +532,99 @@ async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
         .await
         .expect("extension management wired")
         .expect("plugin activates");
-    let denied = send("use guard").await;
+    let denied = send(&runtime, &conversation, "use guard").await;
     assert!(
         denied.contains("hook_predicate_denied"),
         "the plugin's hook must deny while `block` is on: {denied}"
     );
 
     // The settings product face lists the declaration with its default ...
-    let caller = ProductSurfaceCaller::new(
-        TenantId::new(TENANT).unwrap(),
-        UserId::new(OWNER).unwrap(),
-        None,
-        None,
-    );
-    let surface = BoundProductSurface::new(runtime.product_surface(None).unwrap(), caller);
-    let listed = EXTENSION_SETTINGS_VIEW
-        .query_on(
-            &surface,
-            ExtensionSettingsRequest {
-                extension_id: "guard".to_string(),
-            },
-            None,
-        )
-        .await
-        .unwrap();
+    let surface = settings_surface(&runtime, OWNER);
+    let listed = list_settings(&surface, "guard").await.unwrap();
     assert_eq!(listed.settings.len(), 1);
     assert_eq!(listed.settings[0].value, json!(true));
     // ... rejects a value that does not fit it, with a plain reason ...
-    let rejected = EXTENSION_SETTING_SET_COMMAND
-        .invoke_on(
-            &surface,
-            ExtensionSettingSetRequest {
-                extension_id: "guard".to_string(),
-                setting_id: "block".to_string(),
-                value: json!("off"),
-            },
-            ActivityId::new(),
-        )
-        .await
-        .unwrap();
     assert_eq!(
-        rejected,
+        set_setting(&surface, "guard", json!("off")).await.unwrap(),
         ExtensionSettingSetOutcome::Rejected {
             reason: "`block`: expected true or false".to_string()
         }
     );
     // ... and stores a valid one.
-    let updated = EXTENSION_SETTING_SET_COMMAND
-        .invoke_on(
-            &surface,
-            ExtensionSettingSetRequest {
-                extension_id: "guard".to_string(),
-                setting_id: "block".to_string(),
-                value: json!(false),
-            },
-            ActivityId::new(),
-        )
-        .await
-        .unwrap();
+    let updated = set_setting(&surface, "guard", json!(false)).await.unwrap();
     let ExtensionSettingSetOutcome::Updated { setting } = updated else {
         panic!("expected an update, got {updated:?}");
     };
     assert_eq!(setting.value, json!(false));
 
-    // Next run: the hook reads `block = false` from the user's settings and
-    // passes, so the call proceeds past the hook into the capability
-    // pipeline. (Tool-side delivery of the same values through the WASM
-    // invocation context is pinned at the host-runtime tier:
-    // `host_runtime_services_wasm_tool_context_carries_the_users_effective_settings`.
-    // Kernel authorization of a locally installed third-party tool is the
-    // install/consent lifecycle's contract, not this one's.)
-    let passed = send("use guard").await;
+    // Next run: the hook reads `block = false` and passes, and the plugin's
+    // own WASM tool runs and echoes its invocation context — which carries
+    // the same user settings.
+    let passed = send(&runtime, &conversation, "use guard").await;
     assert!(
-        passed.starts_with("tool said:"),
-        "the plugin tool call must still be issued: {passed}"
+        passed.starts_with("tool said:") && passed.contains(r#""status":"success""#),
+        "the plugin tool must run to success once `block` is off: {passed}"
     );
     assert!(
-        !passed.contains("hook_predicate_denied"),
-        "the hook must pass once `block` is off: {passed}"
+        passed
+            .contains(r#"\"capability_id\":\"guard.echo_context\",\"settings\":{\"block\":false}"#),
+        "the tool's context must carry the user's settings: {passed}"
     );
 
     // Deactivation/removal unregistering the hooks is pinned against the same
     // active registry the lifecycle publisher clears, in
     // `observability::hooks::tests::live_hook_sets_follow_activation_and_deactivation`.
-
     runtime.shutdown().await.unwrap();
+
+    // Another user of the same tenant, on the same storage, with the package
+    // in the active registry: the owner's private installation contributes
+    // no hooks to their runs and no settings face.
+    let other_gateway = Arc::new(PluginGateway::default());
+    let other = build_reborn_runtime(runtime_input(
+        OTHER_USER,
+        storage_root,
+        Arc::clone(&other_gateway),
+    ))
+    .await
+    .unwrap();
+    other
+        .publish_bundled_extension_for_test(&package, Some(record.resolved()))
+        .await
+        .expect("extension management wired")
+        .expect("plugin activates");
+    let other_conversation = other.new_conversation().await.unwrap();
+    other
+        .enable_global_auto_approve_for_test(&other_conversation)
+        .await;
+    assert_eq!(
+        send(&other, &other_conversation, "use guard").await,
+        "no guard tool",
+        "a private plugin's tool stays off another user's surface"
+    );
+    // (The package's hooks are absent from this user's per-run dispatcher —
+    // pinned at the per-run factory with real per-user scopes in
+    // `observability::hooks::tests::live_hooks_follow_installation_visibility_per_run_user`.
+    // An Installed-tier hook without a host-verified grant can only attach to
+    // its own capabilities, which this surface already hides, so a leaked
+    // binding would have no model-visible effect here to assert on.)
+    let other_surface = settings_surface(&other, OTHER_USER);
+    let unknown = list_settings(&other_surface, "no-such-plugin")
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.status_code, 404);
+    assert_eq!(
+        list_settings(&other_surface, "guard").await.unwrap_err(),
+        unknown,
+        "another user's private plugin lists exactly like an unknown one"
+    );
+    assert_eq!(
+        set_setting(&other_surface, "guard", json!(true))
+            .await
+            .unwrap_err(),
+        set_setting(&other_surface, "no-such-plugin", json!(true))
+            .await
+            .unwrap_err(),
+        "another user cannot write a private plugin's settings"
+    );
+    other.shutdown().await.unwrap();
 }
