@@ -1,0 +1,42 @@
+# Linux x86_64 `zlo` for Verpin cloud runs. Verpin's VM downloads the asset of the
+# `zlo-linux-<sha>` prerelease and checks it against the .sha256 next to it.
+name: verpin-linux-build
+
+on:
+  push:
+    branches: [verpin/linux-build]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04   # glibc 2.35: runs on the Hermes VM image and anything newer
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: verpin-linux
+      - name: Build
+        env:
+          SKIP_FRONTEND_BUILD: "1"   # headless runs need no web UI
+        run: cargo build --release --locked -p ironclaw --bin zlo
+      - name: Package
+        run: |
+          short=$(git rev-parse --short=12 HEAD)
+          echo "TAG=zlo-linux-$short" >> "$GITHUB_ENV"
+          tar -C target/release -czf zlo-x86_64-unknown-linux-gnu.tar.gz zlo
+          sha256sum zlo-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1 > zlo-x86_64-unknown-linux-gnu.tar.gz.sha256
+          ./target/release/zlo --version
+          ls -la zlo-x86_64-unknown-linux-gnu.tar.gz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" --prerelease --target "$GITHUB_SHA" \
+            --title "$TAG (Linux x86_64, for Verpin cloud runs)" \
+            --notes "Built from $GITHUB_SHA by verpin-linux-build.yml." \
+            zlo-x86_64-unknown-linux-gnu.tar.gz zlo-x86_64-unknown-linux-gnu.tar.gz.sha256
