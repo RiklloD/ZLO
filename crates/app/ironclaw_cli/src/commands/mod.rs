@@ -8,6 +8,7 @@ pub(crate) mod export;
 pub(crate) mod extension;
 pub(crate) mod import;
 pub(crate) mod ironhub;
+pub(crate) mod memory;
 pub(crate) mod models;
 pub(crate) mod onboard;
 pub(crate) mod pair;
@@ -47,6 +48,8 @@ pub(crate) enum Command {
     /// Search and install signed registry packages from IronHub.
     #[command(name = "ironhub", visible_alias = "iron-hub", visible_alias = "hub")]
     IronHub(ironhub::IronHubCommand),
+    /// Maintain native memory (re-embed chunks for the configured embedding model).
+    Memory(memory::MemoryCommand),
     /// Inspect Reborn model slots and route status.
     Models(models::ModelsCommand),
     /// Initialize the standalone Reborn home and first-run setup marker.
@@ -109,6 +112,9 @@ impl Command {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
             Self::IronHub(command) => {
+                command.execute(crate::context::RebornCliContext::resolve_from_env()?)
+            }
+            Self::Memory(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
             Self::Models(command) => command.execute(),

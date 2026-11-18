@@ -350,13 +350,14 @@ impl ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore for 
 }
 
 /// A loopback OpenAI-compatible `/v1/embeddings` stub: records every
-/// request's `authorization` header and JSON body; requests numbered at or
-/// after `fail_from` get HTTP 500. "car"/"automobile" embed to `[1, 0]`,
+/// request's `authorization` header and JSON body; requests numbered in
+/// `fail_from..fail_to` get HTTP 500. "car"/"automobile" embed to `[1, 0]`,
 /// everything else to `[0, 1]`.
 struct StubEmbeddingServer {
     base_url: String,
     requests: Arc<std::sync::Mutex<Vec<StubRequest>>>,
     fail_from: Arc<std::sync::atomic::AtomicUsize>,
+    fail_to: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl StubEmbeddingServer {
@@ -366,7 +367,12 @@ impl StubEmbeddingServer {
         let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let fail_from = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
-        let (log, fail) = (Arc::clone(&requests), Arc::clone(&fail_from));
+        let fail_to = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let (log, fail, fail_end) = (
+            Arc::clone(&requests),
+            Arc::clone(&fail_from),
+            Arc::clone(&fail_to),
+        );
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 let mut raw = Vec::new();
@@ -404,7 +410,10 @@ impl StubEmbeddingServer {
                     log.push((header("authorization"), body.clone()));
                     log.len() - 1
                 };
-                let (status, reply) = if number >= fail.load(std::sync::atomic::Ordering::SeqCst) {
+                let failing = (fail.load(std::sync::atomic::Ordering::SeqCst)
+                    ..fail_end.load(std::sync::atomic::Ordering::SeqCst))
+                    .contains(&number);
+                let (status, reply) = if failing {
                     (
                         "500 Internal Server Error",
                         serde_json::json!({"error": "down"}),
@@ -442,6 +451,7 @@ impl StubEmbeddingServer {
             base_url,
             requests,
             fail_from,
+            fail_to,
         }
     }
 
@@ -575,4 +585,206 @@ async fn production_embedding_chain_sends_the_bound_key_and_degrades_on_failure(
         server.requests().len() > requests.len(),
         "the failing calls were attempted"
     );
+}
+
+/// The re-embed backfill over the production `[embeddings]` chain
+/// (`memory_reembed_job_for_test` = the job the runtime assembles from the
+/// native binding's embedder): a document stored while the provider was
+/// down is reachable by full text only; after the job it is found by
+/// meaning. Asserted at the wire (the bound key reaches `authorization`, a
+/// provider 500 is retried as transient through composition's error mapping)
+/// and at recall; a second run finds no backlog and calls nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reembed_backfill_makes_a_text_only_document_vector_searchable() {
+    use std::sync::atomic::Ordering::SeqCst;
+    const KEY: &str = "sk-backfill-key-7";
+    let server = StubEmbeddingServer::start().await;
+    let section = ironclaw_config::EmbeddingsSection {
+        provider: "openai".to_string(),
+        model: "text-embedding-3-small".to_string(),
+        dimension: Some(2),
+        base_url: Some(server.base_url.clone()),
+    };
+    let filesystem: Arc<dyn ironclaw_filesystem::RootFilesystem> =
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new());
+    let keys: Arc<dyn ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore> =
+        Arc::new(OperatorKeys::default());
+    let service = ironclaw_composition::test_support::semantic_native_memory_for_test(
+        &section,
+        Arc::clone(&keys),
+        SecretString::from(KEY),
+        Arc::clone(&filesystem),
+    )
+    .await
+    .expect("the production chain builds");
+
+    // Written while the provider is down: stored text-only.
+    server.fail_from.store(0, SeqCst);
+    record(service.as_ref(), "run-1", "my car is teal").await;
+    server.fail_from.store(usize::MAX, SeqCst);
+    assert!(
+        recall(service.as_ref(), "automobile").await.is_empty(),
+        "before the backfill a meaning-only query finds nothing"
+    );
+
+    let job = ironclaw_composition::test_support::memory_reembed_job_for_test(
+        &section,
+        keys,
+        SecretString::from(KEY),
+        Arc::clone(&filesystem),
+    )
+    .await
+    .expect("the production backfill job builds");
+    // The backfill's first provider call answers 500, the retry succeeds.
+    let before = server.requests().len();
+    server.fail_from.store(before, SeqCst);
+    server.fail_to.store(before + 1, SeqCst);
+    let options = ironclaw_memory_native::MemoryReembedOptions {
+        initial_backoff: std::time::Duration::from_millis(10),
+        ..ironclaw_memory_native::MemoryReembedOptions::operator(false, None)
+    };
+    let mut samples = Vec::new();
+    let report = job
+        .run(&options, &mut |progress| samples.push(progress))
+        .await
+        .expect("backfill runs");
+    assert_eq!(
+        report.outcome,
+        ironclaw_memory_native::MemoryReembedOutcome::Complete
+    );
+    assert_eq!((report.backlog, report.embedded), (1, 1));
+    assert_eq!(report.provider_calls, 2, "the 500 was retried once");
+    assert_eq!(samples.last().map(|sample| sample.backlog), Some(0));
+    let backfill_requests = &server.requests()[before..];
+    assert_eq!(backfill_requests.len(), 2);
+    for (authorization, body) in backfill_requests {
+        assert_eq!(
+            authorization.as_deref(),
+            Some(format!("Bearer {KEY}").as_str()),
+            "the operator key is injected host-side on every backfill call"
+        );
+        assert_eq!(body["input"], json!(["## user\nmy car is teal\n"]));
+    }
+
+    assert_eq!(
+        recall(service.as_ref(), "automobile").await,
+        vec!["threads/convo/run-1.md".to_string()],
+        "after the backfill the pre-existing document is found by meaning"
+    );
+    let calls = server.requests().len();
+    let again = job.run(&options, &mut |_| {}).await.expect("second run");
+    assert_eq!((again.backlog, again.provider_calls), (0, 0));
+    assert_eq!(
+        server.requests().len(),
+        calls,
+        "a finished backfill calls nothing"
+    );
+}
+
+/// A runtime with `[embeddings]` (a no-key `ollama` provider on the loopback
+/// stub) built from the plain build input — exactly what one-shot CLI
+/// commands such as `zlo memory reembed` build — optionally opted in to the
+/// background re-embed worker the way `serve` is.
+async fn embeddings_runtime(
+    storage: &std::path::Path,
+    server: &StubEmbeddingServer,
+    background: Option<ironclaw_memory_native::MemoryReembedOptions>,
+) -> ironclaw_composition::RebornRuntime {
+    let section = ironclaw_config::EmbeddingsSection {
+        provider: "ollama".to_string(),
+        model: "test-embedder".to_string(),
+        dimension: Some(2),
+        base_url: Some(server.base_url.clone()),
+    };
+    let services =
+        ironclaw_composition::local_filesystem_build_input("reembed-owner", storage.to_path_buf())
+            .with_runtime_policy(
+                ironclaw_composition::standalone_runtime_policy().expect("standalone policy"),
+            )
+            .with_embeddings_section(&section, None)
+            .expect("[embeddings] resolves");
+    let mut input = ironclaw_composition::RebornRuntimeInput::from_build_input(services);
+    input.memory_reembed_background = background;
+    ironclaw_composition::build_reborn_runtime(input)
+        .await
+        .expect("runtime builds")
+}
+
+/// A document written before any embedder existed: text-only chunks.
+async fn seed_text_only(runtime: &ironclaw_composition::RebornRuntime) {
+    let service = ironclaw_memory_native::NativeMemoryService::from_filesystem(
+        ironclaw_composition::test_support::memory_filesystem_for_test(runtime),
+        None,
+    );
+    record(&service, "run-1", "my car is teal").await;
+}
+
+async fn dry_run_backlog(runtime: &ironclaw_composition::RebornRuntime) -> u64 {
+    runtime
+        .reembed_memory(true, None, &mut |_| {})
+        .await
+        .expect("dry run")
+        .expect("embeddings configured")
+        .backlog
+}
+
+/// What `zlo memory reembed --dry-run` builds starts no background worker:
+/// after the dry run and well past the opted-in start delay below, the
+/// provider was never called and no vector or cursor was written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_one_shot_runtime_never_starts_the_background_reembed() {
+    let storage = tempfile::tempdir().expect("tempdir");
+    let server = StubEmbeddingServer::start().await;
+    let runtime = embeddings_runtime(storage.path(), &server, None).await;
+    assert!(
+        !ironclaw_composition::test_support::memory_reembed_background_started_for_test(&runtime)
+    );
+    seed_text_only(&runtime).await;
+
+    let report = runtime
+        .reembed_memory(true, None, &mut |_| {})
+        .await
+        .expect("dry run")
+        .expect("embeddings configured");
+    assert_eq!((report.backlog, report.provider_calls), (1, 0));
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert!(server.requests().is_empty(), "no provider call");
+    assert_eq!(dry_run_backlog(&runtime).await, 1, "no vector was written");
+    let cursors = ironclaw_composition::test_support::memory_filesystem_for_test(&runtime)
+        .list_dir(&ironclaw_host_api::path::VirtualPath::new("/memory/.reembed").expect("path"))
+        .await;
+    assert!(
+        cursors.as_ref().map_or(true, Vec::is_empty),
+        "no cursor was written: {cursors:?}"
+    );
+    runtime.shutdown().await.expect("shutdown");
+}
+
+/// The same runtime opted in (as `serve` is), with a short start delay,
+/// backfills the document by itself — so the test above is not vacuous.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_opted_in_runtime_backfills_in_the_background() {
+    let storage = tempfile::tempdir().expect("tempdir");
+    let server = StubEmbeddingServer::start().await;
+    let options = ironclaw_memory_native::MemoryReembedOptions {
+        start_delay: std::time::Duration::from_millis(200),
+        min_call_interval: std::time::Duration::ZERO,
+        ..ironclaw_memory_native::MemoryReembedOptions::background()
+    };
+    let runtime = embeddings_runtime(storage.path(), &server, Some(options)).await;
+    assert!(
+        ironclaw_composition::test_support::memory_reembed_background_started_for_test(&runtime)
+    );
+    seed_text_only(&runtime).await;
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while dry_run_backlog(&runtime).await > 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the background worker never backfilled the document"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(!server.requests().is_empty());
+    runtime.shutdown().await.expect("shutdown");
 }

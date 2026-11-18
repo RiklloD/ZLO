@@ -259,7 +259,16 @@ const WS0_COMPOSITION_SHARE_BP: usize = 642;
 /// code moved; the counter stopped counting two production-NAMED files that
 /// only `#[cfg(test)]` declarations reach (-488) and the record drops the 12
 /// lines of slack it carried; per-file breakdown in the manifest.
-const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 33_502;
+/// ✎ Re-measured 33_502 -> 33_563 on 2026-11-17 (feat/memory-reembed-backfill):
+/// the re-embed backfill's composition wiring (job construction, background
+/// start, `reembed_memory`, provider-error retry classification); per-item
+/// breakdown in the manifest.
+/// ✎ Re-measured 33_563 -> 33_582 on 2026-11-17 (review round 1): the
+/// background re-embed worker became an opt-in runtime input (`serve` only).
+/// ✎ Re-measured 33_582 -> 33_600 on 2026-11-18 on the merged tree: main @
+/// 3359f4929 measures 33_520 (+18 over its own record, from the sandbox
+/// teardown merge); this branch adds its +80 on top.
+const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 33_600;
 
 /// Composition dispatch, from the same `--print` run: "composition dispatch:
 /// 827 Arc<dyn> (governed prod, excl slack/extension_host)".

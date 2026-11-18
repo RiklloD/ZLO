@@ -155,6 +155,7 @@ with the process-wide registry and the integration harness calls with its own.
 | `ironclaw_llm_request_duration_seconds` (histogram) | `outcome` = success / error | same observation |
 | `ironclaw_approval_gates_opened_total` | — | committed `Blocked` turn transitions whose gate kind is `approval` (same turn-event adapter) |
 | `ironclaw_approval_gates_resolved_total` | `resolution` = approved / denied | committed user decisions, observed by `MetricsApprovalRequestStore` around the approval resolver's store (`approve`, `deny`). A capability-side rollback (`discard_pending` when blocking the invocation fails) is not counted: it runs before the turn commits `Blocked`, so the gate was never counted opened. `opened - resolved` is therefore gates still pending plus gates whose run ended (cancelled, failed) while pending |
+| `ironclaw_memory_reembed_chunks_total` (counter), `ironclaw_memory_reembed_backlog_chunks` (gauge) | none | progress samples of native memory's re-embed backfill (`MemoryReembedJob`), recorded by the boot-time background run composition starts: chunks given a vector in the current embedding space after each durably attached batch, and the chunks the run has not dealt with yet. The gauge has no sample until the job's first scan; an operator `zlo memory reembed` runs in its own process and does not feed the serving process's registry |
 | `ironclaw_metrics_series_overflow_total` | `family` | samples folded into `__other__` |
 
 Cardinality rules, enforced by the registry: no tenant, user, agent, project,

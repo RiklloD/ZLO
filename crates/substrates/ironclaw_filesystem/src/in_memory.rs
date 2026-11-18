@@ -59,6 +59,28 @@ struct State {
     ordered_indexes: HashMap<String, HashMap<IndexName, MaterializedOrderedIndex>>,
     event_logs: HashMap<String, Vec<EventRecord>>,
     sequences: HashMap<String, SeqNo>,
+    /// Highest version each deleted path ever held, so a recreated record
+    /// starts above it and an old version token never matches a later
+    /// incarnation (CONTRACT.md invariant 9).
+    version_floors: HashMap<VirtualPath, RecordVersion>,
+}
+
+impl State {
+    /// The version a record created at `path` now starts at: one above the
+    /// highest version a deleted incarnation held, else the first version.
+    fn initial_version(&self, path: &VirtualPath) -> RecordVersion {
+        self.version_floors
+            .get(path)
+            .map_or_else(|| RecordVersion::from_backend(1), |floor| floor.next())
+    }
+
+    /// Remember a deleted record's version as `path`'s high-water mark.
+    fn record_version_floor(&mut self, path: &VirtualPath, version: RecordVersion) {
+        let floor = self.version_floors.entry(path.clone()).or_insert(version);
+        if *floor < version {
+            *floor = version;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -81,6 +103,7 @@ impl InMemoryBackend {
                 ordered_indexes: HashMap::new(),
                 event_logs: HashMap::new(),
                 sequences: HashMap::new(),
+                version_floors: HashMap::new(),
             })),
         }
     }
@@ -134,9 +157,9 @@ impl RootFilesystem for InMemoryBackend {
             });
         }
         let modified = SystemTime::now();
-        let version = RecordVersion::from_backend(1);
         let mut versions = Vec::with_capacity(entries.len());
         for item in entries {
+            let version = state.initial_version(&item.path);
             state.entries.insert(
                 item.path,
                 StoredEntry {
@@ -179,6 +202,7 @@ impl RootFilesystem for InMemoryBackend {
             });
         }
         if let Some(removed) = state.entries.remove(path) {
+            state.record_version_floor(path, removed.version);
             update_materialized_indexes(&mut state, path, Some(&removed.entry), None);
         }
         Ok(())
@@ -677,7 +701,7 @@ impl RootFilesystem for InMemoryBackend {
         entry.body.extend_from_slice(bytes);
         let next_version = existing
             .map(|s| s.version.next())
-            .unwrap_or_else(|| RecordVersion::from_backend(1));
+            .unwrap_or_else(|| state.initial_version(path));
         state.entries.insert(
             path.clone(),
             StoredEntry {
@@ -713,7 +737,7 @@ fn state_put(
     check_cas(path, cas, current_version)?;
     let next_version = current_version
         .map(RecordVersion::next)
-        .unwrap_or_else(|| RecordVersion::from_backend(1));
+        .unwrap_or_else(|| state.initial_version(path));
     update_materialized_indexes(
         state,
         path,
@@ -755,6 +779,7 @@ fn state_delete(state: &mut State, path: &VirtualPath) -> Result<(), FilesystemE
     }
     for (removed_path, stored) in removed {
         state.entries.remove(&removed_path);
+        state.record_version_floor(&removed_path, stored.version);
         update_materialized_indexes(state, &removed_path, Some(&stored.entry), None);
     }
     clear_event_logs_under(&mut state.event_logs, path.as_str(), &prefix);
@@ -1334,49 +1359,36 @@ mod tests {
         assert_eq!(log[0].seq, log_seq);
     }
 
-    /// Pins the ABA hazard `delete_if_version`'s doc comment warns about:
-    /// version tokens are not generation-stable, so a version captured
-    /// before a delete+recreate cycle can match a *different* incarnation
-    /// of the same path. This is documented, known behavior — not a bug —
-    /// but was previously asserted only in prose. Round-A review finding
-    /// (PR #5749): pin it with a real assertion so a future change to this
-    /// contract (e.g. generation-stable versions) breaks a test loudly
-    /// instead of silently.
+    /// A version token from a deleted incarnation never matches a later one:
+    /// the recreate starts above the deleted version (CONTRACT.md invariant
+    /// 9), so `delete_if_version` with the stale token refuses instead of
+    /// deleting the second incarnation's data. (This test used to pin the
+    /// opposite — versions restarting at 1 — as documented behavior.)
     #[tokio::test]
-    async fn delete_if_version_is_vulnerable_to_aba_across_delete_recreate_cycles() {
+    async fn delete_if_version_rejects_a_token_from_a_deleted_incarnation() {
         let fs = InMemoryBackend::new();
         let path = vpath("/secrets/leases/cas-delete-aba");
 
-        // First incarnation: created and fully deleted.
-        let v1_first = fs
+        let first = fs
             .put(&path, Entry::bytes(vec![1]), CasExpectation::Absent)
             .await
             .unwrap();
-        fs.delete_if_version(&path, v1_first).await.unwrap();
+        fs.delete_if_version(&path, first).await.unwrap();
         assert!(fs.get(&path).await.unwrap().is_none());
 
-        // Second incarnation restarts the version counter at the same raw
-        // value as the first (version is not generation-stable).
-        let v1_second = fs
+        let second = fs
             .put(&path, Entry::bytes(vec![2]), CasExpectation::Absent)
             .await
             .unwrap();
-        assert_eq!(
-            v1_first, v1_second,
-            "version must restart after a full delete, or this ABA hazard doesn't apply"
-        );
-
-        // The stale `v1_first` token — captured against the first
-        // incarnation — incorrectly authorizes deleting the second
-        // incarnation's live data. This is the documented hazard, not a
-        // regression: callers that recreate paths must pair every
-        // successful delete with an unconditional postcondition recheck,
-        // per the trait doc comment.
-        fs.delete_if_version(&path, v1_first).await.unwrap();
         assert!(
-            fs.get(&path).await.unwrap().is_none(),
-            "stale version token wrongly matched and deleted the second incarnation"
+            second > first,
+            "the recreate must start above the deleted version"
         );
+        assert!(matches!(
+            fs.delete_if_version(&path, first).await,
+            Err(FilesystemError::VersionMismatch { .. })
+        ));
+        assert_eq!(fs.read_file(&path).await.unwrap(), vec![2]);
     }
 
     #[tokio::test]

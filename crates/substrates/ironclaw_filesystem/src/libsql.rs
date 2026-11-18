@@ -1137,7 +1137,8 @@ impl RootFilesystem for LibSqlRootFilesystem {
                 r#"
                 INSERT INTO root_filesystem_entries
                     (path, contents, is_dir, content_type, kind, indexed, version, updated_at)
-                VALUES (?1, ?2, 0, 'application/octet-stream', NULL, '{}', 1,
+                VALUES (?1, ?2, 0, 'application/octet-stream', NULL, '{}',
+                        (SELECT COALESCE(MAX(version), 0) + 1 FROM root_filesystem_version_floors WHERE path = ?1),
                         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 ON CONFLICT (path) DO UPDATE SET
                     contents = excluded.contents,
@@ -1197,7 +1198,8 @@ impl RootFilesystem for LibSqlRootFilesystem {
                 r#"
                 INSERT INTO root_filesystem_entries
                     (path, contents, is_dir, content_type, kind, indexed, version, updated_at)
-                VALUES (?1, ?2, 0, 'application/octet-stream', NULL, '{}', 1,
+                VALUES (?1, ?2, 0, 'application/octet-stream', NULL, '{}',
+                        (SELECT COALESCE(MAX(version), 0) + 1 FROM root_filesystem_version_floors WHERE path = ?1),
                         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 ON CONFLICT (path) DO UPDATE SET
                     contents = CAST(root_filesystem_entries.contents || excluded.contents AS BLOB),
@@ -1799,6 +1801,18 @@ async fn delete_libsql_inner(
     // shared helper so root and transactional deletes retain identical
     // semantics.
     let (prefix_lower, prefix_upper) = descendant_path_range(path);
+    // Keep every deleted record's version as its path's high-water mark
+    // (CONTRACT.md invariant 9), in the same transaction as the delete.
+    conn.execute(
+        "INSERT INTO root_filesystem_version_floors (path, version) \
+         SELECT path, version FROM root_filesystem_entries \
+         WHERE (path = ?1 OR (path >= ?2 AND path < ?3)) AND is_dir = 0 \
+         ON CONFLICT (path) DO UPDATE SET \
+             version = max(root_filesystem_version_floors.version, excluded.version)",
+        libsql::params![path.as_str(), prefix_lower.clone(), prefix_upper.clone()],
+    )
+    .await
+    .map_err(|error| libsql_db_error(path.clone(), FilesystemOperation::Delete, error))?;
     let deleted = conn
         .execute(
             "DELETE FROM root_filesystem_entries \
@@ -1959,13 +1973,16 @@ async fn put_libsql_inner(
 
     match cas {
         CasExpectation::Absent => {
-            let rows = conn
-                .execute(
+            let mut rows = conn
+                .query(
                     r#"
                     INSERT INTO root_filesystem_entries
                         (path, contents, is_dir, content_type, kind, indexed, version, updated_at)
-                    VALUES (?1, ?2, 0, ?3, ?4, ?5, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    VALUES (?1, ?2, 0, ?3, ?4, ?5,
+                            (SELECT COALESCE(MAX(version), 0) + 1 FROM root_filesystem_version_floors WHERE path = ?1),
+                            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                     ON CONFLICT (path) DO NOTHING
+                    RETURNING version
                     "#,
                     libsql::params![
                         path.as_str(),
@@ -1979,15 +1996,22 @@ async fn put_libsql_inner(
                 .map_err(|error| {
                     libsql_db_error(path.clone(), FilesystemOperation::WriteFile, error)
                 })?;
-            if rows == 0 {
+            let inserted = rows.next().await.map_err(|error| {
+                libsql_db_error(path.clone(), FilesystemOperation::WriteFile, error)
+            })?;
+            let Some(row) = inserted else {
+                drop(rows);
                 let found = current_version_libsql(conn, path).await?;
                 return Err(FilesystemError::VersionMismatch {
                     path: path.clone(),
                     expected: None,
                     found,
                 });
-            }
-            Ok(RecordVersion::from_backend(1))
+            };
+            let version_raw: i64 = row.get(0).map_err(|error| {
+                libsql_db_error(path.clone(), FilesystemOperation::WriteFile, error)
+            })?;
+            record_version_from_i64(path, version_raw)
         }
         CasExpectation::Version(expected) => {
             let expected_raw = record_version_to_i64(path, expected)?;
@@ -2032,7 +2056,9 @@ async fn put_libsql_inner(
                     r#"
                     INSERT INTO root_filesystem_entries
                         (path, contents, is_dir, content_type, kind, indexed, version, updated_at)
-                    VALUES (?1, ?2, 0, ?3, ?4, ?5, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    VALUES (?1, ?2, 0, ?3, ?4, ?5,
+                            (SELECT COALESCE(MAX(version), 0) + 1 FROM root_filesystem_version_floors WHERE path = ?1),
+                            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                     ON CONFLICT (path) DO UPDATE SET
                         contents = excluded.contents,
                         content_type = excluded.content_type,
@@ -2201,6 +2227,17 @@ async fn delete_if_version_libsql_inner(
     expected_version: RecordVersion,
     expected_raw: i64,
 ) -> Result<(), FilesystemError> {
+    // The high-water mark first, in the same transaction (invariant 9).
+    conn.execute(
+        "INSERT INTO root_filesystem_version_floors (path, version) \
+         SELECT path, version FROM root_filesystem_entries \
+         WHERE path = ?1 AND is_dir = 0 AND version = ?2 \
+         ON CONFLICT (path) DO UPDATE SET \
+             version = max(root_filesystem_version_floors.version, excluded.version)",
+        libsql::params![path.as_str(), expected_raw],
+    )
+    .await
+    .map_err(|error| libsql_db_error(path.clone(), FilesystemOperation::Delete, error))?;
     let deleted = conn
         .execute(
             "DELETE FROM root_filesystem_entries \
@@ -2237,6 +2274,11 @@ async fn run_libsql_migrations_inner(conn: &libsql::Connection) -> Result<(), Fi
     ensure_libsql_ordered_index_table(conn).await?;
     ensure_libsql_events_table(conn).await?;
     ensure_libsql_sequences_table(conn).await?;
+    // Additive: absent on databases created before it, so it is created on
+    // the next migration run; no existing row changes (invariant 9).
+    conn.execute_batch(LIBSQL_VERSION_FLOORS_SCHEMA)
+        .await
+        .map_err(|error| infrastructure_libsql_error(FilesystemOperation::CreateDirAll, error))?;
     Ok(())
 }
 async fn ensure_libsql_root_is_dir_column(
@@ -3186,6 +3228,14 @@ CREATE TABLE IF NOT EXISTS root_filesystem_events (
 );
 CREATE INDEX IF NOT EXISTS idx_root_filesystem_events_path_seq
     ON root_filesystem_events(path, seq);
+"#;
+/// Per-path version high-water marks of deleted records (CONTRACT.md
+/// invariant 9): a recreated record starts above its path's mark.
+const LIBSQL_VERSION_FLOORS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS root_filesystem_version_floors (
+    path TEXT PRIMARY KEY,
+    version INTEGER NOT NULL CHECK (version > 0)
+);
 "#;
 const LIBSQL_SEQUENCES_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS root_filesystem_sequences (

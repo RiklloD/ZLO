@@ -14,6 +14,7 @@ mod events;
 mod indexer;
 mod metadata;
 mod path;
+mod reembed;
 mod repo;
 mod safety;
 mod schema;
@@ -59,12 +60,17 @@ pub use backend::{MemoryBackend, MemoryBackendCapabilities, RepositoryMemoryBack
 pub use chunking::{ChunkConfig, MemoryChunkWrite, chunk_document};
 pub use embedding::{
     MemoryChunkEmbedding, MemoryEmbedder, MemoryEmbeddingError, MemoryEmbeddingFingerprint,
+    MemoryEmbeddingRetry,
 };
 pub use indexer::{
     ChunkingMemoryDocumentIndexer, MemoryChunkReplaceOutcome, MemoryDocumentIndexRepository,
     MemoryDocumentIndexer,
 };
 pub use metadata::{MemoryBackendWriteOptions, MemoryWriteOptions};
+pub use reembed::{
+    MemoryReembedJob, MemoryReembedOptions, MemoryReembedOutcome, MemoryReembedProgress,
+    MemoryReembedReport, MemoryReembedTask,
+};
 pub use repo::{
     FilesystemMemoryDocumentRepository, InMemoryMemoryDocumentRepository, MemoryAppendOutcome,
     MemoryDocumentHistory, MemoryDocumentRepository, MemoryWriteOutcome,

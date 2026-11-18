@@ -517,6 +517,10 @@ pub struct RebornRuntime {
     /// Boot-time reply-publication recovery sweep, owned so shutdown stops
     /// it before releasing publication leases.
     pub(crate) reply_publication_recovery: Option<tokio::task::JoinHandle<()>>,
+    /// Native memory's re-embed backfill (`[embeddings]` + native binding)
+    /// and its boot-time background run, which stops when the runtime drops.
+    pub(crate) memory_reembed: Option<ironclaw_memory_native::MemoryReembedJob>,
+    pub(crate) memory_reembed_background: Option<ironclaw_memory_native::MemoryReembedTask>,
     /// The deployment's single workspace scoping decision, carried so the WebUI
     /// attachment handle addresses the same subtree as agent tool writes.
     pub(crate) workspace_mount_policy: crate::runtime_mounts::WorkspaceMountPolicy,

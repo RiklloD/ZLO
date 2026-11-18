@@ -816,3 +816,35 @@ fn response_cache_hit_series_fold_past_the_llm_series_ceiling() {
         "a hit adds no token series:\n{rendered}"
     );
 }
+
+#[test]
+fn memory_reembed_progress_folds_into_a_counter_and_a_backlog_gauge() {
+    let metrics = OperatorMetrics::new();
+    let rendered = metrics.render_prometheus();
+    assert!(rendered.contains("# TYPE ironclaw_memory_reembed_chunks_total counter"));
+    assert!(rendered.contains("# TYPE ironclaw_memory_reembed_backlog_chunks gauge"));
+    assert_eq!(
+        line_value(&rendered, "ironclaw_memory_reembed_chunks_total").as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        line_value(&rendered, "ironclaw_memory_reembed_backlog_chunks"),
+        None,
+        "no backlog sample before the job's first scan"
+    );
+
+    metrics.record_memory_reembed(0, 7);
+    metrics.record_memory_reembed(4, 3);
+    metrics.record_memory_reembed(3, 0);
+    let rendered = metrics.render_prometheus();
+    assert_eq!(
+        line_value(&rendered, "ironclaw_memory_reembed_chunks_total").as_deref(),
+        Some("7"),
+        "the counter accumulates"
+    );
+    assert_eq!(
+        line_value(&rendered, "ironclaw_memory_reembed_backlog_chunks").as_deref(),
+        Some("0"),
+        "the gauge holds the latest sample"
+    );
+}

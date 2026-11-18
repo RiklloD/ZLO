@@ -1117,6 +1117,7 @@ fn help_mentions_reborn_commands() {
     assert!(stdout.contains("config"), "stdout: {stdout}");
     assert!(stdout.contains("doctor"), "stdout: {stdout}");
     assert!(stdout.contains("extension"), "stdout: {stdout}");
+    assert!(stdout.contains("memory"), "stdout: {stdout}");
     assert!(stdout.contains("ironhub"), "stdout: {stdout}");
     assert!(stdout.contains("models"), "stdout: {stdout}");
     assert!(stdout.contains("onboard"), "stdout: {stdout}");
@@ -1342,6 +1343,60 @@ fn extension_search_does_not_seed_reborn_config() {
     assert!(
         !reborn_home.join("config.toml").exists(),
         "extension search must not seed runtime config"
+    );
+}
+
+/// `zlo memory reembed --dry-run` counts the backlog through the composed
+/// runtime without calling the provider: with no `[embeddings]` it says so;
+/// with one (pointed at a port nothing listens on, so any embedding call
+/// would fail) it reports an empty backlog for the configured space.
+#[test]
+fn memory_reembed_dry_run_reports_the_backlog_without_calling_the_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let reborn_home = temp.path().join("reborn-home");
+    let run = |home: &Path| {
+        isolated_no_llm_command(&workspace, home)
+            .args(["memory", "reembed", "--dry-run", "--json"])
+            .output()
+            .expect("zlo memory reembed should run")
+    };
+
+    write_reborn_config(&reborn_home, "local-dev");
+    let output = run(&reborn_home);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json report");
+    assert_eq!(report["configured"], false, "{report}");
+
+    let configured_home = temp.path().join("reborn-home-embeddings");
+    write_reborn_config(&configured_home, "local-dev");
+    let config = configured_home.join("config.toml");
+    let mut text = std::fs::read_to_string(&config).expect("config");
+    text.push_str(
+        "\n[embeddings]\nprovider = \"openai\"\nmodel = \"text-embedding-3-small\"\nbase_url = \"http://127.0.0.1:9/v1\"\n",
+    );
+    std::fs::write(&config, text).expect("config");
+    let output = run(&configured_home);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json report");
+    assert_eq!(report["configured"], true, "{report}");
+    assert_eq!(report["outcome"], "dry_run", "{report}");
+    assert_eq!(report["backlog"], 0, "{report}");
+    assert_eq!(report["provider_calls"], 0, "{report}");
+    assert!(
+        report["fingerprint"]
+            .as_str()
+            .is_some_and(|fingerprint| fingerprint.contains("text-embedding-3-small")),
+        "{report}"
     );
 }
 

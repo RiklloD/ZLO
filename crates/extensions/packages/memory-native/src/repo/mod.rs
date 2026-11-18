@@ -12,6 +12,7 @@ mod filesystem;
 mod in_memory;
 
 pub use filesystem::FilesystemMemoryDocumentRepository;
+pub(crate) use filesystem::{PendingChunk, ReembedCursor, ReembedPosition, scope_key};
 pub use in_memory::InMemoryMemoryDocumentRepository;
 
 /// Result of an optimistic atomic append attempt.

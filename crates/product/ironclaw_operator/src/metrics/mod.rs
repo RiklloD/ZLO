@@ -23,6 +23,11 @@
 //!   transition that counts a gate opened, and counting the discard would
 //!   make resolved exceed opened. A gate whose run ends (cancelled, failed)
 //!   while still pending stays in `opened - resolved`;
+//! - **memory re-embed backfill** — the progress samples native memory's
+//!   re-embed job reports after each batch it durably attaches
+//!   ([`OperatorMetrics::record_memory_reembed`]): chunks embedded (a
+//!   counter) and the chunks still without a vector in the current embedding
+//!   space (a gauge, absent until the job's first scan);
 //! - **LLM requests, tokens, errors, response-cache hits** — the provider
 //!   responses the model gateway receives, observed by [`MetricsLlmProvider`]
 //!   at the outermost position of the provider chain, labelled from the
@@ -173,6 +178,8 @@ struct MetricsState {
     llm_request_duration: LabeledHistogram,
     approvals_opened: u64,
     approvals_resolved: LabeledCounter,
+    memory_reembed_chunks: u64,
+    memory_reembed_backlog: Option<u64>,
     overflow: BTreeMap<&'static str, u64>,
 }
 
@@ -214,6 +221,15 @@ impl OperatorMetrics {
     /// A turn run committed a `Blocked` transition on an approval gate.
     pub fn record_approval_gate_opened(&self) {
         self.state().approvals_opened += 1;
+    }
+
+    /// One progress sample of native memory's re-embed backfill: `embedded`
+    /// chunks just got a vector in the current space, `backlog` chunks still
+    /// have none.
+    pub fn record_memory_reembed(&self, embedded: u64, backlog: u64) {
+        let mut state = self.state();
+        state.memory_reembed_chunks = state.memory_reembed_chunks.saturating_add(embedded);
+        state.memory_reembed_backlog = Some(backlog);
     }
 
     /// Fold one runtime event the durable event log committed.
@@ -470,6 +486,24 @@ impl OperatorMetrics {
                 &["resolution"],
                 &state.approvals_resolved,
             )?;
+            writeln!(
+                out,
+                "# HELP ironclaw_memory_reembed_chunks_total Memory chunks the re-embed backfill gave a vector in the current embedding space."
+            )?;
+            writeln!(out, "# TYPE ironclaw_memory_reembed_chunks_total counter")?;
+            writeln!(
+                out,
+                "ironclaw_memory_reembed_chunks_total {}",
+                state.memory_reembed_chunks
+            )?;
+            writeln!(
+                out,
+                "# HELP ironclaw_memory_reembed_backlog_chunks Memory chunks with no vector in the current embedding space, as of the backfill's last progress sample."
+            )?;
+            writeln!(out, "# TYPE ironclaw_memory_reembed_backlog_chunks gauge")?;
+            if let Some(backlog) = state.memory_reembed_backlog {
+                writeln!(out, "ironclaw_memory_reembed_backlog_chunks {backlog}")?;
+            }
             writeln!(
                 out,
                 "# HELP ironclaw_metrics_series_overflow_total Samples folded into the __other__ series because a family hit its series ceiling."
