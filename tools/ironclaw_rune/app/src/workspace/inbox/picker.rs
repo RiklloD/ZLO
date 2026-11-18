@@ -234,8 +234,8 @@ fn opened(s: &mut State, on: Option<&str>) {
     s.workspace.inbox.picker.selected = at.unwrap_or(0);
 }
 
-/// Close the menu, whichever trigger opened it; the new-thread screen's
-/// composer takes the keys back. False when it was not open.
+/// Close the menu, whichever trigger opened it; the composer on screen
+/// (the new-thread screen's or the chat's) takes the keys back. False when it was not open.
 pub(in crate::workspace) fn close(s: &mut State) -> bool {
     if !is_open(s) {
         return false;
@@ -249,6 +249,12 @@ pub(in crate::workspace) fn close(s: &mut State) -> bool {
         if on_draft {
             d.input.focused = true;
         }
+    }
+    // Over a chat, its composer had the keys before the search took them.
+    if s.page == Page::Chat
+        && let Some(id) = s.chat.as_ref().map(|c| c.thread_id.clone())
+    {
+        crate::chat::focus_composer_of(s, &id);
     }
     true
 }
@@ -399,6 +405,9 @@ pub fn profile_picker(s: &State, k: &Kit) -> El {
             .key("profile-picker")
             .role("dialog")
             .label("Start in profile")
+            // A press on a heading or the card's padding leaves the keys
+            // with the search field.
+            .preserve_focus_on_press(true)
             .w_full()
             .min_h(0.0)
             .child(el().px(4.).py(4.).child(search))
@@ -655,6 +664,18 @@ mod tests {
         };
         assert!(on_key(&mut s, &cmd, &mut tx));
         assert_eq!(s.workspace.draft.as_ref().expect("draft").profile, "verpin");
+
+        // Over a chat, closing hands the keys back to its composer.
+        let mut c = state();
+        c.page = Page::Chat;
+        let mut chat = crate::chat::ChatState::new("t1".into());
+        // Rune blurs the composer when the search field takes focus.
+        chat.composer.focused = false;
+        c.chat = Some(chat);
+        toggle_new_menu(&mut c);
+        assert!(on_key(&mut c, &key(Key::Escape), &mut tx));
+        assert!(!c.workspace.inbox.picker.search.focused);
+        assert!(c.chat.as_ref().expect("chat").composer.focused);
 
         // Escape closes without changing the profile.
         toggle_draft_menu(&mut s);
