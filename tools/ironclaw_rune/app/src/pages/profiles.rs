@@ -218,6 +218,21 @@ pub fn new_profile(s: &mut State) {
     select(s, None);
 }
 
+/// Name the blank profile the editor just opened on (the profile menu's
+/// "New profile “name”").
+pub fn name_new_profile(s: &mut State, name: &str) {
+    let ps = &mut s.pages.profiles;
+    if ps.open && ps.selected.is_none() {
+        ps.name.replace_text(name);
+    }
+}
+
+/// The display name in the editor.
+#[cfg(test)]
+pub fn new_profile_name(s: &State) -> &str {
+    &s.pages.profiles.name.text
+}
+
 fn select(s: &mut State, id: Option<String>) {
     let ps = &mut s.pages.profiles;
     ps.selected = id;

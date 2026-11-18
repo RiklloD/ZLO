@@ -165,6 +165,8 @@ pub const SCENES: &[Scene] = &[
         page_with(s, Page::Permissions, crate::pages::settings::fixture)
     }),
     ("profile-editor", profile_editor),
+    ("profile-menu", ws::fixture_profile_menu),
+    ("profile-menu-search", ws::fixture_profile_menu_search),
     ("profile-pickers", profile_pickers),
     ("profiles", profiles),
     ("projects", |s| {

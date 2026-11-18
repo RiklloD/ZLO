@@ -439,7 +439,7 @@ fn dismiss(s: &mut State) -> bool {
         return false;
     }
     // Closing a chat's picker hands the keys back to that chat's composer.
-    if crate::chat::model_picker::close_open(s) {
+    if crate::chat::model_picker::close_open(s) || inbox::picker::close(s) {
         return true;
     }
     if in_settings(s) {

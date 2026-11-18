@@ -459,7 +459,7 @@ fn entry_row(p: &crate::design::Palette, ix: usize, e: &Entry, on: bool) -> El {
 /// Subsequence match: every query character in order. Higher is better: a
 /// prefix or word-start hit beats a scattered one, and runs of adjacent
 /// characters beat gaps.
-fn score(query: &str, text: &str) -> Option<i32> {
+pub(super) fn score(query: &str, text: &str) -> Option<i32> {
     if let Some(at) = text.find(query) {
         let word = at == 0 || !text[..at].ends_with(char::is_alphanumeric);
         return Some(1_000 - at as i32 + if word { 500 } else { 0 });
