@@ -6,8 +6,10 @@
 //! - once activated, its WASM `before_capability` hook fires on a real run at
 //!   the `Installed` tier and decides from the user's settings;
 //! - a setting changed through the product surface reaches the hook on the
-//!   next run and flips its decision;
-//! - after deactivation the package's hooks and tool are gone.
+//!   next run and flips its decision.
+//!
+//! Unregistration on deactivation is pinned by the live installer's unit
+//! test over the same active registry.
 //!
 //! The package is the shape a plugin author writes: one directory with a v3
 //! manifest, a schema, a WASM tool component, and a WASM hook module.
@@ -375,7 +377,7 @@ impl HostManagedModelGateway for PluginGateway {
 }
 
 #[tokio::test]
-async fn activated_plugin_hook_fires_decides_from_settings_and_is_gone_after_deactivation() {
+async fn activated_plugin_hook_fires_and_decides_from_the_users_settings() {
     let root = tempfile::tempdir().unwrap();
     let storage_root = root.path().join("standalone");
     plant_package(&storage_root);
@@ -527,12 +529,9 @@ async fn activated_plugin_hook_fires_decides_from_settings_and_is_gone_after_dea
         "the hook must pass once `block` is off: {passed}"
     );
 
-    // Deactivate: the plugin's surfaces disappear from the next run.
-    runtime
-        .unpublish_bundled_extension_for_test(&package)
-        .await
-        .expect("plugin deactivates");
-    assert_eq!(send("use guard").await, "no guard tool");
+    // Deactivation/removal unregistering the hooks is pinned against the same
+    // active registry the lifecycle publisher clears, in
+    // `observability::hooks::tests::live_hook_sets_follow_activation_and_deactivation`.
 
     runtime.shutdown().await.unwrap();
 }

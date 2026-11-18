@@ -485,19 +485,6 @@ impl RebornRuntime {
         })
     }
 
-    /// Deactivate a package published by
-    /// [`Self::publish_bundled_extension_for_test`].
-    #[cfg(feature = "test-support")]
-    pub async fn unpublish_bundled_extension_for_test(
-        &self,
-        package: &ironclaw_extension_registry::ExtensionPackage,
-    ) -> Result<(), ironclaw_assistant::ProductSurfaceFailure> {
-        self.extension_management
-            .unpublish_bundled_package_for_test(package)
-            .await
-            .map_err(ironclaw_assistant::ProductSurfaceFailure::from)
-    }
-
     #[cfg(feature = "test-support")]
     pub async fn publish_bundled_extension_for_test(
         &self,

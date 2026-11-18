@@ -536,19 +536,6 @@ impl ExtensionLifecycleManager {
             .map_err(generic_host_error)
     }
 
-    /// Test-support twin of the production deactivation choke point: remove a
-    /// package published by [`Self::publish_bundled_package_for_test`] from
-    /// the active registry and the generic host's snapshot (mirrors the
-    /// activation transaction's `unpublish_active_package` leg).
-    pub async fn unpublish_bundled_package_for_test(
-        &self,
-        package: &ExtensionPackage,
-    ) -> Result<(), ProductOperationFailure> {
-        self.active_extensions.unpublish(package)?;
-        self.unpublish_from_generic_host(&package.id).await;
-        Ok(())
-    }
-
     /// Mirror an unpublish into the generic host's snapshot (deactivation is
     /// tolerant: a not-installed record is already unpublished).
     async fn unpublish_from_generic_host(&self, extension_id: &ExtensionId) {
