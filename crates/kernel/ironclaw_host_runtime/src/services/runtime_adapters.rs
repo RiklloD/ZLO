@@ -43,6 +43,7 @@ use crate::{
     },
     services::wasm_secrets::StagedWasmHostSecrets,
 };
+use ironclaw_extension_registry::settings::ExtensionSettingsReader;
 
 /// Builds a provider-rejection `DispatchError` for the first-party lane.
 /// `safe_summary` rides the typed diagnostic channel like other lanes'
@@ -1052,6 +1053,7 @@ pub(super) struct WasmRuntimeAdapter {
     runtime_http_egress: SharedRuntimeHttpEgress,
     credential_provider: Option<Arc<dyn WasmRuntimeCredentialProvider>>,
     secret_injections: Arc<RuntimeSecretInjectionStore>,
+    extension_settings: Arc<dyn ExtensionSettingsReader>,
     prepared: Mutex<HashMap<String, Arc<PreparedWitTool>>>,
 }
 
@@ -1063,6 +1065,7 @@ impl WasmRuntimeAdapter {
         runtime_http_egress: SharedRuntimeHttpEgress,
         credential_provider: Option<Arc<dyn WasmRuntimeCredentialProvider>>,
         secret_injections: Arc<RuntimeSecretInjectionStore>,
+        extension_settings: Arc<dyn ExtensionSettingsReader>,
     ) -> Self {
         Self {
             runtime,
@@ -1071,6 +1074,7 @@ impl WasmRuntimeAdapter {
             runtime_http_egress,
             credential_provider,
             secret_injections,
+            extension_settings,
             prepared: Mutex::new(HashMap::new()),
         }
     }
@@ -1082,6 +1086,7 @@ impl WasmRuntimeAdapter {
         runtime_http_egress: SharedRuntimeHttpEgress,
         credential_provider: Option<Arc<dyn WasmRuntimeCredentialProvider>>,
         secret_injections: Arc<RuntimeSecretInjectionStore>,
+        extension_settings: Arc<dyn ExtensionSettingsReader>,
     ) -> Result<Self, WasmError> {
         Ok(Self::new(
             WitToolRuntime::new(config)?,
@@ -1090,6 +1095,7 @@ impl WasmRuntimeAdapter {
             runtime_http_egress,
             credential_provider,
             secret_injections,
+            extension_settings,
         ))
     }
 
@@ -1188,11 +1194,13 @@ where
                 ));
             }
         };
+        let settings = self.invocation_settings(&request).await?;
         let cache_key = module_path.as_str().to_string();
         let prepared = self.prepared_guard()?.get(&cache_key).cloned();
         if let Some(prepared) = prepared {
             let host = self.host_for_scope(&request.scope, request.capability_id);
-            return execute_prepared_wasm(self.runtime.clone(), prepared, host, request).await;
+            return execute_prepared_wasm(self.runtime.clone(), prepared, host, request, settings)
+                .await;
         }
 
         let wasm_bytes = request
@@ -1231,7 +1239,42 @@ where
             }
         };
         let host = self.host_for_scope(&request.scope, request.capability_id);
-        execute_prepared_wasm(self.runtime.clone(), prepared, host, request).await
+        execute_prepared_wasm(self.runtime.clone(), prepared, host, request, settings).await
+    }
+}
+
+impl WasmRuntimeAdapter {
+    /// The invoking package's effective settings for the invocation's scope,
+    /// or `None` when the package declares none. A storage failure fails the
+    /// invocation: a tool must not silently run on defaults the user changed.
+    async fn invocation_settings<F, G>(
+        &self,
+        request: &RuntimeLaneRequest<'_, F, G>,
+    ) -> Result<Option<serde_json::Map<String, Value>>, DispatchError>
+    where
+        F: RootFilesystem,
+        G: ResourceGovernor,
+    {
+        let declared = &request.package.manifest.settings;
+        if declared.is_empty() {
+            return Ok(None);
+        }
+        let stored = self
+            .extension_settings
+            .stored_values(&request.scope, &request.package.id)
+            .await
+            .map_err(|error| {
+                dispatch_error_for_runtime(
+                    RuntimeKind::Wasm,
+                    RuntimeDispatchErrorKind::Executor,
+                    Some(format!("extension settings could not be read: {error}")),
+                )
+            })?;
+        Ok(Some(
+            ironclaw_extension_registry::settings::effective_setting_values(declared, &stored)
+                .into_iter()
+                .collect(),
+        ))
     }
 }
 

@@ -46,6 +46,7 @@ pub mod delivery;
 pub mod descriptors;
 pub mod environment_access;
 pub mod error;
+pub mod extension_settings;
 pub mod history;
 pub mod hooks_catalog;
 pub mod inbound;

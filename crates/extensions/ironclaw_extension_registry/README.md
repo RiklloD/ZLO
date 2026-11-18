@@ -20,7 +20,12 @@ CAS-mutated store out of the crate whose other job is verifying inbound trust.
 with `PackageDefinitionRetention`), lifecycle vocabulary
 (`ExtensionLifecycleEvent`/`Sink`/`Service`), and the host-API manifest
 contract projection (`host_api/`, incl. `host_api::product_adapter` — reached
-by full path, deliberately not re-exported at the root).
+by full path, deliberately not re-exported at the root). Package user
+settings (`settings`: the `[[settings]]` declaration grammar, value
+validation, effective values, the `ExtensionSettingsReader` port, and the
+per-user CAS `ExtensionSettingsStore`); v3 `[[hooks]]`/`[[settings]]` parsing
+lives in `v3_package_surfaces` — see
+`docs/internal/reborn/extension-runtime/package-hooks-and-settings.md`.
 
 ## Depends on / consumed by
 

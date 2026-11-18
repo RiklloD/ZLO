@@ -119,6 +119,9 @@ pub struct ResolvedExtensionManifest {
     /// them; nothing about them reaches the model.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ui_slots: Vec<ironclaw_extension_contracts::plugin_ui::PluginUiSlotDescriptor>,
+    /// Package-declared user settings (v3 `[[settings]]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings: Vec<crate::settings::ExtensionSettingDecl>,
 }
 
 /// A hosted-MCP server declaration (`[mcp]`): the proxied server whose
@@ -275,6 +278,7 @@ impl ResolvedExtensionManifest {
             section_surfaces,
             hooks: manifest.hooks.clone(),
             ui_slots: Vec::new(),
+            settings: manifest.settings.clone(),
         }
     }
 
@@ -354,6 +358,7 @@ impl ResolvedExtensionManifest {
             capabilities: self.tools.clone(),
             host_api_surfaces,
             hooks: self.hooks.clone(),
+            settings: self.settings.clone(),
         })
     }
 }

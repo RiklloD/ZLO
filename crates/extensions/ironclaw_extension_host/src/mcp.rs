@@ -537,6 +537,7 @@ mod tests {
                         },
                         host_apis: Vec::new(),
                         host_api_surfaces: Vec::new(),
+                        settings: Vec::new(),
                         hooks: Vec::new(),
                         capabilities: vec![ironclaw_extension_registry::CapabilityManifest {
                             id: CapabilityId::new(capability_id).unwrap(),

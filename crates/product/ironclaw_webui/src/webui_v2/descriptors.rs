@@ -261,6 +261,8 @@ pub const WEBUI_V2_ROUTE_SUPERMEMORY_DELETE_DOCUMENT: &str =
     "webui.v2.memory.supermemory.delete_document";
 pub const WEBUI_V2_ROUTE_SUPERMEMORY_FORGET: &str = "webui.v2.memory.supermemory.forget";
 pub const WEBUI_V2_ROUTE_HOOKS_CATALOG: &str = "webui.v2.hooks.catalog";
+pub const WEBUI_V2_ROUTE_EXTENSION_SETTINGS_LIST: &str = "webui.v2.extensions.settings.list";
+pub const WEBUI_V2_ROUTE_EXTENSION_SETTING_SET: &str = "webui.v2.extensions.settings.set";
 pub const WEBUI_V2_PATTERN_MEMORY_DOCUMENTS: &str = "/api/webchat/v2/memory/documents";
 pub const WEBUI_V2_PATTERN_MEMORY_DOCUMENT: &str = "/api/webchat/v2/memory/documents/content";
 pub const WEBUI_V2_PATTERN_MEMORY_ARCHIVE: &str = "/api/webchat/v2/memory/documents/archive";
@@ -274,6 +276,10 @@ pub const WEBUI_V2_PATTERN_SUPERMEMORY_DELETE_DOCUMENT: &str =
 pub const WEBUI_V2_PATTERN_SUPERMEMORY_FORGET: &str =
     "/api/webchat/v2/memory/supermemory/memories/forget";
 pub const WEBUI_V2_PATTERN_HOOKS: &str = "/api/webchat/v2/hooks";
+pub const WEBUI_V2_PATTERN_EXTENSION_SETTINGS: &str =
+    "/api/webchat/v2/extensions/{extension_id}/settings";
+pub const WEBUI_V2_PATTERN_EXTENSION_SETTING: &str =
+    "/api/webchat/v2/extensions/{extension_id}/settings/{setting_id}";
 
 // Plugin UI slot routes (`reborn.plugin_ui.v1` trees rendered by an
 // extension's own side-effect-free render tool).
@@ -660,6 +666,18 @@ pub fn webui_v2_routes_with_artifact_flags(
         plugin_ui_render_descriptor(
             WEBUI_V2_ROUTE_PLUGIN_UI_EVENT,
             WEBUI_V2_PATTERN_PLUGIN_UI_EVENT,
+        ),
+        // Package settings share the memory page's user-action policy: a
+        // scoped read and a small bounded mutation.
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_EXTENSION_SETTINGS_LIST,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_EXTENSION_SETTINGS,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_EXTENSION_SETTING_SET,
+            NetworkMethod::Put,
+            WEBUI_V2_PATTERN_EXTENSION_SETTING,
         ),
         computer_use_session_descriptor(),
         computer_use_control_descriptor(),

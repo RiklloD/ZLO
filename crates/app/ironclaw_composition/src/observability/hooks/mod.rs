@@ -68,6 +68,7 @@
 pub(crate) mod audit;
 pub(crate) mod catalog;
 pub(crate) mod factory;
+pub(crate) mod live;
 pub(crate) mod projection;
 
 #[cfg(test)]

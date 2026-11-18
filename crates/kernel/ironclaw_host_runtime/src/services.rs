@@ -177,6 +177,9 @@ where
     /// only.
     extension_tool_resolver: Arc<Mutex<Option<Arc<dyn ToolResolver>>>>,
     post_edit_check: Option<PostEditCheckConfig>,
+    /// Per-user package settings, attached by the WASM lane to each
+    /// invocation context (defaults-only unless composition wires a store).
+    extension_settings: Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsReader>,
     component_types: ProductionComponentTypes,
 }
 
@@ -485,6 +488,9 @@ where
             turn_run_wake_notifier: None,
             extension_tool_resolver: Arc::new(Mutex::new(None)),
             post_edit_check: None,
+            extension_settings: Arc::new(
+                ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings,
+            ),
             component_types: ProductionComponentTypes {
                 trust_policy: None,
                 trust_policy_verified: false,

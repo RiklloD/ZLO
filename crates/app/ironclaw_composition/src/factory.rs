@@ -335,6 +335,11 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) skill_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     pub(crate) workspace_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     pub(crate) extension_filesystem: Arc<CompositeRootFilesystem>,
+    /// Per-user package settings values (`/extension-settings` mount): read by
+    /// the hook factory and the WASM tool lane, written by the settings
+    /// product face.
+    pub(crate) extension_settings:
+        Arc<ironclaw_extension_registry::settings::ExtensionSettingsStore<CompositeRootFilesystem>>,
     /// Single memory provider resolver (issue #3537). Both the memory tools and
     /// the standalone profile source build their `MemoryService` through this, so
     /// profile reads and tools agree on the bound provider (native, or
