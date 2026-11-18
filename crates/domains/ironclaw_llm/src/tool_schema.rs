@@ -54,10 +54,14 @@ fn normalize_schema(
             }
         }
         if strict_objects {
+            strip_strict_unsupported_keywords(&mut schema);
             return schema;
         }
     } else {
         normalize_schema_recursive(&mut schema, strict_objects);
+    }
+    if strict_objects {
+        strip_strict_unsupported_keywords(&mut schema);
     }
 
     // Diagnostic strict-mode validation lives in the main crate's
@@ -67,6 +71,53 @@ fn normalize_schema(
     // time) so the previous debug-log call has been intentionally dropped
     // during the LLM-crate extraction.
     schema
+}
+
+/// Keywords the OpenAI strict-schema compiler does not implement at any depth.
+/// One surviving occurrence 400s the whole request ("Unimplemented keys").
+/// They only ever narrow what is valid, so dropping them keeps the schema a
+/// superset; the tool still validates its own input.
+const STRICT_UNSUPPORTED: &[&str] = &[
+    "not",
+    "if",
+    "then",
+    "else",
+    "dependentRequired",
+    "dependentSchemas",
+];
+
+/// Remove [`STRICT_UNSUPPORTED`] keywords from every subschema. Field names
+/// under `properties` / `$defs` / `definitions` are data and are never
+/// treated as keywords.
+fn strip_strict_unsupported_keywords(schema: &mut JsonValue) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    for key in STRICT_UNSUPPORTED {
+        obj.remove(*key);
+    }
+    for (key, child) in obj.iter_mut() {
+        match key.as_str() {
+            "properties" | "$defs" | "definitions" | "patternProperties" => {
+                if let Some(map) = child.as_object_mut() {
+                    for sub in map.values_mut() {
+                        strip_strict_unsupported_keywords(sub);
+                    }
+                }
+            }
+            "anyOf" | "oneOf" | "allOf" | "prefixItems" => {
+                if let Some(items) = child.as_array_mut() {
+                    for sub in items {
+                        strip_strict_unsupported_keywords(sub);
+                    }
+                }
+            }
+            "items" | "additionalProperties" | "contains" => {
+                strip_strict_unsupported_keywords(child);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// JSON Schema keywords that OpenAI's tool API rejects at the top level of a

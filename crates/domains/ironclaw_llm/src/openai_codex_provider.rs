@@ -1542,6 +1542,109 @@ mod tests {
         assert_eq!(json["description"], "Does things");
     }
 
+    /// Caller-level regression: the Responses API strict validator rejects
+    /// `not` / `if` / `then` / `else` anywhere in a tool schema ("Unimplemented
+    /// keys: ['not']"), which 400s the whole request. Strict shaping must
+    /// strip them at every depth, both on the flatten path and the plain path.
+    #[test]
+    fn test_convert_tool_definition_strips_strict_unsupported_keywords() {
+        fn find_forbidden(value: &serde_json::Value, path: &str, hits: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map {
+                        let here = format!("{path}.{key}");
+                        // `properties` keys are field names, not keywords.
+                        let is_field_map = path.ends_with(".properties");
+                        if !is_field_map
+                            && [
+                                "not",
+                                "if",
+                                "then",
+                                "else",
+                                "dependentRequired",
+                                "dependentSchemas",
+                            ]
+                            .contains(&key.as_str())
+                        {
+                            hits.push(here.clone());
+                        }
+                        find_forbidden(child, &here, hits);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for (i, child) in items.iter().enumerate() {
+                        find_forbidden(child, &format!("{path}[{i}]"), hits);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let plain = ToolDefinition {
+            name: "edit".to_string(),
+            description: "edit".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "not": { "type": "string", "description": "a field literally named not" },
+                    "old_string": { "type": "string", "not": { "const": "null" } },
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": { "x": { "type": "string", "not": { "const": "" } } },
+                            "if": { "required": ["x"] },
+                            "then": { "required": ["x"] }
+                        }
+                    }
+                },
+                "required": ["old_string"],
+                "additionalProperties": false
+            }),
+        };
+        let flattened = ToolDefinition {
+            name: "json".to_string(),
+            description: "json".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "operation": { "type": "string" } },
+                "oneOf": [
+                    {
+                        "properties": {
+                            "operation": { "const": "parse" },
+                            "data": { "type": "string", "not": { "const": "" } }
+                        },
+                        "required": ["operation", "data"],
+                        "not": { "required": ["file_path"] }
+                    }
+                ],
+                "additionalProperties": false
+            }),
+        };
+
+        for tool in [plain, flattened] {
+            let json = convert_tool_definition(&tool);
+            let mut hits = Vec::new();
+            find_forbidden(&json["parameters"], "$", &mut hits);
+            assert!(
+                hits.is_empty(),
+                "{}: strict-unsupported keywords survived: {hits:?}",
+                tool.name
+            );
+        }
+
+        // A property literally named `not` is data, not a keyword: keep it.
+        let json = convert_tool_definition(&ToolDefinition {
+            name: "edit".to_string(),
+            description: "edit".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "not": { "type": "string" } }
+            }),
+        });
+        assert!(json["parameters"]["properties"].get("not").is_some());
+    }
+
     /// Caller-level regression test: drives `convert_tool_definition` end to
     /// end with a GitHub-Copilot-shaped MCP tool definition and asserts that
     /// the resulting Responses API JSON would no longer trip the 400. This
