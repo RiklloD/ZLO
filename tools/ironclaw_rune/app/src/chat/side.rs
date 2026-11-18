@@ -43,7 +43,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use rune::{Cx, El, FileDialogOptions, Tx};
+use rune::{Cx, El, FileDialogOptions, Tx, el};
 use rune_kit::Kit;
 use zlo_client::orchestration::WorktreeView;
 
@@ -130,6 +130,9 @@ pub enum Tab {
     Console,
     /// The side chat open on this thread (only listed while one is).
     SideChat,
+    /// A plugin's `panel.tab` slot; which one is in `prefs.side_tab`
+    /// (`plugin:{extension}/{slot}`, see [`plugin_tab`]).
+    Plugin,
 }
 
 impl Tab {
@@ -156,6 +159,7 @@ impl Tab {
             Tab::History => "history",
             Tab::Console => "console",
             Tab::SideChat => "side-chat",
+            Tab::Plugin => "plugin",
         }
     }
 
@@ -171,6 +175,7 @@ impl Tab {
             Tab::History => "History",
             Tab::Console => "Console",
             Tab::SideChat => "Side chat",
+            Tab::Plugin => "Plugin",
         }
     }
 
@@ -187,6 +192,7 @@ impl Tab {
             Tab::History => &icons::GIT_COMMIT_HORIZONTAL,
             Tab::Console => &icons::SQUARE_TERMINAL,
             Tab::SideChat => &icons::MESSAGES_SQUARE,
+            Tab::Plugin => &icons::PUZZLE,
         }
     }
 
@@ -361,8 +367,16 @@ pub fn dock_open(s: &State, dock: Dock) -> bool {
     }
 }
 
-/// The tab `dock` shows. Side chat falls back to Activity once closed.
+/// The tab `dock` shows. Side chat falls back to Activity once closed, a
+/// plugin's tab once its slot is gone.
 fn dock_tab(s: &State, dock: Dock) -> Tab {
+    if dock == Dock::Side && s.prefs.side_tab.starts_with(PLUGIN_TAB) {
+        return if plugin_tab(s).is_some() {
+            Tab::Plugin
+        } else {
+            Tab::Activity
+        };
+    }
     let tab = match dock {
         Dock::Work => Tab::from_id(&s.prefs.work_tab, dock),
         Dock::Side => Tab::from_id(&s.prefs.side_tab, dock),
@@ -370,6 +384,52 @@ fn dock_tab(s: &State, dock: Dock) -> Tab {
     match tab {
         Tab::SideChat if side(s).is_none_or(|x| x.chat.is_none()) => Tab::Activity,
         tab => tab,
+    }
+}
+
+/// `prefs.side_tab`'s prefix for a plugin's tab.
+const PLUGIN_TAB: &str = "plugin:";
+
+fn plugin_tab_id(slot: &zlo_client::plugins::Slot) -> String {
+    format!("{PLUGIN_TAB}{}/{}", slot.extension_id, slot.slot_id)
+}
+
+/// The plugin slot the right pane's saved tab names, while it exists.
+pub fn plugin_tab(s: &State) -> Option<&zlo_client::plugins::Slot> {
+    let (ext, slot) = s.prefs.side_tab.strip_prefix(PLUGIN_TAB)?.split_once('/')?;
+    s.plugins
+        .find(ext, slot)
+        .filter(|x| x.slot == zlo_client::plugins::SlotKind::PanelTab)
+}
+
+/// The open thread's mount of the shown plugin tab.
+fn plugin_mount(s: &State) -> Option<crate::plugins::MountKey> {
+    let slot = plugin_tab(s)?;
+    Some(crate::plugins::MountKey::new(slot, thread_id(s)))
+}
+
+/// Open the right pane on a plugin's tab and render it for this thread.
+pub fn show_plugin(s: &mut State, extension_id: &str, slot_id: &str) {
+    let Some(slot) = s.plugins.find(extension_id, slot_id).cloned() else {
+        return;
+    };
+    let was_open = dock_open(s, Dock::Side);
+    let id = plugin_tab_id(&slot);
+    s.update_prefs(|p| {
+        p.side_open = true;
+        p.side_tab = id.clone();
+    });
+    if !was_open && let Some(x) = side_mut(s) {
+        x.opened_at[Dock::Side.ix()] = Some(Instant::now());
+    }
+    load(s, Tab::Plugin);
+}
+
+/// The slot list changed (connect, a plugin installed or removed): render
+/// the plugin tab again if one is shown.
+pub fn plugin_slots_changed(s: &mut State) {
+    if s.page == Page::Chat && s.chat.is_some() && tab_shown(s, Tab::Plugin) {
+        load(s, Tab::Plugin);
     }
 }
 
@@ -491,6 +551,11 @@ fn load(s: &mut State, tab: Tab) {
     }
     match tab {
         Tab::Activity | Tab::Agents | Tab::SideChat => {}
+        Tab::Plugin => {
+            if let Some(key) = plugin_mount(s) {
+                crate::plugins::render(s, key);
+            }
+        }
         Tab::Console => console::load(s),
         Tab::Browser => browser::start(s),
         Tab::Outputs => {
@@ -730,7 +795,21 @@ fn tab_actions(s: &State, k: &Kit, tab: Tab) -> Vec<El> {
         Tab::History => history::actions(k),
         Tab::Routines => routines::actions(k),
         Tab::Agents => agents::actions(k),
+        Tab::Plugin => vec![
+            ui::ibtn(&crate::icons::REFRESH_CW, "Refresh")
+                .on_press(|s: &mut State| load(s, Tab::Plugin))
+                .build(k)
+                .key("side-plugin-refresh"),
+        ],
         _ => Vec::new(),
+    }
+}
+
+/// The name in the dock's title row: the tab's, or the plugin slot's title.
+fn tab_title(s: &State, tab: Tab) -> String {
+    match tab {
+        Tab::Plugin => plugin_tab(s).map_or_else(|| tab.label().into(), |x| x.title.clone()),
+        _ => tab.label().into(),
     }
 }
 
@@ -764,6 +843,21 @@ fn body(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, tab: Tab) -
         Tab::History => history::view(s, k),
         Tab::Console => console::view(s, k),
         Tab::SideChat => session::chat_view(s, cx, k, layer),
+        Tab::Plugin => match plugin_mount(s) {
+            Some(key) => ui::scroll(
+                format!("side-{}", key.el_key()),
+                el().w_full()
+                    .px(12.)
+                    .pt(4.)
+                    .child(crate::plugins::mount_view(
+                        s,
+                        k,
+                        &key,
+                        crate::plugins::Density::Panel,
+                    )),
+            ),
+            None => ui::empty(s, "This plugin's tab is gone."),
+        },
     }
 }
 

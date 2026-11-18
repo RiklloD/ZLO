@@ -485,3 +485,44 @@ pub static ZAP: Icon = Icon {
     view: 24.0,
     body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" />"##,
 };
+
+pub static PUZZLE: Icon = Icon {
+    name: "puzzle",
+    view: 24.0,
+    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z" />"##,
+};
+
+/// The icon a plugin names for a slot (Lucide names), from the ones this
+/// app carries; anything else, or none, is the puzzle piece. Plugins never
+/// send artwork.
+pub fn by_name(name: Option<&str>) -> &'static Icon {
+    const NAMED: &[&Icon] = &[
+        &ACTIVITY,
+        &BELL,
+        &BOOK_OPEN,
+        &BOT,
+        &CALENDAR,
+        &CHART_PIE,
+        &CIRCLE_CHECK,
+        &FILE_TEXT,
+        &FOLDER,
+        &GIT_BRANCH,
+        &GLOBE,
+        &INBOX,
+        &INFO,
+        &LAYOUT_DASHBOARD,
+        &LAYOUT_GRID,
+        &LIST_FILTER,
+        &MESSAGES_SQUARE,
+        &NETWORK,
+        &SEARCH,
+        &SETTINGS,
+        &SHIELD_CHECK,
+        &SPARKLES,
+        &STAR,
+        &TARGET,
+        &ZAP,
+    ];
+    name.and_then(|n| NAMED.iter().copied().find(|i| i.name == n))
+        .unwrap_or(&PUZZLE)
+}

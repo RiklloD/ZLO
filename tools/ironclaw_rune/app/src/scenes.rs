@@ -102,6 +102,30 @@ pub const SCENES: &[Scene] = &[
     ("draft-files", ws::fixture_draft_files),
     ("draft-mention", ws::fixture_draft_mention),
     ("extensions", crate::pages::extensions::fixtures::extensions),
+    // Plugins: consent, a plugin's settings page, its side tab and badges.
+    ("plugin-consent", |s| {
+        crate::pages::extensions::fixtures::plugins_consent(s, false)
+    }),
+    ("plugin-consent-light", |s| {
+        crate::pages::extensions::fixtures::plugins_consent(s, true)
+    }),
+    (
+        "plugin-list",
+        crate::pages::extensions::fixtures::plugins_list,
+    ),
+    ("plugin-settings", |s| {
+        crate::pages::extensions::fixtures::plugin_settings(s, false)
+    }),
+    ("plugin-settings-light", |s| {
+        crate::pages::extensions::fixtures::plugin_settings(s, true)
+    }),
+    ("plugin-panel", |s| {
+        crate::plugins::fixtures::panel(s, false)
+    }),
+    ("plugin-panel-light", |s| {
+        crate::plugins::fixtures::panel(s, true)
+    }),
+    ("plugin-panel-error", crate::plugins::fixtures::panel_error),
     ("files", |s| {
         page_with(s, Page::Files, crate::pages::files::fixture)
     }),

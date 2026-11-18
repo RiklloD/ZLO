@@ -244,7 +244,7 @@ fn title(s: &State, k: &Kit, dock: Dock, tab: Tab) -> El {
         .key(format!("side-{}-title", dock.key()))
         .gap(6.)
         .items_center()
-        .child(text(tab.label()).font(xs_med()).color(p.text));
+        .child(text(super::tab_title(s, tab)).font(xs_med()).color(p.text));
     if let Some(n) = super::tab_count(s, tab) {
         name = name.child(text(n.to_string()).font(xs()).color(p.text_faint));
     }
@@ -577,8 +577,23 @@ fn tabs(s: &State, dock: Dock) -> El {
         .copied()
         .filter(|t| *t != Tab::SideChat || has_chat)
         .collect();
+    // Plugins' tabs follow the app's own in the right pane.
+    let plugins: Vec<&zlo_client::plugins::Slot> = match dock {
+        Dock::Side => s
+            .plugins
+            .of(zlo_client::plugins::SlotKind::PanelTab)
+            .collect(),
+        Dock::Work => Vec::new(),
+    };
+    let current_plugin = super::plugin_tab(s);
+    let at = match current {
+        Tab::Plugin => current_plugin
+            .and_then(|c| plugins.iter().position(|x| *x == c))
+            .map(|ix| shown.len() + ix),
+        _ => shown.iter().position(|t| *t == current),
+    };
     let mut strip = row().gap(TAB_GAP).items_center();
-    if let Some(ix) = shown.iter().position(|t| *t == current) {
+    if let Some(ix) = at {
         strip = strip.child(
             el().key(format!("side-{}-tab-pill", dock.key()))
                 .absolute(ix as f32 * (CELL + TAB_GAP), 0.)
@@ -599,6 +614,24 @@ fn tabs(s: &State, dock: Dock) -> El {
         if badge(s, t) {
             cell = cell.child(ui::dot(p.accent, 6.).absolute(19., 3.));
         }
+        strip = strip.child(cell);
+    }
+    for slot in plugins {
+        let on = current == Tab::Plugin && current_plugin == Some(slot);
+        let glyph = icon(
+            crate::icons::by_name(slot.icon.as_deref()),
+            panels::GLYPH_PX,
+        )
+        .color(if on { p.text } else { p.text_muted })
+        .group_color(p.text);
+        let (ext, id) = (slot.extension_id.clone(), slot.slot_id.clone());
+        let cell = panels::toggle_with(
+            s,
+            &format!("side-tab-plugin-{ext}-{id}"),
+            &slot.title,
+            glyph,
+        )
+        .on_press(move |s: &mut State| super::show_plugin(s, &ext, &id));
         strip = strip.child(cell);
     }
     strip
