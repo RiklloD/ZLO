@@ -66,6 +66,8 @@ fn normalize_connect_link_base_url(raw: &str) -> Option<String> {
 }
 
 pub(crate) struct BackendExtensionHostAssemblyInput {
+    /// Plugins without consent for their current files: never boot-hydrated.
+    pub(crate) consent_blocked_extension_ids: BTreeSet<String>,
     pub(crate) binder: ExtensionLaneToolBinder,
     pub(crate) native_factories: Vec<Arc<dyn ironclaw_extension_host::NativeExtensionFactory>>,
     pub(crate) channel_bindings: Vec<ChannelExtensionBinding>,
@@ -106,6 +108,7 @@ pub(crate) async fn build_backend_extension_host(
     input: BackendExtensionHostAssemblyInput,
 ) -> Result<BackendExtensionHostAssembly, RebornBuildError> {
     let BackendExtensionHostAssemblyInput {
+        consent_blocked_extension_ids,
         binder,
         native_factories,
         channel_bindings,
@@ -146,7 +149,7 @@ pub(crate) async fn build_backend_extension_host(
             ),
         ) as Arc<dyn ironclaw_extension_host::egress::ChannelEgressTransport>
     });
-    let boot_installations = ironclaw_extension_host::boot_installation_records(
+    let mut boot_installations = ironclaw_extension_host::boot_installation_records(
         &installation_store,
         Some(&admin_configuration_resolver),
     )
@@ -154,6 +157,8 @@ pub(crate) async fn build_backend_extension_host(
     .map_err(|error| RebornBuildError::InvalidConfig {
         reason: format!("extension boot installation records could not be built: {error}"),
     })?;
+    boot_installations
+        .retain(|record| !consent_blocked_extension_ids.contains(&record.extension_id));
     let generic = ironclaw_extension_host::build_generic_extension_host(
         ironclaw_extension_host::GenericExtensionHostParams {
             binder,

@@ -89,6 +89,95 @@ pub fn unzip_extension_bundle(
     Ok(files)
 }
 
+/// Read an extension package from a folder on the local disk while enforcing
+/// the same boundary as [`unzip_extension_bundle`]: entry count, safe relative
+/// paths, and the total byte budget. The returned entries feed the same import
+/// validation an uploaded bundle goes through.
+///
+/// Symbolic links are refused rather than followed, so a package cannot pull
+/// in files from outside its folder. Hidden entries (a name starting with
+/// `.`, e.g. `.git`) are skipped: they are authoring state, not package
+/// content, and an asset path may not begin with a dot segment anyway.
+pub fn read_extension_folder(
+    root: &std::path::Path,
+) -> Result<Vec<(String, Vec<u8>)>, ExtensionBundleError> {
+    let root_meta = std::fs::symlink_metadata(root).map_err(|error| {
+        ExtensionBundleError::invalid(format!("cannot read extension folder: {error}"))
+    })?;
+    if !root_meta.is_dir() {
+        return Err(ExtensionBundleError::invalid(
+            "extension folder path is not a directory",
+        ));
+    }
+    let mut files = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut pending = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = pending.pop() {
+        let entries = std::fs::read_dir(&dir).map_err(|error| {
+            ExtensionBundleError::invalid(format!("cannot list extension folder: {error}"))
+        })?;
+        let mut entries = entries.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            ExtensionBundleError::invalid(format!("cannot list extension folder: {error}"))
+        })?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                return Err(ExtensionBundleError::invalid(
+                    "extension folder contains a file name that is not UTF-8",
+                ));
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            let relative = format!("{prefix}{name}");
+            let file_type = entry.file_type().map_err(|error| {
+                ExtensionBundleError::invalid(format!("cannot read `{relative}`: {error}"))
+            })?;
+            if file_type.is_symlink() {
+                return Err(ExtensionBundleError::invalid(format!(
+                    "extension folder contains a symbolic link: {relative}"
+                )));
+            }
+            if file_type.is_dir() {
+                pending.push((entry.path(), format!("{relative}/")));
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            ExtensionAssetPath::new(relative.clone()).map_err(|error| {
+                ExtensionBundleError::invalid(format!(
+                    "extension folder contains an unsafe path: {relative}: {error}"
+                ))
+            })?;
+            if files.len() >= MAX_EXTENSION_BUNDLE_FILES {
+                return Err(ExtensionBundleError::invalid(format!(
+                    "extension folder contains too many files (limit {MAX_EXTENSION_BUNDLE_FILES})"
+                )));
+            }
+            let allowance = MAX_EXTENSION_BUNDLE_UNCOMPRESSED_BYTES - total_bytes;
+            let file = std::fs::File::open(entry.path()).map_err(|error| {
+                ExtensionBundleError::invalid(format!("cannot read `{relative}`: {error}"))
+            })?;
+            let mut bytes = Vec::new();
+            file.take(allowance as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|error| {
+                    ExtensionBundleError::invalid(format!("cannot read `{relative}`: {error}"))
+                })?;
+            if bytes.len() > allowance {
+                return Err(ExtensionBundleError::invalid(format!(
+                    "extension folder is larger than the {MAX_EXTENSION_BUNDLE_UNCOMPRESSED_BYTES}-byte limit"
+                )));
+            }
+            total_bytes += bytes.len();
+            files.push((relative, bytes));
+        }
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +300,41 @@ mod tests {
             format!("{error}").contains("too many archive entries"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn read_extension_folder_reads_nested_files_and_skips_hidden_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("schemas/acme")).expect("mkdir");
+        std::fs::create_dir_all(dir.path().join(".git")).expect("mkdir");
+        std::fs::write(dir.path().join("manifest.toml"), b"m").expect("write");
+        std::fs::write(dir.path().join("schemas/acme/run.json"), b"{}").expect("write");
+        std::fs::write(dir.path().join(".git/HEAD"), b"ref").expect("write");
+        let files = read_extension_folder(dir.path()).expect("folder reads");
+        let paths: Vec<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths, vec!["manifest.toml", "schemas/acme/run.json"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_extension_folder_refuses_symbolic_links() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("tempdir");
+        std::fs::write(outside.path().join("secret"), b"s").expect("write");
+        std::fs::write(dir.path().join("manifest.toml"), b"m").expect("write");
+        std::os::unix::fs::symlink(outside.path().join("secret"), dir.path().join("leak"))
+            .expect("symlink");
+        let error = read_extension_folder(dir.path()).expect_err("symlinks are refused");
+        assert!(error.reason().contains("symbolic link"), "{error}");
+    }
+
+    #[test]
+    fn read_extension_folder_enforces_the_file_count_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for index in 0..=MAX_EXTENSION_BUNDLE_FILES {
+            std::fs::write(dir.path().join(format!("f{index}.txt")), b"x").expect("write");
+        }
+        let error = read_extension_folder(dir.path()).expect_err("too many files");
+        assert!(error.reason().contains("too many files"), "{error}");
     }
 }

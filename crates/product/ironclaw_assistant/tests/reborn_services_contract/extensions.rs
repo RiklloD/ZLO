@@ -166,6 +166,7 @@ async fn a_directory_classified_session_channel_is_hidden_from_the_extension_lis
                     extensions: vec![self.session_channel.clone(), self.unrelated.clone()],
                     count: 2,
                 }),
+                consent: None,
             })
         }
 
@@ -450,6 +451,7 @@ impl LifecycleProductService for FailedStateLifecycleService {
                 extensions: vec![self.extension.clone()],
                 count: 1,
             }),
+            consent: None,
         })
     }
 

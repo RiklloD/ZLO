@@ -563,6 +563,7 @@ mod tests {
                             visible_capability_ids: vec!["github.get_workflow_runs".to_string()],
                             connection_required: None,
                         }),
+                        consent: None,
                     })
                 }
                 LifecycleProductAction::ExtensionSelectHostedMcpAuth { package_ref, .. } => {
@@ -573,6 +574,7 @@ mod tests {
                         blockers: Vec::new(),
                         message: Some("auth selection complete".to_string()),
                         payload: None,
+                        consent: None,
                     })
                 }
                 _ => Err(ProductSurfaceError::service_unavailable(false)),
@@ -648,6 +650,7 @@ mod tests {
                     }],
                     count: 1,
                 }),
+                consent: None,
             })
         }
     }

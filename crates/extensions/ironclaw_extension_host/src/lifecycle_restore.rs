@@ -28,6 +28,8 @@ pub async fn restore_extension_lifecycle_state(
     legacy_tenant_owner: &UserId,
 ) -> Result<(), ProductOperationFailure> {
     let mut catalog_registered_user_extension_ids: BTreeSet<String> = BTreeSet::new();
+    let consent_store =
+        crate::extension_consent::ExtensionConsentStore::new(Arc::clone(filesystem));
     for installation in
         canonicalize_persisted_installation_rows(installation_store, legacy_tenant_owner).await?
     {
@@ -59,6 +61,26 @@ pub async fn restore_extension_lifecycle_state(
                 continue;
             }
         };
+        // Consent precedes everything else: a third-party package without a
+        // grant for its current files is registered (so a later grant can
+        // activate it in this process) but never enabled or published, and its
+        // manifest hash is not reconciled — a changed manifest is exactly the
+        // `tampered` case, which the grant itself migrates.
+        let consent_status = consent_store.status(&available).await?;
+        if let Some(phase) = consent_status.blocking_phase() {
+            tracing::debug!(
+                extension_id = installation.extension_id().as_str(),
+                phase = phase.as_str(),
+                "not activating extension at boot until consent is granted"
+            );
+            lifecycle_service
+                .lock()
+                .await
+                .install(available.package.clone())
+                .await
+                .map_err(map_extension_error)?;
+            continue;
+        }
         let hash_matches_catalog = validate_restored_manifest_hash(&installation, &available);
         if let Err(hash_error) = hash_matches_catalog {
             migrate_host_bundled_manifest_hash(
@@ -317,7 +339,7 @@ fn manifest_record_for_available(
     .map_err(map_extension_installation_error)
 }
 
-fn prepare_manifest_migration(
+pub(crate) fn prepare_manifest_migration(
     available: &AvailableExtensionPackage,
     existing: &ExtensionInstallation,
 ) -> Result<ExtensionInstallPlan, ProductOperationFailure> {

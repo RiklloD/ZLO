@@ -22,6 +22,8 @@
 pub mod admin_configuration;
 pub mod admin_configuration_capability;
 pub mod channel_config_product_service;
+#[cfg(test)]
+mod extension_consent_tests;
 pub mod extension_lifecycle_capabilities;
 pub mod extension_lifecycle_command;
 mod install_guidance;

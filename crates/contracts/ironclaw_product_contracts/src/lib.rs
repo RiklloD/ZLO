@@ -65,6 +65,7 @@ pub mod operator_service;
 pub mod operator_tools;
 pub mod orchestration;
 pub mod outbound;
+pub mod package_consent;
 pub mod package_lifecycle;
 pub mod product_wire;
 pub mod profiles;

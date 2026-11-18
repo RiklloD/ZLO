@@ -65,6 +65,25 @@ impl ExtensionHostLifecycleProductService {
         self
     }
 
+    /// Import a package folder already read through
+    /// `ironclaw_extension_host::read_extension_folder` (same limits as an
+    /// upload), through the same validation as an uploaded bundle.
+    pub async fn import_extension_files(
+        &self,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<LifecycleProductResponse, ProductSurfaceError> {
+        let result = async {
+            let Some(extension_management) = &self.extension_management else {
+                return Err(ProductOperationFailure::InvalidBindingRequest {
+                    reason: "extension management is not available in this runtime".to_string(),
+                });
+            };
+            extension_management.import_files(files).await
+        }
+        .await;
+        result.map_err(lifecycle_surface_error)
+    }
+
     pub fn with_extension_management(
         mut self,
         extension_management: Arc<RebornLocalExtensionManagementPort>,
@@ -279,6 +298,18 @@ impl ExtensionHostLifecycleProductService {
                 let scope = lifecycle_resource_scope(&context)?;
                 extension_management
                     .remove(package_ref, &scope, Some(&scope.user_id))
+                    .await
+            }
+            LifecycleProductAction::ExtensionGrantConsent {
+                package_ref,
+                digest,
+            } => {
+                let Some(extension_management) = &self.extension_management else {
+                    return unsupported_projection(Some(package_ref));
+                };
+                let caller = lifecycle_caller(&context)?;
+                extension_management
+                    .grant_consent(package_ref, digest, &caller)
                     .await
             }
             LifecycleProductAction::ExtensionAuth { package_ref } => {
@@ -679,6 +710,7 @@ pub fn response_with_payload(
         blockers: Vec::new(),
         message: None,
         payload: Some(payload),
+        consent: None,
     }
 }
 
@@ -816,6 +848,7 @@ mod tests {
                 visible_capability_ids: Vec::new(),
                 next_step: "pending".to_string(),
             }),
+            consent: None,
         };
         let activation = LifecycleProductResponse {
             package_ref: None,
@@ -827,6 +860,7 @@ mod tests {
                 visible_capability_ids: Vec::new(),
                 connection_required: None,
             }),
+            consent: None,
         };
 
         let setup_link = "https://webui.test/extensions?configure=telegram&setup=personal_account";

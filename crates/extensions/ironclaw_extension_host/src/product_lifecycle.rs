@@ -38,6 +38,8 @@ use ironclaw_product_contracts::package_lifecycle::{
 use ironclaw_product_contracts::surface::{ProductSurfaceCaller, ProductSurfaceError};
 use tokio::sync::{AcquireError, Mutex, Notify, RwLock, Semaphore};
 
+mod consent;
+
 fn unzip_extension_bundle_for_product(
     bundle: &[u8],
 ) -> Result<Vec<(String, Vec<u8>)>, ProductOperationFailure> {
@@ -209,6 +211,10 @@ pub struct ExtensionLifecycleManager {
     /// the factory (e.g. test fixtures) unaffected until they opt in via
     /// `with_provider_instance_readiness`.
     provider_instance_readiness: std::collections::BTreeMap<VendorId, String>,
+    /// Durable consent grants for third-party packages
+    /// (`crate::extension_consent`). Lives on the same root filesystem as the
+    /// installation store, so it needs no constructor input of its own.
+    consent: crate::extension_consent::ExtensionConsentStore,
 }
 
 /// Concurrent `import_bundle` decodes allowed before further uploads wait.
@@ -345,7 +351,9 @@ impl ExtensionLifecycleManager {
                 hosted_mcp_dependencies,
             ),
         );
+        let consent = crate::extension_consent::ExtensionConsentStore::new(Arc::clone(&filesystem));
         Self {
+            consent,
             filesystem,
             catalog,
             installation_store,
@@ -732,6 +740,15 @@ impl ExtensionLifecycleManager {
                 )
             })
             .unwrap_or(InstallationState::Installed);
+        let (phase, consent) = if installation.is_some() {
+            let (_, consent) = self.consent_state(&available).await?;
+            (
+                self.consent_projected_phase(&available, phase).await?,
+                consent,
+            )
+        } else {
+            (phase, None)
+        };
         let install_scope = installation
             .as_ref()
             .map(|installation| install_scope_for_owner(installation.owner()));
@@ -758,6 +775,7 @@ impl ExtensionLifecycleManager {
                 count: 1,
             },
         );
+        response.consent = consent;
         if auth_selection_required {
             response.blockers = vec![LifecycleReadinessBlocker::Setup {
                 ref_id: Some(LifecycleBlockerRef::new(
@@ -1011,13 +1029,14 @@ impl ExtensionLifecycleManager {
                 };
                 available
             };
+            let phase = installation_state_for_installation(
+                &installation,
+                package_has_activatable_surface(&available.package),
+                activation_errors.contains_key(installation.extension_id()),
+            );
             summaries.push(LifecycleInstalledExtensionSummary {
                 summary: available.summary(),
-                phase: installation_state_for_installation(
-                    &installation,
-                    package_has_activatable_surface(&available.package),
-                    activation_errors.contains_key(installation.extension_id()),
-                ),
+                phase: self.consent_projected_phase(&available, phase).await?,
                 install_scope: Some(install_scope_for_owner(installation.owner())),
             });
         }
@@ -1049,6 +1068,7 @@ impl ExtensionLifecycleManager {
         let phase =
             search_installation_phase(extension, &installation, credential_gate, has_last_error)
                 .await?;
+        let phase = self.consent_projected_phase(extension, phase).await?;
         Ok(LifecycleSearchExtensionSummary {
             summary,
             installation_phase: Some(phase),
@@ -1108,6 +1128,27 @@ impl ExtensionLifecycleManager {
         &self,
         bundle: Vec<u8>,
     ) -> Result<LifecycleProductResponse, ProductOperationFailure> {
+        self.import_decoded(move || unzip_extension_bundle_for_product(&bundle))
+            .await
+    }
+
+    /// Import an already-read package folder (`crate::read_extension_folder`,
+    /// which applies the upload's entry, path, and byte limits) through the
+    /// same validation, decode bound, and catalog/materialization path as an
+    /// uploaded bundle.
+    pub async fn import_files(
+        &self,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<LifecycleProductResponse, ProductOperationFailure> {
+        self.import_decoded(move || Ok(files)).await
+    }
+
+    async fn import_decoded(
+        &self,
+        decode: impl FnOnce() -> Result<Vec<(String, Vec<u8>)>, ProductOperationFailure>
+        + Send
+        + 'static,
+    ) -> Result<LifecycleProductResponse, ProductOperationFailure> {
         // Hold the permit until the package has passed duplicate checks,
         // materialization, and catalog insertion. This bounds the number of
         // fully expanded packages retained by an import in addition to the
@@ -1119,7 +1160,7 @@ impl ExtensionLifecycleManager {
             .map_err(map_import_decode_acquire_error)?;
         let reserved_bundled_ids = self.catalog.read().await.reserved_bundled_ids().to_vec();
         let package = tokio::task::spawn_blocking(move || {
-            let files = unzip_extension_bundle_for_product(&bundle)?;
+            let files = decode()?;
             imported_extension_package(files, &reserved_bundled_ids)
         })
         .await
@@ -1235,6 +1276,9 @@ impl ExtensionLifecycleManager {
             .snapshot()
             .get_extension(&extension_id)
             .is_some();
+        // Removal below drops the consent grant; a failed replacement must
+        // restore the previous package with the grant it had.
+        let previous_consent = self.consent.granted_digest(&extension_id).await?;
         if had_installation {
             if !force {
                 return Err(ProductOperationFailure::InvalidBindingRequest {
@@ -1279,6 +1323,16 @@ impl ExtensionLifecycleManager {
                     if let Err(restore_error) = restore {
                         return Err(compensation_failure(
                             "registry replacement failed and the previous install could not be restored",
+                            original_error,
+                            restore_error,
+                        ));
+                    }
+                    if let Some(digest) = &previous_consent
+                        && let Err(restore_error) =
+                            self.consent.grant(&extension_id, digest, caller).await
+                    {
+                        return Err(compensation_failure(
+                            "registry replacement failed and the previous consent grant could not be restored",
                             original_error,
                             restore_error,
                         ));
@@ -1376,7 +1430,7 @@ impl ExtensionLifecycleManager {
             .map(|id| id.as_str().to_string())
             .collect();
 
-        Ok(response_with_payload(
+        let response = response_with_payload(
             Some(package_ref.clone()),
             InstallationState::Installed,
             LifecycleProductPayload::ExtensionInstall {
@@ -1387,7 +1441,9 @@ impl ExtensionLifecycleManager {
                     package_ref.id.as_str()
                 ),
             },
-        ))
+        );
+        self.apply_consent_to_install_response(&available, response)
+            .await
     }
 
     /// First install of an id: register the lifecycle package, materialize
@@ -1463,6 +1519,10 @@ impl ExtensionLifecycleManager {
         credential_gate: &dyn ExtensionActivationCredentialGate,
         caller: &UserId,
     ) -> Result<LifecycleProductResponse, ProductOperationFailure> {
+        // Consent precedes preparation: preparation may reach the network.
+        if let Some(response) = self.consent_blocked_activation(&package_ref).await? {
+            return Ok(response);
+        }
         if let Some(response) = self
             .prepare_if_pending(&package_ref, scope, credential_gate, caller)
             .await?
@@ -1499,6 +1559,11 @@ impl ExtensionLifecycleManager {
         caller: &UserId,
     ) -> Result<LifecycleProductResponse, ProductOperationFailure> {
         let (extension_id, installation_id) = extension_ids_from_package_ref(&package_ref)?;
+        // Every activation entry point converges here; checked before
+        // `operation_lock` because it reads the catalog.
+        if let Some(response) = self.consent_blocked_activation(&package_ref).await? {
+            return Ok(response);
+        }
 
         let _operation_guard = self.operation_lock.lock().await;
         let installation = self
@@ -1949,6 +2014,8 @@ impl ExtensionLifecycleManager {
                     .to_string(),
             );
         }
+        self.revoke_consent_after_removal(&removed_extension_id)
+            .await?;
         Ok(response)
     }
 
@@ -2880,6 +2947,7 @@ fn response_with_payload(
         blockers: Vec::new(),
         message: None,
         payload: Some(payload),
+        consent: None,
     }
 }
 

@@ -474,6 +474,7 @@ mod tests {
                 ],
                 count: 2,
             }),
+            consent: None,
         };
 
         let onboarding = from_lifecycle(&lifecycle);

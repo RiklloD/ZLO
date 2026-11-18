@@ -1693,7 +1693,16 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `ironclaw_assistant`, implementor `ironclaw_computer_use`). The
         // rest is the concurrent `self_update` and `thread_repo` wire
         // modules. Walk, expansion and preflight live in the owning crates.
-        ("ironclaw_product_contracts", 15_784),
+        // 15_784 -> 15_997 (2026-11-18, plugin consent): the
+        // `package_consent` wire module (`PackageConsentDigest`, the consent
+        // request kind/request/summary DTOs), the `consent` field on
+        // `LifecycleProductResponse`, the `ExtensionGrantConsent`
+        // action/payload/command kind, and the `consent_required`/`tampered`
+        // doc lines. Shapes only; the digest, summary derivation, durable
+        // grants and the activation gate live in
+        // `ironclaw_extension_host::extension_consent`. Count read from this
+        // test's failure message.
+        ("ironclaw_product_contracts", 15_997),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

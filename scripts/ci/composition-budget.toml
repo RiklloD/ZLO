@@ -409,7 +409,12 @@ observed_date = "2026-11-17"
 # 33432 -> 33450, observed 33582 -> 33600, zero hidden headroom. No change of
 # this branch: main @ 3359f4929 (fix/sandbox-timeout-lease-cleanup) measures
 # 33520, 18 over its own recorded 33502, which this branch's +80 sits on.
-loc_ceiling = 33450
+# ✎ 2026-11-18 (t3/extension-consent-local-install): 33450 -> 33462,
+# observed 33600 -> 33612, zero hidden headroom. +12 wiring lines only: the
+# consent-blocked id set (decided by `ExtensionLifecycleManager`) is read and
+# handed to `build_backend_extension_host`, which drops those ids from the
+# generic host's boot hydration. No policy lives in composition.
+loc_ceiling = 33462
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to

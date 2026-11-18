@@ -45,6 +45,7 @@ pub(crate) fn registration_response(package_ref: LifecyclePackageRef) -> Lifecyc
             next_step: "Install this registered extension through the ordinary lifecycle."
                 .to_string(),
         }),
+        consent: None,
     }
 }
 

@@ -194,6 +194,23 @@ pub async fn rebuild_lifecycle_test_services_with_auth_provider(
     .await
 }
 
+/// Rebuild over the same durable backing with the default fail-closed auth
+/// provider — a process restart (`zlo` re-runs boot for every command).
+pub async fn rebuild_lifecycle_test_services(
+    previous: &ExtensionLifecycleTestServices,
+    owner_id: &str,
+    network_http_egress: Option<Arc<dyn ironclaw_network::NetworkHttpEgress>>,
+) -> ExtensionLifecycleTestServices {
+    rebuild_lifecycle_test_services_with_auth_provider(
+        previous,
+        owner_id,
+        network_http_egress,
+        false,
+        Arc::new(UnavailableAuthProviderClient),
+    )
+    .await
+}
+
 /// Test-only construction seam for #7853 positive-coverage tests: a catalog
 /// extended with [`device_link_channel_fixture_package`] (a package that
 /// declares BOTH a channel and a required device-link tool credential) and no
@@ -504,15 +521,6 @@ async fn build_lifecycle_test_services_over_backing(
 
     let bundles = ironclaw_extension_host::test_support::first_party_bundles_from_inventory();
     let first_party_reserved_ids = first_party_reserved_extension_ids(&bundles);
-    let mut available_extensions =
-        AvailableExtensionCatalog::from_first_party_assets_with_nearai_mcp_config(None, &bundles)
-            .expect("first-party extension catalog")
-            .with_reserved_bundled_ids(first_party_reserved_ids.clone());
-    if let Some(extra_package) = extra_catalog_package {
-        available_extensions.extend(AvailableExtensionCatalog::from_packages(vec![
-            extra_package,
-        ]));
-    }
     let extension_host_ports =
         ironclaw_host_api::host_port::default_host_port_catalog().expect("host port catalog");
     let extension_host_api_contracts =
@@ -528,6 +536,37 @@ async fn build_lifecycle_test_services_over_backing(
             .await
             .expect("extension installation store"),
         );
+    // Mirror production boot (`production_backend_assembly`): packages
+    // materialized under `/system/extensions` (local installs, scaffolds)
+    // load first, with their durable manifest source, then the first-party
+    // inventory extends the catalog.
+    let persisted_manifest_sources = installation_store
+        .list_manifests()
+        .await
+        .expect("list persisted manifests")
+        .into_iter()
+        .map(|record| (record.manifest().id.clone(), record.manifest().source))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut available_extensions =
+        AvailableExtensionCatalog::from_filesystem_root_with_manifest_sources(
+            extension_filesystem.as_ref(),
+            &VirtualPath::new("/system/extensions").expect("extensions root"),
+            &first_party_reserved_ids,
+            &persisted_manifest_sources,
+        )
+        .await
+        .expect("filesystem extension catalog");
+    available_extensions.extend(
+        AvailableExtensionCatalog::from_first_party_assets_with_nearai_mcp_config(None, &bundles)
+            .expect("first-party extension catalog"),
+    );
+    let mut available_extensions =
+        available_extensions.with_reserved_bundled_ids(first_party_reserved_ids.clone());
+    if let Some(extra_package) = extra_catalog_package {
+        available_extensions.extend(AvailableExtensionCatalog::from_packages(vec![
+            extra_package,
+        ]));
+    }
     // Keep lifecycle publication and capability preflight on the same shared
     // registry, exactly as production composition does. The active snapshot
     // resolver is dispatch-only; `CapabilityHost` resolves the descriptor
@@ -613,15 +652,23 @@ async fn build_lifecycle_test_services_over_backing(
     // instead of binding a `ToolAdapter`/`ChannelSurfaces` this harness has no
     // native channel adapter to satisfy.
     if attach_generic_host {
+        // Same consent filter production composition applies to boot
+        // hydration (`extension_host_assembly::build_backend_extension_host`).
+        let consent_blocked = extension_management
+            .consent_blocked_extension_ids()
+            .await
+            .expect("consent-blocked extension ids");
+        let mut boot_installations = boot_installation_records(&installation_store, None)
+            .await
+            .expect("boot installation records");
+        boot_installations.retain(|record| !consent_blocked.contains(&record.extension_id));
         let generic =
             build_generic_extension_host(ironclaw_extension_host::GenericExtensionHostParams {
                 binder: host_services.extension_lane_tool_binder(),
                 native_factories: Vec::new(),
                 channel_adapters: Vec::new(),
                 installation_store: Arc::clone(&installation_store),
-                boot_installations: boot_installation_records(&installation_store, None)
-                    .await
-                    .expect("boot installation records"),
+                boot_installations,
                 governor: Arc::new(InMemoryResourceGovernor::new()),
                 assembly: ExtensionHostAssemblyConfig::new(
                     first_party_reserved_ids
