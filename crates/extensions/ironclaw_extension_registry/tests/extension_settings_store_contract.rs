@@ -3,6 +3,8 @@
 //! [`ExtensionSettingsReader`] port the runtime lanes use, and cleared by
 //! removal.
 
+#![deny(clippy::let_underscore_must_use)]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

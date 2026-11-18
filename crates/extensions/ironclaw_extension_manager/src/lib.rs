@@ -24,6 +24,7 @@ pub mod admin_configuration_capability;
 pub mod channel_config_product_service;
 pub mod extension_lifecycle_capabilities;
 pub mod extension_lifecycle_command;
+pub mod extension_settings_product_service;
 mod install_guidance;
 pub mod ironhub;
 pub mod lifecycle_product_service;

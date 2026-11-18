@@ -47,6 +47,8 @@ pub use memory::{
     supermemory_delete_document, supermemory_documents, supermemory_forget, supermemory_search,
     supermemory_status,
 };
+mod extension_settings;
+pub use extension_settings::{extension_setting_set, extension_settings_list};
 mod history;
 pub use history::history_search;
 mod inbox;

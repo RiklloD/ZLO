@@ -86,6 +86,9 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_COMPUTER_USE_READINESS, WEBUI_V2_PATTERN_COMPUTER_USE_STATE,
 };
 use crate::webui_v2::descriptors::{
+    WEBUI_V2_PATTERN_EXTENSION_SETTING, WEBUI_V2_PATTERN_EXTENSION_SETTINGS,
+};
+use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_HISTORY_SEARCH, WEBUI_V2_PATTERN_INBOX, WEBUI_V2_PATTERN_INBOX_THREAD,
     WEBUI_V2_PATTERN_TASK_MODELS, WEBUI_V2_PATTERN_THREAD_GOAL,
 };
@@ -480,6 +483,14 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
             post(handlers::supermemory_forget),
         )
         .route(WEBUI_V2_PATTERN_HOOKS, get(handlers::hooks_catalog))
+        .route(
+            WEBUI_V2_PATTERN_EXTENSION_SETTINGS,
+            get(handlers::extension_settings_list),
+        )
+        .route(
+            WEBUI_V2_PATTERN_EXTENSION_SETTING,
+            put(handlers::extension_setting_set),
+        )
         .route(WEBUI_V2_PATTERN_INBOX, get(handlers::inbox_list))
         .route(
             WEBUI_V2_PATTERN_HISTORY_SEARCH,

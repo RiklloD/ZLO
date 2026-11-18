@@ -1814,7 +1814,7 @@ body = { mode = "wasm", export = "evaluate" }
 [[hooks]]
 id = "cap-forecasts"
 kind = "before_capability"
-body = { mode = "predicate", spec = { kind = "deny_capability", when = { kind = "name_equals", name = "weather-guard.forecast" }, reason = "no" } }
+body = { mode = "predicate", spec = { type = "deny_capability", reason = "no", when = { type = "name_equals", name = "weather-guard.forecast" } } }
 
 [[settings]]
 id = "units"

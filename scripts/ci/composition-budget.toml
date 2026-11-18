@@ -409,7 +409,18 @@ observed_date = "2026-11-17"
 # 33432 -> 33450, observed 33582 -> 33600, zero hidden headroom. No change of
 # this branch: main @ 3359f4929 (fix/sandbox-timeout-lease-cleanup) measures
 # 33520, 18 over its own recorded 33502, which this branch's +80 sits on.
-loc_ceiling = 33450
+# ✎ 2026-11-18 (t3/extension-hooks-settings, plugin hooks + settings):
+# 33450 -> 34008, observed 33600 -> 34158, zero hidden headroom, pending the
+# owner's sign-off. +558: `observability/hooks/live.rs` — the per-run,
+# activation-tracking installer for package `[[hooks]]` (active-registry
+# read, module-asset loading under the package root, settings binding,
+# admission caps, cache pruning) plus its factory/assembly wiring and the
+# settings product-surface wiring. It sits beside the existing manifest ->
+# registrar loader because that loader is composition's by design (the
+# registry may not name the hook crate); settings grammar, validation and the
+# store live in `ironclaw_extension_registry`, the product source in
+# `ironclaw_extension_manager`.
+loc_ceiling = 34008
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -524,6 +535,11 @@ loc_observed_date = "2026-11-18"
 # 682, zero hidden headroom. -2 sites are the two `#[cfg(test)]`-only files in
 # the loc_ceiling note (684 measured with the old counter); the other -3 are
 # the slack the prior ceiling carried above that measurement.
-arc_dyn_ceiling = 667
+# ✎ 2026-11-18 (t3/extension-hooks-settings): 667 -> 674, observed 682 ->
+# 689, zero hidden headroom, pending the owner's sign-off. +7: the live hook
+# installer's injected seams (active registry filesystem, settings reader,
+# first-party installer, WASM module resolver) and their assembly casts — each
+# has a second implementor (test fakes / defaults-only reader).
+arc_dyn_ceiling = 674
 arc_dyn_tolerance = 15
 arc_dyn_observed = 682

@@ -1693,7 +1693,12 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `ironclaw_assistant`, implementor `ironclaw_computer_use`). The
         // rest is the concurrent `self_update` and `thread_repo` wire
         // modules. Walk, expansion and preflight live in the owning crates.
-        ("ironclaw_product_contracts", 15_784),
+        // 15_784 -> 15_984 (2026-11-18, plugin package settings): the
+        // `extension_settings` view/command descriptors, wire DTOs and the
+        // `ExtensionSettingsSource` port (caller `ironclaw_assistant`,
+        // implementor `ironclaw_extension_manager`). Declaration grammar,
+        // validation and the store live in `ironclaw_extension_registry`.
+        ("ironclaw_product_contracts", 15_984),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

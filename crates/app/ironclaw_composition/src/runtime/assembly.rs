@@ -1935,6 +1935,7 @@ pub(super) async fn assemble_runtime(
         auto_approve_settings: services.auto_approve_settings.clone(),
         extension_registry: services.extension_registry.clone(),
         shared_extension_registry: services.shared_extension_registry.clone(),
+        extension_settings: Arc::clone(&services.extension_settings),
         skill_auto_activate_learned: Arc::clone(&services.skill_auto_activate_learned),
         extension_management: services.extension_management.clone(),
         runtime_http_egress: services.runtime_http_egress.as_ref().map(Arc::clone),

@@ -1142,3 +1142,71 @@ fn mint(
         },
     ))
 }
+
+/// Package hooks follow the extension lifecycle. With live sources wired, the
+/// per-run factory installs a third-party package's hooks only while the
+/// package is in the active registry: activation (publish) registers them at
+/// the `Installed` tier on the next run, deactivation/removal (unpublish)
+/// leaves the next run with none — and drops the package's resident module
+/// bytes and validation cache.
+#[test]
+fn live_hook_sets_follow_activation_and_deactivation() {
+    use ironclaw_extension_registry::SharedExtensionRegistry;
+    use ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings;
+
+    let package_registry = registry_with_manifest(
+        "live-ext",
+        &manifest_toml("live-ext", &own_deny_hook("deny-run", "live-ext.run")),
+    );
+    let package = package_registry
+        .extensions()
+        .next()
+        .expect("fixture package")
+        .clone();
+    let active = Arc::new(SharedExtensionRegistry::new(ExtensionRegistry::new()));
+    let tenant = ironclaw_host_api::ids::TenantId::new("tenant-live").expect("tenant");
+    let tenant_root = tenant_extension_root(&tenant).expect("root");
+    let filesystem: Arc<dyn ironclaw_filesystem::RootFilesystem> =
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new());
+    let installer = super::live::LiveHookInstaller::new(
+        true,
+        tenant,
+        tenant_root,
+        super::live::LiveHookSources {
+            active: Arc::clone(&active),
+            filesystem,
+            settings: Arc::new(DefaultsOnlyExtensionSettings),
+        },
+        Arc::new(ironclaw_hooks::evaluator::PredicateEvaluator::new()),
+        Arc::new(install_first_party_hooks),
+        Vec::new(),
+    )
+    .expect("installer builds");
+    let request = || ironclaw_turn_runner::loop_driver_host::HookDispatcherBuildRequest {
+        scope: ironclaw_host_api::resource::ResourceScope::system(),
+    };
+    let expected = installed_hook_id("live-ext", "0.1.0", "deny-run");
+    let bound = |builder: HookDispatcherBuilder| {
+        builder
+            .build_arc()
+            .active_bindings_snapshot(HookPointSpec::BeforeCapability)
+            .iter()
+            .any(|binding| binding.hook_id == expected)
+    };
+
+    // Installed on disk but not active: no hooks.
+    let before = futures::executor::block_on(installer.build(request())).expect("build");
+    assert!(!bound(before), "an inactive package contributes no hooks");
+
+    // Activated: the next run carries the package hook.
+    active.upsert(package.clone()).expect("activate");
+    let during = futures::executor::block_on(installer.build(request())).expect("build");
+    assert!(bound(during), "an active package's hook registers");
+
+    // Deactivated/removed: the next run carries none, and nothing stays
+    // resident for the package.
+    active.remove(&package.id);
+    let after = futures::executor::block_on(installer.build(request())).expect("build");
+    assert!(!bound(after), "a deactivated package's hook unregisters");
+    assert!(installer.resident_module_extensions().is_empty());
+}

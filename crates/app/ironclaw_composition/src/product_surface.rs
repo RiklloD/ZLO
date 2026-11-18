@@ -388,8 +388,21 @@ pub(crate) fn build_product_surface_with_channel_connection(
             Some(parts.supermemory),
             runtime.orchestrator.clone(),
         ));
-    Ok(Arc::new(
+    let surface: Arc<dyn ProductSurface> = Arc::new(
         ironclaw_assistant::hooks_page::HooksPageSurface::new(surface, parts.hooks),
+    );
+    // Package-declared settings (`[[settings]]`) for active extensions.
+    let settings_source = Arc::new(
+        ironclaw_extension_manager::extension_settings_product_service::ExtensionSettingsProductService::new(
+            Arc::clone(&runtime.shared_extension_registry),
+            Arc::clone(&runtime.extension_settings),
+        ),
+    );
+    Ok(Arc::new(
+        ironclaw_assistant::extension_settings_page::ExtensionSettingsSurface::new(
+            surface,
+            settings_source,
+        ),
     ))
 }
 

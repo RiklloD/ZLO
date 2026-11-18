@@ -3991,6 +3991,7 @@ dependencies = [
  "ironclaw_turn_runner",
  "ironclaw_turns",
  "ironclaw_usage",
+ "ironclaw_wasm",
  "ironclaw_webui",
  "libsql",
  "rand 0.10.2",
@@ -4011,6 +4012,9 @@ dependencies = [
  "tracing-test",
  "url",
  "uuid",
+ "wat",
+ "wit-component",
+ "wit-parser 0.254.0",
 ]
 
 [[package]]

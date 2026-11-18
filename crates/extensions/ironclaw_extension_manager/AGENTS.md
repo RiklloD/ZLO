@@ -29,6 +29,7 @@ port the host declares — never to add the dependency.
 | `extension_lifecycle_capabilities` | the agent-callable lifecycle capabilities (`extension_install` / `activate` / `remove` / `search` …) |
 | `extension_lifecycle_command` | the `ironclaw extension` CLI command and its rendering |
 | `lifecycle_product_service` | `ExtensionHostLifecycleProductService` — the `LifecycleProductService` port the WebUI routes through |
+| `extension_settings_product_service` | `ExtensionSettingsProductService` — the `ExtensionSettingsSource` port: an active extension's `[[settings]]` with the caller's values, and validated set |
 | `channel_config_product_service` | `RebornChannelConfigProductService` — the product projection over the host's `ChannelConfigService` |
 | `admin_configuration` | the administrator-configuration `RebornViewProvider` |
 | `admin_configuration_capability` | the administrator-configuration replace capability |
