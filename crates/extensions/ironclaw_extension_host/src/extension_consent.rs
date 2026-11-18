@@ -9,6 +9,14 @@
 //! boot as well as on explicit activation — until consent is granted again
 //! for the new digest.
 //!
+//! The decision is per principal ([`ConsentPrincipal`]); the package
+//! definition and its execution pins are one per extension id. A
+//! member-held installation runs, for each member, only on that member's own
+//! grant; a tenant-owned one only on the tenant admin's. Every surface that
+//! already narrows an active extension to the users its installation is
+//! visible to (tool catalog, live hooks, UI slots, settings) narrows it by
+//! consent too, through [`ExtensionConsentStore::consented_owner`].
+//!
 //! Exempt: host-bundled packages (compiled into the binary, first-party
 //! trust) and user-registered hosted-MCP definitions, whose registration
 //! request is already an explicit user act and whose tool catalog passes the
@@ -27,7 +35,7 @@ use std::sync::Arc;
 
 use ironclaw_extension_contracts::state::InstallationState;
 use ironclaw_extension_registry::{
-    CapabilityVisibility, ExtensionRuntimeV2, ManifestSource, PackageContentPins,
+    CapabilityVisibility, ExtensionRuntimeV2, InstallationOwner, ManifestSource, PackageContentPins,
 };
 use ironclaw_filesystem::{FilesystemError, RootFilesystem};
 use ironclaw_host_api::approval::sha256_digest_token;
@@ -48,14 +56,13 @@ use crate::available_extensions::{AvailableExtensionAssetContent, AvailableExten
 pub const CONSENT_RECORD_ROOT: &str = "/system/extensions/.consent";
 
 const CONSENT_DIGEST_DOMAIN: &[u8] = b"zlo-extension-package-consent-v1";
-const CONSENT_RECORD_SCHEMA: u32 = 2;
+/// v3 (2026-11-18): per-principal decisions plus one pins record per id.
+/// Records of any other schema read as no grant.
+const CONSENT_RECORD_SCHEMA: u32 = 3;
 
 /// Whether a package from `source` must carry a consent grant to activate.
 pub fn source_requires_consent(source: ManifestSource) -> bool {
-    match source {
-        ManifestSource::InstalledLocal | ManifestSource::RegistryInstalled => true,
-        ManifestSource::HostBundled | ManifestSource::UserRegistered => false,
-    }
+    source.requires_consent()
 }
 
 /// One package's files as the consent digest sees them: package-relative
@@ -271,8 +278,27 @@ fn consent_requests(package: &AvailableExtensionPackage) -> Vec<LifecycleConsent
                 .to_string(),
         });
     }
-    // `ui_slot` and `setting` requests are reserved kinds: they are derived
-    // here once the manifest declares those sections.
+    for slot in &resolved.ui_slots {
+        requests.push(LifecycleConsentRequest {
+            kind: LifecycleConsentRequestKind::UiSlot,
+            title: slot.title.clone(),
+            detail: format!(
+                "Shows its own {} panel in ZLO, drawn by its {} tool.",
+                slot.slot.as_str(),
+                slot.render
+            ),
+        });
+    }
+    for setting in &resolved.settings {
+        requests.push(LifecycleConsentRequest {
+            kind: LifecycleConsentRequestKind::Setting,
+            title: setting.label.clone(),
+            detail: format!(
+                "Adds the setting \"{}\"; its hooks and tools read the value you choose.",
+                setting.id
+            ),
+        });
+    }
     requests
 }
 
@@ -324,16 +350,17 @@ fn url_host(raw: &str) -> Option<String> {
         .and_then(|url| url.host_str().map(str::to_string))
 }
 
-/// Consent state of one package against its durable grant.
+/// Consent state of one package for one principal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtensionConsentStatus {
     /// Host-bundled or user-registered: no grant needed.
     Exempt,
-    /// A grant exists for the current digest.
+    /// The principal granted consent for the current files, and the
+    /// package's execution pins are those files.
     Granted,
-    /// No grant exists.
+    /// The principal has not granted consent.
     Required,
-    /// A grant exists, for a different digest: the files changed.
+    /// The principal granted consent for other files: they changed.
     Tampered,
 }
 
@@ -348,19 +375,113 @@ impl ExtensionConsentStatus {
     }
 }
 
+/// One consent evaluation: the status plus the digest of the files it was
+/// evaluated against (`None` when the package is exempt). Computed once per
+/// package per operation and reused for every decision that operation makes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsentEvaluation {
+    pub status: ExtensionConsentStatus,
+    pub digest: Option<PackageConsentDigest>,
+}
+
+impl ConsentEvaluation {
+    pub const EXEMPT: Self = Self {
+        status: ExtensionConsentStatus::Exempt,
+        digest: None,
+    };
+}
+
+/// Whose decision a consent grant is.
+///
+/// The package definition and its execution pins are one per extension id
+/// (there is one set of files on disk); the *decision* to let it run is per
+/// principal. A tenant-owned (shared) installation runs on the tenant admin's
+/// decision; a member-held installation runs, for each member, on that
+/// member's own decision — one user's consent never authorizes the package
+/// for another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConsentPrincipal {
+    TenantAdmin,
+    User(UserId),
+}
+
+impl ConsentPrincipal {
+    /// The principal whose decision governs `caller`'s use of an
+    /// installation held by `owner` (`None`: not installed yet, so a fresh
+    /// install — always caller-private).
+    pub fn for_caller(owner: Option<&InstallationOwner>, caller: &UserId) -> Self {
+        match owner {
+            Some(InstallationOwner::Tenant) => Self::TenantAdmin,
+            _ => Self::User(caller.clone()),
+        }
+    }
+
+    /// File-name key: never the raw user id (ids are not path-safe by
+    /// contract), a hash of it.
+    fn record_key(&self) -> String {
+        match self {
+            Self::TenantAdmin => "tenant-admin".to_string(),
+            Self::User(user) => {
+                let mut hex = String::with_capacity(64);
+                for byte in Sha256::digest(user.as_str().as_bytes()).iter() {
+                    // Writing to a String cannot fail.
+                    let _written = write!(hex, "{byte:02x}");
+                }
+                format!("user-{hex}")
+            }
+        }
+    }
+
+    fn wire(&self) -> ConsentPrincipalWire {
+        match self {
+            Self::TenantAdmin => ConsentPrincipalWire::TenantAdmin,
+            Self::User(user) => ConsentPrincipalWire::User {
+                user_id: user.as_str().to_string(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct ExtensionConsentRecord {
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ConsentPrincipalWire {
+    TenantAdmin,
+    User { user_id: String },
+}
+
+/// The package's execution pins: the files the latest authorized grant
+/// covered. One per extension id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PackagePinsRecord {
     schema: u32,
     extension_id: String,
     digest: PackageConsentDigest,
     /// Package-relative path -> `sha256:<hex>` of every consented file: what
     /// the runtime lanes verify the bytes they execute against.
     assets: std::collections::BTreeMap<String, String>,
+}
+
+/// One principal's decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ConsentDecisionRecord {
+    schema: u32,
+    extension_id: String,
+    principal: ConsentPrincipalWire,
+    digest: PackageConsentDigest,
     granted_by: String,
     granted_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Durable consent grants, one record per extension id.
+/// The raw durable consent records of one extension, for restoring them
+/// after a failed replacement.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConsentSnapshot {
+    files: Vec<(VirtualPath, Vec<u8>)>,
+}
+
+/// Durable consent: one pins record per extension id
+/// (`<root>/<id>.json`) and one decision record per principal
+/// (`<root>/grants/<id>/<principal-key>.json`).
 #[derive(Clone)]
 pub struct ExtensionConsentStore {
     filesystem: Arc<dyn RootFilesystem>,
@@ -373,43 +494,78 @@ impl std::fmt::Debug for ExtensionConsentStore {
     }
 }
 
+fn consent_path(raw: String) -> Result<VirtualPath, ProductOperationFailure> {
+    VirtualPath::new(raw).map_err(|error| ProductOperationFailure::InvalidBindingRequest {
+        reason: format!("consent record path is invalid: {error}"),
+    })
+}
+
 impl ExtensionConsentStore {
     pub fn new(filesystem: Arc<dyn RootFilesystem>) -> Self {
         Self { filesystem }
     }
 
-    fn record_path(extension_id: &ExtensionId) -> Result<VirtualPath, ProductOperationFailure> {
-        VirtualPath::new(format!(
+    fn pins_path(extension_id: &ExtensionId) -> Result<VirtualPath, ProductOperationFailure> {
+        consent_path(format!(
             "{CONSENT_RECORD_ROOT}/{}.json",
             extension_id.as_str()
         ))
-        .map_err(|error| ProductOperationFailure::InvalidBindingRequest {
-            reason: format!("consent record path is invalid: {error}"),
-        })
     }
 
-    async fn read(
-        &self,
+    fn decisions_dir(extension_id: &ExtensionId) -> Result<VirtualPath, ProductOperationFailure> {
+        consent_path(format!(
+            "{CONSENT_RECORD_ROOT}/grants/{}",
+            extension_id.as_str()
+        ))
+    }
+
+    fn decision_path(
         extension_id: &ExtensionId,
-    ) -> Result<Option<ExtensionConsentRecord>, ProductOperationFailure> {
-        let path = Self::record_path(extension_id)?;
-        let bytes = match self.filesystem.read_file(&path).await {
-            Ok(bytes) => bytes,
+        principal: &ConsentPrincipal,
+    ) -> Result<VirtualPath, ProductOperationFailure> {
+        consent_path(format!(
+            "{CONSENT_RECORD_ROOT}/grants/{}/{}.json",
+            extension_id.as_str(),
+            principal.record_key()
+        ))
+    }
+
+    async fn read_raw(
+        &self,
+        path: &VirtualPath,
+    ) -> Result<Option<Vec<u8>>, ProductOperationFailure> {
+        match self.filesystem.read_file(path).await {
+            Ok(bytes) => Ok(Some(bytes)),
             Err(FilesystemError::NotFound { .. }) | Err(FilesystemError::MountNotFound { .. }) => {
-                return Ok(None);
+                Ok(None)
             }
-            Err(error) => {
-                return Err(ProductOperationFailure::Transient {
-                    reason: format!("failed to read extension consent record: {error}"),
-                });
-            }
+            Err(error) => Err(ProductOperationFailure::Transient {
+                reason: format!("failed to read extension consent record: {error}"),
+            }),
+        }
+    }
+
+    /// Read one record of the current schema. A record of another schema
+    /// (the pre-principal v2 grant keyed by extension id only, or anything
+    /// older) cannot say whose decision it is: it reads as no grant, so the
+    /// user is asked again (fail closed).
+    async fn read_record<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &VirtualPath,
+        extension_id: &ExtensionId,
+    ) -> Result<Option<T>, ProductOperationFailure> {
+        let Some(bytes) = self.read_raw(path).await? else {
+            return Ok(None);
         };
-        // A record from an older schema (no per-file hashes) cannot bind
-        // execution to the consented bytes: treat it as no grant, so the user
-        // is asked again.
-        let schema = serde_json::from_slice::<serde_json::Value>(&bytes)
-            .ok()
+        let value = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+        let schema = value
+            .as_ref()
             .and_then(|value| value.get("schema").and_then(serde_json::Value::as_u64));
+        let record_id = value.as_ref().and_then(|value| {
+            value
+                .get("extension_id")
+                .and_then(serde_json::Value::as_str)
+        });
         if schema != Some(u64::from(CONSENT_RECORD_SCHEMA)) {
             tracing::debug!(
                 extension_id = extension_id.as_str(),
@@ -418,130 +574,326 @@ impl ExtensionConsentStore {
             );
             return Ok(None);
         }
-        let record: ExtensionConsentRecord = serde_json::from_slice(&bytes).map_err(|error| {
-            ProductOperationFailure::InvalidBindingRequest {
-                reason: format!("extension consent record is malformed: {error}"),
-            }
-        })?;
-        if record.extension_id != extension_id.as_str() {
+        if record_id != Some(extension_id.as_str()) {
             return Err(ProductOperationFailure::InvalidBindingRequest {
                 reason: "extension consent record names a different extension".to_string(),
             });
         }
-        Ok(Some(record))
+        serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+            ProductOperationFailure::InvalidBindingRequest {
+                reason: format!("extension consent record is malformed: {error}"),
+            }
+        })
     }
 
-    /// The grant's digest, if one is recorded.
-    pub async fn granted_digest(
+    async fn write_record<T: Serialize>(
         &self,
-        extension_id: &ExtensionId,
-    ) -> Result<Option<PackageConsentDigest>, ProductOperationFailure> {
-        Ok(self.read(extension_id).await?.map(|record| record.digest))
-    }
-
-    /// The consented per-file hashes, if a grant is recorded.
-    pub async fn granted_pins(
-        &self,
-        extension_id: &ExtensionId,
-    ) -> Result<Option<PackageContentPins>, ProductOperationFailure> {
-        Ok(self
-            .read(extension_id)
-            .await?
-            .map(|record| PackageContentPins::new(record.assets)))
-    }
-
-    /// The whole grant (digest and per-file hashes), for restoring it after
-    /// a failed replacement.
-    pub(crate) async fn granted(
-        &self,
-        extension_id: &ExtensionId,
-    ) -> Result<Option<(PackageConsentDigest, PackageContentPins)>, ProductOperationFailure> {
-        Ok(self
-            .read(extension_id)
-            .await?
-            .map(|record| (record.digest, PackageContentPins::new(record.assets))))
-    }
-
-    /// Persist a grant for `digest` covering exactly the files hashed in
-    /// `pins`, then read it back: success is reported only when the durable
-    /// record names exactly this digest.
-    pub async fn grant(
-        &self,
-        extension_id: &ExtensionId,
-        digest: &PackageConsentDigest,
-        pins: &PackageContentPins,
-        granted_by: &UserId,
+        path: &VirtualPath,
+        record: &T,
     ) -> Result<(), ProductOperationFailure> {
-        let record = ExtensionConsentRecord {
-            schema: CONSENT_RECORD_SCHEMA,
-            extension_id: extension_id.as_str().to_string(),
-            digest: digest.clone(),
-            assets: pins.assets().clone(),
-            granted_by: granted_by.as_str().to_string(),
-            granted_at: chrono::Utc::now(),
-        };
         let bytes =
-            serde_json::to_vec(&record).map_err(|error| ProductOperationFailure::Transient {
+            serde_json::to_vec(record).map_err(|error| ProductOperationFailure::Transient {
                 reason: format!("failed to encode extension consent record: {error}"),
             })?;
-        let path = Self::record_path(extension_id)?;
         self.filesystem
-            .write_file(&path, &bytes)
+            .write_file(path, &bytes)
             .await
             .map_err(|error| ProductOperationFailure::Transient {
                 reason: format!("failed to write extension consent record: {error}"),
-            })?;
-        match self.granted_digest(extension_id).await? {
-            Some(stored) if &stored == digest => Ok(()),
-            _ => Err(ProductOperationFailure::Transient {
-                reason: "extension consent record did not read back after the grant".to_string(),
-            }),
-        }
+            })
     }
 
-    /// Drop the grant (on removal). Absent records are fine.
-    pub async fn revoke(&self, extension_id: &ExtensionId) -> Result<(), ProductOperationFailure> {
-        let path = Self::record_path(extension_id)?;
-        match self.filesystem.delete(&path).await {
-            Ok(()) | Err(FilesystemError::NotFound { .. }) => Ok(()),
-            Err(FilesystemError::MountNotFound { .. }) => Ok(()),
+    async fn delete_record(&self, path: &VirtualPath) -> Result<(), ProductOperationFailure> {
+        match self.filesystem.delete(path).await {
+            Ok(())
+            | Err(FilesystemError::NotFound { .. })
+            | Err(FilesystemError::MountNotFound { .. }) => Ok(()),
             Err(error) => Err(ProductOperationFailure::Transient {
                 reason: format!("failed to delete extension consent record: {error}"),
             }),
         }
     }
 
-    /// Evaluate `package` against its grant, hashing the files as they are
-    /// now (see [`current_package_files`]).
-    pub async fn status(
+    async fn package_pins_record(
         &self,
-        package: &AvailableExtensionPackage,
-    ) -> Result<ExtensionConsentStatus, ProductOperationFailure> {
-        Ok(self.evaluate(package).await?.0)
+        extension_id: &ExtensionId,
+    ) -> Result<Option<PackagePinsRecord>, ProductOperationFailure> {
+        self.read_record(&Self::pins_path(extension_id)?, extension_id)
+            .await
     }
 
-    /// Status plus the digest of the files it was evaluated against
-    /// (`None` when the package is exempt).
+    /// The package's execution pins (digest and per-file hashes), if a grant
+    /// established them.
+    pub async fn granted_package(
+        &self,
+        extension_id: &ExtensionId,
+    ) -> Result<Option<(PackageConsentDigest, PackageContentPins)>, ProductOperationFailure> {
+        Ok(self
+            .package_pins_record(extension_id)
+            .await?
+            .map(|record| (record.digest, PackageContentPins::new(record.assets))))
+    }
+
+    /// The package's execution pins, for the loaders and publication.
+    pub async fn granted_pins(
+        &self,
+        extension_id: &ExtensionId,
+    ) -> Result<Option<PackageContentPins>, ProductOperationFailure> {
+        Ok(self
+            .granted_package(extension_id)
+            .await?
+            .map(|(_, pins)| pins))
+    }
+
+    /// The digest `principal` consented to, if any.
+    pub async fn decision(
+        &self,
+        extension_id: &ExtensionId,
+        principal: &ConsentPrincipal,
+    ) -> Result<Option<PackageConsentDigest>, ProductOperationFailure> {
+        let record: Option<ConsentDecisionRecord> = self
+            .read_record(&Self::decision_path(extension_id, principal)?, extension_id)
+            .await?;
+        Ok(record
+            .filter(|record| record.principal == principal.wire())
+            .map(|record| record.digest))
+    }
+
+    /// Persist `principal`'s grant for `digest`, making `pins` (the files
+    /// that digest covers) the package's execution pins, then read both back:
+    /// success is reported only when the durable records name exactly this
+    /// digest. Callers authorize the principal first.
+    pub async fn grant(
+        &self,
+        extension_id: &ExtensionId,
+        principal: &ConsentPrincipal,
+        digest: &PackageConsentDigest,
+        pins: &PackageContentPins,
+        granted_by: &UserId,
+    ) -> Result<(), ProductOperationFailure> {
+        let pins_record = PackagePinsRecord {
+            schema: CONSENT_RECORD_SCHEMA,
+            extension_id: extension_id.as_str().to_string(),
+            digest: digest.clone(),
+            assets: pins.assets().clone(),
+        };
+        let pins_path = Self::pins_path(extension_id)?;
+        if self.package_pins_record(extension_id).await?.as_ref() != Some(&pins_record) {
+            self.write_record(&pins_path, &pins_record).await?;
+        }
+        let decision = ConsentDecisionRecord {
+            schema: CONSENT_RECORD_SCHEMA,
+            extension_id: extension_id.as_str().to_string(),
+            principal: principal.wire(),
+            digest: digest.clone(),
+            granted_by: granted_by.as_str().to_string(),
+            granted_at: chrono::Utc::now(),
+        };
+        self.write_record(&Self::decision_path(extension_id, principal)?, &decision)
+            .await?;
+        let pins_back = self.granted_package(extension_id).await?;
+        let decision_back = self.decision(extension_id, principal).await?;
+        match (pins_back, decision_back) {
+            (Some((pinned, _)), Some(decided)) if &pinned == digest && &decided == digest => Ok(()),
+            _ => Err(ProductOperationFailure::Transient {
+                reason: "extension consent record did not read back after the grant".to_string(),
+            }),
+        }
+    }
+
+    /// Drop one principal's decision (a member leaving a shared
+    /// installation). Absent records are fine.
+    pub async fn revoke_principal(
+        &self,
+        extension_id: &ExtensionId,
+        principal: &ConsentPrincipal,
+    ) -> Result<(), ProductOperationFailure> {
+        self.delete_record(&Self::decision_path(extension_id, principal)?)
+            .await
+    }
+
+    async fn decision_paths(
+        &self,
+        extension_id: &ExtensionId,
+    ) -> Result<Vec<VirtualPath>, ProductOperationFailure> {
+        match self
+            .filesystem
+            .list_dir(&Self::decisions_dir(extension_id)?)
+            .await
+        {
+            Ok(entries) => Ok(entries.into_iter().map(|entry| entry.path).collect()),
+            Err(FilesystemError::NotFound { .. }) | Err(FilesystemError::MountNotFound { .. }) => {
+                Ok(Vec::new())
+            }
+            Err(error) => Err(ProductOperationFailure::Transient {
+                reason: format!("failed to list extension consent decisions: {error}"),
+            }),
+        }
+    }
+
+    /// Drop the package pins and every decision (on final removal), so a
+    /// later reinstall asks everyone again. Absent records are fine.
+    pub async fn revoke(&self, extension_id: &ExtensionId) -> Result<(), ProductOperationFailure> {
+        for path in self.decision_paths(extension_id).await? {
+            self.delete_record(&path).await?;
+        }
+        self.delete_record(&Self::pins_path(extension_id)?).await
+    }
+
+    /// The raw durable records of one extension.
+    pub(crate) async fn snapshot(
+        &self,
+        extension_id: &ExtensionId,
+    ) -> Result<ConsentSnapshot, ProductOperationFailure> {
+        let mut paths = self.decision_paths(extension_id).await?;
+        paths.push(Self::pins_path(extension_id)?);
+        let mut files = Vec::new();
+        for path in paths {
+            if let Some(bytes) = self.read_raw(&path).await? {
+                files.push((path, bytes));
+            }
+        }
+        Ok(ConsentSnapshot { files })
+    }
+
+    /// Write a snapshot back verbatim.
+    pub(crate) async fn restore(
+        &self,
+        snapshot: &ConsentSnapshot,
+    ) -> Result<(), ProductOperationFailure> {
+        for (path, bytes) in &snapshot.files {
+            self.filesystem
+                .write_file(path, bytes)
+                .await
+                .map_err(|error| ProductOperationFailure::Transient {
+                    reason: format!("failed to restore extension consent record: {error}"),
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Evaluate `package` for `principal`, hashing the files as they are
+    /// now (see [`current_package_files`]) exactly once.
     pub async fn evaluate(
         &self,
         package: &AvailableExtensionPackage,
-    ) -> Result<(ExtensionConsentStatus, Option<PackageConsentDigest>), ProductOperationFailure>
-    {
+        principal: &ConsentPrincipal,
+    ) -> Result<ConsentEvaluation, ProductOperationFailure> {
         if !source_requires_consent(package.source) {
-            return Ok((ExtensionConsentStatus::Exempt, None));
+            return Ok(ConsentEvaluation::EXEMPT);
         }
         let files = current_package_files(self.filesystem.as_ref(), package).await?;
         let current = package_files_digest(&package.package.id, &files)?;
-        let status = match self.granted_digest(&package.package.id).await? {
-            None => ExtensionConsentStatus::Required,
-            Some(granted) if granted == current => ExtensionConsentStatus::Granted,
-            Some(_) => ExtensionConsentStatus::Tampered,
+        let pinned = self
+            .granted_package(&package.package.id)
+            .await?
+            .map(|(digest, _)| digest);
+        let decision = self.decision(&package.package.id, principal).await?;
+        Ok(ConsentEvaluation {
+            status: status_for(&current, pinned.as_ref(), decision.as_ref()),
+            digest: Some(current),
+        })
+    }
+
+    /// Evaluate `package` for an installation as a whole — boot hydration,
+    /// which publishes for every member at once: it may run when its files
+    /// are the pinned ones and at least one principal that governs `owner`
+    /// consented to them. Per-user use is then narrowed by
+    /// [`Self::consented_owner`].
+    pub async fn evaluate_for_owner(
+        &self,
+        package: &AvailableExtensionPackage,
+        owner: &InstallationOwner,
+    ) -> Result<ConsentEvaluation, ProductOperationFailure> {
+        if !source_requires_consent(package.source) {
+            return Ok(ConsentEvaluation::EXEMPT);
+        }
+        let files = current_package_files(self.filesystem.as_ref(), package).await?;
+        let current = package_files_digest(&package.package.id, &files)?;
+        let pinned = self
+            .granted_package(&package.package.id)
+            .await?
+            .map(|(digest, _)| digest);
+        let mut status = ExtensionConsentStatus::Required;
+        for principal in owner_principals(owner) {
+            let decision = self.decision(&package.package.id, &principal).await?;
+            match status_for(&current, pinned.as_ref(), decision.as_ref()) {
+                ExtensionConsentStatus::Granted => {
+                    status = ExtensionConsentStatus::Granted;
+                    break;
+                }
+                ExtensionConsentStatus::Tampered => status = ExtensionConsentStatus::Tampered,
+                _ => {}
+            }
+        }
+        Ok(ConsentEvaluation {
+            status,
+            digest: Some(current),
+        })
+    }
+
+    /// `owner` narrowed to the principals whose decision matches the
+    /// package's execution pins: the tenant row survives only on the tenant
+    /// admin's grant, a member set keeps only the members who consented
+    /// themselves. `None` when nobody remains. Reads small records only (no
+    /// file hashing): what executes is bound to the pins by the lanes, which
+    /// verify every byte they read against them.
+    pub async fn consented_owner(
+        &self,
+        extension_id: &ExtensionId,
+        owner: &InstallationOwner,
+    ) -> Result<Option<InstallationOwner>, ProductOperationFailure> {
+        let Some((pinned, _)) = self.granted_package(extension_id).await? else {
+            return Ok(None);
         };
-        Ok((status, Some(current)))
+        match owner {
+            InstallationOwner::Tenant => Ok(self
+                .decision(extension_id, &ConsentPrincipal::TenantAdmin)
+                .await?
+                .filter(|decided| decided == &pinned)
+                .map(|_| InstallationOwner::Tenant)),
+            InstallationOwner::Users { user_ids } => {
+                let mut consented = BTreeSet::new();
+                for user in user_ids {
+                    let principal = ConsentPrincipal::User(user.clone());
+                    if self.decision(extension_id, &principal).await?.as_ref() == Some(&pinned) {
+                        consented.insert(user.clone());
+                    }
+                }
+                Ok(InstallationOwner::users(consented).ok())
+            }
+        }
     }
 
     pub(crate) fn filesystem(&self) -> &dyn RootFilesystem {
         self.filesystem.as_ref()
+    }
+}
+
+fn owner_principals(owner: &InstallationOwner) -> Vec<ConsentPrincipal> {
+    match owner {
+        InstallationOwner::Tenant => vec![ConsentPrincipal::TenantAdmin],
+        InstallationOwner::Users { user_ids } => user_ids
+            .iter()
+            .cloned()
+            .map(ConsentPrincipal::User)
+            .collect(),
+    }
+}
+
+/// A decision counts only when it covers the current files *and* those are
+/// the package's execution pins (what the lanes verify against).
+fn status_for(
+    current: &PackageConsentDigest,
+    pinned: Option<&PackageConsentDigest>,
+    decision: Option<&PackageConsentDigest>,
+) -> ExtensionConsentStatus {
+    match (decision, pinned) {
+        (None, _) | (Some(_), None) => ExtensionConsentStatus::Required,
+        (Some(decided), Some(pinned)) if decided == current && pinned == current => {
+            ExtensionConsentStatus::Granted
+        }
+        (Some(_), Some(_)) => ExtensionConsentStatus::Tampered,
     }
 }
 

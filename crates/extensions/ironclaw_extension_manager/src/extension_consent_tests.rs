@@ -915,3 +915,355 @@ async fn wasm_module_swapped_after_grant_is_refused_at_invocation() {
         "the consented module is not refused: {outcome:?}"
     );
 }
+
+async fn install_wasm_plugin(
+    services: &ExtensionLifecycleTestServices,
+    user: &str,
+) -> LifecycleProductResponse {
+    run(
+        services,
+        user,
+        RebornExtensionLifecycleCommand::InstallFiles {
+            files: wasm_plugin_files(),
+        },
+    )
+    .await
+    .expect("install files")
+}
+
+async fn plugin_members(services: &ExtensionLifecycleTestServices, id: &str) -> Vec<String> {
+    let owners = services
+        .extension_management
+        .installation_owners()
+        .await
+        .expect("owners");
+    match owners.get(&ExtensionId::new(id).expect("id")) {
+        None => Vec::new(),
+        Some(ironclaw_extension_registry::InstallationOwner::Tenant) => vec!["*".to_string()],
+        Some(ironclaw_extension_registry::InstallationOwner::Users { user_ids }) => user_ids
+            .iter()
+            .map(|user| user.as_str().to_string())
+            .collect(),
+    }
+}
+
+/// Consent is a per-principal decision: Alice's grant never authorizes the
+/// package for Bob. Bob joining Alice's installation is told
+/// `consent_required` (join, activation), the per-user owner projection that
+/// every per-user surface joins (model-visible tools, live hooks, UI slots,
+/// settings) leaves him out until his own grant, and his leaving drops his
+/// decision only.
+#[tokio::test]
+async fn one_users_consent_does_not_authorize_the_package_for_another_member() {
+    let alice = "consent-principal-alice";
+    let bob = "consent-principal-bob";
+    let services = build_lifecycle_test_services(alice, None, false).await;
+    let install = install_wasm_plugin(&services, alice).await;
+    let granted = run(
+        &services,
+        alice,
+        RebornExtensionLifecycleCommand::GrantConsent {
+            id: WASM_PLUGIN_ID.to_string(),
+            digest: consent_of(&install).digest.as_str().to_string(),
+        },
+    )
+    .await
+    .expect("alice grants");
+    assert_eq!(granted.phase, InstallationState::Active, "{granted:?}");
+    assert_eq!(plugin_members(&services, WASM_PLUGIN_ID).await, [alice]);
+
+    // Bob joins the same installation: membership is recorded, but the
+    // package stays blocked for him.
+    let join = run(
+        &services,
+        bob,
+        RebornExtensionLifecycleCommand::Install {
+            id: WASM_PLUGIN_ID.to_string(),
+        },
+    )
+    .await
+    .expect("bob joins");
+    assert_eq!(join.phase, InstallationState::ConsentRequired, "{join:?}");
+    let bob_digest = consent_of(&join).digest.clone();
+    let activate = run(
+        &services,
+        bob,
+        RebornExtensionLifecycleCommand::Activate {
+            id: WASM_PLUGIN_ID.to_string(),
+        },
+    )
+    .await
+    .expect("activate answers");
+    assert_eq!(activate.phase, InstallationState::ConsentRequired);
+    assert_eq!(
+        plugin_members(&services, WASM_PLUGIN_ID).await,
+        [alice],
+        "bob is a member but has not consented: no per-user surface may include him"
+    );
+    let tools = services
+        .extension_management
+        .active_model_visible_capabilities()
+        .await
+        .expect("model-visible capabilities");
+    let tool = tools
+        .iter()
+        .find(|capability| capability.id.as_str() == WASM_PLUGIN_TOOL)
+        .expect("alice's tool stays published");
+    assert!(
+        tool.owner
+            .visible_to(&ironclaw_host_api::ids::UserId::new(alice).expect("user"))
+            && !tool
+                .owner
+                .visible_to(&ironclaw_host_api::ids::UserId::new(bob).expect("user")),
+        "the tool's owner is narrowed to consenting members: {:?}",
+        tool.owner
+    );
+    // Alice still reads granted; Bob reads required.
+    let list_for = |user: &'static str| {
+        let services = &services;
+        async move {
+            let listed = services
+                .extension_management
+                .list_installed(&ironclaw_host_api::ids::UserId::new(user).expect("user"))
+                .await
+                .expect("list");
+            let Some(LifecycleProductPayload::ExtensionList { extensions, .. }) = listed.payload
+            else {
+                panic!("list payload");
+            };
+            extensions
+                .into_iter()
+                .find(|entry| entry.summary.package_ref.id.as_str() == WASM_PLUGIN_ID)
+                .map(|entry| entry.phase)
+        }
+    };
+    assert_eq!(list_for(alice).await, Some(InstallationState::Active));
+    assert_eq!(
+        list_for(bob).await,
+        Some(InstallationState::ConsentRequired)
+    );
+
+    // Bob's own grant lets him in.
+    run(
+        &services,
+        bob,
+        RebornExtensionLifecycleCommand::GrantConsent {
+            id: WASM_PLUGIN_ID.to_string(),
+            digest: bob_digest.as_str().to_string(),
+        },
+    )
+    .await
+    .expect("bob grants");
+    let mut members = plugin_members(&services, WASM_PLUGIN_ID).await;
+    members.sort();
+    assert_eq!(members, [alice, bob]);
+
+    // Bob leaves: only his decision goes; a rejoin asks him again while
+    // Alice keeps running.
+    run(
+        &services,
+        bob,
+        RebornExtensionLifecycleCommand::Remove {
+            id: WASM_PLUGIN_ID.to_string(),
+        },
+    )
+    .await
+    .expect("bob leaves");
+    assert_eq!(plugin_members(&services, WASM_PLUGIN_ID).await, [alice]);
+    let rejoin = run(
+        &services,
+        bob,
+        RebornExtensionLifecycleCommand::Install {
+            id: WASM_PLUGIN_ID.to_string(),
+        },
+    )
+    .await
+    .expect("bob rejoins");
+    assert_eq!(rejoin.phase, InstallationState::ConsentRequired);
+    assert_eq!(plugin_members(&services, WASM_PLUGIN_ID).await, [alice]);
+}
+
+/// A grant record from before per-principal consent (schema 2: keyed by
+/// extension id, `granted_by` recorded but never checked) says nobody's
+/// decision: it reads as no grant, so every user is asked again.
+#[tokio::test]
+async fn a_pre_principal_grant_record_reads_as_no_grant() {
+    let owner = "consent-legacy-owner";
+    let services = build_lifecycle_test_services(owner, None, false).await;
+    let install = install_wasm_plugin(&services, owner).await;
+    let digest = consent_of(&install).digest.clone();
+    let assets: std::collections::BTreeMap<String, String> = wasm_plugin_files()
+        .into_iter()
+        .map(|(path, bytes)| {
+            (
+                path,
+                ironclaw_host_api::approval::sha256_digest_token(&bytes),
+            )
+        })
+        .collect();
+    let legacy = serde_json::json!({
+        "schema": 2,
+        "extension_id": WASM_PLUGIN_ID,
+        "digest": digest.as_str(),
+        "assets": assets,
+        "granted_by": owner,
+        "granted_at": "2026-11-17T00:00:00Z",
+    });
+    services
+        .filesystem
+        .write_file(
+            &VirtualPath::new(format!(
+                "{}/{WASM_PLUGIN_ID}.json",
+                ironclaw_extension_host::extension_consent::CONSENT_RECORD_ROOT
+            ))
+            .expect("record path"),
+            &serde_json::to_vec(&legacy).expect("json"),
+        )
+        .await
+        .expect("plant legacy record");
+    let activate = run(
+        &services,
+        owner,
+        RebornExtensionLifecycleCommand::Activate {
+            id: WASM_PLUGIN_ID.to_string(),
+        },
+    )
+    .await
+    .expect("activate answers");
+    assert_eq!(activate.phase, InstallationState::ConsentRequired);
+    assert!(plugin_members(&services, WASM_PLUGIN_ID).await.is_empty());
+    assert!(
+        services
+            .extension_management
+            .consent_blocked_extension_ids()
+            .await
+            .expect("blocked")
+            .contains(WASM_PLUGIN_ID)
+    );
+}
+
+const SCRIPT_PLUGIN_ID: &str = "acme-script";
+
+/// A legacy v2 package on disk may still declare a script runtime, whose
+/// executor runs commands against the files as they are at call time — no
+/// verified snapshot. A package that needs consent and declares one is
+/// refused, with a plain reason, at install (admission), at activation, and
+/// at grant; it never hydrates at boot.
+#[tokio::test]
+async fn a_plugin_with_a_script_runtime_is_refused_at_admission_and_activation() {
+    let owner = "consent-script-owner";
+    let server = mcp_server();
+    let first = build_lifecycle_test_services(owner, None, false).await;
+    let manifest = format!(
+        r#"schema_version = "reborn.extension_manifest.v2"
+id = "{SCRIPT_PLUGIN_ID}"
+name = "Acme Script"
+version = "0.1.0"
+description = "A legacy script plugin."
+trust = "third_party"
+
+[runtime]
+kind = "script"
+runner = "sandboxed_process"
+command = "sh"
+args = ["-c", "cat"]
+
+[[host_api]]
+id = "ironclaw.capability_provider/v1"
+section = "capability_provider.tools"
+
+[capability_provider.tools]
+
+[[capability_provider.tools.capabilities]]
+id = "{SCRIPT_PLUGIN_ID}.run"
+description = "Run the script"
+effects = ["execute_code"]
+default_permission = "allow"
+visibility = "model"
+input_schema_ref = "schemas/run.input.json"
+"#
+    );
+    for (path, bytes) in [
+        ("manifest.toml", manifest.into_bytes()),
+        ("schemas/run.input.json", br#"{"type":"object"}"#.to_vec()),
+    ] {
+        first
+            .filesystem
+            .write_file(
+                &VirtualPath::new(format!("/system/extensions/{SCRIPT_PLUGIN_ID}/{path}"))
+                    .expect("path"),
+                &bytes,
+            )
+            .await
+            .expect("plant");
+    }
+    let services = reboot(&first, owner, &server).await;
+    let refused = |result: Result<
+        LifecycleProductResponse,
+        crate::extension_lifecycle_command::RebornExtensionLifecycleCommandError,
+    >,
+                   step: &str| {
+        assert!(result.is_err(), "{step} is refused: {result:?}");
+    };
+    // The lifecycle authority's own reason is plain (the product surface
+    // redacts it to `invalid request` on the wire).
+    let reason = services
+        .extension_management
+        .install(
+            ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef::new(
+                ironclaw_product_contracts::package_lifecycle::LifecyclePackageKind::Extension,
+                SCRIPT_PLUGIN_ID,
+            )
+            .expect("ref"),
+            &ironclaw_host_api::ids::UserId::new(owner).expect("user"),
+        )
+        .await
+        .expect_err("install is refused")
+        .to_string();
+    assert!(
+        reason.contains("script runtime"),
+        "the refusal names the reason: {reason}"
+    );
+    refused(
+        run(
+            &services,
+            owner,
+            RebornExtensionLifecycleCommand::Install {
+                id: SCRIPT_PLUGIN_ID.to_string(),
+            },
+        )
+        .await,
+        "install",
+    );
+    refused(
+        run(
+            &services,
+            owner,
+            RebornExtensionLifecycleCommand::Activate {
+                id: SCRIPT_PLUGIN_ID.to_string(),
+            },
+        )
+        .await,
+        "activate",
+    );
+    refused(
+        run(
+            &services,
+            owner,
+            RebornExtensionLifecycleCommand::GrantConsent {
+                id: SCRIPT_PLUGIN_ID.to_string(),
+                digest: "0".repeat(64),
+            },
+        )
+        .await,
+        "grant",
+    );
+    assert!(
+        services
+            .extension_management
+            .active_extensions_for_test()
+            .snapshot()
+            .get_extension(&ExtensionId::new(SCRIPT_PLUGIN_ID).expect("id"))
+            .is_none()
+    );
+}

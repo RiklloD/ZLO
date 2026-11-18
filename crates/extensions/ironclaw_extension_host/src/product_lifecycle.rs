@@ -39,6 +39,7 @@ use ironclaw_product_contracts::surface::{ProductSurfaceCaller, ProductSurfaceEr
 use tokio::sync::{AcquireError, Mutex, Notify, RwLock, Semaphore};
 
 mod consent;
+pub(crate) use consent::{pin_for_publication, plugin_runtime_unsupported};
 
 fn unzip_extension_bundle_for_product(
     bundle: &[u8],
@@ -177,6 +178,9 @@ pub struct ExtensionLifecycleManager {
     /// not re-derive admin-ness.
     tenant_operator_user_id: UserId,
     removal_cleanup: Arc<ExtensionRemovalCleanupRegistry>,
+    /// Clears the removing user's stored package settings on removal.
+    settings_cleanup:
+        Option<Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsCleaner>>,
     /// Late-binding slot for the generic per-user channel-connection service
     /// (extension-runtime §6.4), shared with
     /// `RebornLocalRuntimeServices::channel_disconnect_slot`. Removing
@@ -368,6 +372,7 @@ impl ExtensionLifecycleManager {
             registry_install_operations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             tenant_operator_user_id,
             removal_cleanup: Arc::new(ExtensionRemovalCleanupRegistry::empty()),
+            settings_cleanup: None,
             account_setups: None,
             channel_disconnect_slot: Arc::new(std::sync::OnceLock::new()),
             provider_instance_readiness: std::collections::BTreeMap::new(),
@@ -599,6 +604,16 @@ impl ExtensionLifecycleManager {
         self
     }
 
+    /// Clear the removing user's stored package settings on removal (their
+    /// membership's configuration; never LLM data).
+    pub fn with_settings_cleanup<C>(mut self, settings_cleanup: Arc<C>) -> Self
+    where
+        C: ironclaw_extension_registry::settings::ExtensionSettingsCleaner + 'static,
+    {
+        self.settings_cleanup = Some(settings_cleanup);
+        self
+    }
+
     /// Share the composition's late-binding channel-connection service slot
     /// (see the field doc). Composition passes the SAME `Arc` stored on
     /// `RebornLocalRuntimeServices` so a fill by runtime composition (or the
@@ -740,11 +755,14 @@ impl ExtensionLifecycleManager {
                 )
             })
             .unwrap_or(InstallationState::Installed);
+        // One evaluation serves both the phase and the summary.
         let (phase, consent) = if installation.is_some() {
-            let (_, consent) = self.consent_state(&available).await?;
+            let evaluation = self
+                .consent_evaluation(&available, installation.as_ref(), caller)
+                .await?;
             (
-                self.consent_projected_phase(&available, phase).await?,
-                consent,
+                consent::consent_projected_phase(&evaluation, phase),
+                consent::summary_for(&available, &evaluation),
             )
         } else {
             (phase, None)
@@ -793,12 +811,7 @@ impl ExtensionLifecycleManager {
         // capabilities so the per-request grant minting in the standalone
         // capability surface can filter user-private extensions to their
         // owner. The registry itself stays global; owner is joined here.
-        let owner_by_extension = project_installation_owners(
-            self.installation_store
-                .list_installations()
-                .await
-                .map_err(map_extension_installation_error)?,
-        )?;
+        let owner_by_extension = self.installation_owners().await?;
         let registry = self.active_extensions.snapshot();
         Ok(registry
             .capabilities()
@@ -815,21 +828,27 @@ impl ExtensionLifecycleManager {
     }
 
     /// Owner of every installation (all activation states), keyed by extension
-    /// id (#5459 P1). The operator/settings tool catalog joins this to the
-    /// global extension registry so it can hide another user's private tool —
-    /// the registry snapshot alone carries no owner. Uses `list_installations`
-    /// (not `_enabled_`) because the catalog reflects installed tools
-    /// regardless of activation state.
+    /// id (#5459 P1), narrowed by consent: for a third-party package only the
+    /// principals whose own grant covers its pinned files remain (see
+    /// `consent::consent_filtered_owners`). The operator/settings tool
+    /// catalog, the model-visible capability surface, live package hooks,
+    /// plugin UI slots, and package settings all join this to the global
+    /// extension registry so they hide another user's private tool — and a
+    /// plugin the caller has not consented to — since the registry snapshot
+    /// alone carries no owner. Uses `list_installations` (not `_enabled_`)
+    /// because the catalog reflects installed tools regardless of activation
+    /// state.
     pub async fn installation_owners(
         &self,
     ) -> Result<std::collections::BTreeMap<ExtensionId, InstallationOwner>, ProductOperationFailure>
     {
-        project_installation_owners(
+        let owners = project_installation_owners(
             self.installation_store
                 .list_installations()
                 .await
                 .map_err(map_extension_installation_error)?,
-        )
+        )?;
+        self.consent_filtered_owners(owners).await
     }
 
     pub async fn activation_credential_requirements(
@@ -1008,7 +1027,7 @@ impl ExtensionLifecycleManager {
             .await
             .map_err(map_extension_installation_error)?;
         let activation_errors = self.installation_activation_errors().await?;
-        let mut summaries = Vec::with_capacity(installations.len());
+        let mut rows = Vec::with_capacity(installations.len());
         for installation in installations {
             // #5459 P1: a caller's list is tenant-shared entries plus their
             // OWN private entries; other users' private installs are invisible
@@ -1034,9 +1053,20 @@ impl ExtensionLifecycleManager {
                 package_has_activatable_surface(&available.package),
                 activation_errors.contains_key(installation.extension_id()),
             );
+            rows.push((installation, available, phase));
+        }
+        // One consent evaluation per package, run concurrently: each hashes
+        // that package's files once.
+        let evaluations =
+            futures::future::try_join_all(rows.iter().map(|(installation, available, _)| {
+                self.consent_evaluation(available, Some(installation), caller)
+            }))
+            .await?;
+        let mut summaries = Vec::with_capacity(rows.len());
+        for ((installation, available, phase), evaluation) in rows.into_iter().zip(evaluations) {
             summaries.push(LifecycleInstalledExtensionSummary {
                 summary: available.summary(),
-                phase: self.consent_projected_phase(&available, phase).await?,
+                phase: consent::consent_projected_phase(&evaluation, phase),
                 install_scope: Some(install_scope_for_owner(installation.owner())),
             });
         }
@@ -1068,7 +1098,10 @@ impl ExtensionLifecycleManager {
         let phase =
             search_installation_phase(extension, &installation, credential_gate, has_last_error)
                 .await?;
-        let phase = self.consent_projected_phase(extension, phase).await?;
+        let evaluation = self
+            .consent_evaluation(extension, Some(&installation), caller)
+            .await?;
+        let phase = consent::consent_projected_phase(&evaluation, phase);
         Ok(LifecycleSearchExtensionSummary {
             summary,
             installation_phase: Some(phase),
@@ -1167,6 +1200,7 @@ impl ExtensionLifecycleManager {
         .map_err(|error| ProductOperationFailure::Transient {
             reason: format!("import decode task failed: {error}"),
         })??;
+        consent::reject_unsupported_plugin_runtime(&package.package)?;
         let package_ref = package.package_ref.clone();
         let summary = package.summary();
         let mut catalog = self.catalog.write().await;
@@ -1278,7 +1312,7 @@ impl ExtensionLifecycleManager {
             .is_some();
         // Removal below drops the consent grant; a failed replacement must
         // restore the previous package with the grant it had.
-        let previous_consent = self.consent.granted(&extension_id).await?;
+        let previous_consent = self.consent.snapshot(&extension_id).await?;
         if had_installation {
             if !force {
                 return Err(ProductOperationFailure::InvalidBindingRequest {
@@ -1327,12 +1361,7 @@ impl ExtensionLifecycleManager {
                             restore_error,
                         ));
                     }
-                    if let Some((digest, pins)) = &previous_consent
-                        && let Err(restore_error) = self
-                            .consent
-                            .grant(&extension_id, digest, pins, caller)
-                            .await
-                    {
+                    if let Err(restore_error) = self.consent.restore(&previous_consent).await {
                         return Err(compensation_failure(
                             "registry replacement failed and the previous consent grant could not be restored",
                             original_error,
@@ -1386,6 +1415,9 @@ impl ExtensionLifecycleManager {
             let catalog = self.catalog.read().await;
             catalog.resolve(&package_ref)?
         };
+        // A plugin runtime ZLO cannot bind to verified bytes is refused at
+        // admission, before any membership or file is written.
+        consent::reject_unsupported_plugin_runtime(&available.package)?;
         let _operation_guard = self.operation_lock.lock().await;
         let installation_id =
             ExtensionInstallationId::new(available.package.id.as_str().to_string())
@@ -1444,7 +1476,9 @@ impl ExtensionLifecycleManager {
                 ),
             },
         );
-        self.apply_consent_to_install_response(&available, response)
+        // Drop the operation lock before the consent evaluation hashes files.
+        drop(_operation_guard);
+        self.apply_consent_to_install_response(&available, response, caller)
             .await
     }
 
@@ -1522,7 +1556,10 @@ impl ExtensionLifecycleManager {
         caller: &UserId,
     ) -> Result<LifecycleProductResponse, ProductOperationFailure> {
         // Consent precedes preparation: preparation may reach the network.
-        if let Some(response) = self.consent_blocked_activation(&package_ref).await? {
+        if let Some(response) = self
+            .consent_blocked_activation(&package_ref, caller)
+            .await?
+        {
             return Ok(response);
         }
         if let Some(response) = self
@@ -1531,7 +1568,9 @@ impl ExtensionLifecycleManager {
         {
             return Ok(response);
         }
-        self.activate_inner(package_ref, credential_gate, caller)
+        // Consent was evaluated above (one hash of the package files per
+        // operation); preparation does not change the package files.
+        self.activate_consented(package_ref, credential_gate, caller)
             .await
     }
 
@@ -1560,13 +1599,27 @@ impl ExtensionLifecycleManager {
         credential_gate: &dyn ExtensionActivationCredentialGate,
         caller: &UserId,
     ) -> Result<LifecycleProductResponse, ProductOperationFailure> {
-        let (extension_id, installation_id) = extension_ids_from_package_ref(&package_ref)?;
-        // Every activation entry point converges here; checked before
-        // `operation_lock` because it reads the catalog.
-        if let Some(response) = self.consent_blocked_activation(&package_ref).await? {
+        // Every activation entry point converges here or on
+        // `activate_with_credential_gate`, which checks the same gate; checked
+        // before `operation_lock` because it reads the catalog.
+        if let Some(response) = self
+            .consent_blocked_activation(&package_ref, caller)
+            .await?
+        {
             return Ok(response);
         }
+        self.activate_consented(package_ref, credential_gate, caller)
+            .await
+    }
 
+    /// Activation after the caller's consent gate passed for this operation.
+    async fn activate_consented(
+        &self,
+        package_ref: LifecyclePackageRef,
+        credential_gate: &dyn ExtensionActivationCredentialGate,
+        caller: &UserId,
+    ) -> Result<LifecycleProductResponse, ProductOperationFailure> {
+        let (extension_id, installation_id) = extension_ids_from_package_ref(&package_ref)?;
         let _operation_guard = self.operation_lock.lock().await;
         let installation = self
             .load_installation(&extension_id, &installation_id)
@@ -1631,6 +1684,10 @@ impl ExtensionLifecycleManager {
         previous_state: ExtensionActivationState,
         active_package: ExtensionPackage,
     ) -> Result<LifecycleProductResponse, ProductOperationFailure> {
+        // What gets published carries the execution pins (a third-party
+        // package without them is refused): the model-facing catalog and
+        // every lane read package files through this exact package.
+        let active_package = self.pinned_for_publication(active_package).await?;
         if previous_state == ExtensionActivationState::Enabled
             && self
                 .active_extensions
@@ -2016,8 +2073,22 @@ impl ExtensionLifecycleManager {
                     .to_string(),
             );
         }
-        self.revoke_consent_after_removal(&removed_extension_id)
+        self.revoke_consent_after_removal(&removed_extension_id, Some(caller))
             .await?;
+        // The removing user's own package settings are configuration for
+        // their membership: forget them so a reinstall starts from defaults.
+        // Other members keep theirs (settings are per user scope).
+        if let Some(settings) = self.settings_cleanup.as_ref() {
+            settings
+                .clear_settings(&removal_scope, &removed_extension_id)
+                .await
+                .map_err(|error| ProductOperationFailure::Transient {
+                    reason: format!(
+                        "extension {} was removed but its settings could not be cleared: {error}",
+                        removed_extension_id.as_str()
+                    ),
+                })?;
+        }
         Ok(response)
     }
 
@@ -3219,7 +3290,9 @@ fn installation_state_for_activation(
 /// package with nothing left to discover could still be pinned out of
 /// `Active`.
 /// Whether a package has anything it can actually serve once activated:
-/// a model-visible capability, a channel surface, or hooks.
+/// a model-visible capability, a channel surface, hooks, or declared plugin
+/// UI slots (a UI-only plugin's render tool is deliberately not
+/// model-visible; its slots are the surface).
 ///
 /// A package whose capabilities are supplied by a later runtime step declares
 /// none until that step completes. Deriving this from the package is what
@@ -3230,6 +3303,7 @@ pub(crate) fn package_has_activatable_surface(package: &ExtensionPackage) -> boo
     !crate::lifecycle_restore::package_visible_capability_ids(package).is_empty()
         || package_declares_inbound_product_adapter(package)
         || !package.manifest.hooks.is_empty()
+        || !package.manifest.ui_slots.is_empty()
 }
 
 fn installation_state_for_installation(

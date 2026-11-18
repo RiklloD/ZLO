@@ -2,12 +2,20 @@
 //! the model). Kept beside `product_lifecycle.rs` as a child module so the
 //! manager's lock-ordering rules apply unchanged: the catalog is read before
 //! `operation_lock`, never while holding it.
+//!
+//! Every decision here is made for a principal: the caller (or, on a
+//! tenant-owned installation, the tenant admin). One user's grant never
+//! unblocks another user's install, activation, join, or per-user surfaces.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use ironclaw_extension_contracts::runtime::ExtensionRuntime;
 use ironclaw_extension_contracts::state::InstallationState;
-use ironclaw_extension_registry::ExtensionInstallationId;
+use ironclaw_extension_registry::{
+    ExtensionInstallation, ExtensionInstallationId, ExtensionPackage, InstallationOwner,
+    ManifestSource,
+};
 use ironclaw_host_api::ids::{ExtensionId, UserId};
 use ironclaw_product_contracts::error::ProductOperationFailure;
 use ironclaw_product_contracts::package_consent::{LifecycleConsentSummary, PackageConsentDigest};
@@ -21,8 +29,8 @@ use super::{
 };
 use crate::AvailableExtensionPackage;
 use crate::extension_consent::{
-    ExtensionConsentStatus, consent_summary, current_package_files, package_consent_digest,
-    package_files_digest, package_files_pins, source_requires_consent,
+    ConsentEvaluation, ConsentPrincipal, consent_summary, current_package_files,
+    package_consent_digest, package_files_digest, package_files_pins, source_requires_consent,
 };
 
 impl ExtensionLifecycleManager {
@@ -40,36 +48,57 @@ impl ExtensionLifecycleManager {
         catalog.resolve(package_ref)
     }
 
-    /// Consent status plus the summary to show, for a catalog package.
-    pub(super) async fn consent_state(
+    async fn installation_for(
+        &self,
+        extension_id: &ExtensionId,
+    ) -> Result<Option<ExtensionInstallation>, ProductOperationFailure> {
+        let installation_id = ExtensionInstallationId::new(extension_id.as_str().to_string())
+            .map_err(map_extension_installation_error)?;
+        self.installation_store
+            .get_installation(&installation_id)
+            .await
+            .map_err(map_extension_installation_error)
+    }
+
+    /// One consent evaluation of a catalog package for `caller` against
+    /// `installation` (the caller's principal follows the installation's
+    /// owner). Hashes the package files once.
+    pub(super) async fn consent_evaluation(
         &self,
         available: &AvailableExtensionPackage,
-    ) -> Result<(ExtensionConsentStatus, Option<LifecycleConsentSummary>), ProductOperationFailure>
-    {
-        let (status, digest) = self.consent.evaluate(available).await?;
-        let summary = digest.map(|digest| consent_summary(available, digest));
-        Ok((status, summary))
+        installation: Option<&ExtensionInstallation>,
+        caller: &UserId,
+    ) -> Result<ConsentEvaluation, ProductOperationFailure> {
+        let principal =
+            ConsentPrincipal::for_caller(installation.map(ExtensionInstallation::owner), caller);
+        self.consent.evaluate(available, &principal).await
     }
 
     /// The response an activation returns instead of activating, when the
-    /// package lacks a grant for its current digest. Read before
-    /// `operation_lock` (catalog-before-operation ordering).
+    /// package lacks the caller's grant for its current digest — or declares
+    /// a runtime a plugin may not use. Read before `operation_lock`
+    /// (catalog-before-operation ordering).
     pub(super) async fn consent_blocked_activation(
         &self,
         package_ref: &LifecyclePackageRef,
+        caller: &UserId,
     ) -> Result<Option<LifecycleProductResponse>, ProductOperationFailure> {
         let Ok(available) = self.consent_catalog_package(package_ref).await else {
             // Not in the catalog: the activation path reports that itself.
             return Ok(None);
         };
-        let (status, summary) = self.consent_state(&available).await?;
-        let Some(phase) = status.blocking_phase() else {
+        reject_unsupported_plugin_runtime(&available.package)?;
+        let installation = self.installation_for(&available.package.id).await?;
+        let evaluation = self
+            .consent_evaluation(&available, installation.as_ref(), caller)
+            .await?;
+        let Some(phase) = evaluation.status.blocking_phase() else {
             return Ok(None);
         };
         tracing::debug!(
             extension_id = package_ref.id.as_str(),
             phase = phase.as_str(),
-            "extension activation blocked until consent is granted"
+            "extension activation blocked until the caller grants consent"
         );
         let mut response = response_with_payload(
             Some(package_ref.clone()),
@@ -81,19 +110,23 @@ impl ExtensionLifecycleManager {
             },
         );
         response.message = Some(consent_message(phase, package_ref.id.as_str()));
-        response.consent = summary;
+        response.consent = summary_for(&available, &evaluation);
         Ok(Some(response))
     }
 
-    /// Attach the consent summary to an install response, and report the
-    /// blocking phase when the package still needs a grant.
+    /// Attach the caller's consent summary to an install (or join) response,
+    /// and report the blocking phase when the caller still needs to grant.
     pub(super) async fn apply_consent_to_install_response(
         &self,
         available: &AvailableExtensionPackage,
         mut response: LifecycleProductResponse,
+        caller: &UserId,
     ) -> Result<LifecycleProductResponse, ProductOperationFailure> {
-        let (status, summary) = self.consent_state(available).await?;
-        if let Some(phase) = status.blocking_phase() {
+        let installation = self.installation_for(&available.package.id).await?;
+        let evaluation = self
+            .consent_evaluation(available, installation.as_ref(), caller)
+            .await?;
+        if let Some(phase) = evaluation.status.blocking_phase() {
             response.phase = phase;
             if let Some(LifecycleProductPayload::ExtensionInstall { next_step, .. }) =
                 response.payload.as_mut()
@@ -101,41 +134,34 @@ impl ExtensionLifecycleManager {
                 *next_step = consent_message(phase, available.package.id.as_str());
             }
         }
-        response.consent = summary;
+        response.consent = summary_for(available, &evaluation);
         Ok(response)
     }
 
-    /// Fold consent into a projected installation phase (list/search/project):
-    /// a package without a grant for its current digest is never reported as
-    /// anything but blocked.
-    pub(super) async fn consent_projected_phase(
-        &self,
-        available: &AvailableExtensionPackage,
-        phase: InstallationState,
-    ) -> Result<InstallationState, ProductOperationFailure> {
-        if !source_requires_consent(available.source) {
-            return Ok(phase);
-        }
-        Ok(self
-            .consent
-            .status(available)
-            .await?
-            .blocking_phase()
-            .unwrap_or(phase))
-    }
-
-    /// The consent summary for a package, `None` when it is exempt.
+    /// The consent summary for a package as `caller` would see it, `None`
+    /// when it is exempt.
     pub async fn consent_summary(
         &self,
         package_ref: &LifecyclePackageRef,
+        caller: &UserId,
     ) -> Result<Option<LifecycleConsentSummary>, ProductOperationFailure> {
         let available = self.consent_catalog_package(package_ref).await?;
-        Ok(self.consent_state(&available).await?.1)
+        let installation = self
+            .installation_for(&available.package.id)
+            .await?
+            .filter(|installation| installation.owner().visible_to(caller));
+        let evaluation = self
+            .consent_evaluation(&available, installation.as_ref(), caller)
+            .await?;
+        Ok(summary_for(&available, &evaluation))
     }
 
-    /// Grant consent for `digest`. Fails unless `digest` is the package's
-    /// current digest. Does not activate — the caller activates next, through
-    /// the ordinary activation path.
+    /// Grant the caller's consent for `digest`. Fails unless `digest` is the
+    /// package's current digest. On a tenant-owned installation the grant is
+    /// the tenant admin's and only the tenant admin may make it; otherwise it
+    /// is the caller's own decision and covers nobody else. Does not
+    /// activate — the caller activates next, through the ordinary activation
+    /// path.
     pub async fn grant_consent(
         &self,
         package_ref: LifecyclePackageRef,
@@ -156,6 +182,7 @@ impl ExtensionLifecycleManager {
                 ),
             });
         }
+        reject_unsupported_plugin_runtime(&available.package)?;
         // The grant covers the files as they are on disk now, and they must
         // still be the files the catalog loaded: consent is shown for the
         // catalog's declaration, and activation publishes it.
@@ -179,19 +206,13 @@ impl ExtensionLifecycleManager {
         }
         let pins = package_files_pins(&files);
         let extension_id = available.package.id.clone();
-        let installation_id = ExtensionInstallationId::new(extension_id.as_str().to_string())
-            .map_err(map_extension_installation_error)?;
         let _operation_guard = self.operation_lock.lock().await;
-        let installation = self
-            .installation_store
-            .get_installation(&installation_id)
-            .await
-            .map_err(map_extension_installation_error)?;
+        let installation = self.installation_for(&extension_id).await?;
         if let Some(installation) = installation.as_ref() {
             ensure_caller_may_operate(installation, caller)?;
-            // Consent is what lets a shared install activate (at boot too), and
-            // the grant may migrate the durable manifest below: the same
-            // tenant-operator authority activation demands.
+            // A tenant-owned install runs on the tenant admin's decision (at
+            // boot too), and the grant may migrate the durable manifest
+            // below: the same tenant-operator authority activation demands.
             ensure_caller_may_mutate_tenant_installation(
                 installation,
                 caller,
@@ -201,7 +222,9 @@ impl ExtensionLifecycleManager {
             // The files changed under an existing installation (the
             // `tampered` case): the durable manifest row must describe the
             // package the user just consented to, or activation would publish
-            // the old declaration over the new files.
+            // the old declaration over the new files. Every other member's
+            // earlier decision then no longer matches the pins, so each of
+            // them is asked again.
             let current_hash = crate::lifecycle_restore::available_manifest_hash(&available)?;
             if installation.manifest_ref().manifest_hash() != Some(&current_hash) {
                 let plan =
@@ -212,8 +235,10 @@ impl ExtensionLifecycleManager {
                     .map_err(map_extension_installation_error)?;
             }
         }
+        let principal =
+            ConsentPrincipal::for_caller(installation.as_ref().map(|row| row.owner()), caller);
         self.consent
-            .grant(&extension_id, &digest, &pins, caller)
+            .grant(&extension_id, &principal, &digest, &pins, caller)
             .await?;
         let phase = if installation.is_none() {
             InstallationState::Installed
@@ -241,7 +266,10 @@ impl ExtensionLifecycleManager {
     /// packages from the *persisted* manifest — so classification follows the
     /// persisted source, and a consent-requiring installation the catalog
     /// cannot vouch for (its files went missing or no longer parse, so the
-    /// filesystem catalog skipped it) is blocked: fail closed.
+    /// filesystem catalog skipped it) is blocked: fail closed. An
+    /// installation hydrates when its files are the pinned ones and at least
+    /// one of its principals consented to them; per-user use is narrowed
+    /// afterwards by [`Self::installation_owners`].
     pub async fn consent_blocked_extension_ids(
         &self,
     ) -> Result<BTreeSet<String>, ProductOperationFailure> {
@@ -280,12 +308,16 @@ impl ExtensionLifecycleManager {
                 // A catalog package that claims to need no consent for an
                 // installation persisted as third-party is not trusted either.
                 Some(available) if !source_requires_consent(available.source) => true,
-                Some(available) => self
-                    .consent
-                    .status(&available)
-                    .await?
-                    .blocking_phase()
-                    .is_some(),
+                Some(available) => {
+                    plugin_runtime_unsupported(&available.package)
+                        || self
+                            .consent
+                            .evaluate_for_owner(&available, installation.owner())
+                            .await?
+                            .status
+                            .blocking_phase()
+                            .is_some()
+                }
             };
             if is_blocked {
                 tracing::debug!(
@@ -298,25 +330,141 @@ impl ExtensionLifecycleManager {
         Ok(blocked)
     }
 
-    /// Drop the grant once the installation is gone, so a later reinstall
-    /// asks again.
+    /// `owners` (every installation's owner, keyed by extension id) narrowed
+    /// by consent: for a package that needs consent, only the principals
+    /// whose own grant matches its execution pins remain, and a package
+    /// nobody remains for is dropped — invisible to everyone, exactly like a
+    /// missing owner row. This is the one per-user filter the tool catalog,
+    /// live hooks, UI slots, and settings already apply.
+    pub(super) async fn consent_filtered_owners(
+        &self,
+        owners: BTreeMap<ExtensionId, InstallationOwner>,
+    ) -> Result<BTreeMap<ExtensionId, InstallationOwner>, ProductOperationFailure> {
+        let sources: BTreeMap<ExtensionId, ManifestSource> = self
+            .installation_store
+            .list_manifests()
+            .await
+            .map_err(map_extension_installation_error)?
+            .into_iter()
+            .map(|record| (record.extension_id().clone(), record.manifest().source))
+            .collect();
+        let mut filtered = BTreeMap::new();
+        for (extension_id, owner) in owners {
+            // No durable definition: the source is unknown, so consent cannot
+            // be ruled out; fail closed.
+            let Some(source) = sources.get(&extension_id).copied() else {
+                tracing::debug!(
+                    extension_id = extension_id.as_str(),
+                    "installation without a manifest record is visible to nobody"
+                );
+                continue;
+            };
+            if !source_requires_consent(source) {
+                filtered.insert(extension_id, owner);
+                continue;
+            }
+            if let Some(consented) = self.consent.consented_owner(&extension_id, &owner).await? {
+                filtered.insert(extension_id, consented);
+            }
+        }
+        Ok(filtered)
+    }
+
+    /// `package` bound to its execution pins when it needs consent — what
+    /// publication must carry so the model-facing catalog and every lane
+    /// verify the bytes they read. Refuses a consent-requiring package with
+    /// no pins: it never reaches the active registry unbound.
+    pub(super) async fn pinned_for_publication(
+        &self,
+        package: ExtensionPackage,
+    ) -> Result<ExtensionPackage, ProductOperationFailure> {
+        pin_for_publication(&self.consent, package).await
+    }
+
+    /// Drop consent once the installation is gone (every decision and the
+    /// pins), so a later reinstall asks again; when only `leaving` left a
+    /// still-held installation, drop just their own decision.
     pub(super) async fn revoke_consent_after_removal(
         &self,
         extension_id: &ExtensionId,
+        leaving: Option<&UserId>,
     ) -> Result<(), ProductOperationFailure> {
-        let installation_id = ExtensionInstallationId::new(extension_id.as_str().to_string())
-            .map_err(map_extension_installation_error)?;
-        let still_installed = self
-            .installation_store
-            .get_installation(&installation_id)
-            .await
-            .map_err(map_extension_installation_error)?
-            .is_some();
-        if still_installed {
-            return Ok(());
+        let still_installed = self.installation_for(extension_id).await?;
+        match still_installed {
+            None => self.consent.revoke(extension_id).await,
+            Some(installation) => match leaving {
+                Some(user) if !installation.owner().visible_to(user) => {
+                    self.consent
+                        .revoke_principal(extension_id, &ConsentPrincipal::User(user.clone()))
+                        .await
+                }
+                _ => Ok(()),
+            },
         }
-        self.consent.revoke(extension_id).await
     }
+}
+
+/// See [`ExtensionLifecycleManager::pinned_for_publication`]; shared with
+/// boot restore.
+pub(crate) async fn pin_for_publication(
+    consent: &crate::extension_consent::ExtensionConsentStore,
+    package: ExtensionPackage,
+) -> Result<ExtensionPackage, ProductOperationFailure> {
+    if !source_requires_consent(package.manifest.source) {
+        return Ok(package);
+    }
+    let pins = consent.granted_pins(&package.id).await?.ok_or_else(|| {
+        ProductOperationFailure::InvalidBindingRequest {
+            reason: format!(
+                "extension {} has no consent grant binding its files",
+                package.id.as_str()
+            ),
+        }
+    })?;
+    Ok(package.with_content_pins(pins))
+}
+
+/// A consent-requiring package may not declare a runtime that executes its
+/// files outside a verified snapshot (today: the script/process runtime).
+pub(crate) fn plugin_runtime_unsupported(package: &ExtensionPackage) -> bool {
+    source_requires_consent(package.manifest.source)
+        && matches!(package.manifest.runtime, ExtensionRuntime::Script { .. })
+}
+
+/// The plain refusal for [`plugin_runtime_unsupported`], used at admission
+/// (import/install) and at activation.
+pub(crate) fn reject_unsupported_plugin_runtime(
+    package: &ExtensionPackage,
+) -> Result<(), ProductOperationFailure> {
+    if plugin_runtime_unsupported(package) {
+        return Err(ProductOperationFailure::InvalidBindingRequest {
+            reason: format!(
+                "plugin {} runs its own program (a script runtime); ZLO cannot run plugin programs yet, only WASM plugins",
+                package.id.as_str()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Fold a consent evaluation into a projected installation phase: a package
+/// without the caller's grant for its current digest is never reported as
+/// anything but blocked.
+pub(super) fn consent_projected_phase(
+    evaluation: &ConsentEvaluation,
+    phase: InstallationState,
+) -> InstallationState {
+    evaluation.status.blocking_phase().unwrap_or(phase)
+}
+
+pub(super) fn summary_for(
+    available: &AvailableExtensionPackage,
+    evaluation: &ConsentEvaluation,
+) -> Option<LifecycleConsentSummary> {
+    evaluation
+        .digest
+        .clone()
+        .map(|digest| consent_summary(available, digest))
 }
 
 fn consent_message(phase: InstallationState, extension_id: &str) -> String {

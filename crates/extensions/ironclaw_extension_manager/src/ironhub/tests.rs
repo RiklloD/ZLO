@@ -2131,7 +2131,7 @@ async fn fail_forced_tool_replacement(
         .expect("package ref");
     let digest = services
         .extension_management
-        .consent_summary(&old_ref)
+        .consent_summary(&old_ref, &scope.user_id)
         .await
         .expect("consent summary")
         .expect("registry packages need consent")
