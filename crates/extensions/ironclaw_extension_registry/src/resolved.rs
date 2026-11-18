@@ -309,6 +309,13 @@ impl ResolvedExtensionManifest {
             });
         }
 
+        // A stored record is re-admitted here, possibly after a later step
+        // rewrote its tools (hosted-MCP credential attachment): the render
+        // tool rule holds for whatever the record says now, not only for
+        // what the TOML said at parse time.
+        crate::ui_slots::validate_ui_slots(&self.ui_slots, &self.tools)
+            .map_err(|reason| ManifestV2Error::Invalid { reason })?;
+
         let mut host_api_surfaces = Vec::new();
         if let Some(channel) = &self.channel {
             host_api_surfaces.push(CapabilitySurfaceDeclV2::Channel {

@@ -91,6 +91,24 @@ fn depth_node_count_and_size_limits_are_enforced() {
         })
     );
 
+    // List items spend the same budget as elements: a list cannot carry
+    // thousands of rows under the node limit.
+    let rows = json!({
+        "type": "list",
+        "items": vec![json!({ "title": "r" }); PLUGIN_UI_MAX_NODES],
+    });
+    assert_eq!(
+        PluginUiNode::parse(&rows),
+        Err(PluginUiTreeError::TooManyNodes {
+            max: PLUGIN_UI_MAX_NODES
+        })
+    );
+    let rows_at_limit = json!({
+        "type": "list",
+        "items": vec![json!({ "title": "r" }); PLUGIN_UI_MAX_NODES - 1],
+    });
+    assert!(PluginUiNode::parse(&rows_at_limit).is_ok());
+
     let many = json!({
         "type": "col",
         "children": vec![json!({ "type": "divider" }); PLUGIN_UI_MAX_NODES],

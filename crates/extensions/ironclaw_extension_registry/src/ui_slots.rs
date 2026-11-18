@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 
 use ironclaw_extension_contracts::plugin_ui::{PLUGIN_UI_MAX_SLOTS, PluginUiSlotDescriptor};
-use ironclaw_host_api::capability::{EffectKind, OriginGatePolicy};
+use ironclaw_host_api::capability::{CapabilityDescriptor, EffectKind, OriginGatePolicy};
 use serde::Deserialize;
 
 use crate::v2::CapabilityDeclV2;
@@ -93,6 +93,45 @@ fn validate_render_tool(
         return Err(format!(
             "ui slot `{}` render tool `{}` must not declare credentials or network targets",
             slot.id, tool.id
+        ));
+    }
+    Ok(())
+}
+
+/// The render-tool rule against the live descriptor the host is about to
+/// invoke. The manifest check above runs at admission; this one runs at the
+/// call, so a descriptor that reached the registry by any other path (or was
+/// changed after admission) still cannot run as an ungated panel render.
+pub fn check_render_descriptor(descriptor: &CapabilityDescriptor) -> Result<(), String> {
+    let product = descriptor
+        .origin_gate_matrix
+        .as_ref()
+        .map(|matrix| matrix.product)
+        .unwrap_or_default();
+    if !matches!(
+        product,
+        OriginGatePolicy::ConsentSufficient | OriginGatePolicy::Ungated
+    ) {
+        return Err(format!(
+            "render tool `{}` does not allow product origin",
+            descriptor.id
+        ));
+    }
+    if let Some(effect) = descriptor
+        .effects
+        .iter()
+        .find(|effect| !is_render_safe(**effect))
+    {
+        return Err(format!(
+            "render tool `{}` declares the `{}` effect",
+            descriptor.id,
+            effect_name(*effect)
+        ));
+    }
+    if !descriptor.runtime_credentials.is_empty() || !descriptor.network_targets.is_empty() {
+        return Err(format!(
+            "render tool `{}` carries credentials or network targets",
+            descriptor.id
         ));
     }
     Ok(())

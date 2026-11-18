@@ -101,6 +101,12 @@ impl PluginUiHost for RuntimePluginUiHost {
                 "the plugin's render tool is not active".to_string(),
             ));
         };
+        if let Err(reason) = ironclaw_extension_registry::check_render_descriptor(&descriptor) {
+            debug!(extension_id = %binding.extension_id, %reason, "refusing unsafe plugin ui render tool");
+            return Ok(PluginUiRenderOutcome::Refused(
+                "the plugin's render tool is not safe to run for a panel".to_string(),
+            ));
+        }
         let outcome = self
             .invoker
             .invoke_unpersisted(caller, &descriptor, input)

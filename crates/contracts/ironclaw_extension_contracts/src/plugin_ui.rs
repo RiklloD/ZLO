@@ -521,6 +521,13 @@ fn parse_list_item(
     let Value::Object(map) = value else {
         return Err(invalid(path, "a list item must be an object"));
     };
+    // A list item is an element for the node budget, like its trailing node.
+    *count += 1;
+    if *count > PLUGIN_UI_MAX_NODES {
+        return Err(PluginUiTreeError::TooManyNodes {
+            max: PLUGIN_UI_MAX_NODES,
+        });
+    }
     let fields = Fields { map, path };
     if map.contains_key("type") {
         return Err(invalid(path, "unknown field `type`"));
