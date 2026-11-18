@@ -114,6 +114,22 @@ impl HookRegistrar {
         extension: ironclaw_host_api::ids::ExtensionId,
         extension_version: &str,
         entries: &[HookManifestEntry],
+        builder: HookDispatcherBuilder,
+    ) -> Result<(HookDispatcherBuilder, Vec<HookId>), HookError> {
+        self.install_with_settings(extension, extension_version, entries, None, builder)
+    }
+
+    /// [`Self::install`], additionally binding the extension's effective
+    /// user settings for this run. WASM hook bodies read them as the
+    /// `settings` object of their `ic:hooks/context@1` blob; predicate bodies
+    /// ignore them. Settings are plain, host-validated, non-secret values —
+    /// binding them grants the hook nothing.
+    pub fn install_with_settings(
+        &self,
+        extension: ironclaw_host_api::ids::ExtensionId,
+        extension_version: &str,
+        entries: &[HookManifestEntry],
+        settings: Option<Arc<serde_json::Map<String, serde_json::Value>>>,
         mut builder: HookDispatcherBuilder,
     ) -> Result<(HookDispatcherBuilder, Vec<HookId>), HookError> {
         // Mirror the host-validated `ExtensionId` into the content-addressed
@@ -137,6 +153,7 @@ impl HookRegistrar {
                 &identity_extension,
                 extension_version,
                 entry,
+                settings.as_ref(),
                 &mut builder,
             )?;
             installed.push(hook_id);
@@ -202,6 +219,7 @@ impl HookRegistrar {
         identity_extension: &ExtensionId,
         extension_version: &str,
         entry: &HookManifestEntry,
+        settings: Option<&Arc<serde_json::Map<String, serde_json::Value>>>,
         builder: &mut HookDispatcherBuilder,
     ) -> Result<HookId, HookError> {
         entry.validate().map_err(|e| {
@@ -280,12 +298,15 @@ impl HookRegistrar {
                     kind: entry.kind,
                     export: export.as_str(),
                 };
-                let prepared = runtime.prepare(&request, budget.clone()).map_err(|error| {
-                    HookError::RegistryConstruction(format!(
-                        "WASM hook `{}` failed to prepare: {error}",
-                        entry.id
-                    ))
-                })?;
+                let prepared = runtime
+                    .prepare(&request, budget.clone())
+                    .map_err(|error| {
+                        HookError::RegistryConstruction(format!(
+                            "WASM hook `{}` failed to prepare: {error}",
+                            entry.id
+                        ))
+                    })?
+                    .with_settings(settings.cloned());
                 let wasm_identity_version =
                     WasmVersionMaterial::new(extension_version, &prepared.module_digest_hex())
                         .to_string();

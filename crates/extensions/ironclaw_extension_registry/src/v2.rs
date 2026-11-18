@@ -133,6 +133,12 @@ pub struct HookSectionEntryV2 {
     /// vocabulary *and* so the enclosing manifest can keep deriving `Eq`
     /// (`toml::Value` is not `Eq` because it can hold floats).
     pub raw_toml: String,
+    /// Package-relative WASM module implementing a `mode = "wasm"` hook body
+    /// (v3 `[[hooks]].module`, validated as an extension asset path at parse
+    /// time). `None` for predicate bodies. The composition loader resolves it
+    /// under the package root and hands the bytes to the hook WASM runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
 }
 
 /// Loader-supplied source for a manifest. Never read from TOML.
@@ -736,6 +742,9 @@ pub struct ExtensionManifestV2 {
     /// declare no hooks (the common case). See [`HookSectionEntryV2`] for
     /// the clean-boundary rationale.
     pub hooks: Vec<HookSectionEntryV2>,
+    /// Package-declared user settings (v3 `[[settings]]`; always empty for
+    /// v2 manifests). See [`crate::settings`].
+    pub settings: Vec<crate::settings::ExtensionSettingDecl>,
 }
 
 /// v2 manifest parser/validator errors.
@@ -1125,6 +1134,7 @@ impl ExtensionManifestV2 {
             capabilities: Vec::new(),
             host_api_surfaces: Vec::new(),
             hooks,
+            settings: Vec::new(),
         })
     }
 }
@@ -1134,7 +1144,7 @@ impl ExtensionManifestV2 {
 /// manifest, and that each entry's serialized body is within the per-entry
 /// size bound. Returns the structurally-typed [`HookSectionEntryV2`] payloads
 /// for the composition loader to project into typed hook entries.
-fn validate_hook_entries(
+pub(crate) fn validate_hook_entries(
     raw_hooks: Vec<toml::Value>,
 ) -> Result<Vec<HookSectionEntryV2>, ManifestV2Error> {
     if raw_hooks.len() > MAX_MANIFEST_HOOKS {
@@ -1184,7 +1194,11 @@ fn validate_hook_entries(
         if !seen_ids.insert(local_id.clone()) {
             return Err(ManifestV2Error::DuplicateHookId { id: local_id });
         }
-        entries.push(HookSectionEntryV2 { local_id, raw_toml });
+        entries.push(HookSectionEntryV2 {
+            local_id,
+            raw_toml,
+            module: None,
+        });
     }
     Ok(entries)
 }

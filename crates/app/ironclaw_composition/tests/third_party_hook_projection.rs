@@ -201,7 +201,7 @@ fn ids_at(registry: &HookProjectionRegistry, point: HookPointSpec) -> Vec<HookId
     let factory = build_hook_dispatcher_builder_factory(both_flags_on(), registry)
         .expect("factory builds")
         .expect("flag ON yields a factory");
-    factory()
+    mint(&factory)
         .expect("mint hook builder")
         .build_arc()
         .active_bindings_snapshot(point)
@@ -214,7 +214,7 @@ fn before_capability_ids(registry: &HookProjectionRegistry) -> Vec<HookId> {
     let factory = build_hook_dispatcher_builder_factory(both_flags_on(), registry)
         .expect("factory builds")
         .expect("flag ON yields a factory");
-    factory()
+    mint(&factory)
         .expect("mint hook builder")
         .build_arc()
         .active_bindings_snapshot(HookPointSpec::BeforeCapability)
@@ -423,7 +423,7 @@ async fn matrix_before_capability_installed_deny_is_allowed_and_fires() {
     let factory = build_hook_dispatcher_builder_factory(both_flags_on(), &registry)
         .expect("factory")
         .expect("flag ON yields factory");
-    let dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = mint(&factory).expect("mint hook builder").build_arc();
     assert!(
         ids_at(&registry, HookPointSpec::BeforeCapability)
             .contains(&installed_hook_id("gate-ext", "deny-run")),
@@ -534,7 +534,7 @@ async fn matrix_owning_extension_is_derived_not_spoofable() {
     let factory = build_hook_dispatcher_builder_factory(both_flags_on(), &registry)
         .expect("factory")
         .expect("flag ON yields factory");
-    let dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = mint(&factory).expect("mint hook builder").build_arc();
     let bindings = dispatcher.active_bindings_snapshot(HookPointSpec::BeforeCapability);
     let binding = bindings
         .iter()
@@ -545,4 +545,17 @@ async fn matrix_owning_extension_is_derived_not_spoofable() {
         Some(&ironclaw_host_api::ids::ExtensionId::new("claimant").expect("ext")),
         "owning_extension must be the discovered extension id, never spoofable via the manifest"
     );
+}
+
+fn mint(
+    factory: &ironclaw_turn_runner::loop_driver_host::HookDispatcherBuilderFactory,
+) -> Result<
+    ironclaw_hooks::dispatch::HookDispatcherBuilder,
+    ironclaw_turn_runner::loop_driver_host::RebornLoopDriverHostError,
+> {
+    futures::executor::block_on(factory(
+        ironclaw_turn_runner::loop_driver_host::HookDispatcherBuildRequest {
+            scope: ironclaw_host_api::resource::ResourceScope::system(),
+        },
+    ))
 }

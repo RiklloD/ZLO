@@ -958,7 +958,7 @@ where
         host_factory = host_factory.with_model_budget_accountant(accountant);
     }
     if let Some(factory) = parts.hook_dispatcher_builder_factory {
-        host_factory = host_factory.with_hook_dispatcher_builder_factory(move || factory());
+        host_factory = host_factory.with_run_scoped_hook_dispatcher_builder_factory(factory);
     }
     if let Some(provider) = parts.communication_context_provider {
         host_factory = host_factory.with_communication_context_provider(provider);

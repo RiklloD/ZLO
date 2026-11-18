@@ -178,6 +178,7 @@ pub(super) async fn execute_prepared_wasm<G>(
     prepared: Arc<PreparedWitTool>,
     host: WitToolHost,
     request: RuntimeLaneRequest<'_, impl RootFilesystem, G>,
+    settings: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Result<RuntimeAdapterResult, DispatchError>
 where
     G: ResourceGovernor,
@@ -214,7 +215,7 @@ where
             ));
         }
     };
-    let context_json = wasm_invocation_context(request.capability_id);
+    let context_json = wasm_invocation_context(request.capability_id, settings);
     // The wasmtime guest call is synchronous and CPU/IO-bound. Running it
     // inline on the async worker would park that worker for the full duration
     // of WASM execution; a burst of concurrent turns (>= worker_count) could
@@ -284,11 +285,20 @@ where
     })
 }
 
-fn wasm_invocation_context(capability_id: &CapabilityId) -> String {
-    serde_json::json!({
+/// The JSON `context` handed to a WIT tool's `execute`: the invoked
+/// capability id plus, when the package declares `[[settings]]`, the acting
+/// user's effective values as `settings` (host-validated, non-secret).
+fn wasm_invocation_context(
+    capability_id: &CapabilityId,
+    settings: Option<serde_json::Map<String, serde_json::Value>>,
+) -> String {
+    let mut context = serde_json::json!({
         "capability_id": capability_id.as_str(),
-    })
-    .to_string()
+    });
+    if let (Some(object), Some(settings)) = (context.as_object_mut(), settings) {
+        object.insert("settings".to_string(), serde_json::Value::Object(settings));
+    }
+    context.to_string()
 }
 
 fn preserved_wasm_error_usage(error: &WasmError) -> Option<ResourceUsage> {

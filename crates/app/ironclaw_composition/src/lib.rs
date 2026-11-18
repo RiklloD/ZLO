@@ -508,6 +508,9 @@ const PER_USER_ALIASES: &[&str] = &[
     "/conversations",
     "/suggestions",
     "/turns",
+    // Package-declared user settings values, one record per extension
+    // (`ironclaw_extension_registry::settings::ExtensionSettingsStore`).
+    "/extension-settings",
     "/resources",
     "/engine",
     "/skills",

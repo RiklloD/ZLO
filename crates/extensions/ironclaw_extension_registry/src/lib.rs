@@ -141,6 +141,8 @@ pub struct ExtensionManifest {
     /// validated by the v2 parser; projected into typed hook entries by the
     /// composition loader. Empty for the common no-hooks case.
     pub hooks: Vec<HookSectionEntryV2>,
+    /// Package-declared user settings (v3 `[[settings]]`); see [`settings`].
+    pub settings: Vec<settings::ExtensionSettingDecl>,
 }
 
 impl ExtensionManifest {
@@ -183,6 +185,7 @@ impl TryFrom<ExtensionManifestV2> for ExtensionManifest {
             capabilities: manifest.capabilities,
             host_api_surfaces: manifest.host_api_surfaces,
             hooks: manifest.hooks,
+            settings: manifest.settings,
         })
     }
 }
@@ -196,8 +199,10 @@ mod lifecycle;
 mod package;
 mod registry;
 pub mod resolved;
+pub mod settings;
 pub mod v2;
 pub mod v3;
+mod v3_package_surfaces;
 
 pub use definition_admission::{PackageDefinitionAdmissionOutcome, PackageDefinitionRetention};
 pub use package::{

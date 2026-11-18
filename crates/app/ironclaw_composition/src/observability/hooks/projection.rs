@@ -50,8 +50,15 @@ pub(super) struct HookProjection {
     pub(super) source: ironclaw_extension_registry::ManifestSource,
     /// Package root, for the projection-layer containment check only.
     pub(super) root: ironclaw_host_api::path::VirtualPath,
-    /// The declared `[[hooks]]` payloads — the ONLY package content carried.
+    /// The declared `[[hooks]]` payloads.
     pub(super) hooks: Vec<ironclaw_extension_registry::HookSectionEntryV2>,
+    /// The package's declared `[[settings]]`, so a run can bind the acting
+    /// user's effective values to the package's WASM hooks. Plain,
+    /// non-secret declarations — no capability or runtime surface.
+    pub(super) settings: Vec<ironclaw_extension_registry::settings::ExtensionSettingDecl>,
+    /// Content digest of the manifest record, when the package carries one;
+    /// part of the live projection cache key.
+    pub(super) manifest_digest: Option<String>,
 }
 
 impl HookProjection {
@@ -76,6 +83,8 @@ impl HookProjection {
             source: package.manifest.source,
             root,
             hooks: package.manifest.hooks.clone(),
+            settings: package.manifest.settings.clone(),
+            manifest_digest: package.manifest_digest.clone(),
         })
     }
 }

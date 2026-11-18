@@ -724,6 +724,13 @@ pub(super) async fn assemble_runtime(
                 hooks_config,
                 &projection_registry,
                 &validated_identity.tenant_id,
+                Some(crate::observability::hooks::live::LiveHookSources {
+                    active: Arc::clone(&local_runtime.shared_extension_registry),
+                    filesystem: Arc::clone(&local_runtime.extension_filesystem)
+                        as Arc<dyn ironclaw_filesystem::RootFilesystem>,
+                    settings: Arc::clone(&local_runtime.extension_settings)
+                        as Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsReader>,
+                }),
             )
             .map_err(|error| RebornRuntimeError::InvalidArgument {
                 reason: format!("hook framework activation failed: {error}"),

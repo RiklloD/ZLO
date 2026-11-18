@@ -114,6 +114,9 @@ pub struct ResolvedExtensionManifest {
     pub section_surfaces: Vec<ResolvedSectionSurface>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hooks: Vec<HookSectionEntryV2>,
+    /// Package-declared user settings (v3 `[[settings]]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings: Vec<crate::settings::ExtensionSettingDecl>,
 }
 
 /// A hosted-MCP server declaration (`[mcp]`): the proxied server whose
@@ -269,6 +272,7 @@ impl ResolvedExtensionManifest {
                 .collect(),
             section_surfaces,
             hooks: manifest.hooks.clone(),
+            settings: manifest.settings.clone(),
         }
     }
 
@@ -341,6 +345,7 @@ impl ResolvedExtensionManifest {
             capabilities: self.tools.clone(),
             host_api_surfaces,
             hooks: self.hooks.clone(),
+            settings: self.settings.clone(),
         })
     }
 }

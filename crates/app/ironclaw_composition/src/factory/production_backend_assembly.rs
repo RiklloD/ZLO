@@ -844,6 +844,15 @@ pub(super) async fn build_backend_production(
             product_auth_dependencies.runtime_credential_account_refresh_service(),
         ),
     ));
+    // One settings store, shared by the WASM lane (reads), the hook factory
+    // (reads), and the settings product face (writes).
+    let extension_settings = Arc::new(
+        ironclaw_extension_registry::settings::ExtensionSettingsStore::new(Arc::clone(
+            &stores.scoped_filesystem,
+        )),
+    );
+    services = services.with_extension_settings(Arc::clone(&extension_settings)
+        as Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsReader>);
     services = attach_wasm_runtime(services)?;
     // Re-project the ports after attaching product-auth. Hosted MCP
     // preparation and first-party registrars must receive the account-aware
@@ -1483,6 +1492,7 @@ pub(super) async fn build_backend_production(
         skill_filesystem,
         workspace_filesystem,
         extension_filesystem: Arc::clone(&stores.filesystem),
+        extension_settings,
         memory_service_resolver: resolved_memory.resolver.clone(),
         memory_prompt_safety_sink,
         memory_lifecycle: resolved_memory.lifecycle.clone(),

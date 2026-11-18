@@ -1779,3 +1779,169 @@ fn legacy_resolved_record_without_standard_op_rehydrates_to_none() {
     assert_eq!(rehydrated_descriptor.standard_op, None);
     assert_eq!(rehydrated_descriptor.id, descriptor.id);
 }
+
+// ---------------------------------------------------------------------------
+// Package hooks and settings ([[hooks]] / [[settings]])
+// ---------------------------------------------------------------------------
+
+const PLUGIN_SURFACES_MANIFEST: &str = r#"
+schema_version = "reborn.extension_manifest.v3"
+id = "weather-guard"
+name = "Weather Guard"
+version = "0.2.0"
+description = "A third-party plugin with a hook and settings."
+trust = "third_party"
+
+[runtime]
+kind = "wasm"
+module = "wasm/weather.wasm"
+
+[[tools]]
+id = "weather-guard.forecast"
+description = "Forecast."
+effects = []
+default_permission = "ask"
+visibility = "model"
+input_schema_ref = "schemas/forecast.input.v1.json"
+
+[[hooks]]
+id = "block-forecast"
+kind = "before_capability"
+description = "Deny forecasts when the user turned them off"
+module = "wasm/guard_hook.wasm"
+body = { mode = "wasm", export = "evaluate" }
+
+[[hooks]]
+id = "cap-forecasts"
+kind = "before_capability"
+body = { mode = "predicate", spec = { kind = "deny_capability", when = { kind = "name_equals", name = "weather-guard.forecast" }, reason = "no" } }
+
+[[settings]]
+id = "units"
+kind = "choice"
+label = "Units"
+description = "Temperature units"
+section = "Display"
+default = "metric"
+options = [
+  { value = "metric", label = "Metric" },
+  { value = "imperial", label = "Imperial", description = "Fahrenheit" },
+]
+
+[[settings]]
+id = "forecasts_enabled"
+kind = "switch"
+label = "Allow forecasts"
+default = true
+
+[[settings]]
+id = "days"
+kind = "number"
+label = "Days"
+default = 3
+
+[[settings]]
+id = "city"
+kind = "text"
+label = "Home city"
+default = ""
+"#;
+
+#[test]
+fn v3_hooks_and_settings_reach_the_resolved_record_and_the_package_manifest() {
+    let record = parse_v3_with_source(PLUGIN_SURFACES_MANIFEST, ManifestSource::InstalledLocal)
+        .expect("plugin manifest parses");
+    let resolved = record.resolved();
+    let hooks: Vec<_> = resolved
+        .hooks
+        .iter()
+        .map(|hook| (hook.local_id.as_str(), hook.module.as_deref()))
+        .collect();
+    assert_eq!(
+        hooks,
+        vec![
+            ("block-forecast", Some("wasm/guard_hook.wasm")),
+            ("cap-forecasts", None),
+        ]
+    );
+    // The package-level `module` key is stripped from the hook-vocabulary
+    // payload the composition loader parses with `deny_unknown_fields`.
+    assert!(!resolved.hooks[0].raw_toml.contains("module"));
+    let ids: Vec<_> = resolved
+        .settings
+        .iter()
+        .map(|setting| setting.id.as_str())
+        .collect();
+    assert_eq!(ids, ["units", "forecasts_enabled", "days", "city"]);
+    assert_eq!(resolved.settings[0].section.as_deref(), Some("Display"));
+    assert_eq!(record.manifest().settings, resolved.settings);
+    assert_eq!(record.manifest().hooks, resolved.hooks);
+    // A persisted record rebuilt without a TOML reparse keeps both surfaces.
+    let rebuilt = ironclaw_extension_registry::ResolvedExtensionManifest::to_internal(
+        resolved,
+        ManifestSource::InstalledLocal,
+    )
+    .expect("resolved record rebuilds");
+    assert_eq!(rebuilt.settings, resolved.settings);
+    assert_eq!(rebuilt.hooks, resolved.hooks);
+}
+
+#[test]
+fn v3_hook_and_setting_declarations_fail_closed_with_clear_errors() {
+    // Case 1: drop the wasm hook's module.
+    let missing_module =
+        PLUGIN_SURFACES_MANIFEST.replace("module = \"wasm/guard_hook.wasm\"\n", "");
+    let error = parse_v3_with_source(&missing_module, ManifestSource::InstalledLocal)
+        .expect_err("wasm hook without a module is rejected");
+    assert!(
+        error.contains("has a wasm body and must name its `module` asset"),
+        "{error}"
+    );
+
+    // Case 2: a module path that escapes the package root.
+    let escaping = PLUGIN_SURFACES_MANIFEST.replace(
+        "module = \"wasm/guard_hook.wasm\"\n",
+        "module = \"../escape.wasm\"\n",
+    );
+    let error = parse_v3_with_source(&escaping, ManifestSource::InstalledLocal)
+        .expect_err("escaping module path is rejected");
+    assert!(error.contains("`module` is invalid"), "{error}");
+
+    // Case 3: a predicate hook that names a module.
+    let predicate_module = PLUGIN_SURFACES_MANIFEST.replace(
+        "id = \"cap-forecasts\"\n",
+        "id = \"cap-forecasts\"\nmodule = \"wasm/x.wasm\"\n",
+    );
+    let error = parse_v3_with_source(&predicate_module, ManifestSource::InstalledLocal)
+        .expect_err("predicate hook with a module is rejected");
+    assert!(
+        error.contains("only `mode = \"wasm\"` hooks load a module"),
+        "{error}"
+    );
+
+    // Case 4: a credential-shaped setting points at credential binding.
+    let credential = PLUGIN_SURFACES_MANIFEST.replace("id = \"city\"", "id = \"api_token\"");
+    let error = parse_v3_with_source(&credential, ManifestSource::InstalledLocal)
+        .expect_err("credential-shaped setting is rejected");
+    assert!(error.contains("looks like a credential slot"), "{error}");
+    assert!(error.contains("[[tools.credentials]]"), "{error}");
+
+    // Case 5: a choice default outside its options.
+    let bad_default =
+        PLUGIN_SURFACES_MANIFEST.replace("default = \"metric\"", "default = \"kelvin\"");
+    let error = parse_v3_with_source(&bad_default, ManifestSource::InstalledLocal)
+        .expect_err("choice default must be a listed option");
+    assert!(error.contains("default is invalid"), "{error}");
+
+    // Case 6: an unknown setting kind.
+    let bad_kind = PLUGIN_SURFACES_MANIFEST.replace("kind = \"number\"", "kind = \"slider\"");
+    let error = parse_v3_with_source(&bad_kind, ManifestSource::InstalledLocal)
+        .expect_err("unknown setting kind is rejected");
+    assert!(error.contains("slider"), "{error}");
+
+    // Case 7: duplicate setting ids.
+    let duplicate = PLUGIN_SURFACES_MANIFEST.replace("id = \"days\"", "id = \"units\"");
+    let error = parse_v3_with_source(&duplicate, ManifestSource::InstalledLocal)
+        .expect_err("duplicate setting id is rejected");
+    assert!(error.contains("declared twice"), "{error}");
+}
