@@ -52,6 +52,10 @@ async fn mint_account_login_link_posts_subject_and_returns_url() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -199,6 +203,10 @@ async fn mint_profile_attribution_token_for_user_uses_instance_subject() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -266,6 +274,10 @@ async fn set_community_profile_for_user_publishes_under_instance_subject() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -369,6 +381,10 @@ async fn direct_pinned_sink_rejects_private_hosts_and_bounds_bodies() {
     let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let target_addr = target_listener.local_addr().unwrap();
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(target_listener, target_app).await;
     });
     let redirect_to = format!("http://{target_addr}/stolen");
@@ -388,6 +404,10 @@ async fn direct_pinned_sink_rejects_private_hosts_and_bounds_bodies() {
     let redirect_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let redirect_addr = redirect_listener.local_addr().unwrap();
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(redirect_listener, redirect_app).await;
     });
     let response = DirectPinnedContributionSink
@@ -416,6 +436,10 @@ async fn direct_pinned_sink_rejects_private_hosts_and_bounds_bodies() {
     let big_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let big_addr = big_listener.local_addr().unwrap();
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(big_listener, big_app).await;
     });
     let error = DirectPinnedContributionSink
@@ -542,6 +566,10 @@ async fn fetch_account_traces_returns_user_submissions() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 

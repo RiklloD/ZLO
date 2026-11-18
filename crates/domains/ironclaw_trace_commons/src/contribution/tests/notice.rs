@@ -106,6 +106,10 @@ fn scoped_credit_view_reflects_record_changes_via_signature() {
     let view = scoped_credit_view(&scope).expect("two-record view");
     assert_eq!(view.report.submissions_total, 2);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -179,7 +183,15 @@ fn queue_diagnostics_are_scoped_to_one_user_queue_and_records() {
     assert_eq!(diagnostics_b.revoked_count, 1);
     assert!(diagnostics_b.ready_to_flush);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope_a)));
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope_b)));
 }
 #[test]
@@ -227,6 +239,10 @@ fn queue_diagnostics_aggregates_sanitized_hold_reasons() {
     assert!(!serialized.contains("/Users/alice/private"));
     assert!(!serialized.contains("sk-test-raw-token"));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -394,6 +410,10 @@ fn credit_notice_acknowledge_suppresses_same_fingerprint_until_credit_changes() 
     assert_eq!(after_change.final_credit, 2.0);
     assert_eq!(after_change.delayed_credit_delta, 1.0);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -446,6 +466,10 @@ fn credit_notice_snooze_suppresses_until_deadline() {
             .is_some()
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -482,6 +506,10 @@ fn legacy_credit_notice_timestamp_suppresses_until_interval() {
             .is_some()
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -531,6 +559,10 @@ fn trace_credit_notice_outbox_enqueue_is_idempotent_per_fingerprint() {
         .expect("pending outbox reads");
     assert_eq!(pending.len(), 1);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -603,6 +635,14 @@ fn credit_notice_acknowledge_and_snooze_suppress_pending_outbox_items() {
         1
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&ack_scope)));
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&snooze_scope)));
 }

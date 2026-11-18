@@ -375,6 +375,10 @@ pub(super) async fn mint_login_link_with_response_url(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -420,6 +424,10 @@ pub(super) async fn fetch_account_traces_with_status(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 

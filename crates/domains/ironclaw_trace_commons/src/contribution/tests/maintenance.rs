@@ -72,6 +72,10 @@ async fn queue_flush_compacts_duplicate_envelopes_and_orphan_holds_before_submit
     );
     assert_eq!(diagnostics.telemetry.compaction_reclaimed_items_total, 2);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -111,6 +115,10 @@ async fn queue_flush_quarantines_malformed_envelope_and_submits_later_valid_enve
         listener.local_addr().expect("local addr")
     );
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -173,6 +181,10 @@ async fn queue_flush_quarantines_malformed_envelope_and_submits_later_valid_enve
     let diagnostics = trace_queue_diagnostics_for_scope(Some(&scope)).expect("diagnostics");
     assert_eq!(diagnostics.queued_count, 0);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -230,6 +242,10 @@ async fn queue_compaction_keeps_same_trace_when_semantic_metadata_differs() {
         "warning from changed envelope should not be hidden by compaction"
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -288,6 +304,10 @@ async fn queue_compaction_failure_records_sanitized_queue_telemetry() {
     assert!(!failure.reason.contains(&scope));
     assert!(!failure.reason.contains("TRACE_COMMONS_MISSING_TOKEN"));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -350,6 +370,10 @@ async fn queue_diagnostics_reports_schema_policy_and_redaction_warnings() {
     assert!(!serialized.contains("legacy-redactor"));
     assert!(!serialized.contains("2025-01-01"));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[tokio::test]
@@ -443,8 +467,20 @@ async fn queue_telemetry_classifies_endpoint_credential_and_network_failures() {
         TraceQueueTelemetryFailureKind::NetworkConnectionRefused
     );
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&endpoint_scope)));
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&credential_scope)));
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&network_scope)));
 }
 #[test]
@@ -622,6 +658,10 @@ async fn trace_queue_worker_tick_records_durable_failure_and_success_telemetry()
     assert_eq!(diagnostics.telemetry.consecutive_flush_failures, 0);
     assert!(diagnostics.telemetry.last_failure.is_none());
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }
 #[test]
@@ -655,5 +695,9 @@ fn read_trace_queue_holds_for_scope_returns_sidecars_without_envelope_bodies() {
     let serialized = serde_json::to_string(&holds).expect("holds serialize");
     assert!(!serialized.contains("raw envelope body should not be exposed"));
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "test teardown of this test's own scope dir; a leftover dir cannot fail the test"
+    )]
     let _ = std::fs::remove_dir_all(trace_contribution_dir_for_scope(Some(&scope)));
 }

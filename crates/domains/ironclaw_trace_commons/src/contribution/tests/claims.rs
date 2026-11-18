@@ -126,6 +126,10 @@ async fn fetch_trace_upload_claim_from_issuer_returns_typed_pilot_allowlist_erro
         .expect("mock issuer listener binds");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
     let client = reqwest::Client::builder()
@@ -171,6 +175,10 @@ async fn fetch_trace_upload_claim_from_issuer_generic_http_error_when_label_unkn
         .expect("mock issuer listener binds");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
     let client = reqwest::Client::builder()
@@ -361,6 +369,10 @@ async fn workload_token_reaches_the_issuer_request_as_a_bearer_header() {
         .expect("mock issuer listener binds");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the mock server runs until the test runtime drops it"
+        )]
         let _ = axum::serve(listener, app).await;
     });
 
@@ -372,7 +384,12 @@ async fn workload_token_reaches_the_issuer_request_as_a_bearer_header() {
     let context = TraceUploadClaimContext::for_status_sync();
 
     // Expected to fail on the 500 — the request is what is under test.
-    let _ = fetch_trace_upload_claim_from_issuer(&policy, &context, None).await;
+    assert!(
+        fetch_trace_upload_claim_from_issuer(&policy, &context, None)
+            .await
+            .is_err(),
+        "the mock issuer answers 500"
+    );
 
     let header = seen.lock().expect("header capture lock").clone();
     assert_eq!(

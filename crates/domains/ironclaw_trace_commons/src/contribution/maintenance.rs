@@ -892,8 +892,9 @@ pub(crate) fn write_json_file<T: Serialize + ?Sized>(
         })?
     };
     if let Err(error) = temp.write_all(body.as_bytes()) {
-        // silent-ok: temp-file cleanup; the write error is returned
-        let _ = std::fs::remove_file(&temp_path);
+        if let Err(error) = std::fs::remove_file(&temp_path) {
+            tracing::debug!(%error, "could not remove the trace policy temp file after a failed write");
+        }
         return Err(anyhow::anyhow!(
             "failed to write temporary {} for {}: {}",
             label,
@@ -902,8 +903,9 @@ pub(crate) fn write_json_file<T: Serialize + ?Sized>(
         ));
     }
     if let Err(error) = temp.sync_all() {
-        // silent-ok: temp-file cleanup; the sync error is returned
-        let _ = std::fs::remove_file(&temp_path);
+        if let Err(error) = std::fs::remove_file(&temp_path) {
+            tracing::debug!(%error, "could not remove the trace policy temp file after a failed write");
+        }
         return Err(anyhow::anyhow!(
             "failed to sync temporary {} for {}: {}",
             label,
@@ -913,8 +915,7 @@ pub(crate) fn write_json_file<T: Serialize + ?Sized>(
     }
     drop(temp);
     std::fs::rename(&temp_path, path).map_err(|e| {
-        // silent-ok: temp-file cleanup; the rename error is returned
-        let _ = std::fs::remove_file(&temp_path);
+        if let Err(error) = std::fs::remove_file(&temp_path) { tracing::debug!(%error, "could not remove the trace policy temp file after a failed rename"); }
         anyhow::anyhow!("failed to install {} {}: {}", label, path.display(), e)
     })?;
     sync_directory_best_effort(parent, label);

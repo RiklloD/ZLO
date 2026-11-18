@@ -5,6 +5,7 @@
 //! row. Every historical tag — including the retired concrete channel
 //! variants — must keep parsing forever (LLM data is never dropped over a
 //! channel name).
+#![deny(clippy::let_underscore_must_use)]
 
 use ironclaw_trace_commons::contribution::{IronclawTraceMetadata, TraceChannel};
 
