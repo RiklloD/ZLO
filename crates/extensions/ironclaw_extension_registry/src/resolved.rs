@@ -114,6 +114,11 @@ pub struct ResolvedExtensionManifest {
     pub section_surfaces: Vec<ResolvedSectionSurface>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hooks: Vec<HookSectionEntryV2>,
+    /// Plugin UI slots (v3 `[[ui.slots]]`), each naming a validated render
+    /// tool among `tools`. Product-facing only: the host lists and renders
+    /// them; nothing about them reaches the model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ui_slots: Vec<ironclaw_extension_contracts::plugin_ui::PluginUiSlotDescriptor>,
 }
 
 /// A hosted-MCP server declaration (`[mcp]`): the proxied server whose
@@ -269,6 +274,7 @@ impl ResolvedExtensionManifest {
                 .collect(),
             section_surfaces,
             hooks: manifest.hooks.clone(),
+            ui_slots: Vec::new(),
         }
     }
 

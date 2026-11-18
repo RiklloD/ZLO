@@ -196,6 +196,7 @@ mod lifecycle;
 mod package;
 mod registry;
 pub mod resolved;
+mod ui_slots;
 pub mod v2;
 pub mod v3;
 
