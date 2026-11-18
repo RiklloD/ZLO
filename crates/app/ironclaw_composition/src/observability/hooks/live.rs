@@ -265,7 +265,20 @@ impl LiveHookInstaller {
                     continue;
                 }
             };
-            let settings = if projection.settings.is_empty() {
+            // A concurrent run that saw the package deactivated may have
+            // pruned its module bytes after this run validated it; reload
+            // them from the package root rather than fail the install.
+            if !self.modules_resident(&projection)? {
+                self.load_modules(&projection).await.map_err(|reason| {
+                    replay_error(format!(
+                        "hook modules for extension `{extension}` could not be reloaded: {reason}"
+                    ))
+                })?;
+            }
+            // Only WASM bodies read settings; predicate bodies never do.
+            let reads_settings = !projection.settings.is_empty()
+                && projection.hooks.iter().any(|hook| hook.module.is_some());
+            let settings = if !reads_settings {
                 None
             } else {
                 let stored = self
@@ -409,6 +422,29 @@ impl LiveHookInstaller {
         modules.retain(|key, _| key.extension_id != extension);
         modules.extend(loaded);
         Ok(())
+    }
+
+    /// Whether every WASM hook of `projection` has its module bytes loaded.
+    fn modules_resident(
+        &self,
+        projection: &HookProjection,
+    ) -> Result<bool, RebornLoopDriverHostError> {
+        let modules = self
+            .modules
+            .modules
+            .read()
+            .map_err(|_| replay_error("hook module table is unavailable".to_string()))?;
+        Ok(projection
+            .hooks
+            .iter()
+            .filter(|hook| hook.module.is_some())
+            .all(|hook| {
+                modules.contains_key(&ModuleKey {
+                    extension_id: projection.extension_id.as_str().to_string(),
+                    version: projection.version.clone(),
+                    hook_local_id: hook.local_id.clone(),
+                })
+            }))
     }
 
     /// Drop cached validations and module bytes for packages that are no

@@ -410,8 +410,8 @@ observed_date = "2026-11-17"
 # this branch: main @ 3359f4929 (fix/sandbox-timeout-lease-cleanup) measures
 # 33520, 18 over its own recorded 33502, which this branch's +80 sits on.
 # ✎ 2026-11-18 (t3/extension-hooks-settings, plugin hooks + settings):
-# 33450 -> 34008, observed 33600 -> 34158, zero hidden headroom, pending the
-# owner's sign-off. +558: `observability/hooks/live.rs` — the per-run,
+# 33450 -> 34041, observed 33600 -> 34191, zero hidden headroom, pending the
+# owner's sign-off. +591: `observability/hooks/live.rs` — the per-run,
 # activation-tracking installer for package `[[hooks]]` (active-registry
 # read, module-asset loading under the package root, settings binding,
 # admission caps, cache pruning) plus its factory/assembly wiring and the
@@ -420,7 +420,7 @@ observed_date = "2026-11-17"
 # registry may not name the hook crate); settings grammar, validation and the
 # store live in `ironclaw_extension_registry`, the product source in
 # `ironclaw_extension_manager`.
-loc_ceiling = 34008
+loc_ceiling = 34041
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -431,7 +431,7 @@ loc_tolerance = 150
 loc_nudge_slack = 200
 # Informational — observed when this file was last updated. Not consulted for
 # the pass/fail decision.
-loc_observed = 33600
+loc_observed = 34191
 loc_observed_date = "2026-11-18"
 
 # --- Dispatch (Arc<dyn>) ratchet ------------------------------------------
@@ -542,4 +542,4 @@ loc_observed_date = "2026-11-18"
 # has a second implementor (test fakes / defaults-only reader).
 arc_dyn_ceiling = 674
 arc_dyn_tolerance = 15
-arc_dyn_observed = 682
+arc_dyn_observed = 689
