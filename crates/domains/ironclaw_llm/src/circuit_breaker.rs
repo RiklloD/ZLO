@@ -475,13 +475,13 @@ mod tests {
 
         // First 2 failures: still closed
         for i in 0..2 {
-            let _ = cb.complete(make_request()).await;
+            assert!(cb.complete(make_request()).await.is_err());
             assert_eq!(cb.circuit_state().await, CircuitState::Closed);
             assert_eq!(cb.consecutive_failures().await, i + 1);
         }
 
         // 3rd failure: trips to open
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(cb.circuit_state().await, CircuitState::Open);
     }
 
@@ -498,7 +498,7 @@ mod tests {
         );
 
         // Trip the breaker
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(cb.circuit_state().await, CircuitState::Open);
 
         // Next call should fail with circuit breaker message
@@ -521,14 +521,14 @@ mod tests {
         let cb = CircuitBreakerProvider::new(stub, fast_config(1));
 
         // Trip to open
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(cb.circuit_state().await, CircuitState::Open);
 
         // Wait for recovery timeout
         tokio::time::sleep(Duration::from_millis(60)).await;
 
         // Next call should transition to half-open (and fail, since stub fails)
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         // Failed probe sends it back to Open
         assert_eq!(cb.circuit_state().await, CircuitState::Open);
     }
@@ -539,7 +539,7 @@ mod tests {
         let cb = CircuitBreakerProvider::new(stub.clone(), fast_config(1));
 
         // Trip to open
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(cb.circuit_state().await, CircuitState::Open);
 
         // Wait for recovery, then make the stub succeed
@@ -559,13 +559,13 @@ mod tests {
         let cb = CircuitBreakerProvider::new(stub, fast_config(1));
 
         // Trip to open
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
 
         // Wait for recovery timeout
         tokio::time::sleep(Duration::from_millis(60)).await;
 
         // Probe fails (stub still failing)
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(cb.circuit_state().await, CircuitState::Open);
     }
 
@@ -576,7 +576,7 @@ mod tests {
 
         // ContextLengthExceeded is not transient; breaker should stay closed
         for _ in 0..5 {
-            let _ = cb.complete(make_request()).await;
+            assert!(cb.complete(make_request()).await.is_err());
         }
         assert_eq!(cb.circuit_state().await, CircuitState::Closed);
         assert_eq!(cb.consecutive_failures().await, 0);
@@ -588,8 +588,8 @@ mod tests {
         let cb = CircuitBreakerProvider::new(stub.clone(), fast_config(3));
 
         // Accumulate 2 failures
-        let _ = cb.complete(make_request()).await;
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(cb.consecutive_failures().await, 2);
 
         // One success resets the counter
@@ -604,8 +604,8 @@ mod tests {
         let stub = Arc::new(StubLlm::failing("test"));
         let cb = CircuitBreakerProvider::new(stub, fast_config(2));
 
-        let _ = cb.complete_with_tools(make_tool_request()).await;
-        let _ = cb.complete_with_tools(make_tool_request()).await;
+        assert!(cb.complete_with_tools(make_tool_request()).await.is_err());
+        assert!(cb.complete_with_tools(make_tool_request()).await.is_err());
         assert_eq!(cb.circuit_state().await, CircuitState::Open);
     }
 
@@ -690,22 +690,22 @@ mod tests {
         );
 
         // Trip to open
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
 
         // Wait and flip to succeed
         tokio::time::sleep(Duration::from_millis(60)).await;
         stub.set_failing(false);
 
         // First probe: half-open, success but not enough yet
-        let _ = cb.complete(make_request()).await;
+        cb.complete(make_request()).await.expect("stub succeeds");
         assert_eq!(cb.circuit_state().await, CircuitState::HalfOpen);
 
         // Second probe: still half-open
-        let _ = cb.complete(make_request()).await;
+        cb.complete(make_request()).await.expect("stub succeeds");
         assert_eq!(cb.circuit_state().await, CircuitState::HalfOpen);
 
         // Third probe: closes
-        let _ = cb.complete(make_request()).await;
+        cb.complete(make_request()).await.expect("stub succeeds");
         assert_eq!(cb.circuit_state().await, CircuitState::Closed);
     }
 
@@ -835,14 +835,14 @@ mod tests {
         // Cycle through open/half-open/open several times.
         for _ in 0..5 {
             // Trip to open.
-            let _ = cb.complete(make_request()).await;
+            assert!(cb.complete(make_request()).await.is_err());
             assert_eq!(cb.circuit_state().await, CircuitState::Open);
 
             // Wait for recovery.
             tokio::time::sleep(Duration::from_millis(15)).await;
 
             // Probe fails (stub still failing) → back to Open.
-            let _ = cb.complete(make_request()).await;
+            assert!(cb.complete(make_request()).await.is_err());
             assert_eq!(cb.circuit_state().await, CircuitState::Open);
         }
 
@@ -894,6 +894,10 @@ mod tests {
             _request: CompletionRequest,
         ) -> Result<CompletionResponse, LlmError> {
             let call_index = self.call_index.fetch_add(1, Ordering::SeqCst);
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a test that stopped observing call starts has dropped the receiver"
+            )]
             let _ = self.started.send(call_index);
             match call_index {
                 0 => {
@@ -1070,7 +1074,7 @@ mod tests {
 
         // 100 non-transient errors should not trip the breaker.
         for _ in 0..100 {
-            let _ = cb_nt.complete(make_request()).await;
+            assert!(cb_nt.complete(make_request()).await.is_err());
         }
         assert_eq!(cb_nt.circuit_state().await, CircuitState::Closed);
         assert_eq!(cb_nt.consecutive_failures().await, 0);
@@ -1095,7 +1099,7 @@ mod tests {
         );
 
         // Trip the breaker with one failure.
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(cb.circuit_state().await, CircuitState::Open);
 
         // With recovery_timeout = 0, the very next call should transition
@@ -1119,10 +1123,10 @@ mod tests {
         // get stuck in some intermediate state.
         stub.set_failing(true);
         // Trip again.
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(cb.circuit_state().await, CircuitState::Open);
         // Next call: Open -> HalfOpen (zero timeout), probe fails -> Open.
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(
             cb.circuit_state().await,
             CircuitState::Open,
@@ -1146,19 +1150,19 @@ mod tests {
         );
 
         // Trip the breaker.
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(cb.circuit_state().await, CircuitState::Open);
 
         // Wait for recovery, then succeed once to accumulate 1 half-open success.
         tokio::time::sleep(Duration::from_millis(30)).await;
         stub.set_failing(false);
-        let _ = cb.complete(make_request()).await;
+        cb.complete(make_request()).await.expect("stub succeeds");
         // Still in half-open (need 3 successes, got 1).
         assert_eq!(cb.circuit_state().await, CircuitState::HalfOpen);
 
         // Now fail: should immediately re-open, discarding the 1 accumulated success.
         stub.set_failing(true);
-        let _ = cb.complete(make_request()).await;
+        assert!(cb.complete(make_request()).await.is_err());
         assert_eq!(
             cb.circuit_state().await,
             CircuitState::Open,
@@ -1171,15 +1175,15 @@ mod tests {
         stub.set_failing(false);
 
         // First success: half-open, count=1.
-        let _ = cb.complete(make_request()).await;
+        cb.complete(make_request()).await.expect("stub succeeds");
         assert_eq!(cb.circuit_state().await, CircuitState::HalfOpen);
 
         // Second success: half-open, count=2.
-        let _ = cb.complete(make_request()).await;
+        cb.complete(make_request()).await.expect("stub succeeds");
         assert_eq!(cb.circuit_state().await, CircuitState::HalfOpen);
 
         // Third success: closes the circuit.
-        let _ = cb.complete(make_request()).await;
+        cb.complete(make_request()).await.expect("stub succeeds");
         assert_eq!(
             cb.circuit_state().await,
             CircuitState::Closed,

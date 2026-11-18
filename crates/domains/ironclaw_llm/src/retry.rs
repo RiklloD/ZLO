@@ -515,6 +515,10 @@ mod tests {
     #[async_trait]
     impl CompletionStreamSink for RecordingCompletionStreamSink {
         async fn text_delta(&self, delta: String) {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a test that stopped observing deltas has dropped the receiver"
+            )]
             let _ = self.sender.send(delta);
         }
     }

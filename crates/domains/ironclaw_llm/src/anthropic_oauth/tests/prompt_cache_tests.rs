@@ -26,6 +26,10 @@ async fn oauth_new_model_family_keeps_short_retention_cache_control() {
     config.cache_retention = CacheRetention::Short;
     let provider = AnthropicOAuthProvider::new(&config).expect("provider");
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+    )]
     let _ = provider
         .complete(CompletionRequest::new(vec![
             ChatMessage::system("You are helpful."),

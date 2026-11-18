@@ -1325,6 +1325,10 @@ mod tests {
     #[async_trait]
     impl CompletionStreamSink for RecordingStreamSink {
         async fn text_delta(&self, delta: String) {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a test that stopped observing deltas has dropped the receiver"
+            )]
             let _ = self.sender.send(delta);
         }
     }
@@ -2085,6 +2089,10 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
             "hashed-cache-key-abc".to_string(),
         );
 
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+        )]
         let _ = provider.complete(request).await;
         let body = captured_json(captured).await;
 
@@ -2113,6 +2121,10 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
             "hashed-cache-key-xyz".to_string(),
         );
 
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+        )]
         let _ = provider.complete_with_tools(request).await;
         let body = captured_json(captured).await;
 
@@ -2145,6 +2157,10 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
 
         let mut request = CompletionRequest::new(vec![ChatMessage::user("hello")]);
         request.model = Some("::gpt-6-sol::high".to_string());
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+        )]
         let _ = router.complete(request).await;
         let body = captured_json(captured).await;
 
@@ -2181,6 +2197,10 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","id":"f
             "hashed-cache-key-abc".to_string(),
         );
 
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+        )]
         let _ = provider.complete(request).await;
         let body = captured_json(captured).await;
 

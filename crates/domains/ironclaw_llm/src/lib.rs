@@ -8,6 +8,7 @@
 //! - **Ollama**: Local model inference
 //! - **OpenAI-compatible**: Any endpoint that speaks the OpenAI API
 //! - **AWS Bedrock**: Native Converse API via aws-sdk-bedrockruntime
+#![deny(clippy::let_underscore_must_use)]
 
 pub mod agent_message;
 mod anthropic_oauth;
@@ -1408,6 +1409,10 @@ mod tests {
     #[async_trait::async_trait]
     impl CompletionStreamSink for RecordingSink {
         async fn text_delta(&self, delta: String) {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a test that stopped observing deltas has dropped the receiver"
+            )]
             let _ = self.0.send(delta);
         }
     }

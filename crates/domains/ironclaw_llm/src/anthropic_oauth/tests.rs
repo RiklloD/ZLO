@@ -248,6 +248,10 @@ async fn oauth_short_retention_places_explicit_cache_breakpoints() {
             },
         ],
     );
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+    )]
     let _ = provider.complete_with_tools(request).await;
     let body = captured_json(captured).await;
 
@@ -290,6 +294,10 @@ async fn oauth_long_retention_uses_1h_ttl_markers() {
     let (base_url, captured) = capture_one_request().await;
     let provider = provider_with_retention(&base_url, CacheRetention::Long);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+    )]
     let _ = provider
         .complete(CompletionRequest::new(vec![
             ChatMessage::system("You are helpful."),
@@ -324,6 +332,10 @@ async fn oauth_unsupported_model_downgrades_to_no_caching() {
     config.cache_retention = CacheRetention::Short;
     let provider = AnthropicOAuthProvider::new(&config).expect("provider");
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+    )]
     let _ = provider
         .complete(CompletionRequest::new(vec![
             ChatMessage::system("You are helpful."),
@@ -537,6 +549,10 @@ async fn oauth_no_retention_keeps_legacy_wire_shape() {
     let (base_url, captured) = capture_one_request().await;
     let provider = provider_with_retention(&base_url, CacheRetention::None);
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+    )]
     let _ = provider
         .complete(CompletionRequest::new(vec![
             ChatMessage::system("You are helpful."),

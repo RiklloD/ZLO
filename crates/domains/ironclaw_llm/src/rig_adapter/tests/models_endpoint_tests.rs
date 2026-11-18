@@ -50,8 +50,20 @@ async fn endpoint_against_canned_response(raw_response: &'static str) -> ModelsE
     tokio::spawn(async move {
         if let Ok((mut sock, _)) = listener.accept().await {
             let mut buf = [0u8; 1024];
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "mock-server socket I/O; a broken exchange fails the client-side assertion instead"
+            )]
             let _ = sock.read(&mut buf).await;
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "mock-server socket I/O; a broken exchange fails the client-side assertion instead"
+            )]
             let _ = sock.write_all(raw_response.as_bytes()).await;
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "mock-server socket I/O; a broken exchange fails the client-side assertion instead"
+            )]
             let _ = sock.flush().await;
         }
     });
@@ -143,12 +155,24 @@ async fn gemini_factory_lists_models_from_models_endpoint() {
             };
             let mut buf = vec![0u8; 8192];
             let n = sock.read(&mut buf).await.unwrap_or(0);
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the test may have finished reading the captured request already"
+            )]
             let _ = req_tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
                 body.len()
             );
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "mock-server socket I/O; a broken exchange fails the client-side assertion instead"
+            )]
             let _ = sock.write_all(resp.as_bytes()).await;
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "mock-server socket I/O; a broken exchange fails the client-side assertion instead"
+            )]
             let _ = sock.flush().await;
         }
     });

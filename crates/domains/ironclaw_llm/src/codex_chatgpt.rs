@@ -1407,6 +1407,10 @@ mod tests {
     #[async_trait]
     impl CompletionStreamSink for RecordingStreamSink {
         async fn text_delta(&self, delta: String) {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a test that stopped observing deltas has dropped the receiver"
+            )]
             let _ = self.sender.send(delta);
         }
     }
@@ -1543,6 +1547,10 @@ mod tests {
                 .write_all(response.as_bytes())
                 .await
                 .expect("write response");
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the test may have finished before reading the captured request line"
+            )]
             let _ = tx.send(request_line);
         });
 
@@ -1810,6 +1818,10 @@ mod tests {
             "hashed-cache-key-abc".to_string(),
         );
 
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+        )]
         let _ = provider.complete(request).await;
         let body = captured_completion_json(captured).await;
 
@@ -1837,6 +1849,10 @@ mod tests {
             "hashed-cache-key-xyz".to_string(),
         );
 
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+        )]
         let _ = provider.complete_with_tools(request).await;
         let body = captured_completion_json(captured).await;
 
@@ -1855,6 +1871,10 @@ mod tests {
             "hashed-cache-key-abc".to_string(),
         );
 
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "only the captured request body is asserted; the capture server's canned reply need not parse"
+        )]
         let _ = provider.complete(request).await;
         let body = captured_completion_json(captured).await;
 
