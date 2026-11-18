@@ -175,3 +175,29 @@ mod tests {
         }
     }
 }
+
+/// Grant the caller's consent to a third-party package, pinned to the digest
+/// the caller was shown, then activate it for them. A user action only: the
+/// product surface exposes it as a command (and the WebUI as
+/// `POST /api/webchat/v2/extensions/{package_id}/consent`), never as a
+/// model-callable capability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionGrantConsentRequest {
+    pub extension_id: String,
+    pub digest: PackageConsentDigest,
+}
+
+/// The caller's state for the package after the grant and activation
+/// attempt (`active`, or `setup_needed` when other setup remains).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionGrantConsentOutcome {
+    pub granted: bool,
+    pub installation_state: ironclaw_extension_contracts::state::LifecyclePublicState,
+}
+
+pub const EXTENSION_GRANT_CONSENT_COMMAND_ID: &str = "extensions.consent.grant";
+pub const EXTENSION_GRANT_CONSENT_COMMAND: crate::descriptors::ProductSurfaceCommandDescriptor<
+    ExtensionGrantConsentRequest,
+    ExtensionGrantConsentOutcome,
+> = crate::descriptors::ProductSurfaceCommandDescriptor::new(EXTENSION_GRANT_CONSENT_COMMAND_ID);

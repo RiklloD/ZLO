@@ -85,18 +85,30 @@ pub(super) async fn list_extensions(
         .await?;
     // Redacted per-extension activation errors from the durable installation
     // records, projected onto `RebornExtensionInfo::activation_error`.
-    let activation_errors = service.installed_activation_errors(context).await?;
-    Ok(RebornExtensionListResponse {
-        extensions: lifecycle_extension_infos(
-            installed,
-            extension_credentials,
-            caller,
-            connections,
-            account_states,
-            activation_errors,
-        )
-        .await?,
-    })
+    let activation_errors = service.installed_activation_errors(context.clone()).await?;
+    let mut extensions = lifecycle_extension_infos(
+        installed,
+        extension_credentials,
+        caller,
+        connections,
+        account_states,
+        activation_errors,
+    )
+    .await?;
+    // A package blocked on consent carries what the caller is asked to
+    // consent to (its digest and requests), from the caller's own projection.
+    for extension in &mut extensions {
+        if matches!(
+            extension.installation_state,
+            LifecyclePublicState::ConsentRequired | LifecyclePublicState::Tampered
+        ) {
+            extension.consent = service
+                .project_package(context.clone(), extension.package_ref.clone())
+                .await?
+                .consent;
+        }
+    }
+    Ok(RebornExtensionListResponse { extensions })
 }
 
 pub(super) async fn list_extension_registry(
@@ -506,6 +518,7 @@ fn extension_info(
         auth_accounts,
         surfaces,
         install_scope,
+        consent: None,
     }
 }
 
@@ -648,6 +661,9 @@ fn caller_public_state(
     match LifecyclePublicState::from_host_checkpoint(phase) {
         LifecyclePublicState::Active if caller_ready => LifecyclePublicState::Active,
         LifecyclePublicState::Uninstalled => LifecyclePublicState::Uninstalled,
+        // The caller's consent is the blocking action, not a setup form:
+        // these states pass through so the UI asks for consent.
+        state @ (LifecyclePublicState::ConsentRequired | LifecyclePublicState::Tampered) => state,
         _ => LifecyclePublicState::SetupNeeded,
     }
 }

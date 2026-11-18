@@ -5,9 +5,9 @@
 # first-party lane, an event round-trip, and the invalid/oversize rejections.
 # The render tool is side-effect-free and explicitly allowed for `product`
 # origin — the manifest parser rejects a render tool that is not. It is
-# `visibility = "model"` only because lifecycle activation treats a package
-# with no model-visible tool as "not ready"; `loop_run = "forbidden"` keeps the
-# model from ever invoking it.
+# `visibility = "api"`: never advertised to the model (declared UI slots are
+# the package's activatable surface), and `loop_run = "forbidden"` keeps the
+# model from invoking it even by name.
 schema_version = "reborn.extension_manifest.v3"
 id = "plugin-ui-demo"
 name = "Plugin UI Demo"
@@ -25,7 +25,7 @@ id = "plugin-ui-demo.render"
 description = "Render one of the demo plugin's UI slots as a reborn.plugin_ui.v1 tree."
 effects = []
 default_permission = "allow"
-visibility = "model"
+visibility = "api"
 input_schema_ref = "schemas/plugin-ui-demo/render.input.v1.json"
 
 [[ui.slots]]

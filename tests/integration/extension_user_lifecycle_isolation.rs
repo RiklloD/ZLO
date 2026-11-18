@@ -97,9 +97,15 @@ async fn users_install_and_remove_the_same_extension_independently() {
         .await;
         assert_eq!(status, StatusCode::OK, "{name} install response: {body}");
     }
-    // Installation is the only user action for an extension without personal
-    // setup requirements. Runtime publication/readiness is an internal
-    // checkpoint and must complete before the install response returns.
+    // An imported package is third-party: besides installing, each user
+    // grants their own consent (one user's grant never covers another).
+    // Runtime publication/readiness is an internal checkpoint and must
+    // complete before the consent response returns.
+    fixture.grant_consent(fixture.alice()).await;
+    fixture
+        .assert_user_phase(fixture.bob(), "consent_required")
+        .await;
+    fixture.grant_consent(fixture.bob()).await;
     fixture.assert_user_phase(fixture.alice(), "active").await;
     fixture.assert_user_phase(fixture.bob(), "active").await;
 
@@ -152,6 +158,8 @@ async fn normalized_user_memberships_survive_runtime_restart_and_soft_removal() 
         .await;
         assert_eq!(status, StatusCode::OK, "{name} install response: {body}");
     }
+    fixture.grant_consent(fixture.alice()).await;
+    fixture.grant_consent(fixture.bob()).await;
 
     let (status, body) = post_json(
         fixture.member_router(fixture.alice()),
@@ -190,6 +198,9 @@ async fn normalized_user_memberships_survive_runtime_restart_and_soft_removal() 
     )
     .await;
     assert_eq!(status, StatusCode::OK, "Alice reinstall response: {body}");
+    // Leaving dropped Alice's own decision: rejoining asks her again, while
+    // Bob's survived the restart.
+    rebuilt.grant_consent(rebuilt.alice()).await;
     rebuilt.assert_user_phase(rebuilt.alice(), "active").await;
     rebuilt.assert_user_phase(rebuilt.bob(), "active").await;
 
@@ -297,6 +308,9 @@ async fn legacy_tenant_owned_installation_migrates_to_operator_private_state() {
         LifecycleIsolationFixture::reopen(root, storage_root, tenant_id, agent_id, operator_id)
             .await;
 
+    // The narrowed row now belongs to the operator, whose own consent the
+    // package has not been granted yet (Alice's decision was Alice's).
+    rebuilt.grant_consent(rebuilt.operator()).await;
     rebuilt
         .assert_user_phase(rebuilt.operator(), "active")
         .await;
@@ -374,6 +388,7 @@ async fn persisted_package_root_that_disagrees_with_manifest_id_fails_loudly_ins
     )
     .await;
     assert_eq!(status, StatusCode::OK, "install response: {body}");
+    fixture.grant_consent(fixture.operator()).await;
     fixture
         .assert_user_phase(fixture.operator(), "active")
         .await;
@@ -511,6 +526,7 @@ async fn extension_loader_fabricates_root_for_legacy_row_with_no_persisted_root(
     )
     .await;
     assert_eq!(status, StatusCode::OK, "install response: {body}");
+    fixture.grant_consent(fixture.operator()).await;
     fixture
         .assert_user_phase(fixture.operator(), "active")
         .await;
@@ -701,6 +717,40 @@ impl LifecycleIsolationFixture {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "import response: {body}");
+    }
+
+    /// The user's own consent grant through the WebUI: the list shows the
+    /// package `consent_required` for this user with the digest to grant, and
+    /// the grant route activates it for them. One user's grant never covers
+    /// another, so every user who needs the package active grants here.
+    async fn grant_consent(&self, user_id: UserId) {
+        let label = user_id.as_str().to_string();
+        let (status, body) = get_json(
+            self.member_router(user_id.clone()),
+            "/api/webchat/v2/extensions",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{label} list response: {body}");
+        let entry = extension_entry(&body, EXTENSION_ID, &label);
+        assert_eq!(
+            entry["installation_state"], "consent_required",
+            "{label}: an imported package waits for this user's own consent: {body}"
+        );
+        let digest = entry["consent"]["digest"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{label}: the list carries the consent digest: {body}"))
+            .to_string();
+        let (status, body) = post_json(
+            self.member_router(user_id),
+            &format!("/api/webchat/v2/extensions/{EXTENSION_ID}/consent"),
+            serde_json::json!({
+                "digest": digest,
+                "client_action_id": format!("consent-{label}"),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{label} consent response: {body}");
+        assert_eq!(body["granted"], true, "{label} consent response: {body}");
     }
 
     async fn assert_user_phase(&self, user_id: UserId, expected: &str) {

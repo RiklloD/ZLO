@@ -2892,6 +2892,49 @@ pub async fn remove_extension(
     Ok(Json(response))
 }
 
+/// `POST /api/webchat/v2/extensions/{package_id}/consent` — the caller's own
+/// consent grant for a third-party package, pinned to the digest they were
+/// shown (`consent.digest` on the extension list), then an activation
+/// attempt for them. Body: `{ "digest": "<64 hex>", "client_action_id": "…" }`.
+/// A stale digest is a 400; another user's private install answers like an
+/// unknown one.
+pub async fn grant_extension_consent(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Path(ExtensionPackagePath { package_id }): Path<ExtensionPackagePath>,
+    Json(body): Json<GrantExtensionConsentBody>,
+) -> Result<
+    Json<ironclaw_product_contracts::package_consent::ExtensionGrantConsentOutcome>,
+    WebUiV2HttpError,
+> {
+    let package_ref = extension_package_ref_for_request(
+        LifecyclePackageRef::new(LifecyclePackageKind::Extension, package_id),
+        "package_id",
+    )?;
+    let digest =
+        ironclaw_product_contracts::package_consent::PackageConsentDigest::new(body.digest)
+            .map_err(|_| {
+                ProductSurfaceError::validation(
+                    "digest",
+                    ProductSurfaceValidationCode::InvalidValue,
+                )
+            })?;
+    // Required gesture id, like install/remove: a grant is a distinct user
+    // decision, never deduplicated by input alone.
+    let _client_action_id = parse_client_action_id(body.client_action_id)?;
+    let outcome = invoke_product_command(
+        state.services(),
+        caller,
+        ironclaw_product_contracts::package_consent::EXTENSION_GRANT_CONSENT_COMMAND,
+        ironclaw_product_contracts::package_consent::ExtensionGrantConsentRequest {
+            extension_id: package_ref.id.as_str().to_string(),
+            digest,
+        },
+    )
+    .await?;
+    Ok(Json(outcome))
+}
+
 fn extension_lifecycle_mutation_succeeded(
     resolution: Resolution,
 ) -> Result<(), ProductSurfaceError> {
@@ -2971,16 +3014,24 @@ async fn extension_install_succeeded(
 fn membership_is_visible(extension: &ironclaw_assistant::RebornExtensionInfo) -> bool {
     matches!(
         extension.installation_state,
-        LifecyclePublicState::Active | LifecyclePublicState::SetupNeeded
+        LifecyclePublicState::Active
+            | LifecyclePublicState::SetupNeeded
+            | LifecyclePublicState::ConsentRequired
+            | LifecyclePublicState::Tampered
     )
 }
 
 /// The install landed but the caller still owes setup (credentials, personal
-/// auth, or channel pairing). This is the expected readback when the mutation
-/// reported a blocked-auth or transient outcome: membership exists, readiness
-/// does not.
+/// auth, or channel pairing) or their consent to a third-party package. This
+/// is the expected readback when the mutation reported a blocked-auth or
+/// transient outcome: membership exists, readiness does not.
 fn membership_landed_pending_setup(extension: &ironclaw_assistant::RebornExtensionInfo) -> bool {
-    extension.installation_state == LifecyclePublicState::SetupNeeded
+    matches!(
+        extension.installation_state,
+        LifecyclePublicState::SetupNeeded
+            | LifecyclePublicState::ConsentRequired
+            | LifecyclePublicState::Tampered
+    )
 }
 
 async fn ensure_extension_inventory_readback(
@@ -4393,6 +4444,14 @@ fn bounded_hosted_mcp_name(name: String) -> Result<String, ProductSurfaceError> 
         ));
     }
     Ok(trimmed.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GrantExtensionConsentBody {
+    /// The digest from the caller's `consent` summary.
+    pub digest: String,
+    /// Client gesture id; required.
+    pub client_action_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

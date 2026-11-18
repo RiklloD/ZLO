@@ -73,6 +73,7 @@ pub const WEBUI_V2_ROUTE_REGISTER_HOSTED_MCP_EXTENSION: &str =
     "webui.v2.register_hosted_mcp_extension";
 pub const WEBUI_V2_ROUTE_IMPORT_EXTENSION: &str = "webui.v2.import_extension";
 pub const WEBUI_V2_ROUTE_REMOVE_EXTENSION: &str = "webui.v2.remove_extension";
+pub const WEBUI_V2_ROUTE_GRANT_EXTENSION_CONSENT: &str = "webui.v2.grant_extension_consent";
 pub const WEBUI_V2_ROUTE_GET_EXTENSION_SETUP: &str = "webui.v2.get_extension_setup";
 pub const WEBUI_V2_ROUTE_SETUP_EXTENSION: &str = "webui.v2.setup_extension";
 pub const WEBUI_V2_ROUTE_LIST_SKILLS: &str = "webui.v2.list_skills";
@@ -399,6 +400,8 @@ pub const WEBUI_V2_PATTERN_REGISTER_HOSTED_MCP_EXTENSION: &str =
 pub const WEBUI_V2_PATTERN_IMPORT_EXTENSION: &str = "/api/webchat/v2/extensions/import";
 pub const WEBUI_V2_PATTERN_REMOVE_EXTENSION: &str =
     "/api/webchat/v2/extensions/{package_id}/remove";
+pub const WEBUI_V2_PATTERN_GRANT_EXTENSION_CONSENT: &str =
+    "/api/webchat/v2/extensions/{package_id}/consent";
 pub const WEBUI_V2_PATTERN_SETUP_EXTENSION: &str = "/api/webchat/v2/extensions/{package_id}/setup";
 pub const WEBUI_V2_PATTERN_LIST_SKILLS: &str = "/api/webchat/v2/skills";
 pub const WEBUI_V2_PATTERN_SEARCH_SKILLS: &str = "/api/webchat/v2/skills/search";
@@ -772,6 +775,7 @@ pub fn webui_v2_routes_with_artifact_flags(
         register_hosted_mcp_extension_descriptor(),
         import_extension_descriptor(),
         remove_extension_descriptor(),
+        grant_extension_consent_descriptor(),
         get_extension_setup_descriptor(),
         setup_extension_descriptor(),
         list_skills_descriptor(),
@@ -1843,6 +1847,15 @@ fn remove_extension_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_ROUTE_REMOVE_EXTENSION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_REMOVE_EXTENSION,
+        4,
+    )
+}
+
+fn grant_extension_consent_descriptor() -> IngressRouteDescriptor {
+    mutation_route(
+        WEBUI_V2_ROUTE_GRANT_EXTENSION_CONSENT,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_GRANT_EXTENSION_CONSENT,
         4,
     )
 }
