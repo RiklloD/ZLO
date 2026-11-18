@@ -28,11 +28,15 @@ mod channel_pairing;
 mod cli_token_login;
 // Remote environments: descriptor, device pairing, device tokens, and the
 // Tailscale identity listener wrapper. See the module docs.
+mod device_scopes;
 mod environment_access;
 mod oidc;
 // Operator observability: the public `/api/ready` probe over the host's
 // readiness snapshot and the operator-only Prometheus scrape. See the module docs.
 mod operator_observability;
+mod outside_mcp;
+mod peer_client;
+mod peer_routes;
 mod product_auth;
 // Self-update ("update all machines"): the operator routes over the
 // binary-implemented `SelfUpdateService` port. See the module docs.
@@ -69,6 +73,9 @@ pub use ironclaw_host_ingress::{
 pub use operator_observability::{
     OPERATOR_METRICS_PATH, READINESS_PATH, operator_metrics_route_mount,
 };
+pub use outside_mcp::outside_mcp_route_mount;
+pub use peer_client::{HttpPeerLinkService, transport_allowed};
+pub use peer_routes::{PeerRouteConfig, peer_route_mount};
 pub use product_auth::{ProductAuthRouteMount, ProductAuthRouteState, product_auth_route_mount};
 pub use self_update::{SelfUpdateError, SelfUpdateService, self_update_route_mount};
 pub use webui_rate_limit::RateLimitConfigError;
@@ -322,6 +329,50 @@ pub async fn serve_bound_identity_listener(
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), RebornWebuiServeError> {
     serve_bound_webui_v2(bound, identity_listener_router(router), shutdown).await
+}
+
+/// Serve the private listener (`[remote] private_port`): bound on every
+/// IPv4 interface, it answers only loopback, private (RFC 1918) and tailnet
+/// (100.64.0.0/10, Tailscale's IPv6 range) peers, so a VPS's public address
+/// stays closed. Every `Tailscale-*` header is dropped, as on the main
+/// listener. It is not a firewall: a proxy that rewrites source addresses
+/// looks private.
+pub async fn serve_private_listener(
+    bound: BoundWebuiListener,
+    router: Router,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) -> Result<(), RebornWebuiServeError> {
+    let router = main_listener_router(router).layer(axum::middleware::from_fn(private_peers_only));
+    serve_bound_webui_v2(bound, router, shutdown).await
+}
+
+async fn private_peers_only(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if is_private_peer(peer.ip()) {
+        next.run(request).await
+    } else {
+        axum::http::StatusCode::FORBIDDEN.into_response()
+    }
+}
+
+/// Loopback, RFC 1918, CGNAT/tailnet, or Tailscale's IPv6 ULA range.
+pub fn is_private_peer(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_loopback() || v4.is_private() || (a == 100 && (64..128).contains(&b))
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_private_peer(std::net::IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
+            v6.is_loopback() || (seg[0] == 0xfd7a && seg[1] == 0x115c && seg[2] == 0xa1e0)
+        }
+    }
 }
 
 /// Authenticator that compares the bearer token from the request

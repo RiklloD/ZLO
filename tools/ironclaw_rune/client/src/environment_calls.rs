@@ -10,7 +10,12 @@ use std::time::Duration;
 use ironclaw_product_contracts::environment_access::{
     DEVICES_PATH, DeviceList, ENVIRONMENT_DESCRIPTOR_PATH, EnvironmentDescriptor, PAIR_PATH,
     PAIR_TAILNET_PATH, PAIRING_CODES_PATH, PairClient, PairRequest, PairedDevice,
-    PairingCodeIssued, PairingErrorCode, TailnetPairRequest,
+    PairingCodeIssued, PairingCodeRequest, PairingErrorCode, TailnetPairRequest,
+};
+use ironclaw_product_contracts::peer::{
+    AGENT_REQUESTS_PATH, AgentRequestAnswer, AgentRequestList, AgentRequestView, BalancePreference,
+    LinkEnvironmentRequest, PEER_LINKS_PATH, PeerLinkList, PeerLinkPreferenceRequest,
+    PeerLinkSummary,
 };
 use reqwest::Method;
 use serde::Serialize;
@@ -153,11 +158,77 @@ pub fn pairing_error(error: &ClientError) -> Option<PairingErrorCode> {
 }
 
 impl Client {
-    /// `POST /api/auth/pairing-codes` (operator).
+    /// `POST /api/auth/pairing-codes` (operator): a code for a device with
+    /// every scope.
     pub async fn issue_pairing_code(&self) -> Result<PairingCodeIssued, ClientError> {
+        self.issue_scoped_code(&PairingCodeRequest::default()).await
+    }
+
+    /// `POST /api/auth/pairing-codes` with scopes, or for a peer link.
+    pub async fn issue_scoped_code(
+        &self,
+        request: &PairingCodeRequest,
+    ) -> Result<PairingCodeIssued, ClientError> {
+        self.send(self.request(Method::POST, PAIRING_CODES_PATH).json(request))
+            .await
+    }
+
+    /// `GET /api/peer-links`: the computers this one is linked to.
+    pub async fn peer_links(&self) -> Result<PeerLinkList, ClientError> {
+        self.get(PEER_LINKS_PATH).await
+    }
+
+    /// `POST /api/peer-links`: link another computer with its peer-link code.
+    pub async fn link_environment(
+        &self,
+        request: &LinkEnvironmentRequest,
+    ) -> Result<PeerLinkSummary, ClientError> {
+        self.send(self.request(Method::POST, PEER_LINKS_PATH).json(request))
+            .await
+    }
+
+    /// `DELETE /api/peer-links/{environment_id}`.
+    pub async fn forget_environment(&self, environment_id: &str) -> Result<(), ClientError> {
+        self.send_unit(self.request(
+            Method::DELETE,
+            &format!("{PEER_LINKS_PATH}/{}", seg(environment_id)),
+        ))
+        .await
+    }
+
+    /// `POST /api/peer-links/{environment_id}/preference`.
+    pub async fn set_link_preference(
+        &self,
+        environment_id: &str,
+        preference: BalancePreference,
+    ) -> Result<PeerLinkSummary, ClientError> {
         self.send(
-            self.request(Method::POST, PAIRING_CODES_PATH)
-                .json(&serde_json::json!({})),
+            self.request(
+                Method::POST,
+                &format!("{PEER_LINKS_PATH}/{}/preference", seg(environment_id)),
+            )
+            .json(&PeerLinkPreferenceRequest { preference }),
+        )
+        .await
+    }
+
+    /// `GET /api/agent-requests`: secrets and links agents wait for.
+    pub async fn agent_requests(&self) -> Result<AgentRequestList, ClientError> {
+        self.get(AGENT_REQUESTS_PATH).await
+    }
+
+    /// `POST /api/agent-requests/{request_id}`.
+    pub async fn answer_agent_request(
+        &self,
+        request_id: &str,
+        answer: &AgentRequestAnswer,
+    ) -> Result<AgentRequestView, ClientError> {
+        self.send(
+            self.request(
+                Method::POST,
+                &format!("{AGENT_REQUESTS_PATH}/{}", seg(request_id)),
+            )
+            .json(answer),
         )
         .await
     }

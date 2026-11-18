@@ -151,7 +151,50 @@ own contract is `ironclaw_identity`'s `environment_access::tests`.
 
 The descriptor also carries `build_commit` (the commit the backend was built
 from, when the build knew it) and `self_update` (`[update]` is set up); both
-are `serde(default)` so older backends still parse.
+are `serde(default)` so older backends still parse. It also carries
+`addresses` (the private listener's `http://<tailnet ip>:<port>`, hints a
+client may learn as routes) and `peer_links` (this backend answers linked
+environments).
+
+### Device scopes (`src/device_scopes.rs`)
+
+A device grant carries `scopes` (`orchestration:read|operate`,
+`terminal:operate`, `filesystem:read|write`, `settings:manage`,
+`access:manage`, `environment:manage`); a code minted without a scope list
+grants all of them, and records from before scopes keep all of them. The
+bearer middleware checks every device-token request against
+`required_scope(method, path)` — a path-family classification, so a new
+route inherits `orchestration:read` for reads and `orchestration:operate`
+for other mutations — and answers `403 {"error": "scope_required",
+"scope"}`. The master token and sessions keep full access. `POST
+/api/auth/pairing-codes` takes an optional `PairingCodeRequest` body
+(`{scopes?, peer_link?}`); a device cannot mint a code for a scope it lacks,
+and a peer link cannot mint links. A peer-link grant (`peer_link:
+read_only|operate|full`) has no ordinary scope below `full` and expires after
+30 days.
+
+## Several machines (`src/peer_routes.rs`, `src/peer_client.rs`, `src/outside_mcp.rs`)
+
+DTOs, paths and ports are `ironclaw_product_contracts::peer`; behaviour is
+`ironclaw_orchestrator::{peer, agent_requests}`. All bearer-authenticated.
+
+| Route | Who | Result |
+|---|---|---|
+| `POST /api/peer/v1/tools/{tool}` | a peer-link grant only | Runs one `t3_*` tool here through `PeerToolHandler` with access `min(link access, body.mode_limit)`; the orchestrator fences it (below full access: only threads the link started, no schedules, no further hops). |
+| `GET /api/peer/v1/resources` | peer link, or `orchestration:read` | `EnvironmentResources` (CPU, load, memory, running turns). |
+| `GET/POST /api/peer-links`, `DELETE /api/peer-links/{id}`, `POST /api/peer-links/{id}/preference` | `access:manage`, never a peer link | This machine's links out: list, link with a peer-link code from the other machine (`LinkEnvironmentRequest`), forget, balance preference. |
+| `GET /api/agent-requests`, `POST /api/agent-requests/{id}` | `orchestration:read` / `:operate`; link answers also `access:manage`; never a peer link | Secret and machine-link requests agents wait for (`t3_request_secret`, `t3_environment_link`), answerable from any paired device. A secret answer never comes back. |
+| `POST /api/mcp` | any device with `orchestration:read` (scopes set the access) | MCP (JSON-RPC over HTTP) for outside agents: `initialize`, `tools/list`, `tools/call` over the same fenced `PeerToolHandler` path. |
+
+`HttpPeerLinkService` (the linking side) keeps each link's token in the
+operator secret store (`peer_link_token_handle`), sends it only over https or
+to loopback — never plain http to 100.64/10, which other CGNAT VPNs share —
+and only to an address whose descriptor reports the linked environment's id.
+A `401` marks the link revoked.
+
+`serve_private_listener` serves the same router on `[remote] private_port`
+(every IPv4 interface) and answers only loopback, RFC 1918 and tailnet peers;
+it is opt-in and still fully authenticated.
 
 ## Self-update (`src/self_update.rs`)
 

@@ -56,6 +56,6 @@ pub use ironclaw_product_contracts::orchestration::{
 pub use ironclaw_product_contracts::outbound as contract;
 pub use ironclaw_product_contracts::{
     environment_access, history, hooks_catalog, inbound_requests, inbox, memory_page,
-    notification_inbox, operator_llm, package_lifecycle, product_wire, profiles, self_update,
+    notification_inbox, operator_llm, package_lifecycle, peer, product_wire, profiles, self_update,
     session_import, task_models, workspace_views,
 };

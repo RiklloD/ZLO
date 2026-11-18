@@ -40,17 +40,30 @@ fn target_schema() -> Value {
     })
 }
 
-pub const TOOLS: [ToolSpec; 6] = [
+/// `environment` on every tool that can run on a linked machine.
+fn environment_prop() -> Value {
+    json!({"type": "string", "description": "Run on a linked machine (id or label from t3_capabilities' environments); omit for this machine. t3_delegate also takes 'auto': the machine with the most headroom."})
+}
+
+/// Add `environment` to a tool schema's properties.
+fn with_environment(mut schema: Value) -> Value {
+    if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        props.insert("environment".into(), environment_prop());
+    }
+    schema
+}
+
+pub const TOOLS: [ToolSpec; 8] = [
     ToolSpec {
         name: "t3_capabilities",
         description: "T3 orchestrator: list the providers and models this thread can delegate to, the inherited provider/model, and orchestration features and limits. Call before choosing a target for t3_delegate.",
-        schema: || json!({"type": "object", "properties": {}}),
+        schema: || with_environment(json!({"type": "object", "properties": {}})),
     },
     ToolSpec {
         name: "t3_delegate",
         description: "T3 orchestrator: start a subagent, the ONLY way to start one (never a built-in subagent/agent/task tool). It runs in a new thread the user can see and steer. context='inherit': a subagent on this task (another model, a reviewer, a parallel slice): it gets this conversation so far and keeps this thread's profile. context='brief' (default): a side task, optionally as another target.profile: the child gets ONLY the task text, so include every fact, path and constraint it needs. mode='async' (default) returns a taskId immediately; the result is delivered back to this thread as a new turn when it finishes, so end your turn instead of polling. mode='wait' blocks until done or timeout_s (the child keeps running on timeout). For each review round, call t3_delegate again with the full brief, prior findings and objections, and a new client_request_id. isolation='worktree' gives the child its own git worktree and zlo/<slug> branch made from the HEAD of this thread's folder (uncommitted edits here stay out of it; fails if the folder is not a git repo): use it for children that edit code in parallel. A shared child of a thread that works in a worktree works in that same worktree. The project's .zlo/worktree.toml setup commands run only after the person approves them. When the child ends, a clean worktree is removed; one with changes is kept for t3_thread action=merge_worktree. Nothing is committed for the child: it commits what should be merged on its branch.",
         schema: || {
-            json!({
+            with_environment(json!({
                 "type": "object",
                 "properties": {
                     "task": {"type": "string", "description": "The child's task. With context='brief' it is all the child knows, so make it self-contained."},
@@ -64,14 +77,14 @@ pub const TOOLS: [ToolSpec; 6] = [
                     "client_request_id": {"type": "string", "description": "Stable per logical request; retries return the same task."}
                 },
                 "required": ["task"]
-            })
+            }))
         },
     },
     ToolSpec {
         name: "t3_task",
         description: "T3 orchestrator: inspect or stop delegated tasks of this thread. action=status reads one task (status, workState, provider/model, duration, usage, summary = final result or error); reading a finished result acknowledges its automatic delivery. action=list lists this thread's tasks. action=cancel stops the child and everything it delegated.",
         schema: || {
-            json!({
+            with_environment(json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["status", "list", "cancel"]},
@@ -79,14 +92,14 @@ pub const TOOLS: [ToolSpec; 6] = [
                     "reason": {"type": "string"}
                 },
                 "required": ["action"]
-            })
+            }))
         },
     },
     ToolSpec {
         name: "t3_thread",
         description: "T3 orchestrator thread operations. action=runs lists a thread's runs (turns) with status and token usage. action=fork branches a thread from a run (default: latest) into a new thread that receives a portable context handoff; target may pick a different provider/model. action=merge_back brings a fork's work since the fork point back into its source thread (or target_thread). action=lineage shows forks and merges. action=send messages another thread: mode auto (start idle / steer active), queue (durable follow-up), steer (inject into the active turn) or restart (redirect the active turn). action=worktree_status shows a thread's git worktree (branch, path, ahead/behind this checkout, dirty files). action=merge_worktree brings a finished child's worktree branch into the checkout it was made from (strategy merge|squash|cherry_pick). It refuses a worktree with uncommitted changes (nothing is committed for anyone) or whose HEAD left its branch with work on it, and a checkout with uncommitted tracked changes or a merge/rebase in progress; a merge that does not finish is rolled back (conflicts too, unless on_conflict='leave') and comes back as an error listing the files. action=remove_worktree removes the folder: refused while it has uncommitted changes; a branch with unmerged commits is kept and archived. Omit thread to act on this thread.",
         schema: || {
-            json!({
+            with_environment(json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["runs", "fork", "merge_back", "lineage", "send", "worktree_status", "merge_worktree", "remove_worktree"]},
@@ -101,14 +114,14 @@ pub const TOOLS: [ToolSpec; 6] = [
                     "on_conflict": {"type": "string", "enum": ["abort", "leave"], "description": "merge_worktree: abort (default) restores the checkout; leave keeps the conflicted merge there."}
                 },
                 "required": ["action"]
-            })
+            }))
         },
     },
     ToolSpec {
         name: "t3_queue",
         description: "T3 orchestrator durable message queue for a thread: follow-ups that survive restarts and run in order when the thread is idle. Actions: list, add (text), edit (id, text), reorder (id, before_id or null = end), remove (id), clear, hold / release (pause or resume draining), promote (id; deliver into the active turn as a steer, or how='restart' to redirect it). A user Stop holds the queue until the next message.",
         schema: || {
-            json!({
+            with_environment(json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["list", "add", "edit", "reorder", "remove", "clear", "hold", "release", "promote"]},
@@ -119,14 +132,14 @@ pub const TOOLS: [ToolSpec; 6] = [
                     "how": {"type": "string", "enum": ["steer", "restart"]}
                 },
                 "required": ["action"]
-            })
+            }))
         },
     },
     ToolSpec {
         name: "t3_schedule",
         description: "T3 orchestrator scheduled prompts that run even when no turn is active. action=create with prompt and schedule as an OBJECT: {type:'interval', everyMs:3600000} (at least 60000) or {type:'fixed_time', timeOfDay:'09:00', weekdays:[1,2,3,4,5], timezone:'Europe/Zurich'} (0=Sunday; timezone defaults to the backend's local zone) or {type:'cron', expression:'0 9 * * MON-FRI', timezone:'Europe/Zurich'} (5-field cron; write weekdays as names, numbers count 1=Sunday) or {type:'webhook'} (runs per request to the returned loopback webhookUrl; prompt placeholders {{body.path}}, {{headers.name}}, {{query.name}}, {{body}}, {{request}}; optional signature {header, encoding:'hex'|'base64', prefix, secret} for HMAC-SHA256, or generate:true instead of secret to have the backend make one the user reveals on the Automations page). Runs post into THIS thread by default as a queued message (bind_to_current_thread=true; it waits while the thread is busy or stopped); false starts a fresh thread per run. Report nextRunAt. Also: list, update (id + fields; enabled=false pauses; create also takes enabled; an existing webhook signature can only be changed by the user on the Automations page), delete (id), run_now (id).",
         schema: || {
-            json!({
+            with_environment(json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["create", "list", "update", "delete", "run_now"]},
@@ -140,6 +153,41 @@ pub const TOOLS: [ToolSpec; 6] = [
                     "client_request_id": {"type": "string"}
                 },
                 "required": ["action"]
+            }))
+        },
+    },
+    ToolSpec {
+        name: "t3_request_secret",
+        description: "Ask the person for one secret (token, password, key) in a private card they can answer from any of their devices, instead of in the chat. One secret per call; never combine values. The value never enters the conversation. delivery='secretRef' (default): returns a one-use secretRef to pass to a tool that accepts one (e.g. t3_schedule signature {secret_ref}); you never see the value. delivery='file': returns an owner-only file path for commands, e.g. `sudo -S -p '' cmd < \"$file\"` or `$(cat \"$file\")` inside the command; never print it; it is deleted after 24 hours. Blocks until answered, declined or timeout_ms (default 10 minutes). If the person already pasted the value in this thread, pass it as value instead (no card).",
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string", "description": "Card title, e.g. 'Deploy token'."},
+                    "reason": {"type": "string", "description": "What it is for and where to get it."},
+                    "url": {"type": "string", "description": "Sign-in or setup page for the value, shown as a button."},
+                    "placeholder": {"type": "string"},
+                    "delivery": {"type": "string", "enum": ["secretRef", "file"]},
+                    "value": {"type": "string", "description": "Only a value the person pasted in this thread."},
+                    "timeout_ms": {"type": "integer", "description": "1000..3600000, default 600000."}
+                },
+                "required": ["label", "reason"]
+            })
+        },
+    },
+    ToolSpec {
+        name: "t3_environment_link",
+        description: "Ask the person to link another of their machines (e.g. 'delegate this to my vps') so tools can run there with environment. Shows a card where they pick the machine and the access (read_only, operate, full) and paste a pairing code from it when needed; blocks until they answer or timeout_ms. Pass hint with their words for the machine; pass url only for an address they gave you (https, Tailscale, LAN or loopback), never a guess. Returns {status:'linked', environmentId, label, access}.",
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "hint": {"type": "string", "description": "The person's words for the machine, e.g. 'vps'."},
+                    "environment_id": {"type": "string", "description": "A known machine's id, when mentioned."},
+                    "url": {"type": "string", "description": "Only an address the person gave."},
+                    "access": {"type": "string", "enum": ["read_only", "operate", "full"], "description": "Access to ask for; the person may lower it."},
+                    "timeout_ms": {"type": "integer"}
+                }
             })
         },
     },
@@ -216,7 +264,29 @@ impl Engine {
         }
     }
 
+    /// Run one tool call that arrived over a peer link: never forwarded
+    /// again (linked work cannot use this machine's own links).
+    pub(crate) async fn call_tool_checked(
+        &self,
+        name: &str,
+        ctx: &CallContext,
+        input: &Value,
+    ) -> Result<Value> {
+        let mut input = input.clone();
+        if let Some(map) = input.as_object_mut() {
+            map.remove("environment");
+        }
+        self.dispatch_local(name, ctx, &input).await
+    }
+
     async fn dispatch_tool(&self, name: &str, ctx: &CallContext, input: &Value) -> Result<Value> {
+        if let Some(forwarded) = self.forward_tool(name, ctx, input).await {
+            return forwarded;
+        }
+        self.dispatch_local(name, ctx, input).await
+    }
+
+    async fn dispatch_local(&self, name: &str, ctx: &CallContext, input: &Value) -> Result<Value> {
         self.ensure_thread(&ctx.thread_id, &ctx.scope, None).await?;
         match name {
             "t3_capabilities" => self.capabilities(ctx).await,
@@ -345,6 +415,8 @@ impl Engine {
                 let authority = crate::schedules::ScheduleAuthority::Model;
                 self.schedule_tool(ctx, args(input)?, authority).await
             }
+            "t3_request_secret" => self.request_secret_tool(ctx, input).await,
+            "t3_environment_link" => self.environment_link_tool(ctx, input).await,
             other => Err(OrchestratorError::invalid(format!("unknown tool {other}"))),
         }
     }

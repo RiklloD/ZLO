@@ -4941,6 +4941,7 @@ dependencies = [
  "ironclaw_libsql_runtime",
  "ironclaw_product_contracts",
  "libsql",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2 0.11.0",

@@ -224,6 +224,8 @@ where
     crypto: Arc<SecretsCrypto>,
     lease_ttl: Duration,
     tenant_index_roots: Mutex<HashSet<String>>,
+    /// Reads secrets stored as references (`op://...`) when consumed.
+    references: Option<Arc<dyn crate::reference::SecretReferenceResolver>>,
 }
 
 impl<F> SecretStore<F>
@@ -236,6 +238,32 @@ where
             crypto,
             lease_ttl: Duration::seconds(DEFAULT_SECRET_LEASE_TTL_SECONDS),
             tenant_index_roots: Mutex::new(HashSet::new()),
+            references: None,
+        }
+    }
+
+    /// Resolve secrets stored as references (`op://vault/item/field`) when
+    /// they are consumed; any other value passes through unchanged.
+    pub fn with_reference_resolver(
+        mut self,
+        resolver: Arc<dyn crate::reference::SecretReferenceResolver>,
+    ) -> Self {
+        self.references = Some(resolver);
+        self
+    }
+
+    /// The stored value, or what the reference it holds names.
+    async fn resolve_reference(
+        &self,
+        material: SecretMaterial,
+    ) -> Result<SecretMaterial, SecretStoreError> {
+        use secrecy::ExposeSecret as _;
+        match &self.references {
+            Some(resolver) if resolver.is_reference(material.expose_secret()) => resolver
+                .resolve(material.expose_secret())
+                .await
+                .map_err(|reason| SecretStoreError::SecretMaterialUnreadable { reason }),
+            _ => Ok(material),
         }
     }
 
@@ -249,6 +277,7 @@ where
             crypto,
             lease_ttl,
             tenant_index_roots: Mutex::new(HashSet::new()),
+            references: None,
         }
     }
 
@@ -883,7 +912,7 @@ where
         // `cas_update` calls apply as `FnMut` on each CAS retry; clone scope
         // inside each invocation so the async block can move it without
         // consuming a captured variable that must outlive the retry loop.
-        cas_update(
+        let material = cas_update(
             self.filesystem.as_ref(),
             scope,
             &path,
@@ -956,7 +985,9 @@ where
         // path can write AND surface an error. The outer `Ok` here means the
         // CAS loop succeeded (including writing the expiry marker); unwrap the
         // inner error to get the caller-facing `SecretStoreError`.
-        .and_then(|result| result)
+        .and_then(|result| result)?;
+        // Read outside the CAS loop: a reference is resolved once per lease.
+        self.resolve_reference(material).await
     }
 
     async fn revoke(

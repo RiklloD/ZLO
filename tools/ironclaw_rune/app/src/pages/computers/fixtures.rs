@@ -25,6 +25,7 @@ fn env(id: &str, label: &str, dns: &str, legacy: bool) -> SavedEnvironment {
             kind: RouteKind::Tailnet,
             url: format!("https://{dns}"),
             remote_port: None,
+            learned: false,
         }],
         legacy_token: legacy,
     }
@@ -40,6 +41,8 @@ fn descriptor(id: &str, label: &str, tailnet: Option<&str>) -> EnvironmentDescri
         tailnet_url: tailnet.map(str::to_string),
         build_commit: None,
         self_update: false,
+        addresses: Vec::new(),
+        peer_links: false,
     }
 }
 
@@ -48,6 +51,7 @@ fn peer(dns: &str, online: bool) -> Peer {
         dns_name: dns.into(),
         host_name: dns.split('.').next().unwrap_or(dns).into(),
         online,
+        addresses: Vec::new(),
     }
 }
 
@@ -68,6 +72,9 @@ fn device(
         last_seen_at: Some(Utc::now() - Duration::minutes(5)),
         revoked_at: revoked.then(|| Utc::now() - Duration::days(1)),
         current,
+        scopes: zlo_client::environment_access::DeviceScope::all(),
+        peer_link: None,
+        expires_at: None,
     }
 }
 

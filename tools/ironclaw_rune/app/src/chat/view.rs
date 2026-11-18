@@ -167,6 +167,20 @@ pub(crate) fn column(
         );
     }
 
+    // Secrets and machine links this thread's agent waits for.
+    let requests = crate::pages::agent_requests::cards(s, k, Some(id.as_str()));
+    if !requests.is_empty() {
+        main = main.child(
+            col()
+                .key("agent-requests")
+                .w_full()
+                .px(16.)
+                .pt(8.)
+                .gap(8.)
+                .children(requests),
+        );
+    }
+
     // Room for the floating header; rows fade under its upper edge.
     let top = if chat.embedded { 4. } else { 30. };
     let mut area = col()

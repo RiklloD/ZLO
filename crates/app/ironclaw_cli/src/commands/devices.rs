@@ -163,6 +163,9 @@ mod tests {
             last_seen_at: None,
             revoked_at: revoked.then(Utc::now),
             current: false,
+            scopes: ironclaw_product_contracts::environment_access::DeviceScope::all(),
+            peer_link: None,
+            expires_at: None,
         }
     }
 

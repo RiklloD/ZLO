@@ -32,7 +32,28 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   `TurnOutcome { status, final_text, error, usage: TurnUsage,
   usage_limit_resets_at, cut_by_restart }`.
 - `tools::TOOLS` + `Engine::call_tool` — `t3_capabilities`, `t3_delegate`,
-  `t3_task`, `t3_thread`, `t3_queue` schemas and dispatch.
+  `t3_task`, `t3_thread`, `t3_queue`, `t3_schedule`, `t3_request_secret`,
+  `t3_environment_link` schemas and dispatch. Every `t3_*` tool but the last
+  two takes `environment` (a linked machine's id or label; `t3_delegate` also
+  `auto`) and then runs there.
+- `peer` — several machines. Linking side: `Engine::set_peer_links`, tool
+  forwarding, remote delegation (a local task without a child thread, an
+  `orch_remote_tasks` row, and a follower on the tick that polls the remote
+  task, backs off while unreachable, carries Stop across via
+  `cancel_pending`, and finalizes the task here), and `environment: auto`
+  load balancing (`resources::probe` × each link's `BalancePreference`).
+  Receiving side: `PeerReceiver` (`PeerToolHandler`) — one hidden parent
+  thread per link (`peer-link-<device>`), so a link's tasks are its children;
+  below full access every thread-targeting call is fenced to threads the
+  link started, schedules are refused, linked calls never hop further, and
+  `orch_link_origins` makes `Store::thread_profile` report "ask first" for
+  link work, so it never runs unasked.
+- `agent_requests` — `t3_request_secret` / `t3_environment_link`
+  (`orch_agent_requests`, never a value) and `AgentRequestService` for the
+  clients that answer them. Secrets go to the host's `SecretVault`: a one-use
+  `secretref:` a tool spends (`t3_schedule` signature `secret_ref`), or an
+  owner-only file deleted after 24 h. `op://` answers are read once through
+  the vault's `SecretReferenceReader`.
 - `store::Store` — the `orch_*` tables (ADR 0005).
 - `handoff` — bounded portable context and merge-back deltas.
 - `profiles` — stage 3 profile records (`ProfileOwner`, `ProfileRecord`,

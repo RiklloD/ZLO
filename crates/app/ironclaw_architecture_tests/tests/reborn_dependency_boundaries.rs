@@ -1693,7 +1693,16 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `ironclaw_assistant`, implementor `ironclaw_computer_use`). The
         // rest is the concurrent `self_update` and `thread_repo` wire
         // modules. Walk, expansion and preflight live in the owning crates.
-        ("ironclaw_product_contracts", 15_784),
+        // 15_784 -> 16_566 (2026-11-18, feat/multi-machine): +782 lines of
+        // wire DTOs and ports for several machines working together, shared
+        // by the backend and the ZLO desktop client — device scopes and
+        // peer-link access on `environment_access`, and the new `peer`
+        // module (peer tool calls, resources, link records, agent requests,
+        // the `PeerLinkService` / `PeerToolHandler` / `AgentRequestService` /
+        // `SecretReferenceReader` ports). Behaviour lives in
+        // `ironclaw_orchestrator::{peer, agent_requests}`, the identity
+        // records, and the WebUI peer client.
+        ("ironclaw_product_contracts", 16_566),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.
