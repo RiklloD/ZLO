@@ -435,8 +435,12 @@ observed_date = "2026-11-17"
 # handed to `build_backend_extension_host`, which drops those ids from the
 # generic host's boot hydration. No policy lives in composition.
 # ✎ 2026-11-18 (plugins-integration merge): the two entries above landed
-# together, 34096 + 12 = 34108, plus the bounded live hook validation cache.
-loc_ceiling = 34108
+# together on top of main @ 868f69b98, which itself measures 33747 (147 over
+# its own effective 33600 after feat/multi-machine). 34108 -> 34456, observed
+# 34606, zero hidden headroom, pending the owner's sign-off: main's 33747 +
+# the plugin hooks/settings installer, the plugin UI host, the consent wiring
+# and the bounded live hook validation cache.
+loc_ceiling = 34456
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -556,6 +560,10 @@ loc_observed_date = "2026-11-18"
 # installer's injected seams (active registry filesystem, settings reader,
 # first-party installer, WASM module resolver) and their assembly casts — each
 # has a second implementor (test fakes / defaults-only reader).
-arc_dyn_ceiling = 674
+# ✎ 2026-11-18 (plugins-integration merge): 674 -> 684, observed 699, zero
+# hidden headroom, pending the owner's sign-off. The new seams each have a
+# test fake: `PluginUiHost`, `ExtensionSettingsSource`, the installation
+# visibility port and the package-consent port.
+arc_dyn_ceiling = 684
 arc_dyn_tolerance = 15
 arc_dyn_observed = 689

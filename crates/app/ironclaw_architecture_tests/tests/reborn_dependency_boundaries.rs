@@ -1708,7 +1708,18 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `SecretReferenceReader` ports). Behaviour lives in
         // `ironclaw_orchestrator::{peer, agent_requests}`, the identity
         // records, and the WebUI peer client.
-        ("ironclaw_product_contracts", 16_566),
+        // 16_566 -> 16_976 (2026-11-18, plugins-integration): +410 lines of
+        // wire DTOs and ports for plugins, landed together from three
+        // branches — the `plugin_ui` views and `PluginUiHost` port (caller
+        // `ironclaw_assistant`, implementor `ironclaw_composition`), the
+        // `extension_settings` descriptors and `ExtensionSettingsSource`
+        // port (implementor `ironclaw_extension_manager`), and the consent
+        // fields/states on the package lifecycle wire. Tree validation lives
+        // in `ironclaw_extension_contracts`, settings grammar and the store
+        // in `ironclaw_extension_registry`, consent policy in
+        // `ironclaw_extension_host`. Count read from this test's failure
+        // message.
+        ("ironclaw_product_contracts", 16_976),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.
