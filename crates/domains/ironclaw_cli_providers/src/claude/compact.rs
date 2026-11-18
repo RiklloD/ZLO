@@ -33,8 +33,6 @@ use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::model::now_ms;
 use ironclaw_orchestrator::runtime::{TurnEndStatus, TurnOutcome, TurnProfile};
 use ironclaw_orchestrator::telemetry::TurnTelemetry;
-use nix::sys::signal::{Signal, killpg};
-use nix::unistd::Pid;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::watch;
 
@@ -82,8 +80,13 @@ impl IdleCompactor {
         let Some(mut slot) = slot else {
             return;
         };
-        let _ = slot.cancel.send(true); // silent-ok: the task already ended
-        let _ = slot.done.wait_for(|d| *d).await; // silent-ok: sender dropped means the task ended
+        #[expect(clippy::let_underscore_must_use, reason = "the task already ended")]
+        let _ = slot.cancel.send(true);
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "sender dropped means the task ended"
+        )]
+        let _ = slot.done.wait_for(|d| *d).await;
         tracing::debug!(thread = %thread, "idle compaction: preempted");
     }
 
@@ -165,7 +168,8 @@ impl IdleArm {
                     self.fire(cancelled).await;
                 }
                 compactor.finish(&thread, id);
-                let _ = done_tx.send(true); // silent-ok: nobody waits on this slot
+                #[expect(clippy::let_underscore_must_use, reason = "nobody waits on this slot")]
+                let _ = done_tx.send(true);
             });
         }
         let old = compactor
@@ -175,7 +179,8 @@ impl IdleArm {
             .and_then(|mut slots| slots.insert(thread, Slot { id, cancel, done }));
         // A turn start preempts first, so a replaced slot is only a timer.
         if let Some(old) = old {
-            let _ = old.cancel.send(true); // silent-ok: the task already ended
+            #[expect(clippy::let_underscore_must_use, reason = "the task already ended")]
+            let _ = old.cancel.send(true);
         }
     }
 
@@ -252,7 +257,7 @@ impl IdleArm {
         let pgid = child.id().and_then(|id| i32::try_from(id).ok());
         let kill = |pgid: Option<i32>| {
             if let Some(group) = pgid {
-                let _ = killpg(Pid::from_raw(group), Signal::SIGKILL); // silent-ok: the group may already be gone
+                crate::rpc::kill_group(group, "idle compaction");
             }
         };
         let mut run = CompactRun {
@@ -263,7 +268,9 @@ impl IdleArm {
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
             kill(pgid);
-            let _ = child.wait().await; // silent-ok: reaping a child we killed
+            if let Err(error) = child.wait().await {
+                tracing::debug!(%error, "idle compaction: reaping the killed child failed");
+            }
             run.error = Some("stdio unavailable".into());
             return run;
         };
@@ -284,7 +291,9 @@ impl IdleArm {
         if let Err(error) = written {
             tracing::debug!(%error, "idle compaction: stdin write failed");
             kill(pgid);
-            let _ = child.wait().await; // silent-ok: reaping a child we killed
+            if let Err(error) = child.wait().await {
+                tracing::debug!(%error, "idle compaction: reaping the killed child failed");
+            }
             run.error = Some("stdin closed".into());
             return run;
         }
@@ -316,7 +325,9 @@ impl IdleArm {
             run.error = Some(reason.into());
         }
         // Reaped before returning: `preempt` waits on this.
-        let _ = child.wait().await; // silent-ok: the folded result already says how it went
+        if let Err(error) = child.wait().await {
+            tracing::debug!(%error, "idle compaction: reaping the child failed");
+        }
         if run.error.is_none() && !run.done {
             run.error = Some("no result".into());
         }
@@ -430,7 +441,9 @@ impl Drop for McpGuard {
         if let Some(bridge) = &self.bridge {
             bridge.revoke_token(&self.token);
         }
-        let _ = std::fs::remove_file(&self.file); // silent-ok: temp file cleanup
+        if let Err(error) = std::fs::remove_file(&self.file) {
+            tracing::debug!(%error, "idle compaction: could not remove the MCP config temp file");
+        }
     }
 }
 

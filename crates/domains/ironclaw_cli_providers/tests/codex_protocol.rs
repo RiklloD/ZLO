@@ -10,6 +10,7 @@
 //! - one holder per session: a prompt or action during a review is `Busy`,
 //!   while a compaction yields to a new turn;
 //! - `thread/compact/start`.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;

@@ -424,7 +424,9 @@ impl ClaudeCliRuntime {
             move |mcp: Option<McpSession>| async move {
                 if let (Some(bridge), Some(mcp)) = (bridge, mcp) {
                     bridge.revoke_token(&mcp.token);
-                    let _ = tokio::fs::remove_file(&mcp.config_file).await; // silent-ok: temp file cleanup
+                    if let Err(error) = tokio::fs::remove_file(&mcp.config_file).await {
+                        tracing::debug!(%error, "claude cli: could not remove the MCP config temp file");
+                    }
                 }
             }
         };
@@ -477,7 +479,7 @@ impl ClaudeCliRuntime {
             prompt
         };
         if let Err(e) = control::write_line(&stdin, &first).await {
-            let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // silent-ok: best-effort cleanup of a child that could not take input
+            crate::rpc::kill_group(pgid, "claude cli: child could not take input");
             end_mcp(mcp).await;
             return Err(RuntimeError::Unavailable(format!(
                 "claude stdin: {}",
@@ -543,7 +545,10 @@ impl ClaudeCliRuntime {
                         Ok(next) => next,
                         Err(_) => {
                             refused = Some("claude cli did not acknowledge the approval hook");
-                            let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // silent-ok: the turn fails either way
+                            crate::rpc::kill_group(
+                                pgid,
+                                "claude cli: approval hook not acknowledged",
+                            );
                             break;
                         }
                     }
@@ -596,7 +601,11 @@ impl ClaudeCliRuntime {
                 sink.turn_finished(&thread_id, Some(run), outcome, now_ms())
                     .await;
             }
-            let _ = done_tx.send(true); // silent-ok: nobody waiting on this turn
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "nobody waiting on this turn"
+            )]
+            let _ = done_tx.send(true);
         });
         Ok(run_id)
     }
@@ -654,7 +663,11 @@ impl ClaudeCliRuntime {
             if let Err(error) = killpg(group, Signal::SIGKILL) {
                 tracing::debug!(%error, "claude cli: SIGKILL failed");
             }
-            let _ = done.wait_for(|d| *d).await; // silent-ok: sender dropped means the turn task ended
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "sender dropped means the turn task ended"
+            )]
+            let _ = done.wait_for(|d| *d).await;
         }
     }
 }

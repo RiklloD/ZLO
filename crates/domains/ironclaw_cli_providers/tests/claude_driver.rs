@@ -3,6 +3,7 @@
 //! usage and telemetry, Stop killing the whole process group, and the
 //! approval bridge (hook registration, allow and timeout-deny answers, live
 //! text, the per-turn MCP token).
+#![deny(clippy::let_underscore_must_use)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

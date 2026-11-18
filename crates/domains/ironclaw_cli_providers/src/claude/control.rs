@@ -84,7 +84,11 @@ pub(super) async fn write_line(stdin: &SharedStdin, line: &str) -> std::io::Resu
 /// EOF on stdin: the CLI finishes and exits.
 pub(super) async fn close(stdin: &SharedStdin) {
     if let Some(mut pipe) = stdin.lock().await.take() {
-        let _ = pipe.shutdown().await; // silent-ok: the CLI may already be gone
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the CLI may already be gone"
+        )]
+        let _ = pipe.shutdown().await;
     }
 }
 
@@ -259,10 +263,12 @@ impl BridgedTurn {
                     &request_id,
                     json!({"behavior": "deny", "message": "Tool calls are approved through IronClaw."}),
                 );
-                let _ = write_line(&self.stdin, &answer).await; // silent-ok: the CLI is gone
+                #[expect(clippy::let_underscore_must_use, reason = "the CLI is gone")]
+                let _ = write_line(&self.stdin, &answer).await;
             }
             _ => {
-                let _ = write_line(&self.stdin, &error(&request_id, "unsupported")).await; // silent-ok: the CLI is gone
+                #[expect(clippy::let_underscore_must_use, reason = "the CLI is gone")]
+                let _ = write_line(&self.stdin, &error(&request_id, "unsupported")).await;
             }
         }
     }
@@ -463,6 +469,10 @@ mod tests {
             snap.gates.is_empty() && snap.tools.is_empty(),
             "no gate, no raw tool row"
         );
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
         let _ = child.kill().await;
     }
 
@@ -498,6 +508,10 @@ mod tests {
         assert_eq!(output["permissionDecision"], "deny");
         let reason = output["permissionDecisionReason"].as_str().unwrap();
         assert!(reason.contains("Which color?: Teal"), "{reason}");
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
         let _ = child.kill().await;
     }
 
@@ -532,6 +546,10 @@ mod tests {
         let frame = next_frame(&mut out).await;
         assert_eq!(frame["response"]["request_id"], "e1");
         assert_eq!(frame["response"]["response"], json!({"action": "decline"}));
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
         let _ = child.kill().await;
     }
 

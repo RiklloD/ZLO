@@ -6,6 +6,7 @@
 //! (`codex`). Every tool call any
 //! of them asks to make waits for an IronClaw approval in
 //! [`bridge::CliBridge`]; without a bridge, it is denied.
+#![deny(clippy::let_underscore_must_use)]
 
 pub mod approval_reason;
 mod attachments;

@@ -4,6 +4,7 @@
 //! importer. Covers what is imported and skipped, the Settled shelf, history
 //! through the drivers, idempotent reruns, growth, and a message sent to an
 //! imported thread resuming the CLI's own session from its folder.
+#![deny(clippy::let_underscore_must_use)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

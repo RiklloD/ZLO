@@ -212,7 +212,7 @@ impl AntigravityRuntime {
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
-            let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // silent-ok: cleanup of a half-spawned child
+            crate::rpc::kill_group(pgid, "antigravity: half-spawned child");
             return Err(RuntimeError::Unavailable(
                 "antigravity stdio unavailable".into(),
             ));
@@ -282,7 +282,11 @@ impl AntigravityRuntime {
                 sink.turn_finished(&thread_id, Some(run), outcome, now_ms())
                     .await;
             }
-            let _ = done_tx.send(true); // silent-ok: nobody waiting on this turn
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "nobody waiting on this turn"
+            )]
+            let _ = done_tx.send(true);
         });
         Ok(run_id)
     }
@@ -306,7 +310,11 @@ impl AntigravityRuntime {
         cancelled.store(true, Ordering::SeqCst);
         let open = session.lock().ok().and_then(|s| s.clone());
         if let Some((client, session_id)) = open {
-            let _ = client.notify("session/cancel", Some(json!({"sessionId": session_id}))); // silent-ok: the kill below still ends the turn
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the kill below still ends the turn"
+            )]
+            let _ = client.notify("session/cancel", Some(json!({"sessionId": session_id})));
         }
         if tokio::time::timeout(rpc::KILL_GRACE, done.wait_for(|d| *d))
             .await
@@ -325,7 +333,11 @@ impl AntigravityRuntime {
             if let Err(error) = killpg(group, Signal::SIGKILL) {
                 tracing::debug!(%error, "antigravity: SIGKILL failed");
             }
-            let _ = done.wait_for(|d| *d).await; // silent-ok: sender dropped means the turn task ended
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "sender dropped means the turn task ended"
+            )]
+            let _ = done.wait_for(|d| *d).await;
         }
     }
 }
@@ -799,7 +811,11 @@ async fn save_models(path: &Path, options: &Value) {
     }
     .await;
     if let Err(error) = written {
-        let _ = tokio::fs::remove_file(&tmp).await; // silent-ok: best-effort cleanup of our own temp file
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best-effort cleanup of our own model-list temp file; the write error is traced below"
+        )]
+        let _ = tokio::fs::remove_file(&tmp).await;
         tracing::debug!(%error, "antigravity: model list not saved");
     }
 }
@@ -840,7 +856,7 @@ async fn refresh_models(config: &AntigravityConfig) -> Result<(), String> {
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
     else {
-        let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // silent-ok: cleanup of a half-spawned child
+        crate::rpc::kill_group(pgid, "antigravity: half-spawned model-list host");
         return Err("stdio unavailable".into());
     };
     tokio::spawn(async move {
@@ -878,7 +894,7 @@ async fn refresh_models(config: &AntigravityConfig) -> Result<(), String> {
         )
         .await;
         if let Some(id) = result.get("sessionId").and_then(Value::as_str) {
-            // silent-ok: closing is housekeeping, the list is already saved
+            #[expect(clippy::let_underscore_must_use, reason = "closing is housekeeping, the list is already saved")]
             let _ = client
                 .request("session/close", json!({"sessionId": id}), CLOSE_TIMEOUT)
                 .await;
@@ -901,7 +917,7 @@ async fn close_host(child: &mut Child, pgid: i32) {
     {
         rpc::end_group(child, pgid, rpc::KILL_GRACE).await;
     } else {
-        let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // silent-ok: usually nothing is left
+        crate::rpc::kill_group(pgid, "antigravity: model-list host group");
     }
 }
 

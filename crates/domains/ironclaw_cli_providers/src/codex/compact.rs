@@ -56,13 +56,18 @@ impl IdleCompactor {
         // silent-ok: a poisoned map only follows a panic elsewhere; nothing to cancel then
         let slot = self.slots.lock().ok().and_then(|slots| {
             let slot = slots.get(thread)?;
-            let _ = slot.cancel.send(true); // silent-ok: the task already ended
+            #[expect(clippy::let_underscore_must_use, reason = "the task already ended")]
+            let _ = slot.cancel.send(true);
             Some((slot.id, slot.done.clone()))
         });
         let Some((id, mut done)) = slot else {
             return;
         };
-        let _ = done.wait_for(|d| *d).await; // silent-ok: sender dropped means the task ended
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "sender dropped means the task ended"
+        )]
+        let _ = done.wait_for(|d| *d).await;
         self.finish(thread, id);
         tracing::debug!(thread = %thread, "codex idle compaction: preempted");
     }
@@ -83,7 +88,8 @@ impl IdleCompactor {
             .ok()
             .and_then(|mut slots| slots.insert(thread.clone(), Slot { id, cancel, done }));
         if let Some(old) = old {
-            let _ = old.cancel.send(true); // silent-ok: the task already ended
+            #[expect(clippy::let_underscore_must_use, reason = "the task already ended")]
+            let _ = old.cancel.send(true);
         }
         (id, cancelled, done_tx)
     }
@@ -141,7 +147,8 @@ impl IdleArm {
                 self.fire(cancelled).await;
             }
             compactor.finish(&thread, id);
-            let _ = done.send(true); // silent-ok: nobody waits on this slot
+            #[expect(clippy::let_underscore_must_use, reason = "nobody waits on this slot")]
+            let _ = done.send(true);
         });
     }
 
