@@ -1,6 +1,8 @@
 //! `reborn.plugin_ui.v1` node-tree contract: every documented node kind
 //! round-trips to the same wire JSON, and every documented limit rejects.
 
+#![deny(clippy::let_underscore_must_use)]
+
 use ironclaw_extension_contracts::plugin_ui::{
     PLUGIN_UI_MAX_DEPTH, PLUGIN_UI_MAX_NODES, PluginUiNode, PluginUiSlotDescriptor,
     PluginUiSlotKind, PluginUiTreeError,

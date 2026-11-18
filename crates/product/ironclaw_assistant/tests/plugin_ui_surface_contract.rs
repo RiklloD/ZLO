@@ -3,6 +3,8 @@
 //! every non-tree outcome is a plain `{ "error" }` answer. The end-to-end
 //! path over a real runtime is `tests/integration/plugin_ui.rs`.
 
+#![deny(clippy::let_underscore_must_use)]
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
