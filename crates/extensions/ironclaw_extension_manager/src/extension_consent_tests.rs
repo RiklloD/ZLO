@@ -497,3 +497,215 @@ input_schema_ref = "schemas/acme-folder/invoke.input.v1.json"
         .is_some();
     assert!(!installed, "not active before consent");
 }
+
+async fn install_and_grant(services: &ExtensionLifecycleTestServices, owner: &str) {
+    let install = run(
+        services,
+        owner,
+        RebornExtensionLifecycleCommand::Install {
+            id: PLUGIN_ID.to_string(),
+        },
+    )
+    .await
+    .expect("install");
+    let digest = consent_of(&install).digest.clone();
+    let granted = run(
+        services,
+        owner,
+        RebornExtensionLifecycleCommand::GrantConsent {
+            id: PLUGIN_ID.to_string(),
+            digest: digest.as_str().to_string(),
+        },
+    )
+    .await
+    .expect("grant");
+    assert_eq!(granted.phase, InstallationState::Active, "{granted:?}");
+}
+
+fn manifest_path() -> VirtualPath {
+    VirtualPath::new(format!("/system/extensions/{PLUGIN_ID}/manifest.toml")).expect("manifest")
+}
+
+/// A package whose on-disk manifest no longer parses drops out of the
+/// filesystem catalog, but its durable installation row and persisted
+/// manifest survive. Boot hydration rebuilds packages from that persisted
+/// manifest, so the consent gate must classify by the persisted source and
+/// fail closed when the catalog cannot vouch for the files — whether or not
+/// a grant existed.
+#[tokio::test]
+async fn boot_does_not_hydrate_a_plugin_whose_manifest_became_invalid() {
+    for granted in [false, true] {
+        let owner = "consent-invalid-manifest-owner";
+        let server = mcp_server();
+        let services = boot_with_scaffold(owner, &server).await;
+        if granted {
+            install_and_grant(&services, owner).await;
+        } else {
+            let install = run(
+                &services,
+                owner,
+                RebornExtensionLifecycleCommand::Install {
+                    id: PLUGIN_ID.to_string(),
+                },
+            )
+            .await
+            .expect("install");
+            assert_eq!(install.phase, InstallationState::ConsentRequired);
+        }
+        services
+            .filesystem
+            .write_file(&manifest_path(), b"this is = = not toml [")
+            .await
+            .expect("corrupt manifest");
+
+        let rebooted = reboot(&services, owner, &server).await;
+        assert_eq!(
+            plugin_is_active(&rebooted).await,
+            (false, false),
+            "granted={granted}: neither the registry nor the generic host may publish a plugin \
+             the catalog cannot verify (capabilities, channel and hook surfaces all hang off \
+             the generic host snapshot entry)"
+        );
+        let blocked = rebooted
+            .extension_management
+            .consent_blocked_extension_ids()
+            .await
+            .expect("blocked ids");
+        assert!(
+            blocked.contains(PLUGIN_ID),
+            "granted={granted}: the invalid plugin is consent-blocked: {blocked:?}"
+        );
+    }
+}
+
+/// A shared (tenant-owned) installation is the tenant admin's to consent to:
+/// a member may neither record a grant nor migrate the durable manifest, so
+/// nothing a member does survives a restart as an activation.
+#[tokio::test]
+async fn only_the_tenant_admin_may_grant_consent_for_a_shared_installation() {
+    let admin = "consent-shared-admin";
+    let member = "consent-shared-member";
+    let server = mcp_server();
+    let services = boot_with_scaffold(admin, &server).await;
+    let install = run(
+        &services,
+        admin,
+        RebornExtensionLifecycleCommand::Install {
+            id: PLUGIN_ID.to_string(),
+        },
+    )
+    .await
+    .expect("install");
+    let first_digest = consent_of(&install).digest.clone();
+    let store = services.extension_management.installation_store_handle();
+    let installation_id = ironclaw_extension_registry::ExtensionInstallationId::new(PLUGIN_ID)
+        .expect("installation id");
+    let installation = store
+        .get_installation(&installation_id)
+        .await
+        .expect("read")
+        .expect("installed");
+    store
+        .upsert_installation(
+            installation.with_owner(ironclaw_extension_registry::InstallationOwner::Tenant),
+        )
+        .await
+        .expect("make shared");
+
+    // A member cannot record the first grant.
+    let denied = run(
+        &services,
+        member,
+        RebornExtensionLifecycleCommand::GrantConsent {
+            id: PLUGIN_ID.to_string(),
+            digest: first_digest.as_str().to_string(),
+        },
+    )
+    .await;
+    assert!(denied.is_err(), "a member's grant is refused: {denied:?}");
+    let rebooted = reboot(&services, admin, &server).await;
+    assert_eq!(plugin_is_active(&rebooted).await, (false, false));
+    let blocked = rebooted
+        .extension_management
+        .consent_blocked_extension_ids()
+        .await
+        .expect("blocked ids");
+    assert!(blocked.contains(PLUGIN_ID), "no grant was recorded");
+
+    // The admin grants; then the files change. A member can neither re-grant
+    // the changed content nor migrate the durable manifest to it.
+    let granted = run(
+        &rebooted,
+        admin,
+        RebornExtensionLifecycleCommand::GrantConsent {
+            id: PLUGIN_ID.to_string(),
+            digest: first_digest.as_str().to_string(),
+        },
+    )
+    .await
+    .expect("admin grant");
+    assert_eq!(granted.phase, InstallationState::Active, "{granted:?}");
+    rebooted
+        .filesystem
+        .write_file(
+            &manifest_path(),
+            String::from_utf8(
+                rebooted
+                    .filesystem
+                    .read_file(&manifest_path())
+                    .await
+                    .expect("read manifest"),
+            )
+            .expect("utf8")
+            .replace("Echo the given text back.", "Echo the text, and more.")
+            .as_bytes(),
+        )
+        .await
+        .expect("change manifest");
+    let changed = reboot(&rebooted, admin, &server).await;
+    let manifest_before = changed
+        .extension_management
+        .installation_store_handle()
+        .get_manifest(&ExtensionId::new(PLUGIN_ID).expect("id"))
+        .await
+        .expect("read manifest record")
+        .expect("manifest record");
+    let activate = run(
+        &changed,
+        admin,
+        RebornExtensionLifecycleCommand::Activate {
+            id: PLUGIN_ID.to_string(),
+        },
+    )
+    .await
+    .expect("activate answers");
+    assert_eq!(activate.phase, InstallationState::Tampered);
+    let new_digest = consent_of(&activate).digest.clone();
+    let denied = run(
+        &changed,
+        member,
+        RebornExtensionLifecycleCommand::GrantConsent {
+            id: PLUGIN_ID.to_string(),
+            digest: new_digest.as_str().to_string(),
+        },
+    )
+    .await;
+    assert!(
+        denied.is_err(),
+        "a member's grant for changed content is refused: {denied:?}"
+    );
+    let manifest_after = changed
+        .extension_management
+        .installation_store_handle()
+        .get_manifest(&ExtensionId::new(PLUGIN_ID).expect("id"))
+        .await
+        .expect("read manifest record")
+        .expect("manifest record");
+    assert_eq!(
+        manifest_after.raw_toml(),
+        manifest_before.raw_toml(),
+        "a member cannot migrate the durable manifest"
+    );
+    let after_restart = reboot(&changed, admin, &server).await;
+    assert_eq!(plugin_is_active(&after_restart).await, (false, false));
+}

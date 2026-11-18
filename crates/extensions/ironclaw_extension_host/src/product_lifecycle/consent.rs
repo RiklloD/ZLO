@@ -16,8 +16,8 @@ use ironclaw_product_contracts::package_lifecycle::{
 };
 
 use super::{
-    ExtensionLifecycleManager, ensure_caller_may_operate, map_extension_installation_error,
-    response_with_payload,
+    ExtensionLifecycleManager, ensure_caller_may_mutate_tenant_installation,
+    ensure_caller_may_operate, map_extension_installation_error, response_with_payload,
 };
 use crate::AvailableExtensionPackage;
 use crate::extension_consent::{
@@ -172,6 +172,15 @@ impl ExtensionLifecycleManager {
             .map_err(map_extension_installation_error)?;
         if let Some(installation) = installation.as_ref() {
             ensure_caller_may_operate(installation, caller)?;
+            // Consent is what lets a shared install activate (at boot too), and
+            // the grant may migrate the durable manifest below: the same
+            // tenant-operator authority activation demands.
+            ensure_caller_may_mutate_tenant_installation(
+                installation,
+                caller,
+                &self.tenant_operator_user_id,
+                "grant consent for",
+            )?;
             // The files changed under an existing installation (the
             // `tampered` case): the durable manifest row must describe the
             // package the user just consented to, or activation would publish
@@ -208,9 +217,12 @@ impl ExtensionLifecycleManager {
         Ok(response)
     }
 
-    /// Every installed third-party extension that must not activate at boot
-    /// because it has no grant for its current digest. Composition excludes
-    /// these from the generic host's boot hydration.
+    /// Every installed extension that must not activate at boot. Composition
+    /// excludes these from the generic host's boot hydration, which rebuilds
+    /// packages from the *persisted* manifest — so classification follows the
+    /// persisted source, and a consent-requiring installation the catalog
+    /// cannot vouch for (its files went missing or no longer parse, so the
+    /// filesystem catalog skipped it) is blocked: fail closed.
     pub async fn consent_blocked_extension_ids(
         &self,
     ) -> Result<BTreeSet<String>, ProductOperationFailure> {
@@ -221,23 +233,47 @@ impl ExtensionLifecycleManager {
             .map_err(map_extension_installation_error)?;
         let mut blocked = BTreeSet::new();
         for installation in installations {
-            let Ok(package_ref) = LifecyclePackageRef::new(
+            let extension_id = installation.extension_id();
+            let persisted_source = self
+                .installation_store
+                .get_manifest(extension_id)
+                .await
+                .map_err(map_extension_installation_error)?
+                .map(|record| record.manifest().source);
+            let resolved = match LifecyclePackageRef::new(
                 LifecyclePackageKind::Extension,
-                installation.extension_id().as_str(),
-            ) else {
-                continue;
+                extension_id.as_str(),
+            ) {
+                Ok(package_ref) => self.consent_catalog_package(&package_ref).await.ok(),
+                Err(_) => None,
             };
-            let Ok(available) = self.consent_catalog_package(&package_ref).await else {
+            let requires_consent = persisted_source.is_some_and(source_requires_consent)
+                || resolved
+                    .as_ref()
+                    .is_some_and(|available| source_requires_consent(available.source));
+            if !requires_consent {
                 continue;
+            }
+            let is_blocked = match resolved {
+                // The durable row says third-party but the catalog has no
+                // verifiable package for it: nothing to check a grant against.
+                None => true,
+                // A catalog package that claims to need no consent for an
+                // installation persisted as third-party is not trusted either.
+                Some(available) if !source_requires_consent(available.source) => true,
+                Some(available) => self
+                    .consent
+                    .status(&available)
+                    .await?
+                    .blocking_phase()
+                    .is_some(),
             };
-            if self
-                .consent
-                .status(&available)
-                .await?
-                .blocking_phase()
-                .is_some()
-            {
-                blocked.insert(installation.extension_id().as_str().to_string());
+            if is_blocked {
+                tracing::debug!(
+                    extension_id = extension_id.as_str(),
+                    "extension excluded from boot hydration until consent covers its files"
+                );
+                blocked.insert(extension_id.as_str().to_string());
             }
         }
         Ok(blocked)
