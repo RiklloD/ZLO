@@ -49,6 +49,8 @@ pub use memory::{
 };
 mod history;
 pub use history::history_search;
+mod plugin_ui;
+pub use plugin_ui::{plugin_ui_event, plugin_ui_render, plugin_ui_slots};
 mod inbox;
 pub use inbox::{
     inbox_list, inbox_mutate, task_models_get, task_models_set, thread_goal, thread_goal_set,

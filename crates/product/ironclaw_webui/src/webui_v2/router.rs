@@ -97,6 +97,10 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_SUPERMEMORY_SEARCH,
 };
 use crate::webui_v2::descriptors::{
+    WEBUI_V2_PATTERN_PLUGIN_UI_EVENT, WEBUI_V2_PATTERN_PLUGIN_UI_RENDER,
+    WEBUI_V2_PATTERN_PLUGIN_UI_SLOTS,
+};
+use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_SESSION_IMPORT, WEBUI_V2_PATTERN_SESSION_IMPORT_PROJECTS,
 };
 use crate::webui_v2::handlers;
@@ -480,6 +484,18 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
             post(handlers::supermemory_forget),
         )
         .route(WEBUI_V2_PATTERN_HOOKS, get(handlers::hooks_catalog))
+        .route(
+            WEBUI_V2_PATTERN_PLUGIN_UI_SLOTS,
+            get(handlers::plugin_ui_slots),
+        )
+        .route(
+            WEBUI_V2_PATTERN_PLUGIN_UI_RENDER,
+            post(handlers::plugin_ui_render),
+        )
+        .route(
+            WEBUI_V2_PATTERN_PLUGIN_UI_EVENT,
+            post(handlers::plugin_ui_event),
+        )
         .route(WEBUI_V2_PATTERN_INBOX, get(handlers::inbox_list))
         .route(
             WEBUI_V2_PATTERN_HISTORY_SEARCH,

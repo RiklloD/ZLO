@@ -66,6 +66,7 @@ pub mod operator_tools;
 pub mod orchestration;
 pub mod outbound;
 pub mod package_lifecycle;
+pub mod plugin_ui;
 pub mod product_wire;
 pub mod profiles;
 pub mod project_service;

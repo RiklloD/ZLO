@@ -275,6 +275,15 @@ pub const WEBUI_V2_PATTERN_SUPERMEMORY_FORGET: &str =
     "/api/webchat/v2/memory/supermemory/memories/forget";
 pub const WEBUI_V2_PATTERN_HOOKS: &str = "/api/webchat/v2/hooks";
 
+// Plugin UI slot routes (`reborn.plugin_ui.v1` trees rendered by an
+// extension's own side-effect-free render tool).
+pub const WEBUI_V2_ROUTE_PLUGIN_UI_SLOTS: &str = "webui.v2.plugin_ui.slots";
+pub const WEBUI_V2_ROUTE_PLUGIN_UI_RENDER: &str = "webui.v2.plugin_ui.render";
+pub const WEBUI_V2_ROUTE_PLUGIN_UI_EVENT: &str = "webui.v2.plugin_ui.event";
+pub const WEBUI_V2_PATTERN_PLUGIN_UI_SLOTS: &str = "/api/webchat/v2/plugin-ui/slots";
+pub const WEBUI_V2_PATTERN_PLUGIN_UI_RENDER: &str = "/api/webchat/v2/plugin-ui/render";
+pub const WEBUI_V2_PATTERN_PLUGIN_UI_EVENT: &str = "/api/webchat/v2/plugin-ui/event";
+
 // Computer-use routes (a thread's session + latest frame; Stop / take over).
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_SESSION: &str = "webui.v2.computer_use.session";
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_CONTROL: &str = "webui.v2.computer_use.control";
@@ -638,6 +647,19 @@ pub fn webui_v2_routes_with_artifact_flags(
             WEBUI_V2_ROUTE_HOOKS_CATALOG,
             NetworkMethod::Get,
             WEBUI_V2_PATTERN_HOOKS,
+        ),
+        read_route(
+            WEBUI_V2_ROUTE_PLUGIN_UI_SLOTS,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_PLUGIN_UI_SLOTS,
+        ),
+        plugin_ui_render_descriptor(
+            WEBUI_V2_ROUTE_PLUGIN_UI_RENDER,
+            WEBUI_V2_PATTERN_PLUGIN_UI_RENDER,
+        ),
+        plugin_ui_render_descriptor(
+            WEBUI_V2_ROUTE_PLUGIN_UI_EVENT,
+            WEBUI_V2_PATTERN_PLUGIN_UI_EVENT,
         ),
         computer_use_session_descriptor(),
         computer_use_control_descriptor(),
@@ -1687,6 +1709,27 @@ fn memory_route_descriptor(
         ),
     };
     descriptor(route_id, method, pattern, policy)
+}
+
+/// Render/event carry a small JSON body (an event payload is capped at
+/// 16 KiB behind the surface) but are reads: a render tool is side-effect-free
+/// by manifest rule. They keep the read rate budget because one screen renders
+/// several slots at once.
+fn plugin_ui_render_descriptor(
+    route_id: &'static str,
+    pattern: &'static str,
+) -> IngressRouteDescriptor {
+    descriptor(
+        route_id,
+        NetworkMethod::Post,
+        pattern,
+        mutation_policy(
+            body_limit_kib(32),
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
 }
 
 fn notification_setup_status_descriptor() -> IngressRouteDescriptor {
