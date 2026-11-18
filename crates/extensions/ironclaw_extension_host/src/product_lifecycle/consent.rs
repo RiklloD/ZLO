@@ -21,10 +21,17 @@ use super::{
 };
 use crate::AvailableExtensionPackage;
 use crate::extension_consent::{
-    ExtensionConsentStatus, consent_summary, package_consent_digest, source_requires_consent,
+    ExtensionConsentStatus, consent_summary, current_package_files, package_consent_digest,
+    package_files_digest, package_files_pins, source_requires_consent,
 };
 
 impl ExtensionLifecycleManager {
+    /// The durable consent grants, for the generic host's loader (which binds
+    /// third-party packages to their grant before a runtime lane runs them).
+    pub fn consent_store(&self) -> crate::extension_consent::ExtensionConsentStore {
+        self.consent.clone()
+    }
+
     async fn consent_catalog_package(
         &self,
         package_ref: &LifecyclePackageRef,
@@ -39,11 +46,8 @@ impl ExtensionLifecycleManager {
         available: &AvailableExtensionPackage,
     ) -> Result<(ExtensionConsentStatus, Option<LifecycleConsentSummary>), ProductOperationFailure>
     {
-        let status = self.consent.status(available).await?;
-        let summary = match status {
-            ExtensionConsentStatus::Exempt => None,
-            _ => Some(consent_summary(available)?),
-        };
+        let (status, digest) = self.consent.evaluate(available).await?;
+        let summary = digest.map(|digest| consent_summary(available, digest));
         Ok((status, summary))
     }
 
@@ -152,7 +156,11 @@ impl ExtensionLifecycleManager {
                 ),
             });
         }
-        let current = package_consent_digest(&available)?;
+        // The grant covers the files as they are on disk now, and they must
+        // still be the files the catalog loaded: consent is shown for the
+        // catalog's declaration, and activation publishes it.
+        let files = current_package_files(self.consent.filesystem(), &available).await?;
+        let current = package_files_digest(&available.package.id, &files)?;
         if current != digest {
             return Err(ProductOperationFailure::InvalidBindingRequest {
                 reason: format!(
@@ -161,6 +169,15 @@ impl ExtensionLifecycleManager {
                 ),
             });
         }
+        if package_consent_digest(&available)? != current {
+            return Err(ProductOperationFailure::InvalidBindingRequest {
+                reason: format!(
+                    "the files of extension {} changed after ZLO loaded them; restart ZLO to review the new version before granting consent",
+                    package_ref.id.as_str()
+                ),
+            });
+        }
+        let pins = package_files_pins(&files);
         let extension_id = available.package.id.clone();
         let installation_id = ExtensionInstallationId::new(extension_id.as_str().to_string())
             .map_err(map_extension_installation_error)?;
@@ -195,7 +212,9 @@ impl ExtensionLifecycleManager {
                     .map_err(map_extension_installation_error)?;
             }
         }
-        self.consent.grant(&extension_id, &digest, caller).await?;
+        self.consent
+            .grant(&extension_id, &digest, &pins, caller)
+            .await?;
         let phase = if installation.is_none() {
             InstallationState::Installed
         } else if self
@@ -213,7 +232,7 @@ impl ExtensionLifecycleManager {
             phase,
             LifecycleProductPayload::ExtensionGrantConsent { granted: true },
         );
-        response.consent = Some(consent_summary(&available)?);
+        response.consent = Some(consent_summary(&available, digest));
         Ok(response)
     }
 

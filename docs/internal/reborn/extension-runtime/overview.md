@@ -900,8 +900,19 @@ third-party package, files changed
   ui_slot | setting | service`. The grant (`extension_grant_consent`, a user
   action, never a model-callable capability) names the digest, a SHA-256 over
   every package file, and is refused for any other digest. Changing any file
-  after the grant yields `tampered` until consent is granted again.
-  Host-bundled and user-registered hosted-MCP packages are exempt. Owner:
+  after the grant yields `tampered` until consent is granted again; status is
+  computed from the files on disk, so a running process notices the change on
+  the next list, project, or activation. On a shared (tenant-owned) install
+  only the tenant admin may grant (the grant can migrate the durable
+  manifest). The grant records a `sha256:` hash per file; the generic host's
+  loader attaches them to the package it binds (`ExtensionPackage::
+  content_pins`, refusing a consent-requiring package with no grant or whose
+  persisted manifest is not the consented one), and the WASM lane verifies
+  the exact module buffer it compiles against them, refusing any other bytes
+  (`policy_denied`). Boot hydration classifies installations by their
+  persisted source and excludes a consent-requiring one the catalog cannot
+  verify (missing or invalid files). Host-bundled and user-registered
+  hosted-MCP packages are exempt. Owner:
   `ironclaw_extension_host::extension_consent`. These are public states, not
   `setup_needed`, because the user action differs (review and consent, not a
   setup form).

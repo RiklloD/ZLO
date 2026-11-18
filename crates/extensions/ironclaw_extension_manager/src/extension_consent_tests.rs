@@ -709,3 +709,209 @@ async fn only_the_tenant_admin_may_grant_consent_for_a_shared_installation() {
     let after_restart = reboot(&changed, admin, &server).await;
     assert_eq!(plugin_is_active(&after_restart).await, (false, false));
 }
+
+const WASM_PLUGIN_ID: &str = "acme-wasm";
+const WASM_PLUGIN_TOOL: &str = "acme-wasm.invoke";
+
+fn wasm_plugin_module() -> Vec<u8> {
+    include_bytes!("../../packages/github/wasm/github_tool.wasm").to_vec()
+}
+
+fn wasm_plugin_files() -> Vec<(String, Vec<u8>)> {
+    let manifest = format!(
+        r#"schema_version = "reborn.extension_manifest.v3"
+id = "{WASM_PLUGIN_ID}"
+name = "Acme Wasm"
+version = "0.1.0"
+description = "A WASM plugin."
+trust = "third_party"
+
+[runtime]
+kind = "wasm"
+module = "wasm/{WASM_PLUGIN_ID}.wasm"
+
+[[tools]]
+id = "{WASM_PLUGIN_TOOL}"
+description = "Invoke the plugin."
+effects = []
+default_permission = "allow"
+visibility = "model"
+input_schema_ref = "schemas/{WASM_PLUGIN_ID}/invoke.input.v1.json"
+"#
+    );
+    vec![
+        ("manifest.toml".to_string(), manifest.into_bytes()),
+        (format!("wasm/{WASM_PLUGIN_ID}.wasm"), wasm_plugin_module()),
+        (
+            format!("schemas/{WASM_PLUGIN_ID}/invoke.input.v1.json"),
+            br#"{"type":"object"}"#.to_vec(),
+        ),
+    ]
+}
+
+/// The same component with a trailing custom section: still a valid,
+/// runnable module, so without a content binding it would simply execute.
+fn swapped_wasm_plugin_module() -> Vec<u8> {
+    let mut bytes = wasm_plugin_module();
+    let name = b"swapped";
+    let payload = b"not the consented module";
+    bytes.push(0x00);
+    bytes.push(u8::try_from(1 + name.len() + payload.len()).expect("small section"));
+    bytes.push(u8::try_from(name.len()).expect("small name"));
+    bytes.extend_from_slice(name);
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+fn wasm_module_path() -> VirtualPath {
+    VirtualPath::new(format!(
+        "/system/extensions/{WASM_PLUGIN_ID}/wasm/{WASM_PLUGIN_ID}.wasm"
+    ))
+    .expect("module path")
+}
+
+fn invocation_context(user: &str) -> ironclaw_host_api::scope::ExecutionContext {
+    use ironclaw_host_api::action::{NetworkPolicy, NetworkTargetPattern};
+    use ironclaw_host_api::capability::{
+        CapabilityGrant, CapabilitySet, EffectKind, GrantConstraints,
+    };
+    use ironclaw_host_api::ids::{CapabilityGrantId, CapabilityId, UserId};
+    use ironclaw_host_api::mount::MountView;
+    use ironclaw_host_api::runtime::{RuntimeKind, TrustClass};
+    use ironclaw_host_api::scope::{ExecutionContext, Principal};
+
+    let caller = ExtensionId::new("consent-test-caller").expect("caller id");
+    let user_id = UserId::new(user).expect("user");
+    let grant = CapabilityGrant {
+        id: CapabilityGrantId::new(),
+        capability: CapabilityId::new(WASM_PLUGIN_TOOL).expect("capability id"),
+        grantee: Principal::Extension(caller.clone()),
+        issued_by: Principal::HostRuntime,
+        constraints: GrantConstraints {
+            allowed_effects: vec![EffectKind::DispatchCapability, EffectKind::Network],
+            mounts: MountView::default(),
+            network: NetworkPolicy {
+                allowed_targets: vec![NetworkTargetPattern {
+                    scheme: None,
+                    host_pattern: "*".to_string(),
+                    port: None,
+                }],
+                deny_private_ip_ranges: true,
+                max_egress_bytes: None,
+            },
+            secrets: Vec::new(),
+            resource_ceiling: None,
+            expires_at: None,
+            max_invocations: None,
+        },
+    };
+    let mut context = ExecutionContext::local_default(
+        user_id.clone(),
+        caller,
+        RuntimeKind::FirstParty,
+        TrustClass::FirstParty,
+        CapabilitySet {
+            grants: vec![grant],
+        },
+        MountView::default(),
+    )
+    .expect("execution context");
+    context.authenticated_actor_user_id = Some(user_id);
+    context.run_id = Some(ironclaw_host_api::ids::RunId::new());
+    context
+}
+
+/// The model-visible message is redacted to a fixed policy sentence, so the
+/// refusal is told apart by its kind; the test's control half (consented
+/// bytes on the same path are not refused) ties it to the module bytes.
+fn is_content_refusal(outcome: &ironclaw_host_runtime::RuntimeCapabilityOutcome) -> bool {
+    matches!(
+        outcome,
+        ironclaw_host_runtime::RuntimeCapabilityOutcome::Failed(failure)
+            if failure.kind == ironclaw_host_api::result_meta::FailureKind::PolicyDenied
+    )
+}
+
+/// The grant binds the bytes that execute: a module swapped after the grant
+/// and before its first invocation is refused at compile time by the runtime
+/// adapter (single read, hashed against the consented asset hash), and the
+/// plugin reports `tampered` without a restart.
+#[tokio::test]
+async fn wasm_module_swapped_after_grant_is_refused_at_invocation() {
+    let owner = "consent-wasm-owner";
+    let services = build_lifecycle_test_services(owner, None, false).await;
+    let install = run(
+        &services,
+        owner,
+        RebornExtensionLifecycleCommand::InstallFiles {
+            files: wasm_plugin_files(),
+        },
+    )
+    .await
+    .expect("install");
+    assert_eq!(install.phase, InstallationState::ConsentRequired);
+    let granted = run(
+        &services,
+        owner,
+        RebornExtensionLifecycleCommand::GrantConsent {
+            id: WASM_PLUGIN_ID.to_string(),
+            digest: consent_of(&install).digest.as_str().to_string(),
+        },
+    )
+    .await
+    .expect("grant");
+    assert_eq!(granted.phase, InstallationState::Active, "{granted:?}");
+
+    services
+        .filesystem
+        .write_file(&wasm_module_path(), &swapped_wasm_plugin_module())
+        .await
+        .expect("swap module");
+    let outcome = crate::lifecycle_test_support::invoke_with_standalone_approval(
+        &services,
+        WASM_PLUGIN_TOOL,
+        invocation_context(owner),
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(
+        is_content_refusal(&outcome),
+        "a module that is not the consented one must not run: {outcome:?}"
+    );
+    let project = services
+        .extension_management
+        .project(
+            ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef::new(
+                ironclaw_product_contracts::package_lifecycle::LifecyclePackageKind::Extension,
+                WASM_PLUGIN_ID,
+            )
+            .expect("ref"),
+            &ironclaw_host_api::ids::UserId::new(owner).expect("user"),
+        )
+        .await
+        .expect("project");
+    assert_eq!(
+        project.phase,
+        InstallationState::Tampered,
+        "a long-running server notices the changed files without a restart"
+    );
+
+    // Control: the consented bytes run (whatever the guest answers, the host
+    // does not refuse them).
+    services
+        .filesystem
+        .write_file(&wasm_module_path(), &wasm_plugin_module())
+        .await
+        .expect("restore module");
+    let outcome = crate::lifecycle_test_support::invoke_with_standalone_approval(
+        &services,
+        WASM_PLUGIN_TOOL,
+        invocation_context(owner),
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(
+        !is_content_refusal(&outcome),
+        "the consented module is not refused: {outcome:?}"
+    );
+}

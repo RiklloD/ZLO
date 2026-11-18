@@ -5,7 +5,7 @@ use ironclaw_host_api::{
     path::VirtualPath,
     trust::{PackageIdentity, PackageSource, TrustPolicyInput},
 };
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::{
     CapabilityDeclV2, CapabilityManifest, ExtensionError, ExtensionManifest, ExtensionRuntime,
@@ -21,6 +21,40 @@ pub struct ExtensionPackage {
     pub capabilities: Vec<CapabilityDescriptor>,
     pub manifest_digest: Option<String>,
     pub descriptor_schema_mode: CapabilityDescriptorSchemaMode,
+    /// Hashes of the exact package files a consent grant covers. `None` for
+    /// packages that need no consent (host-bundled, user-registered); `Some`
+    /// binds every runtime read of a package file to the consented bytes
+    /// (see [`Self::verify_asset`]).
+    pub content_pins: Option<PackageContentPins>,
+}
+
+/// Consented per-file hashes of one package, keyed by package-relative path,
+/// as `sha256:<hex>` tokens ([`sha256_digest_token`]). Carried down to the
+/// runtime lanes on the package itself so a lane can refuse bytes that are
+/// not the ones the user consented to, without depending on the consent
+/// store that produced them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackageContentPins {
+    assets: BTreeMap<String, String>,
+}
+
+impl PackageContentPins {
+    pub fn new(assets: BTreeMap<String, String>) -> Self {
+        Self { assets }
+    }
+
+    pub fn assets(&self) -> &BTreeMap<String, String> {
+        &self.assets
+    }
+}
+
+/// A package file read at runtime is not the consented one.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PackageContentPinError {
+    #[error("package file {path} is not covered by the extension's consent grant")]
+    Unpinned { path: String },
+    #[error("package file {path} changed after consent was granted")]
+    Mismatch { path: String },
 }
 
 /// How package capability descriptor schemas are derived from the manifest.
@@ -88,6 +122,7 @@ impl ExtensionPackage {
             capabilities,
             manifest_digest,
             descriptor_schema_mode: CapabilityDescriptorSchemaMode::InlineDynamic,
+            content_pins: None,
         })
     }
 
@@ -105,6 +140,7 @@ impl ExtensionPackage {
             capabilities,
             manifest_digest,
             descriptor_schema_mode: CapabilityDescriptorSchemaMode::ManifestRefs,
+            content_pins: None,
         })
     }
 
@@ -136,7 +172,61 @@ impl ExtensionPackage {
             capabilities,
             manifest_digest,
             descriptor_schema_mode: CapabilityDescriptorSchemaMode::InlineDynamic,
+            content_pins: None,
         })
+    }
+
+    /// Bind the package to consented file hashes.
+    pub fn with_content_pins(mut self, pins: PackageContentPins) -> Self {
+        self.content_pins = Some(pins);
+        self
+    }
+
+    /// Check bytes just read from `path` (an absolute path under the
+    /// package root) against the consented hash for that file. Unpinned
+    /// packages always pass; a pinned package refuses a file the grant does
+    /// not cover and bytes that hash differently. Callers verify the exact
+    /// buffer they go on to use — never re-read after checking.
+    pub fn verify_asset(
+        &self,
+        path: &VirtualPath,
+        bytes: &[u8],
+    ) -> Result<(), PackageContentPinError> {
+        let Some(pins) = &self.content_pins else {
+            return Ok(());
+        };
+        let relative =
+            self.relative_asset_path(path)
+                .ok_or_else(|| PackageContentPinError::Unpinned {
+                    path: path.as_str().to_string(),
+                })?;
+        let Some(expected) = pins.assets.get(relative) else {
+            return Err(PackageContentPinError::Unpinned {
+                path: relative.to_string(),
+            });
+        };
+        if *expected != sha256_digest_token(bytes) {
+            return Err(PackageContentPinError::Mismatch {
+                path: relative.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// The consented hash for the file at `path`, if this package is pinned
+    /// and the grant covers that file.
+    pub fn pinned_asset_hash(&self, path: &VirtualPath) -> Option<&str> {
+        let pins = self.content_pins.as_ref()?;
+        pins.assets
+            .get(self.relative_asset_path(path)?)
+            .map(String::as_str)
+    }
+
+    fn relative_asset_path<'a>(&self, path: &'a VirtualPath) -> Option<&'a str> {
+        let root = self.root_binding.materialized_root().ok()?;
+        path.as_str()
+            .strip_prefix(root.as_str().trim_end_matches('/'))?
+            .strip_prefix('/')
     }
 
     pub fn manifest_digest(&self) -> Option<String> {

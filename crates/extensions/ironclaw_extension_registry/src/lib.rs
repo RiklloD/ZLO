@@ -201,7 +201,8 @@ pub mod v3;
 
 pub use definition_admission::{PackageDefinitionAdmissionOutcome, PackageDefinitionRetention};
 pub use package::{
-    CapabilityDescriptorSchemaMode, ExtensionPackage, composed_capability_description,
+    CapabilityDescriptorSchemaMode, ExtensionPackage, PackageContentPinError, PackageContentPins,
+    composed_capability_description,
 };
 
 pub use admin_configuration::{

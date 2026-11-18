@@ -68,6 +68,8 @@ fn normalize_connect_link_base_url(raw: &str) -> Option<String> {
 pub(crate) struct BackendExtensionHostAssemblyInput {
     /// Plugins without consent for their current files: never boot-hydrated.
     pub(crate) consent_blocked_extension_ids: BTreeSet<String>,
+    /// Consent grants the loader binds third-party packages to.
+    pub(crate) package_consent: ironclaw_extension_host::extension_consent::ExtensionConsentStore,
     pub(crate) binder: ExtensionLaneToolBinder,
     pub(crate) native_factories: Vec<Arc<dyn ironclaw_extension_host::NativeExtensionFactory>>,
     pub(crate) channel_bindings: Vec<ChannelExtensionBinding>,
@@ -109,6 +111,7 @@ pub(crate) async fn build_backend_extension_host(
 ) -> Result<BackendExtensionHostAssembly, RebornBuildError> {
     let BackendExtensionHostAssemblyInput {
         consent_blocked_extension_ids,
+        package_consent,
         binder,
         native_factories,
         channel_bindings,
@@ -186,6 +189,7 @@ pub(crate) async fn build_backend_extension_host(
                 Arc::new(ironclaw_extension_host::UnavailableLinkedAccountResolution)
             }),
             admin_secrets: Some(Arc::clone(&admin_configuration_resolver)),
+            package_consent,
         },
     )
     .await;

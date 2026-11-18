@@ -1188,7 +1188,14 @@ where
                 ));
             }
         };
-        let cache_key = module_path.as_str().to_string();
+        // A package bound to consented content (third-party plugins) caches
+        // its compiled module under the consented hash too, so a module
+        // prepared from other bytes is never reused for it.
+        let pinned_hash = request.package.pinned_asset_hash(&module_path);
+        let cache_key = match pinned_hash {
+            Some(hash) => format!("{}#{hash}", module_path.as_str()),
+            None => module_path.as_str().to_string(),
+        };
         let prepared = self.prepared_guard()?.get(&cache_key).cloned();
         if let Some(prepared) = prepared {
             let host = self.host_for_scope(&request.scope, request.capability_id);
@@ -1206,6 +1213,23 @@ where
                     Some(error.to_string()),
                 )
             })?;
+        // Consent binds the bytes that execute: verify the exact buffer about
+        // to be compiled (one read, no check-then-reread).
+        if let Err(error) = request.package.verify_asset(&module_path, &wasm_bytes) {
+            tracing::debug!(
+                extension_id = request.package.id.as_str(),
+                %error,
+                "refusing a wasm module that is not the consented one"
+            );
+            return Err(dispatch_error_for_runtime(
+                RuntimeKind::Wasm,
+                RuntimeDispatchErrorKind::PolicyDenied,
+                Some(format!(
+                    "extension {} is tampered: {error}; review it and grant consent again",
+                    request.package.id.as_str()
+                )),
+            ));
+        }
         let prepared = Arc::new(
             run_wasm_prepare_blocking(
                 self.runtime.clone(),

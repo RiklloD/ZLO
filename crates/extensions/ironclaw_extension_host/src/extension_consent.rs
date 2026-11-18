@@ -26,8 +26,11 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use ironclaw_extension_contracts::state::InstallationState;
-use ironclaw_extension_registry::{CapabilityVisibility, ExtensionRuntimeV2, ManifestSource};
+use ironclaw_extension_registry::{
+    CapabilityVisibility, ExtensionRuntimeV2, ManifestSource, PackageContentPins,
+};
 use ironclaw_filesystem::{FilesystemError, RootFilesystem};
+use ironclaw_host_api::approval::sha256_digest_token;
 use ironclaw_host_api::capability::{EffectKind, PermissionMode};
 use ironclaw_host_api::ids::{ExtensionId, UserId};
 use ironclaw_host_api::path::VirtualPath;
@@ -45,7 +48,7 @@ use crate::available_extensions::{AvailableExtensionAssetContent, AvailableExten
 pub const CONSENT_RECORD_ROOT: &str = "/system/extensions/.consent";
 
 const CONSENT_DIGEST_DOMAIN: &[u8] = b"zlo-extension-package-consent-v1";
-const CONSENT_RECORD_SCHEMA: u32 = 1;
+const CONSENT_RECORD_SCHEMA: u32 = 2;
 
 /// Whether a package from `source` must carry a consent grant to activate.
 pub fn source_requires_consent(source: ManifestSource) -> bool {
@@ -55,27 +58,78 @@ pub fn source_requires_consent(source: ManifestSource) -> bool {
     }
 }
 
-/// SHA-256 over every file of the package, in path order, each framed by its
-/// length so no two file sets can collide by concatenation. The manifest is
-/// always included, even when the asset list does not carry it.
-pub fn package_consent_digest(
-    package: &AvailableExtensionPackage,
-) -> Result<PackageConsentDigest, ProductOperationFailure> {
-    let mut files: Vec<(&str, &[u8])> = package
+/// One package's files as the consent digest sees them: package-relative
+/// path to bytes, the manifest always included.
+pub(crate) type PackageFiles = std::collections::BTreeMap<String, Vec<u8>>;
+
+/// The files the catalog holds for `package` (the bytes read when it was
+/// loaded or imported).
+pub(crate) fn catalog_package_files(package: &AvailableExtensionPackage) -> PackageFiles {
+    let mut files: PackageFiles = package
         .assets
         .iter()
         .map(|asset| {
             let AvailableExtensionAssetContent::Bytes(bytes) = &asset.content;
-            (asset.path.as_str(), bytes.as_ref())
+            (asset.path.clone(), bytes.to_vec())
         })
         .collect();
-    if !files.iter().any(|(path, _)| *path == "manifest.toml") {
-        files.push(("manifest.toml", package.manifest_toml.as_bytes()));
+    files
+        .entry("manifest.toml".to_string())
+        .or_insert_with(|| package.manifest_toml.as_bytes().to_vec());
+    files
+}
+
+/// The files of `package` as they are on disk now, when its root is
+/// materialized there; the catalog's bytes otherwise (an uploaded package
+/// not yet installed, or a removed one). Reading the disk — not the catalog's
+/// cached copy — is what lets a long-running process notice files that
+/// changed after it loaded them.
+pub(crate) async fn current_package_files(
+    filesystem: &dyn RootFilesystem,
+    package: &AvailableExtensionPackage,
+) -> Result<PackageFiles, ProductOperationFailure> {
+    let Ok(root) = package.package.materialized_root() else {
+        return Ok(catalog_package_files(package));
+    };
+    match filesystem.list_dir(root).await {
+        Ok(_) => {}
+        Err(FilesystemError::NotFound { .. }) | Err(FilesystemError::MountNotFound { .. }) => {
+            return Ok(catalog_package_files(package));
+        }
+        Err(error) => {
+            return Err(ProductOperationFailure::Transient {
+                reason: format!("failed to read extension package files: {error}"),
+            });
+        }
     }
-    files.sort_by(|left, right| left.0.cmp(right.0));
+    let assets =
+        crate::available_extension_import::inline_extension_dir_assets(filesystem, root).await?;
+    Ok(assets
+        .into_iter()
+        .map(|asset| {
+            let AvailableExtensionAssetContent::Bytes(bytes) = asset.content;
+            (asset.path, bytes.into_owned())
+        })
+        .collect())
+}
+
+/// SHA-256 over the catalog's copy of every file of the package; see
+/// [`package_files_digest`].
+pub fn package_consent_digest(
+    package: &AvailableExtensionPackage,
+) -> Result<PackageConsentDigest, ProductOperationFailure> {
+    package_files_digest(&package.package.id, &catalog_package_files(package))
+}
+
+/// SHA-256 over every file of a package, in path order, each framed by its
+/// length so no two file sets can collide by concatenation.
+pub(crate) fn package_files_digest(
+    extension_id: &ExtensionId,
+    files: &PackageFiles,
+) -> Result<PackageConsentDigest, ProductOperationFailure> {
     let mut hasher = Sha256::new();
     hash_part(&mut hasher, CONSENT_DIGEST_DOMAIN);
-    hash_part(&mut hasher, package.package.id.as_str().as_bytes());
+    hash_part(&mut hasher, extension_id.as_str().as_bytes());
     for (path, bytes) in files {
         hash_part(&mut hasher, path.as_bytes());
         hash_part(&mut hasher, bytes);
@@ -90,19 +144,32 @@ pub fn package_consent_digest(
     })
 }
 
+/// Per-file hashes of a file set, in the form the runtime lanes verify
+/// ([`PackageContentPins`]).
+pub(crate) fn package_files_pins(files: &PackageFiles) -> PackageContentPins {
+    PackageContentPins::new(
+        files
+            .iter()
+            .map(|(path, bytes)| (path.clone(), sha256_digest_token(bytes)))
+            .collect(),
+    )
+}
+
 fn hash_part(hasher: &mut Sha256, bytes: &[u8]) {
     hasher.update((bytes.len() as u64).to_be_bytes());
     hasher.update(bytes);
 }
 
-/// Everything the package asks for, derived from the resolved manifest.
+/// Everything the package asks for, derived from the resolved manifest,
+/// pinned to `digest` (the digest of the files a grant would cover).
 pub fn consent_summary(
     package: &AvailableExtensionPackage,
-) -> Result<LifecycleConsentSummary, ProductOperationFailure> {
-    Ok(LifecycleConsentSummary {
-        digest: package_consent_digest(package)?,
+    digest: PackageConsentDigest,
+) -> LifecycleConsentSummary {
+    LifecycleConsentSummary {
+        digest,
         requests: consent_requests(package),
-    })
+    }
 }
 
 fn consent_requests(package: &AvailableExtensionPackage) -> Vec<LifecycleConsentRequest> {
@@ -286,6 +353,9 @@ struct ExtensionConsentRecord {
     schema: u32,
     extension_id: String,
     digest: PackageConsentDigest,
+    /// Package-relative path -> `sha256:<hex>` of every consented file: what
+    /// the runtime lanes verify the bytes they execute against.
+    assets: std::collections::BTreeMap<String, String>,
     granted_by: String,
     granted_at: chrono::DateTime<chrono::Utc>,
 }
@@ -334,6 +404,20 @@ impl ExtensionConsentStore {
                 });
             }
         };
+        // A record from an older schema (no per-file hashes) cannot bind
+        // execution to the consented bytes: treat it as no grant, so the user
+        // is asked again.
+        let schema = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|value| value.get("schema").and_then(serde_json::Value::as_u64));
+        if schema != Some(u64::from(CONSENT_RECORD_SCHEMA)) {
+            tracing::debug!(
+                extension_id = extension_id.as_str(),
+                ?schema,
+                "ignoring an extension consent record of another schema"
+            );
+            return Ok(None);
+        }
         let record: ExtensionConsentRecord = serde_json::from_slice(&bytes).map_err(|error| {
             ProductOperationFailure::InvalidBindingRequest {
                 reason: format!("extension consent record is malformed: {error}"),
@@ -355,18 +439,44 @@ impl ExtensionConsentStore {
         Ok(self.read(extension_id).await?.map(|record| record.digest))
     }
 
-    /// Persist a grant for `digest`, then read it back: success is reported
-    /// only when the durable record names exactly this digest.
+    /// The consented per-file hashes, if a grant is recorded.
+    pub async fn granted_pins(
+        &self,
+        extension_id: &ExtensionId,
+    ) -> Result<Option<PackageContentPins>, ProductOperationFailure> {
+        Ok(self
+            .read(extension_id)
+            .await?
+            .map(|record| PackageContentPins::new(record.assets)))
+    }
+
+    /// The whole grant (digest and per-file hashes), for restoring it after
+    /// a failed replacement.
+    pub(crate) async fn granted(
+        &self,
+        extension_id: &ExtensionId,
+    ) -> Result<Option<(PackageConsentDigest, PackageContentPins)>, ProductOperationFailure> {
+        Ok(self
+            .read(extension_id)
+            .await?
+            .map(|record| (record.digest, PackageContentPins::new(record.assets))))
+    }
+
+    /// Persist a grant for `digest` covering exactly the files hashed in
+    /// `pins`, then read it back: success is reported only when the durable
+    /// record names exactly this digest.
     pub async fn grant(
         &self,
         extension_id: &ExtensionId,
         digest: &PackageConsentDigest,
+        pins: &PackageContentPins,
         granted_by: &UserId,
     ) -> Result<(), ProductOperationFailure> {
         let record = ExtensionConsentRecord {
             schema: CONSENT_RECORD_SCHEMA,
             extension_id: extension_id.as_str().to_string(),
             digest: digest.clone(),
+            assets: pins.assets().clone(),
             granted_by: granted_by.as_str().to_string(),
             granted_at: chrono::Utc::now(),
         };
@@ -401,20 +511,37 @@ impl ExtensionConsentStore {
         }
     }
 
-    /// Evaluate `package` against its grant.
+    /// Evaluate `package` against its grant, hashing the files as they are
+    /// now (see [`current_package_files`]).
     pub async fn status(
         &self,
         package: &AvailableExtensionPackage,
     ) -> Result<ExtensionConsentStatus, ProductOperationFailure> {
+        Ok(self.evaluate(package).await?.0)
+    }
+
+    /// Status plus the digest of the files it was evaluated against
+    /// (`None` when the package is exempt).
+    pub async fn evaluate(
+        &self,
+        package: &AvailableExtensionPackage,
+    ) -> Result<(ExtensionConsentStatus, Option<PackageConsentDigest>), ProductOperationFailure>
+    {
         if !source_requires_consent(package.source) {
-            return Ok(ExtensionConsentStatus::Exempt);
+            return Ok((ExtensionConsentStatus::Exempt, None));
         }
-        let current = package_consent_digest(package)?;
-        Ok(match self.granted_digest(&package.package.id).await? {
+        let files = current_package_files(self.filesystem.as_ref(), package).await?;
+        let current = package_files_digest(&package.package.id, &files)?;
+        let status = match self.granted_digest(&package.package.id).await? {
             None => ExtensionConsentStatus::Required,
             Some(granted) if granted == current => ExtensionConsentStatus::Granted,
             Some(_) => ExtensionConsentStatus::Tampered,
-        })
+        };
+        Ok((status, Some(current)))
+    }
+
+    pub(crate) fn filesystem(&self) -> &dyn RootFilesystem {
+        self.filesystem.as_ref()
     }
 }
 

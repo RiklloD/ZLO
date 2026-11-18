@@ -1278,7 +1278,7 @@ impl ExtensionLifecycleManager {
             .is_some();
         // Removal below drops the consent grant; a failed replacement must
         // restore the previous package with the grant it had.
-        let previous_consent = self.consent.granted_digest(&extension_id).await?;
+        let previous_consent = self.consent.granted(&extension_id).await?;
         if had_installation {
             if !force {
                 return Err(ProductOperationFailure::InvalidBindingRequest {
@@ -1327,9 +1327,11 @@ impl ExtensionLifecycleManager {
                             restore_error,
                         ));
                     }
-                    if let Some(digest) = &previous_consent
-                        && let Err(restore_error) =
-                            self.consent.grant(&extension_id, digest, caller).await
+                    if let Some((digest, pins)) = &previous_consent
+                        && let Err(restore_error) = self
+                            .consent
+                            .grant(&extension_id, digest, pins, caller)
+                            .await
                     {
                         return Err(compensation_failure(
                             "registry replacement failed and the previous consent grant could not be restored",

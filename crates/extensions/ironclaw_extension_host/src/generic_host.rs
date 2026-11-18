@@ -86,6 +86,10 @@ pub struct GenericExtensionHostParams {
     /// configuration passes `None` at the composition boundary instead, where
     /// the choice is visible.
     pub admin_secrets: Option<Arc<crate::ChannelConfigService>>,
+    /// Consent grants for third-party packages. The loader binds every
+    /// consent-requiring package to its grant's per-file hashes before
+    /// handing it to a runtime lane, and refuses one without a grant.
+    pub package_consent: crate::extension_consent::ExtensionConsentStore,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -200,6 +204,7 @@ pub async fn build_generic_extension_host(
         linked_sessions,
         linked_accounts,
         admin_secrets,
+        package_consent,
     } = params;
     let factories: HashMap<String, Arc<dyn NativeExtensionFactory>> = native_factories
         .into_iter()
@@ -211,6 +216,7 @@ pub async fn build_generic_extension_host(
         channel_adapters: channel_adapters.into_iter().collect(),
         governor,
         installation_store: Arc::clone(&installation_store),
+        package_consent,
     });
     // Channel hooks (and, at P5, deliver()) egress through the declared
     // [[channel.egress]] policy over the injected transport; compositions
@@ -319,6 +325,7 @@ struct CompositionExtensionLoader {
     channel_adapters: HashMap<ExtensionId, ChannelSurfaces>,
     governor: Arc<dyn ResourceGovernor>,
     installation_store: Arc<dyn ExtensionInstallationStorePort>,
+    package_consent: crate::extension_consent::ExtensionConsentStore,
 }
 
 #[async_trait]
@@ -329,12 +336,12 @@ impl ExtensionLoader for CompositionExtensionLoader {
         // record.
         let extension_id = ironclaw_host_api::ids::ExtensionId::new(&ctx.extension_id)
             .map_err(|error| load_error(format!("invalid extension id: {error}")))?;
-        let source = match self
+        let manifest_record = self
             .installation_store
             .get_manifest(&extension_id)
             .await
-            .map_err(|error| load_error(format!("manifest record unavailable: {error}")))?
-        {
+            .map_err(|error| load_error(format!("manifest record unavailable: {error}")))?;
+        let source = match manifest_record.as_ref() {
             Some(record) => record.manifest().source,
             // No durable record (host-published test fixtures): derive the
             // least source that admits the contract's requested trust —
@@ -351,6 +358,41 @@ impl ExtensionLoader for CompositionExtensionLoader {
             .resolved
             .to_internal(source)
             .map_err(|error| load_error(format!("resolved contract rebuild failed: {error}")))?;
+        // Third-party packages run only the bytes the user consented to: the
+        // grant's per-file hashes travel on the package to the runtime lane,
+        // which verifies what it executes against them. Every production load
+        // has a durable manifest record (boot hydration skips installations
+        // without one; activation writes it first); only host-published test
+        // fixtures load without one, and they never went through consent.
+        let content_pins = if let Some(record) = manifest_record.as_ref()
+            && crate::extension_consent::source_requires_consent(source)
+        {
+            let pins = self
+                .package_consent
+                .granted_pins(&extension_id)
+                .await
+                .map_err(|error| load_error(format!("consent grant unavailable: {error}")))?
+                .ok_or_else(|| {
+                    load_error(format!(
+                        "extension {} has no consent grant",
+                        extension_id.as_str()
+                    ))
+                })?;
+            // The declaration being published must be the consented one too.
+            let persisted_manifest_hash =
+                ironclaw_host_api::approval::sha256_digest_token(record.raw_toml().as_bytes());
+            if Some(persisted_manifest_hash.as_str())
+                != pins.assets().get("manifest.toml").map(String::as_str)
+            {
+                return Err(load_error(format!(
+                    "extension {} is tampered: its installed manifest is not the consented one",
+                    extension_id.as_str()
+                )));
+            }
+            Some(pins)
+        } else {
+            None
+        };
         // Pure capability count, mirroring `check_binding`'s own
         // declared-tools test (entrypoint.rs) — the two must stay in
         // lockstep or activation fails the binding-rule check before
@@ -382,6 +424,10 @@ impl ExtensionLoader for CompositionExtensionLoader {
             .map_err(|error| load_error(format!("manifest rebuild failed: {error}")))?;
         let package = rebuild_package_from_resolved(manifest, &ctx.resolved, &ctx.extension_id)
             .map_err(load_error)?;
+        let package = match content_pins {
+            Some(pins) => package.with_content_pins(pins),
+            None => package,
+        };
         let adapter = if declares_tools {
             Some(
                 self.binder
@@ -977,6 +1023,9 @@ input_schema_ref = "schemas/echo.input.json"
             factories: HashMap::new(),
             channel_adapters: HashMap::new(),
             governor: Arc::new(InMemoryResourceGovernor::new()),
+            package_consent: crate::extension_consent::ExtensionConsentStore::new(Arc::new(
+                ironclaw_filesystem::InMemoryBackend::new(),
+            )),
             installation_store,
         }
     }
@@ -1097,6 +1146,9 @@ input_schema_ref = "schemas/echo.input.json"
                 crate::linked_account_resolution::UnavailableLinkedAccountResolution,
             ),
             admin_secrets: None,
+            package_consent: crate::extension_consent::ExtensionConsentStore::new(Arc::new(
+                ironclaw_filesystem::InMemoryBackend::new(),
+            )),
         })
         .await;
 

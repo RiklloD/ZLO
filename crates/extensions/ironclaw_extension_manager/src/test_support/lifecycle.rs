@@ -684,6 +684,7 @@ async fn build_lifecycle_test_services_over_backing(
                     ironclaw_extension_host::UnavailableLinkedAccountResolution,
                 ),
                 admin_secrets: None,
+                package_consent: extension_management.consent_store(),
             })
             .await;
         extension_management.attach_generic_host(Arc::clone(&generic.host));
