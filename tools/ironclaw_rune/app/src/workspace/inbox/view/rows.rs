@@ -410,17 +410,7 @@ pub(in crate::workspace) fn profile_mark(
     name: &str,
     lit: f32,
 ) -> El {
-    let colors = [p.accent, p.success, p.warning, p.danger, p.text_muted];
-    let hash = profile_id
-        .bytes()
-        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-    // Identity keeps its color at rest (T3 reversed its grayscale pass);
-    // hover and selection only bring it to full strength.
-    let color = mix(
-        p.text_muted,
-        colors[hash as usize % colors.len()],
-        0.7 + 0.3 * lit,
-    );
+    let color = profile_color(p, profile_id, lit);
     let letter = name
         .chars()
         .find(|c| c.is_alphanumeric())
@@ -431,6 +421,21 @@ pub(in crate::workspace) fn profile_mark(
         .fill(color.alpha(0.22))
         .center()
         .child(tw(letter.to_string(), 10., SEMIBOLD, color))
+}
+
+/// A profile's own color, from its id. Identity keeps its color at rest (T3
+/// reversed its grayscale pass); `lit` 1 (hover, selection) only brings it
+/// to full strength.
+pub(in crate::workspace) fn profile_color(p: &Palette, profile_id: &str, lit: f32) -> Color {
+    let colors = [p.accent, p.success, p.warning, p.danger, p.text_muted];
+    let hash = profile_id
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+    mix(
+        p.text_muted,
+        colors[hash as usize % colors.len()],
+        0.7 + 0.3 * lit,
+    )
 }
 
 /// Linear mix in OKLab, `t` 0 → `a`, 1 → `b`.
@@ -512,7 +517,7 @@ pub(in crate::workspace) fn status_label(
 }
 
 /// Three dots pulsing in turn (GPUI `kit::pulse_dots`).
-fn pulse_dots(color: Color) -> El {
+pub(in crate::workspace) fn pulse_dots(color: Color) -> El {
     let dot = |phase: f32| {
         ui::dot(color, 4.).cycle(rune::Cycle {
             period: 1.2,

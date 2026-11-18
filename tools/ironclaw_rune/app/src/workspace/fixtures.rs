@@ -168,6 +168,46 @@ pub fn fixture_shell(s: &mut State) {
     });
 }
 
+/// The sidebar's profile menu on a long profile list: recents with their
+/// age, the rest by name, a profile working and one that needs an answer.
+pub fn fixture_profile_menu(s: &mut State) {
+    fixture_shell(s);
+    let now = Utc::now().timestamp_millis();
+    let profile = |id: &str, name: &str, branch: Option<&str>, mins: Option<i64>| InboxProfile {
+        profile_id: id.into(),
+        display_name: name.into(),
+        git_branch: branch.map(str::to_string),
+        last_used_at: mins.map(|m| now - m * 60_000),
+    };
+    s.workspace.inbox.list.profiles = vec![
+        profile("default", "Default", None, Some(0)),
+        profile("avallon", "Avallon Case", None, None),
+        profile("flat", "Flat Finder", None, Some(60 * 30)),
+        profile("futur", "Futurchoices", None, None),
+        profile("work", "IronClaw Builder", Some("main"), Some(3)),
+        profile("verpin", "Verpin", Some("main"), Some(190)),
+        profile("thesis", "Thesis", None, None),
+        profile("notion", "Notion Manager", None, None),
+        profile("finance", "Financial Advisor", None, None),
+        profile("cyber", "Cyberzen", Some("master"), None),
+        profile("network", "Network Manager", None, None),
+        profile("club", "Techclub", None, None),
+    ];
+    s.workspace.inbox.list.last_used_profile_id = Some("default".into());
+    super::inbox::picker::toggle_new_menu(s);
+}
+
+/// The new-thread screen's profile switch, filtered by typing, the
+/// second match selected.
+pub fn fixture_profile_menu_search(s: &mut State) {
+    fixture_profile_menu(s);
+    s.chat = None;
+    super::draft::open(s);
+    super::inbox::picker::toggle_draft_menu(s);
+    s.workspace.inbox.picker.search.replace_text("man");
+    s.workspace.inbox.picker.fixture_select(1);
+}
+
 /// Every inbox shelf unfolded, ⌘ held (jump badges), one snooze menu open
 /// and the filters panel.
 pub fn fixture_inbox(s: &mut State) {

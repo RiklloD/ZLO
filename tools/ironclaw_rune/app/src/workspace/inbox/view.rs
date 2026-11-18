@@ -1,41 +1,50 @@
 //! Drawing the sidebar inbox (the render half of GPUI `workspace/inbox.rs`):
-//! the header (search, filters, new thread), the filter panel, the profile
-//! menu, the new-thread draft card, the cards, the shelves and their slim
+//! the header (search, filters, new thread), the filter panel, the
+//! new-thread draft card, the cards, the shelves and their slim
 //! rows.
 
 use rune::{Color, Cx, El, col, el, row};
 use rune_kit::{ControlSize, Kit, Placement, TextInput};
-use zlo_client::inbox::{InboxProfile, InboxState};
+use zlo_client::inbox::InboxState;
 use zlo_client::profiles::DEFAULT_PROFILE_ID;
 
-use super::super::ui::{self, MEDIUM, SM, XS, t, tw};
+use super::super::ui::{self, MEDIUM, XS, tw};
 
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::{Page, State};
 use crate::workspace::draft;
+use crate::workspace::inbox::picker;
 
 pub(in crate::workspace) mod list;
 mod rows;
 
-pub(in crate::workspace) use rows::{branch_label, draft_mark, profile_mark, status_label};
+pub(in crate::workspace) use rows::{
+    branch_label, draft_mark, profile_color, profile_mark, pulse_dots, status_label,
+};
 
 /// The sidebar's thread list with its header. `layer` takes the profile
 /// menu, which floats over the list so no row moves.
-pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
+pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let inbox = &s.workspace.inbox;
     if inbox.new_menu_open {
+        // Under the header, as wide as the list: it covers rows, never the
+        // chat beside them.
+        let width = cx
+            .window_layout_with("inbox-header", |r| r[2])
+            .map_or(picker::WIDTH, |w| (w - 16.).max(picker::MIN_WIDTH));
         layer.push(rune_kit::popover::anchored(
             k,
             col()
-                .w(design::SIDEBAR_WIDTH - 16.)
+                .w(width)
+                .min_h(0.0)
                 .modal(true, |s: &mut State| {
-                    s.workspace.inbox.new_menu_open = false
+                    picker::close(s);
                 })
-                .child(profile_picker(s, k)),
-            "new-thread",
-            Placement::BottomEnd,
-            4.,
+                .child(picker::profile_picker(s, k)),
+            "inbox-header",
+            Placement::Bottom,
+            0.,
         ));
     }
     rows::snooze_menu(s, k, layer);
@@ -97,7 +106,7 @@ fn header(s: &State, k: &Kit) -> El {
                     &icons::SQUARE_PEN,
                     "New thread",
                     ControlSize::Large,
-                    |s| s.workspace.inbox.new_menu_open = !s.workspace.inbox.new_menu_open,
+                    picker::toggle_new_menu,
                 ),
             )
             .key("new-thread"),
@@ -213,92 +222,6 @@ fn filters(s: &State, k: &Kit) -> El {
         .mx(8.)
         .mb(4.)
         .child(ui::floating(p, body, 12.))
-}
-
-/// The new-thread screen's profile menu; the current pick is highlighted.
-/// Also opened from the new-thread screen's profile switch.
-pub fn profile_picker(s: &State, k: &Kit) -> El {
-    let p = &s.palette;
-    let last = s.workspace.inbox.list.last_used_profile_id.clone();
-    let chosen = s.workspace.draft.as_ref().map(|d| d.profile.clone());
-    let mut profiles = s.workspace.inbox.list.profiles.clone();
-    if profiles.is_empty() {
-        profiles.push(InboxProfile {
-            profile_id: DEFAULT_PROFILE_ID.into(),
-            display_name: "Default".into(),
-            git_branch: None,
-            last_used_at: None,
-        });
-    }
-    let rows: Vec<El> = profiles
-        .into_iter()
-        .enumerate()
-        .map(|(ix, profile)| {
-            let highlighted = chosen.as_deref() == Some(profile.profile_id.as_str());
-            let is_last = last.as_deref() == Some(profile.profile_id.as_str());
-            let id = profile.profile_id.clone();
-            let mut r = row()
-                .key(format!("pick-profile-{ix}"))
-                .role("button")
-                .label(format!("Start in {}", profile.display_name))
-                .gap(8.)
-                .px(8.)
-                .py(4.)
-                .center_y()
-                .radius(design::CONTROL_RADIUS)
-                .cursor(rune::Cursor::Pointer)
-                .fill(if highlighted {
-                    p.accent_wash
-                } else {
-                    Color::TRANSPARENT
-                })
-                .hover(p.hover)
-                .child(profile_mark(
-                    p,
-                    &profile.profile_id,
-                    &profile.display_name,
-                    1.,
-                ))
-                .child(
-                    el().grow(1.0).min_w(0.0).child(
-                        t(
-                            profile.display_name.clone(),
-                            SM,
-                            if highlighted { p.text } else { p.text_muted },
-                        )
-                        .truncate(),
-                    ),
-                );
-            if let Some(branch) = profile.git_branch.clone() {
-                r = r.child(branch_label(p, &branch));
-            }
-            if is_last {
-                r = r.child(t("Last used", XS, p.text_faint));
-            }
-            r.on_press(move |s: &mut State| draft::start_in_profile(s, id.clone()))
-        })
-        .collect();
-    ui::floating(
-        p,
-        col()
-            .key("profile-picker")
-            .w_full()
-            .padding(4.)
-            .gap(1.)
-            .child(
-                el().px(8.)
-                    .py(4.)
-                    .child(tw("Start in profile", XS, MEDIUM, p.text_faint)),
-            )
-            .children(rows)
-            .child(ui::ghost_button(
-                k,
-                "New profile",
-                Some(&icons::PLUS),
-                super::new_profile,
-            )),
-        12.,
-    )
 }
 
 pub(super) fn fold(

@@ -25,7 +25,7 @@ use zlo_client::profiles::DEFAULT_PROFILE_ID;
 pub use snapshot::stage_snapshot;
 use submit::{Origin, Submission, send_with, submit};
 
-use super::inbox::{self, view::profile_picker};
+use super::inbox::{self, picker};
 use super::ui::{self, SEMIBOLD, SM, XS, t, tw};
 use crate::chat::menu::{self, ComposerMenu, MenuKey, MenuKeyName};
 use crate::chat::model_picker::ModelPickerState;
@@ -283,7 +283,7 @@ pub(super) fn quick_send(s: &mut State, text: String, voice: Option<crate::voice
 
 /// A profile picked in either menu: open the draft screen in it.
 pub fn start_in_profile(s: &mut State, profile: String) {
-    s.workspace.inbox.new_menu_open = false;
+    picker::close(s);
     open(s);
     let catalog = catalog_thread(s);
     crate::chat::model_picker::draft_set_profile(s, profile.clone(), catalog);
@@ -562,22 +562,17 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             .group_color(p.text),
         )
         .child(ui::glyph(&icons::CHEVRON_DOWN, 12., p.text_faint))
-        .on_press(|s: &mut State| {
-            if let Some(d) = s.workspace.draft.as_mut() {
-                d.menu_open = !d.menu_open;
-            }
-        });
+        .on_press(picker::toggle_draft_menu);
     if draft.menu_open {
         layer.push(rune_kit::popover::anchored(
             k,
             col()
-                .w(260.)
+                .w(picker::WIDTH)
+                .min_h(0.0)
                 .modal(true, |s: &mut State| {
-                    if let Some(d) = s.workspace.draft.as_mut() {
-                        d.menu_open = false;
-                    }
+                    picker::close(s);
                 })
-                .child(profile_picker(s, k)),
+                .child(picker::profile_picker(s, k)),
             "draft-profile",
             Placement::Bottom,
             6.,

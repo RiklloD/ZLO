@@ -226,8 +226,8 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
     }
     let card_line = |id: &str| Line::Card {
         ix: ix_of(id),
-        jump: inbox
-            .cmd_held
+        // The open profile menu numbers its own rows on ⌘.
+        jump: (inbox.cmd_held && !crate::workspace::inbox::picker::is_open(s))
             .then(|| sh.jump.iter().position(|j| j == id))
             .flatten(),
     };

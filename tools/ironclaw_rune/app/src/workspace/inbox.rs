@@ -27,6 +27,7 @@ use crate::jobs;
 use crate::state::{Page, State};
 
 mod labels;
+pub(super) mod picker;
 mod row_menu;
 mod shelves;
 pub(super) mod subagents;
@@ -50,6 +51,8 @@ pub struct Inbox {
     pub filters_open: bool,
     /// The new-thread button's profile menu.
     pub new_menu_open: bool,
+    /// The open profile menu's search and selection (`picker.rs`).
+    pub picker: picker::ProfilePicker,
     pub profile: Option<String>,
     pub model: Option<String>,
     pub state: Option<InboxState>,
@@ -91,6 +94,7 @@ impl Inbox {
             search: TextEdit::new(""),
             filters_open: false,
             new_menu_open: false,
+            picker: picker::ProfilePicker::new(),
             profile: None,
             model: None,
             state: None,
@@ -493,10 +497,7 @@ fn schedule_wake(s: &mut State) {
 
 /// "New profile" in the filters or the profile menu.
 pub(super) fn new_profile(s: &mut State) {
-    s.workspace.inbox.new_menu_open = false;
-    if let Some(draft) = s.workspace.draft.as_mut() {
-        draft.menu_open = false;
-    }
+    picker::close(s);
     super::show(s, Page::Profiles);
     crate::pages::profiles::new_profile(s);
 }
