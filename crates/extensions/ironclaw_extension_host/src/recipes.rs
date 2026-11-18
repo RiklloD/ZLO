@@ -258,6 +258,7 @@ mod tests {
             host_apis: Vec::new(),
             section_surfaces: Vec::new(),
             hooks: Vec::new(),
+            ui_slots: Vec::new(),
         }
     }
 

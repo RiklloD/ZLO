@@ -64,6 +64,7 @@ pub mod native_questions;
 mod notification_channel_resolution;
 pub mod orchestration;
 mod outbound_delivery;
+pub mod plugin_ui;
 mod policy;
 mod process_gate_turn_view;
 mod product_surface_inbound;

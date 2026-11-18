@@ -1359,7 +1359,13 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // 13_026 -> 12_491 (2026-11-10): the fake-only `ProtocolHttpEgress` /
         // `OutboundDeliverySink` ports and their request/response/status
         // types were deleted. Count read from this test's own failure message.
-        ("ironclaw_extension_contracts", 8_160),
+        // 8_160 -> 8_703 (2026-11-18, plugin UI slot protocol): the
+        // `plugin_ui` module — the `reborn.plugin_ui.v1` node tree, its
+        // strict validator (depth/node/size limits, unknown type/field
+        // rejection), and the `[[ui.slots]]` slot vocabulary. Shape
+        // validation only; manifest cross-checks live in the registry and
+        // rendering in product. Count read from this test's failure message.
+        ("ironclaw_extension_contracts", 8_703),
         // Raised 17_501 -> 18_570 by #6831 (standardized messaging framework):
         // the growth is the `messaging` vocabulary — the StandardMessagingOp
         // enum, the 12-code error taxonomy, compiled-in canonical schema/prompt

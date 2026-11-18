@@ -196,6 +196,8 @@ mod lifecycle;
 mod package;
 mod registry;
 pub mod resolved;
+mod ui_slots;
+pub use ui_slots::check_render_descriptor;
 pub mod v2;
 pub mod v3;
 

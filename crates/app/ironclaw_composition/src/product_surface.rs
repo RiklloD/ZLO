@@ -388,8 +388,18 @@ pub(crate) fn build_product_surface_with_channel_connection(
             Some(parts.supermemory),
             runtime.orchestrator.clone(),
         ));
-    Ok(Arc::new(
+    let surface: Arc<dyn ProductSurface> = Arc::new(
         ironclaw_assistant::hooks_page::HooksPageSurface::new(surface, parts.hooks),
+    );
+    // Plugin UI slots: listed from the live active set, rendered through the
+    // product-origin capability path.
+    Ok(Arc::new(
+        ironclaw_assistant::plugin_ui::PluginUiSurface::new(
+            surface,
+            Arc::new(crate::plugin_ui_host::RuntimePluginUiHost::from_runtime(
+                runtime,
+            )),
+        ),
     ))
 }
 

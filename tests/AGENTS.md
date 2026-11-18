@@ -100,7 +100,7 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 | Providers (Google/Slack/GitHub contracts) | — | — | ✓ | ✓ |
 | Coverage/meta gates | — | 2 | ✓ | ✓ |
 
-Totals: **65** group scenarios · **68** flat integration bins (61 in
+Totals: **65** group scenarios · **69** flat integration bins (62 in
 `tests/integration/`, 7 in `tests/integration/auth/`) · **39** top-level Rust bins ·
 **103** Python scenario files (**889** test functions) registered in the active
 Reborn coverage map below. Section 6 separately inventories retained and legacy
@@ -225,7 +225,7 @@ ones speak MTProto over a raw socket with no injectable seam.
 
 ---
 
-## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (68)
+## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (69)
 
 One thread, whole real turn. Grouped by what the user experiences.
 
@@ -319,6 +319,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 | Behavior | Evidence |
 |---|---|
 | An extension installs and activates through the real generic runtime | `extension_runtime.rs` |
+| Install a plugin and see its UI slots listed, rendered by the plugin's own render tool through the product-origin capability path, re-rendered after clicking a button (event round-trip), with a contract-breaking or oversize tree shown as a plain error instead of a tree — while another user who never installed it sees no slots and cannot render one (a new bin because no other scenario wires a fixture first-party render handler) | `plugin_ui.rs` |
 | An inbound channel message is verified and routed by the real generic ingress mount | `extension_ingress.rs` |
 | An outbound reply is published through the real inbound→outbound pipeline — Slack's lands on the native Agent stream (`chat.startStream`→`stopStream` with recipient/thread from the stored reply context), Telegram's as a terminal `sendMessage`; the answer never rides a coordinator send | `extension_delivery.rs` |
 | Pair a Telegram bot actor, run as that verified user, deliver anchored replies and busy notices, disconnect to revoke admission, then pair again to restore delivery (#6643/#6644) | `extension_delivery.rs::paired_telegram_bot_actor_turns_attribute_to_the_user_and_disconnect_revokes_admission` (production generated-code pairing, disconnect/repair, and anchored delivery evidence) |
@@ -359,7 +360,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 | A canonical 10-tool-call agent turn's database write volume is measured and reported (for tracking, not gated) on both libSQL and Postgres, and custom-actor group threads are rejected from canonical durable milestones | `db_write_canonical.rs` |
 | A downloaded run artifact carries per-iteration model-call timing evidence for a completed run, and still carries durable per-message timestamps (with an explicit `run_not_resident` reason) when the process-local timing buffer was evicted or the process restarted | `run_artifact_timings.rs` |
 
-One of the 68 registered bins, `delivery_user_journeys.rs`, holds the explicit
+One of the 69 registered bins, `delivery_user_journeys.rs`, holds the explicit
 channel-delivery journeys (two-lane model):
 
 | A user can… | Scenario |

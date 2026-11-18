@@ -52,6 +52,7 @@ mod observability;
 mod operator_secret_store;
 mod operator_tool_catalog;
 mod outbound_store_assembly;
+mod plugin_ui_host;
 mod product_capability;
 mod product_surface;
 mod production_runtime_policy;

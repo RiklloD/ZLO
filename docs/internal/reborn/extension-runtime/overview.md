@@ -362,6 +362,64 @@ builtin schema refs already resolve. See
 `docs/internal/reborn/extension-runtime/standard-operations.md` for the full
 vocabulary, binding rules, and contract principles.
 
+### 3.5 Plugin UI slots (`[[ui.slots]]`)
+
+A package may contribute UI to the client without shipping client code: it
+declares slots, and the host renders each one by calling one of the
+package's own tools, which returns a **node tree as data**
+(`reborn.plugin_ui.v1`, `ironclaw_extension_contracts::plugin_ui`). The
+backend may run on another machine than the client, so the tree is the whole
+contract between them.
+
+```toml
+[[tools]]
+id = "acme-notes.render"
+origin_gate_matrix = { loop_run = "forbidden", product = "consent_sufficient", automation = "forbidden" }
+effects = []                       # render tools are side-effect-free
+default_permission = "allow"
+visibility = "model"               # see the activation note below
+input_schema_ref = "schemas/render.input.v1.json"
+
+[[ui.slots]]
+id = "notes"                       # [a-z0-9][a-z0-9_-]*, unique per package
+slot = "panel.tab"                 # panel.tab | sidebar.session_row.badge | settings.page
+title = "Notes"
+icon = "icons/notes.svg"           # optional package asset path
+render = "acme-notes.render"       # one of this package's own [[tools]]
+```
+
+Parse-time rules (`ironclaw_extension_registry::ui_slots`): at most 16 slots;
+`render` names a tool of the same manifest; that tool allows `product` origin
+(`consent_sufficient` or `ungated`) and declares no effect beyond
+`read_filesystem`, no credentials, and no network targets. A plugin that needs
+remote data renders what an ordinary, gated tool already fetched — a panel
+never becomes an ungated egress path.
+
+Activation note: lifecycle readiness
+(`ResolvedExtensionManifest::has_model_visible_capabilities`) treats a package
+with no model-visible tool as not ready and never activates it, so a
+slot-only package must keep its render tool `visibility = "model"`;
+`loop_run = "forbidden"` is what keeps the model from invoking it. Counting
+declared slots as a published surface is open follow-up work.
+
+The render tool receives `{ "slot_id", "context": { "thread_id": null|"…" },
+"event": null | { "action", "payload" } }` and must return one node:
+`col`/`row` (`gap?`, `children`), `text` (`text`, `style?` title|body|caption|mono,
+`tone?`), `badge` (`text`, `tone?`), `button` (`label`, `action`, `payload?`,
+`style?` primary|secondary|ghost), `list` (`items: [{title, subtitle?,
+trailing?, action?, payload?}]`), `markdown` (`source`), `divider`;
+`tone` is neutral|success|warning|danger|accent. Unknown types or fields are
+rejected; depth ≤ 8, ≤ 500 nodes, ≤ 64 KiB encoded; a
+`sidebar.session_row.badge` slot must return a single `badge` or `text`.
+
+The host invokes the tool through the ordinary product-origin capability path
+(authorization, the runtime lane), bounds the call to 5 s, persists nothing,
+and turns every failure — a refused or failed call, a timeout, an invalid
+tree — into a plain `{ "error" }` the user sees and the model never does.
+Only active extensions visible to the caller list slots. Routes:
+`ironclaw_webui/CONTRACT.md` (`webui.v2.plugin_ui.*`). Worked fixture:
+`tests/fixtures/extensions/plugin-ui-demo/`.
+
 ## 4. The adapters
 
 Tool surfaces use one adapter. A channel surface exposes a capability set with

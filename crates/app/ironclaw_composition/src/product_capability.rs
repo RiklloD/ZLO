@@ -89,6 +89,36 @@ impl RuntimeProductCapabilityInvoker {
     }
 }
 
+impl RuntimeProductCapabilityInvoker {
+    /// The same product-origin gesture as [`ProductCapabilityInvoker::invoke`]
+    /// — one exact host-issued grant, re-authorized by the runtime — for a
+    /// side-effect-free read whose output must not become durable state (a
+    /// plugin UI render). The descriptor comes from the caller's live
+    /// active-extension snapshot; nothing is replayed or persisted.
+    pub(crate) async fn invoke_unpersisted(
+        &self,
+        caller: &ProductSurfaceCaller,
+        descriptor: &CapabilityDescriptor,
+        input: serde_json::Value,
+    ) -> Result<RuntimeCapabilityOutcome, ProductSurfaceError> {
+        let context = product_execution_context(
+            caller,
+            ActivityId::new(),
+            Some(descriptor),
+            &*self.skill_mount_resolver,
+            &self.system_extensions_lifecycle_mounts,
+        )?;
+        let capability = descriptor.id.clone();
+        let outcome = self
+            .host_runtime
+            .invoke_capability((context, capability, ResourceEstimate::default(), input))
+            .await
+            .map_err(ProductSurfaceError::internal_from)?;
+        ensure_matching_capability(&descriptor.id, &outcome)?;
+        Ok(outcome)
+    }
+}
+
 #[async_trait]
 impl ProductCapabilityInvoker for RuntimeProductCapabilityInvoker {
     async fn invoke(

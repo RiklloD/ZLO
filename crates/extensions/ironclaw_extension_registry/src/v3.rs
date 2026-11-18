@@ -128,6 +128,9 @@ struct RawManifestV3 {
     auth: BTreeMap<String, VendorAuthRecipe>,
     #[serde(default)]
     admin_configuration: Option<ExtensionAdminConfigurationDescriptor>,
+    /// Plugin UI slots (`[[ui.slots]]`); validated in [`crate::ui_slots`].
+    #[serde(default)]
+    ui: Option<crate::ui_slots::RawUiV3>,
     /// Free-form authoring metadata, ignored (same exemption as v2's
     /// `metadata` root).
     #[serde(default)]
@@ -707,6 +710,10 @@ pub(crate) fn parse_v3(
         }
     }
 
+    let ui_slots = raw.ui.map(|ui| ui.slots).unwrap_or_default();
+    crate::ui_slots::validate_ui_slots(&ui_slots, &capabilities)
+        .map_err(|reason| ManifestV3Error::Invalid { reason })?;
+
     let mut host_api_surfaces = Vec::new();
     if let Some(channel) = &raw.channel {
         host_api_surfaces.push(CapabilitySurfaceDeclV2::Channel {
@@ -783,6 +790,7 @@ pub(crate) fn parse_v3(
         host_apis: Vec::new(),
         section_surfaces: Vec::new(),
         hooks: Vec::new(),
+        ui_slots,
     };
 
     Ok((manifest, resolved))

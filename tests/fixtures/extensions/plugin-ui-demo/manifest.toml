@@ -1,0 +1,60 @@
+# Plugin UI slot fixture (`reborn.plugin_ui.v1`).
+#
+# One render tool backs one slot of every kind plus two deliberately broken
+# slots, so the integration suite can prove listing, a real render through the
+# first-party lane, an event round-trip, and the invalid/oversize rejections.
+# The render tool is side-effect-free and explicitly allowed for `product`
+# origin — the manifest parser rejects a render tool that is not. It is
+# `visibility = "model"` only because lifecycle activation treats a package
+# with no model-visible tool as "not ready"; `loop_run = "forbidden"` keeps the
+# model from ever invoking it.
+schema_version = "reborn.extension_manifest.v3"
+id = "plugin-ui-demo"
+name = "Plugin UI Demo"
+version = "0.1.0"
+description = "Fixture plugin that renders one UI slot of each kind."
+trust = "first_party_requested"
+
+[runtime]
+kind = "first_party"
+service = "plugin-ui-demo.extension/v1"
+
+[[tools]]
+origin_gate_matrix = { loop_run = "forbidden", product = "consent_sufficient", automation = "forbidden" }
+id = "plugin-ui-demo.render"
+description = "Render one of the demo plugin's UI slots as a reborn.plugin_ui.v1 tree."
+effects = []
+default_permission = "allow"
+visibility = "model"
+input_schema_ref = "schemas/plugin-ui-demo/render.input.v1.json"
+
+[[ui.slots]]
+id = "panel"
+slot = "panel.tab"
+title = "Demo"
+icon = "icons/demo.svg"
+render = "plugin-ui-demo.render"
+
+[[ui.slots]]
+id = "badge"
+slot = "sidebar.session_row.badge"
+title = "Demo status"
+render = "plugin-ui-demo.render"
+
+[[ui.slots]]
+id = "settings"
+slot = "settings.page"
+title = "Demo settings"
+render = "plugin-ui-demo.render"
+
+[[ui.slots]]
+id = "broken"
+slot = "panel.tab"
+title = "Broken"
+render = "plugin-ui-demo.render"
+
+[[ui.slots]]
+id = "oversize"
+slot = "panel.tab"
+title = "Oversize"
+render = "plugin-ui-demo.render"
