@@ -324,7 +324,10 @@ async fn check_in_background(this: &Arc<SourceSelfUpdate>) {
                     .check_within(&settings, Some(super::git::BACKGROUND_FETCH_TIMEOUT))
                     .map(drop)
             })();
-            // silent-ok: the backend is shutting down and no longer listens.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the backend is shutting down and no longer listens."
+            )]
             let _ = done.send(outcome);
         });
     if let Err(error) = spawned {

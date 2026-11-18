@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 mod backend_client;
 mod cli;
 mod commands;

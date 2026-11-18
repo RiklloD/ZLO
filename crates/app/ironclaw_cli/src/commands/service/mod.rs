@@ -526,9 +526,10 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
             std::fs::rename(&temp, path).with_context(|| format!("replace {}", path.display()))?;
             Ok(())
         })();
-        if result.is_err() {
-            // silent-ok: temp-file cleanup; the original write error is returned
-            let _ = std::fs::remove_file(&temp);
+        if result.is_err()
+            && let Err(error) = std::fs::remove_file(&temp)
+        {
+            tracing::debug!(%error, "could not remove the service file temp copy after a failed write");
         }
         return result;
     }

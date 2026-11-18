@@ -1,3 +1,4 @@
+#![deny(clippy::let_underscore_must_use)]
 use std::{fs, path::Path, process::Command};
 
 fn reborn_bin() -> &'static str {

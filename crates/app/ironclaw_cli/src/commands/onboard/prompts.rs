@@ -353,8 +353,9 @@ impl RawModeGuard {
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        // silent-ok: restoring the terminal in Drop has no caller to report to
-        let _ = crossterm::terminal::disable_raw_mode();
+        if let Err(error) = crossterm::terminal::disable_raw_mode() {
+            tracing::debug!(%error, "could not restore the terminal from raw mode");
+        }
     }
 }
 
@@ -587,7 +588,10 @@ pub(crate) fn read_masked_line() -> std::io::Result<String> {
 fn drain_pending_events() {
     use crossterm::event;
     while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-        // silent-ok: discarding stale input; a read error ends the next poll anyway
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "discarding stale input; a read error ends the next poll anyway"
+        )]
         let _ = event::read();
     }
 }

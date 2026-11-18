@@ -141,8 +141,9 @@ pub(crate) fn run_job(
     let mut record = RunRecord::running("Fetching the source");
     let mut step = |record: &mut RunRecord, message: &str, log: &mut std::fs::File| {
         record.message = Some(message.to_string());
-        // silent-ok: the log is diagnostics; the record write below is the authority.
-        let _ = writeln!(log, "== {message}");
+        if let Err(error) = writeln!(log, "== {message}") {
+            tracing::debug!(%error, "update: could not append to the run log");
+        }
         progress(message);
         records::write_run(input.paths, record)
     };
@@ -151,8 +152,9 @@ pub(crate) fn run_job(
     let finished = match outcome {
         Ok(message) => record.finish(UpdateRunState::Succeeded, message),
         Err(error) => {
-            // silent-ok: as above; the failure message is recorded either way.
-            let _ = writeln!(log, "!! {error:#}");
+            if let Err(error) = writeln!(log, "!! {error:#}") {
+                tracing::debug!(%error, "update: could not append to the run log");
+            }
             record.finish(UpdateRunState::Failed, format!("{error}"))
         }
     };
