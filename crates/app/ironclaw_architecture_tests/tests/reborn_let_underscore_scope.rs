@@ -39,6 +39,8 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_auth",
     "ironclaw_authorization",
     "ironclaw_capabilities",
+    "ironclaw_cli",
+    "ironclaw_cli_providers",
     "ironclaw_common",
     "ironclaw_composition",
     "ironclaw_computer_use",
@@ -62,6 +64,7 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_host_runtime",
     "ironclaw_identity",
     "ironclaw_libsql_runtime",
+    "ironclaw_llm",
     "ironclaw_loop_contracts",
     "ironclaw_loop_host",
     "ironclaw_mcp",
@@ -84,6 +87,7 @@ const TRIAGED_CRATES: &[&str] = &[
     "ironclaw_skills",
     "ironclaw_supermemory",
     "ironclaw_threads",
+    "ironclaw_trace_commons",
     "ironclaw_triggers",
     "ironclaw_trust",
     "ironclaw_turn_runner",
@@ -205,9 +209,13 @@ fn triaged_crates_deny_let_underscore_must_use_in_every_target_root() {
     for name in TRIAGED_CRATES {
         let directory = crate_dir(&root, name);
         let roots = target_roots(&directory);
+        // Non-vacuity per crate: a library or a binary root must be found
+        // (`ironclaw_cli` is binary-only).
         assert!(
-            roots.iter().any(|path| path.ends_with("src/lib.rs")),
-            "{name}: expected a src/lib.rs target root; the scan found {roots:?}"
+            roots
+                .iter()
+                .any(|path| path.ends_with("src/lib.rs") || path.ends_with("src/main.rs")),
+            "{name}: expected a src/lib.rs or src/main.rs target root; the scan found {roots:?}"
         );
         for path in roots {
             let source = fs::read_to_string(&path)
