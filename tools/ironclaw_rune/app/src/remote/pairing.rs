@@ -72,12 +72,14 @@ pub struct PageState {
 pub fn opened(s: &mut State) {
     discover(s);
     load_devices(s);
+    super::linked::opened(s);
 }
 
 /// A new computer answered: the page's per-computer parts reload.
 pub fn connected(s: &mut State) {
     if s.page == crate::state::Page::Computers {
         load_devices(s);
+        super::linked::opened(s);
     }
 }
 
@@ -217,7 +219,47 @@ pub fn submit_ssh(s: &mut State) {
         use zlo_client::ssh;
         let t = target.clone();
         let opened = tokio::task::spawn_blocking(move || {
-            let code = ssh::remote_pair_code(&t, ssh::run_ssh)?;
+            let code = match ssh::remote_pair_code(&t, ssh::run_ssh) {
+                // Nothing runs there yet: start it (ZLO then owns it, and
+                // removing the computer stops it), and ask again.
+                Err(e) if ssh::backend_not_running(&e) => {
+                    ssh::start_backend(&t, ssh::run_ssh)?;
+                    let mut last = e;
+                    let mut found = None;
+                    for _ in 0..10 {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        match ssh::remote_pair_code(&t, ssh::run_ssh) {
+                            Ok(code) => {
+                                found = Some(code);
+                                break;
+                            }
+                            Err(e) if ssh::backend_not_running(&e) => last = e,
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    found.ok_or(last)?
+                }
+                // Not installed: start building it there.
+                Err(ssh::SshError::NotInstalled(host)) => {
+                    return Err(match ssh::install_backend(&t, ssh::run_ssh)? {
+                        true => ssh::SshError::PairFailed {
+                            host: host.clone(),
+                            line: format!(
+                                "ZLO isn't installed on {host} yet, so ZLO started building it there \
+                                 (10 to 20 minutes; log in ~/.zlo/run/install.log). Pair again when it is done."
+                            ),
+                        },
+                        false => ssh::SshError::PairFailed {
+                            host: host.clone(),
+                            line: format!(
+                                "ZLO isn't installed on {host}, and it has no Rust to build it. Install \
+                                 Rust there (rustup.rs) and pair again, or install ZLO there yourself."
+                            ),
+                        },
+                    });
+                }
+                other => other?,
+            };
             let port = code.backend_port.unwrap_or(ssh::DEFAULT_BACKEND_PORT);
             let local = super::tunnel::open(&t, port)?;
             Ok::<_, ssh::SshError>((code, port, local))
@@ -349,6 +391,12 @@ pub(crate) fn paired(s: &mut State, result: Result<Paired, PairError>) {
 pub fn remove(s: &mut State, environment_id: String) {
     s.remote.page.confirm_remove = None;
     let was_active = s.remote.registry.active == Active::Environment(environment_id.clone());
+    let removed_routes = s
+        .remote
+        .registry
+        .get(&environment_id)
+        .map(|e| e.routes.clone())
+        .unwrap_or_default();
     s.remote
         .registry
         .environments
@@ -356,6 +404,31 @@ pub fn remove(s: &mut State, environment_id: String) {
     s.remote.problems.remove(&environment_id);
     s.remote.last_thread.remove(&environment_id);
     super::updates::forget(s, &environment_id);
+    // A server ZLO launched over SSH stops with its computer; one it found
+    // running is left alone (the host's pid file says which).
+    if !s.fixture {
+        let ssh_targets: Vec<zlo_client::ssh::SshTarget> = removed_routes
+            .iter()
+            .filter(|r| r.kind == zlo_client::environments::RouteKind::Ssh)
+            .filter_map(|r| zlo_client::ssh::SshTarget::from_url(&r.url).ok())
+            .collect();
+        if !ssh_targets.is_empty() {
+            jobs::blocking(
+                s,
+                move || {
+                    for t in &ssh_targets {
+                        if let Err(e) =
+                            zlo_client::ssh::stop_launched_backend(t, zlo_client::ssh::run_ssh)
+                        {
+                            tracing::debug!(error = %e, "launched backend not stopped");
+                        }
+                    }
+                    Ok::<(), String>(())
+                },
+                |_, _, _| {},
+            );
+        }
+    }
     if !s.fixture {
         let tokens = s.remote.tokens.clone();
         let id = environment_id.clone();
@@ -412,6 +485,26 @@ pub fn link_origin(s: &State) -> Option<String> {
 }
 
 pub fn issue_code(s: &mut State) {
+    issue_code_with(
+        s,
+        zlo_client::environment_access::PairingCodeRequest::default(),
+    );
+}
+
+/// A code for a device that may only read threads (a phone, a dashboard).
+pub fn issue_read_only_code(s: &mut State) {
+    issue_code_with(
+        s,
+        zlo_client::environment_access::PairingCodeRequest {
+            scopes: Some(vec![
+                zlo_client::environment_access::DeviceScope::OrchestrationRead,
+            ]),
+            peer_link: None,
+        },
+    );
+}
+
+fn issue_code_with(s: &mut State, request: zlo_client::environment_access::PairingCodeRequest) {
     let page = &mut s.remote.page;
     if page.issuing {
         return;
@@ -421,7 +514,7 @@ pub fn issue_code(s: &mut State) {
     jobs::run(
         s,
         "pairing code",
-        |c| async move { c.issue_pairing_code().await },
+        move |c| async move { c.issue_scoped_code(&request).await },
         |s, result, _| {
             let origin = link_origin(s);
             let page = &mut s.remote.page;

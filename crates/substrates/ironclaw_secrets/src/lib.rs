@@ -39,6 +39,8 @@ use ironclaw_host_api::{
 };
 pub use legacy_store::SecretError;
 pub use secrecy::SecretString as SecretMaterial;
+
+pub mod reference;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;

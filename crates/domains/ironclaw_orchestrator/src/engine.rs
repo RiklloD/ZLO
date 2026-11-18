@@ -84,6 +84,12 @@ pub struct Engine {
     pub(crate) git_checkpoints: crate::repo::Checkpoints,
     /// Operator consoles of threads (`crate::console`).
     pub(crate) consoles: crate::console::Consoles,
+    /// Linked environments (`crate::peer`), plugged in by the host.
+    pub(crate) peer_links: OnceLock<Arc<dyn ironclaw_product_contracts::peer::PeerLinkService>>,
+    /// Where answered secrets go (`crate::agent_requests`), plugged in by the host.
+    pub(crate) secret_vault: OnceLock<Arc<dyn crate::agent_requests::SecretVault>>,
+    /// Tool calls waiting on an agent request, woken when it is answered.
+    pub(crate) request_waiters: StdMutex<HashMap<String, Arc<Notify>>>,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -137,6 +143,9 @@ impl Engine {
             extra_turn_listeners: StdMutex::new(Vec::new()),
             git_checkpoints: StdMutex::new(HashMap::new()),
             consoles: Default::default(),
+            peer_links: OnceLock::new(),
+            secret_vault: OnceLock::new(),
+            request_waiters: StdMutex::new(HashMap::new()),
         }))
     }
 
@@ -292,6 +301,8 @@ impl Engine {
         log_step("transfers", self.deliver_transfers_now().await);
         log_step("usage limits", self.fire_usage_limits().await);
         log_step("goal checks", self.run_goal_checks().await);
+        log_step("remote tasks", self.follow_remote_tasks().await);
+        log_step("agent requests", self.expire_agent_requests().await);
     }
 
     /// Clean quit: hold every thread this instance is running as

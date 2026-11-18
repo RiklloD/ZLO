@@ -22,6 +22,7 @@
 //! ([`store::Store`]).
 
 #![deny(clippy::let_underscore_must_use)]
+pub mod agent_requests;
 pub mod cli_approvals;
 mod console;
 pub mod context_report;
@@ -35,12 +36,14 @@ pub mod history_sources;
 pub mod inbox;
 mod migrate;
 pub mod model;
+pub mod peer;
 pub mod profile_runtime;
 pub mod profiles;
 mod recovery;
 mod repo;
 #[cfg(test)]
 mod repo_tests;
+pub mod resources;
 pub mod restart;
 pub mod runtime;
 pub mod schedule_webhooks;

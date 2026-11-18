@@ -46,6 +46,7 @@ mod memory_binding;
 mod memory_page_parts;
 mod memory_provider_factory;
 mod model_gateway_assembly;
+mod multi_machine;
 mod notification_store_assembly;
 mod observability;
 mod operator_secret_store;

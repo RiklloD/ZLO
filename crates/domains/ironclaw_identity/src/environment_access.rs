@@ -34,10 +34,11 @@ use ironclaw_host_api::{
     resource::ResourceScope,
 };
 use ironclaw_product_contracts::environment_access::{
-    DEVICE_TOKEN_PREFIX, DeviceId, DeviceList, DevicePairedBy, DeviceSummary,
-    EnvironmentAccessError, EnvironmentAccessService, EnvironmentId, EnvironmentIdentity,
-    PAIRING_CODE_ALPHABET, PAIRING_CODE_LEN, PairClient, PairedDevice, PairingCodeIssued,
-    display_pairing_code, normalize_pairing_code,
+    DEVICE_TOKEN_PREFIX, DeviceGrant, DeviceId, DeviceList, DevicePairedBy, DeviceScope,
+    DeviceSummary, EnvironmentAccessError, EnvironmentAccessService, EnvironmentId,
+    EnvironmentIdentity, PAIRING_CODE_ALPHABET, PAIRING_CODE_LEN, PEER_LINK_TTL_DAYS, PairClient,
+    PairedDevice, PairingCodeIssued, PairingCodeRequest, PeerLinkAccess, display_pairing_code,
+    normalize_pairing_code,
 };
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -70,6 +71,11 @@ struct StoredPairingCode {
     created_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
     consumed_at: Option<DateTime<Utc>>,
+    /// Codes from before scopes grant every scope.
+    #[serde(default = "DeviceScope::all")]
+    scopes: Vec<DeviceScope>,
+    #[serde(default)]
+    peer_link: Option<PeerLinkAccess>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +108,26 @@ struct StoredDevice {
     revoked_at: Option<DateTime<Utc>>,
     paired_by: StoredPairedBy,
     tailnet_login: Option<String>,
+    /// Devices from before scopes have every scope.
+    #[serde(default = "DeviceScope::all")]
+    scopes: Vec<DeviceScope>,
+    #[serde(default)]
+    peer_link: Option<PeerLinkAccess>,
+}
+
+/// What a new device grant may do.
+struct GrantShape {
+    scopes: Vec<DeviceScope>,
+    peer_link: Option<PeerLinkAccess>,
+}
+
+impl GrantShape {
+    fn full() -> Self {
+        Self {
+            scopes: DeviceScope::all(),
+            peer_link: None,
+        }
+    }
 }
 
 /// [`EnvironmentAccessService`] over a [`ScopedFilesystem`].
@@ -218,21 +244,29 @@ where
         client: PairClient,
         paired_by: StoredPairedBy,
         tailnet_login: Option<String>,
+        grant: GrantShape,
     ) -> Result<PairedDevice, EnvironmentAccessError> {
         let environment = self.environment().await?;
         let (device_id, token) = mint_device_token()?;
+        let now = Utc::now();
+        // A peer link lasts a fixed time; linking again mints a new grant.
+        let expires_at = grant
+            .peer_link
+            .map(|_| now + Duration::days(PEER_LINK_TTL_DAYS));
         let record = StoredDevice {
             device_id: device_id.clone(),
             label: bounded_client_field(&client.label, "Unnamed device"),
             os: bounded_client_field(&client.os, ""),
             app_version: bounded_client_field(&client.app_version, ""),
             token_hash: sha256_hex(token.as_bytes()),
-            created_at: Utc::now(),
+            created_at: now,
             last_seen_at: None,
-            expires_at: None,
+            expires_at,
             revoked_at: None,
             paired_by,
             tailnet_login,
+            scopes: grant.scopes,
+            peer_link: grant.peer_link,
         };
         let path = device_path(&device_id)?;
         self.put_record(&path, &record, CasExpectation::Absent)
@@ -292,13 +326,18 @@ where
             .ok_or_else(|| unavailable("environment record", "missing; ensure_environment not run"))
     }
 
-    async fn issue_pairing_code(&self) -> Result<PairingCodeIssued, EnvironmentAccessError> {
+    async fn issue_pairing_code(
+        &self,
+        request: PairingCodeRequest,
+    ) -> Result<PairingCodeIssued, EnvironmentAccessError> {
         let canonical = mint_pairing_code();
         let now = Utc::now();
         let record = StoredPairingCode {
             created_at: now,
             expires_at: now + PAIRING_CODE_TTL,
             consumed_at: None,
+            scopes: request.effective_scopes(),
+            peer_link: request.peer_link,
         };
         let path = pairing_code_path(&canonical)?;
         self.put_record(&path, &record, CasExpectation::Absent)
@@ -307,6 +346,8 @@ where
         Ok(PairingCodeIssued {
             code: display_pairing_code(&canonical),
             expires_at: record.expires_at,
+            scopes: record.scopes,
+            peer_link: record.peer_link,
         })
     }
 
@@ -320,7 +361,7 @@ where
         let now = Utc::now();
         // One CAS write consumes the code: a racer re-reads the consumed
         // record on retry and gets the same `InvalidCode` as any other miss.
-        cas_update(
+        let grant = cas_update(
             &self.filesystem,
             &self.scope,
             &path,
@@ -337,12 +378,16 @@ where
                     return Err(EnvironmentAccessError::InvalidCode);
                 }
                 record.consumed_at = Some(now);
-                Ok(CasApply::new(record, ()))
+                let grant = GrantShape {
+                    scopes: record.scopes.clone(),
+                    peer_link: record.peer_link,
+                };
+                Ok(CasApply::new(record, grant))
             },
         )
         .await
         .map_err(|error| map_cas_error("consume pairing code", error))?;
-        self.create_device(client, StoredPairedBy::OneTimeCode, None)
+        self.create_device(client, StoredPairedBy::OneTimeCode, None, grant)
             .await
     }
 
@@ -355,6 +400,7 @@ where
             client,
             StoredPairedBy::TailnetIdentity,
             Some(bounded_client_field(tailnet_login, "")),
+            GrantShape::full(),
         )
         .await
     }
@@ -362,7 +408,7 @@ where
     async fn authenticate_device(
         &self,
         token: &str,
-    ) -> Result<Option<DeviceId>, EnvironmentAccessError> {
+    ) -> Result<Option<DeviceGrant>, EnvironmentAccessError> {
         let Some(device_id) = DeviceId::from_device_token(token) else {
             return Ok(None);
         };
@@ -403,7 +449,12 @@ where
                 );
             }
         }
-        Ok(Some(device_id))
+        Ok(Some(DeviceGrant {
+            device_id,
+            label: device.label,
+            scopes: device.scopes,
+            peer_link: device.peer_link,
+        }))
     }
 
     async fn list_devices(
@@ -444,6 +495,9 @@ where
                 created_at: record.created_at,
                 last_seen_at: record.last_seen_at,
                 revoked_at: record.revoked_at,
+                scopes: record.scopes,
+                peer_link: record.peer_link,
+                expires_at: record.expires_at,
             });
         }
         devices.sort_by_key(|device| device.created_at);
@@ -589,6 +643,8 @@ fn device_path(device_id: &DeviceId) -> Result<ScopedPath, EnvironmentAccessErro
 fn scoped_path(raw: String) -> Result<ScopedPath, EnvironmentAccessError> {
     ScopedPath::new(raw).map_err(|error| unavailable("build environment path", error))
 }
+
+mod peer_links;
 
 #[cfg(test)]
 mod tests;

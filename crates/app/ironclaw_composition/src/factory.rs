@@ -839,7 +839,12 @@ where
     // share the SAME master key — secrets written admin-side decrypt under the
     // user's own store and vice versa.
     let crypto = Arc::new(ironclaw_secrets::SecretsCrypto::new(master_key)?);
-    let store = Arc::new(SecretStore::new(scoped_filesystem, Arc::clone(&crypto)));
+    // A stored `op://vault/item/field` is read from 1Password when consumed.
+    let store = Arc::new(
+        SecretStore::new(scoped_filesystem, Arc::clone(&crypto)).with_reference_resolver(Arc::new(
+            ironclaw_secrets::reference::OnePasswordReferenceResolver::default(),
+        )),
+    );
     Ok((store, crypto))
 }
 

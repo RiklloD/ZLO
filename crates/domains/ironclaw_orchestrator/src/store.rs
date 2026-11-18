@@ -506,6 +506,9 @@ impl Store {
                 .await?;
             conn.execute_batch(crate::history_sources::RUN_ORIGINS_SCHEMA)
                 .await?;
+            conn.execute_batch(crate::peer::PEER_SCHEMA).await?;
+            conn.execute_batch(crate::agent_requests::AGENT_REQUESTS_SCHEMA)
+                .await?;
         }
         crate::schedules::upgrade_schema(self).await?;
         self.upgrade_inbox_schema().await?;
@@ -597,6 +600,19 @@ impl Store {
             }
         };
         Ok(())
+    }
+
+    /// Threads with a turn running now (load balancing).
+    pub async fn running_threads(&self) -> Result<u32> {
+        let n = self
+            .row(
+                "SELECT COUNT(*) FROM orch_threads WHERE turn_state = 'running'",
+                vec![],
+                |r| Cols::new(r).int(),
+            )
+            .await?
+            .unwrap_or(0);
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 
     pub async fn thread(&self, id: &ThreadId) -> Result<Option<ThreadRecord>> {

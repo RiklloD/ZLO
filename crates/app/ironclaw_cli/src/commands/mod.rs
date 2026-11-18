@@ -4,6 +4,7 @@ pub(crate) mod completion;
 pub(crate) mod config;
 pub(crate) mod devices;
 pub(crate) mod doctor;
+pub(crate) mod environment;
 pub(crate) mod export;
 pub(crate) mod extension;
 pub(crate) mod import;
@@ -39,6 +40,8 @@ pub(crate) enum Command {
     Devices(devices::DevicesCommand),
     /// Check Reborn binary configuration without creating state.
     Doctor(doctor::DoctorCommand),
+    /// Link your other machines so agents here can work there.
+    Environment(environment::EnvironmentCommand),
     /// Write this computer's ZLO setup to one encrypted file for another computer.
     Export(export::ExportCommand),
     /// Manage local Reborn extension lifecycle.
@@ -101,6 +104,9 @@ impl Command {
                     crate::context::RebornCliContext::resolve_from_env()?
                 };
                 command.execute(context)
+            }
+            Self::Environment(command) => {
+                command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
             Self::Export(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)

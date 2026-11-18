@@ -23,6 +23,8 @@ pub const PAIR_PATH: &str = "/api/auth/pair";
 pub const PAIR_TAILNET_PATH: &str = "/api/auth/pair/tailnet";
 /// Operator route listing paired devices; `/{device_id}` revokes one.
 pub const DEVICES_PATH: &str = "/api/auth/devices";
+/// How long a peer-link grant stays valid; linking again renews it.
+pub const PEER_LINK_TTL_DAYS: i64 = 30;
 
 /// The remote-access protocol this build speaks. A client and a backend
 /// connect only when both report the same value.
@@ -53,6 +55,16 @@ pub struct EnvironmentDescriptor {
     /// (`crate::self_update`). `false` from older backends.
     #[serde(default)]
     pub self_update: bool,
+    /// Addresses this backend is reachable on besides `tailnet_url`
+    /// (`http://<tailnet ip>:<port>` while the private listener runs), so
+    /// a connected client can learn them as routes. Hints only: a client
+    /// uses one after its descriptor reports this environment's id.
+    #[serde(default)]
+    pub addresses: Vec<String>,
+    /// This backend answers peer-link calls from another environment
+    /// (`crate::peer`). `false` from older backends.
+    #[serde(default)]
+    pub peer_links: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +82,12 @@ pub struct PairingCodeIssued {
     /// `XXXX-XXXX-XXXX`, Crockford base32, single use.
     pub code: String,
     pub expires_at: DateTime<Utc>,
+    /// What the device that redeems this code may do.
+    #[serde(default = "DeviceScope::all")]
+    pub scopes: Vec<DeviceScope>,
+    /// `Some` when the code pairs another environment as a peer link.
+    #[serde(default)]
+    pub peer_link: Option<PeerLinkAccess>,
 }
 
 impl fmt::Debug for PairingCodeIssued {
@@ -77,7 +95,179 @@ impl fmt::Debug for PairingCodeIssued {
         f.debug_struct("PairingCodeIssued")
             .field("code", &"<redacted>")
             .field("expires_at", &self.expires_at)
+            .field("scopes", &self.scopes)
+            .field("peer_link", &self.peer_link)
             .finish()
+    }
+}
+
+/// One thing a paired device may do. A device paired without a scope list
+/// gets [`DeviceScope::all`], the access every device had before scopes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceScope {
+    /// Read threads, runs, projects and the inbox.
+    OrchestrationRead,
+    /// Start, message, steer and stop threads; answer questions and approvals.
+    OrchestrationOperate,
+    /// Run commands in a thread's console.
+    TerminalOperate,
+    /// Browse and read host files.
+    FilesystemRead,
+    /// Edit host files.
+    FilesystemWrite,
+    /// Change settings, profiles, extensions, providers and secrets.
+    SettingsManage,
+    /// Issue pairing codes, list and revoke devices, manage peer links.
+    AccessManage,
+    /// Operator maintenance: updates, service control, diagnostics, logs.
+    EnvironmentManage,
+}
+
+impl DeviceScope {
+    pub const ALL: [Self; 8] = [
+        Self::OrchestrationRead,
+        Self::OrchestrationOperate,
+        Self::TerminalOperate,
+        Self::FilesystemRead,
+        Self::FilesystemWrite,
+        Self::SettingsManage,
+        Self::AccessManage,
+        Self::EnvironmentManage,
+    ];
+
+    /// Every scope (the default for a pairing without a scope list).
+    pub fn all() -> Vec<Self> {
+        Self::ALL.to_vec()
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OrchestrationRead => "orchestration:read",
+            Self::OrchestrationOperate => "orchestration:operate",
+            Self::TerminalOperate => "terminal:operate",
+            Self::FilesystemRead => "filesystem:read",
+            Self::FilesystemWrite => "filesystem:write",
+            Self::SettingsManage => "settings:manage",
+            Self::AccessManage => "access:manage",
+            Self::EnvironmentManage => "environment:manage",
+        }
+    }
+
+    /// Parse the `area:verb` form (`orchestration:read`) or the snake form.
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        Self::ALL.into_iter().find(|scope| {
+            scope.as_str() == raw
+                || serde_json::to_value(scope)
+                    .ok()
+                    .and_then(|value| value.as_str().map(|s| s == raw))
+                    .unwrap_or(false)
+        })
+    }
+
+    /// Scopes in a stable order without duplicates; an empty list stays empty.
+    pub fn normalize(scopes: &[Self]) -> Vec<Self> {
+        let mut out = scopes.to_vec();
+        out.sort();
+        out.dedup();
+        out
+    }
+}
+
+impl fmt::Display for DeviceScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The most another environment's agents may do here through a peer link.
+/// Ordered: `ReadOnly < Operate < Full`. An agent never gets more than both
+/// this and its own mode on the linking side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerLinkAccess {
+    /// Read capabilities, tasks and threads the link started.
+    ReadOnly,
+    /// Also start, message and stop threads, fenced to threads the link started.
+    Operate,
+    /// Everything this machine's own agents can do; work is still marked
+    /// with where it came from.
+    Full,
+}
+
+impl PeerLinkAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::Operate => "operate",
+            Self::Full => "full",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "read_only" | "read-only" | "readonly" | "read" => Some(Self::ReadOnly),
+            "operate" | "supervised" | "auto" => Some(Self::Operate),
+            "full" | "full_access" | "full-access" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    /// The device scopes a peer-link grant carries outside the peer route.
+    /// Only a full link reaches the ordinary API.
+    pub fn device_scopes(self) -> Vec<DeviceScope> {
+        match self {
+            Self::Full => DeviceScope::all(),
+            Self::ReadOnly | Self::Operate => Vec::new(),
+        }
+    }
+}
+
+impl fmt::Display for PeerLinkAccess {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// `POST /api/auth/pairing-codes` body (optional; an empty body is
+/// `{scopes: all, peer_link: null}`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingCodeRequest {
+    /// What the paired device may do. `None` is every scope.
+    #[serde(default)]
+    pub scopes: Option<Vec<DeviceScope>>,
+    /// Pair another environment as a peer link with this access.
+    #[serde(default)]
+    pub peer_link: Option<PeerLinkAccess>,
+}
+
+impl PairingCodeRequest {
+    /// The scopes a device redeeming this code gets.
+    pub fn effective_scopes(&self) -> Vec<DeviceScope> {
+        match (self.peer_link, &self.scopes) {
+            (Some(access), _) => access.device_scopes(),
+            (None, Some(scopes)) => DeviceScope::normalize(scopes),
+            (None, None) => DeviceScope::all(),
+        }
+    }
+}
+
+/// What a live device token grants, as [`EnvironmentAccessService::authenticate_device`]
+/// reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceGrant {
+    pub device_id: DeviceId,
+    /// The device's label (for a peer link: the linking environment's name).
+    pub label: String,
+    pub scopes: Vec<DeviceScope>,
+    /// `Some` for a peer link from another environment.
+    pub peer_link: Option<PeerLinkAccess>,
+}
+
+impl DeviceGrant {
+    pub fn allows(&self, scope: DeviceScope) -> bool {
+        self.scopes.contains(&scope)
     }
 }
 
@@ -150,6 +340,16 @@ pub struct DeviceSummary {
     pub revoked_at: Option<DateTime<Utc>>,
     /// The device whose token made this request.
     pub current: bool,
+    /// What the device may do. Records from before scopes have every scope.
+    #[serde(default = "DeviceScope::all")]
+    pub scopes: Vec<DeviceScope>,
+    /// `Some` when the device is another environment's peer link.
+    #[serde(default)]
+    pub peer_link: Option<PeerLinkAccess>,
+    /// When the grant stops working (peer links last
+    /// [`PEER_LINK_TTL_DAYS`]); `None` never expires.
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// `GET /api/auth/devices` response.
@@ -379,8 +579,12 @@ pub trait EnvironmentAccessService: Send + Sync {
     /// The installation's permanent id and label.
     async fn environment(&self) -> Result<EnvironmentIdentity, EnvironmentAccessError>;
 
-    /// Issue a new single-use code, valid five minutes.
-    async fn issue_pairing_code(&self) -> Result<PairingCodeIssued, EnvironmentAccessError>;
+    /// Issue a new single-use code, valid five minutes, for a device with
+    /// the scopes (or peer-link access) `request` names.
+    async fn issue_pairing_code(
+        &self,
+        request: PairingCodeRequest,
+    ) -> Result<PairingCodeIssued, EnvironmentAccessError>;
 
     /// Consume `code` (any case, dashes optional) and create a device grant.
     /// Concurrent redemptions of one code: exactly one succeeds.
@@ -398,12 +602,13 @@ pub trait EnvironmentAccessService: Send + Sync {
         client: PairClient,
     ) -> Result<PairedDevice, EnvironmentAccessError>;
 
-    /// The device a presented `icd_` token belongs to, when the token is
-    /// live (known, matching hash, not revoked). Records `last_seen_at`.
+    /// The grant a presented `icd_` token carries, when the token is live
+    /// (known, matching hash, not revoked, not expired). Records
+    /// `last_seen_at`.
     async fn authenticate_device(
         &self,
         token: &str,
-    ) -> Result<Option<DeviceId>, EnvironmentAccessError>;
+    ) -> Result<Option<DeviceGrant>, EnvironmentAccessError>;
 
     /// Every device, revoked ones included. `current` marks `current_device`.
     async fn list_devices(
@@ -430,7 +635,9 @@ mod tests {
             "pairing": ["one_time_code", "tailnet_identity"],
             "tailnet_url": "https://studio.tail9915dd.ts.net",
             "build_commit": "94172fa26",
-            "self_update": true
+            "self_update": true,
+            "addresses": ["http://100.101.102.103:3000"],
+            "peer_links": true
         });
         let parsed: EnvironmentDescriptor = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(
@@ -453,6 +660,8 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.build_commit, None);
         assert!(!parsed.self_update);
+        assert!(parsed.addresses.is_empty());
+        assert!(!parsed.peer_links);
     }
 
     #[test]
@@ -465,6 +674,8 @@ mod tests {
         let code = PairingCodeIssued {
             code: "7KQ2-M9XD-4TRA".into(),
             expires_at: Utc::now(),
+            scopes: DeviceScope::all(),
+            peer_link: None,
         };
         let request = PairRequest {
             code: "7KQ2-M9XD-4TRA".into(),
@@ -484,6 +695,44 @@ mod tests {
                 "{rendered}"
             );
         }
+    }
+
+    #[test]
+    fn scopes_parse_both_spellings_and_peer_links_narrow_them() {
+        assert_eq!(
+            DeviceScope::parse("orchestration:read"),
+            Some(DeviceScope::OrchestrationRead)
+        );
+        assert_eq!(
+            DeviceScope::parse("filesystem_write"),
+            Some(DeviceScope::FilesystemWrite)
+        );
+        assert_eq!(DeviceScope::parse("root"), None);
+        let operate = PairingCodeRequest {
+            scopes: Some(DeviceScope::all()),
+            peer_link: Some(PeerLinkAccess::Operate),
+        };
+        assert!(operate.effective_scopes().is_empty());
+        assert_eq!(
+            PairingCodeRequest::default().effective_scopes(),
+            DeviceScope::all()
+        );
+        assert!(PeerLinkAccess::ReadOnly < PeerLinkAccess::Operate);
+        assert!(PeerLinkAccess::Operate < PeerLinkAccess::Full);
+    }
+
+    #[test]
+    fn device_rows_from_before_scopes_keep_every_scope() {
+        let row: DeviceSummary = serde_json::from_value(serde_json::json!({
+            "device_id": "0123456789abcdef0123456789abcdef",
+            "label": "Air", "os": "macOS", "app_version": "0.1.0",
+            "paired_by": "one_time_code",
+            "created_at": "2026-11-08T10:00:00Z",
+            "last_seen_at": null, "revoked_at": null, "current": false
+        }))
+        .unwrap();
+        assert_eq!(row.scopes, DeviceScope::all());
+        assert_eq!(row.peer_link, None);
     }
 
     #[test]

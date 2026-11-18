@@ -225,9 +225,13 @@ impl Engine {
     pub(crate) async fn schedule_tool(
         &self,
         ctx: &CallContext,
-        a: ScheduleArgs,
+        mut a: ScheduleArgs,
         authority: ScheduleAuthority,
     ) -> Result<Value> {
+        // A signing secret from `t3_request_secret` arrives as a one-use ref.
+        if let Some(Some(signature)) = a.signature.as_mut() {
+            self.resolve_signature_secret_ref(signature).await?;
+        }
         match a.action.as_str() {
             "list" => self.schedule_list(ctx).await,
             "create" => self.schedule_create(ctx, a).await,

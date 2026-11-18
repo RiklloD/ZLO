@@ -32,6 +32,12 @@ pub struct DelegateRequest {
     /// `shared` (the default: the parent's folder) or `worktree` (a git
     /// worktree and branch of its own, from the parent folder's HEAD).
     pub isolation: Option<String>,
+    /// Another environment to run on (`crate::peer`); handled before here.
+    pub environment: Option<String>,
+    /// Set by the receiving side of a peer link: the child is that link's
+    /// work, its result is read over the link (never delivered as a turn).
+    #[serde(skip)]
+    pub peer_origin: Option<crate::peer::LinkOrigin>,
 }
 
 /// Where a delegated child works.
@@ -66,7 +72,7 @@ impl ChildContext {
 }
 
 /// Provider/model (and, from stage 3, profile) for a child or fork.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq)]
 #[serde(default)]
 pub struct Target {
     pub provider: Option<String>,
@@ -216,10 +222,12 @@ impl Engine {
             .filter(|r| r.capabilities().native_fork)
             .map(|r| r.id().to_string())
             .collect();
+        let environments = self.environments_view().await;
         Ok(json!({
             "inherited": {"provider": ctx.provider, "model": ctx.model, "threadId": ctx.thread_id.as_str()},
             "profiles": profiles,
             "providers": providers,
+            "environments": environments,
             "features": {
                 "delegation": true, "asyncWait": true, "cancel": true, "fork": true,
                 "nativeForkRuntimes": native_fork, "mergeBack": true, "durableQueue": true,
@@ -227,6 +235,8 @@ impl Engine {
                 "continueAfterRestart": settings.continue_after_restart,
                 "resumeOnUsageLimit": settings.resume_on_usage_limit,
                 "schedules": "IronClaw automations (routines)",
+                "linkedEnvironments": !environments.is_null(),
+                "secretRequests": self.secret_vault.get().is_some(),
             },
             "limits": {"maxDepth": settings.max_depth, "maxRunningPerParent": settings.max_running_per_parent},
         }))
@@ -394,6 +404,10 @@ impl Engine {
                 .filter(|t| !t.trim().is_empty())
                 .unwrap_or(&text),
         );
+        let title = match &req.peer_origin {
+            Some(origin) => clip_title(&format!("From {}: {title}", origin.label)),
+            None => title,
+        };
         let mut task = TaskRecord {
             id: TaskId::generate(),
             parent_thread: parent.thread_id.clone(),
@@ -425,6 +439,13 @@ impl Engine {
             limit_reset_at: None,
         };
         self.store.insert_task(&task).await?;
+        if req.peer_origin.is_some() {
+            // The linking side reads the result over the link.
+            self.store
+                .set_delivery(&task.id, Delivery::None, Delivery::Skipped, now_ms())
+                .await?;
+            task.delivery = Delivery::Skipped;
+        }
         self.store.set_hold(&parent.thread_id, None).await?;
         if let Err(error) = self
             .start_child(
@@ -463,6 +484,9 @@ impl Engine {
                 "orchestration_error",
                 format!("Could not start the child agent: {message}"),
             ));
+        }
+        if let (Some(origin), Some(child)) = (&req.peer_origin, &task.child_thread) {
+            self.store.put_link_origin(child, origin).await?;
         }
         let current = self.require_task(&task.id).await?;
         self.maybe_wait(current, wait, timeout).await
@@ -636,7 +660,12 @@ impl Engine {
             .ok_or_else(|| OrchestratorError::not_found("task_not_found", format!("No task {id}.")))
     }
 
-    async fn maybe_wait(&self, task: TaskRecord, wait: bool, timeout_s: f64) -> Result<Value> {
+    pub(crate) async fn maybe_wait(
+        &self,
+        task: TaskRecord,
+        wait: bool,
+        timeout_s: f64,
+    ) -> Result<Value> {
         if !wait {
             return self.task_view(&task, None).await;
         }
@@ -809,6 +838,7 @@ impl Engine {
 
     async fn mark_cancel(&self, task: &TaskRecord, reason: &str) -> Result<()> {
         self.store.mark_task_cancel(&task.id, reason).await?;
+        self.mark_remote_cancel(&task.id, reason).await?;
         if let Some(child) = &task.child_thread {
             self.store
                 .set_hold(child, Some(HoldReason::Cancelled))

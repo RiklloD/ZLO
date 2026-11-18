@@ -78,11 +78,14 @@ pub(crate) fn device_token_authenticator(
 }
 
 /// The descriptor, pairing and device routes. The descriptor also says
-/// which commit this build is and whether `[update]` is set up.
+/// which commit this build is, whether `[update]` is set up, the private
+/// listener's tailnet addresses, and whether peer links are answered.
 pub(crate) fn route_mount(
     service: Arc<dyn EnvironmentAccessService>,
     plan: Option<&RemoteServePlan>,
     self_update: &Arc<crate::commands::update::SourceSelfUpdate>,
+    addresses: AdvertisedAddresses,
+    peer_links: bool,
 ) -> SplitRouteMount {
     environment_access_route_mount(EnvironmentAccessRouteConfig {
         service,
@@ -93,6 +96,73 @@ pub(crate) fn route_mount(
             let self_update = Arc::clone(self_update);
             Arc::new(move || self_update.configured())
         },
+        addresses: Arc::new(move || addresses.current()),
+        peer_links,
+    })
+}
+
+/// The private listener's addresses a client may learn as routes:
+/// `http://<tailnet ip>:<private_port>`, refreshed in the background (the
+/// tailnet address of a machine can change). Plain-http LAN addresses are
+/// not advertised: a token never travels unencrypted.
+#[derive(Clone, Default)]
+pub(crate) struct AdvertisedAddresses(Arc<std::sync::RwLock<Vec<String>>>);
+
+impl AdvertisedAddresses {
+    fn current(&self) -> Vec<String> {
+        self.0.read().map(|list| list.clone()).unwrap_or_default()
+    }
+
+    /// Keep the list fresh while the private listener runs. Ends with the
+    /// runtime (the returned task is aborted at shutdown).
+    pub(crate) fn spawn_refresh(&self, port: u16) -> tokio::task::JoinHandle<()> {
+        let list = Arc::clone(&self.0);
+        tokio::spawn(async move {
+            loop {
+                let found = tokio::task::spawn_blocking(move || tailnet_addresses(port))
+                    .await
+                    .unwrap_or_default();
+                if let Ok(mut current) = list.write() {
+                    *current = found;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            }
+        })
+    }
+}
+
+fn tailnet_addresses(port: u16) -> Vec<String> {
+    use crate::tailscale::TailscaleCli as _;
+    let Some(cli) = crate::tailscale::SystemTailscale::locate() else {
+        return Vec::new();
+    };
+    match cli.run(&["ip", "-4"]) {
+        Ok(output) if output.success => output
+            .stdout
+            .lines()
+            .filter_map(|line| line.trim().parse::<std::net::Ipv4Addr>().ok())
+            .map(|ip| format!("http://{ip}:{port}"))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+impl RemoteServePlan {
+    /// `[remote] private_port`, when set.
+    pub(crate) fn private_port(&self) -> Option<u16> {
+        self.settings.private_port
+    }
+}
+
+/// Bind `0.0.0.0:<private_port>`; [`ironclaw_webui::serve_private_listener`]
+/// answers only loopback, private and tailnet peers on it.
+pub(crate) async fn bind_private_listener(port: u16) -> anyhow::Result<BoundWebuiListener> {
+    let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
+    bind_webui_v2(addr).await.with_context(|| {
+        format!(
+            "failed to bind the private listener on {addr} ([remote].private_port); free the \
+             port or remove private_port"
+        )
     })
 }
 

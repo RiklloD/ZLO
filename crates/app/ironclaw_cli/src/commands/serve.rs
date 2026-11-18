@@ -347,6 +347,8 @@ impl ServeCommand {
             crate::commands::update::current_build(),
             crate::commands::update::build_checkout(),
         )?);
+        // `t3_request_secret` files (`delivery: file`), owner-only, 24 h.
+        let secret_files_dir = boot_config.home().path().join("secret-files");
         // This token keys the stateless session HMAC, so a weak value would be
         // an OFFLINE forgery target: an attacker who obtains one legitimate
         // `{payload}.{hmac}` session pair could brute-force a low-entropy key
@@ -504,6 +506,24 @@ impl ServeCommand {
                 .open_environment_access(&crate::host_info::default_environment_label())
                 .await
                 .context("failed to open the remote-environment records")?;
+            // Several machines: peer links out (the HTTP client keeps each
+            // link's token in the operator secret store), linked calls in,
+            // and agent requests (secrets, machines to link).
+            let peer_links: Arc<dyn ironclaw_product_contracts::peer::PeerLinkService> = Arc::new(
+                ironclaw_webui::HttpPeerLinkService::new(
+                    runtime.peer_link_records(),
+                    runtime.operator_secret_values(),
+                    Arc::clone(&environment_access),
+                    env!("CARGO_PKG_VERSION"),
+                )
+                .map_err(|error| anyhow!("failed to build the peer-link client: {error}"))?,
+            );
+            let multi_machine =
+                runtime.install_multi_machine(Arc::clone(&peer_links), secret_files_dir.clone());
+            let advertised = crate::commands::serve_remote::AdvertisedAddresses::default();
+            let private_port = remote_plan
+                .as_ref()
+                .and_then(crate::commands::serve_remote::RemoteServePlan::private_port);
             let openai_compat_mount = build_openai_compat_route_mount(
                 &runtime,
                 tenant_id.clone(),
@@ -604,6 +624,13 @@ impl ServeCommand {
                 }
                 None => None,
             };
+            let private_listener = match private_port {
+                Some(port) => {
+                    Some(crate::commands::serve_remote::bind_private_listener(port).await?)
+                }
+                None => None,
+            };
+            let address_refresh = private_port.map(|port| advertised.spawn_refresh(port));
             print_serve_banner(
                 listener.announced_addr(listen_addr),
                 env_token_var,
@@ -665,7 +692,21 @@ impl ServeCommand {
                     Arc::clone(&environment_access),
                     remote_plan.as_ref(),
                     &self_update,
+                    advertised.clone(),
+                    multi_machine.receiver.is_some(),
                 ));
+            if let Some(receiver) = multi_machine.receiver.clone() {
+                // Outside agents (MCP clients with a paired device token).
+                serve_config = serve_config
+                    .with_split_route_mount(ironclaw_webui::outside_mcp_route_mount(receiver));
+            }
+            serve_config = serve_config.with_split_route_mount(ironclaw_webui::peer_route_mount(
+                ironclaw_webui::PeerRouteConfig {
+                    tools: multi_machine.receiver.clone(),
+                    links: Some(Arc::clone(&peer_links)),
+                    requests: multi_machine.requests.clone(),
+                },
+            ));
             serve_config = serve_config.with_protected_route_mount(
                 crate::commands::update::self_update_routes(Arc::clone(&self_update)),
             );
@@ -762,6 +803,18 @@ impl ServeCommand {
                     webui_shutdown_signal(),
                 ))
             });
+            // The private listener: the same router, private peers only.
+            let private_task = private_listener.map(|bound| {
+                eprintln!(
+                    "ironclaw: private listener on {} (tailnet and LAN peers only)",
+                    bound.local_addr()
+                );
+                tokio::spawn(ironclaw_webui::serve_private_listener(
+                    bound,
+                    router.clone(),
+                    webui_shutdown_signal(),
+                ))
+            });
             let router = main_listener_router(router);
 
             let serve_result = match listener {
@@ -794,6 +847,17 @@ impl ServeCommand {
                 }
                 None => Ok(()),
             };
+            if let Some(task) = private_task {
+                if serve_result.is_err() {
+                    task.abort();
+                }
+                if let Ok(Err(error)) = task.await {
+                    tracing::debug!(%error, "private listener stopped with an error");
+                }
+            }
+            if let Some(refresh) = address_refresh {
+                refresh.abort();
+            }
             update_checks.abort();
             if let Some(config_reload) = config_reload {
                 config_reload.abort();

@@ -18,6 +18,8 @@
 //! `docs/internal/plans/2026-11-08-zlo-remote-environments.md`.
 
 pub(crate) mod connect;
+pub(crate) mod failback;
+pub mod linked;
 pub mod pairing;
 pub mod tunnel;
 pub mod updates;
@@ -91,6 +93,10 @@ pub struct RemoteState {
     pub app_only: bool,
     /// "Check for updates" / "Update all machines" rows (`updates.rs`).
     pub updates: updates::UpdatesState,
+    /// Which route of the computer in use answered (0 = its first).
+    pub route_rank: usize,
+    /// Linked environments and agent requests (`linked.rs`).
+    pub linked: linked::LinkedState,
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +122,8 @@ impl Default for RemoteState {
             tunnel: None,
             app_only: false,
             updates: Default::default(),
+            route_rank: 0,
+            linked: Default::default(),
         }
     }
 }

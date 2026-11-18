@@ -6,6 +6,10 @@ use anyhow::Context as _;
 use clap::Args;
 use serde::Serialize;
 
+use ironclaw_product_contracts::environment_access::{
+    DeviceScope, PairingCodeRequest, PeerLinkAccess,
+};
+
 use crate::backend_client::RunningBackend;
 use crate::context::RebornCliContext;
 
@@ -14,6 +18,16 @@ pub(crate) struct PairCommand {
     /// Output `{"code", "expires_at", "link"}` as JSON.
     #[arg(long)]
     json: bool,
+    /// Limit what the paired device may do; repeat for each scope
+    /// (`orchestration:read`, `orchestration:operate`, `terminal:operate`,
+    /// `filesystem:read`, `filesystem:write`, `settings:manage`,
+    /// `access:manage`, `environment:manage`). Without it: every scope.
+    #[arg(long = "scope", value_name = "SCOPE")]
+    scopes: Vec<String>,
+    /// Make a code for linking another environment instead of a device:
+    /// `read_only`, `operate` or `full` (the most its agents may do here).
+    #[arg(long, value_name = "ACCESS")]
+    link: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -30,8 +44,35 @@ impl PairCommand {
             .enable_all()
             .build()
             .context("failed to build tokio runtime for `pair`")?;
+        let scopes = if self.scopes.is_empty() {
+            None
+        } else {
+            Some(
+                self.scopes
+                    .iter()
+                    .map(|raw| {
+                        DeviceScope::parse(raw).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "unknown scope {raw:?}; one of: {}",
+                                DeviceScope::ALL.map(DeviceScope::as_str).join(", ")
+                            )
+                        })
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            )
+        };
+        let peer_link = self
+            .link
+            .as_deref()
+            .map(|raw| {
+                PeerLinkAccess::parse(raw).ok_or_else(|| {
+                    anyhow::anyhow!("--link must be read_only, operate or full, not {raw:?}")
+                })
+            })
+            .transpose()?;
+        let request = PairingCodeRequest { scopes, peer_link };
         let (issued, descriptor) = runtime.block_on(async {
-            let issued = backend.issue_pairing_code().await?;
+            let issued = backend.issue_pairing_code(&request).await?;
             let descriptor = backend.descriptor().await?;
             Ok::<_, anyhow::Error>((issued, descriptor))
         })?;
@@ -51,12 +92,28 @@ impl PairCommand {
                 "Expires:      {} (single use)",
                 output.expires_at.to_rfc3339()
             );
-            println!("Link:         {}", output.link);
-            println!();
-            println!(
-                "Open the link on the new device, or enter the code in ZLO under \
-                 Settings > Computers."
-            );
+            if let Some(access) = issued.peer_link {
+                println!("Peer link:    {access} access for the linking machine's agents");
+                println!();
+                println!(
+                    "On the other machine run `zlo environment link {base} --pairing-code {} \
+                     --access {access}`, or paste the code in ZLO under Settings > Computers > \
+                     Linked environments.",
+                    output.code
+                );
+            } else {
+                println!("Link:         {}", output.link);
+                let all = DeviceScope::all();
+                if issued.scopes != all {
+                    let names: Vec<&str> = issued.scopes.iter().map(|s| s.as_str()).collect();
+                    println!("Scopes:       {}", names.join(", "));
+                }
+                println!();
+                println!(
+                    "Open the link on the new device, or enter the code in ZLO under \
+                     Settings > Computers."
+                );
+            }
         }
         Ok(())
     }

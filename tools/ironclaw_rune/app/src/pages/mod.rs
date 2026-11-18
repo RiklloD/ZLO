@@ -2,6 +2,7 @@
 //! [`PagesState`].
 //! Shared page helpers (headers, sections, rows) go in `pages/common.rs`.
 
+pub mod agent_requests;
 pub mod automations;
 pub mod common;
 pub mod computers;

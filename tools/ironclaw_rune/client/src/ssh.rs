@@ -45,6 +45,93 @@ pub const REMOTE_PAIR_COMMANDS: [&str; 4] = [
     "~/.ironclaw/bin/ironclaw pair --json",
 ];
 
+/// Start `zlo serve` on the computer, detached, when ZLO launched none
+/// that still runs. The pid file is the launcher's ownership mark: only a
+/// server ZLO started is ever stopped by it. Exit 127: not installed.
+pub const REMOTE_START_SCRIPT: &str = r#"Z=""; for c in zlo "$HOME/.zlo/bin/zlo" ironclaw "$HOME/.ironclaw/bin/ironclaw"; do if command -v "$c" >/dev/null 2>&1; then Z="$c"; break; fi; done; [ -n "$Z" ] || exit 127; R="$HOME/.zlo/run"; mkdir -p "$R"; P="$R/zlo-launched.pid"; if [ -f "$P" ] && kill -0 "$(cat "$P")" 2>/dev/null; then echo running; exit 0; fi; nohup "$Z" serve >"$R/serve.log" 2>&1 </dev/null & echo $! >"$P"; echo started"#;
+
+/// Stop the server [`REMOTE_START_SCRIPT`] launched; one ZLO found running
+/// (a service, a terminal) is left alone.
+pub const REMOTE_STOP_SCRIPT: &str = r#"P="$HOME/.zlo/run/zlo-launched.pid"; [ -f "$P" ] || exit 0; kill "$(cat "$P")" 2>/dev/null; rm -f "$P"; echo stopped"#;
+
+/// Build and install `zlo` into `~/.zlo/bin` from source, in the background
+/// (cargo must be there). Exit 127: no cargo.
+pub const REMOTE_INSTALL_SCRIPT: &str = r#"C=""; for c in cargo "$HOME/.cargo/bin/cargo"; do if command -v "$c" >/dev/null 2>&1; then C="$c"; break; fi; done; [ -n "$C" ] || exit 127; R="$HOME/.zlo/run"; mkdir -p "$R"; nohup "$C" install --locked --git https://github.com/RiklloD/ZLO ironclaw --bin zlo --root "$HOME/.zlo" >"$R/install.log" 2>&1 </dev/null & echo started"#;
+
+/// `ssh … -- user@host sh -c '<script>'`: the script runs under `sh`
+/// whatever the login shell is. Scripts hold no single quote.
+pub fn script_args(target: &SshTarget, script: &str) -> Vec<String> {
+    debug_assert!(!script.contains('\''));
+    pair_args(target, &format!("sh -c '{script}'"))
+}
+
+/// What [`start_backend`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Started {
+    /// ZLO launched it now.
+    Now,
+    /// One ZLO launched earlier still runs.
+    AlreadyRunning,
+}
+
+/// Start the computer's backend over SSH (blocking).
+pub fn start_backend<F>(target: &SshTarget, mut run: F) -> Result<Started, SshError>
+where
+    F: FnMut(&[String]) -> std::io::Result<Ran>,
+{
+    let ran = run(&script_args(target, REMOTE_START_SCRIPT))
+        .map_err(|e| SshError::NoSsh(e.to_string()))?;
+    match ran.code {
+        Some(0) if String::from_utf8_lossy(&ran.stdout).contains("running") => {
+            Ok(Started::AlreadyRunning)
+        }
+        Some(0) => Ok(Started::Now),
+        Some(127) => Err(SshError::NotInstalled(target.host.clone())),
+        Some(255) => Err(classify_ssh_failure(target, &ran.stderr)
+            .unwrap_or_else(|| SshError::Unreachable(target.host.clone()))),
+        _ => Err(SshError::PairFailed {
+            host: target.host.clone(),
+            line: format!("starting `zlo serve` failed: {}", last_line(&ran.stderr)),
+        }),
+    }
+}
+
+/// Stop a backend ZLO launched there (blocking, best effort).
+pub fn stop_launched_backend<F>(target: &SshTarget, mut run: F) -> Result<(), SshError>
+where
+    F: FnMut(&[String]) -> std::io::Result<Ran>,
+{
+    let ran = run(&script_args(target, REMOTE_STOP_SCRIPT))
+        .map_err(|e| SshError::NoSsh(e.to_string()))?;
+    match ran.code {
+        Some(0) => Ok(()),
+        _ => Err(classify_ssh_failure(target, &ran.stderr)
+            .unwrap_or_else(|| SshError::Unreachable(target.host.clone()))),
+    }
+}
+
+/// Start building `zlo` on the computer (blocking; the build runs on).
+/// `Ok(false)` when it has no cargo.
+pub fn install_backend<F>(target: &SshTarget, mut run: F) -> Result<bool, SshError>
+where
+    F: FnMut(&[String]) -> std::io::Result<Ran>,
+{
+    let ran = run(&script_args(target, REMOTE_INSTALL_SCRIPT))
+        .map_err(|e| SshError::NoSsh(e.to_string()))?;
+    match ran.code {
+        Some(0) => Ok(true),
+        Some(127) => Ok(false),
+        _ => Err(classify_ssh_failure(target, &ran.stderr)
+            .unwrap_or_else(|| SshError::Unreachable(target.host.clone()))),
+    }
+}
+
+/// A pairing failed because nothing answers on the computer yet.
+pub fn backend_not_running(e: &SshError) -> bool {
+    matches!(e, SshError::PairFailed { line, .. }
+        if line.contains("Is `zlo serve` running") || line.contains("could not reach"))
+}
+
 /// `user@host[:port]`, checked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SshTarget {

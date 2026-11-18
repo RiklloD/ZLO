@@ -8,7 +8,7 @@ use ironclaw_host_api::{
 
 use super::*;
 
-fn root() -> Arc<InMemoryBackend> {
+pub(super) fn root() -> Arc<InMemoryBackend> {
     Arc::new(InMemoryBackend::default())
 }
 
@@ -28,7 +28,9 @@ fn open(root: &Arc<InMemoryBackend>) -> FilesystemEnvironmentAccess<InMemoryBack
     )
 }
 
-async fn ready(root: &Arc<InMemoryBackend>) -> FilesystemEnvironmentAccess<InMemoryBackend> {
+pub(super) async fn ready(
+    root: &Arc<InMemoryBackend>,
+) -> FilesystemEnvironmentAccess<InMemoryBackend> {
     let access = open(root);
     access.ensure_environment("Studio").await.expect("ensure");
     access
@@ -66,7 +68,10 @@ async fn environment_id_is_created_once_and_survives_reopen() {
 async fn issued_code_is_crockford_and_stored_only_as_a_hash() {
     let root = root();
     let access = ready(&root).await;
-    let issued = access.issue_pairing_code().await.expect("issue");
+    let issued = access
+        .issue_pairing_code(Default::default())
+        .await
+        .expect("issue");
     let canonical = normalize_pairing_code(&issued.code).expect("well-formed");
     assert_eq!(issued.code, display_pairing_code(&canonical));
     assert!(issued.expires_at > Utc::now() + Duration::minutes(4));
@@ -96,7 +101,10 @@ async fn issued_code_is_crockford_and_stored_only_as_a_hash() {
 async fn redeem_succeeds_once_then_every_miss_is_invalid_code() {
     let root = root();
     let access = ready(&root).await;
-    let issued = access.issue_pairing_code().await.expect("issue");
+    let issued = access
+        .issue_pairing_code(Default::default())
+        .await
+        .expect("issue");
     let lowercase_no_dashes = issued.code.replace('-', "").to_ascii_lowercase();
     let paired = access
         .redeem_pairing_code(&lowercase_no_dashes, client("Air"))
@@ -138,6 +146,8 @@ async fn expired_code_is_invalid_code() {
                 created_at: past,
                 expires_at: past + PAIRING_CODE_TTL,
                 consumed_at: None,
+                scopes: DeviceScope::all(),
+                peer_link: None,
             },
             CasExpectation::Absent,
         )
@@ -153,7 +163,10 @@ async fn expired_code_is_invalid_code() {
 async fn concurrent_redemptions_of_one_code_have_exactly_one_winner() {
     let root = root();
     let access = Arc::new(ready(&root).await);
-    let issued = access.issue_pairing_code().await.expect("issue");
+    let issued = access
+        .issue_pairing_code(Default::default())
+        .await
+        .expect("issue");
     let mut tasks = Vec::new();
     for n in 0..8 {
         let access = Arc::clone(&access);
@@ -182,20 +195,73 @@ async fn concurrent_redemptions_of_one_code_have_exactly_one_winner() {
 async fn device_token_authenticates_until_revoked_including_after_reopen() {
     let root = root();
     let access = ready(&root).await;
-    let issued = access.issue_pairing_code().await.expect("issue");
+    let issued = access
+        .issue_pairing_code(Default::default())
+        .await
+        .expect("issue");
     let paired = access
         .redeem_pairing_code(&issued.code, client("Air"))
         .await
         .expect("redeem");
     let device_id = DeviceId::new(paired.device_id.clone()).expect("id");
 
+    let grant = access
+        .authenticate_device(&paired.token)
+        .await
+        .expect("auth")
+        .expect("live token");
+    assert_eq!(grant.device_id, device_id);
     assert_eq!(
-        access
-            .authenticate_device(&paired.token)
-            .await
-            .expect("auth"),
-        Some(device_id.clone())
+        grant.scopes,
+        DeviceScope::all(),
+        "no scope list is every scope"
     );
+    assert_eq!(grant.peer_link, None);
+
+    // A peer-link code grants no ordinary scope below full access, and the
+    // grant expires after the link lifetime.
+    let link_code = access
+        .issue_pairing_code(PairingCodeRequest {
+            scopes: None,
+            peer_link: Some(PeerLinkAccess::Operate),
+        })
+        .await
+        .expect("issue link code");
+    assert_eq!(link_code.peer_link, Some(PeerLinkAccess::Operate));
+    let link = access
+        .redeem_pairing_code(&link_code.code, client("Laptop"))
+        .await
+        .expect("redeem link");
+    let link_grant = access
+        .authenticate_device(&link.token)
+        .await
+        .expect("auth")
+        .expect("live link");
+    assert!(link_grant.scopes.is_empty());
+    assert_eq!(link_grant.peer_link, Some(PeerLinkAccess::Operate));
+    let scoped = access
+        .issue_pairing_code(PairingCodeRequest {
+            scopes: Some(vec![DeviceScope::OrchestrationRead]),
+            peer_link: None,
+        })
+        .await
+        .expect("issue scoped");
+    let reader = access
+        .redeem_pairing_code(&scoped.code, client("Phone"))
+        .await
+        .expect("redeem scoped");
+    let reader_grant = access
+        .authenticate_device(&reader.token)
+        .await
+        .expect("auth")
+        .expect("live reader");
+    assert_eq!(reader_grant.scopes, vec![DeviceScope::OrchestrationRead]);
+    let rows = access.list_devices(None).await.expect("list").devices;
+    let link_row = rows
+        .iter()
+        .find(|row| row.device_id == link.device_id)
+        .expect("link row");
+    assert!(link_row.expires_at.is_some());
     let forged = format!(
         "icd_{}_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         paired.device_id
@@ -232,7 +298,7 @@ async fn device_token_authenticates_until_revoked_including_after_reopen() {
         .await
         .expect("list")
         .devices;
-    assert_eq!(listed.len(), 1, "revoked devices stay listed");
+    assert_eq!(listed.len(), 3, "revoked devices stay listed");
     assert!(listed[0].revoked_at.is_some());
     assert!(listed[0].current);
     assert!(

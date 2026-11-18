@@ -23,6 +23,8 @@ pub struct Peer {
     pub dns_name: String,
     pub host_name: String,
     pub online: bool,
+    /// Its tailnet addresses (`TailscaleIPs`).
+    pub addresses: Vec<std::net::IpAddr>,
 }
 
 impl Peer {
@@ -64,6 +66,8 @@ struct StatusPeer {
     host_name: String,
     #[serde(default)]
     online: bool,
+    #[serde(default, rename = "TailscaleIPs")]
+    tailscale_ips: Vec<String>,
 }
 
 /// The peers of a `tailscale status --json` document; `None` when
@@ -83,6 +87,11 @@ pub fn parse_status(json: &[u8]) -> Result<Option<Vec<Peer>>, serde_json::Error>
                 dns_name: dns,
                 host_name: p.host_name,
                 online: p.online,
+                addresses: p
+                    .tailscale_ips
+                    .iter()
+                    .filter_map(|ip| ip.parse().ok())
+                    .collect(),
             })
         })
         .collect();
@@ -126,6 +135,16 @@ pub fn status_peers() -> Option<Vec<Peer>> {
             None
         }
     }
+}
+
+/// Every address of every peer on this Mac's tailnet right now (blocking).
+/// Empty when Tailscale is off: learned plain-http routes are then skipped.
+pub fn peer_addresses() -> Vec<std::net::IpAddr> {
+    status_peers()
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|p| p.addresses)
+        .collect()
 }
 
 /// Peers probed at the same time.
@@ -184,12 +203,14 @@ mod tests {
                 Peer {
                     dns_name: "mini.tail9915dd.ts.net".into(),
                     host_name: "mini".into(),
-                    online: false
+                    online: false,
+                    addresses: Vec::new(),
                 },
                 Peer {
                     dns_name: "studio.tail9915dd.ts.net".into(),
                     host_name: "studio".into(),
-                    online: true
+                    online: true,
+                    addresses: Vec::new(),
                 },
             ]
         );
@@ -225,6 +246,7 @@ mod tests {
             dns_name: "mini.invalid".into(),
             host_name: "mini".into(),
             online: false,
+            addresses: Vec::new(),
         }];
         let d = probe(peers.clone()).await;
         assert_eq!(d.peers, peers);

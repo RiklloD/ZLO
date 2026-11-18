@@ -23,6 +23,7 @@
 
 use std::sync::Arc;
 
+use crate::device_scopes::CallerGrant;
 use async_trait::async_trait;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Extension, Path, Request, State};
@@ -44,7 +45,7 @@ use ironclaw_product_contracts::environment_access::{
     DEVICE_TOKEN_PREFIX, DEVICES_PATH, DeviceId, ENVIRONMENT_DESCRIPTOR_PATH,
     ENVIRONMENT_PROTOCOL_VERSION, EnvironmentAccessError, EnvironmentAccessService,
     EnvironmentDescriptor, PAIR_PATH, PAIR_TAILNET_PATH, PAIRING_CODES_PATH, PairRequest,
-    PairingErrorCode, PairingMethod, TailnetPairRequest,
+    PairingCodeRequest, PairingErrorCode, PairingMethod, TailnetPairRequest,
 };
 use serde::Serialize;
 
@@ -98,6 +99,11 @@ pub struct EnvironmentAccessRouteConfig {
     /// Asked on every request: self-update is turned on and off while the
     /// backend runs.
     pub self_update: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Addresses besides the tailnet URL a client may learn as routes
+    /// (the private listener's), asked on every request.
+    pub addresses: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    /// Whether this backend answers peer-link calls.
+    pub peer_links: bool,
 }
 
 struct RouteState {
@@ -106,6 +112,8 @@ struct RouteState {
     remote: Option<RemoteAccessPolicy>,
     build_commit: Option<String>,
     self_update: Arc<dyn Fn() -> bool + Send + Sync>,
+    addresses: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    peer_links: bool,
 }
 
 /// The device whose token authenticated this request (inserted by the
@@ -129,6 +137,8 @@ pub fn environment_access_route_mount(config: EnvironmentAccessRouteConfig) -> S
         remote: config.remote,
         build_commit: config.build_commit,
         self_update: config.self_update,
+        addresses: config.addresses,
+        peer_links: config.peer_links,
     });
     let public = Router::new()
         .route(ENVIRONMENT_DESCRIPTOR_PATH, get(get_descriptor))
@@ -217,8 +227,8 @@ impl WebuiAuthenticator for DeviceTokenAuthenticator {
             return self.fallback.authenticate(token).await;
         }
         match self.service.authenticate_device(token).await {
-            Ok(Some(device_id)) => {
-                Some(WebuiAuthentication::operator(self.operator.clone()).with_device(device_id))
+            Ok(Some(grant)) => {
+                Some(WebuiAuthentication::operator(self.operator.clone()).with_device_grant(grant))
             }
             Ok(None) => None,
             // The implementor logged the cause; an outage fails closed.
@@ -322,6 +332,8 @@ async fn get_descriptor(State(state): State<Arc<RouteState>>) -> Response {
             .map(|remote| remote.tailnet_url.clone()),
         build_commit: state.build_commit.clone(),
         self_update: (state.self_update)(),
+        addresses: (state.addresses)(),
+        peer_links: state.peer_links,
     })
     .into_response()
 }
@@ -379,11 +391,40 @@ async fn pair_tailnet(
 async fn issue_pairing_code(
     State(state): State<Arc<RouteState>>,
     capabilities: Option<Extension<WebUiV2Capabilities>>,
+    grant: Option<Extension<CallerGrant>>,
+    body: axum::body::Bytes,
 ) -> Response {
     if !is_operator(capabilities) {
         return operator_required();
     }
-    match state.service.issue_pairing_code().await {
+    // An empty body is the old shape: a device with every scope.
+    let request = if body.iter().all(u8::is_ascii_whitespace) {
+        PairingCodeRequest::default()
+    } else {
+        match serde_json::from_slice::<PairingCodeRequest>(&body) {
+            Ok(request) => request,
+            Err(_) => return bad_request_body(),
+        }
+    };
+    // A scoped device cannot mint a code for more than it may do itself.
+    let caller = grant
+        .map(|Extension(grant)| grant)
+        .unwrap_or(CallerGrant(None));
+    if let Some(scope) = request
+        .effective_scopes()
+        .into_iter()
+        .find(|scope| !caller.allows(*scope))
+    {
+        return crate::device_scopes::scope_forbidden(scope);
+    }
+    if request.peer_link.is_some() && caller.0.as_ref().is_some_and(|g| g.peer_link.is_some()) {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "peer_link_refused",
+            "A peer link cannot mint links of its own.",
+        );
+    }
+    match state.service.issue_pairing_code(request).await {
         Ok(issued) => Json(issued).into_response(),
         Err(error) => service_error(error),
     }
@@ -477,7 +518,7 @@ fn route_descriptors() -> Vec<IngressRouteDescriptor> {
     ]
 }
 
-fn descriptor(
+pub(crate) fn descriptor(
     route_id: &str,
     method: NetworkMethod,
     pattern: &str,
@@ -487,7 +528,10 @@ fn descriptor(
         .expect("environment access route descriptor must validate at startup") // safety: ids/patterns are crate-local literals; policies come from the sibling helpers below.
 }
 
-fn public_policy(body_limit: BodyLimitPolicy, max_requests: std::num::NonZeroU32) -> IngressPolicy {
+pub(crate) fn public_policy(
+    body_limit: BodyLimitPolicy,
+    max_requests: std::num::NonZeroU32,
+) -> IngressPolicy {
     IngressPolicy::new(IngressPolicyParts {
         listener_class: ListenerClass::LocalGateway,
         auth: IngressAuthPolicy::Public {
@@ -509,7 +553,7 @@ fn public_policy(body_limit: BodyLimitPolicy, max_requests: std::num::NonZeroU32
     .expect("environment access public policy must validate") // safety: LocalGateway + Public + NoEffect is permitted; rate-limit window/max are non-zero by construction.
 }
 
-fn operator_policy(
+pub(crate) fn operator_policy(
     body_limit: BodyLimitPolicy,
     max_requests: std::num::NonZeroU32,
 ) -> IngressPolicy {

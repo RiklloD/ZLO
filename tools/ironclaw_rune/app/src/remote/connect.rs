@@ -13,8 +13,8 @@ use std::sync::Arc;
 use zlo_client::environment_access::EnvironmentDescriptor;
 use zlo_client::environment_calls::fetch_descriptor;
 use zlo_client::environments::{
-    Active, LegacyGateway, Route, RouteKind, SavedEnvironment, check_descriptor, check_transport,
-    host_of, preferred_routes,
+    Active, LegacyGateway, Route, RouteKind, SavedEnvironment, check_descriptor,
+    check_learned_transport, check_transport, host_of, preferred_routes,
 };
 use zlo_client::inbox::InboxListResponse as InboxList;
 use zlo_client::keychain::TokenStore;
@@ -55,6 +55,9 @@ struct Resolved {
     migrated: Option<SavedEnvironment>,
     /// The SSH tunnel the connection goes through (`tunnel::key`).
     tunnel: Option<String>,
+    /// Which of the computer's routes answered, in `preferred_routes` order
+    /// (0 = its first). A later one starts the fail-back check.
+    route_rank: usize,
 }
 
 /// App-only, nothing picked yet: the window asks for a computer.
@@ -65,6 +68,9 @@ pub(crate) const NEEDS_COMPUTER: &str = "Add a computer to work on.";
 enum Mode {
     Fresh,
     Switch,
+    /// The same computer over a better route: nothing on screen changes,
+    /// and a failure leaves the working connection alone.
+    Refresh,
 }
 
 fn target(s: &State) -> Result<Target, Problem> {
@@ -104,6 +110,15 @@ fn target(s: &State) -> Result<Target, Problem> {
 /// Try again, scheduled retries).
 pub fn connect(s: &mut State) {
     start(s, Mode::Fresh);
+}
+
+/// Reconnect to the computer in use without touching the screen: its first
+/// route that answers wins (`failback`).
+pub fn refresh(s: &mut State) {
+    if !matches!(s.conn, Conn::Ready) || s.remote.switching.is_some() {
+        return;
+    }
+    start(s, Mode::Refresh);
 }
 
 /// Work on another computer. From a working screen the old one stays until
@@ -266,6 +281,7 @@ async fn this_mac(override_url: bool) -> Result<Resolved, Problem> {
         descriptor,
         migrated: None,
         tunnel: None,
+        route_rank: 0,
     })
 }
 
@@ -287,6 +303,26 @@ async fn open_tunnel(route: &Route, label: &str) -> Result<(String, String), Pro
         Ok(local) => Ok((key, ssh::tunnel_origin(local))),
         Err(e) => Err(ssh_problem(e)),
     }
+}
+
+/// Start the backend over an SSH route and wait for its descriptor
+/// through the open tunnel.
+async fn start_over_ssh(route: &Route, origin: &str) -> Option<EnvironmentDescriptor> {
+    let target = SshTarget::from_url(&route.url).ok()?;
+    let started = tokio::task::spawn_blocking(move || ssh::start_backend(&target, ssh::run_ssh))
+        .await
+        .ok()?;
+    if let Err(e) = started {
+        tracing::debug!(error = %e, "could not start the backend over SSH");
+        return None;
+    }
+    for _ in 0..10 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if let Ok(d) = fetch_descriptor(origin, super::DESCRIPTOR_TIMEOUT).await {
+            return Some(d);
+        }
+    }
+    None
 }
 
 /// Key and host-key problems need the person; the rest may pass.
@@ -328,8 +364,9 @@ async fn environment(
         "{label} has no address ZLO can use. Pair it again in Settings → Computers."
     ));
     // Tailnet and direct routes first; an SSH tunnel only when they do
-    // not answer.
-    for route in preferred_routes(&env.routes) {
+    // not answer. Learned routes go only to confirmed tailnet peers.
+    let mut peers: Option<Vec<std::net::IpAddr>> = None;
+    for (rank, route) in preferred_routes(&env.routes).into_iter().enumerate() {
         let (origin, tunnel) = if route.kind == RouteKind::Ssh {
             match open_tunnel(route, &label).await {
                 Ok((key, origin)) => (origin, Some(key)),
@@ -337,6 +374,19 @@ async fn environment(
                     last = p;
                     continue;
                 }
+            }
+        } else if route.learned {
+            if peers.is_none() {
+                peers = Some(
+                    tokio::task::spawn_blocking(zlo_client::tailnet::peer_addresses)
+                        .await
+                        .unwrap_or_default(),
+                );
+            }
+            match check_learned_transport(&route.url, peers.as_deref().unwrap_or_default()) {
+                Ok(o) => (o, None),
+                // Not a tailnet peer right now: skip it quietly.
+                Err(_) => continue,
             }
         } else {
             match check_transport(&route.url) {
@@ -361,9 +411,28 @@ async fn environment(
                     descriptor: Some(d),
                     migrated: None,
                     tunnel,
+                    route_rank: rank,
                 });
             }
             Err(ClientError::Network(_)) if tunnel.is_some() => {
+                // Nothing answers through the tunnel: start `zlo serve`
+                // there (ZLO owns that server), then look again.
+                if let Some(d) = start_over_ssh(route, &origin).await {
+                    check_descriptor(&d, Some((&id, &label)))
+                        .map_err(|e| Problem::Blocked(e.to_string()))?;
+                    return Ok(Resolved {
+                        conn: Connection {
+                            base_url: origin,
+                            token,
+                            token_source: "Keychain".into(),
+                        },
+                        computer: Computer::remote(id, d.label.clone()),
+                        descriptor: Some(d),
+                        migrated: None,
+                        tunnel,
+                        route_rank: rank,
+                    });
+                }
                 last = Problem::Unreachable(format!(
                     "The SSH tunnel to {label} is open, but IronClaw isn't answering there. Check that `zlo serve` runs on {label}."
                 ));
@@ -411,6 +480,7 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
     let computer = r.computer;
     let descriptor = r.descriptor;
     let tunnel = r.tunnel;
+    let route_rank = r.route_rank;
     // The UI thread holds the handle until the answer: its runtime is
     // never dropped on one of its own threads.
     // Tagged with this attempt, so a stale answer cannot take a newer
@@ -437,6 +507,7 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
             match result {
                 Ok((session, inbox)) => {
                     s.remote.tunnel = tunnel;
+                    s.remote.route_rank = route_rank;
                     switched(s, mode, backend, computer, descriptor, session, inbox)
                 }
                 Err(e) => failed(s, mode, problem_of(&computer, &e)),
@@ -517,8 +588,19 @@ fn switched(
         descriptor = descriptor.is_some(),
         "connected"
     );
+    // The routes it reports now (its private listener's tailnet
+    // addresses) replace the learned ones; the person's are untouched.
+    if let (Computer::Remote(r), Some(d)) = (&computer, descriptor.as_ref())
+        && s.remote
+            .registry
+            .learn_routes(&r.environment_id, &d.addresses)
+        && let Err(e) = super::save_registry(s)
+    {
+        tracing::warn!(error = %e, "learned routes not saved");
+    }
     adopt(s, computer, descriptor);
     s.rt.backend = Some(backend);
+    super::failback::schedule(s);
     // Only the tunnel this connection goes through stays open.
     super::tunnel::retain(s.remote.tunnel.as_deref());
     if s.remote.switching.take().is_some()
@@ -527,9 +609,16 @@ fn switched(
         tracing::warn!(error = %e, "computer pick not saved");
     }
     super::sync_local_backend(s);
-    let reopen = s.remote.last_thread.get(&key).cloned();
+    // A route refresh keeps the thread in view (its stream reopens on the
+    // new route); a switch reopens what was last open on that computer.
+    let reopen = if mode == Mode::Refresh {
+        crate::workspace::active_id(s).map(str::to_string)
+    } else {
+        s.remote.last_thread.get(&key).cloned()
+    };
     crate::workspace::connected(s, session, inbox, reopen);
     super::pairing::connected(s);
+    super::linked::start_polling(s);
 }
 
 /// The app is on `computer` now: a new connection tag, so every reply
@@ -562,6 +651,15 @@ pub(crate) fn reset_for_switch(s: &mut State) {
 }
 
 fn failed(s: &mut State, mode: Mode, problem: Problem) {
+    if mode == Mode::Refresh {
+        // The working connection stays; the check tries again later.
+        tracing::debug!(
+            ?problem,
+            "route refresh failed; keeping the connection in use"
+        );
+        super::failback::schedule(s);
+        return;
+    }
     if mode == Mode::Switch
         && let Some(sw) = s.remote.switching.take()
     {
