@@ -396,6 +396,7 @@ pub(crate) fn build_product_surface_with_channel_connection(
         ironclaw_extension_manager::extension_settings_product_service::ExtensionSettingsProductService::new(
             Arc::clone(&runtime.shared_extension_registry),
             Arc::clone(&runtime.extension_settings),
+            runtime.extension_management.clone(),
         ),
     );
     Ok(Arc::new(

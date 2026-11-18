@@ -7,9 +7,17 @@
 //! runtime lanes and the hook factory read), so a value is always validated
 //! against the schema the plugin will actually run with. Scope comes only
 //! from the authenticated caller.
+//!
+//! Visibility: the active registry is tenant-global, so every read and write
+//! first checks the installation owner for the caller
+//! ([`crate::installation_visibility`]). An installation the caller may not
+//! see answers exactly like an unknown extension (`not_found`), so a
+//! non-member can neither read another user's private plugin's schema and
+//! defaults nor write settings for it.
 
 use std::sync::Arc;
 
+use crate::installation_visibility::{InstallationOwnerSource, installation_visible_to};
 use async_trait::async_trait;
 use ironclaw_extension_registry::SharedExtensionRegistry;
 use ironclaw_extension_registry::settings::{
@@ -30,29 +38,53 @@ use ironclaw_product_contracts::surface::{
 pub struct ExtensionSettingsProductService<F: RootFilesystem + ?Sized> {
     active: Arc<SharedExtensionRegistry>,
     store: Arc<ExtensionSettingsStore<F>>,
+    owners: Arc<dyn InstallationOwnerSource>,
 }
 
 impl<F: RootFilesystem + ?Sized> ExtensionSettingsProductService<F> {
     pub fn new(
         active: Arc<SharedExtensionRegistry>,
         store: Arc<ExtensionSettingsStore<F>>,
+        owners: Arc<dyn InstallationOwnerSource>,
     ) -> Self {
-        Self { active, store }
+        Self {
+            active,
+            store,
+            owners,
+        }
     }
 
-    fn declarations(
+    /// The declarations of an active extension the caller may see. Unknown,
+    /// inactive, and invisible extensions are all `not_found`.
+    async fn declarations(
         &self,
+        caller: &ProductSurfaceCaller,
         extension_id: &str,
     ) -> Result<(ExtensionId, Vec<ExtensionSettingDecl>), ProductSurfaceError> {
         let id = ExtensionId::new(extension_id).map_err(|error| {
             tracing::debug!(%error, "extension settings: invalid extension id");
             ProductSurfaceError::validation("extension_id", ProductSurfaceValidationCode::InvalidId)
         })?;
-        let snapshot = self.active.snapshot();
-        let package = snapshot
-            .get_extension(&id)
-            .ok_or_else(ProductSurfaceError::not_found)?;
-        Ok((id, package.manifest.settings.clone()))
+        let declarations = {
+            let snapshot = self.active.snapshot();
+            let package = snapshot
+                .get_extension(&id)
+                .ok_or_else(ProductSurfaceError::not_found)?;
+            package.manifest.settings.clone()
+        };
+        let owners = self
+            .owners
+            .installation_owners()
+            .await
+            .map_err(ProductSurfaceError::internal_from)?;
+        if !installation_visible_to(&owners, &id, &caller.user_id) {
+            tracing::debug!(
+                extension_id = %id.as_str(),
+                "extension settings: installation not visible to caller"
+            );
+            return Err(ProductSurfaceError::not_found());
+        }
+        Ok((id, declarations))
     }
 }
 
@@ -65,7 +97,7 @@ impl<F: RootFilesystem + ?Sized + 'static> ExtensionSettingsSource
         caller: &ProductSurfaceCaller,
         extension_id: &str,
     ) -> Result<Vec<ExtensionSettingView>, ProductSurfaceError> {
-        let (id, declarations) = self.declarations(extension_id)?;
+        let (id, declarations) = self.declarations(caller, extension_id).await?;
         if declarations.is_empty() {
             return Ok(Vec::new());
         }
@@ -94,7 +126,7 @@ impl<F: RootFilesystem + ?Sized + 'static> ExtensionSettingsSource
         setting_id: &str,
         value: serde_json::Value,
     ) -> Result<ExtensionSettingSetOutcome, ProductSurfaceError> {
-        let (id, declarations) = self.declarations(extension_id)?;
+        let (id, declarations) = self.declarations(caller, extension_id).await?;
         match self
             .store
             .set(&caller_scope(caller), &id, &declarations, setting_id, value)
