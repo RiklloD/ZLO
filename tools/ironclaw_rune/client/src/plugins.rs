@@ -74,8 +74,8 @@ pub enum RequestKind {
 
 #[derive(Debug, Clone, Serialize)]
 struct GrantConsent<'a> {
-    extension_id: &'a str,
     digest: &'a str,
+    client_action_id: String,
 }
 
 /// The reply to a lifecycle command; only the message is shown.
@@ -270,8 +270,8 @@ impl Client {
         digest: &str,
     ) -> Result<LifecycleReply, ClientError> {
         let body = GrantConsent {
-            extension_id,
             digest,
+            client_action_id: crate::api::client_action_id(),
         };
         self.post(
             &format!("{V2}/extensions/{}/consent", seg(extension_id)),
@@ -612,9 +612,10 @@ mod tests {
 
     #[tokio::test]
     async fn consent_is_granted_at_the_reviewed_digest() {
-        let (base, seen) = serve(200, r#"{"success":true,"message":"Linear is allowed."}"#).await;
+        // The backend's reply carries no message; the app words its own.
+        let (base, seen) = serve(200, r#"{"granted":true,"installation_state":"active"}"#).await;
         let reply = client(&base).grant_consent("linear", "9f2c").await.unwrap();
-        assert_eq!(reply.message.as_deref(), Some("Linear is allowed."));
+        assert_eq!(reply.message, None);
         let seen = seen.lock().unwrap();
         assert!(
             seen[0]
@@ -622,7 +623,9 @@ mod tests {
                 .starts_with("POST /api/webchat/v2/extensions/linear/consent")
         );
         let body: Value = serde_json::from_str(&seen[0].body).unwrap();
-        assert_eq!(body, json!({ "extension_id": "linear", "digest": "9f2c" }));
+        assert_eq!(body["digest"], json!("9f2c"));
+        assert!(body["client_action_id"].is_string());
+        assert_eq!(body.as_object().map(|o| o.len()), Some(2));
     }
 
     #[tokio::test]
