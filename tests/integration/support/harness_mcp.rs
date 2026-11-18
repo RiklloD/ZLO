@@ -136,6 +136,7 @@ pub(super) fn mock_mcp_extension_package(
         host_apis: Vec::new(),
         host_api_surfaces: Vec::new(),
         settings: Vec::new(),
+        ui_slots: Vec::new(),
         hooks: Vec::new(),
         capabilities: vec![CapabilityManifest {
             id: CapabilityId::new(capability_id)?,

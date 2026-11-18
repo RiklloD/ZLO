@@ -915,7 +915,9 @@ impl ScriptBackend for EchoScriptBackend {
 fn registry_with_manifest(manifest: &str) -> ExtensionRegistry {
     let manifest = parse_manifest(manifest);
     let root = VirtualPath::new(format!("/system/extensions/{}", manifest.id.as_str())).unwrap();
-    let package = ExtensionPackage::from_manifest(manifest, root).unwrap();
+    let package = ExtensionPackage::from_manifest(manifest, root)
+        .unwrap()
+        .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     registry

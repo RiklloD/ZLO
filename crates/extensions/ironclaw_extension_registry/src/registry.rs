@@ -27,6 +27,16 @@ impl ExtensionRegistry {
         Self::default()
     }
 
+    /// Explicit test construction: every package marked
+    /// [`ExtensionPackage::with_unverified_contents_for_test`]. Production
+    /// never calls this.
+    pub fn with_unverified_contents_for_test(mut self) -> Self {
+        for package in self.packages.values_mut() {
+            *package = package.clone().with_unverified_contents_for_test();
+        }
+        self
+    }
+
     pub fn insert(&mut self, package: ExtensionPackage) -> Result<(), ExtensionError> {
         self.validate_insertable(&package)?;
         self.insert_validated(package);

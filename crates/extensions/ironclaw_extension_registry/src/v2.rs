@@ -166,6 +166,14 @@ impl ManifestSource {
     pub fn allows_first_party(self) -> bool {
         matches!(self, Self::HostBundled)
     }
+
+    /// True if a package from this source may run only after a user grants
+    /// consent to its exact files (third-party "plugins"). Host-bundled
+    /// packages are compiled in; user-registered hosted-MCP definitions are
+    /// an explicit user registration with no package files.
+    pub fn requires_consent(self) -> bool {
+        matches!(self, Self::InstalledLocal | Self::RegistryInstalled)
+    }
 }
 
 /// One reserved extension-id prefix plus the predicate that authorizes a
@@ -745,6 +753,11 @@ pub struct ExtensionManifestV2 {
     /// Package-declared user settings (v3 `[[settings]]`; always empty for
     /// v2 manifests). See [`crate::settings`].
     pub settings: Vec<crate::settings::ExtensionSettingDecl>,
+    /// Plugin UI slots (v3 `[[ui.slots]]`; always empty for v2 manifests).
+    /// Carried on the internal manifest so activation readiness can count a
+    /// declared slot as a surface (a UI-only plugin's render tool is not
+    /// model-visible).
+    pub ui_slots: Vec<ironclaw_extension_contracts::plugin_ui::PluginUiSlotDescriptor>,
 }
 
 /// v2 manifest parser/validator errors.
@@ -1135,6 +1148,7 @@ impl ExtensionManifestV2 {
             host_api_surfaces: Vec::new(),
             hooks,
             settings: Vec::new(),
+            ui_slots: Vec::new(),
         })
     }
 }

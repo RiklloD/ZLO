@@ -748,6 +748,7 @@ pub(crate) fn parse_v3(
         host_api_surfaces,
         hooks,
         settings,
+        ui_slots: ui_slots.clone(),
     };
 
     let auth = recipes

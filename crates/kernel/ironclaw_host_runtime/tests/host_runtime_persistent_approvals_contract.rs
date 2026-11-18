@@ -921,7 +921,8 @@ parameters_schema = {{}}
         manifest,
         VirtualPath::new("/system/extensions/echo").unwrap(),
     )
-    .unwrap();
+    .unwrap()
+    .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     registry

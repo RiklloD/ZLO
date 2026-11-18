@@ -1411,6 +1411,7 @@ fn test_package(manifest: &str, extension_id: &str) -> ExtensionPackage {
         VirtualPath::new(format!("/system/extensions/{extension_id}")).unwrap(),
     )
     .expect("test package should build")
+    .with_unverified_contents_for_test()
 }
 
 fn test_descriptor(runtime: RuntimeKind, effects: Vec<EffectKind>) -> CapabilityDescriptor {

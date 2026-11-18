@@ -56,7 +56,8 @@ async fn extension_v2_lifecycle_discovers_installs_publishes_and_dispatches_host
     let package = discovered
         .get_extension(&ExtensionId::new("script").unwrap())
         .unwrap()
-        .clone();
+        .clone()
+        .with_unverified_contents_for_test();
 
     let mut lifecycle = ExtensionLifecycleService::new(ExtensionRegistry::new());
     lifecycle.install(package).await.unwrap();
@@ -271,7 +272,9 @@ async fn github_v2_package_discovers_and_publishes_issue_hot_catalog() {
     )
     .unwrap();
     let manifest = ExtensionManifest::try_from(record.manifest().clone()).unwrap();
-    let package = ExtensionPackage::from_manifest(manifest, root).unwrap();
+    let package = ExtensionPackage::from_manifest(manifest, root)
+        .unwrap()
+        .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     let extension_id = ExtensionId::new("github").unwrap();

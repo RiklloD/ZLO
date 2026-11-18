@@ -7150,7 +7150,9 @@ async fn host_runtime_services_wasm_tool_context_carries_the_users_effective_set
     .unwrap();
     let manifest = ExtensionManifest::try_from(record.manifest().clone()).unwrap();
     let root = VirtualPath::new("/system/extensions/settings-plugin").unwrap();
-    let package = ExtensionPackage::from_manifest(manifest, root).unwrap();
+    let package = ExtensionPackage::from_manifest(manifest, root)
+        .unwrap()
+        .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
 

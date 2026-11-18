@@ -36,11 +36,29 @@ pub struct ExtensionPackage {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PackageContentPins {
     assets: BTreeMap<String, String>,
+    /// Set only by [`ExtensionPackage::with_unverified_contents_for_test`]:
+    /// an explicit test construction that binds nothing.
+    unverified_for_test: bool,
 }
 
 impl PackageContentPins {
     pub fn new(assets: BTreeMap<String, String>) -> Self {
-        Self { assets }
+        Self {
+            assets,
+            unverified_for_test: false,
+        }
+    }
+
+    /// Pins for an explicit file set (package-relative path -> bytes), hashed
+    /// the way the consent grant hashes them. For callers that hold the exact
+    /// files they bind a package to — the consent store and test fixtures.
+    pub fn from_files<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> Self {
+        Self::new(
+            files
+                .into_iter()
+                .map(|(path, bytes)| (path.to_string(), sha256_digest_token(bytes)))
+                .collect(),
+        )
     }
 
     pub fn assets(&self) -> &BTreeMap<String, String> {
@@ -48,9 +66,73 @@ impl PackageContentPins {
     }
 }
 
+/// Verify `bytes` read from `path` against `pins` for a package rooted at
+/// `root` from `source` — the one rule every runtime read of a package file
+/// follows (see [`ExtensionPackage::verify_asset`]). For callers that hold a
+/// package's identity and pins without the whole package (the hook-only
+/// projection).
+pub fn verify_package_file(
+    extension_id: &ExtensionId,
+    source: ManifestSource,
+    pins: Option<&PackageContentPins>,
+    root: &VirtualPath,
+    path: &VirtualPath,
+    bytes: &[u8],
+) -> Result<(), PackageContentPinError> {
+    let Some(expected) = required_pin(extension_id, source, pins, root, path)? else {
+        return Ok(());
+    };
+    if expected != sha256_digest_token(bytes) {
+        return Err(PackageContentPinError::Mismatch {
+            path: relative_to_root(root, path)
+                .unwrap_or(path.as_str())
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn required_pin<'a>(
+    extension_id: &ExtensionId,
+    source: ManifestSource,
+    pins: Option<&'a PackageContentPins>,
+    root: &VirtualPath,
+    path: &VirtualPath,
+) -> Result<Option<&'a str>, PackageContentPinError> {
+    let Some(pins) = pins else {
+        if source.requires_consent() {
+            return Err(PackageContentPinError::NoGrant {
+                extension_id: extension_id.as_str().to_string(),
+            });
+        }
+        return Ok(None);
+    };
+    if pins.unverified_for_test {
+        return Ok(None);
+    }
+    let relative =
+        relative_to_root(root, path).ok_or_else(|| PackageContentPinError::Unpinned {
+            path: path.as_str().to_string(),
+        })?;
+    pins.assets
+        .get(relative)
+        .map(|hash| Some(hash.as_str()))
+        .ok_or_else(|| PackageContentPinError::Unpinned {
+            path: relative.to_string(),
+        })
+}
+
+fn relative_to_root<'a>(root: &VirtualPath, path: &'a VirtualPath) -> Option<&'a str> {
+    path.as_str()
+        .strip_prefix(root.as_str().trim_end_matches('/'))?
+        .strip_prefix('/')
+}
+
 /// A package file read at runtime is not the consented one.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PackageContentPinError {
+    #[error("extension {extension_id} has no consent grant binding the files it runs")]
+    NoGrant { extension_id: String },
     #[error("package file {path} is not covered by the extension's consent grant")]
     Unpinned { path: String },
     #[error("package file {path} changed after consent was granted")]
@@ -182,41 +264,95 @@ impl ExtensionPackage {
         self
     }
 
+    /// Explicit test construction: a package whose source needs consent but
+    /// whose files the test itself wrote, run without any content binding.
+    /// Production never calls this — a third-party package reaches a lane
+    /// only with the pins of its consent grant (the lifecycle's publication
+    /// and the generic host's loader attach them).
+    pub fn with_unverified_contents_for_test(mut self) -> Self {
+        self.content_pins = Some(PackageContentPins {
+            assets: BTreeMap::new(),
+            unverified_for_test: true,
+        });
+        self
+    }
+
     /// Check bytes just read from `path` (an absolute path under the
-    /// package root) against the consented hash for that file. Unpinned
-    /// packages always pass; a pinned package refuses a file the grant does
-    /// not cover and bytes that hash differently. Callers verify the exact
-    /// buffer they go on to use — never re-read after checking.
+    /// package root) against the consented hash for that file. Fails closed:
+    /// a package that needs consent ([`ManifestSource::requires_consent`])
+    /// and carries no pins is refused, as is a file the grant does not cover
+    /// and bytes that hash differently. Only a package from a source that
+    /// needs no consent (host-bundled, user-registered) runs unpinned.
+    /// Callers verify the exact buffer they go on to use — never re-read
+    /// after checking.
     pub fn verify_asset(
         &self,
         path: &VirtualPath,
         bytes: &[u8],
     ) -> Result<(), PackageContentPinError> {
-        let Some(pins) = &self.content_pins else {
+        let Some(expected) = self.required_asset_pin(path)? else {
             return Ok(());
         };
-        let relative =
-            self.relative_asset_path(path)
-                .ok_or_else(|| PackageContentPinError::Unpinned {
-                    path: path.as_str().to_string(),
-                })?;
-        let Some(expected) = pins.assets.get(relative) else {
-            return Err(PackageContentPinError::Unpinned {
-                path: relative.to_string(),
-            });
-        };
-        if *expected != sha256_digest_token(bytes) {
+        if expected != sha256_digest_token(bytes) {
             return Err(PackageContentPinError::Mismatch {
-                path: relative.to_string(),
+                path: self
+                    .relative_asset_path(path)
+                    .unwrap_or(path.as_str())
+                    .to_string(),
             });
         }
         Ok(())
     }
 
+    /// The consented hash a read of `path` must match: `Ok(None)` only for a
+    /// package that needs no consent and carries no pins; `Ok(Some(hash))`
+    /// when the grant covers the file; `Err` when the package needs consent
+    /// but carries no pins, or is pinned and the grant does not cover the
+    /// file. Lanes call this before any cache lookup keyed by the file, so a
+    /// module compiled from other bytes is never reused for a pinned package.
+    pub fn required_asset_pin(
+        &self,
+        path: &VirtualPath,
+    ) -> Result<Option<&str>, PackageContentPinError> {
+        let Ok(root) = self.root_binding.materialized_root() else {
+            // A virtual (remote-only) package has no files to pin.
+            return if self.requires_verified_contents() {
+                Err(PackageContentPinError::NoGrant {
+                    extension_id: self.id.as_str().to_string(),
+                })
+            } else {
+                Ok(None)
+            };
+        };
+        required_pin(
+            &self.id,
+            self.manifest.source,
+            self.content_pins.as_ref(),
+            root,
+            path,
+        )
+    }
+
+    /// True when this package's files must be verified against a consent
+    /// grant before anything runs them: its source needs consent and it is
+    /// not an explicit unverified test construction. A lane that cannot bind
+    /// execution to verified bytes (the script runtime) refuses such a
+    /// package outright.
+    pub fn requires_verified_contents(&self) -> bool {
+        self.manifest.source.requires_consent()
+            && !self
+                .content_pins
+                .as_ref()
+                .is_some_and(|pins| pins.unverified_for_test)
+    }
+
     /// The consented hash for the file at `path`, if this package is pinned
     /// and the grant covers that file.
     pub fn pinned_asset_hash(&self, path: &VirtualPath) -> Option<&str> {
-        let pins = self.content_pins.as_ref()?;
+        let pins = self
+            .content_pins
+            .as_ref()
+            .filter(|pins| !pins.unverified_for_test)?;
         pins.assets
             .get(self.relative_asset_path(path)?)
             .map(String::as_str)
@@ -571,6 +707,78 @@ default_permission = "ask"
 visibility = "model"
 input_schema_ref = "schemas/remote-tools/invoke.input.v1.json"
 "#;
+
+    fn wasm_package(source: ManifestSource) -> ExtensionPackage {
+        let manifest = ExtensionManifest::parse(
+            &DIRECT_REMOTE_VIRTUAL_MANIFEST.replace(
+                "kind = \"mcp\"\ntransport = \"http\"\nurl = \"https://mcp.example.test/mcp\"",
+                "kind = \"wasm\"\nmodule = \"wasm/tool.wasm\"",
+            ),
+            source,
+            &HostPortCatalog::empty(),
+            &contracts(),
+        )
+        .expect("manifest parses");
+        ExtensionPackage::from_manifest(
+            manifest,
+            VirtualPath::new("/system/extensions/remote-tools").expect("root"),
+        )
+        .expect("package")
+    }
+
+    /// Absent pins are acceptable only for a package that needs no consent;
+    /// a consent-requiring package without pins is refused, as is a pinned
+    /// package's file the grant does not cover — before any bytes are read.
+    #[test]
+    fn content_pins_fail_closed_for_packages_that_need_consent() {
+        let module = VirtualPath::new("/system/extensions/remote-tools/wasm/tool.wasm").unwrap();
+        let bytes = b"module bytes".as_slice();
+
+        let bundled = wasm_package(ManifestSource::HostBundled);
+        assert_eq!(bundled.required_asset_pin(&module), Ok(None));
+        assert_eq!(bundled.verify_asset(&module, bytes), Ok(()));
+
+        for source in [
+            ManifestSource::InstalledLocal,
+            ManifestSource::RegistryInstalled,
+        ] {
+            let unpinned = wasm_package(source);
+            assert!(unpinned.requires_verified_contents());
+            assert!(matches!(
+                unpinned.required_asset_pin(&module),
+                Err(PackageContentPinError::NoGrant { .. })
+            ));
+            assert!(matches!(
+                unpinned.verify_asset(&module, bytes),
+                Err(PackageContentPinError::NoGrant { .. })
+            ));
+
+            let uncovered = wasm_package(source).with_content_pins(PackageContentPins::from_files(
+                [("manifest.toml", b"m".as_slice())],
+            ));
+            assert!(matches!(
+                uncovered.required_asset_pin(&module),
+                Err(PackageContentPinError::Unpinned { .. })
+            ));
+
+            let pinned = wasm_package(source)
+                .with_content_pins(PackageContentPins::from_files([("wasm/tool.wasm", bytes)]));
+            assert_eq!(
+                pinned.required_asset_pin(&module),
+                Ok(Some(sha256_digest_token(bytes).as_str()))
+            );
+            assert_eq!(pinned.verify_asset(&module, bytes), Ok(()));
+            assert!(matches!(
+                pinned.verify_asset(&module, b"other bytes"),
+                Err(PackageContentPinError::Mismatch { .. })
+            ));
+
+            let test_only = wasm_package(source).with_unverified_contents_for_test();
+            assert!(!test_only.requires_verified_contents());
+            assert_eq!(test_only.verify_asset(&module, b"anything"), Ok(()));
+            assert_eq!(test_only.pinned_asset_hash(&module), None);
+        }
+    }
 
     fn contracts() -> HostApiContractRegistry {
         let mut contracts = HostApiContractRegistry::new();

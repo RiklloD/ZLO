@@ -426,6 +426,25 @@ where
         &self,
         request: RuntimeLaneRequest<'_, F, G>,
     ) -> Result<RuntimeAdapterResult, DispatchError> {
+        // The script executor runs commands against the package's files as
+        // they are at call time; nothing binds that to an immutable verified
+        // snapshot yet, so a package whose files are bound by consent
+        // (third-party plugins) never reaches it. Host-bundled packages are
+        // unaffected.
+        if request.package.requires_verified_contents() {
+            tracing::debug!(
+                extension_id = request.package.id.as_str(),
+                "refusing a script runtime for a package that needs consent"
+            );
+            return Err(dispatch_error_for_runtime(
+                RuntimeKind::Script,
+                RuntimeDispatchErrorKind::PolicyDenied,
+                Some(format!(
+                    "extension {} declares a script runtime, which plugins cannot use yet",
+                    request.package.id.as_str()
+                )),
+            ));
+        }
         // The lane holds no budget authority: it is handed the narrow
         // reserve/reconcile/release port, not the governor (#7067).
         let budget = GovernorRuntimeBudget::new(request.governor);
@@ -487,6 +506,25 @@ where
         &self,
         request: RuntimeLaneRequest<'_, F, G>,
     ) -> Result<RuntimeAdapterResult, DispatchError> {
+        // The script executor runs commands against the package's files as
+        // they are at call time; nothing binds that to an immutable verified
+        // snapshot yet, so a package whose files are bound by consent
+        // (third-party plugins) never reaches it. Host-bundled packages are
+        // unaffected.
+        if request.package.requires_verified_contents() {
+            tracing::debug!(
+                extension_id = request.package.id.as_str(),
+                "refusing a script runtime for a package that needs consent"
+            );
+            return Err(dispatch_error_for_runtime(
+                RuntimeKind::Script,
+                RuntimeDispatchErrorKind::PolicyDenied,
+                Some(format!(
+                    "extension {} declares a script runtime, which plugins cannot use yet",
+                    request.package.id.as_str()
+                )),
+            ));
+        }
         // The lane holds no budget authority: it is handed the narrow
         // reserve/reconcile/release port, not the governor (#7067).
         let budget = GovernorRuntimeBudget::new(request.governor);
@@ -1194,11 +1232,17 @@ where
                 ));
             }
         };
-        let settings = self.invocation_settings(&request).await?;
         // A package bound to consented content (third-party plugins) caches
         // its compiled module under the consented hash too, so a module
-        // prepared from other bytes is never reused for it.
-        let pinned_hash = request.package.pinned_asset_hash(&module_path);
+        // prepared from other bytes is never reused for it. Resolved before
+        // the cache lookup and fail-closed: a package that needs consent but
+        // carries no pins, or whose grant does not cover the module, is
+        // refused here — never served from a module another package compiled.
+        let pinned_hash = request
+            .package
+            .required_asset_pin(&module_path)
+            .map_err(|error| tampered_wasm_package(request.package, &error))?;
+        let settings = self.invocation_settings(&request).await?;
         let cache_key = match pinned_hash {
             Some(hash) => format!("{}#{hash}", module_path.as_str()),
             None => module_path.as_str().to_string(),
@@ -1224,19 +1268,7 @@ where
         // Consent binds the bytes that execute: verify the exact buffer about
         // to be compiled (one read, no check-then-reread).
         if let Err(error) = request.package.verify_asset(&module_path, &wasm_bytes) {
-            tracing::debug!(
-                extension_id = request.package.id.as_str(),
-                %error,
-                "refusing a wasm module that is not the consented one"
-            );
-            return Err(dispatch_error_for_runtime(
-                RuntimeKind::Wasm,
-                RuntimeDispatchErrorKind::PolicyDenied,
-                Some(format!(
-                    "extension {} is tampered: {error}; review it and grant consent again",
-                    request.package.id.as_str()
-                )),
-            ));
+            return Err(tampered_wasm_package(request.package, &error));
         }
         let prepared = Arc::new(
             run_wasm_prepare_blocking(
@@ -1265,6 +1297,27 @@ where
         let host = self.host_for_scope(&request.scope, request.capability_id);
         execute_prepared_wasm(self.runtime.clone(), prepared, host, request, settings).await
     }
+}
+
+/// The refusal a lane returns for bytes the package's consent grant does not
+/// bind (no grant, an uncovered file, or changed bytes).
+fn tampered_wasm_package(
+    package: &ExtensionPackage,
+    error: &ironclaw_extension_registry::PackageContentPinError,
+) -> DispatchError {
+    tracing::debug!(
+        extension_id = package.id.as_str(),
+        %error,
+        "refusing a wasm module that is not the consented one"
+    );
+    dispatch_error_for_runtime(
+        RuntimeKind::Wasm,
+        RuntimeDispatchErrorKind::PolicyDenied,
+        Some(format!(
+            "extension {} is tampered: {error}; review it and grant consent again",
+            package.id.as_str()
+        )),
+    )
 }
 
 impl WasmRuntimeAdapter {

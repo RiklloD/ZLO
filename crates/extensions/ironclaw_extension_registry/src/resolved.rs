@@ -277,7 +277,7 @@ impl ResolvedExtensionManifest {
                 .collect(),
             section_surfaces,
             hooks: manifest.hooks.clone(),
-            ui_slots: Vec::new(),
+            ui_slots: manifest.ui_slots.clone(),
             settings: manifest.settings.clone(),
         }
     }
@@ -359,6 +359,7 @@ impl ResolvedExtensionManifest {
             host_api_surfaces,
             hooks: self.hooks.clone(),
             settings: self.settings.clone(),
+            ui_slots: self.ui_slots.clone(),
         })
     }
 }

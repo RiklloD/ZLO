@@ -494,6 +494,7 @@ async fn resolve_package_input_schema_ref(
     })?;
     read_json_ref(
         filesystem,
+        package,
         root,
         &declaration.input_schema_ref,
         "input_schema_ref",
@@ -1010,7 +1011,9 @@ required = true
         )
         .expect("manifest must parse");
         let root = VirtualPath::new("/system/extensions/isolation-test").expect("valid root");
-        ExtensionPackage::from_manifest(manifest, root).expect("package must build")
+        ExtensionPackage::from_manifest(manifest, root)
+            .expect("package must build")
+            .with_unverified_contents_for_test()
     }
 
     fn shell_credential_context_package() -> ExtensionPackage {
@@ -1022,7 +1025,9 @@ required = true
         )
         .expect("manifest must parse");
         let root = VirtualPath::new("/system/extensions/atlas").expect("valid root");
-        ExtensionPackage::from_manifest(manifest, root).expect("package must build")
+        ExtensionPackage::from_manifest(manifest, root)
+            .expect("package must build")
+            .with_unverified_contents_for_test()
     }
 
     fn shell_descriptor() -> CapabilityDescriptor {
@@ -1252,6 +1257,85 @@ required = true
         assert_eq!(
             surface.capabilities[0].descriptor.id.as_str(),
             "isolation-test.healthy"
+        );
+    }
+
+    /// A third-party package's model-facing schema is part of what its
+    /// consent grant covers: the surface publishes a capability only when the
+    /// exact schema bytes it read match the grant's pin. A schema changed
+    /// after the grant, or a package published with no pins at all, is not
+    /// published (per capability — the healthy sibling still is).
+    #[tokio::test]
+    async fn third_party_schemas_publish_only_when_they_match_the_consent_pins() {
+        let healthy = br#"{"type": "object", "properties": {}}"#.as_slice();
+        let broken_consented = br#"{"type": "object"}"#.as_slice();
+        let fs = InMemoryBackend::new();
+        for (path, bytes) in [
+            ("schemas/healthy.input.json", healthy),
+            (
+                "schemas/broken.input.json",
+                br#"{"type": "object", "description": "changed after consent"}"#.as_slice(),
+            ),
+        ] {
+            fs.write_file(
+                &VirtualPath::new(format!("/system/extensions/isolation-test/{path}"))
+                    .expect("valid path"),
+                bytes,
+            )
+            .await
+            .expect("seed schema");
+        }
+        let base = {
+            let manifest = ExtensionManifest::parse(
+                TWO_CAPABILITY_MANIFEST,
+                ManifestSource::InstalledLocal,
+                &HostPortCatalog::empty(),
+                &isolation_test_contracts(),
+            )
+            .expect("manifest must parse");
+            ExtensionPackage::from_manifest(
+                manifest,
+                VirtualPath::new("/system/extensions/isolation-test").expect("valid root"),
+            )
+            .expect("package must build")
+        };
+        let runtime_policy = test_runtime_policy();
+        let surface_version = CapabilitySurfaceVersion::new("surface-v1").unwrap();
+        let authorizer = AlwaysAllow;
+        let published = |package: ExtensionPackage| {
+            let fs = &fs;
+            let runtime_policy = &runtime_policy;
+            let surface_version = &surface_version;
+            let authorizer = &authorizer;
+            async move {
+                let mut registry = ExtensionRegistry::new();
+                registry.insert(package).expect("insert package");
+                CapabilityCatalog::new(&registry, authorizer, surface_version, runtime_policy)
+                    .with_filesystem(fs)
+                    .visible_capabilities(isolation_test_request())
+                    .await
+                    .expect("surface resolves")
+                    .capabilities
+                    .iter()
+                    .map(|capability| capability.descriptor.id.as_str().to_string())
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        let pinned = base.clone().with_content_pins(
+            ironclaw_extension_registry::PackageContentPins::from_files([
+                ("schemas/healthy.input.json", healthy),
+                ("schemas/broken.input.json", broken_consented),
+            ]),
+        );
+        assert_eq!(
+            published(pinned).await,
+            ["isolation-test.healthy"],
+            "the schema changed after consent is not published"
+        );
+        assert!(
+            published(base).await.is_empty(),
+            "a package that needs consent and carries no pins publishes nothing"
         );
     }
 

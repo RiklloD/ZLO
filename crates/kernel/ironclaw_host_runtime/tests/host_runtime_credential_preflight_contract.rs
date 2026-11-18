@@ -125,7 +125,9 @@ fn registry_with_manifest(manifest: &str) -> ExtensionRegistry {
     )
     .expect("manifest must parse");
     let root = VirtualPath::new(format!("/system/extensions/{}", manifest.id.as_str())).unwrap();
-    let package = ExtensionPackage::from_manifest(manifest, root).expect("package must build");
+    let package = ExtensionPackage::from_manifest(manifest, root)
+        .expect("package must build")
+        .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     registry

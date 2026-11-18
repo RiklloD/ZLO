@@ -33,6 +33,7 @@ fn first_party_test_package(service: &str, capability_id: &str) -> ExtensionPack
             host_apis: Vec::new(),
             host_api_surfaces: Vec::new(),
             settings: Vec::new(),
+            ui_slots: Vec::new(),
             capabilities: vec![ironclaw_extension_registry::CapabilityManifest {
                 id: CapabilityId::new(capability_id).unwrap(),
                 description: "binder fixture capability".to_string(),

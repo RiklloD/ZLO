@@ -1642,7 +1642,9 @@ pub(crate) fn registry_with_host_bundled_manifest(manifest: &str) -> ExtensionRe
     let mut registry = ExtensionRegistry::new();
     let manifest = parse_manifest_from_source(manifest, ManifestSource::HostBundled);
     let root = VirtualPath::new(format!("/system/extensions/{}", manifest.id.as_str())).unwrap();
-    let package = ExtensionPackage::from_manifest(manifest, root).unwrap();
+    let package = ExtensionPackage::from_manifest(manifest, root)
+        .unwrap()
+        .with_unverified_contents_for_test();
     registry.insert(package).unwrap();
     registry
 }
@@ -1661,7 +1663,9 @@ pub(crate) fn registry_with_manifests(manifests: &[&str]) -> ExtensionRegistry {
         let manifest = parse_manifest(manifest);
         let root =
             VirtualPath::new(format!("/system/extensions/{}", manifest.id.as_str())).unwrap();
-        let package = ExtensionPackage::from_manifest(manifest, root).unwrap();
+        let package = ExtensionPackage::from_manifest(manifest, root)
+            .unwrap()
+            .with_unverified_contents_for_test();
         registry.insert(package).unwrap();
     }
     registry

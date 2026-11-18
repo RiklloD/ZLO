@@ -557,6 +557,29 @@ impl<F: RootFilesystem + ?Sized> ExtensionSettingsStore<F> {
     }
 }
 
+/// Forgets a user's stored values for one extension — the removal
+/// lifecycle's hook into the settings store. Settings are configuration, not
+/// LLM data, so removal clears them: a reinstall starts from defaults.
+#[async_trait]
+pub trait ExtensionSettingsCleaner: Send + Sync {
+    async fn clear_settings(
+        &self,
+        scope: &ResourceScope,
+        extension_id: &ExtensionId,
+    ) -> Result<(), ExtensionSettingsError>;
+}
+
+#[async_trait]
+impl<F: RootFilesystem + ?Sized> ExtensionSettingsCleaner for ExtensionSettingsStore<F> {
+    async fn clear_settings(
+        &self,
+        scope: &ResourceScope,
+        extension_id: &ExtensionId,
+    ) -> Result<(), ExtensionSettingsError> {
+        self.clear(scope, extension_id).await
+    }
+}
+
 #[async_trait]
 impl<F: RootFilesystem + ?Sized> ExtensionSettingsReader for ExtensionSettingsStore<F> {
     async fn stored_values(
