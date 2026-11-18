@@ -223,12 +223,19 @@ impl WasmHookRuntime {
         })
     }
 
+    /// Compile (or reuse) and ABI-validate one hook module. The bytes come
+    /// from `resolver` when given (a registrar-scoped source) and from the
+    /// runtime's own resolver otherwise.
     pub(crate) fn prepare(
         &self,
         request: &WasmHookModuleRequest<'_>,
         budget: WasmBudget,
+        resolver: Option<&dyn WasmHookModuleResolver>,
     ) -> Result<PreparedWasmHook, WasmHookRuntimeError> {
-        let bytes = self.resolver.resolve_module(request)?;
+        let bytes = match resolver {
+            Some(resolver) => resolver.resolve_module(request)?,
+            None => self.resolver.resolve_module(request)?,
+        };
         let digest = blake3::hash(&bytes);
         // Fast path: lookup under the cache lock; the LRU `get` updates
         // recency so cache-hot modules stay resident.

@@ -28,8 +28,8 @@ use crate::installed_hook::PredicateBackedBeforeCapabilityHook;
 use crate::manifest::{HookManifestBody, HookManifestEntry, HookManifestKind, HookManifestScope};
 use crate::registry::{HookBindingScope, HookPointSpec};
 use crate::wasm::{
-    WasmBeforeCapabilityHook, WasmBeforePromptHook, WasmHookModuleRequest, WasmHookRuntime,
-    WasmObserverHook,
+    WasmBeforeCapabilityHook, WasmBeforePromptHook, WasmHookModuleRequest, WasmHookModuleResolver,
+    WasmHookRuntime, WasmObserverHook,
 };
 
 /// Maximum number of hooks a single extension may register, summed across
@@ -67,6 +67,11 @@ pub struct HookRegistrar {
     /// declared by `HookManifestBody::Wasm`. When absent, WASM bodies are
     /// rejected at install time with `HookError::WasmRuntimeUnavailable`.
     wasm_runtime: Option<Arc<WasmHookRuntime>>,
+    /// Optional module source for this registrar only. When set, WASM bodies
+    /// resolve their bytes here instead of through the runtime's shared
+    /// resolver, so an installer can pin the exact bytes one build admitted
+    /// while the runtime's compiled-module cache stays shared.
+    module_resolver: Option<Arc<dyn WasmHookModuleResolver>>,
 }
 
 impl HookRegistrar {
@@ -75,6 +80,7 @@ impl HookRegistrar {
             evaluator,
             verified_grants: std::collections::HashSet::new(),
             wasm_runtime: None,
+            module_resolver: None,
         }
     }
 
@@ -96,6 +102,15 @@ impl HookRegistrar {
     #[must_use]
     pub fn with_wasm_runtime(mut self, runtime: Arc<WasmHookRuntime>) -> Self {
         self.wasm_runtime = Some(runtime);
+        self
+    }
+
+    /// Resolve WASM module bytes from `resolver` for every install made by
+    /// this registrar, instead of the runtime's shared resolver. The compiled
+    /// module cache (keyed by content digest) is still the runtime's.
+    #[must_use]
+    pub fn with_module_resolver(mut self, resolver: Arc<dyn WasmHookModuleResolver>) -> Self {
+        self.module_resolver = Some(resolver);
         self
     }
 
@@ -299,7 +314,7 @@ impl HookRegistrar {
                     export: export.as_str(),
                 };
                 let prepared = runtime
-                    .prepare(&request, budget.clone())
+                    .prepare(&request, budget.clone(), self.module_resolver.as_deref())
                     .map_err(|error| {
                         HookError::RegistryConstruction(format!(
                             "WASM hook `{}` failed to prepare: {error}",

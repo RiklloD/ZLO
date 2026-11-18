@@ -35,6 +35,9 @@ composition and `ironclaw_loop_host`'s kernel-facing base.
   (`settings` object); package hooks reach the registrar through
   composition's live, activation-tracking installer
   (`docs/internal/reborn/extension-runtime/package-hooks-and-settings.md`).
+  `HookRegistrar::with_module_resolver` + `wasm::PinnedHookModules` let an
+  installer compile exactly the module bytes it admitted for a run, while the
+  compiled-module cache stays shared on the runtime.
 
 ## Depends on / consumed by
 

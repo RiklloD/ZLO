@@ -4,7 +4,10 @@
 //! mirrors the tool-WASM runtime's fresh-store model while exposing only typed
 //! hook sinks: no filesystem, network, wall clock, RNG, or WASI imports.
 
+mod pinned;
 mod runtime;
+
+pub use pinned::{HookModuleBytes, PinnedHookModules};
 
 pub use runtime::{
     WasmBeforeCapabilityHook, WasmBeforePromptHook, WasmHookFailure, WasmHookModuleRequest,
