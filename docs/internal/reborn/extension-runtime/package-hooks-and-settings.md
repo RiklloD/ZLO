@@ -49,7 +49,14 @@ the same owner projection the tool catalog and the model-visible capability
 surface join (`ironclaw_extension_manager::installation_visibility`). A
 private install contributes to its members' runs only, a tenant-shared one to
 everyone's, and an active package with no installation row to nobody's (fail
-closed). An unreadable owner map fails the run's host build.
+closed). An unreadable owner map fails the run's host build. The owner
+projection is consent-filtered (`ExtensionLifecycleManager::installation_owners`):
+a third-party package's hooks reach only the runs of users whose own consent
+grant covers its files.
+
+Boot: the boot-time projection carries trusted (builtin / host-bundled)
+packages only. Third-party packages are never discovered from
+`/system/extensions` for hooks at boot; the live installer is their only path.
 
 Trust: every package hook installs through `HookRegistrar` at the
 `Installed` tier — restricted sinks (no `Allow`), no `Validation`/
@@ -62,10 +69,15 @@ those exact bytes through a registrar-scoped module resolver
 shared cache cannot invalidate them. They run in the hook WASM sandbox (fuel,
 memory, wall clock; no filesystem, network, clock or RNG imports).
 
-Consent seam: `live::read_hook_module` is the single read of hook module
-bytes and returns the buffer that is validated and compiled. Digest-pinned
-consent (install/consent lifecycle, not this surface) verifies those bytes
-against the consented asset hash there, before caching or compiling.
+Consent binding: a third-party package contributes hooks only when it was
+published with its consent grant's per-file pins (`ExtensionPackage::
+content_pins`); without them its hooks are quarantined ("no consent grant
+binds this package's files"). `live::read_hook_module` is the single read of
+hook module bytes and verifies that exact buffer against the pinned hash
+before it is cached or compiled; a mismatch quarantines the package's hooks
+("tampered"), and the package reads `tampered` on the next lifecycle list.
+The validation cache key includes the pins, so a new grant revalidates from
+freshly read, re-verified bytes.
 
 WASM hook ABI: `ic:hooks/context@1` `ctx_size`/`ctx_read` expose a JSON
 context blob. When the package declares settings, the blob carries the acting
@@ -144,7 +156,12 @@ Product face (`ironclaw_product_contracts::extension_settings`, answered by
 
 - The schema is read from the active package; an installed-but-inactive
   extension's settings are not listed (404).
-- Removal does not yet clear stored values (`ExtensionSettingsStore::clear`
-  exists; the removal-cleanup registry binding is install-catalog data).
-- The Settings page hook inventory (`/api/webchat/v2/hooks`) is still computed
-  from the boot-time projection, not the live active set.
+- Removal clears the removing user's stored values
+  (`ExtensionSettingsCleaner::clear_settings`, wired into
+  `ExtensionLifecycleManager::remove`): settings are configuration, not LLM
+  data, so a reinstall starts from the declared defaults. Other members keep
+  theirs.
+- The Settings page hook inventory (`/api/webchat/v2/hooks`) lists trusted
+  hooks deployment-wide and, per caller, the hooks of active third-party
+  packages visible to that caller (consent-filtered), with any live
+  quarantine reason. Another user's private plugin is absent.

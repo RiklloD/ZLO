@@ -949,28 +949,66 @@ third-party package, files changed
          after consent              -> tampered
 ```
 
-- `consent_required` / `tampered` (amended 2026-11-18, plugin consent): a
-  package the binary did not compile in (`InstalledLocal`,
-  `RegistryInstalled`) does not activate — on install, explicit activation, or
-  boot hydration — until the user grants consent. The lifecycle response
-  carries `consent: { digest, requests: [{ kind, title, detail }] }` derived
-  from the resolved manifest; `kind` is `tool | network | credential | hook |
-  ui_slot | setting | service`. The grant (`extension_grant_consent`, a user
+- `consent_required` / `tampered` (amended 2026-11-18, plugin consent;
+  per-principal and execution-bound 2026-11-18 after review): a package the
+  binary did not compile in (`InstalledLocal`, `RegistryInstalled`) does not
+  activate — on install/join, explicit activation, or boot hydration — and
+  contributes nothing to a user's runs until **that user** grants consent.
+  The lifecycle response carries `consent: { digest, requests: [{ kind,
+  title, detail }] }` derived from the resolved manifest; `kind` is `tool |
+  network | credential | hook | ui_slot | setting | service` (hooks, UI slots
+  and settings are listed too). The grant (`extension_grant_consent`, a user
   action, never a model-callable capability) names the digest, a SHA-256 over
-  every package file, and is refused for any other digest. Changing any file
-  after the grant yields `tampered` until consent is granted again; status is
-  computed from the files on disk, so a running process notices the change on
-  the next list, project, or activation. On a shared (tenant-owned) install
-  only the tenant admin may grant (the grant can migrate the durable
-  manifest). The grant records a `sha256:` hash per file; the generic host's
-  loader attaches them to the package it binds (`ExtensionPackage::
-  content_pins`, refusing a consent-requiring package with no grant or whose
-  persisted manifest is not the consented one), and the WASM lane verifies
-  the exact module buffer it compiles against them, refusing any other bytes
-  (`policy_denied`). Boot hydration classifies installations by their
-  persisted source and excludes a consent-requiring one the catalog cannot
-  verify (missing or invalid files). Host-bundled and user-registered
-  hosted-MCP packages are exempt. Owner:
+  every package file, and is refused for any other digest.
+  - **Whose decision.** One physical package definition and one set of
+    execution pins exist per extension id, but the decision is per principal:
+    a tenant-owned (shared) install runs on the tenant admin's grant (only the
+    tenant admin may make it); a member-held install runs, for each member,
+    only on that member's own grant. Another user joining the membership is
+    `consent_required` until they grant; leaving drops only their decision;
+    final removal drops all of them. Durable records (schema 3, under
+    `/system/extensions/.consent/`): `<id>.json` holds the pins (`digest` +
+    per-file `sha256:` hashes), `grants/<id>/<principal>.json` one decision
+    (`principal`, `digest`, `granted_by`, `granted_at`). A record of any other
+    schema (the earlier id-keyed grant) reads as no grant.
+  - **Per-user surfaces.** `ExtensionLifecycleManager::installation_owners`
+    narrows every owner row by consent (members without a matching decision
+    are dropped; a row nobody consented to is invisible). The tool catalog,
+    the model-visible capability surface, live package hooks, plugin UI
+    slots, package settings and the hook inventory all join that projection.
+  - **Execution binding.** Publication (activation and boot restore) attaches
+    the pins to the published `ExtensionPackage::content_pins`; the generic
+    host's loader attaches them to its rebuilt copy. Every runtime read of a
+    package file is verified against them before use: the WASM lane (before
+    its compiled-module cache lookup), the model-facing schema/prompt reads
+    (`capability_catalog::read_json_ref` — a mismatch omits that capability),
+    and hook modules (`live::read_hook_module` — a mismatch quarantines the
+    package's hooks). Pins are fail-closed: a consent-requiring package
+    without pins is refused (`ExtensionPackage::verify_asset` /
+    `required_asset_pin`); only host-bundled and user-registered packages run
+    unpinned (plus the explicit `with_unverified_contents_for_test`).
+  - **Status from disk.** Changing any file after the grant yields `tampered`
+    until consent is granted again; status is computed from the files on disk
+    (once per package per operation), so a running process notices on the
+    next list, project, or activation.
+  - **Script runtimes.** A consent-requiring package that declares a
+    `script` runtime (reachable through legacy v2 manifests) is refused at
+    admission (import/install), activation, grant and boot, and the script
+    lane itself refuses such a package: the script executor runs commands
+    against files as they are at call time, with no verified snapshot.
+  - **Hooks.** The boot hook projection carries trusted (builtin /
+    host-bundled) packages only; third-party hooks come solely from the live
+    installer, per run, for consented users, from verified bytes.
+  - **Wire.** WebUI v2: `GET /api/webchat/v2/extensions` lists
+    `installation_state: "consent_required" | "tampered"` with
+    `consent: { digest, requests }` for the caller;
+    `POST /api/webchat/v2/extensions/{package_id}/consent` with
+    `{ "digest", "client_action_id" }` grants for the caller and activates
+    (product command `extensions.consent.grant`), answering
+    `{ "granted": true, "installation_state": "active" | ... }`. CLI:
+    `zlo extension grant <id> --digest <digest>` (or `install --yes`).
+
+  Host-bundled and user-registered hosted-MCP packages are exempt. Owner:
   `ironclaw_extension_host::extension_consent`. These are public states, not
   `setup_needed`, because the user action differs (review and consent, not a
   setup form).
