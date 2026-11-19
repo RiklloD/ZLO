@@ -4,7 +4,6 @@
 //! runs, so a turn waits and Stop ends it like a turn.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use ironclaw_orchestrator::model::ThreadRecord;
@@ -53,17 +52,26 @@ impl MuseRuntime {
                 note: "Nothing to compact yet.".into(),
             });
         }
+        // A Stop while this prepared: no host is launched.
+        if claim.is_cancelled() {
+            return Ok(ThreadActionOutcome::Busy);
+        }
         let (mut child, pgid) = self.spawn_host(false)?;
         let mut group = crate::slot::GroupGuard::new(pgid, "muse: dropped host group");
         let (client, inbound) = connect(&mut child, pgid)?;
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = claim.cancel_flag();
         let (done_tx, done_rx) = watch::channel(false);
-        claim.fill(ActiveTurn {
+        let published = claim.fill(ActiveTurn {
             pgid,
-            cancelled: Arc::clone(&cancelled),
             live: Arc::default(),
             done: done_rx,
         });
+        if !published {
+            drop((client, inbound));
+            close_host(&mut child, pgid).await;
+            group.disarm();
+            return Ok(ThreadActionOutcome::Busy);
+        }
         let result = tokio::time::timeout(COMPACT_TIMEOUT, run(&client, inbound, &session))
             .await
             .unwrap_or_else(|_| Compacted::Failed("timed out".into()));

@@ -108,9 +108,18 @@ pub(super) fn agent_command(c: &AntigravityConfig) -> Command {
 /// Profile folders, the work folder and the session map. The auth method
 /// goes in the profile's `settings.json` (never a credential); an existing
 /// file (a shared profile) is left alone.
+///
+/// The profile holds the account's sign-in, so every folder ZLO creates in
+/// it is 0700, and a profile ZLO owns (under its state folder) is tightened
+/// to 0700 along with its `config` folder. A shared profile another app
+/// made keeps its mode. Threat model: the profile is private to the user;
+/// another process of the same user racing the skill links inside it is
+/// out of scope (it could change the profile directly anyway), so the
+/// links are made by path, not through held directory handles.
 pub(super) async fn prepare_dirs(config: &AntigravityConfig) -> std::io::Result<()> {
     let acp = config.profile_dir.join(APP_DATA_DIR);
-    tokio::fs::create_dir_all(acp.join("tmp")).await?;
+    private_dir_all(&config.profile_dir).await?;
+    private_dir_all(&acp.join("tmp")).await?;
     tokio::fs::create_dir_all(&config.work_dir).await?;
     tokio::fs::create_dir_all(config.state_dir.join("sessions")).await?;
     let settings = acp.join("settings.json");
@@ -121,6 +130,35 @@ pub(super) async fn prepare_dirs(config: &AntigravityConfig) -> std::io::Result<
     }
     if let Some(user) = &config.user_gemini_dir {
         link_user_skills(&config.profile_dir, user).await;
+    }
+    if config.owns_profile() {
+        tighten(&config.profile_dir).await?;
+        tighten(&config.profile_dir.join("config")).await?;
+    }
+    Ok(())
+}
+
+/// `create_dir_all`, with every folder it creates 0700.
+async fn private_dir_all(path: &Path) -> std::io::Result<()> {
+    tokio::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+        .await
+}
+
+/// Drop group and other access from a real folder ZLO owns; a missing
+/// folder or a symlink is left alone.
+async fn tighten(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = match tokio::fs::symlink_metadata(path).await {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mode = meta.permissions().mode();
+    if meta.is_dir() && !meta.file_type().is_symlink() && mode & 0o077 != 0 {
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o700)).await?;
     }
     Ok(())
 }
@@ -194,7 +232,7 @@ async fn link_one(profile: &Path, rel: &Path, target: &Path) -> std::io::Result<
         return Ok(());
     }
     if let Some(parent) = link.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        private_dir_all(parent).await?;
     }
     tokio::fs::symlink(target, &link).await
 }
@@ -365,6 +403,65 @@ mod tests {
             "agentCapabilities": {"_meta": {"antigravity": {"systemPrompt": {"append": true}}}}
         })));
         assert!(!appends_system_prompt(&json!({"agentCapabilities": {}})));
+    }
+
+    fn test_config(profile: PathBuf, state: PathBuf, user: Option<PathBuf>) -> AntigravityConfig {
+        AntigravityConfig {
+            runtime_id: "antigravity".into(),
+            display_name: "Antigravity".into(),
+            launch: AgentLaunch::Cli {
+                agy: PathBuf::from("agy"),
+            },
+            profile_dir: profile,
+            user_gemini_dir: user,
+            auth_method: "oauth-personal".into(),
+            auth_timeout: Duration::from_secs(5),
+            work_dir: state.join("work"),
+            state_dir: state,
+            background_hold: Duration::from_secs(30),
+        }
+    }
+
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    // Review (2nd round, C): the profile and its `config` folder are
+    // private (0700) when ZLO creates them, and tightened when ZLO owns the
+    // profile; a shared profile someone else made keeps its mode.
+    #[tokio::test]
+    async fn profile_folders_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let open = std::fs::Permissions::from_mode(0o755);
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("gemini");
+        std::fs::create_dir_all(user.join("config/skills")).unwrap();
+
+        // Created by ZLO: private all the way down.
+        let state = dir.path().join("state");
+        let fresh = test_config(state.join("profile"), state.clone(), Some(user.clone()));
+        prepare_dirs(&fresh).await.unwrap();
+        assert_eq!(mode(&fresh.profile_dir), 0o700);
+        assert_eq!(mode(&fresh.profile_dir.join("config")), 0o700);
+        assert_eq!(mode(&fresh.profile_dir.join(APP_DATA_DIR)), 0o700);
+
+        // ZLO's own profile left looser: tightened.
+        std::fs::set_permissions(&fresh.profile_dir, open.clone()).unwrap();
+        std::fs::set_permissions(fresh.profile_dir.join("config"), open.clone()).unwrap();
+        prepare_dirs(&fresh).await.unwrap();
+        assert_eq!(mode(&fresh.profile_dir), 0o700);
+        assert_eq!(mode(&fresh.profile_dir.join("config")), 0o700);
+
+        // A shared profile (another app's) that exists: its mode stays, and
+        // the `config` folder ZLO creates inside it is private.
+        let shared = dir.path().join("hermes/profile");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::set_permissions(&shared, open).unwrap();
+        let foreign = test_config(shared.clone(), dir.path().join("state2"), Some(user));
+        prepare_dirs(&foreign).await.unwrap();
+        assert_eq!(mode(&shared), 0o755);
+        assert_eq!(mode(&shared.join("config")), 0o700);
     }
 
     #[tokio::test]

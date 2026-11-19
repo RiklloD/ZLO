@@ -31,6 +31,7 @@ mod fold;
 pub mod launch;
 mod live;
 mod store;
+mod superseded;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -60,6 +61,7 @@ use fold::PromptFold;
 use launch::AgentLaunch;
 use live::LiveFold;
 use store::{INIT_TIMEOUT, SESSION_TIMEOUT};
+use superseded::{Superseded, is_usage_limit};
 
 /// The legacy ACP runtime release the driver was checked against.
 pub const EXPECTED_RUNTIME_VERSION: &str = "1.3.0";
@@ -139,6 +141,12 @@ impl AntigravityConfig {
         self.state_dir.join("models.json")
     }
 
+    /// Whether the profile is ZLO's own (under its state folder) rather
+    /// than one another app signed in and shares.
+    fn owns_profile(&self) -> bool {
+        self.profile_dir.starts_with(&self.state_dir)
+    }
+
     fn uses_browser(&self) -> bool {
         matches!(
             self.auth_method.as_str(),
@@ -159,7 +167,6 @@ type SteerTx = mpsc::UnboundedSender<SteerRequest>;
 
 struct ActiveTurn {
     pgid: i32,
-    cancelled: Arc<AtomicBool>,
     /// The live connection and ACP session, once the session is open.
     session: Arc<Mutex<Option<(RpcClient, String)>>>,
     steer: SteerTx,
@@ -178,6 +185,8 @@ pub struct AntigravityRuntime {
     refreshing: Arc<AtomicBool>,
     /// When the last refresh started (ms), for [`REFRESH_RETRY_MS`].
     last_refresh: Arc<std::sync::atomic::AtomicI64>,
+    #[cfg(test)]
+    prep_gate: Option<Arc<crate::slot::PrepGate>>,
 }
 
 /// What a turn sends besides the user's text.
@@ -206,13 +215,18 @@ impl AntigravityRuntime {
             primed: crate::Primed::default(),
             refreshing: Arc::new(AtomicBool::new(false)),
             last_refresh: Arc::new(std::sync::atomic::AtomicI64::new(i64::MIN)),
+            #[cfg(test)]
+            prep_gate: None,
         })
     }
 
     /// Start the turn the `claim` admitted. Every early return drops the
     /// claim, which frees the thread; once the agent runs, its task owns the
-    /// claim and a guard on the agent's process group, so a panicking or
-    /// aborted turn still frees the thread and ends the agent.
+    /// claim, a guard on the agent's process group and a report guard, so a
+    /// panicking or aborted turn still frees the thread, ends the agent and
+    /// is reported failed. A Stop while the turn prepares cancels the slot:
+    /// the agent is not launched (or is ended at once if the Stop landed
+    /// during the spawn) and the turn is reported `Cancelled`.
     async fn spawn_turn(
         &self,
         claim: Claim<ActiveTurn>,
@@ -228,6 +242,18 @@ impl AntigravityRuntime {
         launch::prepare_dirs(&self.config)
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("antigravity dirs: {}", e.kind())))?;
+        #[cfg(test)]
+        crate::slot::PrepGate::pass(self.prep_gate.as_ref()).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        if claim.is_cancelled() {
+            crate::slot::report_cancelled(
+                claim,
+                self.sink.clone(),
+                thread.thread_id.clone(),
+                run_id.clone(),
+            );
+            return Ok(run_id);
+        }
         let mut child = launch::agent_command(&self.config)
             .spawn()
             .map_err(|e| RuntimeError::Unavailable(format!("spawn antigravity: {}", e.kind())))?;
@@ -251,18 +277,29 @@ impl AntigravityRuntime {
         });
         let (client, inbound) = RpcClient::start(stdin, stdout, "antigravity");
 
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = claim.cancel_flag();
         let session = Arc::new(Mutex::new(None));
         let (steer_tx, steer_rx) = mpsc::unbounded_channel();
         let (done_tx, done_rx) = watch::channel(false);
-        claim.fill(ActiveTurn {
+        let published = claim.fill(ActiveTurn {
             pgid,
-            cancelled: Arc::clone(&cancelled),
             session: Arc::clone(&session),
             steer: steer_tx.clone(),
             done: done_rx,
         });
+        if !published {
+            // Stopped while the agent spawned: end it before it does anything.
+            drop((client, inbound));
+            store::close_host(&mut child, pgid).await;
+            group.disarm();
+            crate::slot::report_cancelled(
+                claim,
+                self.sink.clone(),
+                thread.thread_id.clone(),
+                run_id.clone(),
+            );
+            return Ok(run_id);
+        }
 
         let turn = Turn {
             config: Arc::clone(&self.config),
@@ -283,6 +320,13 @@ impl AntigravityRuntime {
         let sink = self.sink.clone();
         let thread_id = thread.thread_id.clone();
         let run = run_id.clone();
+        let mut report = crate::slot::ReportGuard::new(
+            sink.clone(),
+            bridge.clone(),
+            thread_id.clone(),
+            run.clone(),
+            "antigravity",
+        );
         tokio::spawn(async move {
             if let Some(sink) = sink.upgrade() {
                 sink.turn_started(&thread_id, Some(run.clone()), now_ms())
@@ -294,6 +338,7 @@ impl AntigravityRuntime {
             let (outcome, telemetry) = turn.run(client, inbound, steer_rx).await;
             store::close_host(&mut child, pgid).await;
             group.disarm();
+            report.disarm();
             if let Some(bridge) = &bridge {
                 bridge.turn_ended(&thread_id, &run, outcome.status.as_str());
             }
@@ -335,18 +380,16 @@ impl AntigravityRuntime {
     /// Ask the agent to cancel, then kill its process group if it does not
     /// settle within the grace period. Waits until the turn is reported.
     async fn stop(&self, thread: &ThreadId) {
-        let entry = self.active.with_turn(thread, |t| {
-            (
-                t.pgid,
-                Arc::clone(&t.cancelled),
-                Arc::clone(&t.session),
-                t.done.clone(),
-            )
-        });
-        let Some((pgid, cancelled, session, mut done)) = entry else {
+        // Sets the turn's cancelled flag; a turn still preparing never runs.
+        if !self.active.stop_admitted(thread).await {
+            return;
+        }
+        let entry = self
+            .active
+            .with_turn(thread, |t| (t.pgid, Arc::clone(&t.session), t.done.clone()));
+        let Some((pgid, session, mut done)) = entry else {
             return;
         };
-        cancelled.store(true, Ordering::SeqCst);
         let open = session.lock().ok().and_then(|s| s.clone());
         if let Some((client, session_id)) = open {
             // `agy` 1.5 also ends the commands it backgrounded on cancel.
@@ -410,7 +453,7 @@ struct AgentTraits {
     appends: bool,
 }
 
-type PromptFuture = Pin<Box<dyn Future<Output = Result<Value, RpcError>> + Send>>;
+pub(super) type PromptFuture = Pin<Box<dyn Future<Output = Result<Value, RpcError>> + Send>>;
 
 /// Put a `session/prompt` frame on the wire now (frames go out in the
 /// order sent) and return the wait for its answer. A steer is acknowledged
@@ -490,6 +533,7 @@ impl Turn {
 
         let first = self.prompt_text(agent, recap.as_deref());
         let mut answer: Result<Value, RpcError> = Err(RpcError::Closed);
+        let mut superseded = Superseded::default();
         let mut prompt = match send_prompt(&client, &session_id, &first) {
             Ok(pending) => Some(pending),
             Err(error) => {
@@ -586,11 +630,13 @@ impl Turn {
                     journal::append(&transcript, &entries).await;
                     // The frame is on the wire before the steer is
                     // acknowledged. The earlier prompt's answer (`end_turn`,
-                    // by design of a steer) is no longer awaited.
+                    // by design of a steer) is still awaited for an error.
                     let sent = match send_prompt(&client, &session_id, &request.text) {
                         Ok(pending) => {
                             live.steered();
-                            prompt = Some(pending);
+                            if let Some(earlier) = prompt.replace(pending) {
+                                superseded.push(earlier);
+                            }
                             held = false;
                             true
                         }
@@ -602,9 +648,11 @@ impl Turn {
                     #[expect(clippy::let_underscore_must_use, reason = "the steerer may have given up waiting")]
                     let _ = request.taken.send(sent);
                 }
+                () = superseded.settle(), if !superseded.is_empty() => {}
                 () = tokio::time::sleep(HOLD_TICK), if prompt.is_none() => {}
             }
         }
+        superseded.settle_ready();
         // Updates that raced the answer still belong to this turn.
         while let Ok(message) = inbound.try_recv() {
             self.handle(&client, &session_id, agent, message, &mut fold, &mut live);
@@ -626,7 +674,27 @@ impl Turn {
                 )
             };
         }
-        if fold.lost_thinking_signature(&answer) {
+        let earlier = superseded.error.take();
+        if let Some(earlier) = &earlier
+            && !self.cancelled.load(Ordering::SeqCst)
+        {
+            // A superseded prompt failed: a later success does not undo it,
+            // and a quota reached there still arms the resume.
+            let earlier_outcome = fold.outcome(false, earlier);
+            if outcome.status == TurnEndStatus::Completed
+                || (is_usage_limit(&earlier_outcome) && !is_usage_limit(&outcome))
+            {
+                outcome = TurnOutcome {
+                    final_text: outcome.final_text.take(),
+                    ..earlier_outcome
+                };
+            }
+        }
+        if fold.lost_thinking_signature(&answer)
+            || earlier
+                .as_ref()
+                .is_some_and(|e| fold.lost_thinking_signature(e))
+        {
             store::retire_session(&self.config.session_file(&self.key)).await;
             outcome = TurnOutcome::ended(
                 TurnEndStatus::Failed,
@@ -1290,6 +1358,39 @@ pub async fn default_config(home: &Path) -> Option<AntigravityConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Review (2nd round, B): a Stop that lands while the turn prepares (no
+    // agent yet) ends it `Cancelled`, and the agent is never launched.
+    #[tokio::test]
+    async fn stop_while_the_turn_prepares_never_launches_the_agent() {
+        use crate::slot::test_support::{Recorder, marker_host, stop_before_launch};
+        let dir = tempfile::tempdir().unwrap();
+        let (host, marker) = marker_host(dir.path());
+        let recorder = Arc::new(Recorder::default());
+        let mut rt = AntigravityRuntime::new(
+            AntigravityConfig {
+                runtime_id: "antigravity".into(),
+                display_name: "Antigravity".into(),
+                launch: AgentLaunch::Runtime {
+                    server: host,
+                    harness: dir.path().join("harness"),
+                },
+                profile_dir: dir.path().join("profile"),
+                user_gemini_dir: None,
+                auth_method: "oauth-personal".into(),
+                auth_timeout: Duration::from_secs(5),
+                work_dir: dir.path().join("work"),
+                state_dir: dir.path().join("state"),
+                background_hold: DEFAULT_BACKGROUND_HOLD,
+            },
+            recorder.sink(),
+            None,
+        )
+        .unwrap();
+        let gate = Arc::new(crate::slot::PrepGate::default());
+        rt.prep_gate = Some(Arc::clone(&gate));
+        stop_before_launch(Arc::new(rt), gate, recorder, &marker).await;
+    }
 
     // Review: the recap is fenced, labeled as data, and its text cannot
     // close the fence, whatever the case of the tag.

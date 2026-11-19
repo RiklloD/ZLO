@@ -141,7 +141,12 @@ is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
   linked into the private profile; only a missing entry, an empty
   placeholder folder or a link to exactly that target is replaced (a link
   pointing elsewhere is the user's and stays), and nothing is changed when
-  a folder on the way inside the profile is a symlink.
+  a folder on the way inside the profile is a symlink. Every folder ZLO
+  creates in the profile is 0700, and ZLO's own profile and its `config`
+  folder are tightened to 0700 (a shared Hermes profile keeps its mode);
+  placeholders go with `remove_dir`, never a recursive removal. The links
+  are made by path: another process of the same user racing them inside
+  the private profile is outside the threat model.
 - **Finding the agent:** `agy --version` runs asynchronously
   (`register_antigravity_runtime` and `register_cli_runtimes` are `async`)
   in its own process group, under one 5 s deadline for its first output
@@ -151,7 +156,12 @@ is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
   (`slot.rs`, shared with Muse): a racing start is `Busy`, and the claim
   and a guard on the agent's process group live in the turn task, so a
   dropped, panicking or aborted turn still frees the thread and ends the
-  agent.
+  agent; a report guard then tells the engine (`turn_finished`) and the
+  bridge (`turn_ended`) the turn failed. The slot's cancellation flag
+  exists from the claim on: a Stop while the turn still prepares sets it,
+  the driver checks it before spawning and `fill` refuses a cancelled
+  slot, so the agent is never launched (or is ended at once) and the turn
+  is reported `Cancelled`; that Stop returns once the report is out.
 - **Turns:** one agent process per turn: `initialize`, `authenticate`,
   `session/new` on the first turn (the agent's session id is kept in
   `~/.ironclaw/antigravity/sessions/<key>`), then `session/resume`. The
@@ -170,8 +180,13 @@ is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
   prompt answers `end_turn`, the turn carries on under the new one, and the
   agent's tools and subagents are left alone. A steer is acknowledged only
   after its `session/prompt` frame is queued on the wire (frames go out in
-  order), so steers sent at once all reach the agent. The legacy runtime
-  refuses (the engine queues); `SteerHow::Restart` stops and restarts.
+  order), so steers sent at once all reach the agent. The superseded
+  prompt's reply is still awaited: its `end_turn`/`cancelled` is ignored,
+  but an error (a quota, a lost thinking signature, anything else) is kept
+  and classified like the turn's own answer, so a later success does not
+  mask it and a lost signature still retires the session pointer. The
+  legacy runtime refuses (the engine queues); `SteerHow::Restart` stops
+  and restarts.
 - **Background commands:** `agy` ends a prompt while a command it
   backgrounded still runs and replies on its own when it finishes. The turn
   stays open until the command is done and that reply closes with a
@@ -247,7 +262,10 @@ dependency: its facade has no `turn/interrupt`, `model/list` or
 - **Fork:** no native fork; the engine's portable handoff starts a new
   session with the context (as t3code does).
 - **Admission:** the same shared claim as Antigravity (`slot.rs`): one turn,
-  compaction or probe per thread, taken before any await.
+  compaction or probe per thread, taken before any await. A Stop before
+  the host runs cancels the slot (the turn is reported `Cancelled`, a
+  compaction answers `Busy`, and `muse serve` never launches), and a
+  panicking or aborted turn task is reported failed.
 - **Compaction:** Muse compacts near the window by itself
   (`RuntimeCompaction::automatic`); `ThreadAction::Compact` resumes the
   session on a host of its own, sends `session/compact` and waits up to

@@ -119,7 +119,6 @@ struct LiveTurn {
 
 struct ActiveTurn {
     pgid: i32,
-    cancelled: Arc<AtomicBool>,
     live: Arc<Mutex<Option<LiveTurn>>>,
     done: watch::Receiver<bool>,
 }
@@ -142,6 +141,8 @@ pub struct MuseRuntime {
     active: Slots,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
     primed: crate::Primed,
+    #[cfg(test)]
+    prep_gate: Option<Arc<crate::slot::PrepGate>>,
 }
 
 impl MuseRuntime {
@@ -158,6 +159,8 @@ impl MuseRuntime {
             active: Slots::default(),
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
             primed: crate::Primed::default(),
+            #[cfg(test)]
+            prep_gate: None,
         })
     }
 
@@ -216,20 +219,44 @@ impl MuseRuntime {
         tokio::fs::create_dir_all(&self.config.work_dir)
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("work dir: {}", e.kind())))?;
+        #[cfg(test)]
+        crate::slot::PrepGate::pass(self.prep_gate.as_ref()).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        // A Stop while the turn prepared: the host is never launched.
+        if claim.is_cancelled() {
+            crate::slot::report_cancelled(
+                claim,
+                self.sink.clone(),
+                thread.thread_id.clone(),
+                run_id.clone(),
+            );
+            return Ok(run_id);
+        }
         let (mut child, pgid) = self.spawn_host(false)?;
         let mut group = GroupGuard::new(pgid, "muse: dropped host group");
         let (client, inbound) = connect(&mut child, pgid)?;
 
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = claim.cancel_flag();
         let live = Arc::new(Mutex::new(None));
         let (done_tx, done_rx) = watch::channel(false);
-        claim.fill(ActiveTurn {
+        let published = claim.fill(ActiveTurn {
             pgid,
-            cancelled: Arc::clone(&cancelled),
             live: Arc::clone(&live),
             done: done_rx,
         });
+        if !published {
+            // Stopped while the host spawned: end it before it does anything.
+            drop((client, inbound));
+            close_host(&mut child, pgid).await;
+            group.disarm();
+            crate::slot::report_cancelled(
+                claim,
+                self.sink.clone(),
+                thread.thread_id.clone(),
+                run_id.clone(),
+            );
+            return Ok(run_id);
+        }
 
         // Never wait on a catalog probe in flight; the rows are fallbacks.
         let models = self
@@ -257,6 +284,14 @@ impl MuseRuntime {
         let sink = self.sink.clone();
         let thread_id = thread.thread_id.clone();
         let run = run_id.clone();
+        let mut report = crate::slot::ReportGuard::new(
+            sink.clone(),
+            bridge.clone(),
+            thread_id.clone(),
+            run.clone(),
+            "muse",
+        )
+        .with_token(mcp.as_ref().map(|m| m.token.clone()));
         tokio::spawn(async move {
             if let Some(sink) = sink.upgrade() {
                 sink.turn_started(&thread_id, Some(run.clone()), now_ms())
@@ -268,6 +303,7 @@ impl MuseRuntime {
             let (outcome, telemetry) = turn.run(client, inbound).await;
             close_host(&mut child, pgid).await;
             group.disarm();
+            report.disarm();
             if let Some(bridge) = &bridge {
                 if let Some(mcp) = &mcp {
                     bridge.revoke_token(&mcp.token);
@@ -318,13 +354,14 @@ impl MuseRuntime {
     /// `turn/interrupt`, then the process group if the turn does not settle
     /// within the grace period. Waits until the turn is reported.
     async fn stop(&self, thread: &ThreadId) {
-        let entry = self.active.with_turn(thread, |t| {
-            (t.pgid, Arc::clone(&t.cancelled), t.done.clone())
-        });
-        let Some((pgid, cancelled, mut done)) = entry else {
+        // Sets the turn's cancelled flag; a turn still preparing never runs.
+        if !self.active.stop_admitted(thread).await {
+            return;
+        }
+        let entry = self.active.with_turn(thread, |t| (t.pgid, t.done.clone()));
+        let Some((pgid, mut done)) = entry else {
             return;
         };
-        cancelled.store(true, Ordering::SeqCst);
         if let Some(live) = self.live(thread) {
             // Joined turns first: the admitted one ending ends the wait.
             for turn_id in live.joined.iter().chain([&live.turn_id]) {
@@ -1160,6 +1197,34 @@ pub fn default_config(home: &Path, binary: &Path) -> MuseConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Review (2nd round, B): a Stop that lands while the turn prepares (no
+    // host yet) ends it `Cancelled`, and `muse serve` is never launched.
+    #[tokio::test]
+    async fn stop_while_the_turn_prepares_never_launches_the_host() {
+        use crate::slot::test_support::{Recorder, marker_host, stop_before_launch};
+        let dir = tempfile::tempdir().unwrap();
+        let (host, marker) = marker_host(dir.path());
+        let recorder = Arc::new(Recorder::default());
+        let mut rt = MuseRuntime::new(
+            MuseConfig {
+                runtime_id: "muse-code".into(),
+                display_name: "Muse Code".into(),
+                binary: host,
+                work_dir: dir.path().join("work"),
+                state_dir: dir.path().join("state"),
+                usage_file: None,
+                reasoning_effort: None,
+                orchestrator_tools: false,
+            },
+            recorder.sink(),
+            None,
+        )
+        .unwrap();
+        let gate = Arc::new(crate::slot::PrepGate::default());
+        rt.prep_gate = Some(Arc::clone(&gate));
+        stop_before_launch(Arc::new(rt), gate, recorder, &marker).await;
+    }
 
     #[test]
     fn denial_takes_the_once_denied_choice_else_abort() {
