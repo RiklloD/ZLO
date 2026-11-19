@@ -1076,21 +1076,36 @@ impl Store {
         author: Author,
     ) -> Result<QueueItemId> {
         let id = QueueItemId::generate();
-        let now = now_ms();
-        self.exec(
-            "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, updated_at) \
-             VALUES (?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM orch_queue WHERE thread_id = ?2), \
-             ?3, 'pending', ?4, ?5, ?5)",
-            vec![
-                s(id.as_str()),
-                s(thread.as_str()),
-                s(text),
-                s(author.as_str()),
-                now.into(),
-            ],
-        )
-        .await?;
+        self.queue_add_once(&id, thread, text, author).await?;
         Ok(id)
+    }
+
+    /// [`Self::queue_add`] under a caller-chosen id: a second add with the
+    /// same id (a repeated recovery) is a no-op. `true` when this call
+    /// inserted the row.
+    pub async fn queue_add_once(
+        &self,
+        id: &QueueItemId,
+        thread: &ThreadId,
+        text: &str,
+        author: Author,
+    ) -> Result<bool> {
+        let now = now_ms();
+        let n = self
+            .exec(
+                "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, updated_at) \
+                 VALUES (?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM orch_queue WHERE thread_id = ?2), \
+                 ?3, 'pending', ?4, ?5, ?5) ON CONFLICT(id) DO NOTHING",
+                vec![
+                    s(id.as_str()),
+                    s(thread.as_str()),
+                    s(text),
+                    s(author.as_str()),
+                    now.into(),
+                ],
+            )
+            .await?;
+        Ok(n > 0)
     }
 
     /// Edit a pending item's text; false when it is no longer pending.

@@ -224,6 +224,7 @@ mod tests {
                 login_file: root.join(".claude.json"),
                 projects_dir: projects.clone(),
                 usage_file: None,
+                autocompact: None,
             },
             sink,
             None,

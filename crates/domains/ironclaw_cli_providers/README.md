@@ -44,14 +44,74 @@ One `claude -p --output-format stream-json --input-format stream-json
 for the control protocol until the result arrives. The thread's
 `native_session_id` is minted at creation; the first turn passes
 `--session-id`, later turns `--resume`. Stop sends SIGTERM to the process
-group, SIGKILL after 2 s. A rejected `rate_limit_event` (or a limit-shaped
-error result) becomes `usage_limit_resets_at`. History reads the CLI's own
-session journal. The CLI child dies with the backend, so
+group, SIGKILL after 2 s. A rejected `rate_limit_event`, the same reading
+repeated on a blocked assistant frame (`api_error_params.rate_limit_info`,
+whose reset counts only while still ahead), or a limit-shaped error result
+becomes `usage_limit_resets_at`, and the error names the limit
+(`usage_limit: the Claude 5-hour limit is reached`; weekly, weekly Opus,
+weekly Sonnet, extra-usage). History reads the CLI's own session journal. The CLI child dies with the backend, so
 `reports_restart_cuts` stays off and the engine's live-work rows cover cuts.
 
 Wire types come from `claude-codes`, pinned to the checked CLI release
-(`claude::EXPECTED_CLI_VERSION`, `2.1.302`); a different installed version
+(`claude::EXPECTED_CLI_VERSION`, `2.1.328`); a different installed version
 is logged at `debug`.
+
+`ZLO_CLAUDE_AUTOCOMPACT` (tokens, 100000 to 1000000) is passed as
+`--autocompact`: the CLI compacts at about that much context instead of its
+default. It does not change the model's window; out-of-range values are
+ignored. Idle compaction (below) is separate.
+
+### Steering
+
+With the bridge, a message sent while a turn runs is written into its open
+stdin as a user message with `priority: "next"`: Claude reads it once the
+tool calls in flight finish, in the same turn (an approval still waiting is
+declined with the person's words). `claude/steer.rs` follows each command
+written (the prompt and every steer, by uuid) through the CLI's
+`command_lifecycle` frames (`queued`, `started`, `completed`, or dropped as
+`cancelled` / `discarded` / `refused`) and the `user_message_uuids` echoes:
+
+- stdin closes only once every command is done, not at the first `result`,
+  so the approval hook can still answer a steer's tool calls. A steer the
+  CLI never acknowledges stops holding stdin 15 s after it began waiting
+  for it: an absolute deadline, so unrelated output does not extend it.
+  The 60 s hook-registration wait is absolute too.
+- a steer the CLI never started (dropped, Stop, a crash, the turn ending
+  first) is handed back through `TurnEventSink::steers_unread` (with the
+  run id and each steer's own uuid) before the turn ends; the engine queues
+  it under an id derived from thread, run and steer, so a repeated report
+  never queues it twice, and it is sent as a later turn (after a Stop, once
+  the thread is released) instead of being lost. A queue write that still
+  fails after two retries comes back as undelivered: the turn then ends
+  failed (a Stop stays cancelled) with an error that quotes each message
+  and says it was not delivered.
+
+A CLI without lifecycle frames or echoes keeps the old behaviour: stdin
+closes at the first result and every steer counts as read.
+
+### Task lists
+
+Claude CLI 2.1.3xx has no `TodoWrite` in headless runs; with
+`CLAUDE_CODE_ENABLE_TODO_TOOLS=1` (always set) it offers `TaskCreate`,
+`TaskUpdate`, `TaskList` and `TaskGet`, deferred behind `ToolSearch`. The
+hook allows those, and a `ToolSearch` that only loads them
+(`select:TaskCreate,...`), without a gate: they touch nothing but the
+session's task store, `<config>/tasks/<session>/<id>.json`. That is made
+true, not assumed: the CLI's resolver prefers `CLAUDE_CODE_TASK_LIST_ID`
+and a team's list over the session id, so every child gets
+`CLAUDE_CODE_TASK_LIST_ID=<session>` and loses inherited team/list routing
+(`CLAUDE_INTERNAL_SESSION_TASK_LIST_ID`, `CLAUDE_INTERNAL_ASSISTANT_TEAM_NAME`,
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `CLAUDE_CODE_TEAMMATE_COMMAND`,
+`CLAUDE_CODE_TEAM_TEARDOWN_PARK_TIMEOUT_MS`). After each successful call
+the driver re-reads that store into the thread's plan (task order,
+`pending` / `in_progress` / `completed`), so the list carries across turns.
+The read (`claude/tasks.rs`) never follows a link (the store folder must be
+a real directory; entries open `O_NOFOLLOW | O_NONBLOCK` and must be the
+regular file listed, so a FIFO cannot hang it), skips entries over 64 KiB,
+looks at 512 entries and 1 MiB at most, and logs any failure other than a
+missing store at `debug`. Overlapping refreshes carry a generation; only
+the newest publishes. `TodoWrite` is still handled for older CLIs. Any
+other `ToolSearch` asks as before.
 
 ## Tools and approvals
 
@@ -68,6 +128,11 @@ CLI has its tools and every call waits for a person:
   `allow` or `deny`, never an error frame: on an error the CLI falls back to
   its own rules, which auto-approve reads. Timeout (10 min), Stop, turn end
   and any failure deny.
+- The CLI's own agents and teams are off: `--disallowedTools
+  Agent,Task,Workflow,SendMessage,ListAgents,TaskStop`
+  (`BUILTIN_SUBAGENT_TOOLS`), and the hook denies those tools outright as a
+  backstop, even on a "Full access" profile. Subagents are orchestrator
+  threads; ZLO's own Stop covers background shells.
 - No allow rules are passed, "always allow" is not offered, prompts are
   answered "no" (`--permission-prompts none`), and
   `--dangerously-skip-permissions` is never used.

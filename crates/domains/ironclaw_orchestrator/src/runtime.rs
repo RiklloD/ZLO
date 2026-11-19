@@ -150,6 +150,54 @@ impl TurnOutcome {
     }
 }
 
+/// A steer a runtime accepted into a turn whose agent never read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadSteer {
+    /// The runtime's own id for this steer (the message uuid it wrote),
+    /// unique per steer: the idempotency key of its recovery.
+    pub id: String,
+    pub text: String,
+}
+
+/// What [`TurnEventSink::steers_unread`] could not keep.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SteerRecovery {
+    /// Steers that are not queued (after retries), oldest first.
+    pub undelivered: Vec<UnreadSteer>,
+}
+
+impl TurnOutcome {
+    /// The turn's outcome once steers in `lost` could not be kept for a
+    /// later turn: the person must see that their words did not arrive, so
+    /// a turn that would have completed ends failed, and the error names
+    /// each lost message. Any other end (failed, a Stop, a restart cut) keeps
+    /// its status and gains the same note.
+    pub fn with_undelivered_steers(mut self, lost: &[UnreadSteer]) -> Self {
+        if lost.is_empty() {
+            return self;
+        }
+        let quoted: Vec<String> = lost.iter().map(|s| format!("\"{}\"", s.text)).collect();
+        let note = format!(
+            "Not delivered: {} sent during this turn could not be saved for a later turn. \
+             Send it again: {}",
+            if lost.len() == 1 {
+                "a message"
+            } else {
+                "messages"
+            },
+            quoted.join(", ")
+        );
+        self.error = Some(match self.error.take() {
+            Some(error) => format!("{error}\n{note}"),
+            None => note,
+        });
+        if self.status == TurnEndStatus::Completed {
+            self.status = TurnEndStatus::Failed;
+        }
+        self
+    }
+}
+
 /// Input for one turn.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnInput {
@@ -451,6 +499,24 @@ pub trait TurnEventSink: Send + Sync {
         outcome: TurnOutcome,
         at: Millis,
     );
+
+    /// Steers the runtime accepted into run `run_id` but its agent never read
+    /// (dropped, or the turn ended first), oldest first. Reported before that
+    /// turn's `turn_finished`; the engine queues each one, keyed by
+    /// [`UnreadSteer::id`] so a repeated report never queues it twice, and
+    /// returns the ones it could not keep. The runtime must then tell the
+    /// person (the turn ends failed, naming them): they are the person's
+    /// words. A sink that keeps nothing returns every steer.
+    async fn steers_unread(
+        &self,
+        _thread_id: &ThreadId,
+        _run_id: &str,
+        steers: Vec<UnreadSteer>,
+    ) -> SteerRecovery {
+        SteerRecovery {
+            undelivered: steers,
+        }
+    }
 
     /// Latest context/speed/cache figures of a thread; reported after every
     /// model call or turn, whichever the runtime can measure.

@@ -19,6 +19,10 @@ use serde_json::{Map, Value, json};
 
 /// The Claude CLI's checklist tool.
 pub const CLAUDE_TODO_TOOL: &str = "TodoWrite";
+/// The task-list tools that replace `TodoWrite` in Claude CLI 2.1.3xx
+/// (offered with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`). They only touch the
+/// session's own task store (`<config>/tasks/<session>/<id>.json`).
+pub const CLAUDE_TASK_TOOLS: [&str; 4] = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
 /// The Claude CLI's question tool.
 pub const CLAUDE_QUESTION_TOOL: &str = "AskUserQuestion";
 
@@ -48,6 +52,44 @@ pub fn claude_todo_plan(input: &Value) -> Option<AgentPlan> {
         Some(PlanEntry::new(text(t, "content")?, status(t)).with_active_form(text(t, "activeForm")))
     });
     Some(AgentPlan::new(entries, None, now()))
+}
+
+/// Whether a `ToolSearch` call only loads task-list tools
+/// (`select:TaskCreate,TaskUpdate`): in 2.1.3xx they are deferred, so the
+/// model loads them first. Loading a schema runs nothing; any other search
+/// still asks.
+pub fn claude_task_tool_load(tool: &str, input: &Value) -> bool {
+    if tool != "ToolSearch" {
+        return false;
+    }
+    let Some(names) = input
+        .get("query")
+        .and_then(Value::as_str)
+        .and_then(|q| q.trim().strip_prefix("select:"))
+    else {
+        return false;
+    };
+    let mut names = names.split(',').map(str::trim).peekable();
+    names.peek().is_some() && names.all(|n| CLAUDE_TASK_TOOLS.contains(&n))
+}
+
+/// A Claude session's tasks (the parsed `<id>.json` entries of its task
+/// store, read by the driver) as a plan, in task-number order. Entries
+/// without an id or subject are skipped; no tasks is an empty plan, so a
+/// deleted last task clears what was shown.
+pub fn claude_task_plan(tasks: Vec<Value>) -> AgentPlan {
+    let mut tasks: Vec<(u64, String, Value)> = tasks
+        .into_iter()
+        .filter_map(|task| {
+            let id = text(&task, "id")?;
+            Some((id.parse().unwrap_or(u64::MAX), id, task)) // silent-ok: a non-numeric id sorts last
+        })
+        .collect();
+    tasks.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    let entries = tasks.iter().filter_map(|(_, _, t)| {
+        Some(PlanEntry::new(text(t, "subject")?, status(t)).with_active_form(text(t, "activeForm")))
+    });
+    AgentPlan::new(entries, None, now())
 }
 
 /// Codex's `turn/plan/updated` params as a plan.
@@ -481,6 +523,52 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect(),
         }
+    }
+
+    #[test]
+    fn only_a_task_tool_load_is_a_task_tool_search() {
+        let q = |query: &str| json!({"query": query, "max_results": 5});
+        assert!(claude_task_tool_load("ToolSearch", &q("select:TaskCreate")));
+        assert!(claude_task_tool_load(
+            "ToolSearch",
+            &q("select:TaskCreate, TaskUpdate")
+        ));
+        assert!(!claude_task_tool_load(
+            "ToolSearch",
+            &q("select:TaskCreate,Bash")
+        ));
+        assert!(!claude_task_tool_load("ToolSearch", &q("task create")));
+        assert!(!claude_task_tool_load("ToolSearch", &q("select:")));
+        assert!(!claude_task_tool_load("Bash", &q("select:TaskCreate")));
+    }
+
+    /// The entries the 2.1.328 task tools write (recorded file shapes).
+    #[test]
+    fn claude_tasks_become_a_plan_in_task_order() {
+        let tasks = [
+            r#"{"id":"10","subject":"Ship","status":"pending","blocks":[],"blockedBy":[]}"#,
+            r#"{"id":"2","subject":"Build","description":"Build","status":"in_progress","blocks":[],"blockedBy":[]}"#,
+            r#"{"id":"1","subject":"Plan","description":"Plan","status":"completed","blocks":[],"blockedBy":[]}"#,
+            r#"{"subject":"no id"}"#,
+        ]
+        .iter()
+        .map(|t| serde_json::from_str(t).unwrap())
+        .collect();
+        let plan = claude_task_plan(tasks);
+        let rows: Vec<(&str, PlanEntryStatus)> = plan
+            .entries
+            .iter()
+            .map(|e| (e.content.as_str(), e.status))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("Plan", PlanEntryStatus::Completed),
+                ("Build", PlanEntryStatus::InProgress),
+                ("Ship", PlanEntryStatus::Pending),
+            ]
+        );
+        assert!(claude_task_plan(Vec::new()).entries.is_empty());
     }
 
     #[test]
