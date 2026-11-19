@@ -11,7 +11,7 @@ use ironclaw_host_api::ids::ThreadId;
 use ironclaw_host_api::turn::DenialFeedback;
 use serde_json::Value;
 
-use crate::bridge::{CallClaim, CliBridge, ToolDecision};
+use crate::bridge::{CallClaim, CliBridge, Receipt, ToolDecision};
 
 /// A tool call an agent wants to run, as the drivers can describe it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,17 +60,31 @@ pub async fn decide(
     request: &PermissionRequest,
     claim: CallClaim,
 ) -> PermissionDecision {
+    decide_receipted(bridge, thread, run_id, request, claim)
+        .await
+        .0
+}
+
+/// [`decide`], plus the [`Receipt`] the driver reports on once its reply
+/// reached the agent (a steer that declined the call waits on it).
+pub async fn decide_receipted(
+    bridge: Option<&CliBridge>,
+    thread: &ThreadId,
+    run_id: &str,
+    request: &PermissionRequest,
+    claim: CallClaim,
+) -> (PermissionDecision, Receipt) {
     let Some(bridge) = bridge else {
         tracing::debug!(
             runtime = %request.runtime,
             tool = %request.tool,
             "cli agent permission request denied (no approval bridge)"
         );
-        return PermissionDecision::DENY;
+        return (PermissionDecision::DENY, Receipt::none());
     };
     let input = request.subject.clone().map_or(Value::Null, Value::String);
-    match bridge
-        .decide_call(
+    let (decision, receipt) = bridge
+        .decide_call_receipted(
             thread,
             run_id,
             &request.tool,
@@ -78,12 +92,13 @@ pub async fn decide(
             request.reason.clone(),
             claim,
         )
-        .await
-    {
+        .await;
+    let decision = match decision {
         ToolDecision::Allow => PermissionDecision::AllowOnce,
         ToolDecision::Deny(_) => PermissionDecision::DENY,
         ToolDecision::Rejected(feedback) => PermissionDecision::Deny {
             feedback: Some(feedback),
         },
-    }
+    };
+    (decision, receipt)
 }

@@ -54,21 +54,37 @@ pub(super) struct HeldSteer {
     pub line: String,
 }
 
+/// Where one steer stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// Accepted before the prompt was written; not on the wire yet.
+    Held,
+    /// On the wire; the CLI has not started it.
+    Written,
+    /// The CLI started it (`started` lifecycle or a uuid echo).
+    Read,
+}
+
+#[derive(Debug, Clone)]
+struct Steer {
+    held: HeldSteer,
+    stage: Stage,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct SteerLedger {
     /// Commands written to stdin that have not completed or been dropped.
     open: HashSet<String>,
     /// Commands the CLI has acknowledged (any lifecycle state or echo).
     acked: HashSet<String>,
-    /// Steers the CLI has not started, oldest first: (uuid, text).
-    unread: Vec<(String, String)>,
-    /// Steers accepted before the prompt was written, oldest first.
-    held: Vec<HeldSteer>,
+    /// Every steer of the turn in the order it was accepted, held and
+    /// written alike, so a recovery keeps the person's order.
+    steers: Vec<Steer>,
     /// The CLI reports which command it is on.
     tracked: bool,
     /// A result has arrived.
     settled: bool,
-    /// Input was closed on unacknowledged steers: stop waiting for them.
+    /// Input was closed on open steers: stop waiting for them.
     abandoned: bool,
 }
 
@@ -78,26 +94,48 @@ impl SteerLedger {
         self.open.insert(uuid.to_string());
     }
 
-    /// A steer about to be written. Undone by [`Self::unsent`] when the
-    /// write fails.
-    pub(super) fn sent(&mut self, uuid: &str, text: &str) {
-        self.open.insert(uuid.to_string());
-        self.unread.push((uuid.to_string(), text.to_string()));
-    }
-
     /// A steer that came before the prompt: kept until the prompt is out.
     pub(super) fn hold(&mut self, steer: HeldSteer) {
-        self.held.push(steer);
+        self.steers.push(Steer {
+            held: steer,
+            stage: Stage::Held,
+        });
     }
 
     /// The held steers, oldest first, to write now that the prompt is out.
-    pub(super) fn take_held(&mut self) -> Vec<HeldSteer> {
-        std::mem::take(&mut self.held)
+    /// They stay in place (and in order) until [`Self::sent`] marks them.
+    pub(super) fn held(&self) -> Vec<HeldSteer> {
+        self.steers
+            .iter()
+            .filter(|s| s.stage == Stage::Held)
+            .map(|s| s.held.clone())
+            .collect()
     }
 
-    pub(super) fn unsent(&mut self, uuid: &str) {
+    /// A steer about to be written: a held one moves on in place, a new one
+    /// joins the end. Undone by [`Self::unsent`] when the write fails.
+    pub(super) fn sent(&mut self, steer: &HeldSteer) {
+        self.open.insert(steer.uuid.clone());
+        match self.steers.iter_mut().find(|s| s.held.uuid == steer.uuid) {
+            Some(known) => known.stage = Stage::Written,
+            None => self.steers.push(Steer {
+                held: steer.clone(),
+                stage: Stage::Written,
+            }),
+        }
+    }
+
+    /// Its write failed: a held steer goes back to held (still in order,
+    /// still unread); a direct one is forgotten (its caller queues it).
+    pub(super) fn unsent(&mut self, uuid: &str, was_held: bool) {
         self.open.remove(uuid);
-        self.unread.retain(|(u, _)| u != uuid);
+        if was_held {
+            if let Some(known) = self.steers.iter_mut().find(|s| s.held.uuid == uuid) {
+                known.stage = Stage::Held;
+            }
+        } else {
+            self.steers.retain(|s| s.held.uuid != uuid);
+        }
     }
 
     /// Fold one output frame in.
@@ -117,8 +155,9 @@ impl SteerLedger {
                 self.acked.insert(uuid.to_string());
                 match frame.get("state").and_then(Value::as_str) {
                     Some("started") => self.read(uuid),
+                    // Not proof it was read: Claude also completes commands
+                    // it never started (T3 Code checks the same).
                     Some("completed") => {
-                        self.read(uuid);
                         self.open.remove(uuid);
                     }
                     // Removed before it was read: it stays unread.
@@ -143,7 +182,13 @@ impl SteerLedger {
 
     fn read(&mut self, uuid: &str) {
         self.acked.insert(uuid.to_string());
-        self.unread.retain(|(u, _)| u != uuid);
+        if let Some(known) = self
+            .steers
+            .iter_mut()
+            .find(|s| s.held.uuid == uuid && s.stage == Stage::Written)
+        {
+            known.stage = Stage::Read;
+        }
     }
 
     /// Whether stdin may close now: a result is in and nothing is open (or
@@ -173,25 +218,24 @@ impl SteerLedger {
         self.abandoned = true;
     }
 
-    /// Steers the CLI never started, oldest first: the ones never written
-    /// (held for a prompt that did not go out), then the written ones the
-    /// CLI did not start. Written ones are left out for a CLI that does not
-    /// report lifecycle: there is no telling, and resending a steer it did
-    /// read would deliver it twice.
+    /// Steers the CLI never started, in the order they were accepted: the
+    /// ones never written (held for a prompt that did not go out) and the
+    /// written ones the CLI did not start. Written ones are left out for a
+    /// CLI that does not report lifecycle: there is no telling, and
+    /// resending a steer it did read would deliver it twice.
     pub(super) fn unread(&self) -> Vec<UnreadSteer> {
-        let held = self.held.iter().map(|h| UnreadSteer {
-            id: h.uuid.clone(),
-            text: h.text.clone(),
-        });
-        let written = self
-            .unread
+        self.steers
             .iter()
-            .filter(|_| self.tracked)
-            .map(|(id, text)| UnreadSteer {
-                id: id.clone(),
-                text: text.clone(),
-            });
-        held.chain(written).collect()
+            .filter(|s| match s.stage {
+                Stage::Held => true,
+                Stage::Written => self.tracked,
+                Stage::Read => false,
+            })
+            .map(|s| UnreadSteer {
+                id: s.held.uuid.clone(),
+                text: s.held.text.clone(),
+            })
+            .collect()
     }
 }
 
@@ -208,6 +252,14 @@ mod tests {
         json!({"type": "command_lifecycle", "command_uuid": uuid, "state": state})
     }
 
+    fn steer(uuid: &str, text: &str) -> HeldSteer {
+        HeldSteer {
+            uuid: uuid.into(),
+            text: text.into(),
+            line: "{}".into(),
+        }
+    }
+
     fn result(uuid: &str) -> Value {
         json!({"type": "result", "subtype": "success", "user_message_uuids": [uuid]})
     }
@@ -220,7 +272,7 @@ mod tests {
         l.prompt("a");
         l.observe(&life("a", "queued"));
         l.observe(&life("a", "started"));
-        l.sent("b", "stop counting");
+        l.sent(&steer("b", "stop counting"));
         l.observe(&life("b", "queued"));
         l.observe(&result("a"));
         assert!(!l.may_close(), "steer b is still open");
@@ -237,7 +289,7 @@ mod tests {
         let mut l = SteerLedger::default();
         l.prompt("a");
         l.observe(&life("a", "started"));
-        l.sent("b", "also fix the docs");
+        l.sent(&steer("b", "also fix the docs"));
         l.observe(&life("b", "queued"));
         l.observe(&result("a"));
         l.observe(&life("a", "completed"));
@@ -252,10 +304,10 @@ mod tests {
         let mut l = SteerLedger::default();
         l.prompt("a");
         l.observe(&life("a", "started"));
-        l.sent("b", "first");
-        l.sent("c", "second");
+        l.sent(&steer("b", "first"));
+        l.sent(&steer("c", "second"));
         assert_eq!(texts(&l), vec!["first".to_string(), "second".to_string()]);
-        l.unsent("c");
+        l.unsent("c", false);
         assert_eq!(texts(&l), vec!["first".to_string()]);
     }
 
@@ -266,7 +318,7 @@ mod tests {
         l.observe(&life("a", "started"));
         l.observe(&result("a"));
         l.observe(&life("a", "completed"));
-        l.sent("b", "late");
+        l.sent(&steer("b", "late"));
         assert!(!l.may_close());
         assert!(l.waiting_for_ack());
         l.abandon();
@@ -281,7 +333,7 @@ mod tests {
         let mut l = SteerLedger::default();
         l.prompt("a");
         l.observe(&life("a", "started"));
-        l.sent("b", "queued but never started");
+        l.sent(&steer("b", "queued but never started"));
         l.observe(&life("b", "queued"));
         l.observe(&result("a"));
         l.observe(&life("a", "completed"));
@@ -298,15 +350,47 @@ mod tests {
     #[test]
     fn a_held_steer_never_written_is_unread() {
         let mut l = SteerLedger::default();
-        l.hold(HeldSteer {
-            uuid: "h".into(),
-            text: "early".into(),
-            line: "{}".into(),
-        });
+        l.hold(steer("h", "early"));
         assert_eq!(texts(&l), vec!["early".to_string()]);
-        let held = l.take_held();
+        let held = l.held();
         assert_eq!(held.len(), 1);
+        l.sent(&held[0]);
+        assert!(l.held().is_empty());
+        // Written without lifecycle: no telling, so not unread.
         assert!(texts(&l).is_empty());
+    }
+
+    /// Review (Sol, 8): A written and unread, B's write failed back to held:
+    /// recovery keeps the order they were accepted in.
+    #[test]
+    fn a_partial_flush_keeps_the_admission_order() {
+        let mut l = SteerLedger::default();
+        l.hold(steer("a", "first"));
+        l.hold(steer("b", "second"));
+        l.prompt("p");
+        l.observe(&life("p", "started"));
+        let held = l.held();
+        l.sent(&held[0]);
+        l.sent(&held[1]);
+        l.unsent("b", true);
+        assert_eq!(l.held().len(), 1, "b is held again");
+        assert_eq!(texts(&l), vec!["first".to_string(), "second".to_string()]);
+    }
+
+    /// Review (Sol, 3): Claude completes commands it never started; only
+    /// `started` or an echo proves a steer was read.
+    #[test]
+    fn completed_alone_is_not_read() {
+        let mut l = SteerLedger::default();
+        l.prompt("a");
+        l.observe(&life("a", "started"));
+        l.sent(&steer("b", "never started"));
+        l.observe(&life("b", "queued"));
+        l.observe(&result("a"));
+        l.observe(&life("a", "completed"));
+        l.observe(&life("b", "completed"));
+        assert!(l.may_close());
+        assert_eq!(texts(&l), vec!["never started".to_string()]);
     }
 
     /// An older CLI without lifecycle or echoes: close at the result, as
@@ -315,7 +399,7 @@ mod tests {
     fn without_lifecycle_the_first_result_closes_and_nothing_is_unread() {
         let mut l = SteerLedger::default();
         l.prompt("a");
-        l.sent("b", "x");
+        l.sent(&steer("b", "x"));
         l.observe(&json!({"type": "result", "subtype": "success"}));
         assert!(l.may_close());
         assert!(texts(&l).is_empty());

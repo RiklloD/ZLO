@@ -91,6 +91,8 @@ const INIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// the deadline the process group is killed and the turn ends with its
 /// result.
 const EXIT_GRACE: Duration = Duration::from_secs(10);
+/// How long a tool call whose result never comes counts as the CLI working.
+const TOOL_BUSY_BOUND: Duration = Duration::from_secs(30 * 60);
 
 /// One Claude CLI account.
 #[derive(Debug, Clone)]
@@ -151,6 +153,8 @@ pub struct ClaudeCliRuntime {
     /// How long the CLI may stay silent after the result while steers it
     /// acknowledged keep stdin open.
     steer_idle_timeout: Duration,
+    /// How long an unanswered tool call counts as work after the result.
+    tool_busy_bound: Duration,
     /// How long the CLI may outlive its closed input after the result.
     exit_grace: Duration,
 }
@@ -194,6 +198,7 @@ impl ClaudeCliRuntime {
             compactor: Arc::default(),
             steer_ack_timeout: steer::ACK_TIMEOUT,
             steer_idle_timeout: steer::IDLE_TIMEOUT,
+            tool_busy_bound: TOOL_BUSY_BOUND,
             exit_grace: EXIT_GRACE,
         })
     }
@@ -209,6 +214,13 @@ impl ClaudeCliRuntime {
     /// open (default [`steer::IDLE_TIMEOUT`]); tests shorten it.
     pub fn with_steer_idle_timeout(mut self, timeout: Duration) -> Self {
         self.steer_idle_timeout = timeout;
+        self
+    }
+
+    /// Bound how long a tool call whose result never arrives counts as the
+    /// CLI working (default 30 min); tests shorten it.
+    pub fn with_tool_busy_bound(mut self, bound: Duration) -> Self {
+        self.tool_busy_bound = bound;
         self
     }
 
@@ -568,6 +580,7 @@ impl ClaudeCliRuntime {
                     run_id: run_id.clone(),
                     ready: Arc::clone(&ready),
                     steers: Arc::clone(&steers),
+                    tool_bound: self.tool_busy_bound,
                 },
                 prompt.clone(),
                 task_store,
@@ -647,6 +660,7 @@ impl ClaudeCliRuntime {
             let init_deadline = tokio::time::Instant::now() + INIT_TIMEOUT;
             let mut steer_deadline: Option<tokio::time::Instant> = None;
             let mut exit_deadline: Option<tokio::time::Instant> = None;
+            let mut quiet_from = tokio::time::Instant::now();
             loop {
                 // The result is in and input is closed: nothing more can be
                 // asked of the CLI, so its exit is waited for only so long.
@@ -665,15 +679,30 @@ impl ClaudeCliRuntime {
                 // it does. Silence with nothing running is a CLI that will
                 // not, so input closes and the steers it never started are
                 // reported unread (t3code bounds the same wait).
-                let idle_wait = !steer_wait
-                    && exit_deadline.is_none()
-                    && bridged
+                // Silence counts from the last frame, the last hook answer,
+                // or the moment a tool call stopped counting as work.
+                let idle = if steer_wait || exit_deadline.is_some() {
+                    None
+                } else {
+                    bridged
                         .as_ref()
-                        .is_some_and(|t| t.holding_open() && !t.busy());
-                let next = if idle_wait {
-                    match tokio::time::timeout(steer_idle_timeout, lines.next_line()).await {
-                        Ok(next) => next,
-                        Err(_) => {
+                        .filter(|t| t.holding_open())
+                        .map(|t| (t.answers(), t.busy_until()))
+                };
+                let next = if let Some((answers, busy_until)) = idle {
+                    let idle_deadline = quiet_from + steer_idle_timeout;
+                    tokio::select! {
+                        next = lines.next_line() => next,
+                        // A hook answered: busy may have ended, look again.
+                        () = answers.finished() => {
+                            quiet_from = tokio::time::Instant::now();
+                            continue;
+                        }
+                        () = tokio::time::sleep_until(busy_until.unwrap_or(idle_deadline)), if busy_until.is_some() => {
+                            quiet_from = tokio::time::Instant::now();
+                            continue;
+                        }
+                        () = tokio::time::sleep_until(idle_deadline), if busy_until.is_none() => {
                             tracing::debug!(
                                 "claude cli: idle with steers open after the result; input closed"
                             );
@@ -717,12 +746,20 @@ impl ClaudeCliRuntime {
                 } else {
                     lines.next_line().await
                 };
+                if matches!(next, Ok(Some(_))) {
+                    quiet_from = tokio::time::Instant::now();
+                }
                 match next {
                     // Settled: what a background task's wake-up streams now
                     // cannot reach the CLI (its tool calls are denied) and
-                    // must not change the outcome or open gates.
-                    Ok(Some(_)) if exit_deadline.is_some() => {
-                        tracing::debug!("claude cli: frame after the settled result ignored");
+                    // must not change the outcome or open gates. Whether it
+                    // started a steer still counts: one it read is not sent
+                    // again.
+                    Ok(Some(line)) if exit_deadline.is_some() => {
+                        tracing::debug!("claude cli: frame after the settled result not acted on");
+                        if let Some(turn) = &bridged {
+                            turn.observe_only(&line);
+                        }
                     }
                     Ok(Some(line)) => {
                         fold.push_line(&line, Instant::now());
@@ -831,15 +868,16 @@ impl ClaudeCliRuntime {
         let Some((stdin, steers, ready, run_id)) = entry else {
             return SteerOutcome::Rejected;
         };
+        // The words go as one denial's reason (or a question's answer);
+        // only once its reply is on the CLI's stdin do they count as sent.
+        // Otherwise (no gate, or that reply failed) they go as a steer.
         if control::input_open(&stdin).await
             && let Some(bridge) = &self.bridge
-            && bridge.decline_pending(
-                thread,
-                &run_id,
-                &format!("The user declined this call and said instead: {text}"),
-            ) > 0
         {
-            return SteerOutcome::Steered;
+            let gates = bridge.steer_at_gates(thread, &run_id, text, true);
+            if !gates.is_empty() && gates.settle().await {
+                return SteerOutcome::Steered;
+            }
         }
         // A fresh uuid: the steer belongs to the running run, it does not
         // start one in the journal. The ledger tracks it by this uuid until

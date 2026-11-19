@@ -65,10 +65,13 @@ ignored. Idle compaction (below) is separate.
 
 With the bridge, a message sent while a turn runs is written into its open
 stdin as a user message with `priority: "next"`: Claude reads it once the
-tool calls in flight finish, in the same turn. An approval still waiting
-is declined instead, with the person's words as the PreToolUse deny reason
-(Claude hands it to the model as the call's result), and no steer frame is
-written: the model reads the words once. A steer sent before the prompt is
+tool calls in flight finish, in the same turn. A call still waiting for
+approval is declined instead, the oldest one with the person's whole text
+as its PreToolUse deny reason (Claude hands it to the model as the call's
+result) and any others plainly; a question Claude asked is answered with
+the text as typed. No steer frame follows once that answer is on the CLI's
+stdin (the hook writer reports it through a `bridge::Receipt`); if it never
+got there, the words go as a steer instead, so they arrive exactly once. A steer sent before the prompt is
 written (the CLI has not acknowledged the hook registration yet) is held
 and written right after the prompt, in order, never as a later turn; one
 the turn never writes is reported unread. `claude/steer.rs` follows each command
@@ -84,7 +87,13 @@ written (the prompt and every steer, by uuid) through the CLI's
   acknowledge keeps stdin open while Claude works on it (its next native
   turn streams), but 90 s of silence with no tool call or hook answer in
   flight (`steer::IDLE_TIMEOUT`) closes input: a CLI that queued a steer
-  and never got to it no longer holds the turn on "Working".
+  and never got to it no longer holds the turn on "Working". A hook that
+  finishes wakes that wait; a tool call whose result never comes stops
+  counting as work after 30 min. Only `started` or a uuid echo proves a
+  steer read (Claude also completes commands it never started), and that
+  evidence still counts in the exit grace after input closed. The prompt
+  and held steers are written off the output loop, each write bounded by
+  `control::WRITE_TIMEOUT`; recovery keeps the order steers were accepted in.
 - a steer the CLI never started (dropped, Stop, a crash, the turn ending
   first) is handed back through `TurnEventSink::steers_unread` (with the
   run id and each steer's own uuid) before the turn ends; the engine queues
@@ -99,18 +108,21 @@ A CLI without lifecycle frames or echoes keeps the old behaviour: stdin
 closes at the first result and every steer counts as read.
 
 On Codex and Muse a steer meets the turn at a `SteerDoor`
-(`steer_door.rs`): while the turn is still starting (host spawning, session
-opening, `turn/start` unanswered) it is accepted and held, then sent in
-order as soon as the turn has an id (a steer arriving meanwhile joins the
-held ones rather than overtaking them); a turn that never starts reports
-the held steers through `steers_unread`. At a pending approval the steer
-declines it first (neither protocol carries a message on a decline), then
-goes as `turn/steer`. A `turn/steer` unanswered within 15 s counts as
-delivered while the turn still runs (it is on the wire; queueing it as well
-could deliver it twice) and as refused once the turn has ended (the door
-closes as the loop sees `turn/completed`). Codex journals the reply so far
-as its own entry before the steer row; Muse journals the prompt, steers and
-reply under the run id.
+(`steer_door.rs`), and every accepted steer joins one channel the turn's
+own loop reads in order: while the turn is still starting (host spawning,
+session opening, `turn/start` unanswered) it is accepted at once (held);
+once the turn has an id (which also lets Stop interrupt it) the requester
+waits for the loop's verdict. The loop sends steers while it keeps reading
+the agent's events (completion, approvals), never once Stop has won, and
+cuts the reply at each one, so the transcript reads: reply so far, steer,
+what followed (Codex and Muse alike, under the run id). A steer answered is
+delivered; one refused, or whose frame never reached the agent, comes back
+(a held one through `steers_unread`); one unanswered within 15 s counts as
+delivered while the turn runs, and once the turn has ended without
+answering it is *unconfirmed*: kept in the run with a "Steer delivery not
+confirmed" notice, never requeued (it may have been read). At pending
+approvals the steer declines them first and waits for those replies to
+reach the agent (neither protocol carries a message on a decline).
 
 ### Task lists
 
@@ -270,11 +282,15 @@ is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
   after its `session/prompt` frame is queued on the wire (frames go out in
   order), so steers sent at once all reach the agent. A steer while the
   ACP session is still opening is accepted at once and sent after the
-  first prompt (or reported unread if the turn never gets there); one at a
-  pending permission rejects it first. A requester that gives up waiting
-  (10 s) withdraws its request under a ticket the drive loop must take
-  before sending, so a steer reported refused (and queued) is never also
-  sent (`antigravity/steer.rs`). The superseded
+  first prompt (or reported unread if the turn never gets there, or its
+  frame never reached the agent); one at a pending permission rejects it
+  first and waits for that reply to be written. A requester that gives up
+  waiting (10 s) withdraws its request under a ticket the drive loop must
+  take before sending, so a steer reported refused (and queued) is never
+  also sent (`antigravity/steer.rs`). Once taken, the loop queues the
+  prompt with no I/O in between, under the session lock Stop also takes
+  for its cancel (no prompt goes out after a cancel), and the requester
+  waits for the frame's actual write: a closed stdin refuses it. The superseded
   prompt's reply is still awaited: its `end_turn`/`cancelled` is ignored,
   but an error (a quota, a lost thinking signature, anything else) is kept
   and classified like the turn's own answer, so a later success does not

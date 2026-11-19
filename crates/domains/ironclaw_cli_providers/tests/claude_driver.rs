@@ -1341,3 +1341,323 @@ async fn a_steer_at_a_pending_approval_declines_it_with_the_words_and_writes_not
         TurnEndStatus::Completed
     );
 }
+
+// ── Review (Sol) regressions ────────────────────────────────────────────────
+
+/// Shell helpers every fixture below starts with.
+const HEAD: &str = r#"#!/bin/sh
+uuid_of() { echo "$1" | sed 's/.*"uuid":"\([^"]*\)".*/\1/'; }
+life() { echo "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$1\",\"state\":\"$2\",\"session_id\":\"s\"}"; }
+result() { echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":5,\"duration_api_ms\":5,\"num_turns\":1,\"result\":\"$2\",\"session_id\":\"s\",\"total_cost_usd\":0,\"user_message_uuids\":[\"$1\"]}"; }
+hook() { echo "{\"type\":\"control_request\",\"request_id\":\"$1\",\"request\":{\"subtype\":\"hook_callback\",\"callback_id\":\"ironclaw-approval\",\"input\":{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$2\"},\"tool_use_id\":\"$1\"}}}"; }
+read -r init
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"ironclaw-init","response":{}}}'
+read -r prompt
+a=$(uuid_of "$prompt")
+life "$a" started
+touch @DIR@/ready
+"#;
+
+fn fixture(dir: &Path, body: &str) -> PathBuf {
+    script(
+        dir,
+        "claude",
+        &format!("{HEAD}{body}").replace("@DIR@", &dir.display().to_string()),
+    )
+}
+
+async fn steer_when_ready(rt: &ClaudeCliRuntime, thread: &ThreadRecord, dir: &Path, text: &str) {
+    wait_for(|| dir.join("ready").exists()).await;
+    assert_eq!(
+        rt.steer(thread, text, SteerHow::Steer).await.unwrap(),
+        SteerOutcome::Steered
+    );
+}
+
+async fn wait_event(
+    events: &mut tokio::sync::broadcast::Receiver<LiveEvent>,
+    matches: impl Fn(&LiveEvent) -> bool,
+) {
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("live event")
+            .unwrap();
+        if matches(&event) {
+            return;
+        }
+    }
+}
+
+/// Sol 1: a hook waits on a person after the result (busy), then is answered
+/// and the CLI goes silent without another frame. The answer must wake the
+/// read loop so the silence bound starts; before, the loop sat in an
+/// untimed read forever.
+#[tokio::test]
+async fn silence_after_a_hook_is_answered_still_ends_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(30));
+    let binary = fixture(
+        dir.path(),
+        r#"read -r steer
+b=$(uuid_of "$steer")
+life "$b" queued
+hook h1 "make"
+result "$a" "done"
+life "$a" completed
+read -r answer
+echo "$answer" >> @DIR@/answer.log
+read -r _eof
+"#,
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)))
+        .with_steer_idle_timeout(Duration::from_millis(600))
+        .with_exit_grace(Duration::from_millis(500));
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    steer_when_ready(&rt, &thread, dir.path(), "also lint").await;
+    wait_event(&mut events, |e| matches!(e, LiveEvent::GateOpened { .. })).await;
+    // Busy on the person: no silence bound while the hook waits.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        sink.finished.lock().unwrap().is_empty(),
+        "closed while a hook waited"
+    );
+    let gate = bridge.snapshot(&thread.thread_id).unwrap().gates[0].clone();
+    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, GateAnswer::Approve));
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    assert_eq!(*sink.unread.lock().unwrap(), vec!["also lint".to_string()]);
+}
+
+/// Sol 1: a tool call whose result never comes no longer counts as work
+/// forever: past its bound, silence ends the turn.
+#[tokio::test]
+async fn a_tool_call_that_never_finishes_stops_counting_as_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = fixture(
+        dir.path(),
+        r#"read -r steer
+b=$(uuid_of "$steer")
+life "$b" queued
+result "$a" "done"
+life "$a" completed
+life "$b" started
+echo '{"type":"assistant","parent_tool_use_id":null,"message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"sleep 999"}}]},"session_id":"s"}'
+read -r _eof
+"#,
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)))
+        .with_steer_idle_timeout(Duration::from_millis(500))
+        .with_tool_busy_bound(Duration::from_millis(500))
+        .with_exit_grace(Duration::from_millis(500));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    steer_when_ready(&rt, &thread, dir.path(), "and then this").await;
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    assert!(sink.unread.lock().unwrap().is_empty(), "the CLI started it");
+}
+
+/// Sol 1: flushing a held steer the CLI is slow to read happens off the
+/// output loop: the CLI's output after the hook ack is shown at once.
+#[tokio::test]
+async fn a_held_steer_flush_never_stalls_the_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let body = r#"#!/bin/sh
+uuid_of() { echo "$1" | sed 's/.*"uuid":"\([^"]*\)".*/\1/' | cut -c1-36; }
+read -r init
+touch @DIR@/init
+while [ ! -e @DIR@/go ]; do sleep 0.05; done
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"ironclaw-init","response":{}}}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}},"parent_tool_use_id":null,"session_id":"s","uuid":"e1"}'
+while [ ! -e @DIR@/release ]; do sleep 0.05; done
+read -r prompt
+read -r steer
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"duration_api_ms":5,"num_turns":1,"result":"ok","session_id":"s","total_cost_usd":0}'
+read -r _eof
+"#;
+    let binary = script(
+        dir.path(),
+        "claude",
+        &body.replace("@DIR@", &dir.path().display().to_string()),
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("init").exists()).await;
+    // Far bigger than a pipe buffer: its write blocks until the CLI reads.
+    let big = "x".repeat(400_000);
+    assert_eq!(
+        rt.steer(&thread, &big, SteerHow::Steer).await.unwrap(),
+        SteerOutcome::Steered
+    );
+    std::fs::write(dir.path().join("go"), "").unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        wait_event(&mut events, |e| matches!(e, LiveEvent::Text { .. })),
+    )
+    .await
+    .expect("output handled while the held steer was being written");
+    std::fs::write(dir.path().join("release"), "").unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+}
+
+/// Sol 3: the silence bound closed input, then the CLI starts the queued
+/// steer: that read still counts (it is not sent again as a later turn).
+#[tokio::test]
+async fn a_steer_started_after_input_closed_is_not_sent_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = fixture(
+        dir.path(),
+        r#"read -r steer
+b=$(uuid_of "$steer")
+life "$b" queued
+result "$a" "done"
+life "$a" completed
+read -r _eof
+life "$b" started
+"#,
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)))
+        .with_steer_idle_timeout(Duration::from_millis(500))
+        .with_exit_grace(Duration::from_millis(800));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    steer_when_ready(&rt, &thread, dir.path(), "read late").await;
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    assert!(
+        sink.unread.lock().unwrap().is_empty(),
+        "read during the exit grace: {:?}",
+        sink.unread.lock().unwrap()
+    );
+}
+
+/// Sol 3: Claude completes a command it never started; only `started` or
+/// an echo proves a steer was read.
+#[tokio::test]
+async fn a_steer_completed_without_being_started_comes_back_unread() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = fixture(
+        dir.path(),
+        r#"read -r steer
+b=$(uuid_of "$steer")
+life "$b" queued
+result "$a" "done"
+life "$a" completed
+life "$b" completed
+read -r _eof
+"#,
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    steer_when_ready(&rt, &thread, dir.path(), "never started").await;
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    assert_eq!(
+        *sink.unread.lock().unwrap(),
+        vec!["never started".to_string()]
+    );
+}
+
+/// Sol 4: with two calls waiting, the person's words go once, whole (past
+/// the gate preview limit), as one denial's reason; the other is declined
+/// plainly; no steer frame follows.
+#[tokio::test]
+async fn a_steer_at_two_gates_carries_its_whole_text_through_one_denial() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = fixture(
+        dir.path(),
+        r#"hook h1 "rm -rf build"
+hook h2 "rm -rf dist"
+read -r one
+echo "$one" >> @DIR@/answer.log
+read -r two
+echo "$two" >> @DIR@/answer.log
+result "$a" "ok"
+life "$a" completed
+while IFS= read -r line; do echo "$line" >> @DIR@/input.log; done
+"#,
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    for _ in 0..2 {
+        wait_event(&mut events, |e| matches!(e, LiveEvent::GateOpened { .. })).await;
+    }
+    let text = format!("keep both folders {}", "and explain why ".repeat(200));
+    assert!(text.chars().count() > 3_000);
+    assert_eq!(
+        rt.steer(&thread, &text, SteerHow::Steer).await.unwrap(),
+        SteerOutcome::Steered
+    );
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let answers = std::fs::read_to_string(dir.path().join("answer.log")).unwrap();
+    let answers: Vec<&str> = answers.lines().collect();
+    assert_eq!(answers.len(), 2);
+    assert!(
+        answers
+            .iter()
+            .all(|a| a.contains(r#""permissionDecision":"deny""#))
+    );
+    let carrying: Vec<&&str> = answers
+        .iter()
+        .filter(|a| a.contains("keep both folders"))
+        .collect();
+    assert_eq!(carrying.len(), 1, "once: {answers:?}");
+    assert!(carrying[0].contains(text.trim_end()), "whole text");
+    let after = std::fs::read_to_string(dir.path().join("input.log")).unwrap_or_default();
+    assert!(!after.contains("keep both folders"), "{after}");
+}
+
+/// Sol 6: a steer while Claude's own question waits answers the question
+/// with the person's words as typed (no approval-denial sentence), and no
+/// steer frame follows.
+#[tokio::test]
+async fn a_steer_at_a_pending_question_is_its_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = fixture(
+        dir.path(),
+        r#"echo '{"type":"control_request","request_id":"q1","request":{"subtype":"hook_callback","callback_id":"ironclaw-approval","input":{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database?","header":"DB","options":[{"label":"postgres"},{"label":"sqlite"}]}]},"tool_use_id":"q1"}}}'
+read -r answer
+echo "$answer" >> @DIR@/answer.log
+result "$a" "ok"
+life "$a" completed
+while IFS= read -r line; do echo "$line" >> @DIR@/input.log; done
+"#,
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_event(&mut events, |e| {
+        matches!(e, LiveEvent::QuestionOpened { .. })
+    })
+    .await;
+    assert_eq!(
+        rt.steer(&thread, "use sqlite", SteerHow::Steer)
+            .await
+            .unwrap(),
+        SteerOutcome::Steered
+    );
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let answer = std::fs::read_to_string(dir.path().join("answer.log")).unwrap();
+    assert!(answer.contains("wrote instead: use sqlite"), "{answer}");
+    assert!(!answer.contains("declined this call"), "{answer}");
+    let after = std::fs::read_to_string(dir.path().join("input.log")).unwrap_or_default();
+    assert!(!after.contains("use sqlite"), "{after}");
+}

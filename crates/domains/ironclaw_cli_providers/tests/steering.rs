@@ -15,7 +15,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use ironclaw_cli_providers::antigravity::launch::AgentLaunch;
 use ironclaw_cli_providers::antigravity::{AntigravityConfig, AntigravityRuntime};
-use ironclaw_cli_providers::bridge::{CliBridge, LiveEvent};
+use ironclaw_cli_providers::bridge::{CliBridge, GateAnswer, LiveEvent};
 use ironclaw_cli_providers::codex::{CodexConfig, CodexRuntime};
 use ironclaw_cli_providers::muse::{MuseConfig, MuseRuntime};
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
@@ -148,6 +148,24 @@ async fn rows(rt: &dyn TurnRuntime, thread: &ThreadRecord, run: &str) -> (Vec<St
     (rows, all_in_run)
 }
 
+/// The orchestrator store the host records approvals in (Review, Sol 6:
+/// with it, a decline is a durable write before the agent hears it, which
+/// a steer must wait for).
+async fn ledger(dir: &Path, bridge: &CliBridge) -> Arc<ironclaw_orchestrator::engine::Engine> {
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.join("orch.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+    let engine = ironclaw_orchestrator::engine::Engine::open_libsql(runtime, "steer")
+        .await
+        .unwrap();
+    bridge.record_to(engine.store().clone());
+    engine
+}
+
 async fn wait_gate(events: &mut tokio::sync::broadcast::Receiver<LiveEvent>) {
     loop {
         let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
@@ -169,7 +187,14 @@ async fn wait_gate(events: &mut tokio::sync::broadcast::Receiver<LiveEvent>) {
 ///   `said`; the steer gets a new message and ends the turn;
 /// - `slow`: `turn/steer` is never answered; the turn ends once `end` exists;
 /// - `slowend`: `turn/steer` is never answered and the turn ends at once;
-/// - `gate`: an approval waits; the steer ends the turn.
+/// - `gate`: an approval waits; the steer ends the turn;
+/// - `heldend`: like `early`, but no steer is answered and the first one
+///   ends the turn at once;
+/// - `gatehold`: like `early`, then an approval is asked at once; no steer
+///   is answered; the approval's answer ends the turn;
+/// - `heldstop`: like `early`; no steer is answered; `turn/interrupt` ends
+///   the turn;
+/// - `ask`: a `requestUserInput` question waits; the steer ends the turn.
 const CODEX: &str = r#"#!/bin/sh
 LOG=__DIR__/codex.log
 DIR=__DIR__
@@ -184,13 +209,13 @@ while IFS= read -r line; do
   printf '%s\n' "$line" >> "$LOG"
   id=$(id_of "$line")
   case "$line" in
-    *'"decision":'*) ;;
+    *'"decision":'*) if [ "$MODE" = gatehold ]; then done_turn; fi ;;
     *'"method":"initialize"'*) reply "$id" '{"userAgent":"codex"}' ;;
     *'"method":"initialized"'*) ;;
     *'"method":"thread/start"'*|*'"method":"thread/resume"'*) reply "$id" '{"thread":{"id":"cx-1"},"model":"gpt-b"}' ;;
     *'"method":"turn/start"'*)
       touch "$DIR/starting"
-      if [ "$MODE" = early ] || [ "$MODE" = never ]; then
+      if [ "$MODE" = early ] || [ "$MODE" = never ] || [ "$MODE" = heldend ] || [ "$MODE" = gatehold ] || [ "$MODE" = heldstop ]; then
         while [ ! -e "$DIR/go" ]; do sleep 0.05; done
       fi
       if [ "$MODE" = never ]; then
@@ -203,17 +228,24 @@ while IFS= read -r line; do
         said m1 "Looking at it"
         emit item/completed '{"threadId":"cx-1","turnId":"tu-1","item":{"type":"commandExecution","id":"c1","command":"ls"}}'
       fi
-      if [ "$MODE" = gate ]; then
+      if [ "$MODE" = gate ] || [ "$MODE" = gatehold ]; then
         printf '%s\n' '{"jsonrpc":"2.0","id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"cx-1","turnId":"tu-1","itemId":"c1","command":"rm -rf build","kind":"command","startedAtMs":0}}'
       fi
+      if [ "$MODE" = ask ]; then
+        printf '%s\n' '{"jsonrpc":"2.0","id":98,"method":"item/tool/requestUserInput","params":{"threadId":"cx-1","turnId":"tu-1","itemId":"q1","questions":[{"id":"db","header":"DB","question":"Which database?","options":[{"label":"postgres","description":"pg"},{"label":"sqlite","description":"file"}]}]}}'
+      fi
       touch "$DIR/said" ;;
+    *'"method":"turn/interrupt"'*)
+      reply "$id" '{}'
+      emit turn/completed '{"threadId":"cx-1","turn":{"id":"tu-1","status":"interrupted","error":null}}' ;;
     *'"method":"turn/steer"'*)
       STEERS=$((STEERS+1))
       case "$MODE" in
         slow) touch "$DIR/steered"; while [ ! -e "$DIR/end" ]; do sleep 0.05; done; said m2 "Done"; done_turn ;;
-        slowend) done_turn ;;
+        slowend|heldend) done_turn ;;
+        gatehold|heldstop) ;;
         early) reply "$id" '{"turnId":"tu-1"}'; if [ $STEERS -eq 2 ]; then said m2 "Done"; done_turn; fi ;;
-        cut) reply "$id" '{"turnId":"tu-1"}'; sleep 0.3; said m2 "Short"; done_turn ;;
+        cut) reply "$id" '{"turnId":"tu-1"}'; said m2 "Short"; done_turn ;;
         *) reply "$id" '{"turnId":"tu-1"}'; said m2 "Done"; done_turn ;;
       esac ;;
   esac
@@ -377,10 +409,12 @@ async fn codex_an_unanswered_steer_is_delivered_once_or_queued_once() {
     assert_eq!(rows, ["User:hi", "User:slow answer", "Assistant:Done"]);
 }
 
-/// The same unanswered `turn/steer`, but its turn ends first: refused, so
-/// the engine queues it, and it is not journaled into the ended run.
+/// Review (Sol, 2): the same unanswered `turn/steer`, but its turn ends
+/// first. Codex may or may not have read it: never counted delivered, never
+/// requeued (it could be delivered twice), but kept in the run with a
+/// "Steer delivery not confirmed" notice for the person to decide.
 #[tokio::test]
-async fn codex_an_unanswered_steer_whose_turn_ended_is_refused() {
+async fn codex_an_unanswered_steer_whose_turn_ended_is_unconfirmed() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
     let rt = codex(dir.path(), "slowend", &recorder, None)
@@ -394,10 +428,161 @@ async fn codex_an_unanswered_steer_whose_turn_ended_is_refused() {
         rt.steer(&thread, "too late", SteerHow::Steer)
             .await
             .unwrap(),
-        SteerOutcome::Rejected
+        SteerOutcome::Steered,
+        "not refused: it may have been read"
+    );
+    wait_for(|| recorder.finished().len() == 1).await;
+    assert!(recorder.unread().is_empty(), "never requeued");
+    let (rows, in_run) = rows(&rt, &thread, &recorder.run()).await;
+    assert_eq!(
+        rows[..2],
+        ["User:hi".to_string(), "User:too late".to_string()]
+    );
+    assert!(
+        rows[2].starts_with("System:Steer delivery not confirmed"),
+        "{rows:?}"
+    );
+    assert!(in_run);
+}
+
+/// Review (Sol, 2): held steers sent at the start whose answers never come
+/// while the turn completes: the completion is read (the turn ends in
+/// seconds, not one steer timeout after another), and each steer is either
+/// unconfirmed (in the run, with the notice) or back for the engine.
+#[tokio::test]
+async fn codex_a_completion_during_the_startup_steers_ends_the_turn_promptly() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt =
+        codex(dir.path(), "heldend", &recorder, None).with_steer_timeout(Duration::from_secs(20));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("starting").exists()).await;
+    for text in ["held-one", "held-two"] {
+        assert_eq!(
+            rt.steer(&thread, text, SteerHow::Steer).await.unwrap(),
+            SteerOutcome::Steered
+        );
+    }
+    let started = std::time::Instant::now();
+    std::fs::write(dir.path().join("go"), "").unwrap();
+    wait_for(|| recorder.finished().len() == 1).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "the turn's end waited on its steers: {:?}",
+        started.elapsed()
     );
     let (rows, _) = rows(&rt, &thread, &recorder.run()).await;
-    assert!(!rows.iter().any(|r| r.contains("too late")), "{rows:?}");
+    let unread = recorder.unread();
+    for text in ["held-one", "held-two"] {
+        let noticed = rows
+            .iter()
+            .any(|r| r.starts_with("System:") && r.contains(text));
+        assert!(
+            noticed ^ unread.iter().any(|u| u == text),
+            "{text}: {rows:?} {unread:?}"
+        );
+    }
+    assert!(
+        rows.iter()
+            .any(|r| r.starts_with("System:") && r.contains("held-one"))
+    );
+}
+
+/// Review (Sol, 2): while a startup steer waits for its answer, the turn
+/// still serves the agent: an approval it asks opens at once.
+#[tokio::test]
+async fn codex_an_approval_during_a_startup_steer_opens_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(30));
+    let rt = codex(dir.path(), "gatehold", &recorder, Some(Arc::clone(&bridge)))
+        .with_steer_timeout(Duration::from_secs(20));
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("starting").exists()).await;
+    assert_eq!(
+        rt.steer(&thread, "held", SteerHow::Steer).await.unwrap(),
+        SteerOutcome::Steered
+    );
+    let started = std::time::Instant::now();
+    std::fs::write(dir.path().join("go"), "").unwrap();
+    wait_gate(&mut events).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the approval waited on the steer: {:?}",
+        started.elapsed()
+    );
+    let gate = bridge.snapshot(&thread.thread_id).unwrap().gates[0].clone();
+    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, GateAnswer::Approve));
+    wait_for(|| recorder.finished().len() == 1).await;
+}
+
+/// Review (Sol, 2): Stop while a startup steer waits for its answer
+/// interrupts the native turn (its id is published at once) instead of
+/// waiting for the steer and then killing the server.
+#[tokio::test]
+async fn codex_stop_during_a_startup_steer_interrupts_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt =
+        codex(dir.path(), "heldstop", &recorder, None).with_steer_timeout(Duration::from_secs(20));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("starting").exists()).await;
+    assert_eq!(
+        rt.steer(&thread, "held", SteerHow::Steer).await.unwrap(),
+        SteerOutcome::Steered
+    );
+    std::fs::write(dir.path().join("go"), "").unwrap();
+    wait_for(|| read(&dir.path().join("codex.log")).contains("turn/steer")).await;
+    rt.cancel(&thread, "stop").await.unwrap();
+    let log = read(&dir.path().join("codex.log"));
+    assert!(log.contains(r#""method":"turn/interrupt""#), "{log}");
+    assert_eq!(recorder.finished()[0].status, TurnEndStatus::Cancelled);
+}
+
+/// Review (Sol, 6): a steer while a question waits answers it (Codex's
+/// reply cannot carry free text, so the text goes as the steer, once), and
+/// the question never gets the approval-denial sentence.
+#[tokio::test]
+async fn codex_a_steer_at_a_pending_question_answers_it_and_steers_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let rt = codex(dir.path(), "ask", &recorder, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("question")
+            .unwrap();
+        if matches!(event, LiveEvent::QuestionOpened { .. }) {
+            break;
+        }
+    }
+    assert_eq!(
+        rt.steer(&thread, "use sqlite", SteerHow::Steer)
+            .await
+            .unwrap(),
+        SteerOutcome::Steered
+    );
+    wait_for(|| recorder.finished().len() == 1).await;
+    let log = read(&dir.path().join("codex.log"));
+    let answered = log
+        .lines()
+        .position(|l| l.contains(r#""id":98"#) && l.contains("result"))
+        .expect("question answered");
+    let steer = log
+        .lines()
+        .position(|l| l.contains("turn/steer"))
+        .expect("steered");
+    assert!(answered < steer, "{log}");
+    assert!(!log.contains("declined this call"), "{log}");
+    assert_eq!(log.matches("use sqlite").count(), 1, "once: {log}");
 }
 
 /// A steer at a pending approval declines it first (Codex's reply carries
@@ -407,6 +592,7 @@ async fn codex_a_steer_at_a_pending_approval_declines_it_then_steers() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
     let bridge = CliBridge::new(Duration::from_secs(10));
+    let _ledger = ledger(dir.path(), &bridge).await;
     let rt = codex(dir.path(), "gate", &recorder, Some(Arc::clone(&bridge)));
     let thread = thread(&rt).await;
     let mut events = bridge.subscribe();
@@ -433,7 +619,11 @@ async fn codex_a_steer_at_a_pending_approval_declines_it_then_steers() {
 // ── Muse Code ───────────────────────────────────────────────────────────────
 
 /// `__MODE__`: `early` answers `turn/start` once `go` exists and a steer
-/// ends the turn; `gate` asks for approval, and a steer ends the turn.
+/// ends the turn; `gate` asks for approval, and a steer ends the turn;
+/// `cut` finishes one message before the steer (then `said`), and the
+/// steer's answer streams another at once; `gatehold` is `early` whose
+/// steer is never answered while an approval is asked; its decision ends
+/// the turn.
 const MUSE: &str = r#"#!/bin/sh
 LOG=__DIR__/muse.log
 DIR=__DIR__
@@ -453,23 +643,40 @@ while IFS= read -r line; do
       SID=$(field "$line" sessionId)
       reply "$id" "{\"session\":{\"sessionId\":\"$SID\",\"modelId\":\"muse-spark-1.3\"}}" ;;
     *'"method":"session/setApprovalMode"'*|*'"method":"session/setModel"'*) reply "$id" '{}' ;;
-    *'"method":"approval/decide"'*) reply "$id" '{}' ;;
+    *'"method":"approval/decide"'*)
+      reply "$id" '{}'
+      if [ "$MODE" = gatehold ]; then emit turn/completed "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\",\"terminal\":\"completed\"}"; fi ;;
     *'"method":"turn/steer"'*)
+      [ "$MODE" = gatehold ] && continue
       reply "$id" "{\"turnId\":\"$TID\"}"
       emit item/completed "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"m1\",\"turnId\":\"$TID\",\"kind\":\"agentMessage\",\"status\":\"completed\",\"revision\":2,\"text\":\"Done\"}}"
       emit turn/completed "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\",\"terminal\":\"completed\"}" ;;
     *'"method":"turn/start"'*)
       TID=$(field "$line" commandId)
       touch "$DIR/starting"
-      if [ "$MODE" = early ]; then while [ ! -e "$DIR/go" ]; do sleep 0.05; done; fi
+      if [ "$MODE" = early ] || [ "$MODE" = gatehold ]; then while [ ! -e "$DIR/go" ]; do sleep 0.05; done; fi
       reply "$id" "{\"turnId\":\"$TID\",\"disposition\":\"started\"}"
       emit turn/started "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\"}"
-      if [ "$MODE" = gate ]; then
+      if [ "$MODE" = cut ]; then
+        emit item/completed "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"m0\",\"turnId\":\"$TID\",\"kind\":\"agentMessage\",\"status\":\"completed\",\"revision\":1,\"text\":\"Looking at it\"}}"
+        touch "$DIR/said"
+      fi
+      if [ "$MODE" = gate ] || [ "$MODE" = gatehold ]; then
         emit approval/requested "{\"sessionId\":\"$SID\",\"approvalId\":\"a1\",\"turnId\":\"$TID\",\"status\":\"pending\",\"toolName\":\"bash\",\"currentRequirementId\":\"r1\",\"subject\":{\"command\":\"rm -rf build\"},\"availableChoices\":[{\"choiceId\":\"ok\",\"decision\":\"approved\",\"scope\":\"once\"},{\"choiceId\":\"no\",\"decision\":\"denied\",\"scope\":\"once\"}]}"
       fi ;;
   esac
 done
 "#;
+
+fn muse_with_timeout(
+    dir: &Path,
+    mode: &str,
+    recorder: &Arc<Recorder>,
+    bridge: Option<Arc<CliBridge>>,
+    timeout: Duration,
+) -> MuseRuntime {
+    muse(dir, mode, recorder, bridge).with_steer_timeout(timeout)
+}
 
 fn muse(
     dir: &Path,
@@ -527,6 +734,7 @@ async fn muse_a_steer_at_a_pending_approval_declines_it_then_steers() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
     let bridge = CliBridge::new(Duration::from_secs(10));
+    let _ledger = ledger(dir.path(), &bridge).await;
     let rt = muse(dir.path(), "gate", &recorder, Some(Arc::clone(&bridge)));
     let thread = thread(&rt).await;
     let mut events = bridge.subscribe();
@@ -560,6 +768,72 @@ async fn muse_a_steer_at_a_pending_approval_declines_it_then_steers() {
     );
 }
 
+/// Review (Sol, 7): Muse cuts the reply at the steer too, and output the
+/// steer's answer streams at once still lands after the steer's row.
+#[tokio::test]
+async fn muse_journals_the_reply_before_the_steer_ahead_of_its_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = muse(dir.path(), "cut", &recorder, None);
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("said").exists()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        rt.steer(&thread, "shorter please", SteerHow::Steer)
+            .await
+            .unwrap(),
+        SteerOutcome::Steered
+    );
+    wait_for(|| recorder.finished().len() == 1).await;
+    let (rows, in_run) = rows(&rt, &thread, &recorder.run()).await;
+    assert_eq!(
+        rows,
+        [
+            "User:hi",
+            "Assistant:Looking at it",
+            "User:shorter please",
+            "Assistant:Done"
+        ]
+    );
+    assert!(in_run);
+}
+
+/// Review (Sol, 2): Muse serves the agent while a startup steer waits for
+/// its answer: an approval it asks opens at once.
+#[tokio::test]
+async fn muse_an_approval_during_a_startup_steer_opens_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(30));
+    let rt = muse_with_timeout(
+        dir.path(),
+        "gatehold",
+        &recorder,
+        Some(Arc::clone(&bridge)),
+        Duration::from_secs(20),
+    );
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("starting").exists()).await;
+    assert_eq!(
+        rt.steer(&thread, "held", SteerHow::Steer).await.unwrap(),
+        SteerOutcome::Steered
+    );
+    let started = std::time::Instant::now();
+    std::fs::write(dir.path().join("go"), "").unwrap();
+    wait_gate(&mut events).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the approval waited on the steer: {:?}",
+        started.elapsed()
+    );
+    let gate = bridge.snapshot(&thread.thread_id).unwrap().gates[0].clone();
+    assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, GateAnswer::Approve));
+    wait_for(|| recorder.finished().len() == 1).await;
+}
+
 // ── Antigravity (`agy acp`) ─────────────────────────────────────────────────
 
 /// `agy` 1.5 that opens its session only once `go` exists (`__MODE__=ok`),
@@ -584,7 +858,7 @@ while IFS= read -r line; do
     *'"method":"authenticate"'*) reply "$id" '{}' ;;
     *'"method":"session/new"'*|*'"method":"session/resume"'*)
       touch "$DIR/opening"
-      [ "$MODE" = perm ] || while [ ! -e "$DIR/go" ]; do sleep 0.05; done
+      [ "$MODE" = perm ] || [ "$MODE" = closein ] || while [ ! -e "$DIR/go" ]; do sleep 0.05; done
       if [ "$MODE" = fail ]; then printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"no session"}}\n' "$id"
       else reply "$id" "{\"sessionId\":\"acp-1\",\"configOptions\":$OPTS}"; fi ;;
     *'"method":"session/set_config_option"'*) reply "$id" '{}' ;;
@@ -593,6 +867,11 @@ while IFS= read -r line; do
         reply "$P1" '{"stopReason":"end_turn"}'
         chunk "Steered"
         reply "$id" '{"stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":2}}'
+      elif [ "$MODE" = closein ]; then
+        P1=$id; chunk "Par"
+        exec 0<&-
+        touch "$DIR/said"
+        sleep 3
       elif [ "$MODE" = perm ]; then
         P1=$id
         printf '%s\n' '{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"acp-1","toolCall":{"toolCallId":"c1","title":"rm -rf build","kind":"execute","status":"pending"},"options":[{"optionId":"yes","kind":"allow_once","name":"Allow"},{"optionId":"no","kind":"reject_once","name":"Deny"}]}}'
@@ -681,6 +960,7 @@ async fn antigravity_a_steer_at_a_pending_permission_rejects_it_then_steers() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
     let bridge = CliBridge::new(Duration::from_secs(10));
+    let _ledger = ledger(dir.path(), &bridge).await;
     let rt = antigravity_with(dir.path(), "perm", &recorder, Some(Arc::clone(&bridge)));
     let thread = thread(&rt).await;
     let mut events = bridge.subscribe();
@@ -710,4 +990,24 @@ async fn antigravity_a_steer_at_a_pending_permission_rejects_it_then_steers() {
         "once: {log}"
     );
     assert_eq!(recorder.finished()[0].status, TurnEndStatus::Completed);
+}
+
+/// Review (Sol, 5): "queued" is not "sent". With the agent's stdin closed,
+/// a steer's prompt never reaches it: refused (the engine queues it), not
+/// acknowledged because it entered a local channel.
+#[tokio::test]
+async fn antigravity_a_steer_the_agent_cannot_read_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity(dir.path(), "closein", &recorder);
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("said").exists()).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        rt.steer(&thread, "never read", SteerHow::Steer)
+            .await
+            .unwrap(),
+        SteerOutcome::Rejected
+    );
 }

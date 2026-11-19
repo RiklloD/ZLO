@@ -52,7 +52,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, watch};
 
-use crate::bridge::{CallClaim, CliBridge};
+use crate::bridge::{CallClaim, CliBridge, Receipt};
 use crate::interaction;
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
@@ -385,15 +385,15 @@ impl AntigravityRuntime {
             // Fails only once the turn stopped taking steers.
             return steer.send(held).is_ok();
         }
-        if let Some(bridge) = &self.bridge
-            && bridge.decline_pending(
-                thread,
-                &run_id,
-                &format!("The user declined this call and said instead: {text}"),
-            ) > 0
-        {
-            // Lets the decline's answer go out ahead of the steer.
-            tokio::task::yield_now().await;
+        // Pending permissions are rejected first, and the steer waits until
+        // those replies are on the agent's stdin (ACP's reject carries no
+        // message). A question's ACP reply cannot carry the text either, so
+        // the text still goes as the steer.
+        if let Some(bridge) = &self.bridge {
+            let gates = bridge.steer_at_gates(thread, &run_id, text, false);
+            if !gates.is_empty() && gates.settle().await {
+                return true;
+            }
         }
         offer_steer(&steer, text.to_string(), true).await
     }
@@ -411,8 +411,13 @@ impl AntigravityRuntime {
         let Some((pgid, session, mut done)) = entry else {
             return;
         };
-        let open = session.lock().ok().and_then(|s| s.clone());
-        if let Some((client, session_id)) = open {
+        // Under the session lock, which the drive loop holds while it checks
+        // for a Stop and queues a steer's prompt: the cancel goes out after
+        // any prompt already queued (and ends it too), and no prompt is
+        // queued after it.
+        if let Ok(open) = session.lock()
+            && let Some((client, session_id)) = open.as_ref()
+        {
             // `agy` 1.5 also ends the commands it backgrounded on cancel.
             #[expect(
                 clippy::let_underscore_must_use,
@@ -460,13 +465,17 @@ pub(super) type PromptFuture = Pin<Box<dyn Future<Output = Result<Value, RpcErro
 /// Put a `session/prompt` frame on the wire now (frames go out in the
 /// order sent) and return the wait for its answer. A steer is acknowledged
 /// only after this returns, so no later steer can replace an unsent one.
-fn send_prompt(client: &RpcClient, session_id: &str, text: &str) -> Result<PromptFuture, RpcError> {
+fn send_prompt(
+    client: &RpcClient,
+    session_id: &str,
+    text: &str,
+) -> Result<(PromptFuture, rpc::Written), RpcError> {
     let params = json!({
         "sessionId": session_id,
         "prompt": [{"type": "text", "text": text}],
     });
-    let reply = client.start_request("session/prompt", params)?;
-    Ok(Box::pin(reply.wait(PROMPT_TIMEOUT)))
+    let (reply, written) = client.start_request_acked("session/prompt", params)?;
+    Ok((Box::pin(reply.wait(PROMPT_TIMEOUT)), written))
 }
 
 /// One turn's protocol work, owned by its task.
@@ -509,11 +518,9 @@ impl Turn {
             .await;
         steer_rx.close();
         while let Ok(request) = steer_rx.try_recv() {
-            // A waiting requester hears `false` (its answer is dropped).
-            if request.take()
-                && let Some(steer) = request.answer(false)
-            {
-                unread.push(steer);
+            // A waiting requester hears it was refused.
+            if request.take() {
+                request.answer(None).file(&mut unread, &mut Vec::new());
             }
         }
         if let Ok(mut slot) = self.session.lock() {
@@ -553,7 +560,7 @@ impl Turn {
         let mut answer: Result<Value, RpcError> = Err(RpcError::Closed);
         let mut superseded = Superseded::default();
         let mut prompt = match send_prompt(&client, &session_id, &first) {
-            Ok(pending) => Some(pending),
+            Ok((pending, _written)) => Some(pending),
             Err(error) => {
                 answer = Err(error);
                 None
@@ -561,6 +568,8 @@ impl Turn {
         };
         // Held open after the prompt for a backgrounded command.
         let mut held = false;
+        // Held steers queued for the wire, checked once the turn is over.
+        let mut held_writes: Vec<steer::HeldWrite> = Vec::new();
         let mut quiet_since = Instant::now();
         let mut closed_by_usage = false;
         // Set when a held command never reported back within the bound.
@@ -634,8 +643,8 @@ impl Turn {
                     if !request.take() {
                         continue;
                     }
-                    if !agent.steers || self.cancelled.load(Ordering::SeqCst) {
-                        unread.extend(request.answer(false));
+                    if !agent.steers {
+                        request.answer(None).file(unread, &mut held_writes);
                         continue;
                     }
                     // What the agent said so far (including updates already
@@ -646,34 +655,54 @@ impl Turn {
                             self.handle(&client, &session_id, agent, message, &mut fold, &mut live);
                     }
                     let mut entries: Vec<HistoryMessage> = fold.take_partial().into_iter().collect();
-                    if request.journal {
-                        entries.push(journal::message(HistoryRole::User, request.text.clone(), Vec::new()));
-                    }
-                    journal::append(&transcript, &entries).await;
-                    // The frame is on the wire before the steer is
-                    // acknowledged. The earlier prompt's answer (`end_turn`,
-                    // by design of a steer) is still awaited for an error.
-                    let sent = match send_prompt(&client, &session_id, &request.text) {
-                        Ok(pending) => {
+                    // Checked and queued under the session lock, which Stop
+                    // takes to send its cancel: no prompt goes out after it.
+                    // No I/O in between: the requester is answered at once
+                    // and waits only for the frame's write.
+                    let queued = match self.session.lock() {
+                        Ok(_guard) if self.cancelled.load(Ordering::SeqCst) => None,
+                        Ok(_guard) => match send_prompt(&client, &session_id, &request.text) {
+                            Ok(sent) => Some(sent),
+                            Err(error) => {
+                                tracing::debug!(error = %error.label(), "antigravity: steer not sent");
+                                None
+                            }
+                        },
+                        Err(_) => None, // silent-ok: a poisoned lock only follows a panic elsewhere; the steer is refused
+                    };
+                    let journaled = request.journal.then(|| request.text.clone());
+                    match queued {
+                        Some((pending, written)) => {
                             live.steered();
+                            // The earlier prompt's answer (`end_turn`, by
+                            // design of a steer) is still awaited for an error.
                             if let Some(earlier) = prompt.replace(pending) {
                                 superseded.push(earlier);
                             }
                             held = false;
-                            true
+                            request.answer(Some(written)).file(unread, &mut held_writes);
+                            entries.extend(journaled.map(|text| journal::message(HistoryRole::User, text, Vec::new())));
                         }
-                        Err(error) => {
-                            tracing::debug!(error = %error.label(), "antigravity: steer not sent");
-                            false
-                        }
-                    };
-                    unread.extend(request.answer(sent));
+                        None => request.answer(None).file(unread, &mut held_writes),
+                    }
+                    if !entries.is_empty() {
+                        journal::append(&transcript, &entries).await;
+                    }
                 }
                 () = superseded.settle(), if !superseded.is_empty() => {}
                 () = tokio::time::sleep(HOLD_TICK), if prompt.is_none() => {}
             }
         }
         superseded.settle_ready();
+        // A held steer whose frame the agent never took was not delivered.
+        for (steer, mut written) in held_writes {
+            if matches!(
+                written.try_recv(),
+                Ok(false) | Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ) {
+                unread.push(steer);
+            }
+        }
         // Updates that raced the answer still belong to this turn.
         while let Ok(message) = inbound.try_recv() {
             self.handle(&client, &session_id, agent, message, &mut fold, &mut live);
@@ -1034,7 +1063,7 @@ impl Turn {
         let claim = permissions::claim(bridge.as_deref(), &thread, &run).with_call_id(call_id);
         pending.fetch_add(1, Ordering::SeqCst);
         tokio::spawn(async move {
-            let (answer, feedback) = answer_permission(
+            let (answer, feedback, receipt) = answer_permission(
                 bridge.clone(),
                 &thread,
                 &run,
@@ -1044,9 +1073,16 @@ impl Turn {
                 claim,
             )
             .await;
-            if let Err(error) = client.respond(&id, answer) {
-                tracing::debug!(error = %error.label(), "antigravity: reply not sent");
-            }
+            // The receipt follows the reply onto the agent's stdin: a steer
+            // that declined this call goes out only after it.
+            let written = match client.respond_acked(&id, answer) {
+                Ok(written) => written.await.unwrap_or(false), // silent-ok: a dropped ack means the writer is gone, so not written
+                Err(error) => {
+                    tracing::debug!(error = %error.label(), "antigravity: reply not sent");
+                    false
+                }
+            };
+            receipt.delivered(written);
             pending.fetch_sub(1, Ordering::SeqCst);
             if let Some(feedback) = feedback {
                 deliver_feedback(bridge.as_deref(), steer.as_ref(), &thread, &feedback).await;
@@ -1141,14 +1177,17 @@ async fn answer_permission(
     session_id: &str,
     params: &Value,
     claim: CallClaim,
-) -> (Value, Option<DenialFeedback>) {
+) -> (Value, Option<DenialFeedback>, Receipt) {
     if let (Some(bridge), Some(form)) = (&bridge, interaction::acp_interaction_form(params)) {
+        // ACP's interaction reply carries no free text: a steer that
+        // answered it sends its words as the steer (the receipt drops).
         let outcome = bridge
             .ask(thread, run_id, "antigravity_question", form.clone(), claim)
             .await;
         return (
             interaction::acp_interaction_reply(&form, outcome.answer()),
             None,
+            Receipt::none(),
         );
     }
     permission_answer(
@@ -1173,7 +1212,7 @@ async fn permission_answer(
     session_id: &str,
     params: &Value,
     claim: CallClaim,
-) -> (Value, Option<DenialFeedback>) {
+) -> (Value, Option<DenialFeedback>, Receipt) {
     let call = &params["toolCall"];
     let cancelled = json!({"outcome": {"outcome": "cancelled"}});
     let request = PermissionRequest {
@@ -1192,8 +1231,9 @@ async fn permission_answer(
         // what the model said before the call.
         reason: None,
     };
-    let (kind, feedback) = match permissions::decide(bridge, thread, run_id, &request, claim).await
-    {
+    let (decision, receipt) =
+        permissions::decide_receipted(bridge, thread, run_id, &request, claim).await;
+    let (kind, feedback) = match decision {
         PermissionDecision::AllowOnce => ("allow_once", None),
         // ACP's permission outcome is an option id with no message: the
         // feedback goes to the agent another way.
@@ -1207,7 +1247,7 @@ async fn permission_answer(
         .and_then(|o| o.get("optionId").and_then(Value::as_str))
         .map(|option| json!({"outcome": {"outcome": "selected", "optionId": option}}))
         .unwrap_or(cancelled);
-    (answer, feedback)
+    (answer, feedback, receipt)
 }
 
 #[async_trait]

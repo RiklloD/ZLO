@@ -162,7 +162,7 @@ mod tests {
             ActiveTurn {
                 pgid: 0,
                 cancelled: Arc::new(AtomicBool::new(false)),
-                door: Arc::default(),
+                door: Arc::new(crate::steer_door::SteerDoor::closed()),
                 done: done_rx.clone(),
             },
         )])));

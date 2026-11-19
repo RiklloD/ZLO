@@ -310,7 +310,106 @@ struct TokenEntry {
 
 struct PendingGate {
     view: GateView,
-    answer: oneshot::Sender<(ToolDecision, CliApprovalDecision)>,
+    answer: oneshot::Sender<(ToolDecision, CliApprovalDecision, Receipt)>,
+}
+
+/// Handed to a driver with a decision or answer from the bridge: the driver
+/// reports with [`Receipt::delivered`] whether what it was told reached the
+/// agent (its reply written, the agent's RPC answered). Dropped unreported,
+/// it reports `false`. Whoever answered the gate on a steer's behalf waits
+/// on it, so the steer is sequenced after the reply and never claims words
+/// were delivered that were not.
+pub struct Receipt(Option<oneshot::Sender<bool>>);
+
+impl Receipt {
+    /// A receipt nobody waits on.
+    pub fn none() -> Self {
+        Self(None)
+    }
+
+    fn pair() -> (Self, oneshot::Receiver<bool>) {
+        let (tx, rx) = oneshot::channel();
+        (Self(Some(tx)), rx)
+    }
+
+    /// Report whether the decision or answer reached the agent.
+    pub fn delivered(mut self, ok: bool) {
+        self.send(ok);
+    }
+
+    fn send(&mut self, ok: bool) {
+        if let Some(tx) = self.0.take()
+            && tx.send(ok).is_err()
+        {
+            tracing::debug!("cli bridge: nobody waits on this receipt any more");
+        }
+    }
+}
+
+impl Drop for Receipt {
+    fn drop(&mut self) {
+        self.send(false);
+    }
+}
+
+impl std::fmt::Debug for Receipt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Receipt(awaited)"
+        } else {
+            "Receipt(none)"
+        })
+    }
+}
+
+/// How long a steer waits for the replies to the gates it answered.
+const GATE_RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The deny reason an approval carries when a steer declines it and the
+/// agent takes the reason as the call's result (Claude's PreToolUse hook).
+pub fn steer_denial(text: &str) -> String {
+    format!("The user declined this call and said instead: {text}")
+}
+
+/// What a steer did at its run's open gates ([`CliBridge::steer_at_gates`]).
+#[derive(Debug, Default)]
+pub struct GateSteer {
+    /// The question the person's text answered (its reply may or may not
+    /// hand the text to the agent: only some protocols take free text).
+    question: Option<oneshot::Receiver<bool>>,
+    /// The approval declined with the text as its feedback.
+    carrier: Option<oneshot::Receiver<bool>>,
+    /// Approvals declined without the text.
+    declined: Vec<oneshot::Receiver<bool>>,
+}
+
+impl GateSteer {
+    /// Nothing was waiting.
+    pub fn is_empty(&self) -> bool {
+        self.question.is_none() && self.carrier.is_none() && self.declined.is_empty()
+    }
+
+    /// Wait (bounded) until every answered gate's reply has reached the
+    /// agent or failed. `true` when the text itself reached it (through the
+    /// question's reply or the carrying denial): then the caller must not
+    /// send it again. `false`: the caller steers it.
+    pub async fn settle(self) -> bool {
+        let deadline = tokio::time::Instant::now() + GATE_RECEIPT_TIMEOUT;
+        let wait = |rx: oneshot::Receiver<bool>| async move {
+            matches!(tokio::time::timeout_at(deadline, rx).await, Ok(Ok(true)))
+        };
+        let mut carried = false;
+        if let Some(rx) = self.question {
+            carried |= wait(rx).await;
+        }
+        if let Some(rx) = self.carrier {
+            carried |= wait(rx).await;
+        }
+        for rx in self.declined {
+            wait(rx).await;
+        }
+        carried
+    }
 }
 
 struct LiveTurn {
@@ -764,6 +863,7 @@ impl CliBridge {
                 .send((
                     ToolDecision::Deny("The turn ended.".into()),
                     CliApprovalDecision::TurnEnded,
+                    Receipt::none(),
                 ))
                 .is_err()
             {
@@ -771,7 +871,11 @@ impl CliBridge {
             }
         }
         for question in waiting {
-            if question.answer.send(QuestionOutcome::TurnEnded).is_err() {
+            if question
+                .answer
+                .send((QuestionOutcome::TurnEnded, Receipt::none()))
+                .is_err()
+            {
                 tracing::debug!("turn ended: the question waiter was already gone");
             }
         }
@@ -859,23 +963,47 @@ impl CliBridge {
         reason: Option<String>,
         claim: CallClaim,
     ) -> ToolDecision {
+        self.decide_call_receipted(thread, run_id, tool_name, input, reason, claim)
+            .await
+            .0
+    }
+
+    /// [`Self::decide_call`], plus the [`Receipt`] the driver reports on once
+    /// its reply reached the agent (a steer that declined the gate waits on
+    /// it before it is sent).
+    pub async fn decide_call_receipted(
+        &self,
+        thread: &ThreadId,
+        run_id: &str,
+        tool_name: &str,
+        input: &Value,
+        reason: Option<String>,
+        claim: CallClaim,
+    ) -> (ToolDecision, Receipt) {
         if !claim.live {
-            return ToolDecision::Deny("No live turn to approve this call.".into());
+            return (
+                ToolDecision::Deny("No live turn to approve this call.".into()),
+                Receipt::none(),
+            );
         }
         // Backstop for the launch flags: a hidden subagent never runs, even
         // on a "Full access" profile.
         if crate::is_builtin_subagent_tool(tool_name) {
-            return ToolDecision::Deny(BUILTIN_SUBAGENT_DENIAL.into());
+            return (
+                ToolDecision::Deny(BUILTIN_SUBAGENT_DENIAL.into()),
+                Receipt::none(),
+            );
         }
         let call_id = claim.call_id.clone();
         if self.profile_full_access(thread).await {
             // The profile lookup awaited: the turn may have ended meanwhile.
-            return if self.is_live(thread, run_id) {
+            let decision = if self.is_live(thread, run_id) {
                 self.tool_started(thread, run_id, tool_name, input, call_id);
                 ToolDecision::Allow
             } else {
                 ToolDecision::Deny("The turn ended.".into())
             };
+            return (decision, Receipt::none());
         }
         let gate = GateView {
             gate_ref: format!("gate:cli-{}", uuid::Uuid::new_v4().simple()),
@@ -899,7 +1027,10 @@ impl CliBridge {
             };
             if let Err(error) = ledger.cli_approval_opened(&record).await {
                 tracing::debug!(%error, "cli bridge: approval not recorded; denied");
-                return ToolDecision::Deny("This call could not be recorded.".into());
+                return (
+                    ToolDecision::Deny("This call could not be recorded.".into()),
+                    Receipt::none(),
+                );
             }
         }
         let (tx, rx) = oneshot::channel();
@@ -915,24 +1046,30 @@ impl CliBridge {
         let Some(unsent) = registered else {
             self.record_close(&gate.gate_ref, CliApprovalDecision::TurnEnded, None)
                 .await;
-            return ToolDecision::Deny("No live turn to approve this call.".into());
+            return (
+                ToolDecision::Deny("No live turn to approve this call.".into()),
+                Receipt::none(),
+            );
         };
         self.emit_text(thread, run_id, unsent);
         self.emit(LiveEvent::GateOpened {
             thread: thread.clone(),
             gate: gate.clone(),
         });
-        let (decision, recorded) = match tokio::time::timeout(self.approval_timeout, rx).await {
-            Ok(Ok(answer)) => answer,
-            Ok(Err(_)) => (
-                ToolDecision::Deny("The approval was dropped.".into()),
-                CliApprovalDecision::TurnEnded,
-            ),
-            Err(_) => (
-                ToolDecision::Deny("Nobody approved this call in time.".into()),
-                CliApprovalDecision::TimedOut,
-            ),
-        };
+        let (decision, recorded, receipt) =
+            match tokio::time::timeout(self.approval_timeout, rx).await {
+                Ok(Ok(answer)) => answer,
+                Ok(Err(_)) => (
+                    ToolDecision::Deny("The approval was dropped.".into()),
+                    CliApprovalDecision::TurnEnded,
+                    Receipt::none(),
+                ),
+                Err(_) => (
+                    ToolDecision::Deny("Nobody approved this call in time.".into()),
+                    CliApprovalDecision::TimedOut,
+                    Receipt::none(),
+                ),
+            };
         let reason = decision.denial_message();
         self.record_close(&gate.gate_ref, recorded, reason.as_deref())
             .await;
@@ -950,16 +1087,30 @@ impl CliBridge {
         if decision == ToolDecision::Allow {
             self.tool_started(thread, run_id, tool_name, input, call_id);
         }
-        decision
+        (decision, receipt)
     }
 
-    /// Decline every pending gate on `thread` with `reason`: a steer that
-    /// arrives while a call waits answers it with the person's words, so the
-    /// turn moves on to the new instruction. Returns how many were declined.
-    /// Only `run_id`'s gates: a late steer never answers the next turn's.
-    pub fn decline_pending(&self, thread: &ThreadId, run_id: &str, reason: &str) -> usize {
-        let reason: String = reason.chars().take(GATE_BODY_MAX_CHARS).collect();
-        let (pending, waiting) = self
+    /// A steer arrived while `run_id` waits on the person (T3 Code: a
+    /// message sent while approvals are pending redirects the agent):
+    /// - the oldest pending question is answered by the text, as typed;
+    /// - every pending approval is declined. With `feedback` (the agent
+    ///   reads a denial's reason, as Claude's hook does) and no question
+    ///   answered, the oldest one carries the whole text as its reason
+    ///   ([`steer_denial`]) and the rest are declined plainly, so the agent
+    ///   reads the words once.
+    ///
+    /// A gate whose waiter is already gone (it timed out or its turn ended
+    /// meanwhile) is skipped: it answers nothing. Wait on the result with
+    /// [`GateSteer::settle`] before steering. Only `run_id`'s gates: a late
+    /// steer never answers the next turn's.
+    pub fn steer_at_gates(
+        &self,
+        thread: &ThreadId,
+        run_id: &str,
+        text: &str,
+        feedback: bool,
+    ) -> GateSteer {
+        let (gates, mut questions) = self
             .live
             .lock()
             .ok()
@@ -974,30 +1125,50 @@ impl CliBridge {
                     })
             })
             .unwrap_or_default(); // silent-ok: a poisoned map only follows a panic elsewhere
-        let declined = pending.len() + waiting.len();
-        // A question waiting on the form is answered by what they typed.
-        for question in waiting {
-            if question
+        let mut steer = GateSteer::default();
+        // Oldest first; one that cannot take the answer hands it on.
+        let mut rest = Vec::new();
+        for question in questions.drain(..) {
+            if steer.question.is_some() {
+                rest.push(question);
+                continue;
+            }
+            let (receipt, rx) = Receipt::pair();
+            match question
                 .answer
-                .send(QuestionOutcome::Replied(reason.clone()))
-                .is_err()
+                .send((QuestionOutcome::Replied(text.to_string()), receipt))
             {
-                tracing::debug!("decline: the question waiter was already gone");
+                Ok(()) => steer.question = Some(rx),
+                Err(_) => tracing::debug!("steer: a question waiter was already gone"),
             }
         }
-        for gate in pending {
-            if gate
-                .answer
-                .send((
-                    ToolDecision::Deny(reason.clone()),
-                    CliApprovalDecision::Declined,
-                ))
-                .is_err()
-            {
-                tracing::debug!("decline: the approval waiter was already gone");
+        // Questions the text did not answer keep waiting.
+        if !rest.is_empty()
+            && let Ok(mut live) = self.live.lock()
+            && let Some(turn) = live.get_mut(thread).filter(|t| t.run_id == run_id)
+        {
+            turn.questions.splice(0..0, rest);
+        }
+        let carry = feedback && steer.question.is_none();
+        for gate in gates {
+            let (receipt, rx) = Receipt::pair();
+            let reason = if carry && steer.carrier.is_none() {
+                steer_denial(text)
+            } else {
+                "The user declined this call and sent a new message instead.".to_string()
+            };
+            let carries = carry && steer.carrier.is_none();
+            match gate.answer.send((
+                ToolDecision::Deny(reason),
+                CliApprovalDecision::Declined,
+                receipt,
+            )) {
+                Ok(()) if carries => steer.carrier = Some(rx),
+                Ok(()) => steer.declined.push(rx),
+                Err(_) => tracing::debug!("steer: an approval waiter was already gone"),
             }
         }
-        declined
+        steer
     }
 
     /// Keep rejection feedback the running turn could not take — the decline
@@ -1039,16 +1210,22 @@ impl CliBridge {
             return false;
         };
         let decision = match answer {
-            GateAnswer::Approve => (ToolDecision::Allow, CliApprovalDecision::Allowed),
+            GateAnswer::Approve => (
+                ToolDecision::Allow,
+                CliApprovalDecision::Allowed,
+                Receipt::none(),
+            ),
             GateAnswer::Decline { feedback: None } => (
                 ToolDecision::Deny("The user declined this call.".into()),
                 CliApprovalDecision::Declined,
+                Receipt::none(),
             ),
             GateAnswer::Decline {
                 feedback: Some(feedback),
             } => (
                 ToolDecision::Rejected(feedback),
                 CliApprovalDecision::Declined,
+                Receipt::none(),
             ),
         };
         pending.answer.send(decision).is_ok()
@@ -1217,6 +1394,119 @@ async fn call_tool(
 
 #[cfg(test)]
 mod tests {
+
+    /// Review (Sol, 4): a gate whose waiter is gone (it timed out, or its
+    /// task ended) answers nothing: a steer must not count it as delivered.
+    #[tokio::test]
+    async fn a_steer_skips_a_gate_whose_waiter_is_gone() {
+        let bridge = CliBridge::new(Duration::from_secs(30));
+        let thread = ThreadId::new("t-stale").unwrap();
+        bridge.turn_started(&thread, "r1");
+        let mut events = bridge.subscribe();
+        let asker = Arc::clone(&bridge);
+        let (t, waiting_thread) = (thread.clone(), thread.clone());
+        let waiting = tokio::spawn(async move {
+            asker
+                .request_approval(&waiting_thread, "r1", "Bash", &json!({"command": "ls"}))
+                .await
+        });
+        loop {
+            if let LiveEvent::GateOpened { .. } = events.recv().await.unwrap() {
+                break;
+            }
+        }
+        // The waiter goes away while its gate is still listed.
+        waiting.abort();
+        assert!(waiting.await.unwrap_err().is_cancelled());
+        let steer = bridge.steer_at_gates(&t, "r1", "do this instead", true);
+        assert!(steer.is_empty(), "a stale gate was counted: {steer:?}");
+        assert!(!steer.settle().await);
+    }
+
+    /// Review (Sol, 6): a steer is sequenced after the decline's reply, not
+    /// after a yield: `settle` returns only once the driver reported its
+    /// reply on the agent's wire (here, 300 ms later, after a durable write).
+    #[tokio::test]
+    async fn a_steer_waits_for_the_decline_to_reach_the_agent() {
+        let bridge = CliBridge::new(Duration::from_secs(30));
+        let thread = ThreadId::new("t-seq").unwrap();
+        bridge.turn_started(&thread, "r1");
+        let mut events = bridge.subscribe();
+        let (asker, t) = (Arc::clone(&bridge), thread.clone());
+        let waiter = tokio::spawn(async move {
+            let claim = asker.claim_call(&t, "r1");
+            let (decision, receipt) = asker
+                .decide_call_receipted(&t, "r1", "Bash", &json!({"command": "rm"}), None, claim)
+                .await;
+            // The driver's reply takes a while to reach the agent.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            receipt.delivered(true);
+            decision
+        });
+        loop {
+            if let LiveEvent::GateOpened { .. } = events.recv().await.unwrap() {
+                break;
+            }
+        }
+        let steer = bridge.steer_at_gates(&thread, "r1", "stop", false);
+        let started = Instant::now();
+        assert!(
+            !steer.settle().await,
+            "a plain decline does not carry the text"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "settled before the reply"
+        );
+        assert!(matches!(waiter.await.unwrap(), ToolDecision::Deny(_)));
+    }
+
+    /// Review (Sol, 4): the words go whole through one denial; the rest are
+    /// declined without them, and every receipt reports.
+    #[tokio::test]
+    async fn a_steer_carries_its_text_through_one_gate_only() {
+        let bridge = CliBridge::new(Duration::from_secs(30));
+        let thread = ThreadId::new("t-two").unwrap();
+        bridge.turn_started(&thread, "r1");
+        let mut events = bridge.subscribe();
+        let mut waiters = Vec::new();
+        for command in ["a", "b"] {
+            let (asker, t) = (Arc::clone(&bridge), thread.clone());
+            waiters.push(tokio::spawn(async move {
+                let claim = asker.claim_call(&t, "r1");
+                asker
+                    .decide_call_receipted(
+                        &t,
+                        "r1",
+                        "Bash",
+                        &json!({"command": command}),
+                        None,
+                        claim,
+                    )
+                    .await
+            }));
+            loop {
+                if let LiveEvent::GateOpened { .. } = events.recv().await.unwrap() {
+                    break;
+                }
+            }
+        }
+        let text = "z".repeat(GATE_BODY_MAX_CHARS * 2);
+        let steer = bridge.steer_at_gates(&thread, "r1", &text, true);
+        let mut reasons = Vec::new();
+        for waiter in waiters {
+            let (decision, receipt) = waiter.await.unwrap();
+            reasons.push(decision.denial_message().unwrap());
+            receipt.delivered(true);
+        }
+        assert!(steer.settle().await, "the carrying denial was delivered");
+        assert_eq!(
+            reasons.iter().filter(|r| r.contains(&text)).count(),
+            1,
+            "{reasons:?}"
+        );
+        assert!(reasons.iter().any(|r| !r.contains('z')));
+    }
     use super::*;
 
     fn tid() -> ThreadId {

@@ -43,6 +43,12 @@ pub(crate) struct TurnFold {
     /// The latest `usage/changed` subscription windows.
     pub(crate) limit_reading: Option<Value>,
     completed: Option<Value>,
+    /// Agent messages Muse reported complete.
+    finished: HashSet<String>,
+    /// Agent messages already journaled ahead of a steer.
+    journaled: HashSet<String>,
+    /// Tool labels already journaled ahead of a steer.
+    tools_journaled: usize,
 }
 
 impl TurnFold {
@@ -152,6 +158,9 @@ impl TurnFold {
                     entry.2 = text.to_string();
                 }
             }
+            if item.get("status").and_then(Value::as_str) == Some("completed") {
+                self.finished.insert(id.to_string());
+            }
             return;
         }
         let tool = item.get("tool").and_then(Value::as_str);
@@ -173,10 +182,41 @@ impl TurnFold {
             .map(|(_, _, text)| text.trim().to_string())
     }
 
+    /// The last non-empty agent message among those `keep` selects.
+    fn last_message(&self, keep: impl Fn(&str) -> bool) -> String {
+        self.messages
+            .iter()
+            .filter(|(id, (_, _, text))| keep(id) && !text.trim().is_empty())
+            .max_by_key(|(_, (order, _, _))| *order)
+            .map(|(_, (_, _, text))| text.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    /// What the agent said and ran before a steer, as its own transcript
+    /// entry (finished messages only; one still streaming goes on into the
+    /// next entry). `None` when nothing new happened since the last cut.
+    pub(crate) fn take_segment(&mut self) -> Option<HistoryMessage> {
+        let text =
+            self.last_message(|id| self.finished.contains(id) && !self.journaled.contains(id));
+        let tools = self.tools[self.tools_journaled..].to_vec();
+        let ids: Vec<String> = self
+            .finished
+            .iter()
+            .filter(|id| !self.journaled.contains(*id))
+            .cloned()
+            .collect();
+        self.journaled.extend(ids);
+        self.tools_journaled = self.tools.len();
+        (!text.is_empty() || !tools.is_empty())
+            .then(|| journal::message(HistoryRole::Assistant, text, tools))
+    }
+
+    /// The turn's (last) transcript entry: everything after the last cut.
     pub(crate) fn assistant_message(&self) -> Option<HistoryMessage> {
-        let text = self.answer().unwrap_or_default();
-        (!text.is_empty() || !self.tools.is_empty())
-            .then(|| journal::message(HistoryRole::Assistant, text, self.tools.clone()))
+        let text = self.last_message(|id| !self.journaled.contains(id));
+        let tools = self.tools[self.tools_journaled..].to_vec();
+        (!text.is_empty() || !tools.is_empty())
+            .then(|| journal::message(HistoryRole::Assistant, text, tools))
     }
 
     fn usage(&self) -> Option<TurnUsage> {

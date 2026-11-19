@@ -95,7 +95,7 @@ impl QuestionOutcome {
 
 pub(super) struct PendingQuestion {
     pub(super) view: QuestionView,
-    pub(super) answer: oneshot::Sender<QuestionOutcome>,
+    pub(super) answer: oneshot::Sender<(QuestionOutcome, super::Receipt)>,
 }
 
 impl CliBridge {
@@ -136,8 +136,25 @@ impl CliBridge {
         form: QuestionForm,
         claim: CallClaim,
     ) -> QuestionOutcome {
+        self.ask_receipted(thread, run_id, tool, form, claim)
+            .await
+            .0
+    }
+
+    /// [`Self::ask`], plus the [`super::Receipt`] the driver reports on: `true`
+    /// once its reply handed a [`QuestionOutcome::Replied`] text to the
+    /// agent. A driver whose protocol carries no free text leaves it to drop,
+    /// and the steer that answered sends the text itself.
+    pub async fn ask_receipted(
+        &self,
+        thread: &ThreadId,
+        run_id: &str,
+        tool: &str,
+        form: QuestionForm,
+        claim: CallClaim,
+    ) -> (QuestionOutcome, super::Receipt) {
         if !claim.live || form.validate().is_err() {
-            return QuestionOutcome::TurnEnded;
+            return (QuestionOutcome::TurnEnded, super::Receipt::none());
         }
         let view = QuestionView {
             gate_ref: format!(
@@ -156,7 +173,7 @@ impl CliBridge {
                 Ok(body) => body,
                 Err(error) => {
                     tracing::debug!(%error, "cli bridge: question not encoded; not asked");
-                    return QuestionOutcome::TurnEnded;
+                    return (QuestionOutcome::TurnEnded, super::Receipt::none());
                 }
             };
             let record = CliApprovalRecord {
@@ -172,7 +189,7 @@ impl CliBridge {
             };
             if let Err(error) = ledger.cli_approval_opened(&record).await {
                 tracing::debug!(%error, "cli bridge: question not recorded; not asked");
-                return QuestionOutcome::TurnEnded;
+                return (QuestionOutcome::TurnEnded, super::Receipt::none());
             }
         }
         let (tx, rx) = oneshot::channel();
@@ -187,23 +204,23 @@ impl CliBridge {
         let Some(unsent) = registered else {
             self.close_question(&view.gate_ref, &QuestionOutcome::TurnEnded)
                 .await;
-            return QuestionOutcome::TurnEnded;
+            return (QuestionOutcome::TurnEnded, super::Receipt::none());
         };
         self.emit_text(thread, run_id, unsent);
         self.emit(LiveEvent::QuestionOpened {
             thread: thread.clone(),
             question: view.clone(),
         });
-        let outcome = match tokio::time::timeout(self.approval_timeout, rx).await {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) => QuestionOutcome::TurnEnded,
-            Err(_) => QuestionOutcome::TimedOut,
+        let (outcome, receipt) = match tokio::time::timeout(self.approval_timeout, rx).await {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(_)) => (QuestionOutcome::TurnEnded, super::Receipt::none()),
+            Err(_) => (QuestionOutcome::TimedOut, super::Receipt::none()),
         };
         // The record holds the answer before the agent gets it.
-        let outcome = if self.close_question(&view.gate_ref, &outcome).await {
-            outcome
+        let (outcome, receipt) = if self.close_question(&view.gate_ref, &outcome).await {
+            (outcome, receipt)
         } else {
-            QuestionOutcome::NotRecorded
+            (QuestionOutcome::NotRecorded, super::Receipt::none())
         };
         if let Ok(mut live) = self.live.lock()
             && let Some(turn) = live.get_mut(thread)
@@ -214,7 +231,7 @@ impl CliBridge {
             thread: thread.clone(),
             question: view,
         });
-        outcome
+        (outcome, receipt)
     }
 
     /// Close a question's record with its typed outcome. `false` when there
@@ -270,7 +287,10 @@ impl CliBridge {
         }
         let pending = turn.questions.remove(at);
         let outcome = answer.map_or(QuestionOutcome::Declined, QuestionOutcome::Answered);
-        Ok(pending.answer.send(outcome).is_ok())
+        Ok(pending
+            .answer
+            .send((outcome, super::Receipt::none()))
+            .is_ok())
     }
 }
 
@@ -382,7 +402,8 @@ mod tests {
                     waiting.await.unwrap()
                 }
                 "steer" => {
-                    assert_eq!(bridge.decline_pending(&tid(), run, "use sqlite"), 1);
+                    let steer = bridge.steer_at_gates(&tid(), run, "use sqlite", true);
+                    assert!(!steer.is_empty());
                     waiting.await.unwrap()
                 }
                 _ => {

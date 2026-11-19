@@ -68,10 +68,28 @@ pub(crate) enum Inbound {
 
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, RpcError>>>>>;
 
+/// One frame for the writer, and who wants to know it reached the child's
+/// stdin (`true`) or never will (`false`: the pipe failed or closed first).
+type Outgoing = (String, Option<oneshot::Sender<bool>>);
+
+/// Resolves once a frame was written to the child's stdin and flushed
+/// (`true`), or will never be (`false`).
+pub(crate) type Written = oneshot::Receiver<bool>;
+
+fn ack(written: Option<oneshot::Sender<bool>>, ok: bool) {
+    if let Some(tx) = written {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "nobody may wait for this write any more"
+        )]
+        let _ = tx.send(ok);
+    }
+}
+
 /// Request handle. Cloneable; dropping every clone closes the child's stdin.
 #[derive(Clone)]
 pub(crate) struct RpcClient {
-    out: mpsc::UnboundedSender<String>,
+    out: mpsc::UnboundedSender<Outgoing>,
     pending: Pending,
     next_id: Arc<AtomicI64>,
 }
@@ -83,19 +101,24 @@ impl RpcClient {
         stdout: ChildStdout,
         name: &'static str,
     ) -> (Self, mpsc::UnboundedReceiver<Inbound>) {
-        let (out, mut out_rx) = mpsc::unbounded_channel::<String>();
+        let (out, mut out_rx) = mpsc::unbounded_channel::<Outgoing>();
         let (in_tx, in_rx) = mpsc::unbounded_channel();
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
 
         let mut stdin = stdin;
         tokio::spawn(async move {
-            while let Some(frame) = out_rx.recv().await {
-                if stdin.write_all(frame.as_bytes()).await.is_err() {
+            while let Some((frame, written)) = out_rx.recv().await {
+                let ok =
+                    stdin.write_all(frame.as_bytes()).await.is_ok() && stdin.flush().await.is_ok();
+                ack(written, ok);
+                if !ok {
                     break;
                 }
-                if stdin.flush().await.is_err() {
-                    break;
-                }
+            }
+            // Frames left behind never reach the child.
+            out_rx.close();
+            while let Ok((_, written)) = out_rx.try_recv() {
+                ack(written, false);
             }
             #[expect(
                 clippy::let_underscore_must_use,
@@ -140,8 +163,18 @@ impl RpcClient {
 
     fn send(&self, frame: Value) -> Result<(), RpcError> {
         self.out
-            .send(format!("{frame}\n"))
+            .send((format!("{frame}\n"), None))
             .map_err(|_closed| RpcError::Closed)
+    }
+
+    /// [`Self::send`], with a receiver that resolves once the frame is on
+    /// the child's stdin (or never will be).
+    fn send_acked(&self, frame: Value) -> Result<Written, RpcError> {
+        let (tx, rx) = oneshot::channel();
+        self.out
+            .send((format!("{frame}\n"), Some(tx)))
+            .map_err(|_closed| RpcError::Closed)?;
+        Ok(rx)
     }
 
     pub(crate) async fn request(
@@ -161,22 +194,39 @@ impl RpcClient {
         method: &str,
         params: Value,
     ) -> Result<PendingReply, RpcError> {
+        Ok(self.start_request_acked(method, params)?.0)
+    }
+
+    /// [`Self::start_request`], plus a receiver for when the frame is
+    /// actually on the child's stdin: "queued" is not "sent" when the child
+    /// has closed its input.
+    pub(crate) fn start_request_acked(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<(PendingReply, Written), RpcError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         if let Ok(mut map) = self.pending.lock() {
             map.insert(id, tx);
         }
-        let sent =
-            self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
-        if let Err(error) = sent {
-            self.forget(id);
-            return Err(error);
-        }
-        Ok(PendingReply {
-            client: self.clone(),
-            id,
-            rx,
-        })
+        let sent = self
+            .send_acked(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        let written = match sent {
+            Ok(written) => written,
+            Err(error) => {
+                self.forget(id);
+                return Err(error);
+            }
+        };
+        Ok((
+            PendingReply {
+                client: self.clone(),
+                id,
+                rx,
+            },
+            written,
+        ))
     }
 
     fn forget(&self, id: i64) {
@@ -197,6 +247,11 @@ impl RpcClient {
         self.send(json!({"jsonrpc": "2.0", "id": id, "result": result}))
     }
 
+    /// [`Self::respond`], resolving once the answer is on the child's stdin.
+    pub(crate) fn respond_acked(&self, id: &Value, result: Value) -> Result<Written, RpcError> {
+        self.send_acked(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+    }
+
     pub(crate) fn respond_error(
         &self,
         id: &Value,
@@ -215,6 +270,22 @@ pub(crate) struct PendingReply {
 }
 
 impl PendingReply {
+    /// [`Self::wait`] against an absolute deadline, so a wait that is only
+    /// polled later still started when the request did.
+    pub(crate) async fn wait_until(
+        self,
+        deadline: tokio::time::Instant,
+    ) -> Result<Value, RpcError> {
+        match tokio::time::timeout_at(deadline, self.rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_dropped)) => Err(RpcError::Closed),
+            Err(_elapsed) => {
+                self.client.forget(self.id);
+                Err(RpcError::Timeout)
+            }
+        }
+    }
+
     pub(crate) async fn wait(self, timeout: Duration) -> Result<Value, RpcError> {
         match tokio::time::timeout(timeout, self.rx).await {
             Ok(Ok(result)) => result,
