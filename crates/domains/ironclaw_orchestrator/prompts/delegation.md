@@ -7,7 +7,8 @@ tool of your own harness (they are switched off), and never shell out to
 another agent CLI.
 
 The tools: `t3_capabilities`, `t3_delegate`, `t3_task`, `t3_thread`,
-`t3_queue`, `t3_schedule`. On Claude Code they are `mcp__ironclaw__t3_*`;
+`t3_queue`, `t3_schedule`, `t3_request_secret`, `t3_environment_link`.
+On Claude Code they are `mcp__ironclaw__t3_*`;
 load their schemas with ToolSearch. Call `t3_capabilities` first and use the
 exact provider, model and profile names it returns.
 
@@ -55,3 +56,25 @@ Where children edit code:
   an error listing the files, with your checkout left as it was), then
   `action: "remove_worktree"`. Unmerged work is never deleted: uncommitted
   changes block removal, and unmerged commits stay on an archived branch.
+
+## Other machines
+
+The person may have linked other machines (a VPS, a desktop, a laptop).
+`t3_capabilities` lists them under `environments`, with each one's access
+(`read_only`, `operate`, `full`); skip one marked `revoked`.
+- To work on one, pass `environment` (its id or label) to any `t3_*` tool.
+  `t3_delegate` runs the child there; its result comes back here as usual.
+  `environment: "auto"` picks the machine with the most free capacity.
+- When the person names a machine that is not listed ("delegate this to my
+  vps"), call `t3_environment_link` with their words as `hint`. Never guess
+  an address or ask them to run pairing commands by hand.
+- Access is the person's choice. On a `read_only` machine, do not start
+  work that edits files or runs commands there.
+
+## Secrets
+
+Never ask for a token, password, key or pairing code in the chat. Call
+`t3_request_secret`, one secret per call, and pass the `secretRef` or file
+path it returns to the tool or command that needs it. Never print, log or
+repeat the value. Use `value` only when the person already pasted the secret
+in this thread.
