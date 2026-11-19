@@ -944,9 +944,10 @@ impl ProductSurface for OrchestratedProductSurface {
                             .await
                             .map_err(ProductSurfaceError::internal_from)?;
                         }
+                        // A retried submit answers what the first one did.
                         let turn = self
                             .engine
-                            .user_turn(&thread, &text)
+                            .user_turn_once(&thread, &text, body.client_action_id.as_deref())
                             .await
                             .map_err(ProductSurfaceError::internal_from)?;
                         let output = external::submit_response(&id, turn)
@@ -1194,12 +1195,16 @@ impl ProductSurface for OrchestratedProductSurface {
             };
             // Rows over the whole runtime history (stable ids), paged
             // backwards with a `cli:` cursor.
-            let (page, next) = external::page_rows(
-                external::timeline_values(&id, &history),
-                limit,
-                cursor.as_deref(),
-            );
+            let mut rows = external::timeline_values(&id, &history);
+            let steers = self
+                .engine
+                .thread_steers(&id)
+                .await
+                .map_err(ProductSurfaceError::internal_from)?;
+            external::annotate_steers(&mut rows, &steers);
+            let (page, next) = external::page_rows(rows, limit, cursor.as_deref());
             if let Some(item) = result.items.first_mut() {
+                item["steer_marks"] = external::steer_marks(&page);
                 item["messages"] = Value::Array(page);
                 item["next_cursor"] = next.clone().map_or(Value::Null, Value::String);
             }

@@ -2,6 +2,7 @@
 //! (`runs` charter row).
 
 use super::*;
+use ironclaw_product_contracts::product_wire::RebornSubmitDelivery;
 
 pub const SUBMIT_TURN_COMMAND_ID: &str = "turn.submit";
 
@@ -456,6 +457,7 @@ where
                 resolved_run_profile_id: submission.resolved_run_profile_id,
                 resolved_run_profile_version: submission.resolved_run_profile_version,
                 event_cursor: submission.event_cursor,
+                delivery: Some(RebornSubmitDelivery::Started),
             }),
             ProductInboundAck::Accepted {
                 accepted_message_ref,
@@ -536,6 +538,10 @@ where
                     status: busy.status,
                     event_cursor: busy.event_cursor,
                     notice: notice.to_string(),
+                    delivery: Some(RebornSubmitDelivery::Steered),
+                    steer_id: None,
+                    queued_id: None,
+                    waiting_for_turn: false,
                 })
             }
             ProductInboundAck::Rejected(rejection) => Err(session_rejection_error(&rejection)),

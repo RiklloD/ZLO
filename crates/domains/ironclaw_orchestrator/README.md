@@ -22,14 +22,28 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   `take_next_message_context`, and the operations behind the tools and
   routes (`delegate`, `task_status`, `task_list`, `cancel_task`, `queue_*`,
   `send`, `runs`, `fork`, `merge_back`, `lineage`, `capabilities`, `status`).
-  It implements `runtime::TurnEventSink`; its `steers_unread` queues the
-  steers a runtime accepted into a turn but its agent never read (reported
-  before that turn's `turn_finished`), so each is sent as a later turn,
-  after a Stop only once the thread is released. Each is keyed by thread,
-  run and the runtime's steer id (a repeated report queues nothing new);
-  a write that fails after retries is returned in `SteerRecovery`, and the
-  runtime ends the turn failed naming it
-  (`TurnOutcome::with_undelivered_steers`).
+  It implements `runtime::TurnEventSink`. Steering follows t3code:
+  every input (user send, `t3_thread send`, `t3_queue promote`, deferred
+  steers, automatic steers, queue drains) goes through one per-thread
+  admission path (`admission`): a durable delivery row in `orch_queue`
+  (monotonic `seq`) is inserted or claimed by compare-and-set before any
+  runtime call and settled after it, so one message is never sent twice
+  across fallbacks. Runtime callbacks never take that lock; they record
+  facts. Each steer attempt gets a `SteerId` and an `orch_steers` row
+  ("Steer · waiting to be read" until `steer_updated` reports it read, on
+  runtimes with `reports_steer_reads`). Stop is recorded against its run
+  (`orch_run_stops`) and checked on every attempt and fallback; readiness
+  (`turn_ready`) is recorded per run and wakes delivery from its own task.
+  A steer still unread once its run ended is requeued, in one transaction,
+  ahead of messages enqueued after it; after a Stop it becomes a "Steer
+  delivery not confirmed" notice. Boot settles claims a crash left (an
+  in-flight steer becomes unconfirmed, never replayed). `NotReady` steers
+  wait as deferred queue items; `TurnEnded` ones start the next turn right
+  away. Delegated results and context handoffs steer a busy parent only
+  when its runtime's `steer_interrupts_tools` is false.
+  `profile_runtime::UserTurn` is the typed delivery (started / steered /
+  queued / restarted); `Engine::user_turn_once` answers a retried client
+  action id without reaching the runtime again.
 - `runtime::TurnRuntime` — the runtime seam (create thread, start turn,
   steer, cancel, history, optional native fork, catalog, and
   `thread_action` for runtime-native operations — Codex review and

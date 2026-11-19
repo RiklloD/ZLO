@@ -206,7 +206,7 @@ impl<'a> Cols<'a> {
         self.oint()?
             .ok_or_else(|| OrchestratorError::Corrupt(format!("column {col} is null")))
     }
-    fn real(&mut self) -> Result<f64> {
+    pub(crate) fn real(&mut self) -> Result<f64> {
         match self.value()? {
             Value::Integer(i) => Ok(i as f64),
             Value::Real(r) => Ok(r),
@@ -334,10 +334,10 @@ fn task_row(row: &libsql::Row) -> Result<TaskRecord> {
     })
 }
 
-const QUEUE_COLS: &str =
-    "id, thread_id, position, text, status, created_by, created_at, updated_at, sent_at";
+pub(crate) const QUEUE_COLS: &str = "id, thread_id, position, text, status, created_by, created_at, updated_at, sent_at, \
+     COALESCE(kind, 'message'), steer_run, COALESCE(seq, 0), claim, claimed_at, claim_run";
 
-fn queue_row(row: &libsql::Row) -> Result<QueueItem> {
+pub(crate) fn queue_row(row: &libsql::Row) -> Result<QueueItem> {
     let mut c = Cols::new(row);
     Ok(QueueItem {
         id: QueueItemId::new(c.text()?)?,
@@ -349,6 +349,12 @@ fn queue_row(row: &libsql::Row) -> Result<QueueItem> {
         created_at: c.int()?,
         updated_at: c.int()?,
         sent_at: c.oint()?,
+        kind: QueueKind::parse(&c.text()?)?,
+        steer_run: c.otext()?,
+        seq: c.int()?,
+        claim: c.otext()?,
+        claimed_at: c.oint()?,
+        claim_run: c.otext()?,
     })
 }
 
@@ -509,11 +515,13 @@ impl Store {
             conn.execute_batch(crate::peer::PEER_SCHEMA).await?;
             conn.execute_batch(crate::agent_requests::AGENT_REQUESTS_SCHEMA)
                 .await?;
+            conn.execute_batch(crate::steers::STEERS_SCHEMA).await?;
         }
         crate::schedules::upgrade_schema(self).await?;
         self.upgrade_inbox_schema().await?;
         self.upgrade_goals_schema().await?;
         self.upgrade_worktree_schema().await?;
+        self.upgrade_queue_schema().await?;
         self.close_interrupted_cli_approvals(crate::model::now_ms())
             .await?;
         self.import_legacy_threads(legacy_runtime).await
@@ -1045,7 +1053,7 @@ impl Store {
         };
         self.rows(
             &format!(
-                "SELECT {QUEUE_COLS} FROM orch_queue WHERE thread_id = ?1{filter} ORDER BY position, created_at"
+                "SELECT {QUEUE_COLS} FROM orch_queue WHERE thread_id = ?1{filter} ORDER BY position, seq, created_at"
             ),
             vec![s(thread.as_str())],
             queue_row,
@@ -1099,9 +1107,10 @@ impl Store {
         let now = now_ms();
         let n = self
             .exec(
-                "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, updated_at) \
+                "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, updated_at, seq) \
                  VALUES (?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM orch_queue WHERE thread_id = ?2), \
-                 ?3, 'pending', ?4, ?5, ?5) ON CONFLICT(id) DO NOTHING",
+                 ?3, 'pending', ?4, ?5, ?5, (SELECT COALESCE(MAX(seq), 0) + 1 FROM orch_queue)) \
+                 ON CONFLICT(id) DO NOTHING",
                 vec![
                     s(id.as_str()),
                     s(thread.as_str()),
@@ -1192,46 +1201,6 @@ impl Store {
             })
             .collect();
         self.tx(statements).await
-    }
-
-    /// Claim the current head (pending → sending) atomically.
-    pub async fn claim_queue_head(&self, thread: &ThreadId) -> Result<Option<QueueItem>> {
-        let conn = self.db.write().await?;
-        let tx = conn
-            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
-            .await?;
-        let mut rows = tx
-            .query(
-                &format!(
-                    "SELECT {QUEUE_COLS} FROM orch_queue WHERE thread_id = ?1 AND status = 'pending' \
-                     ORDER BY position, created_at LIMIT 1"
-                ),
-                vec![s(thread.as_str())],
-            )
-            .await?;
-        let head = match rows.next().await? {
-            Some(row) => Some(queue_row(&row)?),
-            None => None,
-        };
-        drop(rows);
-        if let Some(item) = &head {
-            tx.execute(
-                "UPDATE orch_queue SET status = 'sending', updated_at = ?2 WHERE id = ?1",
-                vec![s(item.id.as_str()), now_ms().into()],
-            )
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(head)
-    }
-
-    /// Boot: sends a crash cut mid-flight go back to pending.
-    pub async fn requeue_sending(&self) -> Result<u64> {
-        self.exec(
-            "UPDATE orch_queue SET status = 'pending', updated_at = ?1 WHERE status = 'sending'",
-            vec![now_ms().into()],
-        )
-        .await
     }
 
     // ── holds ───────────────────────────────────────────────────────────

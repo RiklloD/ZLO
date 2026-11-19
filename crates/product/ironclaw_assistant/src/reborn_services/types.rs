@@ -51,6 +51,10 @@ pub struct RebornTimelineResponse {
     /// start of the thread and there is nothing more to load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// Steer markers and "Steer delivery not confirmed" notices of the
+    /// page's messages (threads that run off IronClaw's loop).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steer_marks: Vec<ironclaw_product_contracts::product_wire::RebornTimelineSteerMark>,
 }
 
 /// Project a kernel cancel-run result onto its product wire shape.

@@ -137,6 +137,7 @@ fn msg(role: HistoryRole, text: &str) -> HistoryMessage {
         run_id: None,
         hidden: false,
         at: None,
+        steer_id: None,
     }
 }
 
