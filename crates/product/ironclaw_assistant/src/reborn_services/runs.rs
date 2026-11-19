@@ -24,7 +24,8 @@ pub const RETRY_RUN_COMMAND: ProductSurfaceCommandDescriptor<
     RebornRetryRunResponse,
 > = ProductSurfaceCommandDescriptor::new(RETRY_RUN_COMMAND_ID);
 
-pub(super) const NOTICE_BUSY_GENERIC: &str = "Ironclaw is still working on a previous message — resend yours once the current task finishes.";
+pub(super) const NOTICE_BUSY_GENERIC: &str =
+    "Your message wasn't added to the running task — send it again once that task finishes.";
 
 pub(super) fn describe_turn_status(status: TurnStatus) -> (&'static str, Option<&'static str>) {
     match status {
@@ -394,7 +395,8 @@ where
             Arc::clone(&self.thread_service),
             Arc::clone(&self.turn_coordinator),
             Arc::clone(&self.input_enqueue),
-        );
+        )
+        .with_approval_interactions(Arc::clone(&self.approval_interactions));
         if let Some(lander) = &self.inbound_attachments {
             inbound = inbound.with_inbound_attachments(Arc::clone(lander));
         }

@@ -115,7 +115,8 @@ pub use input_port::HostQueueLoopInputPort;
 pub use input_queue::{
     EnqueueQueuedMessageRequest, HostInputAckEffectHandler, HostInputBatch, HostInputEnqueuePort,
     HostInputEnvelope, HostInputQueue, HostInputQueueError, HostInputQueueReconcile,
-    InMemoryHostInputQueue, MAX_QUEUED_INPUTS_PER_RUN, RejectingInputEnqueue,
+    HostStrandedSteerRedelivery, InMemoryHostInputQueue, MAX_QUEUED_INPUTS_PER_RUN,
+    RejectingInputEnqueue, RunQueueEnding, StrandedSteer,
 };
 pub use ironclaw_loop_contracts::PromptContextTokenBudget;
 pub use model_gateway::{

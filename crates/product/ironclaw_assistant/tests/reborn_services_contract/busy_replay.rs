@@ -125,7 +125,7 @@ async fn rejected_busy_notice_generic_status_contains_generic_copy() {
             assert_eq!(status, TurnStatus::Running);
             assert_eq!(
                 notice,
-                "Ironclaw is still working on a previous message — resend yours once the current task finishes."
+                "Your message wasn't added to the running task — send it again once that task finishes."
             );
         }
         other => panic!("expected RejectedBusy, got {other:?}"),

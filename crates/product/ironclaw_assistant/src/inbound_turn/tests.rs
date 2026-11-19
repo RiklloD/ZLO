@@ -272,7 +272,15 @@ async fn replay_submit_carries_direct_surface_type_and_adapter_id() {
     let thread_service = StubSessionThreadService;
 
     handoff
-        .submit_or_replay(&thread_service, &coordinator, &RejectingInputEnqueue, None)
+        .submit_or_replay(
+            &thread_service,
+            &coordinator,
+            SteeringPorts {
+                input_enqueue: &RejectingInputEnqueue,
+                approvals: None,
+            },
+            None,
+        )
         .await
         .expect("submit_or_replay succeeds");
 
@@ -544,7 +552,15 @@ async fn shared_user_message_records_channel_surface_type() {
     let thread_service = StubSessionThreadService;
 
     handoff
-        .submit_or_replay(&thread_service, &coordinator, &RejectingInputEnqueue, None)
+        .submit_or_replay(
+            &thread_service,
+            &coordinator,
+            SteeringPorts {
+                input_enqueue: &RejectingInputEnqueue,
+                approvals: None,
+            },
+            None,
+        )
         .await
         .expect("submit_or_replay succeeds");
 

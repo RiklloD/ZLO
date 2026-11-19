@@ -5,21 +5,29 @@ import {
   RECORD_STATUS,
   UI_MESSAGE_STATUS,
   isBusyRejectedStatus,
+  isSteerStatus,
   uiStatusFromRecordStatus,
 } from "./message-status";
 
-test("deferred-busy maps to queued (accepted and waiting, never an error)", () => {
+test("deferred-busy maps to steered (part of the running turn, never queued or an error)", () => {
   assert.equal(
     uiStatusFromRecordStatus(RECORD_STATUS.DEFERRED_BUSY),
-    UI_MESSAGE_STATUS.QUEUED,
+    UI_MESSAGE_STATUS.STEERED,
   );
 });
 
-test("explicit queued stays queued", () => {
+test("a persisted queued row is a steer the agent has not read yet", () => {
   assert.equal(
     uiStatusFromRecordStatus(RECORD_STATUS.QUEUED),
-    UI_MESSAGE_STATUS.QUEUED,
+    UI_MESSAGE_STATUS.STEER_PENDING,
   );
+});
+
+test("steer statuses are recognised as steers", () => {
+  assert.equal(isSteerStatus(UI_MESSAGE_STATUS.STEERED), true);
+  assert.equal(isSteerStatus(UI_MESSAGE_STATUS.STEER_PENDING), true);
+  assert.equal(isSteerStatus(UI_MESSAGE_STATUS.ERROR), false);
+  assert.equal(isSteerStatus("submitted"), false);
 });
 
 test("rejected-busy maps to error (was not accepted, must resend)", () => {
@@ -47,9 +55,9 @@ test("live (send outcome) and reload (record status) agree for busy outcomes", (
   // route through `uiStatusFromRecordStatus`, so pin the expected mapping for
   // each busy outcome rather than comparing the function to itself.
   const expected = new Map([
-    [RECORD_STATUS.DEFERRED_BUSY, UI_MESSAGE_STATUS.QUEUED],
+    [RECORD_STATUS.DEFERRED_BUSY, UI_MESSAGE_STATUS.STEERED],
     [RECORD_STATUS.REJECTED_BUSY, UI_MESSAGE_STATUS.ERROR],
-    [RECORD_STATUS.QUEUED, UI_MESSAGE_STATUS.QUEUED],
+    [RECORD_STATUS.QUEUED, UI_MESSAGE_STATUS.STEER_PENDING],
   ]);
   for (const [status, ui] of expected) {
     assert.equal(uiStatusFromRecordStatus(status), ui);

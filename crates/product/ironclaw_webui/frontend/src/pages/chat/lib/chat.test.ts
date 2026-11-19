@@ -10,7 +10,7 @@ import {
   type VmComponentProps,
 } from "../../../lib/vm-component-harness";
 import "../../../test/vm-tsx-setup";
-import { channelConnectionFromGate, gateIsDeviceLink } from "./gates";
+import { channelConnectionFromGate, gateBlocksComposer, gateIsDeviceLink } from "./gates";
 import { messageBelongsToActiveRun } from "./message-types";
 import {
   inspectorDebugEnabled,
@@ -150,6 +150,7 @@ function renderChat({
     html: (strings, ...values) => ({ strings: Array.from(strings), values }),
     channelConnectionDisplayName,
     channelConnectionFromGate,
+    gateBlocksComposer,
     gateIsDeviceLink,
     inspectorDebugEnabled,
     latestInspectorRunId,
@@ -738,6 +739,50 @@ test("Chat keeps the new-conversation composer sendable while a prior run is set
   assert.equal(sentBody.options.threadId, null);
   assert.equal(sentBody.options.images.length, 0);
   assert.equal(sentBody.options.attachments.length, 0);
+});
+
+test("Chat lets a message through while an approval is pending (it steers and declines)", async () => {
+  const pendingGate = {
+    kind: "gate",
+    gateKind: "approval",
+    requestId: "request-1",
+    toolName: "tool",
+    description: "",
+    parameters: "",
+  };
+  let sent = [];
+  const { tree, components } = renderChat({
+    hookState: {
+      messages: [{ id: "message-1" }],
+      isProcessing: false,
+      pendingGate,
+      suggestions: [],
+      sseStatus: "open",
+      historyLoading: false,
+      hasMore: false,
+      cooldownSeconds: 0,
+      recoveryNotice: null,
+      activeRun: { runId: "run-1", threadId: "thread-1", status: "blocked" },
+      send: async (text) => {
+        sent.push(text);
+        return {};
+      },
+      cancelRun: async () => {},
+      retryMessage: () => {},
+      approve: () => {},
+      recoverHistory: () => {},
+      loadMore: () => {},
+      setSuggestions: () => {},
+      submitAuthToken: async () => {},
+    },
+  });
+
+  const chatInput = findComponent(tree, components.ChatInput);
+  const props = componentProps(chatInput, components.ChatInput);
+  assert.equal(props.sendDisabled, false);
+  assert.notEqual(props.statusText, "chat.resolveApprovalBeforeSend");
+  await props.onSend("no, do the other thing");
+  assert.deepEqual(sent, ["no, do the other thing"]);
 });
 
 test("Chat renders the pairing card from a channel-connection gate and blocks composer sends", async () => {

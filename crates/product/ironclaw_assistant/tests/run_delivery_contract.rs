@@ -3485,6 +3485,61 @@ async fn observer_busy_hint_deduplicates_per_conversation_event_pair() {
     assert_eq!(harness.adapter.texts().len(), 2, "fresh event, fresh hint");
 }
 
+/// A steered message (`DeferredBusy`) is part of the running task: the agent
+/// reads it at its next step, so the channel must not ask the person to
+/// resend it. Only a message that was truly not delivered (`RejectedBusy`)
+/// gets the busy hint, and its copy says it was not added.
+#[tokio::test]
+async fn observer_steered_message_gets_no_busy_hint_and_rejected_one_does() {
+    let harness = build_harness(
+        vec![scripted_state(TurnStatus::Running, None)],
+        false,
+        None,
+        Duration::from_millis(20),
+    );
+    let active_run = TurnRunId::new();
+    harness
+        .observer
+        .observe_ack(
+            user_message_envelope(ProductTriggerReason::DirectChat, "evt-steered"),
+            ProductInboundAck::DeferredBusy {
+                accepted_message_ref: AcceptedMessageRef::new("msg:steered").expect("ref"),
+                active_run_id: active_run,
+                busy: None,
+            },
+        )
+        .await;
+    assert!(
+        harness.adapter.texts().is_empty(),
+        "a steered message gets no busy hint: {:?}",
+        harness.adapter.texts()
+    );
+
+    harness
+        .observer
+        .observe_ack(
+            user_message_envelope(ProductTriggerReason::DirectChat, "evt-rejected"),
+            ProductInboundAck::RejectedBusy {
+                accepted_message_ref: AcceptedMessageRef::new("msg:rejected").expect("ref"),
+                active_run_id: Some(active_run),
+                busy: None,
+            },
+        )
+        .await;
+    let texts = harness.adapter.texts();
+    assert_eq!(texts.len(), 1, "{texts:?}");
+    assert!(
+        texts[0].contains("couldn't add this message"),
+        "the hint says the message was not added: {}",
+        texts[0]
+    );
+    assert!(
+        !texts[0].contains("still working on a previous message"),
+        "{}",
+        texts[0]
+    );
+}
+
 #[tokio::test]
 async fn observer_auth_prompt_includes_setup_link_only_in_direct_chat() {
     // Direct chat: the OAuth URL survives.
