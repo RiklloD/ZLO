@@ -623,9 +623,11 @@ mod tests {
                 };
                 connections_task.fetch_add(1, Ordering::SeqCst);
                 use tokio::io::AsyncWriteExt;
-                let _ = stream
+                // The client may hang up first; the counter is the assertion.
+                stream
                     .write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n")
-                    .await;
+                    .await
+                    .ok();
             }
         });
         (format!("http://{addr}"), connections)
