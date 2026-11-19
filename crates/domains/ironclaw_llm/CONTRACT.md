@@ -250,6 +250,7 @@ Key notes:
 - `cost_per_token()` returns `(Decimal, Decimal)` using `rust_decimal`. Look up via `costs::model_cost()` in your constructor; fall back to `costs::default_cost()` for unknowns.
 - `RigAdapter` forwards per-request model overrides through rig-core's typed request model field. Do not put `model` in flattened `additional_params`, which would serialize a duplicate top-level JSON key.
 - `complete_with_tools()` is never cached (tool calls can have side effects) — `CachedProvider` always passes them through.
+- `model_metadata()` and `model_metadata_for_route()` must be static descriptions of the configured model: no network or credential I/O (no token refresh, no discovery call) and no lock shared with an in-flight call — the loop reapplies the selected route's window on every provider request, so any I/O there stalls or serializes behind it. Decorators (`TokenRefreshingProvider` and peers) delegate both unchanged rather than wrapping them with the pre-call work they add to the other trait methods.
 
 To add a new provider:
 1. Create `crates/domains/ironclaw_llm/src/myprovider.rs` implementing `LlmProvider` <!-- check-guidance: path-ok --> (prescriptive: the file you are about to add, not one that exists)
