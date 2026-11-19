@@ -373,10 +373,6 @@ impl MuseRuntime {
         self.active.with_turn(thread, |turn| Arc::clone(&turn.door))
     }
 
-    fn live(&self, thread: &ThreadId) -> Option<LiveTurn> {
-        self.door(thread)?.live()
-    }
-
     /// `turn/interrupt`, then the process group if the turn does not settle
     /// within the grace period. Waits until the turn is reported.
     async fn stop(&self, thread: &ThreadId) {
@@ -388,20 +384,31 @@ impl MuseRuntime {
         let Some((pgid, mut done)) = entry else {
             return;
         };
-        if let Some(live) = self.live(thread) {
-            // Joined turns first: the admitted one ending ends the wait.
-            for turn_id in live.joined.iter().chain([&live.turn_id]) {
-                let params = json!({
-                    "sessionId": live.session_id,
-                    "commandId": command_id(),
-                    "turnId": turn_id,
-                });
-                let interrupt = live
-                    .client
-                    .request("turn/interrupt", params, rpc::KILL_GRACE);
-                if let Err(error) = interrupt.await {
-                    tracing::debug!(error = %error.label(), "muse: interrupt not admitted");
-                }
+        // Queued under the door's lock: no steer is queued after them.
+        // Joined turns first: the admitted one ending ends the wait.
+        let interrupts = self.door(thread).and_then(|door| {
+            door.interrupt(|live| {
+                live.joined
+                    .iter()
+                    .chain([&live.turn_id])
+                    .map(|turn_id| {
+                        let params = json!({
+                            "sessionId": live.session_id,
+                            "commandId": command_id(),
+                            "turnId": turn_id,
+                        });
+                        live.client.start_request("turn/interrupt", params)
+                    })
+                    .collect::<Vec<_>>()
+            })
+        });
+        for interrupt in interrupts.into_iter().flatten() {
+            let answered = match interrupt {
+                Ok(reply) => reply.wait(rpc::KILL_GRACE).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = answered {
+                tracing::debug!(error = %error.label(), "muse: interrupt not admitted");
             }
         }
         if tokio::time::timeout(rpc::KILL_GRACE, done.wait_for(|d| *d))
@@ -577,7 +584,7 @@ impl Turn {
         let mut unread = Vec::new();
         let (outcome, telemetry) = self.drive(client, inbound, &mut steers, &mut unread).await;
         // A turn that never reached its loop: what it held goes back.
-        let settled = SteerPipe::new(&self.run_id)
+        let settled = SteerPipe::new(&self.run_id, self.steer_timeout, Box::new(|_| true))
             .finish(&self.door, &mut steers, true)
             .await;
         unread.extend(settled.unread);
@@ -672,17 +679,48 @@ impl Turn {
             joined: Vec::new(),
             run_id: self.run_id.clone(),
         });
-        let mut pipe = SteerPipe::new(&self.run_id);
+        // Muse answers `turn/steer` with the turn it joined: only this one
+        // counts (T3 Code checks the same).
+        let expected = turn_id.clone();
+        let mut pipe = SteerPipe::new(
+            &self.run_id,
+            self.steer_timeout,
+            Box::new(move |answer| {
+                answer.get("turnId").and_then(Value::as_str) == Some(expected.as_str())
+            }),
+        );
 
         let mut asked = HashSet::new();
         let mut shown = live::MuseLive::default();
         let root = workspace_root(&self.config.work_dir);
-        loop {
-            let message = tokio::select! {
-                message = inbound.recv() => message,
-                // The next steer, cut in where the reply stands now. None
-                // is sent once Stop has won; they are refused at the end.
+        let mut done = false;
+        let mut lost_input = false;
+        while !done {
+            tokio::select! {
+                message = inbound.recv() => match message {
+                    Some(message) => {
+                        done = self.on_inbound(&client, &root, &mut fold, &mut shown, &mut asked, message);
+                    }
+                    None => done = true,
+                },
+                // The next steer. Stop's flag is looked at again where the
+                // frame is queued (under the door's lock).
                 Some(request) = steers.recv(), if !self.cancelled.load(Ordering::SeqCst) => {
+                    // Fold what Muse already sent, so the cut is where its
+                    // reply really stands.
+                    while !done {
+                        match inbound.try_recv() {
+                            Ok(message) => {
+                                done = self.on_inbound(&client, &root, &mut fold, &mut shown, &mut asked, message);
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    if done {
+                        let settled = pipe.refuse(request);
+                        self.record(&transcript, settled, unread).await;
+                        continue;
+                    }
                     let segment = fold.take_segment();
                     let params = json!({
                         "sessionId": self.session_id,
@@ -690,51 +728,20 @@ impl Turn {
                         "expectedTurnId": turn_id,
                         "input": [{"type": "text", "text": request.steer.text}],
                     });
-                    let started = client.start_request_acked("turn/steer", params);
-                    pipe.sent(request, segment, started, self.steer_timeout);
-                    continue;
-                }
-                answer = pipe.answer(), if pipe.busy() => {
-                    let settled = pipe.settle(answer, true);
+                    let started = self
+                        .door
+                        .submit(|live| live.client.start_request_acked("turn/steer", params));
+                    let settled = pipe.sent(request, segment, started);
                     self.record(&transcript, settled, unread).await;
-                    continue;
                 }
-            };
-            let Some(message) = message else {
-                break;
-            };
-            match message {
-                Inbound::Notification { method, params } => {
-                    if params
-                        .get("sessionId")
-                        .and_then(Value::as_str)
-                        .is_some_and(|s| s != self.session_id)
-                    {
-                        continue;
-                    }
-                    if method == "approval/requested" || method == "approval/updated" {
-                        self.approval(&client, &params, &mut asked);
-                    }
-                    let done = fold.push(&method, &params);
-                    if method == "turn/started" {
-                        let joined = fold.joined();
-                        self.door.update(|live| live.joined = joined);
-                    }
-                    self.show(&mut shown, &fold, &root, &method, &params);
-                    if done {
-                        break;
-                    }
+                event = pipe.event(), if pipe.busy() => {
+                    let settled = pipe.on_event(event);
+                    self.record(&transcript, settled, unread).await;
                 }
-                // Presentation receipts only; decisions travel as commands.
-                Inbound::Request { id, method, .. } => {
-                    let sent = if method == "approval/request" || method == "userInput/request" {
-                        client.respond(&id, json!({}))
-                    } else {
-                        client.respond_error(&id, -32601, "method not supported by this client")
-                    };
-                    if let Err(error) = sent {
-                        tracing::debug!(error = %error.label(), "muse: reply not sent");
-                    }
+                // Muse can no longer be reached: end the turn now.
+                () = client.writer_failed() => {
+                    lost_input = true;
+                    done = true;
                 }
             }
         }
@@ -744,7 +751,13 @@ impl Turn {
         let stopped = self.cancelled.load(Ordering::SeqCst);
         let settled = pipe.finish(&self.door, steers, stopped).await;
         self.record(&transcript, settled, unread).await;
-        let outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst), now_ms());
+        let mut outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst), now_ms());
+        if lost_input && outcome.status == TurnEndStatus::Completed {
+            outcome = TurnOutcome::ended(
+                TurnEndStatus::Failed,
+                Some("muse: the host stopped taking input".into()),
+            );
+        }
         if let Some(entry) = fold.assistant_message() {
             let entry = HistoryMessage {
                 run_id: Some(self.run_id.clone()),
@@ -760,6 +773,52 @@ impl Turn {
             .as_ref()
             .and_then(|m| self.models.get(m)?.context_limit);
         (outcome, fold.telemetry(&self.config.runtime_id, window))
+    }
+
+    /// One message from Muse, folded and shown. `true` once the turn has
+    /// completed.
+    fn on_inbound(
+        &self,
+        client: &RpcClient,
+        root: &str,
+        fold: &mut TurnFold,
+        shown: &mut live::MuseLive,
+        asked: &mut HashSet<String>,
+        message: Inbound,
+    ) -> bool {
+        match message {
+            Inbound::Notification { method, params } => {
+                if params
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s != self.session_id)
+                {
+                    return false;
+                }
+                if method == "approval/requested" || method == "approval/updated" {
+                    self.approval(client, &params, asked);
+                }
+                let done = fold.push(&method, &params);
+                if method == "turn/started" {
+                    let joined = fold.joined();
+                    self.door.update(|live| live.joined = joined);
+                }
+                self.show(shown, fold, root, &method, &params);
+                done
+            }
+            // Presentation receipts only; decisions travel as commands.
+            Inbound::Request { id, method, .. } => {
+                let sent = if method == "approval/request" || method == "userInput/request" {
+                    client.respond(&id, json!({}))
+                } else {
+                    client.respond_error(&id, -32601, "method not supported by this client")
+                };
+                if let Err(error) = sent {
+                    tracing::debug!(error = %error.label(), "muse: reply not sent");
+                }
+                false
+            }
+        }
     }
 
     /// `initialize`, the subscription reading, then start or resume the
@@ -935,9 +994,11 @@ impl Turn {
         let claim = permissions::claim(bridge.as_deref(), &thread, &run);
         // The decision waits for a person; the turn's events keep flowing.
         tokio::spawn(async move {
-            let (decision, receipt) =
+            let (decision, mut receipt) =
                 permissions::decide_receipted(bridge.as_deref(), &thread, &run, &request, claim)
                     .await;
+            // Muse's choice carries no message: plain either way.
+            receipt.claim();
             let feedback = match &decision {
                 PermissionDecision::Deny { feedback } => feedback.clone(),
                 PermissionDecision::AllowOnce => None,
@@ -1169,13 +1230,18 @@ impl TurnRuntime for MuseRuntime {
             let Some(door) = self.door(&thread.thread_id) else {
                 return Ok(SteerOutcome::Rejected);
             };
+            // One steer at a time from its declines to its knock: a second
+            // one cannot overtake this one's declines.
+            let admitted = door.admit().await;
             if let (Some(bridge), Some(live)) = (&self.bridge, door.live()) {
                 let gates = bridge.steer_at_gates(&thread.thread_id, &live.run_id, text, false);
                 if !gates.is_empty() && gates.settle().await {
                     return Ok(SteerOutcome::Steered);
                 }
             }
-            return Ok(match door.knock(text) {
+            let knock = door.knock(text);
+            drop(admitted);
+            return Ok(match knock {
                 Knock::Held => SteerOutcome::Steered,
                 Knock::Closed => SteerOutcome::Rejected,
                 Knock::Sent(verdict) => verdict.await.unwrap_or(SteerOutcome::Rejected), // silent-ok: a lost verdict means the turn ended before sending it

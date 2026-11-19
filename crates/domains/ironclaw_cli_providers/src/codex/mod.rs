@@ -169,6 +169,8 @@ pub struct CodexRuntime {
     primed: crate::Primed,
     /// How long a `turn/steer` waits for its answer ([`STEER_TIMEOUT`]).
     steer_timeout: Duration,
+    /// How long one frame may take to go onto the server's stdin.
+    write_timeout: Duration,
     /// Idle compaction timers, one per thread (see `compact.rs`).
     compactor: Arc<compact::IdleCompactor>,
     /// One holder per session: turns, thread actions, idle compaction.
@@ -190,9 +192,17 @@ impl CodexRuntime {
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
             primed: crate::Primed::default(),
             steer_timeout: STEER_TIMEOUT,
+            write_timeout: rpc::WRITE_TIMEOUT,
             compactor: Arc::default(),
             admission: Arc::default(),
         })
+    }
+
+    /// Bound one write to the server's stdin (default 30 s); a write past it
+    /// closes the server's input and ends the turn. Tests shorten it.
+    pub fn with_write_timeout(mut self, timeout: Duration) -> Self {
+        self.write_timeout = timeout;
+        self
     }
 
     /// Bound how long a steer waits for `turn/steer`'s answer (default
@@ -243,7 +253,7 @@ impl CodexRuntime {
             .await?
             .unwrap_or_else(|| self.config.work_dir.clone());
         let (mut child, pgid) = self.spawn_server()?;
-        let (client, inbound) = connect(&mut child, pgid)?;
+        let (client, inbound) = connect_bounded(&mut child, pgid, self.write_timeout)?;
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -331,10 +341,6 @@ impl CodexRuntime {
             .and_then(|a| a.get(thread).map(|t| Arc::clone(&t.door)))
     }
 
-    fn live(&self, thread: &ThreadId) -> Option<LiveTurn> {
-        self.door(thread)?.live()
-    }
-
     /// `turn/interrupt`, then the process group if the turn does not settle
     /// within the grace period. Waits until the turn is reported.
     async fn stop(&self, thread: &ThreadId) {
@@ -346,15 +352,23 @@ impl CodexRuntime {
             return;
         };
         cancelled.store(true, Ordering::SeqCst);
-        if let Some(live) = self.live(thread) {
-            let params = json!({"threadId": live.codex_thread, "turnId": live.turn_id});
-            if let Err(error) = live
-                .client
-                .request("turn/interrupt", params, rpc::KILL_GRACE)
-                .await
-            {
-                tracing::debug!(error = %error.label(), "codex: interrupt not admitted");
+        // Queued under the door's lock: no steer is queued after it.
+        let interrupt = self.door(thread).and_then(|door| {
+            door.interrupt(|live| {
+                let params = json!({"threadId": live.codex_thread, "turnId": live.turn_id});
+                live.client.start_request("turn/interrupt", params)
+            })
+        });
+        match interrupt {
+            Some(Ok(reply)) => {
+                if let Err(error) = reply.wait(rpc::KILL_GRACE).await {
+                    tracing::debug!(error = %error.label(), "codex: interrupt not admitted");
+                }
             }
+            Some(Err(error)) => {
+                tracing::debug!(error = %error.label(), "codex: interrupt not sent");
+            }
+            None => {}
         }
         if tokio::time::timeout(rpc::KILL_GRACE, done.wait_for(|d| *d))
             .await
@@ -448,6 +462,15 @@ fn connect(
     child: &mut Child,
     pgid: i32,
 ) -> Result<(RpcClient, mpsc::UnboundedReceiver<Inbound>), RuntimeError> {
+    connect_bounded(child, pgid, rpc::WRITE_TIMEOUT)
+}
+
+/// [`connect`] with another per-frame write bound.
+fn connect_bounded(
+    child: &mut Child,
+    pgid: i32,
+    write_timeout: Duration,
+) -> Result<(RpcClient, mpsc::UnboundedReceiver<Inbound>), RuntimeError> {
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
     else {
@@ -460,7 +483,12 @@ fn connect(
             tracing::debug!(target: "codex", "stderr: {line}");
         }
     });
-    Ok(RpcClient::start(stdin, stdout, "codex"))
+    Ok(RpcClient::start_bounded(
+        stdin,
+        stdout,
+        "codex",
+        write_timeout,
+    ))
 }
 
 /// `initialize` + `initialized`.
@@ -522,7 +550,7 @@ impl Turn {
         let mut unread = Vec::new();
         let (outcome, telemetry) = self.drive(client, inbound, &mut steers, &mut unread).await;
         // A turn that never reached its loop: what it held goes back.
-        let settled = SteerPipe::new(&self.run_id)
+        let settled = SteerPipe::new(&self.run_id, self.steer_timeout, Box::new(|_| true))
             .finish(&self.door, &mut steers, true)
             .await;
         unread.extend(settled.unread);
@@ -540,6 +568,51 @@ impl Turn {
 
     fn policy(&self) -> (&'static str, &'static str) {
         session_policy(self.bridge.is_some())
+    }
+
+    /// One message from Codex, folded and shown. `true` once the turn has
+    /// completed.
+    fn on_inbound(
+        &self,
+        client: &RpcClient,
+        codex_thread: &str,
+        root: &str,
+        fold: &mut TurnFold,
+        live: &mut live::LiveFold,
+        message: Inbound,
+    ) -> bool {
+        match message {
+            Inbound::Notification { method, params } => {
+                if params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t != codex_thread)
+                {
+                    return false;
+                }
+                let steps = live.push(&method, &params);
+                live::apply(
+                    self.bridge.as_deref(),
+                    &self.thread_id,
+                    &self.run_id,
+                    root,
+                    steps,
+                );
+                plan::on_notification(
+                    self.bridge.as_deref(),
+                    &self.thread_id,
+                    &self.run_id,
+                    fold.turn_id.as_deref(),
+                    &method,
+                    &params,
+                );
+                fold.push(&method, &params)
+            }
+            Inbound::Request { id, method, params } => {
+                self.answer_request(client, id, &method, &params);
+                false
+            }
+        }
     }
 
     async fn drive(
@@ -613,74 +686,71 @@ impl Turn {
             turn_id: turn_id.clone(),
             run_id: self.run_id.clone(),
         });
-        let mut pipe = SteerPipe::new(&self.run_id);
+        // Codex answers `turn/steer` with the turn it joined; any answer
+        // to an `expectedTurnId` request is for this turn.
+        let mut pipe = SteerPipe::new(&self.run_id, self.steer_timeout, Box::new(|_| true));
 
         let mut live = live::LiveFold::for_turn(fold.turn_id.clone());
         let mut flush = tokio::time::interval(LIVE_FLUSH_EVERY);
-        loop {
-            let message = tokio::select! {
-                message = inbound.recv() => message,
-                // The next steer, cut in where the reply stands now. None
-                // is sent once Stop has won; they are refused at the end.
+        let mut done = false;
+        let mut lost_input = false;
+        while !done {
+            tokio::select! {
+                message = inbound.recv() => match message {
+                    Some(message) => {
+                        done = self.on_inbound(&client, &codex_thread, &root, &mut fold, &mut live, message);
+                    }
+                    None => done = true,
+                },
+                // The next steer. Stop's flag is looked at again where the
+                // frame is queued (under the door's lock).
                 Some(request) = steers.recv(), if !self.cancelled.load(Ordering::SeqCst) => {
+                    let input = codex_input(&request.steer.text).await;
+                    // Fold what Codex already sent, so the cut is where its
+                    // reply really stands.
+                    while !done {
+                        match inbound.try_recv() {
+                            Ok(message) => {
+                                done = self.on_inbound(&client, &codex_thread, &root, &mut fold, &mut live, message);
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    if done {
+                        let settled = pipe.refuse(request);
+                        self.record(&transcript, settled, unread).await;
+                        continue;
+                    }
                     let segment = fold.take_segment();
                     let params = json!({
                         "threadId": codex_thread,
                         "expectedTurnId": turn_id,
-                        "input": codex_input(&request.steer.text).await,
+                        "input": input,
                     });
-                    let started = client.start_request_acked("turn/steer", params);
-                    pipe.sent(request, segment, started, self.steer_timeout);
-                    continue;
-                }
-                answer = pipe.answer(), if pipe.busy() => {
-                    let settled = pipe.settle(answer, true);
+                    let started = self
+                        .door
+                        .submit(|live| live.client.start_request_acked("turn/steer", params));
+                    let settled = pipe.sent(request, segment, started);
                     self.record(&transcript, settled, unread).await;
-                    continue;
+                }
+                event = pipe.event(), if pipe.busy() => {
+                    let settled = pipe.on_event(event);
+                    self.record(&transcript, settled, unread).await;
                 }
                 _ = flush.tick() => {
                     if let Some(bridge) = &self.bridge {
                         bridge.flush_details(&self.thread_id, &self.run_id);
                     }
-                    continue;
                 }
-            };
-            let Some(message) = message else {
-                break;
-            };
-            match message {
-                Inbound::Notification { method, params } => {
-                    if params
-                        .get("threadId")
-                        .and_then(Value::as_str)
-                        .is_some_and(|t| t != codex_thread)
-                    {
-                        continue;
-                    }
-                    let steps = live.push(&method, &params);
-                    live::apply(
-                        self.bridge.as_deref(),
-                        &self.thread_id,
-                        &self.run_id,
-                        &root,
-                        steps,
-                    );
-                    plan::on_notification(
-                        self.bridge.as_deref(),
-                        &self.thread_id,
-                        &self.run_id,
-                        fold.turn_id.as_deref(),
-                        &method,
-                        &params,
-                    );
-                    if fold.push(&method, &params) {
-                        break;
-                    }
-                }
-                Inbound::Request { id, method, params } => {
-                    self.answer_request(&client, id, &method, &params);
+                // Codex can no longer be reached: end the turn now.
+                () = client.writer_failed() => {
+                    lost_input = true;
+                    done = true;
                 }
             }
+        }
+        if lost_input {
+            tracing::debug!("codex: input to the server failed; turn ended");
         }
 
         // The turn is over: the door closes, steers still in flight settle
@@ -688,7 +758,13 @@ impl Turn {
         let stopped = self.cancelled.load(Ordering::SeqCst);
         let settled = pipe.finish(&self.door, steers, stopped).await;
         self.record(&transcript, settled, unread).await;
-        let outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst));
+        let mut outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst));
+        if lost_input && outcome.status == TurnEndStatus::Completed {
+            outcome = TurnOutcome::ended(
+                TurnEndStatus::Failed,
+                Some("codex: the server stopped taking input".into()),
+            );
+        }
         if let Some(entry) = fold.assistant_message() {
             let entry = HistoryMessage {
                 run_id: Some(self.run_id.clone()),
@@ -818,9 +894,11 @@ impl Turn {
         let claim = permissions::claim(bridge.as_deref(), &thread, &run);
         // The decision waits for a person; the turn's events keep flowing.
         tokio::spawn(async move {
-            let (decision, receipt) =
+            let (decision, mut receipt) =
                 permissions::decide_receipted(bridge.as_deref(), &thread, &run, &request, claim)
                     .await;
+            // Codex's answer carries no message: plain either way.
+            receipt.claim();
             let feedback = match &decision {
                 PermissionDecision::Deny { feedback } => feedback.clone(),
                 PermissionDecision::AllowOnce => None,
@@ -834,7 +912,7 @@ impl Turn {
             // The receipt follows the reply onto Codex's stdin: a steer that
             // declined this call goes out only after it.
             match client.respond_acked(&id, answer) {
-                Ok(written) => receipt.delivered(written.await.unwrap_or(false)), // silent-ok: a dropped ack means the writer is gone, so not written
+                Ok(mut written) => receipt.delivered(written.outcome().await),
                 Err(error) => {
                     tracing::debug!(error = %error.label(), "codex: approval reply not sent");
                     receipt.delivered(false);
@@ -1101,13 +1179,18 @@ impl TurnRuntime for CodexRuntime {
             let Some(door) = self.door(&thread.thread_id) else {
                 return Ok(SteerOutcome::Rejected);
             };
+            // One steer at a time from its declines to its knock: a second
+            // one cannot overtake this one's declines.
+            let admitted = door.admit().await;
             if let (Some(bridge), Some(live)) = (&self.bridge, door.live()) {
                 let gates = bridge.steer_at_gates(&thread.thread_id, &live.run_id, text, false);
                 if !gates.is_empty() && gates.settle().await {
                     return Ok(SteerOutcome::Steered);
                 }
             }
-            return Ok(match door.knock(text) {
+            let knock = door.knock(text);
+            drop(admitted);
+            return Ok(match knock {
                 Knock::Held => SteerOutcome::Steered,
                 Knock::Closed => SteerOutcome::Rejected,
                 // Dropped unanswered only with the turn's task.

@@ -12,11 +12,9 @@ use std::sync::Arc;
 
 use ironclaw_host_api::ids::ThreadId;
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
-use tokio::process::ChildStdin;
-use tokio::sync::Mutex;
 
-use super::steer::{HeldSteer, SteerLedger};
+use super::input::Input;
+use super::steer::SteerLedger;
 use super::tasks::TaskRefresher;
 use crate::bridge::{CliBridge, Receipt, ToolDecision};
 use crate::interaction;
@@ -24,7 +22,6 @@ use crate::interaction;
 const INIT_REQUEST_ID: &str = "ironclaw-init";
 const HOOK_CALLBACK_ID: &str = "ironclaw-approval";
 
-pub(super) type SharedStdin = Arc<Mutex<Option<ChildStdin>>>;
 pub(super) type SharedSteers = Arc<std::sync::Mutex<SteerLedger>>;
 
 /// The `initialize` request that routes every tool call through our hook.
@@ -93,156 +90,11 @@ pub(super) async fn steer_message(uuid: &str, text: &str) -> String {
     }
 }
 
-/// What [`steer_or_hold`] did with a steer.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum SteerWrite {
-    /// On the wire, recorded in the ledger.
-    Written,
-    /// The prompt is not written yet: held, and written right after it.
-    Held,
-}
-
-/// Write a steer into the running turn, or hold it until the prompt is out,
-/// decided under the stdin lock: the prompt write takes the same lock, so a
-/// steer is never left behind a prompt that already went out, and a
-/// concurrent close either sees it open or happened first (the write fails,
-/// so the engine queues the text instead).
-pub(super) async fn steer_or_hold(
-    stdin: &SharedStdin,
-    steers: &SharedSteers,
-    ready: &std::sync::atomic::AtomicBool,
-    steer: HeldSteer,
-) -> std::io::Result<SteerWrite> {
-    let mut guard = stdin.lock().await;
-    if guard.is_none() {
-        return Err(std::io::ErrorKind::BrokenPipe.into());
-    }
-    if !ready.load(std::sync::atomic::Ordering::SeqCst) {
-        with_ledger(steers, |l| l.hold(steer));
-        return Ok(SteerWrite::Held);
-    }
-    write_recorded(&mut guard, steers, &steer, false).await?;
-    Ok(SteerWrite::Written)
-}
-
-/// How long one frame may take to go onto the CLI's stdin. A CLI that
-/// stops reading its input would otherwise hold the stdin lock forever
-/// (and with it every hook answer and the turn's close).
-pub(super) const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// One frame on the pipe, bounded by [`WRITE_TIMEOUT`]. A write that timed
-/// out may have left half a frame: the caller closes the pipe.
-async fn write_frame(pipe: &mut ChildStdin, line: &str) -> std::io::Result<()> {
-    let write = async {
-        pipe.write_all(format!("{line}\n").as_bytes()).await?;
-        pipe.flush().await
-    };
-    match tokio::time::timeout(WRITE_TIMEOUT, write).await {
-        Ok(written) => written,
-        Err(_) => Err(std::io::ErrorKind::TimedOut.into()),
-    }
-}
-
-/// [`write_frame`] on the shared stdin, closing it for good when the write
-/// failed (a broken or half-written stream takes nothing more).
-async fn write_guarded(guard: &mut Option<ChildStdin>, line: &str) -> std::io::Result<()> {
-    let Some(pipe) = guard.as_mut() else {
-        return Err(std::io::ErrorKind::BrokenPipe.into());
-    };
-    let written = write_frame(pipe, line).await;
-    if written.is_err()
-        && let Some(mut pipe) = guard.take()
-    {
-        #[expect(
-            clippy::let_underscore_must_use,
-            reason = "the stream is already broken"
-        )]
-        let _ = pipe.shutdown().await;
-    }
-    written
-}
-
-/// One steer on the wire, in the ledger before the write (undone on
-/// failure: a held steer goes back to held, in place). The caller holds
-/// the stdin lock.
-async fn write_recorded(
-    guard: &mut Option<ChildStdin>,
-    steers: &SharedSteers,
-    steer: &HeldSteer,
-    was_held: bool,
-) -> std::io::Result<()> {
-    with_ledger(steers, |l| l.sent(steer));
-    let written = write_guarded(guard, &steer.line).await;
-    if written.is_err() {
-        with_ledger(steers, |l| l.unsent(&steer.uuid, was_held));
-    }
-    written
-}
-
-/// The turn's prompt, then every steer held for it, in order, under one
-/// stdin lock; `ready` is set once the prompt is out, so later steers are
-/// written directly. Runs off the stdout task (see [`BridgedTurn::on_ack`]),
-/// so a CLI slow to read its input never stops its output being handled. A
-/// held steer whose write fails stays held, in its place, and is reported
-/// unread at the end of the turn.
-async fn write_prompt(
-    stdin: SharedStdin,
-    steers: SharedSteers,
-    ready: Arc<std::sync::atomic::AtomicBool>,
-    run_id: String,
-    prompt: String,
-) -> std::io::Result<()> {
-    let mut guard = stdin.lock().await;
-    with_ledger(&steers, |l| l.prompt(&run_id));
-    write_guarded(&mut guard, &prompt).await?;
-    ready.store(true, std::sync::atomic::Ordering::SeqCst);
-    for steer in with_ledger(&steers, |l| l.held()) {
-        write_recorded(&mut guard, &steers, &steer, true).await?;
-    }
-    Ok(())
-}
-
 pub(super) fn with_ledger<T>(steers: &SharedSteers, f: impl FnOnce(&mut SteerLedger) -> T) -> T {
     match steers.lock() {
         Ok(mut ledger) => f(&mut ledger),
         // A poisoned ledger only follows a panic elsewhere; its data is intact.
         Err(poisoned) => f(&mut poisoned.into_inner()),
-    }
-}
-
-/// EOF on stdin once the ledger says nothing is open any more (or `force`).
-/// Decided under the stdin lock, so a steer is never written after it.
-async fn close_when_settled(stdin: &SharedStdin, steers: &SharedSteers, force: bool) {
-    let mut guard = stdin.lock().await;
-    if !force && !with_ledger(steers, |l| l.may_close()) {
-        return;
-    }
-    if let Some(mut pipe) = guard.take() {
-        #[expect(
-            clippy::let_underscore_must_use,
-            reason = "the CLI may already be gone"
-        )]
-        let _ = pipe.shutdown().await;
-    }
-}
-
-pub(super) async fn write_line(stdin: &SharedStdin, line: &str) -> std::io::Result<()> {
-    write_guarded(&mut *stdin.lock().await, line).await
-}
-
-/// The turn's stdin still takes input.
-pub(super) async fn input_open(stdin: &SharedStdin) -> bool {
-    stdin.lock().await.is_some()
-}
-
-/// EOF on stdin: the CLI finishes and exits.
-pub(super) async fn close(stdin: &SharedStdin) {
-    if let Some(mut pipe) = stdin.lock().await.take() {
-        #[expect(
-            clippy::let_underscore_must_use,
-            reason = "the CLI may already be gone"
-        )]
-        let _ = pipe.shutdown().await;
     }
 }
 
@@ -296,10 +148,9 @@ pub(super) enum Step {
 /// The live handles one bridged turn shares with the runtime.
 pub(super) struct TurnIo {
     pub bridge: Arc<CliBridge>,
-    pub stdin: SharedStdin,
+    pub input: Input,
     pub thread: ThreadId,
     pub run_id: String,
-    pub ready: Arc<std::sync::atomic::AtomicBool>,
     pub steers: SharedSteers,
     /// How long an unanswered tool call counts as work (see `busy`).
     pub tool_bound: std::time::Duration,
@@ -307,13 +158,12 @@ pub(super) struct TurnIo {
 
 pub(super) struct BridgedTurn {
     pub bridge: Arc<CliBridge>,
-    pub stdin: SharedStdin,
+    /// The turn's input owner: every frame to the CLI goes through it.
+    pub input: Input,
     pub thread: ThreadId,
     pub run_id: String,
     /// Sent once the CLI acknowledged the hook registration.
     pub prompt: Option<String>,
-    /// Set once that prompt is written: a steer before it would land first.
-    ready: Arc<std::sync::atomic::AtomicBool>,
     /// What the CLI has read of the prompt and the steers.
     steers: SharedSteers,
     /// The session's task store; a finished task tool call re-reads it into
@@ -372,11 +222,10 @@ impl BridgedTurn {
     pub(super) fn new(turn: TurnIo, prompt: String, task_store: Option<PathBuf>) -> Self {
         Self {
             bridge: turn.bridge,
-            stdin: turn.stdin,
+            input: turn.input,
             thread: turn.thread,
             run_id: turn.run_id,
             prompt: Some(prompt),
-            ready: turn.ready,
             steers: turn.steers,
             tasks: task_store.map(TaskRefresher::new),
             task_calls: HashSet::new(),
@@ -449,7 +298,7 @@ impl BridgedTurn {
     /// input so it can finish; the steer is reported unread.
     pub(super) async fn give_up_on_steers(&self) {
         with_ledger(&self.steers, SteerLedger::abandon);
-        close_when_settled(&self.stdin, &self.steers, true).await;
+        self.input.close(true);
     }
 
     pub(super) async fn on_line(&mut self, line: &str) -> Step {
@@ -467,15 +316,14 @@ impl BridgedTurn {
             // Tool results come back as the user's turn: they finish the rows.
             Some("user") if frame["parent_tool_use_id"].is_null() => self.on_tool_results(&frame),
             // A result ends its native turn: no tool call of it still runs.
-            // Closed here, before the next frame is read: one after the
-            // settled result must find input closed. It waits only while a
-            // write holds the lock, which `WRITE_TIMEOUT` bounds.
+            // Input ends once every command written is done (see `steer.rs`):
+            // the owner closes it; the read loop already treats a settled
+            // ledger as closed, and the owner refuses steers from then on.
             Some("result") => {
                 self.inflight.clear();
-                close_when_settled(&self.stdin, &self.steers, false).await;
+                self.input.close(false);
             }
-            // Input ends once every command written is done (see `steer.rs`).
-            Some("command_lifecycle") => close_when_settled(&self.stdin, &self.steers, false).await,
+            Some("command_lifecycle") => self.input.close(false),
             _ => {}
         }
         Step::Continue
@@ -486,22 +334,12 @@ impl BridgedTurn {
             return Step::Continue;
         }
         if response["subtype"].as_str() != Some("success") {
-            close(&self.stdin).await;
+            self.input.close(true);
             return Step::InitRefused;
         }
+        // The owner writes it, then the steers held for it, in order.
         if let Some(prompt) = self.prompt.take() {
-            let flush = write_prompt(
-                Arc::clone(&self.stdin),
-                Arc::clone(&self.steers),
-                Arc::clone(&self.ready),
-                self.run_id.clone(),
-                prompt,
-            );
-            tokio::spawn(async move {
-                if let Err(error) = flush.await {
-                    tracing::debug!(%error, "claude cli: prompt or held steer not written");
-                }
-            });
+            self.input.prompt(&self.run_id, prompt);
         }
         Step::Continue
     }
@@ -528,29 +366,34 @@ impl BridgedTurn {
                 {
                     return;
                 }
-                let (bridge, stdin) = (Arc::clone(&self.bridge), Arc::clone(&self.stdin));
+                let call_id = input["tool_use_id"].as_str().map(str::to_string);
+                let (bridge, input) = (Arc::clone(&self.bridge), self.input.clone());
                 let (thread, run) = (self.thread.clone(), self.run_id.clone());
                 // Claimed here, in stream order, before the answer is spawned.
-                let call_id = input["tool_use_id"].as_str().map(str::to_string);
                 let claim = known.then(|| bridge.claim_call(&thread, &run).with_call_id(call_id));
                 let answering = Answering::new(&self.answering);
                 // Answered off the read loop: the CLI keeps streaming meanwhile.
                 tokio::spawn(async move {
                     let _answering = answering;
-                    let (decision, receipt) = if let Some(claim) = claim {
+                    let (mut decision, mut receipt) = if let Some(claim) = claim {
                         bridge
                             .decide_call_receipted(&thread, &run, &tool, &tool_input, reason, claim)
                             .await
                     } else {
                         (ToolDecision::Deny("Unknown hook.".into()), Receipt::none())
                     };
+                    // A steer that gave up waiting sends its words itself:
+                    // the denial then goes plain, or they would arrive twice.
+                    if !receipt.claim() {
+                        decision = ToolDecision::Deny(crate::bridge::PLAIN_DECLINE.into());
+                    }
                     // The receipt says whether the answer (a steer's words as
                     // its deny reason, maybe) is on the CLI's stdin.
-                    let written = write_line(&stdin, &hook_answer(&request_id, &decision)).await;
-                    if let Err(error) = &written {
-                        tracing::debug!(%error, "claude cli: hook answer not delivered");
+                    let written = input.frame(hook_answer(&request_id, &decision)).await;
+                    if !written {
+                        tracing::debug!("claude cli: hook answer not delivered");
                     }
-                    receipt.delivered(written.is_ok());
+                    receipt.delivered(written);
                 });
             }
             // An MCP server asks the person for structured input.
@@ -561,13 +404,11 @@ impl BridgedTurn {
                     &request_id,
                     json!({"behavior": "deny", "message": "Tool calls are approved through IronClaw."}),
                 );
-                #[expect(clippy::let_underscore_must_use, reason = "the CLI is gone")]
-                let _ = write_line(&self.stdin, &answer).await;
+                self.input.frame_unawaited(answer);
             }
-            _ => {
-                #[expect(clippy::let_underscore_must_use, reason = "the CLI is gone")]
-                let _ = write_line(&self.stdin, &error(&request_id, "unsupported")).await;
-            }
+            _ => self
+                .input
+                .frame_unawaited(error(&request_id, "unsupported")),
         }
     }
 
@@ -590,27 +431,23 @@ impl BridgedTurn {
                 if let Some(id) = call_id {
                     self.task_calls.insert(id.to_string());
                 }
-                let answer = hook_answer(request_id, &ToolDecision::Allow);
-                if let Err(error) = write_line(&self.stdin, &answer).await {
-                    tracing::debug!(%error, "claude cli: hook answer not delivered");
-                }
+                self.input
+                    .frame_unawaited(hook_answer(request_id, &ToolDecision::Allow));
                 true
             }
             interaction::CLAUDE_TODO_TOOL => {
                 if let Some(plan) = interaction::claude_todo_plan(input) {
                     self.bridge.plan_updated(&self.thread, &self.run_id, plan);
                 }
-                let answer = hook_answer(request_id, &ToolDecision::Allow);
-                if let Err(error) = write_line(&self.stdin, &answer).await {
-                    tracing::debug!(%error, "claude cli: hook answer not delivered");
-                }
+                self.input
+                    .frame_unawaited(hook_answer(request_id, &ToolDecision::Allow));
                 true
             }
             interaction::CLAUDE_QUESTION_TOOL => {
                 let Some(form) = interaction::claude_question_form(input) else {
                     return false; // not a shape we can draw: the ordinary gate asks
                 };
-                let (bridge, stdin) = (Arc::clone(&self.bridge), Arc::clone(&self.stdin));
+                let (bridge, input) = (Arc::clone(&self.bridge), self.input.clone());
                 let (thread, run) = (self.thread.clone(), self.run_id.clone());
                 let claim = bridge.claim_call(&thread, &run);
                 let request_id = request_id.to_string();
@@ -618,9 +455,13 @@ impl BridgedTurn {
                 let answering = Answering::new(&self.answering);
                 tokio::spawn(async move {
                     let _answering = answering;
-                    let (outcome, receipt) = bridge
+                    let (mut outcome, mut receipt) = bridge
                         .ask_receipted(&thread, &run, &tool, form.clone(), claim)
                         .await;
+                    // A steer that gave up waiting sends its words itself.
+                    if !receipt.claim() {
+                        outcome = crate::bridge::QuestionOutcome::Declined;
+                    }
                     let replied = matches!(outcome, crate::bridge::QuestionOutcome::Replied(_));
                     let reply = match outcome.answer() {
                         Some(answer) => interaction::claude_question_reply(&form, Some(answer)),
@@ -630,11 +471,11 @@ impl BridgedTurn {
                     // never runs, so the model reads exactly this text (a
                     // steer's words included, when one answered it).
                     let answer = hook_answer(&request_id, &ToolDecision::Deny(reply));
-                    let written = write_line(&stdin, &answer).await;
-                    if let Err(error) = &written {
-                        tracing::debug!(%error, "claude cli: question answer not delivered");
+                    let written = input.frame(answer).await;
+                    if !written {
+                        tracing::debug!("claude cli: question answer not delivered");
                     }
-                    receipt.delivered(replied && written.is_ok());
+                    receipt.delivered(replied && written);
                 });
                 true
             }
@@ -651,24 +492,30 @@ impl BridgedTurn {
         let form = (request["mode"].as_str().unwrap_or("form") == "form")
             .then(|| interaction::elicitation_form(server, message, &request["requested_schema"]))
             .flatten();
-        let (bridge, stdin) = (Arc::clone(&self.bridge), Arc::clone(&self.stdin));
+        let (bridge, input) = (Arc::clone(&self.bridge), self.input.clone());
         let (thread, run) = (self.thread.clone(), self.run_id.clone());
         let claim = form.as_ref().map(|_| bridge.claim_call(&thread, &run));
         let answering = Answering::new(&self.answering);
         tokio::spawn(async move {
             let _answering = answering;
-            let reply = match (form, claim) {
+            let (reply, receipt) = match (form, claim) {
                 (Some(form), Some(claim)) => {
-                    let outcome = bridge
-                        .ask(&thread, &run, "mcp_elicitation", form.clone(), claim)
+                    let (outcome, receipt) = bridge
+                        .ask_receipted(&thread, &run, "mcp_elicitation", form.clone(), claim)
                         .await;
-                    interaction::elicitation_reply(&form, outcome.answer())
+                    (
+                        interaction::elicitation_reply(&form, outcome.answer()),
+                        receipt,
+                    )
                 }
-                _ => json!({"action": "decline"}),
+                _ => (json!({"action": "decline"}), Receipt::none()),
             };
-            if let Err(error) = write_line(&stdin, &success(&request_id, reply)).await {
-                tracing::debug!(%error, "claude cli: elicitation answer not delivered");
+            // An elicitation reply carries no free text: a steer that
+            // answered it sends its words itself, after this is written.
+            if !input.frame(success(&request_id, reply)).await {
+                tracing::debug!("claude cli: elicitation answer not delivered");
             }
+            receipt.delivered(false);
         });
     }
 
@@ -773,18 +620,22 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let stdin = Arc::new(Mutex::new(child.stdin.take()));
+        let steers = SharedSteers::default();
+        let input = Input::spawn(
+            child.stdin.take().unwrap(),
+            Arc::clone(&steers),
+            super::super::input::DEFAULT_WRITE_TIMEOUT,
+        );
         let out = BufReader::new(child.stdout.take().unwrap()).lines();
         let thread = ThreadId::new("claude-forms").unwrap();
         bridge.turn_started(&thread, "run-c");
         let turn = BridgedTurn::new(
             TurnIo {
                 bridge: Arc::clone(bridge),
-                stdin,
+                input,
                 thread,
                 run_id: "run-c".into(),
-                ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-                steers: SharedSteers::default(),
+                steers,
                 tool_bound: std::time::Duration::from_secs(60),
             },
             String::new(),

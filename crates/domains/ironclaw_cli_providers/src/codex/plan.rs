@@ -86,12 +86,22 @@ pub(super) fn answer_question(
     let (client, id) = (client.clone(), id.clone());
     let (thread, run, method) = (thread.clone(), run_id.to_string(), method.to_string());
     tokio::spawn(async move {
-        let outcome = bridge
-            .ask(&thread, &run, &method, form.clone(), claim)
+        let (outcome, mut receipt) = bridge
+            .ask_receipted(&thread, &run, &method, form.clone(), claim)
             .await;
-        if let Err(error) = client.respond(&id, reply(asked, Some(&form), outcome.answer())) {
-            tracing::debug!(error = %error.label(), "codex: question reply not sent");
+        // The reply carries no free text, so a steer that answered the
+        // question sends its words itself: only once this reply is on the
+        // wire (its receipt follows the write), so they land after it.
+        receipt.claim();
+        match client.respond_acked(&id, reply(asked, Some(&form), outcome.answer())) {
+            Ok(mut written) => {
+                written.outcome().await;
+            }
+            Err(error) => {
+                tracing::debug!(error = %error.label(), "codex: question reply not sent");
+            }
         }
+        receipt.delivered(false);
     });
     true
 }

@@ -319,29 +319,105 @@ struct PendingGate {
 /// it reports `false`. Whoever answered the gate on a steer's behalf waits
 /// on it, so the steer is sequenced after the reply and never claims words
 /// were delivered that were not.
-pub struct Receipt(Option<oneshot::Sender<bool>>);
+pub struct Receipt {
+    tx: Option<oneshot::Sender<bool>>,
+    /// Shared with the steer that answered the gate: whoever moves it off
+    /// `Waiting` first decides whether the reply still carries the text.
+    ticket: Option<Arc<Mutex<Ticket>>>,
+}
+
+/// Where a steer and the driver replying for it agree, once, on what the
+/// reply carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ticket {
+    Waiting,
+    /// The driver is handing the reply to its transport as it was given.
+    Taken,
+    /// The steer stopped waiting: the reply goes in its plain form and the
+    /// steer sends the text itself.
+    Withdrawn,
+}
+
+fn settle_ticket(ticket: &Mutex<Ticket>, to: Ticket) -> Result<(), Ticket> {
+    // A poisoned ticket only follows a panic elsewhere; its state is intact.
+    let mut state = ticket
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match *state {
+        Ticket::Waiting => {
+            *state = to;
+            Ok(())
+        }
+        other => Err(other),
+    }
+}
 
 impl Receipt {
     /// A receipt nobody waits on.
     pub fn none() -> Self {
-        Self(None)
+        Self {
+            tx: None,
+            ticket: None,
+        }
     }
 
-    fn pair() -> (Self, oneshot::Receiver<bool>) {
+    fn pair() -> (Self, Answered) {
         let (tx, rx) = oneshot::channel();
-        (Self(Some(tx)), rx)
+        let ticket = Arc::new(Mutex::new(Ticket::Waiting));
+        (
+            Self {
+                tx: Some(tx),
+                ticket: Some(Arc::clone(&ticket)),
+            },
+            Answered { rx, ticket },
+        )
     }
 
-    /// Report whether the decision or answer reached the agent.
+    /// Call right before handing the reply to the transport. `true`: send it
+    /// as given. `false`: the steer that answered this gate gave up waiting
+    /// and sends its words itself, so the reply must go in its plain form
+    /// ([`PLAIN_DECLINE`], or a dismissed question) or they would arrive
+    /// twice.
+    pub fn claim(&mut self) -> bool {
+        self.ticket
+            .as_ref()
+            .is_none_or(|t| settle_ticket(t, Ticket::Taken) != Err(Ticket::Withdrawn))
+    }
+
+    /// Report whether the reply reached the agent (written to its input;
+    /// for an RPC request, also answered).
     pub fn delivered(mut self, ok: bool) {
         self.send(ok);
     }
 
     fn send(&mut self, ok: bool) {
-        if let Some(tx) = self.0.take()
+        if let Some(tx) = self.tx.take()
             && tx.send(ok).is_err()
         {
             tracing::debug!("cli bridge: nobody waits on this receipt any more");
+        }
+    }
+}
+
+/// A gate's reply as the steer that answered it follows it.
+#[derive(Debug)]
+struct Answered {
+    rx: oneshot::Receiver<bool>,
+    ticket: Arc<Mutex<Ticket>>,
+}
+
+impl Answered {
+    /// Wait for the reply. Past `deadline` the steer withdraws it (if the
+    /// driver has not taken it yet: it then goes plain, `false`); once
+    /// taken, its own end is waited for, which the driver's write bound
+    /// limits. Never "maybe": a reply that may still land is waited for.
+    async fn reached(mut self, deadline: tokio::time::Instant) -> bool {
+        if let Ok(reached) = tokio::time::timeout_at(deadline, &mut self.rx).await {
+            return reached.unwrap_or(false); // silent-ok: a dropped receipt means the reply never went out
+        }
+        match settle_ticket(&self.ticket, Ticket::Withdrawn) {
+            Ok(()) => false,
+            Err(_) => self.rx.await.unwrap_or(false), // silent-ok: as above
         }
     }
 }
@@ -354,7 +430,7 @@ impl Drop for Receipt {
 
 impl std::fmt::Debug for Receipt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.0.is_some() {
+        f.write_str(if self.tx.is_some() {
             "Receipt(awaited)"
         } else {
             "Receipt(none)"
@@ -362,8 +438,12 @@ impl std::fmt::Debug for Receipt {
     }
 }
 
-/// How long a steer waits for the replies to the gates it answered.
+/// How long a steer waits for the replies to the gates it answered before
+/// it withdraws them (a reply already being written is still waited for).
 const GATE_RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The deny reason of an approval a steer declined, in its plain form.
+pub const PLAIN_DECLINE: &str = "The user declined this call and sent a new message instead.";
 
 /// The deny reason an approval carries when a steer declines it and the
 /// agent takes the reason as the call's result (Claude's PreToolUse hook).
@@ -374,13 +454,15 @@ pub fn steer_denial(text: &str) -> String {
 /// What a steer did at its run's open gates ([`CliBridge::steer_at_gates`]).
 #[derive(Debug, Default)]
 pub struct GateSteer {
+    /// How long replies are waited for before the untaken are withdrawn.
+    wait: Duration,
     /// The question the person's text answered (its reply may or may not
     /// hand the text to the agent: only some protocols take free text).
-    question: Option<oneshot::Receiver<bool>>,
+    question: Option<Answered>,
     /// The approval declined with the text as its feedback.
-    carrier: Option<oneshot::Receiver<bool>>,
+    carrier: Option<Answered>,
     /// Approvals declined without the text.
-    declined: Vec<oneshot::Receiver<bool>>,
+    declined: Vec<Answered>,
 }
 
 impl GateSteer {
@@ -389,24 +471,23 @@ impl GateSteer {
         self.question.is_none() && self.carrier.is_none() && self.declined.is_empty()
     }
 
-    /// Wait (bounded) until every answered gate's reply has reached the
-    /// agent or failed. `true` when the text itself reached it (through the
-    /// question's reply or the carrying denial): then the caller must not
-    /// send it again. `false`: the caller steers it.
+    /// Wait until every answered gate's reply has reached the agent or
+    /// definitely failed (withdrawing, past the bound, any the driver has not
+    /// taken yet). `true` when the text itself reached the agent (through
+    /// the question's reply or the carrying denial): the caller must not
+    /// send it again. `false` only when it definitely did not: the caller
+    /// steers it, after every decline.
     pub async fn settle(self) -> bool {
-        let deadline = tokio::time::Instant::now() + GATE_RECEIPT_TIMEOUT;
-        let wait = |rx: oneshot::Receiver<bool>| async move {
-            matches!(tokio::time::timeout_at(deadline, rx).await, Ok(Ok(true)))
-        };
+        let deadline = tokio::time::Instant::now() + self.wait;
         let mut carried = false;
-        if let Some(rx) = self.question {
-            carried |= wait(rx).await;
+        if let Some(question) = self.question {
+            carried |= question.reached(deadline).await;
         }
-        if let Some(rx) = self.carrier {
-            carried |= wait(rx).await;
+        if let Some(carrier) = self.carrier {
+            carried |= carrier.reached(deadline).await;
         }
-        for rx in self.declined {
-            wait(rx).await;
+        for declined in self.declined {
+            declined.reached(deadline).await;
         }
         carried
     }
@@ -532,6 +613,9 @@ impl LiveBuffer {
 
 pub struct CliBridge {
     approval_timeout: Duration,
+    /// How long a steer waits for the replies of the gates it answered
+    /// before it withdraws the ones not taken yet (milliseconds).
+    gate_receipt_ms: std::sync::atomic::AtomicU64,
     tokens: Mutex<HashMap<String, TokenEntry>>,
     live: Mutex<HashMap<ThreadId, LiveTurn>>,
     events: broadcast::Sender<LiveEvent>,
@@ -556,6 +640,9 @@ impl CliBridge {
     pub fn new(approval_timeout: Duration) -> Arc<Self> {
         Arc::new(Self {
             approval_timeout,
+            gate_receipt_ms: std::sync::atomic::AtomicU64::new(
+                u64::try_from(GATE_RECEIPT_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+            ),
             tokens: Mutex::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
             events: broadcast::channel(EVENT_BUFFER).0,
@@ -564,6 +651,15 @@ impl CliBridge {
             plans: Mutex::new(HashMap::new()),
             tool_providers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Bound how long a steer waits for its gate replies before it
+    /// withdraws those not taken yet (default 30 s); tests shorten it.
+    pub fn set_gate_receipt_timeout(&self, timeout: Duration) {
+        self.gate_receipt_ms.store(
+            u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     pub fn approval_timeout(&self) -> Duration {
@@ -1125,7 +1221,13 @@ impl CliBridge {
                     })
             })
             .unwrap_or_default(); // silent-ok: a poisoned map only follows a panic elsewhere
-        let mut steer = GateSteer::default();
+        let mut steer = GateSteer {
+            wait: Duration::from_millis(
+                self.gate_receipt_ms
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            ..GateSteer::default()
+        };
         // Oldest first; one that cannot take the answer hands it on.
         let mut rest = Vec::new();
         for question in questions.drain(..) {
@@ -1155,7 +1257,7 @@ impl CliBridge {
             let reason = if carry && steer.carrier.is_none() {
                 steer_denial(text)
             } else {
-                "The user declined this call and sent a new message instead.".to_string()
+                PLAIN_DECLINE.to_string()
             };
             let carries = carry && steer.carrier.is_none();
             match gate.answer.send((

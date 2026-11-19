@@ -124,6 +124,24 @@ confirmed" notice, never requeued (it may have been read). At pending
 approvals the steer declines them first and waits for those replies to
 reach the agent (neither protocol carries a message on a decline).
 
+#### One input owner per turn
+
+Every driver has exactly one writer to its agent's input, fed by one ordered
+mailbox: Claude's `claude/input.rs` owns stdin (hook registration, prompt
+and held steers, every hook and question answer, each steer, the close); the
+RPC drivers' writer task in `rpc.rs` owns theirs, and Codex/Muse steers and
+Stop's interrupt are queued under the turn door's lock. Every write is
+bounded (30 s); one that fails closes input for good and the turn ends in
+bounded time, result or not. The reader never waits on a write.
+
+A steer is delivered only on evidence (the write completed and, where the
+protocol answers, the answer came for this turn), refused on a definite
+failure (requeued by the engine, once), and unconfirmed only when it was
+written and no answer came before the turn ended (kept with a notice, never
+requeued). Gate replies a steer answered carry a `bridge::Receipt`: the
+steer waits for them, and after its bound withdraws only replies the driver
+has not taken yet (they then go plain), so the words never arrive twice.
+
 ### Task lists
 
 Claude CLI 2.1.3xx has no `TodoWrite` in headless runs; with

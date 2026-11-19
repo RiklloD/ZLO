@@ -215,9 +215,11 @@ while IFS= read -r line; do
     *'"method":"thread/start"'*|*'"method":"thread/resume"'*) reply "$id" '{"thread":{"id":"cx-1"},"model":"gpt-b"}' ;;
     *'"method":"turn/start"'*)
       touch "$DIR/starting"
-      if [ "$MODE" = early ] || [ "$MODE" = never ] || [ "$MODE" = heldend ] || [ "$MODE" = gatehold ] || [ "$MODE" = heldstop ]; then
+      if [ "$MODE" = early ] || [ "$MODE" = never ] || [ "$MODE" = heldend ] || [ "$MODE" = gatehold ] || [ "$MODE" = heldstop ] || [ "$MODE" = burst ]; then
         while [ ! -e "$DIR/go" ]; do sleep 0.05; done
       fi
+      # Output already sent when the turn id comes back.
+      if [ "$MODE" = burst ]; then said m1 "First"; said m2 "Second"; fi
       if [ "$MODE" = never ]; then
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32600,"message":"busy"}}\n' "$id"
         continue
@@ -234,7 +236,9 @@ while IFS= read -r line; do
       if [ "$MODE" = ask ]; then
         printf '%s\n' '{"jsonrpc":"2.0","id":98,"method":"item/tool/requestUserInput","params":{"threadId":"cx-1","turnId":"tu-1","itemId":"q1","questions":[{"id":"db","header":"DB","question":"Which database?","options":[{"label":"postgres","description":"pg"},{"label":"sqlite","description":"file"}]}]}}'
       fi
-      touch "$DIR/said" ;;
+      touch "$DIR/said"
+      # Stops reading its input (alive), then exits.
+      if [ "$MODE" = deaf ]; then sleep 2; exit 0; fi ;;
     *'"method":"turn/interrupt"'*)
       reply "$id" '{}'
       emit turn/completed '{"threadId":"cx-1","turn":{"id":"tu-1","status":"interrupted","error":null}}' ;;
@@ -246,6 +250,7 @@ while IFS= read -r line; do
         gatehold|heldstop) ;;
         early) reply "$id" '{"turnId":"tu-1"}'; if [ $STEERS -eq 2 ]; then said m2 "Done"; done_turn; fi ;;
         cut) reply "$id" '{"turnId":"tu-1"}'; said m2 "Short"; done_turn ;;
+        burst) reply "$id" '{"turnId":"tu-1"}'; said m3 "Short"; done_turn ;;
         *) reply "$id" '{"turnId":"tu-1"}'; said m2 "Done"; done_turn ;;
       esac ;;
   esac
@@ -404,9 +409,19 @@ async fn codex_an_unanswered_steer_is_delivered_once_or_queued_once() {
     );
     std::fs::write(dir.path().join("end"), "").unwrap();
     wait_for(|| recorder.finished().len() == 1).await;
+    // Written, never answered, turn over: no evidence it was read (Sol 3),
+    // so it is unconfirmed (notice), not counted delivered, never requeued.
     assert!(recorder.unread().is_empty());
     let (rows, _) = rows(&rt, &thread, &recorder.run()).await;
-    assert_eq!(rows, ["User:hi", "User:slow answer", "Assistant:Done"]);
+    assert_eq!(
+        rows[..2],
+        ["User:hi".to_string(), "User:slow answer".to_string()]
+    );
+    assert!(
+        rows[2].starts_with("System:Steer delivery not confirmed"),
+        "{rows:?}"
+    );
+    assert_eq!(rows[3], "Assistant:Done");
 }
 
 /// Review (Sol, 2): the same unanswered `turn/steer`, but its turn ends
@@ -632,6 +647,7 @@ id_of() { printf '%s' "$1" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p'; }
 field() { printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }
 reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
 emit() { printf '{"jsonrpc":"2.0","method":"%s","params":%s}\n' "$1" "$2"; }
+STEERS=0
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$LOG"
   id=$(id_of "$line")
@@ -644,10 +660,15 @@ while IFS= read -r line; do
       reply "$id" "{\"session\":{\"sessionId\":\"$SID\",\"modelId\":\"muse-spark-1.3\"}}" ;;
     *'"method":"session/setApprovalMode"'*|*'"method":"session/setModel"'*) reply "$id" '{}' ;;
     *'"method":"approval/decide"'*)
+      # The decision's answer comes late; the host keeps reading.
+      if [ "$MODE" = gateslow ]; then ( sleep 1; reply "$id" '{}' ) & continue; fi
       reply "$id" '{}'
       if [ "$MODE" = gatehold ]; then emit turn/completed "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\",\"terminal\":\"completed\"}"; fi ;;
     *'"method":"turn/steer"'*)
       [ "$MODE" = gatehold ] && continue
+      if [ "$MODE" = wrongturn ]; then reply "$id" '{"turnId":"another-turn"}'; continue; fi
+      STEERS=$((STEERS+1))
+      if [ "$MODE" = gateslow ] && [ $STEERS -lt 2 ]; then reply "$id" "{\"turnId\":\"$TID\"}"; continue; fi
       reply "$id" "{\"turnId\":\"$TID\"}"
       emit item/completed "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"m1\",\"turnId\":\"$TID\",\"kind\":\"agentMessage\",\"status\":\"completed\",\"revision\":2,\"text\":\"Done\"}}"
       emit turn/completed "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\",\"terminal\":\"completed\"}" ;;
@@ -661,7 +682,8 @@ while IFS= read -r line; do
         emit item/completed "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"m0\",\"turnId\":\"$TID\",\"kind\":\"agentMessage\",\"status\":\"completed\",\"revision\":1,\"text\":\"Looking at it\"}}"
         touch "$DIR/said"
       fi
-      if [ "$MODE" = gate ] || [ "$MODE" = gatehold ]; then
+      if [ "$MODE" = wrongturn ]; then touch "$DIR/said"; fi
+      if [ "$MODE" = gate ] || [ "$MODE" = gatehold ] || [ "$MODE" = gateslow ]; then
         emit approval/requested "{\"sessionId\":\"$SID\",\"approvalId\":\"a1\",\"turnId\":\"$TID\",\"status\":\"pending\",\"toolName\":\"bash\",\"currentRequirementId\":\"r1\",\"subject\":{\"command\":\"rm -rf build\"},\"availableChoices\":[{\"choiceId\":\"ok\",\"decision\":\"approved\",\"scope\":\"once\"},{\"choiceId\":\"no\",\"decision\":\"denied\",\"scope\":\"once\"}]}"
       fi ;;
   esac
@@ -858,7 +880,7 @@ while IFS= read -r line; do
     *'"method":"authenticate"'*) reply "$id" '{}' ;;
     *'"method":"session/new"'*|*'"method":"session/resume"'*)
       touch "$DIR/opening"
-      [ "$MODE" = perm ] || [ "$MODE" = closein ] || while [ ! -e "$DIR/go" ]; do sleep 0.05; done
+      [ "$MODE" = perm ] || [ "$MODE" = closein ] || [ "$MODE" = deaf ] || [ "$MODE" = now ] || while [ ! -e "$DIR/go" ]; do sleep 0.05; done
       if [ "$MODE" = fail ]; then printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"no session"}}\n' "$id"
       else reply "$id" "{\"sessionId\":\"acp-1\",\"configOptions\":$OPTS}"; fi ;;
     *'"method":"session/set_config_option"'*) reply "$id" '{}' ;;
@@ -867,6 +889,10 @@ while IFS= read -r line; do
         reply "$P1" '{"stopReason":"end_turn"}'
         chunk "Steered"
         reply "$id" '{"stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":2}}'
+      elif [ "$MODE" = deaf ]; then
+        P1=$id; chunk "Par"
+        touch "$DIR/said"
+        sleep 3
       elif [ "$MODE" = closein ]; then
         P1=$id; chunk "Par"
         exec 0<&-
@@ -1009,5 +1035,206 @@ async fn antigravity_a_steer_the_agent_cannot_read_is_refused() {
             .await
             .unwrap(),
         SteerOutcome::Rejected
+    );
+}
+
+// ── Review round 3 (Sol): one ordered input side, evidence-only outcomes ──
+
+/// Sol 3: a steer whose frame is stuck in a pipe the server stopped
+/// reading is never counted as success on a late answer: its requester
+/// waits for the write, and when the server goes away unread, it is
+/// refused (the engine queues it).
+#[tokio::test]
+async fn codex_a_steer_stuck_in_a_stalled_write_is_refused_not_steered() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt =
+        codex(dir.path(), "deaf", &recorder, None).with_steer_timeout(Duration::from_millis(300));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("said").exists()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let big = format!("big {}", "x".repeat(400_000));
+    assert_eq!(
+        rt.steer(&thread, &big, SteerHow::Steer).await.unwrap(),
+        SteerOutcome::Rejected
+    );
+    wait_for(|| recorder.finished().len() == 1).await;
+    assert!(
+        recorder.unread().is_empty(),
+        "its requester queues it, once"
+    );
+}
+
+/// Sol 3: Muse answers with the turn it put the steer in; another turn's id
+/// is a refusal, like T3 Code.
+#[tokio::test]
+async fn muse_a_steer_acknowledged_for_another_turn_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = muse(dir.path(), "wrongturn", &recorder, None);
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("said").exists()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        rt.steer(&thread, "elsewhere", SteerHow::Steer)
+            .await
+            .unwrap(),
+        SteerOutcome::Rejected
+    );
+    rt.cancel(&thread, "stop").await.unwrap();
+}
+
+/// Sol 5: two sends while an approval waits, the decline's answer slow
+/// (Muse acknowledges the decision a second later). The second send may not
+/// overtake the first: both go after the decline, in the order sent. The
+/// fake records arrival order.
+#[tokio::test]
+async fn muse_two_sends_at_a_gate_keep_their_order_behind_the_decline() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(30));
+    let _ledger = ledger(dir.path(), &bridge).await;
+    let rt = Arc::new(muse(
+        dir.path(),
+        "gateslow",
+        &recorder,
+        Some(Arc::clone(&bridge)),
+    ));
+    let thread = thread(rt.as_ref()).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_gate(&mut events).await;
+    let first = {
+        let (rt, thread) = (Arc::clone(&rt), thread.clone());
+        tokio::spawn(async move { rt.steer(&thread, "alpha", SteerHow::Steer).await.unwrap() })
+    };
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let second = {
+        let (rt, thread) = (Arc::clone(&rt), thread.clone());
+        tokio::spawn(async move { rt.steer(&thread, "beta", SteerHow::Steer).await.unwrap() })
+    };
+    assert_eq!(first.await.unwrap(), SteerOutcome::Steered);
+    assert_eq!(second.await.unwrap(), SteerOutcome::Steered);
+    wait_for(|| recorder.finished().len() == 1).await;
+    let log = read(&dir.path().join("muse.log"));
+    let at = |needle: &str| {
+        log.lines()
+            .position(|l| l.contains("turn/steer") && l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} not steered: {log}"))
+    };
+    let decide = log
+        .lines()
+        .position(|l| l.contains("approval/decide"))
+        .expect("declined");
+    assert!(decide < at("alpha") && at("alpha") < at("beta"), "{log}");
+}
+
+/// Sol 6: output Codex sent before the steer is folded before the cut, and
+/// every message of it is kept, in order. (Repeated: the loop's choice of
+/// what to read first must not matter.)
+#[tokio::test]
+async fn codex_output_sent_before_a_steer_is_cut_whole_and_in_order() {
+    for _ in 0..6 {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = Arc::new(Recorder::default());
+        let rt = codex(dir.path(), "burst", &recorder, None);
+        let thread = thread(&rt).await;
+        rt.start_turn(&thread, input()).await.unwrap();
+        wait_for(|| dir.path().join("starting").exists()).await;
+        assert_eq!(
+            rt.steer(&thread, "now shorter", SteerHow::Steer)
+                .await
+                .unwrap(),
+            SteerOutcome::Steered
+        );
+        std::fs::write(dir.path().join("go"), "").unwrap();
+        wait_for(|| recorder.finished().len() == 1).await;
+        let (rows, _) = rows(&rt, &thread, &recorder.run()).await;
+        assert_eq!(
+            rows,
+            [
+                "User:hi",
+                "Assistant:First",
+                "Assistant:Second",
+                "User:now shorter",
+                "Assistant:Short"
+            ]
+        );
+    }
+}
+
+/// Sol 4: a steer whose prompt frame is stuck in a pipe the agent stopped
+/// reading is never reported sent: the write's own bound fails it (the
+/// steer is refused) and the turn is torn down at once.
+#[tokio::test]
+async fn antigravity_a_steer_stuck_in_a_stalled_write_is_refused_and_ends_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt =
+        antigravity(dir.path(), "deaf", &recorder).with_write_timeout(Duration::from_millis(500));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("said").exists()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let big = format!("big {}", "x".repeat(400_000));
+    let started = std::time::Instant::now();
+    assert_eq!(
+        rt.steer(&thread, &big, SteerHow::Steer).await.unwrap(),
+        SteerOutcome::Rejected
+    );
+    // Refused on the write's own bound, not after a 30 s wait.
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    wait_for(|| recorder.finished().len() == 1).await;
+}
+
+/// Sol 4: Stop lands while the turn writes its prompt's transcript row
+/// (held here by a FIFO nobody reads yet): the first prompt is never sent
+/// after the cancel.
+#[tokio::test]
+async fn antigravity_stop_during_the_first_prompts_journal_write_sends_no_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = Arc::new(antigravity(dir.path(), "ok", &recorder));
+    let thread = thread(rt.as_ref()).await;
+    let key = thread.native_session_id.clone().unwrap();
+    rt.start_turn(&thread, input()).await.unwrap();
+    // `session/new` is in (the recap read is done) and waits for `go`.
+    wait_for(|| dir.path().join("opening").exists()).await;
+    let transcripts = dir.path().join("state").join("transcripts");
+    std::fs::create_dir_all(&transcripts).unwrap();
+    let fifo = transcripts.join(format!("{key}.jsonl"));
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(dir.path().join("go"), "").unwrap();
+    // The turn is now blocked opening the FIFO for its prompt row.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let stop = {
+        let (rt, thread) = (Arc::clone(&rt), thread.clone());
+        tokio::spawn(async move { rt.cancel(&thread, "stop").await.unwrap() })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let drain = std::thread::spawn(move || {
+        let mut row = String::new();
+        std::io::Read::read_to_string(&mut std::fs::File::open(fifo).unwrap(), &mut row).unwrap();
+        row
+    });
+    stop.await.unwrap();
+    assert!(drain.join().unwrap().contains("hi"), "the row was written");
+    wait_for(|| recorder.finished().len() == 1).await;
+    let log = read(&dir.path().join("agy.log"));
+    assert!(
+        !log.contains("session/prompt"),
+        "prompt sent after Stop: {log}"
     );
 }

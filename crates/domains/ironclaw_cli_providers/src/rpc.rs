@@ -17,7 +17,7 @@ use nix::unistd::Pid;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// A failed request.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,21 +68,60 @@ pub(crate) enum Inbound {
 
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, RpcError>>>>>;
 
-/// One frame for the writer, and who wants to know it reached the child's
-/// stdin (`true`) or never will (`false`: the pipe failed or closed first).
-type Outgoing = (String, Option<oneshot::Sender<bool>>);
+/// One frame for the writer, and where to report whether it reached the
+/// child's stdin.
+type Outgoing = (String, Option<watch::Sender<Option<bool>>>);
 
-/// Resolves once a frame was written to the child's stdin and flushed
-/// (`true`), or will never be (`false`).
-pub(crate) type Written = oneshot::Receiver<bool>;
+/// How long one frame may take to go onto the child's stdin. A child that
+/// stops reading its input fails the write; the writer then closes the
+/// pipe for good and reports it ([`RpcClient::writer_failed`]), so the
+/// driver tears the turn down in bounded time.
+pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn ack(written: Option<oneshot::Sender<bool>>, ok: bool) {
+/// Whether one frame reached the child's stdin (written and flushed).
+/// Cloneable: the requester and the turn's ledger can both follow it. It
+/// always ends: the writer reports every frame, and a frame it never got to
+/// (pipe broken, writer gone) is `false`.
+#[derive(Clone)]
+pub(crate) struct Written(watch::Receiver<Option<bool>>);
+
+impl Written {
+    fn pending() -> (watch::Sender<Option<bool>>, Self) {
+        let (tx, rx) = watch::channel(None);
+        (tx, Self(rx))
+    }
+
+    /// Already settled, for a frame that was never queued.
+    pub(crate) fn failed() -> Self {
+        let (tx, rx) = Self::pending();
+        tx.send_replace(Some(false));
+        rx
+    }
+
+    /// `Some(written)` once settled, `None` while the write is pending.
+    pub(crate) fn now(&self) -> Option<bool> {
+        *self.0.borrow()
+    }
+
+    /// Wait until the write settled.
+    pub(crate) async fn outcome(&mut self) -> bool {
+        let settled = self.0.wait_for(Option::is_some).await.map(|state| *state);
+        match settled {
+            Ok(state) => state.unwrap_or(false), // silent-ok: `wait_for` returned a settled value
+            // The writer dropped the report without settling it: not written.
+            Err(_) => self.now().unwrap_or(false), // silent-ok: no report means never written
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_watch(rx: watch::Receiver<Option<bool>>) -> Self {
+        Self(rx)
+    }
+}
+
+fn ack(written: Option<watch::Sender<Option<bool>>>, ok: bool) {
     if let Some(tx) = written {
-        #[expect(
-            clippy::let_underscore_must_use,
-            reason = "nobody may wait for this write any more"
-        )]
-        let _ = tx.send(ok);
+        tx.send_replace(Some(ok));
     }
 }
 
@@ -90,6 +129,9 @@ fn ack(written: Option<oneshot::Sender<bool>>, ok: bool) {
 #[derive(Clone)]
 pub(crate) struct RpcClient {
     out: mpsc::UnboundedSender<Outgoing>,
+    /// Flips to `true` once a write failed or timed out and the writer
+    /// closed the child's stdin for good.
+    failed: watch::Receiver<bool>,
     pending: Pending,
     next_id: Arc<AtomicI64>,
 }
@@ -101,17 +143,33 @@ impl RpcClient {
         stdout: ChildStdout,
         name: &'static str,
     ) -> (Self, mpsc::UnboundedReceiver<Inbound>) {
+        Self::start_bounded(stdin, stdout, name, WRITE_TIMEOUT)
+    }
+
+    /// [`Self::start`] with another per-frame write bound (tests).
+    pub(crate) fn start_bounded(
+        stdin: ChildStdin,
+        stdout: ChildStdout,
+        name: &'static str,
+        write_timeout: Duration,
+    ) -> (Self, mpsc::UnboundedReceiver<Inbound>) {
         let (out, mut out_rx) = mpsc::unbounded_channel::<Outgoing>();
+        let (failed_tx, failed) = watch::channel(false);
         let (in_tx, in_rx) = mpsc::unbounded_channel();
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
 
         let mut stdin = stdin;
         tokio::spawn(async move {
             while let Some((frame, written)) = out_rx.recv().await {
-                let ok =
-                    stdin.write_all(frame.as_bytes()).await.is_ok() && stdin.flush().await.is_ok();
+                let write = async {
+                    stdin.write_all(frame.as_bytes()).await?;
+                    stdin.flush().await
+                };
+                let ok = matches!(tokio::time::timeout(write_timeout, write).await, Ok(Ok(())));
                 ack(written, ok);
                 if !ok {
+                    tracing::debug!("{name}: write to the child failed; its input is closed");
+                    failed_tx.send_replace(true);
                     break;
                 }
             }
@@ -154,6 +212,7 @@ impl RpcClient {
         (
             Self {
                 out,
+                failed,
                 pending,
                 next_id: Arc::new(AtomicI64::new(1)),
             },
@@ -170,11 +229,21 @@ impl RpcClient {
     /// [`Self::send`], with a receiver that resolves once the frame is on
     /// the child's stdin (or never will be).
     fn send_acked(&self, frame: Value) -> Result<Written, RpcError> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = Written::pending();
         self.out
             .send((format!("{frame}\n"), Some(tx)))
             .map_err(|_closed| RpcError::Closed)?;
         Ok(rx)
+    }
+
+    /// Resolves once a write failed and the child's input is closed: the
+    /// turn cannot reach the agent any more and must end.
+    pub(crate) async fn writer_failed(&self) {
+        let mut failed = self.failed.clone();
+        if failed.wait_for(|f| *f).await.is_err() {
+            // The writer ended cleanly (every client dropped): never fails.
+            std::future::pending::<()>().await;
+        }
     }
 
     pub(crate) async fn request(
@@ -270,22 +339,6 @@ pub(crate) struct PendingReply {
 }
 
 impl PendingReply {
-    /// [`Self::wait`] against an absolute deadline, so a wait that is only
-    /// polled later still started when the request did.
-    pub(crate) async fn wait_until(
-        self,
-        deadline: tokio::time::Instant,
-    ) -> Result<Value, RpcError> {
-        match tokio::time::timeout_at(deadline, self.rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_dropped)) => Err(RpcError::Closed),
-            Err(_elapsed) => {
-                self.client.forget(self.id);
-                Err(RpcError::Timeout)
-            }
-        }
-    }
-
     pub(crate) async fn wait(self, timeout: Duration) -> Result<Value, RpcError> {
         match tokio::time::timeout(timeout, self.rx).await {
             Ok(Ok(result)) => result,

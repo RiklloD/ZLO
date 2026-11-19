@@ -1661,3 +1661,157 @@ while IFS= read -r line; do echo "$line" >> @DIR@/input.log; done
     let after = std::fs::read_to_string(dir.path().join("input.log")).unwrap_or_default();
     assert!(!after.contains("use sqlite"), "{after}");
 }
+
+// ── Review round 3 (Sol): one input owner per turn ─────────────────────────
+
+/// The CLI acks the hook registration, then never reads its input again
+/// while keeping its output open. `@AFTER@` runs after the ack.
+const DEAF_AFTER_ACK: &str = r#"#!/bin/sh
+read -r init
+touch @DIR@/init
+while [ ! -e @DIR@/go ]; do sleep 0.05; done
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"ironclaw-init","response":{}}}'
+@AFTER@
+"#;
+
+fn deaf_fixture(dir: &Path, after: &str) -> PathBuf {
+    script(
+        dir,
+        "claude",
+        &DEAF_AFTER_ACK
+            .replace("@AFTER@", after)
+            .replace("@DIR@", &dir.display().to_string()),
+    )
+}
+
+/// A steer bigger than any pipe buffer, held for the prompt: its write
+/// stalls until the CLI reads.
+async fn hold_a_big_steer(rt: &ClaudeCliRuntime, thread: &ThreadRecord, dir: &Path) -> String {
+    wait_for(|| dir.join("init").exists()).await;
+    let big = format!("big {}", "x".repeat(400_000));
+    assert_eq!(
+        rt.steer(thread, &big, SteerHow::Steer).await.unwrap(),
+        SteerOutcome::Steered
+    );
+    std::fs::write(dir.join("go"), "").unwrap();
+    big
+}
+
+/// Sol 1: the held-steer write times out while the CLI keeps its output
+/// open with no result. Before, the writer only logged and the reader
+/// waited forever; now the failed write closes input, wakes the reader, and
+/// the turn ends after the exit grace, with the steer back unread.
+#[tokio::test]
+async fn a_write_that_times_out_ends_the_turn_even_without_a_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = deaf_fixture(dir.path(), "while :; do sleep 1; done");
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)))
+        .with_write_timeout(Duration::from_millis(500))
+        .with_exit_grace(Duration::from_millis(500));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    let big = hold_a_big_steer(&rt, &thread, dir.path()).await;
+    let started = std::time::Instant::now();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        sink.finished.lock().unwrap()[0].status,
+        TurnEndStatus::Failed
+    );
+    assert_eq!(*sink.unread.lock().unwrap(), vec![big]);
+}
+
+/// Sol 1: while the held-steer write is stalled, the reader still handles
+/// `command_lifecycle` and `result` frames and the output after them: it
+/// never waits on stdin.
+#[tokio::test]
+async fn output_frames_are_handled_while_a_write_is_stalled() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = deaf_fixture(
+        dir.path(),
+        r#"sleep 0.3
+echo '{"type":"command_lifecycle","command_uuid":"other","state":"queued","session_id":"s"}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}},"parent_tool_use_id":null,"session_id":"s","uuid":"e1"}'
+while [ ! -e @DIR@/release ]; do sleep 0.05; done
+read -r prompt
+read -r steer
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"duration_api_ms":5,"num_turns":1,"result":"ok","session_id":"s","total_cost_usd":0}'
+read -r _eof"#,
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)))
+        .with_steer_idle_timeout(Duration::from_millis(500))
+        .with_steer_ack_timeout(Duration::from_millis(500))
+        .with_exit_grace(Duration::from_millis(500));
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    hold_a_big_steer(&rt, &thread, dir.path()).await;
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        wait_event(&mut events, |e| matches!(e, LiveEvent::Text { .. })),
+    )
+    .await
+    .expect("output after a lifecycle frame was held up by the stalled write");
+    std::fs::write(dir.path().join("release"), "").unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+}
+
+/// Sol 2: the reply that carries the steer's words is stuck behind a
+/// stalled write past the receipt bound. It was already handed to the
+/// writer, so it is waited for (not withdrawn) and the words reach the CLI
+/// once, in the denial, never again as a steer frame.
+#[tokio::test]
+async fn a_gate_reply_stuck_behind_a_write_is_not_doubled_by_a_steer() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(30));
+    bridge.set_gate_receipt_timeout(Duration::from_millis(300));
+    let binary = deaf_fixture(
+        dir.path(),
+        r#"echo '{"type":"control_request","request_id":"h1","request":{"subtype":"hook_callback","callback_id":"ironclaw-approval","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf build"},"tool_use_id":"h1"}}}'
+while [ ! -e @DIR@/release ]; do sleep 0.05; done
+read -r prompt
+read -r steer
+read -r answer
+printf '%s\n' "$answer" >> @DIR@/input.log
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"duration_api_ms":5,"num_turns":1,"result":"ok","session_id":"s","total_cost_usd":0}'
+while IFS= read -r line; do printf '%s\n' "$line" | cut -c1-2000 >> @DIR@/input.log; done"#,
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)))
+        .with_exit_grace(Duration::from_millis(500));
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    hold_a_big_steer(&rt, &thread, dir.path()).await;
+    wait_event(&mut events, |e| matches!(e, LiveEvent::GateOpened { .. })).await;
+    let steer = {
+        let rt = &rt;
+        let thread = thread.clone();
+        async move {
+            rt.steer(&thread, "use sqlite", SteerHow::Steer)
+                .await
+                .unwrap()
+        }
+    };
+    let release = async {
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        std::fs::write(dir.path().join("release"), "").unwrap();
+    };
+    let (outcome, ()) = tokio::join!(steer, release);
+    assert_eq!(outcome, SteerOutcome::Steered);
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let log = std::fs::read_to_string(dir.path().join("input.log")).unwrap();
+    assert_eq!(log.matches("use sqlite").count(), 1, "{log}");
+    assert!(
+        log.lines().next().unwrap().contains("permissionDecision"),
+        "{log}"
+    );
+}

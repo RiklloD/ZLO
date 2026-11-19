@@ -217,25 +217,40 @@ impl TurnFold {
             .unwrap_or_default()
     }
 
-    /// What the agent said and ran before a steer, as its own transcript
-    /// entry, so the steer's row lands after it (T3 Code places a steer
+    /// What the agent said and ran before a steer, every finished message
+    /// as its own transcript entry in order (the calls on the last one), so the steer's row lands after it (T3 Code places a steer
     /// inside the run, after the work it interrupts). Only finished agent
     /// messages: one still streaming goes on into the next entry. `None`
     /// when nothing new happened since the last cut.
-    pub(crate) fn take_segment(&mut self) -> Option<HistoryMessage> {
-        let text =
-            self.last_message(|id| self.finished.contains(id) && !self.journaled.contains(id));
-        let tools = self.tools[self.tools_journaled..].to_vec();
-        let ids: Vec<String> = self
-            .finished
+    pub(crate) fn take_segment(&mut self) -> Vec<HistoryMessage> {
+        let mut finished: Vec<(usize, String, String)> = self
+            .messages
             .iter()
-            .filter(|id| !self.journaled.contains(*id))
-            .cloned()
+            .filter(|(id, _)| self.finished.contains(*id) && !self.journaled.contains(*id))
+            .map(|(id, (order, text))| (*order, id.clone(), text.trim().to_string()))
             .collect();
-        self.journaled.extend(ids);
+        finished.sort_by_key(|(order, _, _)| *order);
+        let tools = self.tools[self.tools_journaled..].to_vec();
         self.tools_journaled = self.tools.len();
-        (!text.is_empty() || !tools.is_empty())
-            .then(|| journal::message(HistoryRole::Assistant, text, tools))
+        let mut entries: Vec<HistoryMessage> = Vec::new();
+        for (_, id, text) in finished {
+            self.journaled.insert(id);
+            if !text.is_empty() {
+                entries.push(journal::message(HistoryRole::Assistant, text, Vec::new()));
+            }
+        }
+        // The calls made before the steer go with the last thing said.
+        if !tools.is_empty() {
+            match entries.last_mut() {
+                Some(last) => last.tool_calls = tools,
+                None => entries.push(journal::message(
+                    HistoryRole::Assistant,
+                    String::new(),
+                    tools,
+                )),
+            }
+        }
+        entries
     }
 
     /// The turn's (last) transcript entry: everything after the last cut.
@@ -432,12 +447,12 @@ mod tests {
             "item/agentMessage/delta",
             &json!({"turnId": "t1", "itemId": "m2", "delta": "Now"}),
         );
-        let before = f.take_segment().expect("segment");
+        let before = f.take_segment().pop().expect("segment");
         assert_eq!(
             (before.text.as_str(), before.tool_calls.clone()),
             ("Looking at it", vec!["shell()".to_string()])
         );
-        assert!(f.take_segment().is_none(), "nothing new");
+        assert!(f.take_segment().is_empty(), "nothing new");
         f.push("item/completed", &json!({"turnId": "t1", "item": {"id": "m2", "type": "agentMessage", "text": "Now shorter"}}));
         let after = f.assistant_message().expect("rest");
         assert_eq!(
@@ -449,6 +464,20 @@ mod tests {
             &json!({"turn": {"id": "t1", "status": "completed"}}),
         );
         assert_eq!(f.outcome(false).final_text.as_deref(), Some("Now shorter"));
+    }
+
+    /// Sol 6: two messages finished before a steer are both kept, in order.
+    #[test]
+    fn every_message_before_a_steer_is_kept_in_order() {
+        let mut f = fold();
+        for (id, text) in [("m1", "First"), ("m2", "Second")] {
+            f.push(
+                "item/completed",
+                &json!({"turnId": "t1", "item": {"id": id, "type": "agentMessage", "text": text}}),
+            );
+        }
+        let cut: Vec<String> = f.take_segment().into_iter().map(|e| e.text).collect();
+        assert_eq!(cut, ["First", "Second"]);
     }
 
     #[test]

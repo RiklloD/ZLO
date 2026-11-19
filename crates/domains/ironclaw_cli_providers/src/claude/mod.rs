@@ -21,6 +21,7 @@
 mod compact;
 mod control;
 pub(crate) mod import;
+mod input;
 mod steer;
 mod stream;
 mod tasks;
@@ -43,7 +44,8 @@ use tokio::process::Command;
 use tokio::sync::watch;
 
 use crate::bridge::{CliBridge, SESSION_TOKEN_TTL, SessionGrant, mcp_config_json};
-use control::{BridgedTurn, SharedStdin, SharedSteers, Step, TurnIo};
+use control::{BridgedTurn, SharedSteers, Step, TurnIo};
+use input::{Input, InputState, SteerAdmit};
 use stream::TurnFold;
 
 /// The CLI release the wire handling was checked against (`claude --version`).
@@ -123,14 +125,11 @@ struct ActiveTurn {
     cancelled: Arc<std::sync::atomic::AtomicBool>,
     /// Flips to `true` once the turn has been reported finished.
     done: watch::Receiver<bool>,
-    /// The turn's stdin. A bridged turn keeps it open until the result,
-    /// which is how a steer reaches the running turn.
-    stdin: SharedStdin,
-    /// True once the original prompt is written; steers before it are held
-    /// and written right after it.
-    ready: Arc<std::sync::atomic::AtomicBool>,
-    /// What the CLI has read of the prompt and the steers (see `steer.rs`).
-    steers: SharedSteers,
+    /// The owner of the turn's stdin (see `input.rs`): a bridged turn keeps
+    /// it open until the result, which is how a steer reaches the turn.
+    input: Input,
+    /// One steer at a time, from its gate answers to its admission.
+    admission: Arc<tokio::sync::Mutex<()>>,
     run_id: String,
 }
 
@@ -157,12 +156,8 @@ pub struct ClaudeCliRuntime {
     tool_busy_bound: Duration,
     /// How long the CLI may outlive its closed input after the result.
     exit_grace: Duration,
-}
-
-/// The turn's stdin is closed for good. Waits out a writer holding it, so
-/// a close that landed while the lock was contended is never missed.
-async fn input_closed(stdin: &SharedStdin) -> bool {
-    stdin.lock().await.is_none()
+    /// How long one frame may take to go onto the CLI's stdin.
+    write_timeout: Duration,
 }
 
 /// What one turn's process is started with, besides the session.
@@ -199,6 +194,7 @@ impl ClaudeCliRuntime {
             steer_ack_timeout: steer::ACK_TIMEOUT,
             steer_idle_timeout: steer::IDLE_TIMEOUT,
             tool_busy_bound: TOOL_BUSY_BOUND,
+            write_timeout: input::DEFAULT_WRITE_TIMEOUT,
             exit_grace: EXIT_GRACE,
         })
     }
@@ -214,6 +210,13 @@ impl ClaudeCliRuntime {
     /// open (default [`steer::IDLE_TIMEOUT`]); tests shorten it.
     pub fn with_steer_idle_timeout(mut self, timeout: Duration) -> Self {
         self.steer_idle_timeout = timeout;
+        self
+    }
+
+    /// Bound one write to the CLI's stdin (default 30 s); a write past it
+    /// fails the turn's input and ends the turn. Tests shorten it.
+    pub fn with_write_timeout(mut self, timeout: Duration) -> Self {
+        self.write_timeout = timeout;
         self
     }
 
@@ -564,10 +567,10 @@ impl ClaudeCliRuntime {
             end_mcp(mcp).await;
             return Err(RuntimeError::Unavailable("claude stdio unavailable".into()));
         };
-        let stdin: SharedStdin = Arc::new(tokio::sync::Mutex::new(Some(stdin)));
         let prompt = control::prompt_with_images(&run_id, text).await;
-        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let steers = SharedSteers::default();
+        // From here on only the input owner writes to the CLI.
+        let input = Input::spawn(stdin, Arc::clone(&steers), self.write_timeout);
         // Bridged: register the hook first; the prompt follows its ack and
         // stdin stays open for hook answers. Otherwise: prompt, then EOF.
         let task_store = self.task_store(&session_id);
@@ -575,10 +578,9 @@ impl ClaudeCliRuntime {
             BridgedTurn::new(
                 TurnIo {
                     bridge: Arc::clone(bridge),
-                    stdin: Arc::clone(&stdin),
+                    input: input.clone(),
                     thread: thread.thread_id.clone(),
                     run_id: run_id.clone(),
-                    ready: Arc::clone(&ready),
                     steers: Arc::clone(&steers),
                     tool_bound: self.tool_busy_bound,
                 },
@@ -591,16 +593,15 @@ impl ClaudeCliRuntime {
         } else {
             prompt
         };
-        if let Err(e) = control::write_line(&stdin, &first).await {
+        if !input.frame(first).await {
             crate::rpc::kill_group(pgid, "claude cli: child could not take input");
             end_mcp(mcp).await;
-            return Err(RuntimeError::Unavailable(format!(
-                "claude stdin: {}",
-                e.kind()
-            )));
+            return Err(RuntimeError::Unavailable(
+                "claude stdin: the CLI did not take its first input".into(),
+            ));
         }
         if bridged.is_none() {
-            control::close(&stdin).await;
+            input.close(true);
         }
 
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -612,9 +613,8 @@ impl ClaudeCliRuntime {
                     pgid,
                     cancelled: Arc::clone(&cancelled),
                     done: done_rx,
-                    stdin: Arc::clone(&stdin),
-                    ready,
-                    steers: Arc::clone(&steers),
+                    input: input.clone(),
+                    admission: Arc::default(),
                     run_id: run_id.clone(),
                 },
             );
@@ -644,7 +644,7 @@ impl ClaudeCliRuntime {
         let steer_ack_timeout = self.steer_ack_timeout;
         let steer_idle_timeout = self.steer_idle_timeout;
         let exit_grace = self.exit_grace;
-        let input = Arc::clone(&stdin);
+        let mut input_state = input.watch();
         tokio::spawn(async move {
             if let Some(sink) = sink.upgrade() {
                 sink.turn_started(&thread_id, Some(run.clone()), now_ms())
@@ -662,10 +662,21 @@ impl ClaudeCliRuntime {
             let mut exit_deadline: Option<tokio::time::Instant> = None;
             let mut quiet_from = tokio::time::Instant::now();
             loop {
-                // The result is in and input is closed: nothing more can be
-                // asked of the CLI, so its exit is waited for only so long.
-                if exit_deadline.is_none() && fold.has_result() && input_closed(&input).await {
-                    exit_deadline = Some(tokio::time::Instant::now() + exit_grace);
+                // Nothing more can be asked of the CLI, so its exit is waited
+                // for only so long: the result is in and input is closed (or
+                // the ledger says it closes now: the owner refuses any steer
+                // from then on), or a write failed, result or not.
+                if exit_deadline.is_none() {
+                    let state = input.state();
+                    let settled = fold.has_result()
+                        && (state != InputState::Open
+                            || control::with_ledger(&steers, |l| l.may_close()));
+                    if settled || state == InputState::Failed {
+                        if state == InputState::Failed && !fold.has_result() {
+                            refused = Some("claude cli stopped taking input");
+                        }
+                        exit_deadline = Some(tokio::time::Instant::now() + exit_grace);
+                    }
                 }
                 let waiting = bridged.as_ref().is_some_and(BridgedTurn::awaiting_ack);
                 let steer_wait = bridged
@@ -702,6 +713,8 @@ impl ClaudeCliRuntime {
                             quiet_from = tokio::time::Instant::now();
                             continue;
                         }
+                        // Input closed or failed: look again.
+                        Ok(()) = input_state.changed() => continue,
                         () = tokio::time::sleep_until(idle_deadline), if busy_until.is_none() => {
                             tracing::debug!(
                                 "claude cli: idle with steers open after the result; input closed"
@@ -744,7 +757,11 @@ impl ClaudeCliRuntime {
                         }
                     }
                 } else {
-                    lines.next_line().await
+                    tokio::select! {
+                        next = lines.next_line() => next,
+                        // A failed write ends the turn even with no result.
+                        Ok(()) = input_state.changed() => continue,
+                    }
                 };
                 if matches!(next, Ok(Some(_))) {
                     quiet_from = tokio::time::Instant::now();
@@ -796,7 +813,7 @@ impl ClaudeCliRuntime {
             // before the turn ends so no drain runs between the two. Input is
             // closed first: no steer can be written after the ledger is read.
             // One the engine could not keep fails the turn, naming it.
-            control::close(&stdin).await;
+            input.close_now().await;
             let unread = control::with_ledger(&steers, |l| l.unread());
             if !unread.is_empty() {
                 let lost = match sink.upgrade() {
@@ -856,22 +873,20 @@ impl ClaudeCliRuntime {
     /// the turn never writes is reported unread at its end.
     async fn steer_in_turn(&self, thread: &ThreadId, text: &str) -> SteerOutcome {
         let entry = self.active.lock().ok().and_then(|a| {
-            a.get(thread).map(|t| {
-                (
-                    Arc::clone(&t.stdin),
-                    Arc::clone(&t.steers),
-                    Arc::clone(&t.ready),
-                    t.run_id.clone(),
-                )
-            })
+            a.get(thread)
+                .map(|t| (t.input.clone(), Arc::clone(&t.admission), t.run_id.clone()))
         }); // silent-ok: a poisoned map only follows a panic elsewhere
-        let Some((stdin, steers, ready, run_id)) = entry else {
+        let Some((input, admission, run_id)) = entry else {
             return SteerOutcome::Rejected;
         };
+        // One steer at a time: a second one cannot overtake this one's gate
+        // answers, nor see gates this one already took.
+        let _admitted = admission.lock().await;
         // The words go as one denial's reason (or a question's answer);
-        // only once its reply is on the CLI's stdin do they count as sent.
-        // Otherwise (no gate, or that reply failed) they go as a steer.
-        if control::input_open(&stdin).await
+        // only once that reply is on the CLI's stdin do they count as sent.
+        // Otherwise (no gate, or that reply definitely failed or was
+        // withdrawn) they go as a steer, after every decline.
+        if input.state() == InputState::Open
             && let Some(bridge) = &self.bridge
         {
             let gates = bridge.steer_at_gates(thread, &run_id, text, true);
@@ -889,12 +904,9 @@ impl ClaudeCliRuntime {
             text: text.to_string(),
             line,
         };
-        match control::steer_or_hold(&stdin, &steers, &ready, steer).await {
-            Ok(_) => SteerOutcome::Steered,
-            Err(error) => {
-                tracing::debug!(%error, "claude cli: steer not delivered");
-                SteerOutcome::Rejected
-            }
+        match input.steer(steer).await {
+            SteerAdmit::Written | SteerAdmit::Held => SteerOutcome::Steered,
+            SteerAdmit::Refused => SteerOutcome::Rejected,
         }
     }
 

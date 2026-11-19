@@ -136,6 +136,7 @@ impl IdleArm {
             steer_ack_timeout: rt.steer_ack_timeout,
             steer_idle_timeout: rt.steer_idle_timeout,
             tool_busy_bound: rt.tool_busy_bound,
+            write_timeout: rt.write_timeout,
             exit_grace: rt.exit_grace,
         });
         Self {

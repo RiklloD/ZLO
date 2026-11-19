@@ -192,23 +192,38 @@ impl TurnFold {
             .unwrap_or_default()
     }
 
-    /// What the agent said and ran before a steer, as its own transcript
-    /// entry (finished messages only; one still streaming goes on into the
+    /// What the agent said and ran before a steer, every finished message
+    /// as its own transcript entry in order (the calls on the last one) (finished messages only; one still streaming goes on into the
     /// next entry). `None` when nothing new happened since the last cut.
-    pub(crate) fn take_segment(&mut self) -> Option<HistoryMessage> {
-        let text =
-            self.last_message(|id| self.finished.contains(id) && !self.journaled.contains(id));
-        let tools = self.tools[self.tools_journaled..].to_vec();
-        let ids: Vec<String> = self
-            .finished
+    pub(crate) fn take_segment(&mut self) -> Vec<HistoryMessage> {
+        let mut finished: Vec<(usize, String, String)> = self
+            .messages
             .iter()
-            .filter(|id| !self.journaled.contains(*id))
-            .cloned()
+            .filter(|(id, _)| self.finished.contains(*id) && !self.journaled.contains(*id))
+            .map(|(id, (order, _, text))| (*order, id.clone(), text.trim().to_string()))
             .collect();
-        self.journaled.extend(ids);
+        finished.sort_by_key(|(order, _, _)| *order);
+        let tools = self.tools[self.tools_journaled..].to_vec();
         self.tools_journaled = self.tools.len();
-        (!text.is_empty() || !tools.is_empty())
-            .then(|| journal::message(HistoryRole::Assistant, text, tools))
+        let mut entries: Vec<HistoryMessage> = Vec::new();
+        for (_, id, text) in finished {
+            self.journaled.insert(id);
+            if !text.is_empty() {
+                entries.push(journal::message(HistoryRole::Assistant, text, Vec::new()));
+            }
+        }
+        // The calls made before the steer go with the last thing said.
+        if !tools.is_empty() {
+            match entries.last_mut() {
+                Some(last) => last.tool_calls = tools,
+                None => entries.push(journal::message(
+                    HistoryRole::Assistant,
+                    String::new(),
+                    tools,
+                )),
+            }
+        }
+        entries
     }
 
     /// The turn's (last) transcript entry: everything after the last cut.
@@ -442,6 +457,23 @@ pub(crate) fn model_rows(catalog: &Value) -> Vec<ModelRow> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Sol 6: two messages finished before a steer are both kept, in order.
+    #[test]
+    fn every_message_before_a_steer_is_kept_in_order() {
+        let mut f = TurnFold {
+            turn_id: Some("t1".into()),
+            ..TurnFold::default()
+        };
+        for (id, text) in [("m1", "First"), ("m2", "Second")] {
+            f.push(
+                "item/completed",
+                &serde_json::json!({"sessionId": "s", "item": {"itemId": id, "turnId": "t1", "kind": "agentMessage", "status": "completed", "revision": 1, "text": text}}),
+            );
+        }
+        let cut: Vec<String> = f.take_segment().into_iter().map(|e| e.text).collect();
+        assert_eq!(cut, ["First", "Second"]);
+    }
     use super::*;
     use serde_json::json;
 
