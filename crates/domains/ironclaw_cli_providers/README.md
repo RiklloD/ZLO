@@ -3,7 +3,7 @@
 Coding-agent CLIs as `ironclaw_orchestrator` turn runtimes: the Claude CLI,
 registered twice: `claude-cli` (default account) and `claude-cli-2`
 (`CLAUDE_CONFIG_DIR=~/.claude-account2`), only when a `claude` binary is
-found; `antigravity` (Google's ACP agent), `muse-code` (Meta's Muse Code)
+found; `antigravity` (Google's Antigravity agent over ACP), `muse-code` (Meta's Muse Code)
 and `codex` (OpenAI's Codex CLI over `codex app-server`, on the user's own
 `codex login`), each registered when installed
 (`register_antigravity_runtime`, `register_muse_runtime`,
@@ -115,49 +115,90 @@ through `TurnEventSink::turn_telemetry` and served by
 
 ## Antigravity (`antigravity`)
 
-Runs Google's Antigravity ACP agent (`agy_acp_server.par` with
-`localharness_external` beside it), not the `agy` CLI: `agy` 1.4.0 has no
-ACP mode. The runtime is found where Hermes or T3 Code installed it
+Runs Google's Antigravity agent over ACP: the native `agy` CLI's
+`agy acp` stdio server when the installed `agy` is 1.5 or later (found on
+`PATH`, then `~/.local/bin`; checked against `launch::EXPECTED_CLI_VERSION`,
+`1.5.11`), else the legacy one-file runtime (`agy_acp_server.par` beside
+`localharness_external`, 1.3.0) where Hermes or T3 Code installed it
 (`~/.hermes/plugin-data/t3code/antigravity-acp`, then
-`~/.t3/tools/antigravity-acp`, `<platform>/active.json` naming the version).
-The protocol is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
-`agent-client-protocol` crate is not used because it turns on `serde_json`'s
-`preserve_order` for the whole workspace build.
+`~/.t3/tools/antigravity-acp`). The native launch is
+`agy acp --gemini-dir <profile> --app-data-dir antigravity-acp
+--disable-telemetry`, never `--dangerously-skip-permissions`. The protocol
+is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
+`agent-client-protocol` crate is not used because it turns on
+`serde_json`'s `preserve_order` for the whole workspace build.
 
-- **Sign-in:** `GEMINI_HOME` is the profile Hermes already signed in
+- **Sign-in:** the profile is the one Hermes already signed in
   (`~/.hermes/plugin-data/t3code/antigravity/profile`) when it exists, else
-  `~/.ironclaw/antigravity/profile`. `authenticated` is the presence of
-  `antigravity-acp/acp_token.json` there. The agent inherits only an environment
-  allowlist (`HOME`, `PATH`, locale, proxy and CA settings), so ambient
-  cloud credentials and API keys never reach it, and `BROWSER` is `/usr/bin/true`: a
-  missing sign-in fails the turn after `auth_timeout` instead of opening a
-  browser.
-- **Turns:** one agent process per turn (it starts in about a second):
-  `initialize`, `authenticate`, `session/new` on the first turn (the agent's
-  session id is kept in `~/.ironclaw/antigravity/sessions/<key>`), then
-  `session/resume`. The thread's model is applied with
-  `session/set_config_option` (`default` keeps the agent's choice).
-- **Stop:** `session/cancel`, then SIGTERM/SIGKILL of the process group
-  after 2 s each. No in-turn steering: a steer restarts the turn.
+  `~/.ironclaw/antigravity/profile`. Both launches keep the sign-in at
+  `<profile>/antigravity-acp/acp_token.json`, so one sign-in serves either;
+  `authenticated` is that file's presence. The agent inherits only an
+  environment allowlist (`HOME`, `PATH`, locale, proxy and CA settings), so
+  ambient cloud credentials and API keys never reach it, and `BROWSER` is
+  `/usr/bin/true`: a missing sign-in fails the turn after `auth_timeout`
+  instead of opening a browser. The user's global skills
+  (`~/.gemini/config/skills`, `~/.gemini/antigravity-cli/skills`) are
+  linked into the private profile; only a missing entry or an empty
+  placeholder folder is replaced.
+- **Turns:** one agent process per turn: `initialize`, `authenticate`,
+  `session/new` on the first turn (the agent's session id is kept in
+  `~/.ironclaw/antigravity/sessions/<key>`), then `session/resume`. The
+  thread's model and thinking level (`thought_level`, the catalog's
+  `efforts`) are applied with `session/set_config_option`; a pre-1.5 model
+  id such as `gemini-3.8-flash-high` is still passed through. The profile
+  preamble, skills index and goal go in
+  `_meta.antigravity.systemPrompt.append` on every `session/new` and
+  `session/resume` when the agent offers it, so the prompt is the user's
+  text verbatim and native commands (`/goal`, `/plan`, `/clear`) reach the
+  agent; without it they go ahead of the prompt, except before a `/`
+  command. A `/goal` run's `<!-- GOAL_COMPLETE -->` marker is dropped from
+  the answer.
+- **Steer:** on `agy acp` a message sent mid-turn is another
+  `session/prompt` into the same session (`steer_in_turn`): the running
+  prompt answers `end_turn`, the turn carries on under the new one, and the
+  agent's tools and subagents are left alone. The legacy runtime refuses
+  (the engine queues); `SteerHow::Restart` stops and restarts.
+- **Background commands:** `agy` ends a prompt while a command it
+  backgrounded still runs and replies on its own when it finishes. The turn
+  stays open until the command is done and that reply closes with a
+  `usage_update` (or 60 s of silence with nothing running); a daemon
+  (`IsDaemon`) never holds a turn, and an agent exit while held fails it.
+- **Stop:** `session/cancel` (which also ends `agy`'s background commands),
+  then SIGTERM/SIGKILL of the process group after 2 s each.
+- **Live turn:** reply text, thinking, tool rows with their output and
+  Antigravity's own subagent calls (`invoke_subagent`, shown read-only as
+  `subagent` rows) stream to the bridge; plan updates as before.
 - **History:** IronClaw's own journal,
-  `~/.ironclaw/antigravity/transcripts/<key>.jsonl` (user prompt, final
-  answer, tool call names).
+  `~/.ironclaw/antigravity/transcripts/<key>.jsonl` (user prompts and
+  steers, answers, tool call names). When the agent has lost a thread's
+  session, the fresh one gets a recap of that journal.
 - **Models:** the list the last session reported
-  (`~/.ironclaw/antigravity/models.json`), else Hermes's cache in the shared
-  profile, else `default`. A signed-in catalog read refreshes a list older
-  than an hour in the background (`session/new` + `session/close`, no
-  prompt), so newly shipped models appear without a turn or an app release.
+  (`~/.ironclaw/antigravity/models.json`, with the thinking levels), else
+  Hermes's cache in the shared profile, else `default`. A signed-in catalog
+  read refreshes a list older than an hour in the background
+  (`session/new` + `session/close`, no prompt).
 - **Limits:** a quota-shaped error (`RESOURCE_EXHAUSTED`, "quota", "rate
-  limit") becomes a `usage_limit:` failure; ACP reports no reset time.
+  limit") or a `refusal` stop becomes a `usage_limit:` failure;
+  `quotaResetTimeStamp`, `quotaResetDelay` or `retryDelay` in the error
+  sets `usage_limit_resets_at`. A model rejecting a saved thinking block
+  (lost signature) retires the session pointer (renamed, never deleted), so
+  the next turn starts a fresh session with the recap.
 - **Telemetry:** context used and window from ACP `usage_update`; cache hit
-  rate and TPS only when `session/prompt` returns `usage` (the 1.3.0 agent
-  does not, so TPS stays empty).
+  rate and TPS from `session/prompt`'s `usage` (`agy` 1.5 reports it; the
+  1.3.0 runtime does not).
 - **Tools:** the client offers no file system and no terminal, the session
   stays in the agent's ask-first `default` mode, and every
   `session/request_permission` goes through `permissions::decide`: with
   the bridge it waits as an approval in the thread and answers `allow_once`
-  or `reject_once` (never `allow_always`); without, `reject_once`. Native
-  questions are cancelled.
+  or `reject_once` (never `allow_always`); without, `reject_once`. A
+  rejection's feedback steers the running turn on `agy acp`, else waits in
+  the queue as the next turn's input. Native questions are cancelled
+  without a bridge.
+- **Not ported from T3 Code:** subscription usage windows (they need an
+  HTTP call with the account's refresh token: `ironclaw_usage`'s job),
+  reading `agy`'s SQLite session log for upstream errors reported as
+  `end_turn`, detached subagent transcripts, managed downloads, and remote
+  sign-in.
 
 ## Muse Code (`muse-code`)
 

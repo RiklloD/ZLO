@@ -702,6 +702,9 @@ impl CliBridge {
         let registered = self.live.lock().ok().is_some_and(|mut live| {
             live.get_mut(thread)
                 .filter(|t| t.run_id == run_id)
+                // A CLI that reports a call before asking about it (ACP's
+                // `tool_call`) already drew its row: never draw it twice.
+                .filter(|t| call_id.is_none() || !t.tools.iter().any(|(id, _)| *id == call_id))
                 .map(|t| t.tools.push((call_id, tool.clone())))
                 .is_some()
         });

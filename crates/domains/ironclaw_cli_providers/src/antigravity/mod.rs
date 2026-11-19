@@ -1,22 +1,25 @@
-//! The Antigravity ACP agent (`agy_acp_server`) as an orchestrator
-//! runtime, driven over the Agent Client Protocol like the Hermes t3code
-//! driver: `initialize`, `authenticate` eagerly, `session/new` once, then
-//! `session/resume` instead of replaying history.
+//! Google's Antigravity agent as an orchestrator runtime, driven over the
+//! Agent Client Protocol: `initialize`, `authenticate` eagerly,
+//! `session/new` once, then `session/resume` instead of replaying history.
 //!
-//! One agent process per turn (it starts in about a second). The ACP session
-//! id is the agent's to mint, so the thread's `native_session_id` is a key of
-//! ours and `<state_dir>/sessions/<key>` holds the agent's id. Transcripts are
-//! IronClaw's own journal (`<state_dir>/transcripts/<key>.jsonl`): the agent's
-//! conversation store is not a stable format.
+//! The agent is the native `agy` CLI's `agy acp` server (1.5 and later),
+//! else the legacy one-file ACP runtime T3 Code and Hermes used to install
+//! ([`launch`]). One agent process per turn. The ACP session id is the
+//! agent's to mint, so the thread's `native_session_id` is a key of ours and
+//! `<state_dir>/sessions/<key>` holds the agent's id. Transcripts are
+//! IronClaw's own journal (`<state_dir>/transcripts/<key>.jsonl`): the
+//! agent's conversation store is not a stable format.
 //!
-//! The account's models come from the agent, never a list of ours: every
-//! session's config options are saved to `<state_dir>/models.json`, and a
-//! signed-in catalog read refreshes a list older than an hour in the
-//! background (a bare `session/new` + `session/close`, no prompt), so models
-//! the vendor ships appear in the picker without an app release.
+//! A message sent while a turn runs goes to the agent as another
+//! `session/prompt` (`agy` 1.5 steers with it: the running prompt answers
+//! `end_turn` and the turn carries on under the new one, its tools and
+//! subagents untouched). A command the agent backgrounds keeps the turn
+//! open until the agent has reported it ([`live`]). The profile, skills and
+//! goal go in `_meta.antigravity.systemPrompt.append` when the agent offers
+//! it, so the prompt is the user's text verbatim and native commands
+//! (`/goal`, `/plan`, `/clear`) reach the agent.
 //!
-//! The `agy` CLI is not an ACP agent (1.4.0 has no ACP mode); the ACP server
-//! is the separately shipped runtime T3 Code and Hermes install.
+//! The account's models come from the agent, never a list of ours ([`store`]).
 //!
 //! Tools fail closed: the client offers no file system or terminal, the
 //! session runs in the agent's `default` (ask first) mode, and every
@@ -25,24 +28,28 @@
 //! otherwise.
 
 mod fold;
+pub mod launch;
+mod live;
+mod store;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use ironclaw_host_api::ids::ThreadId;
+use ironclaw_host_api::turn::DenialFeedback;
 use ironclaw_orchestrator::model::{RuntimeId, ThreadRecord, ThreadScope, now_ms};
 use ironclaw_orchestrator::runtime::*;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::bridge::{CallClaim, CliBridge};
 use crate::interaction;
@@ -50,55 +57,49 @@ use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
 use fold::PromptFold;
+use launch::AgentLaunch;
+use live::LiveFold;
+use store::{INIT_TIMEOUT, SESSION_TIMEOUT};
 
-/// The ACP runtime release the driver was checked against.
+/// The legacy ACP runtime release the driver was checked against.
 pub const EXPECTED_RUNTIME_VERSION: &str = "1.3.0";
 
 /// Model alias that keeps the agent's own choice.
 const DEFAULT_MODEL: &str = "default";
 
-const INIT_TIMEOUT: Duration = Duration::from_secs(90);
-const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
 const CONFIG_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long the account's model list is trusted before a catalog read asks
-/// the agent again, so models the vendor ships reach the picker without a turn.
-const MODELS_TTL_MS: i64 = 60 * 60 * 1000;
 /// After a refresh attempt (failed ones included), wait this long before the
 /// next, so an expired sign-in or no network never relaunches the agent on
 /// every catalog read.
 const REFRESH_RETRY_MS: i64 = 10 * 60 * 1000;
-/// Closing the probe session is housekeeping; never wait long for it.
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A prompt runs as long as the agent works on it; Stop ends it sooner.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
-
-/// The only inherited variables the agent sees. Everything else (ambient
-/// cloud credentials, API keys, agent knobs) is dropped: the agent signs in
-/// through its own profile only.
-const KEPT_ENV: [&str; 10] = [
-    "HOME",
-    "PATH",
-    "USER",
-    "LOGNAME",
-    "LANG",
-    "LC_ALL",
-    "SSL_CERT_FILE",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "NO_PROXY",
-];
+/// How long a steer waits for the running turn to take it.
+const STEER_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+/// While a turn is held for a background command: how often it checks, how
+/// long a reply closed by `usage_update` must stay quiet, and how long a
+/// silent agent with nothing running is waited for.
+const HOLD_TICK: Duration = Duration::from_millis(250);
+const HOLD_SETTLE: Duration = Duration::from_secs(1);
+const HOLD_QUIET: Duration = Duration::from_secs(60);
+/// The transcript recap a fresh session gets when the thread's earlier
+/// session is gone: this many messages, at most this many characters.
+const RECAP_MESSAGES: usize = 40;
+const RECAP_MAX_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone)]
 pub struct AntigravityConfig {
     /// Runtime and provider id (`antigravity`).
     pub runtime_id: String,
     pub display_name: String,
-    /// `agy_acp_server(.par)`.
-    pub executable: PathBuf,
-    /// `localharness_external`, shipped beside the server.
-    pub harness: PathBuf,
-    /// `GEMINI_HOME`: the agent's private profile and its account sign-in.
+    /// The agent program.
+    pub launch: AgentLaunch,
+    /// `GEMINI_HOME` / `--gemini-dir`: the agent's private profile and its
+    /// account sign-in.
     pub profile_dir: PathBuf,
+    /// The user's own Gemini directory (`~/.gemini`), whose global skills
+    /// are linked into the profile; `None` links nothing.
+    pub user_gemini_dir: Option<PathBuf>,
     /// ACP auth method id (`oauth-personal`, `oauth-business`, ...).
     pub auth_method: String,
     /// How long `authenticate` may take. A missing sign-in waits for a
@@ -113,7 +114,7 @@ pub struct AntigravityConfig {
 impl AntigravityConfig {
     fn token_file(&self) -> PathBuf {
         self.profile_dir
-            .join("antigravity-acp")
+            .join(launch::APP_DATA_DIR)
             .join("acp_token.json")
     }
 
@@ -139,11 +140,22 @@ impl AntigravityConfig {
     }
 }
 
+/// A message for the running turn; the turn answers whether it took it.
+struct SteerRequest {
+    text: String,
+    /// A person's message (journaled), not scaffolding such as a rejection.
+    journal: bool,
+    taken: oneshot::Sender<bool>,
+}
+
+type SteerTx = mpsc::UnboundedSender<SteerRequest>;
+
 struct ActiveTurn {
     pgid: i32,
     cancelled: Arc<AtomicBool>,
     /// The live connection and ACP session, once the session is open.
     session: Arc<Mutex<Option<(RpcClient, String)>>>,
+    steer: SteerTx,
     done: watch::Receiver<bool>,
 }
 
@@ -159,6 +171,17 @@ pub struct AntigravityRuntime {
     refreshing: Arc<AtomicBool>,
     /// When the last refresh started (ms), for [`REFRESH_RETRY_MS`].
     last_refresh: Arc<std::sync::atomic::AtomicI64>,
+}
+
+/// What a turn sends besides the user's text.
+#[derive(Default)]
+struct TurnContext {
+    /// Profile preamble and goal, whole: for an agent that appends it to its
+    /// system prompt (it keeps none of it between processes).
+    system: Option<String>,
+    /// Profile preamble (first turn this process runs for the thread) and
+    /// goal, put ahead of the prompt for an agent that cannot.
+    inline: Option<String>,
 }
 
 impl AntigravityRuntime {
@@ -186,25 +209,21 @@ impl AntigravityRuntime {
             .unwrap_or(false) // silent-ok: a poisoned map only happens after a panic elsewhere
     }
 
-    fn command(&self) -> Command {
-        agent_command(&self.config)
-    }
-
     async fn spawn_turn(
         &self,
         thread: &ThreadRecord,
         text: &str,
-        context: Option<&str>,
+        effort: Option<String>,
+        context: TurnContext,
     ) -> Result<String, RuntimeError> {
         let key = thread
             .native_session_id
             .clone()
             .ok_or_else(|| RuntimeError::Rejected("thread has no antigravity session".into()))?;
-        prepare_dirs(&self.config)
+        launch::prepare_dirs(&self.config)
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("antigravity dirs: {}", e.kind())))?;
-        let mut child = self
-            .command()
+        let mut child = launch::agent_command(&self.config)
             .spawn()
             .map_err(|e| RuntimeError::Unavailable(format!("spawn antigravity: {}", e.kind())))?;
         let pgid = rpc::group_of(&child)
@@ -212,7 +231,7 @@ impl AntigravityRuntime {
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
-            crate::rpc::kill_group(pgid, "antigravity: half-spawned child");
+            rpc::kill_group(pgid, "antigravity: half-spawned child");
             return Err(RuntimeError::Unavailable(
                 "antigravity stdio unavailable".into(),
             ));
@@ -229,6 +248,7 @@ impl AntigravityRuntime {
         let run_id = uuid::Uuid::new_v4().to_string();
         let cancelled = Arc::new(AtomicBool::new(false));
         let session = Arc::new(Mutex::new(None));
+        let (steer_tx, steer_rx) = mpsc::unbounded_channel();
         let (done_tx, done_rx) = watch::channel(false);
         if let Ok(mut active) = self.active.lock() {
             active.insert(
@@ -237,6 +257,7 @@ impl AntigravityRuntime {
                     pgid,
                     cancelled: Arc::clone(&cancelled),
                     session: Arc::clone(&session),
+                    steer: steer_tx.clone(),
                     done: done_rx,
                 },
             );
@@ -246,10 +267,13 @@ impl AntigravityRuntime {
             config: Arc::clone(&self.config),
             key,
             model: thread.model.clone(),
+            effort,
             text: text.to_string(),
-            context: context.map(str::to_string),
+            context,
             cancelled,
             session,
+            steer_tx,
+            permissions: Arc::new(AtomicUsize::new(0)),
             bridge: self.bridge.clone(),
             thread_id: thread.thread_id.clone(),
             run_id: run_id.clone(),
@@ -267,8 +291,8 @@ impl AntigravityRuntime {
             if let Some(bridge) = &bridge {
                 bridge.turn_started(&thread_id, &run);
             }
-            let (outcome, telemetry) = turn.run(client, inbound).await;
-            close_host(&mut child, pgid).await;
+            let (outcome, telemetry) = turn.run(client, inbound, steer_rx).await;
+            store::close_host(&mut child, pgid).await;
             if let Some(bridge) = &bridge {
                 bridge.turn_ended(&thread_id, &run, outcome.status.as_str());
             }
@@ -291,6 +315,19 @@ impl AntigravityRuntime {
         Ok(run_id)
     }
 
+    /// Hand `text` to the running turn as a steer. `false` when there is no
+    /// turn, its session is not open yet, or the agent cannot be steered.
+    async fn steer_running(&self, thread: &ThreadId, text: &str) -> bool {
+        let Some(steer) = self.active.lock().ok().and_then(|a| {
+            a.get(thread)
+                .filter(|t| t.session.lock().is_ok_and(|s| s.is_some()))
+                .map(|t| t.steer.clone())
+        }) else {
+            return false;
+        };
+        offer_steer(&steer, text.to_string(), true).await
+    }
+
     /// Ask the agent to cancel, then kill its process group if it does not
     /// settle within the grace period. Waits until the turn is reported.
     async fn stop(&self, thread: &ThreadId) {
@@ -310,6 +347,7 @@ impl AntigravityRuntime {
         cancelled.store(true, Ordering::SeqCst);
         let open = session.lock().ok().and_then(|s| s.clone());
         if let Some((client, session_id)) = open {
+            // `agy` 1.5 also ends the commands it backgrounded on cancel.
             #[expect(
                 clippy::let_underscore_must_use,
                 reason = "the kill below still ends the turn"
@@ -342,21 +380,70 @@ impl AntigravityRuntime {
     }
 }
 
+/// Offer a steer to a turn and wait (briefly) for it to be taken.
+async fn offer_steer(steer: &SteerTx, text: String, journal: bool) -> bool {
+    let (taken, answer) = oneshot::channel();
+    if steer
+        .send(SteerRequest {
+            text,
+            journal,
+            taken,
+        })
+        .is_err()
+    {
+        return false;
+    }
+    matches!(
+        tokio::time::timeout(STEER_ACK_TIMEOUT, answer).await,
+        Ok(Ok(true))
+    )
+}
+
+/// What the agent's `initialize` answer says it can do.
+#[derive(Debug, Clone, Copy, Default)]
+struct AgentTraits {
+    /// A second `session/prompt` steers the running turn.
+    steers: bool,
+    /// `_meta.antigravity.systemPrompt.append` is honored.
+    appends: bool,
+}
+
+type PromptFuture = Pin<Box<dyn Future<Output = Result<Value, RpcError>> + Send>>;
+
+fn send_prompt(client: &RpcClient, session_id: &str, text: &str) -> PromptFuture {
+    let client = client.clone();
+    let params = json!({
+        "sessionId": session_id,
+        "prompt": [{"type": "text", "text": text}],
+    });
+    Box::pin(async move {
+        client
+            .request("session/prompt", params, PROMPT_TIMEOUT)
+            .await
+    })
+}
+
 /// One turn's protocol work, owned by its task.
 struct Turn {
     config: Arc<AntigravityConfig>,
     key: String,
     model: Option<String>,
+    effort: Option<String>,
     text: String,
-    /// Profile preamble and thread goal, sent ahead of `text` but never journaled.
-    context: Option<String>,
+    context: TurnContext,
     cancelled: Arc<AtomicBool>,
     session: Arc<Mutex<Option<(RpcClient, String)>>>,
+    /// The turn's own steer channel, for rejection feedback.
+    steer_tx: SteerTx,
+    /// Permission requests still waiting for an answer.
+    permissions: Arc<AtomicUsize>,
     // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
     run_id: String,
 }
+
+type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
 
 impl Turn {
     /// Run the turn, then drop every handle on the connection so the agent
@@ -365,11 +452,9 @@ impl Turn {
         self,
         client: RpcClient,
         inbound: mpsc::UnboundedReceiver<Inbound>,
-    ) -> (
-        TurnOutcome,
-        Option<ironclaw_orchestrator::telemetry::TurnTelemetry>,
-    ) {
-        let result = self.drive(client, inbound).await;
+        steer_rx: mpsc::UnboundedReceiver<SteerRequest>,
+    ) -> (TurnOutcome, Telemetry) {
+        let result = self.drive(client, inbound, steer_rx).await;
         if let Ok(mut slot) = self.session.lock() {
             *slot = None;
         }
@@ -380,20 +465,20 @@ impl Turn {
         &self,
         client: RpcClient,
         mut inbound: mpsc::UnboundedReceiver<Inbound>,
-    ) -> (
-        TurnOutcome,
-        Option<ironclaw_orchestrator::telemetry::TurnTelemetry>,
-    ) {
+        mut steer_rx: mpsc::UnboundedReceiver<SteerRequest>,
+    ) -> (TurnOutcome, Telemetry) {
         let mut fold = PromptFold::default();
-        let session_id = match self.open(&client, &mut fold).await {
-            Ok(id) => id,
+        let mut live = LiveFold::default();
+        let (session_id, agent, recap) = match self.open(&client, &mut fold).await {
+            Ok(opened) => opened,
             Err(outcome) => return (outcome, None),
         };
         if self.cancelled.load(Ordering::SeqCst) {
             return (TurnOutcome::ended(TurnEndStatus::Cancelled, None), None);
         }
+        let transcript = self.config.transcript(&self.key);
         journal::append(
-            &self.config.transcript(&self.key),
+            &transcript,
             &[journal::message(
                 HistoryRole::User,
                 self.text.clone(),
@@ -402,53 +487,152 @@ impl Turn {
         )
         .await;
 
-        let prompt = {
-            let client = client.clone();
-            let params = json!({
-                "sessionId": session_id,
-                "prompt": [{"type": "text", "text": crate::with_context(&self.text, self.context.as_deref())}],
-            });
-            async move {
-                client
-                    .request("session/prompt", params, PROMPT_TIMEOUT)
-                    .await
+        let first = self.prompt_text(agent, recap.as_deref());
+        let mut prompt = Some(send_prompt(&client, &session_id, &first));
+        let mut answer: Result<Value, RpcError> = Err(RpcError::Closed);
+        // Held open after the prompt for a backgrounded command.
+        let mut held = false;
+        let mut quiet_since = Instant::now();
+        let mut closed_by_usage = false;
+        loop {
+            if prompt.is_none() {
+                let ended = self.cancelled.load(Ordering::SeqCst)
+                    || answer
+                        .as_ref()
+                        .map_or(true, |r| r["stopReason"].as_str() != Some("end_turn"));
+                if ended {
+                    break;
+                }
+                if live.background_running() {
+                    held = true;
+                } else if !held {
+                    break;
+                } else {
+                    // The command finished; the agent's own reply about it
+                    // ends with a `usage_update`.
+                    let idle = self.permissions.load(Ordering::SeqCst) == 0 && !live.busy();
+                    let quiet = quiet_since.elapsed();
+                    if idle && ((closed_by_usage && quiet >= HOLD_SETTLE) || quiet >= HOLD_QUIET) {
+                        break;
+                    }
+                }
             }
-        };
-        tokio::pin!(prompt);
-        let answer = loop {
             tokio::select! {
-                answer = &mut prompt => break answer,
+                result = async {
+                    match prompt.as_mut() {
+                        Some(pending) => pending.await,
+                        None => std::future::pending().await,
+                    }
+                }, if prompt.is_some() => {
+                    prompt = None;
+                    answer = result;
+                    // Updates the agent sent before its answer are already
+                    // queued: fold them before judging whether work remains.
+                    while let Ok(message) = inbound.try_recv() {
+                        closed_by_usage =
+                            self.handle(&client, &session_id, agent, message, &mut fold, &mut live);
+                        quiet_since = Instant::now();
+                    }
+                }
                 next = inbound.recv() => match next {
-                    Some(message) => self.handle(&client, &session_id, message, &mut fold),
-                    // The agent is gone; the pending prompt fails as closed.
-                    None => break prompt.await,
+                    Some(message) => {
+                        closed_by_usage =
+                            self.handle(&client, &session_id, agent, message, &mut fold, &mut live);
+                        quiet_since = Instant::now();
+                    }
+                    // The agent is gone: a pending prompt fails as closed,
+                    // and so does a turn held for a background command.
+                    None => {
+                        if let Some(pending) = prompt.take() {
+                            answer = pending.await;
+                        } else if held {
+                            answer = Err(RpcError::Closed);
+                        }
+                        break;
+                    }
                 },
+                Some(request) = steer_rx.recv() => {
+                    if !agent.steers || self.cancelled.load(Ordering::SeqCst) {
+                        #[expect(clippy::let_underscore_must_use, reason = "the steerer may have given up waiting")]
+                        let _ = request.taken.send(false);
+                        continue;
+                    }
+                    // What the agent said so far (including updates already
+                    // received) was its reply to the earlier message; the
+                    // steer starts a new one.
+                    while let Ok(message) = inbound.try_recv() {
+                        closed_by_usage =
+                            self.handle(&client, &session_id, agent, message, &mut fold, &mut live);
+                    }
+                    let mut entries: Vec<HistoryMessage> = fold.take_partial().into_iter().collect();
+                    if request.journal {
+                        entries.push(journal::message(HistoryRole::User, request.text.clone(), Vec::new()));
+                    }
+                    journal::append(&transcript, &entries).await;
+                    live.steered();
+                    prompt = Some(send_prompt(&client, &session_id, &request.text));
+                    held = false;
+                    #[expect(clippy::let_underscore_must_use, reason = "the steerer may have given up waiting")]
+                    let _ = request.taken.send(true);
+                }
+                () = tokio::time::sleep(HOLD_TICK), if prompt.is_none() => {}
             }
-        };
+        }
         // Updates that raced the answer still belong to this turn.
         while let Ok(message) = inbound.try_recv() {
-            self.handle(&client, &session_id, message, &mut fold);
+            self.handle(&client, &session_id, agent, message, &mut fold, &mut live);
         }
-        let outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst), &answer);
+        if let Some(bridge) = &self.bridge {
+            bridge.flush_details(&self.thread_id, &self.run_id);
+        }
+        let mut outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst), &answer);
+        if fold.lost_thinking_signature(&answer) {
+            store::retire_session(&self.config.session_file(&self.key)).await;
+            outcome = TurnOutcome::ended(
+                TurnEndStatus::Failed,
+                Some(
+                    "antigravity: the saved session can no longer be sent to the model; \
+                     the next message starts a fresh session with this thread's context"
+                        .into(),
+                ),
+            );
+        }
         if let Some(entry) = fold.assistant_message() {
-            journal::append(&self.config.transcript(&self.key), &[entry]).await;
+            journal::append(&transcript, &[entry]).await;
         }
         let telemetry = fold.telemetry(&self.config.runtime_id, answer.as_ref().ok());
         (outcome, telemetry)
     }
 
+    /// The first prompt as sent. An agent that appends to its system prompt
+    /// got the context there; otherwise it goes ahead of the text, except
+    /// for a native command (`/goal ...`), which must lead the prompt.
+    fn prompt_text(&self, agent: AgentTraits, recap: Option<&str>) -> String {
+        if agent.appends || self.text.trim_start().starts_with('/') {
+            return self.text.clone();
+        }
+        let context = crate::join_notes([recap.map(str::to_string), self.context.inline.clone()]);
+        crate::with_context(&self.text, context.as_deref())
+    }
+
     /// `initialize`, `authenticate`, then resume or create the session and
-    /// bring its mode and model in line. Failures come back as the outcome.
-    async fn open(&self, client: &RpcClient, fold: &mut PromptFold) -> Result<String, TurnOutcome> {
-        let init = json!({
-            "protocolVersion": 1,
-            "clientInfo": {"name": "ironclaw", "title": "IronClaw", "version": env!("CARGO_PKG_VERSION")},
-            "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
-        });
-        client
-            .request("initialize", init, INIT_TIMEOUT)
+    /// bring its mode, model and thinking level in line. Failures come back
+    /// as the outcome. Returns the session, the agent's traits, and a recap
+    /// of the thread for a fresh session that replaces a lost one (when it
+    /// could not go in the system prompt).
+    async fn open(
+        &self,
+        client: &RpcClient,
+        fold: &mut PromptFold,
+    ) -> Result<(String, AgentTraits, Option<String>), TurnOutcome> {
+        let init = client
+            .request("initialize", store::initialize_params(), INIT_TIMEOUT)
             .await
             .map_err(|e| fold::failed(&e))?;
+        let agent = AgentTraits {
+            steers: self.config.launch.may_steer() && launch::steers_with_prompt(&init),
+            appends: launch::appends_system_prompt(&init),
+        };
         client
             .request(
                 "authenticate",
@@ -465,34 +649,54 @@ impl Turn {
             })?;
 
         let cwd = self.config.work_dir.display().to_string();
-        let known = tokio::fs::read_to_string(self.config.session_file(&self.key))
-            .await
-            .ok() // silent-ok: no file means the first turn of the thread
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        let meta = |extra: Option<&str>| -> Value {
+            let system =
+                crate::join_notes([extra.map(str::to_string), self.context.system.clone()]);
+            match system.filter(|_| agent.appends) {
+                Some(append) => json!({"antigravity": {"systemPrompt": {"append": append}}}),
+                None => Value::Null,
+            }
+        };
+        let with_meta = |mut params: Value, meta: Value| {
+            if !meta.is_null() {
+                params["_meta"] = meta;
+            }
+            params
+        };
         let mut opened = None;
-        if let Some(id) = known {
+        if let Some(id) = store::read_session_id(&self.config.session_file(&self.key)).await {
             let resumed = client
                 .request(
                     "session/resume",
-                    json!({"sessionId": id, "cwd": cwd, "mcpServers": []}),
+                    with_meta(
+                        json!({"sessionId": id, "cwd": cwd, "mcpServers": []}),
+                        meta(None),
+                    ),
                     SESSION_TIMEOUT,
                 )
                 .await;
             match resumed {
                 Ok(result) => opened = Some((id, result)),
-                // The agent lost the session: start over rather than leave
-                // the thread stuck. Context lives on in our transcript.
+                // The agent lost the session: start over with a recap of
+                // our transcript rather than leave the thread stuck.
                 Err(error) => tracing::debug!(error = %error.label(), "antigravity: resume failed"),
             }
         }
+        let mut inline_recap = None;
         let (session_id, result) = match opened {
             Some(found) => found,
             None => {
+                let recap = self.recap().await;
+                if !agent.appends {
+                    inline_recap = recap.clone();
+                }
                 let result = client
                     .request(
                         "session/new",
-                        json!({"cwd": cwd, "mcpServers": []}),
+                        with_meta(
+                            json!({"cwd": cwd, "mcpServers": []}),
+                            meta(recap.as_deref()),
+                        ),
                         SESSION_TIMEOUT,
                     )
                     .await
@@ -507,7 +711,7 @@ impl Turn {
                         )
                     })?
                     .to_string();
-                save_session_id(&self.config.session_file(&self.key), &id).await;
+                store::save_session_id(&self.config.session_file(&self.key), &id).await;
                 (id, result)
             }
         };
@@ -516,14 +720,14 @@ impl Turn {
         }
 
         let mut options = result.get("configOptions").cloned().unwrap_or(Value::Null);
-        save_models(&self.config.models_file(), &options).await;
+        store::save_models(&self.config.models_file(), &options).await;
         self.apply_mode(client, &session_id, &options, result.get("modes"))
             .await
             .map_err(|e| fold::failed(&e))?;
         if let Some(model) = self.model.as_deref().filter(|m| *m != DEFAULT_MODEL)
             && fold::current_model(&options).as_deref() != Some(model)
         {
-            if !fold::model_options(&options).iter().any(|m| m == model) {
+            if fold::pick_model(&options, model) == fold::ModelPick::Unavailable {
                 return Err(TurnOutcome::ended(
                     TurnEndStatus::Failed,
                     Some(format!(
@@ -531,20 +735,77 @@ impl Turn {
                     )),
                 ));
             }
-            let answer = client
-                .request(
-                    "session/set_config_option",
-                    json!({"sessionId": session_id, "configId": "model", "value": model}),
-                    CONFIG_TIMEOUT,
-                )
-                .await
-                .map_err(|e| fold::failed(&e))?;
-            if let Some(updated) = answer.get("configOptions") {
-                options = updated.clone();
-            }
+            options = self
+                .set_option(client, &session_id, "model", model, options)
+                .await?;
+        }
+        if let (Some(effort), Some(option)) =
+            (self.effort.as_deref(), fold::effort_option(&options))
+            && option.get("currentValue").and_then(Value::as_str) != Some(effort)
+            && fold::effort_options(&options).iter().any(|e| e == effort)
+            && let Some(id) = option.get("id").and_then(Value::as_str).map(str::to_string)
+        {
+            options = self
+                .set_option(client, &session_id, &id, effort, options)
+                .await?;
         }
         fold.model = fold::current_model(&options).or_else(|| self.model.clone());
-        Ok(session_id)
+        if let Some(model) = self.model.as_deref().filter(|m| *m != DEFAULT_MODEL)
+            && fold::pick_model(&options, model) == fold::ModelPick::Legacy
+        {
+            fold.model = Some(model.to_string());
+        }
+        Ok((session_id, agent, inline_recap))
+    }
+
+    async fn set_option(
+        &self,
+        client: &RpcClient,
+        session_id: &str,
+        config_id: &str,
+        value: &str,
+        options: Value,
+    ) -> Result<Value, TurnOutcome> {
+        let answer = client
+            .request(
+                "session/set_config_option",
+                json!({"sessionId": session_id, "configId": config_id, "value": value}),
+                CONFIG_TIMEOUT,
+            )
+            .await
+            .map_err(|e| fold::failed(&e))?;
+        Ok(answer.get("configOptions").cloned().unwrap_or(options))
+    }
+
+    /// The thread so far, for a fresh agent session that replaces a lost
+    /// one; `None` on the thread's first turn.
+    async fn recap(&self) -> Option<String> {
+        let history = journal::read(&self.config.transcript(&self.key), RECAP_MESSAGES)
+            .await
+            .unwrap_or_default(); // silent-ok: a missing recap only costs the agent context
+        if history.is_empty() {
+            return None;
+        }
+        let mut lines: Vec<String> = Vec::new();
+        let mut used = 0;
+        for message in history.iter().rev() {
+            let who = match message.role {
+                HistoryRole::User => "User",
+                _ => "Assistant",
+            };
+            let line = format!("{who}: {}", message.text.trim());
+            used += line.chars().count();
+            if used > RECAP_MAX_CHARS {
+                break;
+            }
+            lines.push(line);
+        }
+        lines.reverse();
+        Some(format!(
+            "Your earlier session for this conversation is no longer available. \
+             The conversation so far:\n\n{}",
+            lines.join("\n\n")
+        ))
     }
 
     /// Keep the agent in its ask-first `default` mode.
@@ -590,48 +851,43 @@ impl Turn {
         Ok(())
     }
 
+    /// Fold one inbound message. Returns whether it was a `usage_update`
+    /// (the agent closes a reply with one).
     fn handle(
         &self,
         client: &RpcClient,
         session_id: &str,
+        agent: AgentTraits,
         message: Inbound,
         fold: &mut PromptFold,
-    ) {
+        live: &mut LiveFold,
+    ) -> bool {
         match message {
             Inbound::Notification { method, params } => {
-                if method == "session/update"
-                    && params.get("sessionId").and_then(Value::as_str) == Some(session_id)
+                if method != "session/update"
+                    || params.get("sessionId").and_then(Value::as_str) != Some(session_id)
                 {
-                    fold.push_update(&params["update"], Instant::now());
-                    if let (Some(bridge), Some(plan)) = (
-                        self.bridge.as_deref(),
-                        interaction::acp_plan(&params["update"]),
-                    ) {
-                        bridge.plan_updated(&self.thread_id, &self.run_id, plan);
-                    }
+                    return false;
                 }
+                let update = &params["update"];
+                fold.push_update(update, Instant::now());
+                live::apply(
+                    self.bridge.as_deref(),
+                    &self.thread_id,
+                    &self.run_id,
+                    live.push(update),
+                );
+                if let (Some(bridge), Some(plan)) =
+                    (self.bridge.as_deref(), interaction::acp_plan(update))
+                {
+                    bridge.plan_updated(&self.thread_id, &self.run_id, plan);
+                }
+                update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update")
             }
             Inbound::Request { id, method, params } => {
                 if method == "session/request_permission" {
-                    // The answer waits for a person; updates keep flowing meanwhile.
-                    let client = client.clone();
-                    let bridge = self.bridge.clone();
-                    let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
-                    let (runtime, session) =
-                        (self.config.runtime_id.clone(), session_id.to_string());
-                    // Claimed here, before any await, so the reason is what the
-                    // model said up to this call and nothing later.
-                    let claim = permissions::claim(bridge.as_deref(), &thread, &run);
-                    tokio::spawn(async move {
-                        let answer = answer_permission(
-                            bridge, &thread, &run, &runtime, &session, &params, claim,
-                        )
-                        .await;
-                        if let Err(error) = client.respond(&id, answer) {
-                            tracing::debug!(error = %error.label(), "antigravity: reply not sent");
-                        }
-                    });
-                    return;
+                    self.spawn_permission(client, session_id, agent, id, params);
+                    return false;
                 }
                 // No file system, no terminal: the client offered neither.
                 if let Err(error) =
@@ -639,17 +895,85 @@ impl Turn {
                 {
                     tracing::debug!(error = %error.label(), "antigravity: reply not sent");
                 }
+                false
             }
         }
     }
+
+    /// Answer a permission request in the background: it waits for a
+    /// person while updates keep flowing. A rejection's feedback is steered
+    /// into the turn after the reject goes out, else queued for the next.
+    fn spawn_permission(
+        &self,
+        client: &RpcClient,
+        session_id: &str,
+        agent: AgentTraits,
+        id: Value,
+        params: Value,
+    ) {
+        let client = client.clone();
+        let bridge = self.bridge.clone();
+        let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
+        let (runtime, session) = (self.config.runtime_id.clone(), session_id.to_string());
+        let steer = agent.steers.then(|| self.steer_tx.clone());
+        let pending = Arc::clone(&self.permissions);
+        // Claimed here, before any await, so the reason is what the model
+        // said up to this call and nothing later. The call id lets the
+        // approved call keep the row its `tool_call` already drew.
+        let call_id = params["toolCall"]["toolCallId"]
+            .as_str()
+            .map(str::to_string);
+        let claim = permissions::claim(bridge.as_deref(), &thread, &run).with_call_id(call_id);
+        pending.fetch_add(1, Ordering::SeqCst);
+        tokio::spawn(async move {
+            let (answer, feedback) = answer_permission(
+                bridge.clone(),
+                &thread,
+                &run,
+                &runtime,
+                &session,
+                &params,
+                claim,
+            )
+            .await;
+            if let Err(error) = client.respond(&id, answer) {
+                tracing::debug!(error = %error.label(), "antigravity: reply not sent");
+            }
+            pending.fetch_sub(1, Ordering::SeqCst);
+            if let Some(feedback) = feedback {
+                deliver_feedback(bridge.as_deref(), steer.as_ref(), &thread, &feedback).await;
+            }
+        });
+    }
 }
 
-/// The ACP answer to one `session/request_permission`. Antigravity's own
-/// questions (an `interaction_*` call that passes
-/// [`interaction::acp_interaction_form`]: no effect, no persistent option)
-/// become a question form; everything else, including an `interaction_*`
-/// request that fails that check, is an approval through the shared seam,
-/// which only ever picks a once-scoped option.
+/// What the person said instead of approving: into the running turn when
+/// the agent steers, else into the thread's queue as the next turn's input.
+async fn deliver_feedback(
+    bridge: Option<&CliBridge>,
+    steer: Option<&SteerTx>,
+    thread: &ThreadId,
+    feedback: &DenialFeedback,
+) {
+    if let Some(steer) = steer
+        && offer_steer(steer, crate::bridge::rejection_message(feedback), false).await
+    {
+        return;
+    }
+    if let Some(bridge) = bridge
+        && !bridge.queue_undelivered_feedback(thread, feedback).await
+    {
+        tracing::debug!("antigravity: rejection feedback could not be queued");
+    }
+}
+
+/// The ACP answer to one `session/request_permission`, and a rejection's
+/// feedback for the caller to deliver. Antigravity's own questions (an
+/// `interaction_*` call that passes [`interaction::acp_interaction_form`]:
+/// no effect, no persistent option) become a question form; everything
+/// else, including an `interaction_*` request that fails that check, is an
+/// approval through the shared seam, which only ever picks a once-scoped
+/// option.
 async fn answer_permission(
     bridge: Option<Arc<CliBridge>>,
     thread: &ThreadId,
@@ -658,12 +982,15 @@ async fn answer_permission(
     session_id: &str,
     params: &Value,
     claim: CallClaim,
-) -> Value {
+) -> (Value, Option<DenialFeedback>) {
     if let (Some(bridge), Some(form)) = (&bridge, interaction::acp_interaction_form(params)) {
         let outcome = bridge
             .ask(thread, run_id, "antigravity_question", form.clone(), claim)
             .await;
-        return interaction::acp_interaction_reply(&form, outcome.answer());
+        return (
+            interaction::acp_interaction_reply(&form, outcome.answer()),
+            None,
+        );
     }
     permission_answer(
         bridge.as_deref(),
@@ -687,16 +1014,15 @@ async fn permission_answer(
     session_id: &str,
     params: &Value,
     claim: CallClaim,
-) -> Value {
+) -> (Value, Option<DenialFeedback>) {
     let call = &params["toolCall"];
     let cancelled = json!({"outcome": {"outcome": "cancelled"}});
     let request = PermissionRequest {
         runtime: runtime.to_string(),
         session_id: session_id.to_string(),
-        tool: call
-            .get("kind")
-            .or_else(|| call.get("title"))
-            .and_then(Value::as_str)
+        tool: ["name", "kind", "title"]
+            .iter()
+            .find_map(|k| call.get(*k).and_then(Value::as_str))
             .unwrap_or("tool")
             .to_string(),
         subject: call
@@ -707,218 +1033,22 @@ async fn permission_answer(
         // what the model said before the call.
         reason: None,
     };
-    let kind = match permissions::decide(bridge, thread, run_id, &request, claim).await {
-        PermissionDecision::AllowOnce => "allow_once",
-        // ACP's permission outcome is an option id with no message and this
-        // runtime cannot be steered mid-turn, so a rejection's feedback waits
-        // in the thread's queue and runs as the next turn's input.
-        PermissionDecision::Deny { feedback } => {
-            if let (Some(bridge), Some(feedback)) = (bridge, feedback)
-                && !bridge.queue_undelivered_feedback(thread, &feedback).await
-            {
-                tracing::debug!("antigravity: rejection feedback could not be queued");
-            }
-            "reject_once"
-        }
+    let (kind, feedback) = match permissions::decide(bridge, thread, run_id, &request, claim).await
+    {
+        PermissionDecision::AllowOnce => ("allow_once", None),
+        // ACP's permission outcome is an option id with no message: the
+        // feedback goes to the agent another way.
+        PermissionDecision::Deny { feedback } => ("reject_once", feedback),
     };
-    params["options"]
+    let answer = params["options"]
         .as_array()
         .into_iter()
         .flatten()
         .find(|o| o.get("kind").and_then(Value::as_str) == Some(kind))
         .and_then(|o| o.get("optionId").and_then(Value::as_str))
         .map(|option| json!({"outcome": {"outcome": "selected", "optionId": option}}))
-        .unwrap_or(cancelled)
-}
-
-/// The agent process: allowlisted environment, its own profile, its own
-/// process group, no browser.
-fn agent_command(c: &AntigravityConfig) -> Command {
-    let mut cmd = Command::new(&c.executable);
-    cmd.env_clear();
-    for key in KEPT_ENV {
-        if let Some(value) = std::env::var_os(key) {
-            cmd.env(key, value);
-        }
-    }
-    // The agent is a one-file bundle that unpacks itself per launch;
-    // keep that under its profile, where it can be reclaimed.
-    let tmp = c.profile_dir.join("antigravity-acp").join("tmp");
-    cmd.env("GEMINI_HOME", &c.profile_dir)
-        .env("AGY_ACP_FORCE_FILE_STORAGE", "1")
-        .env("PYTHONUNBUFFERED", "1")
-        .env("ELECTRON_RUN_AS_NODE", "1")
-        .env("ANTIGRAVITY_HARNESS_PATH", &c.harness)
-        .env("TMPDIR", tmp)
-        // A background turn never opens a browser on its own.
-        .env("BROWSER", "/usr/bin/true")
-        .current_dir(&c.work_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .kill_on_drop(true);
-    cmd
-}
-
-async fn prepare_dirs(config: &AntigravityConfig) -> std::io::Result<()> {
-    let acp = config.profile_dir.join("antigravity-acp");
-    tokio::fs::create_dir_all(acp.join("tmp")).await?;
-    tokio::fs::create_dir_all(&config.work_dir).await?;
-    tokio::fs::create_dir_all(config.state_dir.join("sessions")).await?;
-    // The agent reads its auth method here; never a credential. An existing
-    // file (a shared profile) is left alone.
-    let settings = acp.join("settings.json");
-    if !tokio::fs::try_exists(&settings).await.unwrap_or(false) {
-        // silent-ok: a failed probe rewrites the same small file
-        let body = json!({"auth": {"type": config.auth_method}}).to_string();
-        tokio::fs::write(&settings, format!("{body}\n")).await?;
-    }
-    Ok(())
-}
-
-async fn save_session_id(path: &Path, id: &str) {
-    let written = async {
-        if let Some(dir) = path.parent() {
-            tokio::fs::create_dir_all(dir).await?;
-        }
-        tokio::fs::write(path, id).await
-    }
-    .await;
-    if let Err(error) = written {
-        tracing::debug!(%error, "antigravity: session id not saved");
-    }
-}
-
-/// Keep the account's model list for the catalog.
-async fn save_models(path: &Path, options: &Value) {
-    let models = fold::model_options(options);
-    if models.is_empty() {
-        return;
-    }
-    let body = json!({
-        "at": now_ms(),
-        "current": fold::current_model(options),
-        "models": models,
-    })
-    .to_string();
-    // A turn and a refresh may save at once: write a private file and rename
-    // it over the list, so a reader never sees a torn or truncated one.
-    let tmp = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
-    let written = async {
-        tokio::fs::write(&tmp, body).await?;
-        tokio::fs::rename(&tmp, path).await
-    }
-    .await;
-    if let Err(error) = written {
-        #[expect(
-            clippy::let_underscore_must_use,
-            reason = "best-effort cleanup of our own model-list temp file; the write error is traced below"
-        )]
-        let _ = tokio::fs::remove_file(&tmp).await;
-        tracing::debug!(%error, "antigravity: model list not saved");
-    }
-}
-
-/// Clears the refresh single-flight flag when the refresh task ends.
-struct RefreshFlag(Arc<AtomicBool>);
-
-impl Drop for RefreshFlag {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
-    }
-}
-
-/// Whether our model list is missing, unreadable, from before lists carried
-/// a timestamp, or older than [`MODELS_TTL_MS`].
-async fn models_stale(path: &Path) -> bool {
-    let Ok(raw) = tokio::fs::read_to_string(path).await else {
-        return true; // silent-ok: no list yet is exactly what a refresh fixes
-    };
-    let at = serde_json::from_str::<Value>(&raw)
-        .ok() // silent-ok: a torn list is refreshed like a missing one
-        .and_then(|doc| doc["at"].as_i64());
-    at.is_none_or(|at| now_ms().saturating_sub(at) > MODELS_TTL_MS)
-}
-
-/// Ask the agent for the account's models without a turn: `initialize`,
-/// `authenticate`, `session/new` (whose config options carry the model
-/// list), save the list, `session/close`, then end the process group. The
-/// session is bound to no thread and never prompted.
-async fn refresh_models(config: &AntigravityConfig) -> Result<(), String> {
-    prepare_dirs(config)
-        .await
-        .map_err(|e| format!("dirs: {}", e.kind()))?;
-    let mut child = agent_command(config)
-        .spawn()
-        .map_err(|e| format!("spawn: {}", e.kind()))?;
-    let pgid = rpc::group_of(&child).ok_or("exited at spawn")?;
-    let (Some(stdin), Some(stdout), Some(stderr)) =
-        (child.stdin.take(), child.stdout.take(), child.stderr.take())
-    else {
-        crate::rpc::kill_group(pgid, "antigravity: half-spawned model-list host");
-        return Err("stdio unavailable".into());
-    };
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            tracing::debug!(target: "antigravity", "refresh stderr: {line}");
-        }
-    });
-    let (client, inbound) = RpcClient::start(stdin, stdout, "antigravity");
-    let asked = async {
-        let init = json!({
-            "protocolVersion": 1,
-            "clientInfo": {"name": "ironclaw", "title": "IronClaw", "version": env!("CARGO_PKG_VERSION")},
-            "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
-        });
-        client.request("initialize", init, INIT_TIMEOUT).await?;
-        client
-            .request(
-                "authenticate",
-                json!({"methodId": config.auth_method}),
-                config.auth_timeout,
-            )
-            .await?;
-        let cwd = config.work_dir.display().to_string();
-        let result = client
-            .request(
-                "session/new",
-                json!({"cwd": cwd, "mcpServers": []}),
-                SESSION_TIMEOUT,
-            )
-            .await?;
-        save_models(
-            &config.models_file(),
-            result.get("configOptions").unwrap_or(&Value::Null),
-        )
-        .await;
-        if let Some(id) = result.get("sessionId").and_then(Value::as_str) {
-            #[expect(clippy::let_underscore_must_use, reason = "closing is housekeeping, the list is already saved")]
-            let _ = client
-                .request("session/close", json!({"sessionId": id}), CLOSE_TIMEOUT)
-                .await;
-        }
-        Ok::<(), RpcError>(())
-    }
-    .await;
-    drop(client);
-    drop(inbound);
-    close_host(&mut child, pgid).await;
-    asked.map_err(|e| e.label())
-}
-
-/// After the answer: let the agent exit on stdin EOF, then make sure the
-/// whole group is gone.
-async fn close_host(child: &mut Child, pgid: i32) {
-    if tokio::time::timeout(Duration::from_secs(3), child.wait())
-        .await
-        .is_err()
-    {
-        rpc::end_group(child, pgid, rpc::KILL_GRACE).await;
-    } else {
-        crate::rpc::kill_group(pgid, "antigravity: model-list host group");
-    }
+        .unwrap_or(cancelled);
+    (answer, feedback)
 }
 
 #[async_trait]
@@ -930,8 +1060,8 @@ impl TurnRuntime for AntigravityRuntime {
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             native_fork: false,
-            // ACP has no in-turn input; a new message waits in the queue.
-            steer_in_turn: false,
+            // `agy acp` takes a message mid-turn; the legacy runtime queues.
+            steer_in_turn: self.config.launch.may_steer(),
             reports_usage: true,
             reports_restart_cuts: false,
             host_files: true,
@@ -961,12 +1091,19 @@ impl TurnRuntime for AntigravityRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
-        let context = crate::prompt_context(
-            self.primed.take(&thread.thread_id, input.profile.as_ref()),
-            input.goal.as_deref(),
-        );
+        let goal = input.goal.as_deref();
+        let context = TurnContext {
+            system: crate::prompt_context(
+                input.profile.as_ref().and_then(crate::session_preamble),
+                goal,
+            ),
+            inline: crate::prompt_context(
+                self.primed.take(&thread.thread_id, input.profile.as_ref()),
+                goal,
+            ),
+        };
         let run_id = self
-            .spawn_turn(&thread, &input.text, context.as_deref())
+            .spawn_turn(&thread, &input.text, input.effort, context)
             .await?;
         Ok(TurnAdmission::Started {
             run_id: Some(run_id),
@@ -979,13 +1116,18 @@ impl TurnRuntime for AntigravityRuntime {
         text: &str,
         how: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError> {
-        // ACP has no in-turn input. A steer is refused (the engine queues
-        // it); only an explicit Restart stops the turn.
         if how == SteerHow::Steer {
-            return Ok(SteerOutcome::Rejected);
+            // `agy acp` takes it as another prompt into the running turn;
+            // anything else is refused and the engine queues the text.
+            return Ok(if self.steer_running(&thread.thread_id, text).await {
+                SteerOutcome::Steered
+            } else {
+                SteerOutcome::Rejected
+            });
         }
         self.stop(&thread.thread_id).await;
-        self.spawn_turn(thread, text, None).await?;
+        self.spawn_turn(thread, text, None, TurnContext::default())
+            .await?;
         Ok(SteerOutcome::Restarted)
     }
 
@@ -1013,92 +1155,40 @@ impl TurnRuntime for AntigravityRuntime {
         let now = now_ms();
         if authenticated
             && now.saturating_sub(self.last_refresh.load(Ordering::SeqCst)) >= REFRESH_RETRY_MS
-            && models_stale(&self.config.models_file()).await
+            && store::models_stale(&self.config.models_file()).await
             && !self.refreshing.swap(true, Ordering::SeqCst)
         {
             self.last_refresh.store(now, Ordering::SeqCst);
             let config = Arc::clone(&self.config);
-            let flag = RefreshFlag(Arc::clone(&self.refreshing));
+            let flag = store::RefreshFlag(Arc::clone(&self.refreshing));
             tokio::spawn(async move {
                 let _flag = flag; // cleared on every exit, a panic included
-                if let Err(error) = refresh_models(&config).await {
+                if let Err(error) = store::refresh_models(&config).await {
                     tracing::debug!(%error, "antigravity: model list refresh failed");
                 }
             });
         }
+        let (models, efforts) = store::cached_models(&self.config).await;
         Ok(vec![CatalogProvider {
             provider: self.config.runtime_id.clone(),
             name: self.config.display_name.clone(),
             authenticated,
             current: false,
-            models: cached_models(&self.config).await,
-            // The effort is part of each model's name (`-low`/`-high`).
-            efforts: Vec::new(),
+            models,
+            // `agy` 1.5 offers a thinking level beside the model; 1.3 put
+            // the level in each model's name (`-low`/`-high`) and has none.
+            efforts,
             model_efforts: Default::default(),
             brand: None,
         }])
     }
 }
 
-/// The account's models: our own list from the last session, else the one
-/// Hermes saved in a shared profile, else the agent's default alias.
-async fn cached_models(config: &AntigravityConfig) -> Vec<String> {
-    let hermes = config
-        .profile_dir
-        .join("antigravity-acp")
-        .join("hermes-models.json");
-    for path in [config.models_file(), hermes] {
-        let Ok(raw) = tokio::fs::read_to_string(&path).await else {
-            continue; // silent-ok: a missing cache falls through to the next source
-        };
-        let Ok(doc) = serde_json::from_str::<Value>(&raw) else {
-            continue; // silent-ok: a torn cache falls through
-        };
-        let models: Vec<String> = doc["models"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|m| m.as_str().or_else(|| m.get("id").and_then(Value::as_str)))
-            .map(str::to_string)
-            .collect();
-        if !models.is_empty() {
-            return models;
-        }
-    }
-    vec![DEFAULT_MODEL.to_string()]
-}
-
-/// The installed ACP runtime: Hermes's managed copy, then T3 Code's. Returns
-/// `(agy_acp_server, localharness_external)`.
-pub fn find_runtime(home: &Path) -> Option<(PathBuf, PathBuf)> {
-    let platform = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => "darwin-arm64",
-        ("macos", "x86_64") => "darwin-x64",
-        ("linux", "aarch64") => "linux-arm64",
-        ("linux", "x86_64") => "linux-x64",
-        _ => return None,
-    };
-    [
-        home.join(".hermes/plugin-data/t3code/antigravity-acp"),
-        home.join(".t3/tools/antigravity-acp"),
-    ]
-    .into_iter()
-    .find_map(|dir| {
-        let base = dir.join(platform);
-        let active = std::fs::read_to_string(base.join("active.json")).ok()?; // silent-ok: no install here
-        let release: Value = serde_json::from_str(&active).ok()?; // silent-ok: a torn marker is no install
-        let version = base.join("versions").join(release["releaseId"].as_str()?);
-        let executable = version.join("agy_acp_server.par");
-        let harness = version.join("localharness_external");
-        (executable.is_file() && harness.is_file()).then_some((executable, harness))
-    })
-}
-
-/// The default account: the installed ACP runtime, the profile Hermes already
-/// signed in when there is one (the plan shares CLI logins across apps),
-/// else IronClaw's own.
+/// The default account: the installed agent (native CLI first), the
+/// profile Hermes already signed in when there is one (the plan shares CLI
+/// logins across apps), else IronClaw's own.
 pub fn default_config(home: &Path) -> Option<AntigravityConfig> {
-    let (executable, harness) = find_runtime(home)?;
+    let launch = launch::find_agent(home)?;
     let hermes_profile = home.join(".hermes/plugin-data/t3code/antigravity/profile");
     let state = home.join(".ironclaw").join("antigravity");
     let profile_dir = if hermes_profile.is_dir() {
@@ -1109,9 +1199,9 @@ pub fn default_config(home: &Path) -> Option<AntigravityConfig> {
     Some(AntigravityConfig {
         runtime_id: "antigravity".into(),
         display_name: "Antigravity".into(),
-        executable,
-        harness,
+        launch,
         profile_dir,
+        user_gemini_dir: Some(home.join(".gemini")),
         auth_method: "oauth-personal".into(),
         auth_timeout: Duration::from_secs(60),
         work_dir: state.join("work"),
@@ -1146,7 +1236,8 @@ mod tests {
                 &request,
                 CallClaim::default()
             )
-            .await,
+            .await
+            .0,
             json!({"outcome": {"outcome": "selected", "optionId": "no"}})
         );
         let question = json!({"toolCall": {"toolCallId": "interaction_1"}, "options": []});
@@ -1160,7 +1251,8 @@ mod tests {
                 &question,
                 CallClaim::default()
             )
-            .await["outcome"]["outcome"],
+            .await
+            .0["outcome"]["outcome"],
             "cancelled"
         );
 
@@ -1181,6 +1273,7 @@ mod tests {
                     bridge.claim_call(&thread, "r1"),
                 )
                 .await
+                .0
             })
         };
         let gate = loop {
@@ -1222,6 +1315,7 @@ mod tests {
                     claim,
                 )
                 .await
+                .0
             })
         };
         let opened = loop {

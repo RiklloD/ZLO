@@ -8,8 +8,19 @@ use ironclaw_orchestrator::runtime::{HistoryRole, TurnEndStatus, TurnOutcome, Tu
 use ironclaw_orchestrator::telemetry::{TurnTelemetry, tokens_per_second};
 use serde_json::Value;
 
+use ironclaw_orchestrator::model::now_ms;
+
 use crate::journal;
 use crate::rpc::RpcError;
+
+/// The marker a native `/goal` run leaves at the end of its reply.
+const GOAL_COMPLETE_MARKER: &str = "<!-- GOAL_COMPLETE -->";
+
+/// What the model says about a thinking block whose signature was lost.
+const INVALID_THINKING_SIGNATURE: [&str; 2] = [
+    ".thinking.signature: Field required",
+    "Invalid `signature` in `thinking` block",
+];
 
 #[derive(Debug, Default)]
 pub(crate) struct PromptFold {
@@ -35,10 +46,9 @@ impl PromptFold {
             }
             Some("agent_thought_chunk") => self.mark_chunk(now),
             Some("tool_call") => {
-                let title = update
-                    .get("kind")
-                    .or_else(|| update.get("title"))
-                    .and_then(Value::as_str)
+                let title = ["name", "kind", "title"]
+                    .iter()
+                    .find_map(|k| update.get(*k).and_then(Value::as_str))
                     .unwrap_or("tool");
                 self.tools.push(format!("{title}()"));
                 // The answer is the text after the last tool call.
@@ -63,9 +73,39 @@ impl PromptFold {
     pub(crate) fn assistant_message(
         &self,
     ) -> Option<ironclaw_orchestrator::runtime::HistoryMessage> {
-        let text = self.answer.trim().to_string();
+        let text = self.answer_text();
         (!text.is_empty() || !self.tools.is_empty())
             .then(|| journal::message(HistoryRole::Assistant, text, self.tools.clone()))
+    }
+
+    /// What the agent said before a steer, as its own transcript entry; the
+    /// answer starts over under the steer.
+    pub(crate) fn take_partial(
+        &mut self,
+    ) -> Option<ironclaw_orchestrator::runtime::HistoryMessage> {
+        let entry = self.assistant_message();
+        self.answer.clear();
+        self.tools.clear();
+        entry
+    }
+
+    /// The answer without the marker a native `/goal` run ends with.
+    fn answer_text(&self) -> String {
+        self.answer
+            .replace(GOAL_COMPLETE_MARKER, "")
+            .trim()
+            .to_string()
+    }
+
+    /// The model rejected a thinking block saved in the agent's session, so
+    /// every later prompt to that session fails the same way.
+    pub(crate) fn lost_thinking_signature(&self, answer: &Result<Value, RpcError>) -> bool {
+        let error = answer.as_ref().err().map(RpcError::message).unwrap_or("");
+        [error, self.answer.as_str()].iter().any(|text| {
+            INVALID_THINKING_SIGNATURE
+                .iter()
+                .any(|needle| text.contains(needle))
+        })
     }
 
     /// `session/prompt`'s optional `usage` (ACP prompt usage), Claude-style:
@@ -134,9 +174,14 @@ impl PromptFold {
                 match result.get("stopReason").and_then(Value::as_str) {
                     Some("end_turn") => TurnOutcome {
                         usage,
-                        ..TurnOutcome::completed(Some(self.answer.trim().to_string()))
+                        ..TurnOutcome::completed(Some(self.answer_text()))
                     },
                     Some("cancelled") => TurnOutcome::ended(TurnEndStatus::Cancelled, None),
+                    // The agent maps only a quota-exhausted model stop here.
+                    Some("refusal") => TurnOutcome {
+                        usage,
+                        ..usage_limited(None)
+                    },
                     other => TurnOutcome {
                         usage,
                         ..TurnOutcome::ended(
@@ -158,9 +203,10 @@ impl PromptFold {
 /// paths or provider bodies, so only codes and classes leave this function.
 pub(crate) fn failed(error: &RpcError) -> TurnOutcome {
     let text = error.message();
-    let message = if journal::mentions_usage_limit(text) {
-        "usage_limit: the Antigravity quota is reached".to_string()
-    } else if matches!(error, RpcError::Remote { code: -32000, .. })
+    if journal::mentions_usage_limit(text) {
+        return usage_limited(reset_at(text, now_ms()));
+    }
+    let message = if matches!(error, RpcError::Remote { code: -32000, .. })
         || text.to_ascii_lowercase().contains("auth")
     {
         "antigravity: sign-in required (run the Antigravity login)".to_string()
@@ -168,6 +214,68 @@ pub(crate) fn failed(error: &RpcError) -> TurnOutcome {
         format!("antigravity error ({})", error.label())
     };
     TurnOutcome::ended(TurnEndStatus::Failed, Some(message))
+}
+
+/// A quota failure; `resets_at` arms the engine's automatic resume.
+fn usage_limited(resets_at: Option<i64>) -> TurnOutcome {
+    TurnOutcome {
+        usage_limit_resets_at: resets_at,
+        ..TurnOutcome::ended(
+            TurnEndStatus::Failed,
+            Some("usage_limit: the Antigravity quota is reached".to_string()),
+        )
+    }
+}
+
+/// When a quota error says it resets: Google's `quotaResetTimeStamp`
+/// (RFC 3339), else a `quotaResetDelay` or `retryDelay` Go duration from
+/// `now` (ms).
+pub(crate) fn reset_at(text: &str, now: i64) -> Option<i64> {
+    let field = |key: &str| {
+        let start = text.find(key)? + key.len();
+        let rest = &text[start..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, ']' | ',' | '"' | '}'))
+            .unwrap_or(rest.len());
+        Some(&rest[..end])
+    };
+    if let Some(stamp) = field("quotaResetTimeStamp:")
+        && let Ok(at) = chrono::DateTime::parse_from_rfc3339(stamp)
+    {
+        return Some(at.timestamp_millis());
+    }
+    let delay = field("quotaResetDelay:").or_else(|| field("retryDelay:"))?;
+    go_duration_ms(delay)
+        .filter(|ms| *ms > 0.0)
+        .map(|ms| now.saturating_add(ms.round() as i64))
+}
+
+/// A Go duration (`1h2m3.5s`, `250ms`) in milliseconds.
+fn go_duration_ms(raw: &str) -> Option<f64> {
+    let mut total = 0.0;
+    let mut rest = raw;
+    while !rest.is_empty() {
+        let digits = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(rest.len());
+        let amount: f64 = rest[..digits].parse().ok()?;
+        rest = &rest[digits..];
+        let (unit, factor) = [
+            ("ns", 1e-6),
+            ("us", 1e-3),
+            ("µs", 1e-3),
+            ("μs", 1e-3),
+            ("ms", 1.0),
+            ("h", 3_600_000.0),
+            ("m", 60_000.0),
+            ("s", 1_000.0),
+        ]
+        .into_iter()
+        .find(|(unit, _)| rest.starts_with(unit))?;
+        rest = &rest[unit.len()..];
+        total += amount * factor;
+    }
+    Some(total)
 }
 
 /// Model ids from ACP `configOptions` (the `model` select, flat or grouped).
@@ -204,6 +312,51 @@ fn model_option(config_options: &Value) -> Option<&Value> {
         .find(|o| o.get("id").and_then(Value::as_str) == Some("model"))
 }
 
+/// The thinking-level select (`agy` 1.5 reports it beside the model; the
+/// 1.3 runtime folded it into model ids such as `gemini-3.8-flash-high`).
+pub(crate) fn effort_option(config_options: &Value) -> Option<&Value> {
+    config_options.as_array()?.iter().find(|o| {
+        o.get("category").and_then(Value::as_str) == Some("thought_level")
+            && o.get("type").and_then(Value::as_str) == Some("select")
+    })
+}
+
+/// The levels the thinking-level select offers.
+pub(crate) fn effort_options(config_options: &Value) -> Vec<String> {
+    effort_option(config_options)
+        .and_then(|o| o["options"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|o| o.get("value").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+/// How the thread's model is applied to a session: a listed model as is; a
+/// pre-1.5 id that extends a listed family (`gemini-3.8-flash-high`) is
+/// still accepted by the agent; anything else is not this account's.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ModelPick {
+    Listed,
+    Legacy,
+    Unavailable,
+}
+
+pub(crate) fn pick_model(config_options: &Value, model: &str) -> ModelPick {
+    let listed = model_options(config_options);
+    if listed.iter().any(|m| m == model) {
+        ModelPick::Listed
+    } else if listed.iter().any(|family| {
+        model
+            .strip_prefix(family.as_str())
+            .is_some_and(|r| r.starts_with('-'))
+    }) {
+        ModelPick::Legacy
+    } else {
+        ModelPick::Unavailable
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +375,68 @@ mod tests {
         let text = outcome.error.unwrap();
         assert!(text.starts_with("usage_limit"), "{text}");
         assert!(!text.contains("/Users"));
+    }
+
+    #[test]
+    fn quota_errors_carry_their_reset_time() {
+        let now = 1_000_000;
+        assert_eq!(
+            reset_at("Status: RESOURCE_EXHAUSTED [quotaResetDelay:1h2m3.5s]", now),
+            Some(now + 3_723_500)
+        );
+        assert_eq!(reset_at("retryDelay:250ms, more", now), Some(now + 250));
+        assert_eq!(
+            reset_at("quotaResetTimeStamp:2026-11-20T00:00:00Z]", now),
+            Some(1_795_132_800_000)
+        );
+        assert_eq!(reset_at("no reset here", now), None);
+        let error = RpcError::Remote {
+            code: -32603,
+            message: "RESOURCE_EXHAUSTED quota [quotaResetDelay:30s]".into(),
+            data: None,
+        };
+        let outcome = PromptFold::default().outcome(false, &Err(error));
+        assert!(
+            outcome
+                .usage_limit_resets_at
+                .is_some_and(|at| at > now_ms())
+        );
+        // A `refusal` stop is the agent's quota stop.
+        let refused = PromptFold::default().outcome(false, &Ok(json!({"stopReason": "refusal"})));
+        assert!(refused.error.unwrap().starts_with("usage_limit"));
+    }
+
+    #[test]
+    fn goal_marker_is_stripped_and_a_lost_signature_is_recognized() {
+        let mut fold = PromptFold::default();
+        let chunk = |s: &str| json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": s}});
+        fold.push_update(&chunk("DONE <!-- GOAL_COMPLETE -->"), Instant::now());
+        let outcome = fold.outcome(false, &Ok(json!({"stopReason": "end_turn"})));
+        assert_eq!(outcome.final_text.as_deref(), Some("DONE"));
+        assert!(!fold.lost_thinking_signature(&Ok(json!({}))));
+        let lost = RpcError::Remote {
+            code: -32603,
+            message: "messages.3.content.0: Invalid `signature` in `thinking` block".into(),
+            data: None,
+        };
+        assert!(fold.lost_thinking_signature(&Err(lost)));
+    }
+
+    #[test]
+    fn models_and_efforts_from_agy_1_5_options() {
+        let options = json!([
+            {"id": "model", "type": "select", "currentValue": "gemini-4-neon",
+             "options": [{"value": "gemini-4-neon"}, {"value": "gemini-3.8-flash"}]},
+            {"id": "thought_level", "category": "thought_level", "type": "select",
+             "currentValue": "high", "options": [{"value": "low"}, {"value": "high"}]},
+        ]);
+        assert_eq!(effort_options(&options), ["low", "high"]);
+        assert_eq!(pick_model(&options, "gemini-4-neon"), ModelPick::Listed);
+        assert_eq!(
+            pick_model(&options, "gemini-3.8-flash-high"),
+            ModelPick::Legacy
+        );
+        assert_eq!(pick_model(&options, "gemini-3.8"), ModelPick::Unavailable);
     }
 
     #[test]

@@ -122,7 +122,7 @@ pub(crate) fn injected_context(
     sample
 }
 
-fn join_notes(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+pub(crate) fn join_notes(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {
     let parts: Vec<String> = parts.into_iter().flatten().collect();
     (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
@@ -259,7 +259,9 @@ pub fn register_antigravity_runtime(
         return 0;
     };
     let Some(config) = antigravity::default_config(&home) else {
-        tracing::debug!("antigravity acp runtime not found; antigravity runtime not registered");
+        tracing::debug!(
+            "antigravity agent (agy acp or the ACP runtime) not found; antigravity runtime not registered"
+        );
         return 0;
     };
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;

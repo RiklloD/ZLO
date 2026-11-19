@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use ironclaw_cli_providers::antigravity::launch::AgentLaunch;
 use ironclaw_cli_providers::antigravity::{AntigravityConfig, AntigravityRuntime};
 use ironclaw_cli_providers::bridge::{CliBridge, DEFAULT_APPROVAL_TIMEOUT, GateAnswer};
 use ironclaw_cli_providers::codex::{CodexConfig, CodexRuntime};
@@ -174,9 +175,12 @@ fn antigravity_with(
         AntigravityConfig {
             runtime_id: "antigravity".into(),
             display_name: "Antigravity".into(),
-            executable: script(dir, "agy_acp_server", &body),
-            harness: dir.join("localharness_external"),
+            launch: AgentLaunch::Runtime {
+                server: script(dir, "agy_acp_server", &body),
+                harness: dir.join("localharness_external"),
+            },
             profile_dir: dir.join("profile"),
+            user_gemini_dir: None,
             auth_method: "oauth-personal".into(),
             auth_timeout: Duration::from_secs(5),
             work_dir: dir.join("work"),
@@ -330,13 +334,16 @@ async fn antigravity_failed_refresh_backs_off() {
             runtime_id: "antigravity".into(),
             display_name: "Antigravity".into(),
             // Starts, then dies before answering `initialize`.
-            executable: script(
-                dir.path(),
-                "agy_acp_server",
-                &format!("#!/bin/sh\necho start >> '{}'\nexit 1\n", log.display()),
-            ),
-            harness: dir.path().join("localharness_external"),
+            launch: AgentLaunch::Runtime {
+                server: script(
+                    dir.path(),
+                    "agy_acp_server",
+                    &format!("#!/bin/sh\necho start >> '{}'\nexit 1\n", log.display()),
+                ),
+                harness: dir.path().join("localharness_external"),
+            },
             profile_dir: dir.path().join("profile"),
+            user_gemini_dir: None,
             auth_method: "oauth-personal".into(),
             auth_timeout: Duration::from_secs(5),
             work_dir: dir.path().join("work"),
@@ -411,6 +418,313 @@ async fn antigravity_stop_kills_the_process_group() {
         "default model keeps the agent's choice"
     );
     assert!(!alive(&pid_file), "tool subprocess survived Stop");
+}
+
+// ── Antigravity on the native `agy acp` (1.5) ───────────────────────────────
+
+/// A fake `agy` 1.5: it reports its version and the system-prompt append,
+/// and `__MODE__` picks how its prompts behave:
+/// - `steer`: the first prompt stays open until a second one arrives, which
+///   answers the first `end_turn` and carries the turn on (agy's steer);
+/// - `bg`: the prompt ends while a backgrounded command runs; the agent then
+///   reports the command and replies by itself, closing with `usage_update`;
+/// - `perm`: asks to run a command, then waits for a steer like `steer`;
+/// - `lost`: every `session/resume` fails (the agent lost the session).
+const AGY_CLI: &str = r#"#!/bin/sh
+LOG=__LOG__
+MODE=__MODE__
+printf 'args %s\n' "$*" >> "$LOG"
+id_of() { printf '%s' "$1" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p'; }
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+note() { printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-1","update":%s}}\n' "$1"; }
+chunk() { note "{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"$1\"}}"; }
+OPTS='[{"id":"model","type":"select","currentValue":"gemini-a","options":[{"value":"gemini-a"},{"value":"gemini-b"}]},{"id":"thought_level","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"low"},{"value":"high"}]},{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[]}]'
+CMD='"toolCallId":"c1","name":"run_command","kind":"execute","title":"sleep 1","rawInput":{"CommandLine":"sleep 1","WaitMsBeforeAsync":500}'
+P1=
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$LOG"
+  id=$(id_of "$line")
+  case "$line" in
+    *'"method":"initialize"'*) reply "$id" '{"protocolVersion":1,"agentCapabilities":{"_meta":{"antigravity":{"systemPrompt":{"append":true}}}},"agentInfo":{"name":"Antigravity ACP Server","version":"1.5.11"}}' ;;
+    *'"method":"authenticate"'*) reply "$id" '{}' ;;
+    *'"method":"session/new"'*) reply "$id" "{\"sessionId\":\"acp-1\",\"configOptions\":$OPTS}" ;;
+    *'"method":"session/resume"'*)
+      if [ "$MODE" = lost ]; then printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"session not found"}}\n' "$id"
+      else reply "$id" "{\"configOptions\":$OPTS}"; fi ;;
+    *'"method":"session/set_config_option"'*) reply "$id" '{}' ;;
+    *'"method":"session/prompt"'*)
+      if [ -n "$P1" ]; then
+        reply "$P1" '{"stopReason":"end_turn"}'
+        chunk "Steered"
+        reply "$id" '{"stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":2}}'
+      elif [ "$MODE" = steer ]; then P1=$id; chunk "Par"
+      elif [ "$MODE" = perm ]; then
+        P1=$id
+        note "{\"sessionUpdate\":\"tool_call\",$CMD,\"status\":\"in_progress\"}"
+        printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":\"p1\",\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"acp-1\",\"toolCall\":{$CMD,\"status\":\"pending\"},\"options\":[{\"optionId\":\"yes\",\"kind\":\"allow_once\",\"name\":\"Allow\"},{\"optionId\":\"no\",\"kind\":\"reject_once\",\"name\":\"Deny\"}]}}"
+        IFS= read -r answer; printf '%s\n' "$answer" >> "$LOG"
+        note "{\"sessionUpdate\":\"tool_call_update\",$CMD,\"status\":\"failed\"}"
+      elif [ "$MODE" = bg ]; then
+        note "{\"sessionUpdate\":\"tool_call\",$CMD,\"status\":\"in_progress\"}"
+        chunk "started "
+        reply "$id" '{"stopReason":"end_turn"}'
+        sleep 1
+        note "{\"sessionUpdate\":\"tool_call_update\",$CMD,\"status\":\"completed\",\"rawOutput\":{\"output\":\"finished\"}}"
+        chunk "done"
+        note '{"sessionUpdate":"usage_update","used":900,"size":1000}'
+      else chunk "pong"; reply "$id" '{"stopReason":"end_turn"}'; fi ;;
+  esac
+done
+"#;
+
+fn antigravity_cli(
+    dir: &Path,
+    mode: &str,
+    recorder: &Arc<Recorder>,
+    bridge: Option<Arc<CliBridge>>,
+) -> AntigravityRuntime {
+    let body = AGY_CLI
+        .replace("__LOG__", &dir.join("agy.log").display().to_string())
+        .replace("__MODE__", mode);
+    AntigravityRuntime::new(
+        AntigravityConfig {
+            runtime_id: "antigravity".into(),
+            display_name: "Antigravity".into(),
+            launch: AgentLaunch::Cli {
+                agy: script(dir, "agy", &body),
+            },
+            profile_dir: dir.join("profile"),
+            user_gemini_dir: None,
+            auth_method: "oauth-personal".into(),
+            auth_timeout: Duration::from_secs(5),
+            work_dir: dir.join("work"),
+            state_dir: dir.join("state"),
+        },
+        sink(recorder),
+        bridge,
+    )
+    .unwrap()
+}
+
+fn agy_log(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join("agy.log")).unwrap_or_default()
+}
+
+/// The native CLI runs as `agy acp` on the shared profile, never with the
+/// permission bypass; the goal rides in the system-prompt append so the
+/// prompt is the user's text verbatim; a message sent mid-turn is a second
+/// `session/prompt` that steers the running turn instead of restarting it.
+#[tokio::test]
+async fn antigravity_cli_steers_the_running_turn_with_a_second_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli(dir.path(), "steer", &recorder, None);
+    assert!(rt.capabilities().steer_in_turn);
+    let thread = thread(&rt, "default").await;
+    let mut first = input();
+    first.goal = Some("ship the release".into());
+    first.effort = Some("low".into());
+    rt.start_turn(&thread, first).await.unwrap();
+    wait_for(|| agy_log(dir.path()).contains(r#""method":"session/prompt""#)).await;
+    // Let the first reply's text arrive before steering.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let steered = rt
+        .steer(&thread, "make it shorter", SteerHow::Steer)
+        .await
+        .unwrap();
+    assert_eq!(steered, SteerOutcome::Steered);
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+
+    let log = agy_log(dir.path());
+    assert!(
+        log.contains(&format!(
+            "args acp --gemini-dir {} --app-data-dir antigravity-acp --disable-telemetry",
+            dir.path().join("profile").display()
+        )),
+        "{log}"
+    );
+    assert!(!log.contains("dangerously"), "{log}");
+    assert!(
+        log.contains(r#""systemPrompt":{"append":"#) && log.contains("ship the release"),
+        "{log}"
+    );
+    assert!(
+        log.contains(r#""prompt":[{"text":"hi","type":"text"}]"#),
+        "the prompt is the user's text alone: {log}"
+    );
+    assert!(log.contains(r#""configId":"thought_level""#) && log.contains(r#""value":"low""#));
+    assert_eq!(
+        log.matches(r#""method":"session/prompt""#).count(),
+        2,
+        "{log}"
+    );
+    assert!(
+        !log.contains("session/cancel"),
+        "a steer never cancels: {log}"
+    );
+
+    let outcome = recorder.finished.lock().unwrap()[0].clone();
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.final_text.as_deref(), Some("Steered"));
+    let history: Vec<(HistoryRole, String)> = rt
+        .history(&thread, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| (m.role, m.text))
+        .collect();
+    assert_eq!(
+        history,
+        [
+            (HistoryRole::User, "hi".to_string()),
+            (HistoryRole::Assistant, "Par".to_string()),
+            (HistoryRole::User, "make it shorter".to_string()),
+            (HistoryRole::Assistant, "Steered".to_string()),
+        ]
+    );
+    // No turn: a steer is refused and the engine queues it.
+    assert_eq!(
+        rt.steer(&thread, "late", SteerHow::Steer).await.unwrap(),
+        SteerOutcome::Rejected
+    );
+    let catalog = rt.catalog(&scope()).await.unwrap();
+    assert_eq!(catalog[0].efforts, ["low", "high"]);
+}
+
+/// `agy` ends its prompt while a command it backgrounded still runs, then
+/// reports the command and replies on its own: the turn stays open until
+/// that reply closes, and its text is part of the answer.
+#[tokio::test]
+async fn antigravity_cli_holds_the_turn_for_a_background_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let rt = antigravity_cli(dir.path(), "bg", &recorder, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt, "default").await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| agy_log(dir.path()).contains(r#""method":"session/prompt""#)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        recorder.finished.lock().unwrap().is_empty(),
+        "the prompt answered, but the command still runs"
+    );
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+    let outcome = recorder.finished.lock().unwrap()[0].clone();
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.final_text.as_deref(), Some("started done"));
+
+    // The command showed as a live row, with its output, then finished.
+    let mut seen = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        match event {
+            ironclaw_cli_providers::bridge::LiveEvent::Tool { tool, .. } => {
+                seen.push(format!("{}:{:?}", tool.tool_name, tool.state))
+            }
+            ironclaw_cli_providers::bridge::LiveEvent::ToolOutput { tail, .. } => {
+                seen.push(format!("out:{tail}"))
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        seen.first().map(String::as_str),
+        Some("run_command:Running"),
+        "{seen:?}"
+    );
+    assert!(seen.iter().any(|s| s == "out:finished"), "{seen:?}");
+    assert!(
+        seen.iter().any(|s| s == "run_command:Completed"),
+        "{seen:?}"
+    );
+}
+
+/// Stop while a turn is held for a background command cancels it (agy 1.5
+/// ends its commands on `session/cancel`) instead of waiting it out.
+#[tokio::test]
+async fn antigravity_cli_stop_ends_a_turn_held_for_a_background_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli(dir.path(), "bg", &recorder, None);
+    let thread = thread(&rt, "default").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| agy_log(dir.path()).contains(r#""method":"session/prompt""#)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    rt.cancel(&thread, "stop").await.unwrap();
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+    assert_eq!(
+        recorder.finished.lock().unwrap()[0].status,
+        TurnEndStatus::Cancelled
+    );
+}
+
+/// A session the agent lost is replaced by a fresh one that gets the
+/// thread so far (from IronClaw's journal) in its system prompt.
+#[tokio::test]
+async fn antigravity_cli_recaps_the_thread_when_its_session_is_lost() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli(dir.path(), "lost", &recorder, None);
+    let thread = thread(&rt, "default").await;
+    for n in 1..=2 {
+        rt.start_turn(&thread, input()).await.unwrap();
+        wait_for(|| recorder.finished.lock().unwrap().len() == n).await;
+    }
+    let log = agy_log(dir.path());
+    let news: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains(r#""method":"session/new""#))
+        .collect();
+    assert_eq!(news.len(), 2, "{log}");
+    assert!(!news[0].contains("no longer available"), "{}", news[0]);
+    assert!(
+        news[1].contains("no longer available") && news[1].contains("Assistant: pong"),
+        "{}",
+        news[1]
+    );
+    assert_eq!(
+        recorder.finished.lock().unwrap()[1].status,
+        TurnEndStatus::Completed
+    );
+}
+
+/// On `agy acp`, a rejection's feedback goes out as `reject_once` and then
+/// steers the still-running turn, so nothing waits in the queue.
+#[tokio::test]
+async fn antigravity_cli_rejection_feedback_steers_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let engine = ledger(dir.path()).await;
+    bridge.record_to(engine.store().clone());
+    let rt = antigravity_cli(dir.path(), "perm", &recorder, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt, "default").await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    reject_first_gate(&bridge, &recorder, &thread.thread_id).await;
+
+    let log = agy_log(dir.path());
+    let reject = log.find(r#""optionId":"no""#).expect("rejected");
+    let steer = log.rfind(FEEDBACK_TEXT).expect("steered");
+    assert!(reject < steer, "the reject goes first: {log}");
+    assert!(!log.contains(r#""optionId":"yes""#), "{log}");
+    assert_eq!(
+        queued_after_settle(&engine, &thread.thread_id, false).await,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        recorder.finished.lock().unwrap()[0].final_text.as_deref(),
+        Some("Steered")
+    );
+    // The call drew one row (from its `tool_call`), not a second on the gate.
+    let mut rows = std::collections::HashSet::new();
+    while let Ok(event) = events.try_recv() {
+        if let ironclaw_cli_providers::bridge::LiveEvent::Tool { tool, .. } = event {
+            rows.insert(tool.invocation);
+        }
+    }
+    assert_eq!(rows.len(), 1, "{rows:?}");
 }
 
 // ── Muse Code ───────────────────────────────────────────────────────────────
