@@ -52,7 +52,7 @@ pub(crate) struct DefaultCompactionStrategy {
 
 impl DefaultCompactionStrategy {
     pub(crate) const DEFAULT_PRESERVE_TAIL_TOKENS: u64 = 20_000;
-    pub(crate) const DEFAULT_DEADLINE_MS: u64 = 30_000;
+    pub(crate) const DEFAULT_DEADLINE_MS: u64 = 60_000;
 
     fn prompt_context_budget(&self, ctx: &LoopRunContext) -> PromptContextTokenBudget {
         ctx.model_context_window_tokens
