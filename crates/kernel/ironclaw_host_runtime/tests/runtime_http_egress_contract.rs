@@ -2656,6 +2656,7 @@ async fn mcp_http_client_reuses_real_host_staged_network_policy_for_json_rpc_ses
         .call_tool(McpClientRequest {
             provider: ExtensionId::new("mcp").unwrap(),
             capability_id: capability_id.clone(),
+            tool_name: None,
             scope: scope.clone(),
             transport: "http".to_string(),
             command: None,
@@ -2727,6 +2728,7 @@ async fn mcp_http_client_reuses_staged_credential_for_json_rpc_session() {
         .call_tool(McpClientRequest {
             provider: ExtensionId::new("mcp").unwrap(),
             capability_id: capability_id.clone(),
+            tool_name: None,
             scope: scope.clone(),
             transport: "http".to_string(),
             command: None,
@@ -2911,6 +2913,7 @@ async fn mcp_http_client_reuses_product_auth_staged_credential_for_json_rpc_sess
         .call_tool(McpClientRequest {
             provider: ExtensionId::new("mcp").unwrap(),
             capability_id: capability_id.clone(),
+            tool_name: None,
             scope: runtime_scope,
             transport: "http".to_string(),
             command: None,
@@ -2985,6 +2988,7 @@ async fn mcp_http_client_cannot_use_direct_secret_store_lease_with_production_eg
         .call_tool(McpClientRequest {
             provider: ExtensionId::new("mcp").unwrap(),
             capability_id,
+            tool_name: None,
             scope,
             transport: "http".to_string(),
             command: None,
