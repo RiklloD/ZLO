@@ -48,9 +48,9 @@ for arg in "$@"; do
   esac
 done
 
-ENGINE_TAG=engine-v0.6.0
+ENGINE_TAG=engine-v0.7.0
 ENGINE_URL=https://github.com/RiklloD/hermes-plugin-computer-use-plus/releases/download/$ENGINE_TAG/open-computer-use-engine-arm64.zip
-ENGINE_SHA256=098dc77a2ae1a9e817a2c4e7967ae016c11ed01cf315874b5f7dd44a8bfbebf0
+ENGINE_SHA256=f69cf629a9afda257123b0da0b3c27b3e9e243a60a8684e74073fbf16c73a691
 
 BUNDLE_ID=com.numoh.desktop
 NAME=ZLO
