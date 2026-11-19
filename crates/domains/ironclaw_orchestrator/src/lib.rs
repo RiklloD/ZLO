@@ -22,6 +22,9 @@
 //! ([`store::Store`]).
 
 #![deny(clippy::let_underscore_must_use)]
+mod admission;
+#[cfg(test)]
+mod admission_tests;
 pub mod agent_requests;
 pub mod cli_approvals;
 mod console;

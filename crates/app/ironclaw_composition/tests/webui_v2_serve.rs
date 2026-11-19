@@ -1096,6 +1096,7 @@ impl ironclaw_product_contracts::surface::ProductSurface for StubServices {
                     messages: Vec::new(),
                     summary_artifacts: Vec::new(),
                     next_cursor: None,
+                    steer_marks: Vec::new(),
                 })
                 .map_err(ProductSurfaceError::internal_from)?
             }

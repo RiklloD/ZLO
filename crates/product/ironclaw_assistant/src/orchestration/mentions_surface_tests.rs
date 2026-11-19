@@ -300,6 +300,7 @@ impl TurnRuntime for History {
             run_id: None,
             hidden: false,
             at: None,
+            steer_id: None,
         }])
     }
 }

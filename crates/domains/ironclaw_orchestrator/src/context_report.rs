@@ -476,6 +476,7 @@ mod tests {
             run_id: None,
             hidden,
             at: None,
+            steer_id: None,
         };
         let history = vec![
             msg(HistoryRole::User, &"old ".repeat(400), false),

@@ -870,6 +870,7 @@ impl StubServices {
             messages: Vec::new(),
             summary_artifacts: Vec::new(),
             next_cursor: None,
+            steer_marks: Vec::new(),
         })
     }
 

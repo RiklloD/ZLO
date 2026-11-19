@@ -417,6 +417,13 @@ pub struct QueueItem {
     /// The run a deferred steer targets, or the run a recovered steer was
     /// sent into.
     pub steer_run: Option<String>,
+    /// Monotonic enqueue order across the database (ties of `position`).
+    pub seq: i64,
+    /// The admission attempt that holds a `sending` item.
+    pub claim: Option<String>,
+    pub claimed_at: Option<Millis>,
+    /// The run a delivered item became part of (started or steered into).
+    pub claim_run: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

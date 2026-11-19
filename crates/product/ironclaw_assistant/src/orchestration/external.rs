@@ -35,7 +35,7 @@ use ironclaw_product_contracts::outbound::{
 };
 use ironclaw_product_contracts::product_wire::{
     RebornCancelRunResponse, RebornResolveGateResponse, RebornResumeGateResponse,
-    RebornSubmitDelivery, RebornSubmitTurnResponse,
+    RebornSubmitDelivery, RebornSubmitTurnResponse, RebornTimelineSteerMark,
 };
 use ironclaw_product_contracts::surface::{
     ProductSurfaceError, ProductSurfaceEventSubscription, ProductSurfaceQueryPage,
@@ -172,6 +172,7 @@ pub(super) fn bare_timeline(thread: &ThreadRecord) -> Option<ProductSurfaceQuery
         messages: Vec::new(),
         summary_artifacts: Vec::new(),
         next_cursor: None,
+        steer_marks: Vec::new(),
     };
     Some(ProductSurfaceQueryPage {
         // silent-ok: a struct of ids, strings and timestamps always serializes.
@@ -192,6 +193,8 @@ pub(crate) struct TimelineRow {
     pub(crate) text: String,
     pub(crate) run_id: Option<String>,
     pub(crate) at: Option<i64>,
+    /// The engine's steer id when the runtime journaled this row as one.
+    pub(crate) steer_id: Option<String>,
 }
 
 /// The id a timeline row gets: stable for its position in the history.
@@ -243,6 +246,7 @@ pub(crate) fn timeline_rows(thread: &ThreadId, history: &[HistoryMessage]) -> Ve
             text: m.text.clone(),
             run_id: m.run_id.clone(),
             at: m.at,
+            steer_id: m.steer_id.clone(),
         });
     }
     rows
@@ -266,6 +270,7 @@ pub(super) fn timeline_values(thread: &ThreadId, history: &[HistoryMessage]) -> 
                 "turn_run_id": row.run_id,
                 "content": row.text,
                 "redaction_ref": null,
+                "steer_id": row.steer_id,
             })
         })
         .collect()
@@ -279,19 +284,25 @@ pub(super) fn timeline_values(thread: &ThreadId, history: &[HistoryMessage]) -> 
 /// Rows are annotated in place, so row positions and cursors never shift.
 pub(super) fn annotate_steers(rows: &mut [Value], steers: &[SteerRecord]) {
     let mut used = vec![false; steers.len()];
+    let mut opened: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in rows.iter_mut().filter(|r| r["kind"] == "user") {
-        let content = row["content"]
-            .as_str()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
         let run = row["turn_run_id"].as_str().map(str::to_string);
-        let found = steers.iter().enumerate().position(|(i, steer)| {
-            !used[i]
-                && steer.state != SteerState::Unconfirmed
-                && steer.text.trim() == content
-                && (run.is_none() || steer.run_id.is_none() || run == steer.run_id)
-        });
+        // The first user row of a run is its prompt, never a steer.
+        let opening = run.as_ref().is_some_and(|r| opened.insert(r.clone()));
+        let found = match row["steer_id"].as_str() {
+            // The runtime journaled the steer under the engine's id.
+            Some(id) => steers.iter().position(|s| s.id.as_str() == id),
+            None if opening => None,
+            None => {
+                let content = row["content"].as_str().unwrap_or_default().trim();
+                steers.iter().enumerate().position(|(i, steer)| {
+                    !used[i]
+                        && steer.state != SteerState::Unconfirmed
+                        && steer.text.trim() == content
+                        && (run.is_none() || steer.run_id.is_none() || run == steer.run_id)
+                })
+            }
+        };
         if let Some(i) = found {
             used[i] = true;
             let steer = &steers[i];
@@ -321,6 +332,28 @@ pub(super) fn annotate_steers(rows: &mut [Value], steers: &[SteerRecord]) {
             None => rows[at]["steer_notices"] = json!([notice]),
         }
     }
+}
+
+/// The page's steer annotations as the timeline's typed `steer_marks`
+/// (the message records themselves carry no steer fields).
+pub(super) fn steer_marks(page: &[Value]) -> Value {
+    let marks: Vec<RebornTimelineSteerMark> = page
+        .iter()
+        .filter(|row| row.get("steer").is_some() || row.get("steer_notices").is_some())
+        .filter_map(|row| {
+            Some(RebornTimelineSteerMark {
+                message_id: row["message_id"].as_str()?.to_string(),
+                steer: row
+                    .get("steer")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                notices: row
+                    .get("steer_notices")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default(), // silent-ok: built just above from typed values
+            })
+        })
+        .collect();
+    serde_json::to_value(marks).unwrap_or_else(|_| Value::Array(Vec::new())) // silent-ok: plain strings and bools
 }
 
 /// Cursor of a CLI timeline page: the position (in all rows, oldest first)
@@ -782,6 +815,7 @@ mod tests {
             run_id: Some(run.to_string()),
             hidden: false,
             at: None,
+            steer_id: None,
         }
     }
 

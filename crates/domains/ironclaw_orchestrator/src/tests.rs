@@ -33,6 +33,14 @@ pub(crate) struct FakeRuntime {
     pub(crate) reads: bool,
     /// Steers without cancelling tool calls (`steer_interrupts_tools`).
     pub(crate) gentle: bool,
+    /// When set, each steer waits for a permit (a test releases it).
+    pub(crate) steer_gate: Option<Arc<tokio::sync::Semaphore>>,
+    /// When set, each turn start waits for a permit.
+    pub(crate) start_gate: Option<Arc<tokio::sync::Semaphore>>,
+    /// Told when a gated call is in flight.
+    pub(crate) entered: Arc<tokio::sync::Notify>,
+    /// The runtime's session lock, held through every steer.
+    pub(crate) session: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl FakeRuntime {
@@ -72,6 +80,7 @@ fn msg(role: HistoryRole, text: &str) -> HistoryMessage {
         run_id: None,
         hidden: false,
         at: None,
+        steer_id: None,
     }
 }
 
@@ -117,6 +126,10 @@ impl TurnRuntime for FakeRuntime {
         t: &ThreadRecord,
         input: TurnInput,
     ) -> Result<TurnAdmission, RuntimeError> {
+        if let Some(gate) = &self.start_gate {
+            self.entered.notify_one();
+            gate.acquire().await.unwrap().forget();
+        }
         self.started
             .lock()
             .unwrap()
@@ -144,6 +157,11 @@ impl TurnRuntime for FakeRuntime {
         t: &ThreadRecord,
         request: &SteerRequest,
     ) -> Result<SteerOutcome, RuntimeError> {
+        let _session = self.session.lock().await;
+        if let Some(gate) = &self.steer_gate {
+            self.entered.notify_one();
+            gate.acquire().await.unwrap().forget();
+        }
         let outcome = self
             .steer_script
             .lock()

@@ -1,14 +1,15 @@
-//! Steers: text delivered into a running turn (t3code's steering model).
+//! Steers: text delivered into a running turn (t3code's steering model) —
+//! the ledger, run-scoped Stop and readiness, and unread-steer recovery.
 //!
-//! Every steer the engine hands a runtime gets a [`SteerId`] and a row in
-//! `orch_steers`, the ledger the transcript reads ("Steer · waiting to be
-//! read" until the runtime reports it read). A steer still unread when its
-//! turn ends is sent again as a queued turn that keeps its place ahead of
-//! messages queued after it was sent; after a Stop it is not resent but
-//! kept as a "Steer delivery not confirmed" notice the person decides on.
-//! A steer that reaches a turn which cannot take input yet waits in the
-//! queue as a deferred steer and is delivered once the runtime reports the
-//! turn ready, or runs as the next turn if that turn ends first.
+//! Every message an admission path handles is one durable delivery row in
+//! `orch_queue` (its id is the delivery id across every attempt and
+//! fallback; `crate::admission`). Each attempt to steer it into a run gets a
+//! [`SteerId`] and a row in `orch_steers` ("Steer · waiting to be read" until
+//! the runtime reports it read). A steer still unread once its run is no
+//! longer the thread's live run goes back to the queue ahead of messages
+//! enqueued after it (by the monotonic `seq`), in one transaction with its
+//! ledger transition; when a Stop reached that run it becomes a "Steer
+//! delivery not confirmed" notice instead.
 
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use ironclaw_host_api::ids::ThreadId;
 use serde::Serialize;
 
 use crate::engine::{Engine, Result};
+use crate::error::OrchestratorError;
 use crate::model::*;
 use crate::runtime::*;
 use crate::store::{Cols, Store, opt, s};
@@ -33,20 +35,40 @@ CREATE TABLE IF NOT EXISTS orch_steers (
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS orch_steers_thread ON orch_steers(thread_id, state);
+CREATE TABLE IF NOT EXISTS orch_run_stops (
+  thread_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (thread_id, run_id)
+);
+CREATE TABLE IF NOT EXISTS orch_run_ready (
+  thread_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (thread_id, run_id)
+);
+CREATE TABLE IF NOT EXISTS orch_submissions (
+  thread_id TEXT NOT NULL,
+  client_action_id TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (thread_id, client_action_id)
+);
 "#;
 
-/// Title of the notice a steer Stop left unconfirmed gets (t3code's).
+/// Title of the notice a steer Stop left unread gets (t3code's).
 pub const STEER_UNCONFIRMED_TITLE: &str = "Steer delivery not confirmed";
-
-/// How long a send waits for a turn its runtime says has ended to be
-/// recorded as ended, before it falls back to the queue head.
-const TURN_END_WAIT: Duration = Duration::from_secs(3);
-const TURN_END_POLL: Duration = Duration::from_millis(25);
 
 /// Write attempts for one unread steer, and the pause before each retry.
 const STEER_QUEUE_RETRIES: [Duration; 2] = [Duration::from_millis(50), Duration::from_millis(250)];
 
-/// One steer in the ledger.
+/// The run key Stop and readiness are recorded under (`""`: a run the
+/// runtime gave no id).
+fn run_key(run: Option<&str>) -> String {
+    run.unwrap_or_default().to_string()
+}
+
+/// One steer attempt in the ledger.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SteerRecord {
@@ -57,8 +79,8 @@ pub struct SteerRecord {
     pub text: String,
     pub created_by: Author,
     pub state: SteerState,
-    /// A Stop reached its run while it was unread.
-    pub stop_reached: bool,
+    /// The delivery (queue row) this attempt belongs to.
+    pub queue_id: Option<QueueItemId>,
     pub sent_at: Millis,
     pub updated_at: Millis,
 }
@@ -80,29 +102,21 @@ impl SteerRecord {
             self.text
         )
     }
-
-    fn unread(&self) -> bool {
-        matches!(
-            self.state,
-            SteerState::Sending | SteerState::Pending | SteerState::Dropped
-        )
-    }
 }
 
 const STEER_COLS: &str =
-    "id, thread_id, run_id, text, created_by, state, stop_reached, sent_at, updated_at";
+    "id, thread_id, run_id, text, created_by, state, queue_id, sent_at, updated_at";
 
 fn steer_row(row: &libsql::Row) -> Result<SteerRecord> {
     let mut c = Cols::new(row);
     Ok(SteerRecord {
-        id: SteerId::new(c.text()?)
-            .map_err(|e| crate::error::OrchestratorError::Corrupt(e.to_string()))?,
+        id: SteerId::new(c.text()?).map_err(|e| OrchestratorError::Corrupt(e.to_string()))?,
         thread_id: c.thread()?,
         run_id: c.otext()?,
         text: c.text()?,
         created_by: Author::parse(&c.text()?)?,
         state: SteerState::parse(&c.text()?)?,
-        stop_reached: c.int()? != 0,
+        queue_id: c.otext()?.map(QueueItemId::new).transpose()?,
         sent_at: c.int()?,
         updated_at: c.int()?,
     })
@@ -116,29 +130,221 @@ fn states_sql(states: &[SteerState]) -> String {
         .join(",")
 }
 
+/// What the recovery of one steer did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Recovered {
+    /// Back in the queue ahead of later messages.
+    Requeued,
+    /// A Stop reached its run: kept as a notice, not resent.
+    Unconfirmed,
+    /// Not unread any more (read, or recovered by another path).
+    Skipped,
+}
+
+/// Where a settled delivery goes.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Settle {
+    pub(crate) status: QueueStatus,
+    pub(crate) kind: QueueKind,
+    pub(crate) steer_run: Option<String>,
+    pub(crate) claim_run: Option<String>,
+    /// Move it ahead of every pending item.
+    pub(crate) front: bool,
+}
+
+impl Settle {
+    pub(crate) fn to(status: QueueStatus) -> Self {
+        Self {
+            status,
+            kind: QueueKind::Message,
+            steer_run: None,
+            claim_run: None,
+            front: false,
+        }
+    }
+}
+
 impl Store {
-    pub(crate) async fn upgrade_queue_schema(&self) -> Result<()> {
+    /// Add a column when it is missing. Two backends opening the same file
+    /// can both see it missing: the loser's "duplicate column" is success.
+    pub(crate) async fn add_column_once(
+        &self,
+        table: &str,
+        name: &str,
+        definition: &str,
+    ) -> Result<()> {
         let present = self
-            .rows("PRAGMA table_info(orch_queue)", vec![], |r| {
+            .rows(&format!("PRAGMA table_info({table})"), vec![], |r| {
                 let mut c = Cols::new(r);
                 c.int()?;
                 c.text()
             })
             .await?;
+        if present.iter().any(|p| p == name) {
+            return Ok(());
+        }
+        match self
+            .exec(
+                &format!("ALTER TABLE {table} ADD COLUMN {name} {definition}"),
+                vec![],
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) if error.to_string().contains("duplicate column") => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) async fn upgrade_queue_schema(&self) -> Result<()> {
         for (name, definition) in [
             ("kind", "TEXT NOT NULL DEFAULT 'message'"),
             ("steer_run", "TEXT"),
+            ("seq", "INTEGER"),
+            ("claim", "TEXT"),
+            ("claimed_at", "INTEGER"),
+            ("claim_run", "TEXT"),
         ] {
-            if !present.iter().any(|p| p == name) {
-                self.exec(
-                    &format!("ALTER TABLE orch_queue ADD COLUMN {name} {definition}"),
-                    vec![],
-                )
-                .await?;
-            }
+            self.add_column_once("orch_queue", name, definition).await?;
         }
+        self.add_column_once("orch_steers", "queue_id", "TEXT")
+            .await?;
+        // Rows from before the column keep their insertion order.
+        self.exec(
+            "UPDATE orch_queue SET seq = rowid WHERE seq IS NULL",
+            vec![],
+        )
+        .await?;
         Ok(())
     }
+
+    // ── deliveries ──────────────────────────────────────────────────────
+
+    /// Insert one delivery: `claim` set means claimed at birth (`sending`),
+    /// otherwise pending. Its `seq` is the next in the database.
+    pub(crate) async fn queue_insert(
+        &self,
+        thread: &ThreadId,
+        text: &str,
+        author: Author,
+        kind: QueueKind,
+        steer_run: Option<&str>,
+        claim: Option<&str>,
+    ) -> Result<QueueItemId> {
+        let id = QueueItemId::generate();
+        let now = now_ms();
+        let status = if claim.is_some() {
+            QueueStatus::Sending
+        } else {
+            QueueStatus::Pending
+        };
+        self.exec(
+            "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, \
+             updated_at, kind, steer_run, seq, claim, claimed_at) \
+             VALUES (?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM orch_queue WHERE thread_id = ?2), \
+             ?3, ?4, ?5, ?6, ?6, ?7, ?8, (SELECT COALESCE(MAX(seq), 0) + 1 FROM orch_queue), ?9, ?10)",
+            vec![
+                s(id.as_str()),
+                s(thread.as_str()),
+                s(text),
+                s(status.as_str()),
+                s(author.as_str()),
+                now.into(),
+                s(kind.as_str()),
+                opt(steer_run.map(str::to_string)),
+                opt(claim.map(str::to_string)),
+                opt(claim.map(|_| now)),
+            ],
+        )
+        .await?;
+        Ok(id)
+    }
+
+    /// Claim a pending delivery for one admission attempt (pending →
+    /// sending); `false` when someone else holds or settled it.
+    pub(crate) async fn queue_claim(&self, id: &QueueItemId, claim: &str) -> Result<bool> {
+        let now = now_ms();
+        let n = self
+            .exec(
+                "UPDATE orch_queue SET status = 'sending', claim = ?2, claimed_at = ?3, updated_at = ?3 \
+                 WHERE id = ?1 AND status = 'pending'",
+                vec![s(id.as_str()), s(claim), now.into()],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// Settle the delivery `claim` holds; `false` when the claim is gone
+    /// (recovery took it back meanwhile).
+    pub(crate) async fn queue_settle(
+        &self,
+        id: &QueueItemId,
+        claim: &str,
+        settle: &Settle,
+    ) -> Result<bool> {
+        let now = now_ms();
+        let position = if settle.front {
+            "(SELECT COALESCE(MIN(q.position), 1) - 1 FROM orch_queue q WHERE q.thread_id = orch_queue.thread_id \
+             AND q.status IN ('pending','sending'))"
+        } else {
+            "position"
+        };
+        let n = self
+            .exec(
+                &format!(
+                    "UPDATE orch_queue SET status = ?3, kind = ?4, steer_run = ?5, \
+                     claim_run = COALESCE(?6, claim_run), position = {position}, updated_at = ?7, \
+                     sent_at = CASE WHEN ?3 = 'sent' THEN ?7 ELSE sent_at END, \
+                     claim = CASE WHEN ?3 = 'sending' THEN claim ELSE NULL END \
+                     WHERE id = ?1 AND status = 'sending' AND claim = ?2"
+                ),
+                vec![
+                    s(id.as_str()),
+                    s(claim),
+                    s(settle.status.as_str()),
+                    s(settle.kind.as_str()),
+                    opt(settle.steer_run.clone()),
+                    opt(settle.claim_run.clone()),
+                    now.into(),
+                ],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// Change a pending item's kind (a deferred steer whose run is gone
+    /// runs as a message, keeping its place).
+    pub(crate) async fn set_pending_kind(
+        &self,
+        id: &QueueItemId,
+        kind: QueueKind,
+        steer_run: Option<&str>,
+    ) -> Result<bool> {
+        let n = self
+            .exec(
+                "UPDATE orch_queue SET kind = ?2, steer_run = ?3, updated_at = ?4 \
+                 WHERE id = ?1 AND status = 'pending'",
+                vec![
+                    s(id.as_str()),
+                    s(kind.as_str()),
+                    opt(steer_run.map(str::to_string)),
+                    now_ms().into(),
+                ],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    pub(crate) async fn deferred_steer_threads(&self) -> Result<Vec<ThreadId>> {
+        self.rows(
+            "SELECT DISTINCT thread_id FROM orch_queue WHERE status = 'pending' AND kind = 'deferred_steer'",
+            vec![],
+            |r| Cols::new(r).thread(),
+        )
+        .await
+    }
+
+    // ── ledger ──────────────────────────────────────────────────────────
 
     pub(crate) async fn insert_steer(&self, steer: &SteerRecord) -> Result<bool> {
         let n = self
@@ -154,7 +360,7 @@ impl Store {
                     s(&steer.text),
                     s(steer.created_by.as_str()),
                     s(steer.state.as_str()),
-                    i64::from(steer.stop_reached).into(),
+                    opt(steer.queue_id.as_ref().map(|q| q.as_str().to_string())),
                     steer.sent_at.into(),
                     steer.updated_at.into(),
                 ],
@@ -215,176 +421,166 @@ impl Store {
         .await
     }
 
-    /// Unread steers of `run` (every run when `None`), oldest first.
-    async fn unread_steers(
-        &self,
-        thread: &ThreadId,
-        run: Option<&str>,
-    ) -> Result<Vec<SteerRecord>> {
+    /// Accepted-but-unread steers of the thread, oldest first.
+    async fn open_steers(&self, thread: &ThreadId) -> Result<Vec<SteerRecord>> {
         self.rows(
             &format!(
                 "SELECT {STEER_COLS} FROM orch_steers WHERE thread_id = ?1 \
-                 AND state IN ('sending','pending','dropped') \
-                 AND (?2 IS NULL OR run_id IS NULL OR run_id = ?2) ORDER BY sent_at, rowid"
+                 AND state IN ('pending','dropped') ORDER BY sent_at, rowid"
             ),
-            vec![s(thread.as_str()), opt(run.map(str::to_string))],
+            vec![s(thread.as_str())],
             steer_row,
         )
         .await
     }
 
-    /// A Stop reached every unread steer of the thread.
-    async fn mark_steers_stop_reached(&self, thread: &ThreadId) -> Result<()> {
+    async fn threads_with_open_steers(&self) -> Result<Vec<ThreadId>> {
+        self.rows(
+            "SELECT DISTINCT thread_id FROM orch_steers WHERE state IN ('pending','dropped')",
+            vec![],
+            |r| Cols::new(r).thread(),
+        )
+        .await
+    }
+
+    /// A steered delivery: its ledger row leaves `sending` and its queue row
+    /// is sent into `run`, in one transaction. `false` when the queue claim
+    /// was taken back meanwhile.
+    pub(crate) async fn settle_steered(
+        &self,
+        steer: &SteerRecord,
+        state: SteerState,
+        claim: &str,
+    ) -> Result<bool> {
+        let now = now_ms();
+        let Some(queue_id) = &steer.queue_id else {
+            return Ok(false);
+        };
+        self.tx(vec![
+            (
+                "UPDATE orch_steers SET state = ?3, updated_at = ?4 \
+                 WHERE thread_id = ?1 AND id = ?2 AND state = 'sending'"
+                    .to_string(),
+                vec![
+                    s(steer.thread_id.as_str()),
+                    s(steer.id.as_str()),
+                    s(state.as_str()),
+                    now.into(),
+                ],
+            ),
+            (
+                "UPDATE orch_queue SET status = 'sent', sent_at = ?3, updated_at = ?3, \
+                 claim_run = ?4, claim = NULL WHERE id = ?1 AND status = 'sending' AND claim = ?2"
+                    .to_string(),
+                vec![
+                    s(queue_id.as_str()),
+                    s(claim),
+                    now.into(),
+                    opt(steer.run_id.clone()),
+                ],
+            ),
+        ])
+        .await?;
+        Ok(true)
+    }
+
+    /// Recover one unread steer in one transaction: re-check that it is
+    /// still unread, check whether a Stop reached its run, then either note
+    /// it unconfirmed or put its delivery back in the queue ahead of every
+    /// pending item enqueued after it. A delivery the ledger has no row for
+    /// (a runtime's own id) is created at the tail.
+    pub(crate) async fn recover_steer(&self, thread: &ThreadId, id: &SteerId) -> Result<Recovered> {
+        let conn = self.db.write().await?;
+        let tx = conn
+            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
+            .await?;
+        let outcome = recover_in(&tx, thread, id).await;
+        match outcome {
+            Ok(done) => {
+                tx.commit().await?;
+                Ok(done)
+            }
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
+        }
+    }
+
+    // ── run-scoped Stop and readiness ───────────────────────────────────
+
+    pub(crate) async fn record_run_stop(&self, thread: &ThreadId, run: Option<&str>) -> Result<()> {
         self.exec(
-            "UPDATE orch_steers SET stop_reached = 1, updated_at = ?2 \
-             WHERE thread_id = ?1 AND state IN ('sending','pending','dropped')",
-            vec![s(thread.as_str()), now_ms().into()],
+            "INSERT OR IGNORE INTO orch_run_stops (thread_id, run_id, at) VALUES (?1, ?2, ?3)",
+            vec![s(thread.as_str()), s(run_key(run)), now_ms().into()],
         )
         .await?;
         Ok(())
     }
 
-    /// Queue `text` with a kind; at the head of the pending items when
-    /// `front`, otherwise at the tail.
-    pub(crate) async fn queue_add_kind(
-        &self,
-        thread: &ThreadId,
-        text: &str,
-        author: Author,
-        kind: QueueKind,
-        steer_run: Option<&str>,
-        front: bool,
-    ) -> Result<QueueItemId> {
-        let id = QueueItemId::generate();
-        let now = now_ms();
-        let position = if front {
-            "(SELECT COALESCE(MIN(position), 1) - 1 FROM orch_queue WHERE thread_id = ?2 AND status IN ('pending','sending'))"
-        } else {
-            "(SELECT COALESCE(MAX(position), 0) + 1 FROM orch_queue WHERE thread_id = ?2)"
-        };
-        self.exec(
-            &format!(
-                "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, updated_at, kind, steer_run) \
-                 VALUES (?1, ?2, {position}, ?3, 'pending', ?4, ?5, ?5, ?6, ?7)"
-            ),
-            vec![
-                s(id.as_str()),
-                s(thread.as_str()),
-                s(text),
-                s(author.as_str()),
-                now.into(),
-                s(kind.as_str()),
-                opt(steer_run.map(str::to_string)),
-            ],
-        )
-        .await?;
-        Ok(id)
+    pub(crate) async fn run_stopped(&self, thread: &ThreadId, run: Option<&str>) -> Result<bool> {
+        Ok(self
+            .row(
+                "SELECT 1 FROM orch_run_stops WHERE thread_id = ?1 AND run_id = ?2",
+                vec![s(thread.as_str()), s(run_key(run))],
+                |r| Cols::new(r).int(),
+            )
+            .await?
+            .is_some())
     }
 
-    /// Queue a recovered steer sent at `sent_at` ahead of every pending item
-    /// queued after that moment (several keep their send order). A second
-    /// call with the same id is a no-op; `true` when this call inserted it.
-    pub(crate) async fn queue_insert_steer(
+    pub(crate) async fn record_run_ready(
         &self,
-        id: &QueueItemId,
         thread: &ThreadId,
-        text: &str,
-        author: Author,
-        sent_at: Millis,
-        steer_run: Option<&str>,
-    ) -> Result<bool> {
-        let conn = self.db.write().await?;
-        let tx = conn
-            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
-            .await?;
-        let mut exists = tx
-            .query(
-                "SELECT 1 FROM orch_queue WHERE id = ?1",
-                vec![s(id.as_str())],
-            )
-            .await?;
-        if exists.next().await?.is_some() {
-            drop(exists);
-            tx.commit().await?;
-            return Ok(false);
-        }
-        drop(exists);
-        let mut rows = tx
-            .query(
-                "SELECT position, created_at, COALESCE(kind, 'message') FROM orch_queue \
-                 WHERE thread_id = ?1 AND status = 'pending' ORDER BY position, created_at",
-                vec![s(thread.as_str())],
-            )
-            .await?;
-        let mut pending: Vec<(f64, Millis, QueueKind)> = Vec::new();
-        while let Some(row) = rows.next().await? {
-            let mut c = Cols::new(&row);
-            pending.push((c.real()?, c.int()?, QueueKind::parse(&c.text()?)?));
-        }
-        drop(rows);
-        // Same millisecond: a message counts as later; a steer recovered
-        // before this one stays ahead.
-        let later = pending.iter().position(|(_, at, kind)| {
-            *at > sent_at || (*at == sent_at && *kind != QueueKind::RecoveredSteer)
-        });
-        let position = match later {
-            Some(0) => pending[0].0 - 1.0,
-            Some(i) => (pending[i - 1].0 + pending[i].0) / 2.0,
-            None => {
-                let mut max = tx
-                    .query(
-                        "SELECT COALESCE(MAX(position), 0) + 1 FROM orch_queue WHERE thread_id = ?1",
-                        vec![s(thread.as_str())],
-                    )
-                    .await?;
-                let value = match max.next().await? {
-                    Some(row) => Cols::new(&row).real()?,
-                    None => 1.0,
-                };
-                drop(max);
-                value
-            }
-        };
-        let inserted = tx
-            .execute(
-                "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, updated_at, kind, steer_run) \
-                 VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, 'recovered_steer', ?8)",
-                vec![
-                    s(id.as_str()),
-                    s(thread.as_str()),
-                    position.into(),
-                    s(text),
-                    s(author.as_str()),
-                    sent_at.into(),
-                    now_ms().into(),
-                    opt(steer_run.map(str::to_string)),
-                ],
-            )
-            .await;
-        match inserted {
-            Ok(_) => {
-                tx.commit().await?;
-                Ok(true)
-            }
-            Err(error) => {
-                tx.rollback().await?;
-                Err(error.into())
-            }
-        }
-    }
-
-    pub(crate) async fn set_queue_kind(
-        &self,
-        id: &QueueItemId,
-        kind: QueueKind,
-        steer_run: Option<&str>,
+        run: Option<&str>,
     ) -> Result<()> {
         self.exec(
-            "UPDATE orch_queue SET kind = ?2, steer_run = ?3, updated_at = ?4 WHERE id = ?1",
+            "INSERT OR IGNORE INTO orch_run_ready (thread_id, run_id, at) VALUES (?1, ?2, ?3)",
+            vec![s(thread.as_str()), s(run_key(run)), now_ms().into()],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn run_ready(&self, thread: &ThreadId, run: Option<&str>) -> Result<bool> {
+        Ok(self
+            .row(
+                "SELECT 1 FROM orch_run_ready WHERE thread_id = ?1 AND run_id = ?2",
+                vec![s(thread.as_str()), s(run_key(run))],
+                |r| Cols::new(r).int(),
+            )
+            .await?
+            .is_some())
+    }
+
+    // ── submissions (client action idempotency) ─────────────────────────
+
+    pub(crate) async fn submission(
+        &self,
+        thread: &ThreadId,
+        client_action_id: &str,
+    ) -> Result<Option<String>> {
+        self.row(
+            "SELECT outcome FROM orch_submissions WHERE thread_id = ?1 AND client_action_id = ?2",
+            vec![s(thread.as_str()), s(client_action_id)],
+            |r| Cols::new(r).text(),
+        )
+        .await
+    }
+
+    pub(crate) async fn put_submission(
+        &self,
+        thread: &ThreadId,
+        client_action_id: &str,
+        outcome: &str,
+    ) -> Result<()> {
+        self.exec(
+            "INSERT OR IGNORE INTO orch_submissions (thread_id, client_action_id, outcome, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
             vec![
-                s(id.as_str()),
-                s(kind.as_str()),
-                opt(steer_run.map(str::to_string)),
+                s(thread.as_str()),
+                s(client_action_id),
+                s(outcome),
                 now_ms().into(),
             ],
         )
@@ -392,21 +588,206 @@ impl Store {
         Ok(())
     }
 
-    async fn deferred_steer_threads(&self) -> Result<Vec<ThreadId>> {
-        self.rows(
-            "SELECT DISTINCT thread_id FROM orch_queue WHERE status = 'pending' AND kind = 'deferred_steer'",
-            vec![],
-            |r| Cols::new(r).thread(),
+    // ── boot ────────────────────────────────────────────────────────────
+
+    /// Settle deliveries a crash left claimed, before anything drains. A
+    /// steer attempt in flight may or may not have reached the agent: it is
+    /// kept as an unconfirmed notice, never replayed. A start claim counts
+    /// as sent when the thread recorded a turn start after it, otherwise it
+    /// goes back to pending.
+    pub(crate) async fn reconcile_claims(&self) -> Result<()> {
+        let claimed = self
+            .rows(
+                &format!(
+                    "SELECT {} FROM orch_queue WHERE status = 'sending'",
+                    crate::store::QUEUE_COLS
+                ),
+                vec![],
+                crate::store::queue_row,
+            )
+            .await?;
+        let now = now_ms();
+        for item in claimed {
+            let in_flight = self
+                .rows(
+                    &format!(
+                        "SELECT {STEER_COLS} FROM orch_steers WHERE queue_id = ?1 AND state = 'sending'"
+                    ),
+                    vec![s(item.id.as_str())],
+                    steer_row,
+                )
+                .await?;
+            if !in_flight.is_empty() {
+                let mut statements = vec![(
+                    "UPDATE orch_queue SET status = 'sent', claim = NULL, updated_at = ?2, sent_at = ?2 \
+                     WHERE id = ?1 AND status = 'sending'"
+                        .to_string(),
+                    vec![s(item.id.as_str()), now.into()],
+                )];
+                for steer in in_flight {
+                    statements.push((
+                        "UPDATE orch_steers SET state = 'unconfirmed', updated_at = ?2 \
+                         WHERE id = ?1 AND state = 'sending'"
+                            .to_string(),
+                        vec![s(steer.id.as_str()), now.into()],
+                    ));
+                }
+                self.tx(statements).await?;
+                continue;
+            }
+            let started = match (self.thread(&item.thread_id).await?, item.claimed_at) {
+                (Some(t), Some(claimed)) => t.turn_started_at.is_some_and(|at| at >= claimed),
+                _ => false,
+            };
+            let (status, run) = if started {
+                let run = self
+                    .thread(&item.thread_id)
+                    .await?
+                    .and_then(|t| t.active_run_id);
+                (QueueStatus::Sent, run)
+            } else {
+                (QueueStatus::Pending, None)
+            };
+            self.exec(
+                "UPDATE orch_queue SET status = ?2, claim = NULL, claim_run = COALESCE(?3, claim_run), \
+                 updated_at = ?4 WHERE id = ?1 AND status = 'sending'",
+                vec![
+                    s(item.id.as_str()),
+                    s(status.as_str()),
+                    opt(run),
+                    now.into(),
+                ],
+            )
+            .await?;
+        }
+        // Ledger rows whose delivery row is gone or never existed.
+        self.exec(
+            "UPDATE orch_steers SET state = 'unconfirmed', updated_at = ?1 WHERE state = 'sending'",
+            vec![now.into()],
         )
-        .await
+        .await?;
+        Ok(())
     }
 }
 
-/// What a steer attempt did, and the ledger id of a delivered one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SteerAttempt {
-    pub(crate) outcome: SteerOutcome,
-    pub(crate) id: SteerId,
+async fn recover_in(
+    tx: &libsql::Transaction,
+    thread: &ThreadId,
+    id: &SteerId,
+) -> Result<Recovered> {
+    let mut rows = tx
+        .query(
+            &format!("SELECT {STEER_COLS} FROM orch_steers WHERE thread_id = ?1 AND id = ?2"),
+            vec![s(thread.as_str()), s(id.as_str())],
+        )
+        .await?;
+    let steer = match rows.next().await? {
+        Some(row) => steer_row(&row)?,
+        None => return Ok(Recovered::Skipped),
+    };
+    drop(rows);
+    if !matches!(steer.state, SteerState::Pending | SteerState::Dropped) {
+        return Ok(Recovered::Skipped);
+    }
+    let now = now_ms();
+    let mut stop = tx
+        .query(
+            "SELECT 1 FROM orch_run_stops WHERE thread_id = ?1 AND run_id = ?2",
+            vec![s(thread.as_str()), s(run_key(steer.run_id.as_deref()))],
+        )
+        .await?;
+    let stopped = stop.next().await?.is_some();
+    drop(stop);
+    if stopped {
+        tx.execute(
+            "UPDATE orch_steers SET state = 'unconfirmed', updated_at = ?2 WHERE id = ?1",
+            vec![s(id.as_str()), now.into()],
+        )
+        .await?;
+        return Ok(Recovered::Unconfirmed);
+    }
+    // The delivery's enqueue order, when it has a row.
+    let mut own_seq = None;
+    if let Some(queue_id) = &steer.queue_id {
+        let mut rows = tx
+            .query(
+                "SELECT COALESCE(seq, 0) FROM orch_queue WHERE id = ?1",
+                vec![s(queue_id.as_str())],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            own_seq = Some(Cols::new(&row).int()?);
+        }
+        drop(rows);
+    }
+    let mut rows = tx
+        .query(
+            "SELECT position, COALESCE(seq, 0) FROM orch_queue WHERE thread_id = ?1 \
+             AND status = 'pending' ORDER BY position, seq",
+            vec![s(thread.as_str())],
+        )
+        .await?;
+    let mut pending: Vec<(f64, i64)> = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let mut c = Cols::new(&row);
+        pending.push((c.real()?, c.int()?));
+    }
+    drop(rows);
+    let later = own_seq.and_then(|mine| pending.iter().position(|(_, seq)| *seq > mine));
+    let position = match later {
+        Some(0) => pending.first().map_or(1.0, |p| p.0 - 1.0),
+        Some(i) => match (pending.get(i - 1), pending.get(i)) {
+            (Some(a), Some(b)) => (a.0 + b.0) / 2.0,
+            _ => 1.0,
+        },
+        None => pending.last().map_or(1.0, |p| p.0 + 1.0),
+    };
+    let queue_id = match (&steer.queue_id, own_seq) {
+        (Some(queue_id), Some(_)) => {
+            tx.execute(
+                "UPDATE orch_queue SET status = 'pending', kind = 'recovered_steer', steer_run = ?2, \
+                 position = ?3, claim = NULL, updated_at = ?4 WHERE id = ?1",
+                vec![
+                    s(queue_id.as_str()),
+                    opt(steer.run_id.clone()),
+                    position.into(),
+                    now.into(),
+                ],
+            )
+            .await?;
+            queue_id.clone()
+        }
+        _ => {
+            let queue_id = unread_steer_queue_id(
+                thread,
+                steer.run_id.as_deref().unwrap_or_default(),
+                steer.id.as_str(),
+            )?;
+            tx.execute(
+                "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, \
+                 updated_at, kind, steer_run, seq) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?6, \
+                 'recovered_steer', ?7, (SELECT COALESCE(MAX(seq), 0) + 1 FROM orch_queue)) \
+                 ON CONFLICT(id) DO NOTHING",
+                vec![
+                    s(queue_id.as_str()),
+                    s(thread.as_str()),
+                    position.into(),
+                    s(&steer.text),
+                    s(steer.created_by.as_str()),
+                    now.into(),
+                    opt(steer.run_id.clone()),
+                ],
+            )
+            .await?;
+            queue_id
+        }
+    };
+    tx.execute(
+        "UPDATE orch_steers SET state = 'requeued', queue_id = ?2, updated_at = ?3 WHERE id = ?1",
+        vec![s(id.as_str()), s(queue_id.as_str()), now.into()],
+    )
+    .await?;
+    Ok(Recovered::Requeued)
 }
 
 impl Engine {
@@ -416,87 +797,42 @@ impl Engine {
         self.store.steers(thread).await
     }
 
-    /// Hand `text` to the running turn of `thread` as one steer, recorded in
-    /// the ledger. A steer never kills the turn: on a runtime without
-    /// in-turn steering it is `Rejected` without a call.
-    pub(crate) async fn steer_text(
-        &self,
-        thread: &ThreadRecord,
-        text: &str,
-        how: SteerHow,
-        author: Author,
-    ) -> Result<SteerAttempt> {
-        let runtime = self.runtime(&thread.runtime_id)?;
-        let id = SteerId::generate();
-        if how == SteerHow::Steer && !runtime.capabilities().steer_in_turn {
-            return Ok(SteerAttempt {
-                outcome: SteerOutcome::Rejected,
-                id,
-            });
-        }
-        let now = now_ms();
-        // Written before the call: the runtime may report it read before
-        // its answer returns.
-        self.store
-            .insert_steer(&SteerRecord {
-                id: id.clone(),
-                thread_id: thread.thread_id.clone(),
-                run_id: thread.active_run_id.clone(),
-                text: text.to_string(),
-                created_by: author,
-                state: SteerState::Sending,
-                stop_reached: false,
-                sent_at: now,
-                updated_at: now,
-            })
-            .await?;
-        let request = SteerRequest {
-            id: id.clone(),
-            text: text.to_string(),
-            how,
-        };
-        let result = runtime.steer_message(thread, &request).await;
-        let next = match &result {
-            Ok(SteerOutcome::Steered) if runtime.reports_steer_reads() => SteerState::Pending,
-            Ok(SteerOutcome::Steered) => SteerState::Read,
-            // The restarted turn's prompt is this text.
-            Ok(SteerOutcome::Restarted) => SteerState::Read,
-            _ => SteerState::NotSent,
-        };
-        self.store
-            .set_steer_state(&thread.thread_id, &id, &[SteerState::Sending], next)
-            .await?;
-        let outcome = result?;
-        Ok(SteerAttempt { outcome, id })
-    }
-
-    /// Wait (bounded) for a turn its runtime no longer has to be recorded
-    /// as ended. `true` once the thread is idle.
-    pub(crate) async fn wait_turn_end(&self, thread: &ThreadId) -> Result<bool> {
-        let deadline = tokio::time::Instant::now() + TURN_END_WAIT;
+    /// Recover one steer with bounded retries; `false` when it could not
+    /// be written (it stays unread, and a later pass retries it).
+    async fn recover_with_retries(&self, thread: &ThreadId, id: &SteerId) -> bool {
+        let mut pauses = STEER_QUEUE_RETRIES.iter();
         loop {
-            match self.store.thread(thread).await? {
-                Some(t) if t.is_running() => {}
-                _ => return Ok(true),
+            match self.store.recover_steer(thread, id).await {
+                Ok(_) => return true,
+                Err(error) => match pauses.next() {
+                    Some(pause) => {
+                        tracing::debug!(%error, "unread steer not recovered yet; retrying");
+                        tokio::time::sleep(*pause).await;
+                    }
+                    None => {
+                        tracing::debug!(%error, "unread steer could not be recovered");
+                        return false;
+                    }
+                },
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Ok(false);
-            }
-            tokio::time::sleep(TURN_END_POLL).await;
         }
     }
 
-    /// Recorded unread steers of `run` (every run when `None`): queued ahead
-    /// of later messages, or, after a Stop, kept as an unconfirmed notice.
-    /// Returns the ones that could not be queued.
-    pub(crate) async fn recover_unread_steers(
-        &self,
-        thread: &ThreadId,
-        run: Option<&str>,
-    ) -> Result<Vec<UnreadSteer>> {
+    /// Recover the thread's unread steers whose run is no longer its live
+    /// run. Idempotent and safe beside any admission: each steer moves in
+    /// one transaction guarded by its ledger state. Returns the ones that
+    /// could not be written.
+    pub(crate) async fn recover_stranded(&self, thread_id: &ThreadId) -> Result<Vec<UnreadSteer>> {
+        let thread = self.store.thread(thread_id).await?;
         let mut lost = Vec::new();
-        for steer in self.store.unread_steers(thread, run).await? {
-            if !self.recover_steer(&steer).await? {
+        for steer in self.store.open_steers(thread_id).await? {
+            let live = thread
+                .as_ref()
+                .is_some_and(|t| t.is_running() && t.active_run_id == steer.run_id);
+            if live {
+                continue;
+            }
+            if !self.recover_with_retries(thread_id, &steer.id).await {
                 lost.push(UnreadSteer {
                     id: steer.id.as_str().to_string(),
                     text: steer.text.clone(),
@@ -506,62 +842,18 @@ impl Engine {
         Ok(lost)
     }
 
-    /// `false` when the steer could not be queued (after retries).
-    async fn recover_steer(&self, steer: &SteerRecord) -> Result<bool> {
-        let unread = [
-            SteerState::Sending,
-            SteerState::Pending,
-            SteerState::Dropped,
-        ];
-        if steer.stop_reached {
-            self.store
-                .set_steer_state(
-                    &steer.thread_id,
-                    &steer.id,
-                    &unread,
-                    SteerState::Unconfirmed,
-                )
-                .await?;
-            return Ok(true);
+    /// Tick step: steers left unread by runs that ended (a recovery that
+    /// failed at the turn's end is retried here).
+    pub(crate) async fn recover_all_stranded(&self) -> Result<()> {
+        for thread in self.store.threads_with_open_steers().await? {
+            self.recover_stranded(&thread).await?;
         }
-        let run = steer.run_id.as_deref().unwrap_or("");
-        let qid = unread_steer_queue_id(&steer.thread_id, run, steer.id.as_str())?;
-        let mut pauses = STEER_QUEUE_RETRIES.iter();
-        loop {
-            match self
-                .store
-                .queue_insert_steer(
-                    &qid,
-                    &steer.thread_id,
-                    &steer.text,
-                    steer.created_by,
-                    steer.sent_at,
-                    steer.run_id.as_deref(),
-                )
-                .await
-            {
-                Ok(_) => break,
-                Err(error) => match pauses.next() {
-                    Some(pause) => {
-                        tracing::debug!(%error, "unread steer not queued yet; retrying");
-                        tokio::time::sleep(*pause).await;
-                    }
-                    None => {
-                        tracing::debug!(%error, "unread steer could not be queued");
-                        return Ok(false);
-                    }
-                },
-            }
-        }
-        self.store
-            .set_steer_state(&steer.thread_id, &steer.id, &unread, SteerState::Requeued)
-            .await?;
-        Ok(true)
+        Ok(())
     }
 
     /// A runtime's report of unread steers (`TurnEventSink::steers_unread`):
-    /// each goes through the ledger, recorded first when the runtime keyed
-    /// it by an id of its own.
+    /// the run will not read them, so each is recovered now; one keyed by
+    /// the runtime's own id is entered in the ledger first.
     pub(crate) async fn report_unread_steers(
         &self,
         thread: &ThreadId,
@@ -570,63 +862,55 @@ impl Engine {
     ) -> Vec<UnreadSteer> {
         let mut undelivered = Vec::new();
         for steer in steers {
-            match self.report_unread_steer(thread, run, &steer).await {
-                Ok(true) => {}
-                Ok(false) => undelivered.push(steer),
+            let recorded = self.mark_unread(thread, run, &steer).await;
+            let kept = match recorded {
+                Ok(id) => self.recover_with_retries(thread, &id).await,
                 Err(error) => {
-                    tracing::debug!(%error, "unread steer could not be recovered; reported back");
-                    undelivered.push(steer);
+                    tracing::debug!(%error, "unread steer report not recorded");
+                    false
                 }
+            };
+            if !kept {
+                undelivered.push(steer);
             }
         }
         undelivered
     }
 
-    async fn report_unread_steer(
+    async fn mark_unread(
         &self,
         thread: &ThreadId,
         run: &str,
         steer: &UnreadSteer,
-    ) -> Result<bool> {
+    ) -> Result<SteerId> {
         let id = SteerId::new(steer.id.clone())
-            .map_err(|e| crate::error::OrchestratorError::invalid(e.to_string()))?;
-        let record = match self.store.steer_record(thread, &id).await? {
-            Some(record) => record,
-            None => {
-                let now = now_ms();
-                let record = SteerRecord {
+            .map_err(|e| OrchestratorError::invalid(e.to_string()))?;
+        if self.store.steer_record(thread, &id).await?.is_some() {
+            self.store
+                .set_steer_state(
+                    thread,
+                    &id,
+                    &[SteerState::Sending, SteerState::Pending, SteerState::Read],
+                    SteerState::Dropped,
+                )
+                .await?;
+        } else {
+            let now = now_ms();
+            self.store
+                .insert_steer(&SteerRecord {
                     id: id.clone(),
                     thread_id: thread.clone(),
                     run_id: Some(run.to_string()),
                     text: steer.text.clone(),
                     created_by: Author::User,
-                    state: SteerState::Pending,
-                    stop_reached: self.store.hold(thread).await? == Some(HoldReason::Stopped),
+                    state: SteerState::Dropped,
+                    queue_id: None,
                     sent_at: now,
                     updated_at: now,
-                };
-                self.store.insert_steer(&record).await?;
-                record
-            }
-        };
-        match record.state {
-            // Already queued or noted (a repeated report).
-            SteerState::Requeued | SteerState::Unconfirmed => Ok(true),
-            _ => {
-                let mut record = record;
-                // The runtime's report wins over an earlier "read".
-                if record.state == SteerState::Read {
-                    self.store
-                        .set_steer_state(thread, &id, &[SteerState::Read], SteerState::Pending)
-                        .await?;
-                    record.state = SteerState::Pending;
-                }
-                if !record.unread() {
-                    return Ok(true);
-                }
-                self.recover_steer(&record).await
-            }
+                })
+                .await?;
         }
+        Ok(id)
     }
 
     /// The runtime's read report for one steer.
@@ -643,7 +927,6 @@ impl Engine {
                     SteerState::Sending,
                     SteerState::Pending,
                     SteerState::Dropped,
-                    SteerState::NotSent,
                 ],
                 SteerState::Read,
             ),
@@ -658,126 +941,32 @@ impl Engine {
         Ok(())
     }
 
-    /// A Stop on `thread`: unread steers are not resent, deferred ones wait
-    /// in the (held) queue as ordinary messages.
+    /// Stop on `thread`, recorded against its live run: steers into that
+    /// run are never resent, and deferred steers aimed at it wait in the
+    /// (held) queue as ordinary messages.
     pub(crate) async fn steers_on_stop(&self, thread: &ThreadId) -> Result<()> {
-        self.store.mark_steers_stop_reached(thread).await?;
+        let run = self
+            .store
+            .thread(thread)
+            .await?
+            .filter(ThreadRecord::is_running)
+            .map(|t| t.active_run_id);
+        if let Some(run) = &run {
+            self.store.record_run_stop(thread, run.as_deref()).await?;
+        }
         for item in self.store.queue(thread, false).await? {
             if item.kind == QueueKind::DeferredSteer {
                 self.store
-                    .set_queue_kind(&item.id, QueueKind::Message, None)
+                    .set_pending_kind(&item.id, QueueKind::Message, None)
                     .await?;
             }
         }
         Ok(())
-    }
-
-    /// Queue `text` to steer run `run` once it can take input.
-    pub(crate) async fn defer_steer(
-        &self,
-        thread: &ThreadId,
-        text: &str,
-        author: Author,
-        run: Option<&str>,
-    ) -> Result<QueueItemId> {
-        self.store
-            .queue_add_kind(thread, text, author, QueueKind::DeferredSteer, run, false)
-            .await
-    }
-
-    /// Deliver the thread's deferred steers into its running turn, in queue
-    /// order. One whose run ended (or never matched) becomes an ordinary
-    /// queued message, keeping its place.
-    pub(crate) async fn deliver_deferred_steers(&self, thread_id: &ThreadId) -> Result<()> {
-        for item in self.store.queue(thread_id, false).await? {
-            if item.kind != QueueKind::DeferredSteer || item.status != QueueStatus::Pending {
-                continue;
-            }
-            let thread = self.store.thread(thread_id).await?;
-            let Some(thread) = thread.filter(|t| {
-                t.is_running() && (item.steer_run.is_none() || t.active_run_id == item.steer_run)
-            }) else {
-                self.store
-                    .set_queue_kind(&item.id, QueueKind::Message, None)
-                    .await?;
-                continue;
-            };
-            if !self
-                .store
-                .set_queue_status(&item.id, QueueStatus::Pending, QueueStatus::Sending)
-                .await?
-            {
-                continue;
-            }
-            let attempt = self
-                .steer_text(&thread, &item.text, SteerHow::Steer, item.created_by)
-                .await;
-            match attempt.as_ref().map(|a| &a.outcome) {
-                Ok(SteerOutcome::Steered | SteerOutcome::Restarted) => {
-                    self.store
-                        .set_queue_status(&item.id, QueueStatus::Sending, QueueStatus::Sent)
-                        .await?;
-                }
-                Ok(SteerOutcome::NotReady) => {
-                    self.store
-                        .set_queue_status(&item.id, QueueStatus::Sending, QueueStatus::Pending)
-                        .await?;
-                    // Later ones would overtake it.
-                    return Ok(());
-                }
-                other => {
-                    if let Err(error) = other {
-                        tracing::debug!(%error, "deferred steer failed; it runs from the queue");
-                    }
-                    self.store
-                        .set_queue_kind(&item.id, QueueKind::Message, None)
-                        .await?;
-                    self.store
-                        .set_queue_status(&item.id, QueueStatus::Sending, QueueStatus::Pending)
-                        .await?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Tick step: retry deferred steers (runtimes that never report ready).
-    pub(crate) async fn deliver_all_deferred_steers(&self) -> Result<()> {
-        for thread in self.store.deferred_steer_threads().await? {
-            self.deliver_deferred_steers(&thread).await?;
-        }
-        Ok(())
-    }
-
-    /// Automatic input (a delegated result, a context handoff) for a busy
-    /// `thread`: steered into its running turn only when the runtime steers
-    /// without cancelling tool calls (t3code's rule for wakes, which never
-    /// restart). `false`: not delivered, the caller waits for the turn end.
-    pub(crate) async fn steer_automatic(&self, thread_id: &ThreadId, text: &str) -> Result<bool> {
-        let Some(thread) = self.store.thread(thread_id).await? else {
-            return Ok(false);
-        };
-        if !thread.is_running() || self.store.hold(thread_id).await?.is_some() {
-            return Ok(false);
-        }
-        let runtime = self.runtime(&thread.runtime_id)?;
-        if !runtime.capabilities().steer_in_turn || runtime.steer_interrupts_tools() {
-            return Ok(false);
-        }
-        match self
-            .steer_text(&thread, text, SteerHow::Steer, Author::System)
-            .await
-        {
-            Ok(attempt) => Ok(attempt.outcome == SteerOutcome::Steered),
-            Err(error) => {
-                tracing::debug!(%error, "automatic steer failed; it waits for the turn end");
-                Ok(false)
-            }
-        }
     }
 }
 
-/// The queue id of a recovered steer: one per (thread, run, steer).
+/// The queue id of a recovered steer without a delivery row: one per
+/// (thread, run, steer).
 pub(crate) fn unread_steer_queue_id(
     thread: &ThreadId,
     run_id: &str,

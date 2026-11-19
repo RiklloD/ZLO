@@ -90,6 +90,8 @@ pub struct Engine {
     pub(crate) secret_vault: OnceLock<Arc<dyn crate::agent_requests::SecretVault>>,
     /// Tool calls waiting on an agent request, woken when it is answered.
     pub(crate) request_waiters: StdMutex<HashMap<String, Arc<Notify>>>,
+    /// One admission path per thread (`crate::admission`).
+    pub(crate) admission: crate::admission::AdmissionLocks,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -146,6 +148,7 @@ impl Engine {
             peer_links: OnceLock::new(),
             secret_vault: OnceLock::new(),
             request_waiters: StdMutex::new(HashMap::new()),
+            admission: StdMutex::new(HashMap::new()),
         }))
     }
 
@@ -296,6 +299,7 @@ impl Engine {
         log_step("cancels", self.process_cancels().await);
         log_step("schedules", self.fire_schedules().await);
         log_step("restarts", self.fire_restarts().await);
+        log_step("steer recovery", self.recover_all_stranded().await);
         log_step("deferred steers", self.deliver_all_deferred_steers().await);
         log_step("queues", self.drain_queues().await);
         log_step("results", self.deliver_results().await);
@@ -555,7 +559,8 @@ impl Engine {
     // ── tick steps ──────────────────────────────────────────────────────
 
     async fn boot(&self) -> Result<()> {
-        self.store.requeue_sending().await?;
+        // Claims a crash left behind settle before anything drains.
+        self.store.reconcile_claims().await?;
         self.store.requeue_running_goal_checks().await?;
         // Live work another engine instance left behind was cut by its exit.
         for work in self.store.live_work().await? {
@@ -591,36 +596,6 @@ impl Engine {
             self.drain_thread(&thread_id).await?;
         }
         Ok(())
-    }
-
-    /// Start the head of an idle, unheld thread's queue as a turn. `true`
-    /// when one started.
-    pub(crate) async fn drain_thread(&self, thread_id: &ThreadId) -> Result<bool> {
-        if self.store.hold(thread_id).await?.is_some() {
-            return Ok(false);
-        }
-        match self.store.thread(thread_id).await? {
-            Some(t) if !t.is_running() => {}
-            _ => return Ok(false),
-        }
-        let Some(item) = self.store.claim_queue_head(thread_id).await? else {
-            return Ok(false);
-        };
-        let delivered = self
-            .deliver(thread_id, item.text.clone(), TurnOrigin::QueueDrain, true)
-            .await;
-        let started = matches!(delivered, Ok(true));
-        let next = if started {
-            self.store.set_last_user(thread_id, now_ms()).await?;
-            QueueStatus::Sent
-        } else {
-            QueueStatus::Pending
-        };
-        self.store
-            .set_queue_status(&item.id, QueueStatus::Sending, next)
-            .await?;
-        delivered?;
-        Ok(started)
     }
 
     async fn deliver_results(&self) -> Result<()> {
@@ -1138,11 +1113,11 @@ impl TurnEventSink for Engine {
         log_step("steer updated", result);
     }
 
-    async fn turn_ready(&self, thread_id: &ThreadId, _run_id: Option<&str>) {
+    async fn turn_ready(&self, thread_id: &ThreadId, run_id: Option<&str>) {
         if self.shutting_down.load(Ordering::SeqCst) {
             return;
         }
-        let result = self.deliver_deferred_steers(thread_id).await;
+        let result = self.note_turn_ready(thread_id, run_id).await;
         log_step("turn ready", result);
     }
 
@@ -1162,11 +1137,6 @@ impl TurnEventSink for Engine {
             let Some(thread) = self.store.thread(thread_id).await? else {
                 return Ok(None);
             };
-            // Steers still unread go back to the queue before the thread
-            // reads idle, so a send racing this end lands behind them.
-            let run = run_id.clone().or_else(|| thread.active_run_id.clone());
-            let lost = self.recover_unread_steers(thread_id, run.as_deref()).await?;
-            let outcome = outcome.with_undelivered_steers(&lost);
             // Log first: `set_turn_running` refuses runs already logged, so a
             // late admission bookkeeping write cannot resurrect this turn.
             self.store
@@ -1190,6 +1160,10 @@ impl TurnEventSink for Engine {
                 .set_turn_ended(thread_id, run_id.as_deref(), state, outcome.error.as_deref(), at)
                 .await?;
             self.store.delete_live_work(thread_id).await?;
+            // Unread steers go back to the queue once the end is recorded:
+            // a failed recovery stays retryable (the tick, the next send)
+            // and never leaves an ended run "running".
+            self.recover_first(thread_id).await;
             let settings = self.store.settings().await?;
             let usage_armed = match outcome.usage_limit_resets_at {
                 Some(reset) if settings.resume_on_usage_limit => {
