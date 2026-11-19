@@ -317,6 +317,78 @@ pub(crate) async fn end_group(child: &mut Child, pgid: i32, grace: Duration) {
     kill_group(pgid, "agent host");
 }
 
+/// [`end_group`], and every process group the leader's descendants moved
+/// into: a CLI starts its shell commands detached (their own group), so a
+/// hung background command outlives a signal to the leader's group. The
+/// descendants are listed before any signal, while their parent links
+/// still lead back to the leader.
+pub(crate) async fn end_tree(child: &mut Child, pgid: i32, grace: Duration) {
+    let detached = descendant_groups(pgid).await;
+    end_group(child, pgid, grace).await;
+    for group in detached {
+        kill_group(group, "agent host: detached descendant");
+    }
+}
+
+/// The process groups of every descendant of `root`, other than its own.
+/// Empty when the process table cannot be read (traced).
+async fn descendant_groups(root: i32) -> Vec<i32> {
+    let listed = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::process::Command::new("ps")
+            .args(["-axo", "pid=,ppid=,pgid="])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let output = match listed {
+        Ok(Ok(output)) if output.status.success() => output.stdout,
+        Ok(Ok(output)) => {
+            tracing::debug!(status = %output.status, "agent host: process table unreadable");
+            return Vec::new();
+        }
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "agent host: process table unreadable");
+            return Vec::new();
+        }
+        Err(_) => {
+            tracing::debug!("agent host: process table listing timed out");
+            return Vec::new();
+        }
+    };
+    let rows: Vec<(i32, i32, i32)> = String::from_utf8_lossy(&output)
+        .lines()
+        .filter_map(|line| {
+            let mut cols = line.split_whitespace().map(str::parse::<i32>);
+            match (cols.next(), cols.next(), cols.next()) {
+                (Some(Ok(pid)), Some(Ok(ppid)), Some(Ok(pgid))) => Some((pid, ppid, pgid)),
+                _ => None,
+            }
+        })
+        .collect();
+    let mut tree = vec![root];
+    let mut i = 0;
+    while let Some(&parent) = tree.get(i) {
+        tree.extend(
+            rows.iter()
+                .filter(|(pid, ppid, _)| *ppid == parent && !tree.contains(pid))
+                .map(|(pid, _, _)| *pid)
+                .collect::<Vec<_>>(),
+        );
+        i += 1;
+    }
+    let mut groups: Vec<i32> = rows
+        .iter()
+        .filter(|(pid, _, pgid)| *pid != root && tree.contains(pid) && *pgid != root && *pgid > 1)
+        .map(|(_, _, pgid)| *pgid)
+        .collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups
+}
+
 /// SIGKILL the process group `pgid`. An already-empty group (`ESRCH`) is the
 /// usual outcome at cleanup and stays quiet; any other failure is traced.
 pub(crate) fn kill_group(pgid: i32, context: &'static str) {

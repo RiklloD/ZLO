@@ -1060,3 +1060,74 @@ async fn an_unacknowledged_steer_closes_input_at_an_absolute_deadline_and_is_nev
         "{error}"
     );
 }
+
+/// The CLI answers, then outlives its input: a Bash call that hit its
+/// timeout was moved to the background and the CLI waits for it before it
+/// exits (seen live: a hung `ntn api` search held a finished turn on
+/// "Working" for 15+ minutes). Its shell commands run detached, in their
+/// own process group, and here it also ignores SIGTERM. The turn ends a
+/// bounded grace after the result, with the answer; a frame streamed after
+/// it changes nothing; the CLI and its detached work are killed. `@EOF@`
+/// is whether the CLI also closes its output first (then the wait for its
+/// exit is what must be bounded).
+const OUTLIVES_INPUT: &str = r#"#!/bin/sh
+trap '' TERM
+read -r init
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"ironclaw-init","response":{}}}'
+read -r prompt
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"duration_api_ms":5,"num_turns":1,"result":"Here is the answer","session_id":"s","total_cost_usd":0}'
+read -r _eof
+set -m
+sleep 600 &
+echo $! > @DIR@/background.pid
+set +m
+touch @DIR@/input-closed
+if [ "@EOF@" = yes ]; then
+  exec >/dev/null
+else
+  echo '{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":5,"duration_api_ms":5,"num_turns":1,"result":"woken up","session_id":"s","total_cost_usd":0}'
+fi
+while :; do sleep 1; done
+"#;
+
+#[tokio::test]
+async fn a_cli_that_outlives_its_input_after_the_result_still_ends_the_turn() {
+    for eof in ["no", "yes"] {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = Arc::new(Recorder::default());
+        let bridge = CliBridge::new(Duration::from_secs(10));
+        let binary = script(
+            dir.path(),
+            "claude",
+            &OUTLIVES_INPUT
+                .replace("@DIR@", &dir.path().display().to_string())
+                .replace("@EOF@", eof),
+        );
+        let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)))
+            .with_exit_grace(Duration::from_millis(500));
+        let thread = thread(&rt).await;
+        let started = std::time::Instant::now();
+        rt.start_turn(&thread, input()).await.unwrap();
+        wait_for(|| dir.path().join("input-closed").exists()).await;
+        wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "eof={eof}: turn ended only after {:?}",
+            started.elapsed()
+        );
+        let outcome = sink.finished.lock().unwrap()[0].clone();
+        assert_eq!(outcome.status, TurnEndStatus::Completed, "eof={eof}");
+        assert_eq!(outcome.final_text.as_deref(), Some("Here is the answer"));
+        // The detached background work went with the turn.
+        let pid = std::fs::read_to_string(dir.path().join("background.pid")).unwrap();
+        let pid = pid.trim();
+        let pgid = std::process::Command::new("ps")
+            .args(["-o", "pgid=", "-p", pid])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&pgid.stdout).trim().is_empty(),
+            "eof={eof}: detached background process {pid} survived the turn"
+        );
+    }
+}

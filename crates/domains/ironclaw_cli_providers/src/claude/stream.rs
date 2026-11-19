@@ -190,6 +190,11 @@ impl TurnFold {
         }
     }
 
+    /// A `result` frame has arrived.
+    pub(crate) fn has_result(&self) -> bool {
+        self.result.is_some()
+    }
+
     /// Context from the last assistant message, max from the result's
     /// `modelUsage`, speed over the turn's streamed messages.
     pub(crate) fn limit_windows(&self) -> Option<&serde_json::Value> {

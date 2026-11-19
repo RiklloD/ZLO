@@ -82,6 +82,15 @@ const MODELS: [&str; 4] = [
 const KILL_GRACE: Duration = Duration::from_secs(2);
 /// How long the CLI may take to acknowledge the hook registration.
 const INIT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the CLI may run on once the turn's result is in and its input
+/// is closed. The CLI does not exit while a background task of the session
+/// lives (a `run_in_background` call, or a Bash call moved to the
+/// background at its timeout); a hung one would hold the turn open forever.
+/// A process-per-turn session cannot use what such a task brings later:
+/// its wake-up turn finds input closed, so every tool call is denied. At
+/// the deadline the process group is killed and the turn ends with its
+/// result.
+const EXIT_GRACE: Duration = Duration::from_secs(10);
 
 /// One Claude CLI account.
 #[derive(Debug, Clone)]
@@ -138,6 +147,14 @@ pub struct ClaudeCliRuntime {
     compactor: Arc<compact::IdleCompactor>,
     /// How long after the result an unacknowledged steer may hold stdin.
     steer_ack_timeout: Duration,
+    /// How long the CLI may outlive its closed input after the result.
+    exit_grace: Duration,
+}
+
+/// The turn's stdin is closed for good. Waits out a writer holding it, so
+/// a close that landed while the lock was contended is never missed.
+async fn input_closed(stdin: &SharedStdin) -> bool {
+    stdin.lock().await.is_none()
 }
 
 /// What one turn's process is started with, besides the session.
@@ -172,6 +189,7 @@ impl ClaudeCliRuntime {
             work_dirs: Mutex::new(HashMap::new()),
             compactor: Arc::default(),
             steer_ack_timeout: steer::ACK_TIMEOUT,
+            exit_grace: EXIT_GRACE,
         })
     }
 
@@ -179,6 +197,13 @@ impl ClaudeCliRuntime {
     /// [`steer::ACK_TIMEOUT`]); tests shorten it.
     pub fn with_steer_ack_timeout(mut self, timeout: Duration) -> Self {
         self.steer_ack_timeout = timeout;
+        self
+    }
+
+    /// Bound how long the CLI may run on after the result once its input
+    /// is closed (default [`EXIT_GRACE`]); tests shorten it.
+    pub fn with_exit_grace(mut self, grace: Duration) -> Self {
+        self.exit_grace = grace;
         self
     }
 
@@ -592,6 +617,8 @@ impl ClaudeCliRuntime {
         let usage_file = self.config.usage_file.clone();
         let run = run_id.clone();
         let steer_ack_timeout = self.steer_ack_timeout;
+        let exit_grace = self.exit_grace;
+        let input = Arc::clone(&stdin);
         tokio::spawn(async move {
             if let Some(sink) = sink.upgrade() {
                 sink.turn_started(&thread_id, Some(run.clone()), now_ms())
@@ -606,7 +633,13 @@ impl ClaudeCliRuntime {
             // Absolute deadlines: unrelated output must not extend a wait.
             let init_deadline = tokio::time::Instant::now() + INIT_TIMEOUT;
             let mut steer_deadline: Option<tokio::time::Instant> = None;
+            let mut exit_deadline: Option<tokio::time::Instant> = None;
             loop {
+                // The result is in and input is closed: nothing more can be
+                // asked of the CLI, so its exit is waited for only so long.
+                if exit_deadline.is_none() && fold.has_result() && input_closed(&input).await {
+                    exit_deadline = Some(tokio::time::Instant::now() + exit_grace);
+                }
                 let waiting = bridged.as_ref().is_some_and(BridgedTurn::awaiting_ack);
                 let steer_wait = bridged
                     .as_ref()
@@ -627,6 +660,12 @@ impl ClaudeCliRuntime {
                             continue;
                         }
                     }
+                } else if let Some(deadline) = exit_deadline {
+                    match tokio::time::timeout_at(deadline, lines.next_line()).await {
+                        Ok(next) => next,
+                        // Ended below, with whatever it left running.
+                        Err(_) => break,
+                    }
                 } else if waiting {
                     match tokio::time::timeout_at(init_deadline, lines.next_line()).await {
                         Ok(next) => next,
@@ -643,6 +682,12 @@ impl ClaudeCliRuntime {
                     lines.next_line().await
                 };
                 match next {
+                    // Settled: what a background task's wake-up streams now
+                    // cannot reach the CLI (its tool calls are denied) and
+                    // must not change the outcome or open gates.
+                    Ok(Some(_)) if exit_deadline.is_some() => {
+                        tracing::debug!("claude cli: frame after the settled result ignored");
+                    }
                     Ok(Some(line)) => {
                         fold.push_line(&line, Instant::now());
                         if let Some(turn) = bridged.as_mut()
@@ -658,7 +703,17 @@ impl ClaudeCliRuntime {
                     }
                 }
             }
-            let exit = child.wait().await.ok().and_then(|s| s.code()); // silent-ok: exit code only labels a failure the fold already detects
+            // Bounded even after EOF: a CLI that closed its output can still
+            // wait on a background task. What it leaves running goes too.
+            let reap_by = exit_deadline.unwrap_or_else(|| tokio::time::Instant::now() + exit_grace);
+            let exit = match tokio::time::timeout_at(reap_by, child.wait()).await {
+                Ok(status) => status.ok().and_then(|s| s.code()), // silent-ok: exit code only labels a failure the fold already detects
+                Err(_) => {
+                    tracing::debug!("claude cli: still running after its turn; process tree ended");
+                    crate::rpc::end_tree(&mut child, pgid, KILL_GRACE).await;
+                    None
+                }
+            };
             let mut outcome =
                 fold.outcome(cancelled.load(std::sync::atomic::Ordering::SeqCst), exit);
             if let Some(reason) = refused {
