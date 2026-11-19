@@ -17,6 +17,7 @@ use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
 
 use super::steer::SteerLedger;
+use super::tasks::TaskRefresher;
 use crate::bridge::{CliBridge, ToolDecision};
 use crate::interaction;
 
@@ -232,7 +233,7 @@ pub(super) struct BridgedTurn {
     steers: SharedSteers,
     /// The session's task store; a finished task tool call re-reads it into
     /// the thread's plan. `None` leaves the plan alone.
-    task_store: Option<PathBuf>,
+    tasks: Option<TaskRefresher>,
     /// Tool use ids of task-tool calls let through in this turn.
     task_calls: HashSet<String>,
     /// The next text delta opens a new text block.
@@ -250,11 +251,17 @@ impl BridgedTurn {
             prompt: Some(prompt),
             ready: turn.ready,
             steers: turn.steers,
-            task_store,
+            tasks: task_store.map(TaskRefresher::new),
             task_calls: HashSet::new(),
             new_block: false,
             new_thinking_block: false,
         }
+    }
+
+    #[cfg(test)]
+    fn with_task_refresher(mut self, tasks: TaskRefresher) -> Self {
+        self.tasks = Some(tasks);
+        self
     }
 
     pub(super) fn awaiting_ack(&self) -> bool {
@@ -481,17 +488,13 @@ impl BridgedTurn {
                     .tool_finished(&self.thread, &self.run_id, id, failed);
             }
         }
-        if let (true, Some(store)) = (tasks_changed, self.task_store.clone()) {
+        if let (true, Some(tasks)) = (tasks_changed, &self.tasks) {
             let (bridge, thread, run) = (
                 Arc::clone(&self.bridge),
                 self.thread.clone(),
                 self.run_id.clone(),
             );
-            tokio::spawn(async move {
-                if let Some(plan) = interaction::claude_task_plan(&store).await {
-                    bridge.plan_updated(&thread, &run, plan);
-                }
-            });
+            tasks.refresh(move |plan| bridge.plan_updated(&thread, &run, plan));
         }
     }
 
@@ -541,6 +544,17 @@ mod tests {
         tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
         tokio::process::Child,
     ) {
+        turn_with_store(bridge, None)
+    }
+
+    fn turn_with_store(
+        bridge: &Arc<CliBridge>,
+        task_store: Option<PathBuf>,
+    ) -> (
+        BridgedTurn,
+        tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+        tokio::process::Child,
+    ) {
         let mut child = tokio::process::Command::new("cat")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -560,7 +574,7 @@ mod tests {
                 steers: SharedSteers::default(),
             },
             String::new(),
-            None,
+            task_store,
         );
         (turn, out, child)
     }
@@ -688,6 +702,148 @@ mod tests {
         let frame = next_frame(&mut out).await;
         assert_eq!(frame["response"]["request_id"], "e1");
         assert_eq!(frame["response"]["response"], json!({"action": "decline"}));
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
+        let _ = child.kill().await;
+    }
+
+    /// A task-tool call let through by the hook, then its result: the turn
+    /// re-reads the task store into the plan.
+    async fn run_task_call(
+        turn: &mut BridgedTurn,
+        out: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+        request: &str,
+        use_id: &str,
+    ) {
+        let hook = json!({
+            "type": "control_request",
+            "request_id": request,
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": HOOK_CALLBACK_ID,
+                "input": {"tool_name": "TaskUpdate", "tool_input": {"taskId": "1"}, "tool_use_id": use_id},
+            },
+        });
+        turn.on_line(&hook.to_string()).await;
+        let frame = next_frame(out).await;
+        assert_eq!(
+            frame["response"]["response"]["hookSpecificOutput"]["permissionDecision"],
+            "allow"
+        );
+        let result = json!({
+            "type": "user",
+            "parent_tool_use_id": null,
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": use_id, "content": "Updated task #1"}
+            ]},
+        });
+        turn.on_line(&result.to_string()).await;
+    }
+
+    async fn wait_for_plan(bridge: &CliBridge, thread: &ThreadId) -> Vec<String> {
+        for _ in 0..250 {
+            if let Some((_, _, plan)) = bridge.plan_of(thread) {
+                return plan.entries.iter().map(|e| e.content.clone()).collect();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("no plan published");
+    }
+
+    /// The task store is the CLI's: a linked entry (pointing outside the
+    /// store), an oversize entry and a FIFO are all skipped, and the FIFO
+    /// does not hang the refresh; a linked store folder is not read at all.
+    #[tokio::test]
+    async fn task_refresh_reads_only_bounded_regular_files_of_a_real_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("tasks").join("session-1");
+        std::fs::create_dir_all(&store).unwrap();
+        let task = |id: &str, subject: &str| {
+            format!(r#"{{"id":"{id}","subject":"{subject}","status":"pending"}}"#)
+        };
+        std::fs::write(store.join("1.json"), task("1", "Plan")).unwrap();
+        let outside = dir.path().join("secret.json");
+        std::fs::write(&outside, task("2", "Linked")).unwrap();
+        std::os::unix::fs::symlink(&outside, store.join("2.json")).unwrap();
+        let padding = "x".repeat(usize::try_from(super::super::tasks::MAX_FILE_BYTES).unwrap());
+        std::fs::write(
+            store.join("3.json"),
+            format!(r#"{{"id":"3","subject":"Huge","status":"pending","pad":"{padding}"}}"#),
+        )
+        .unwrap();
+        nix::unistd::mkfifo(&store.join("4.json"), nix::sys::stat::Mode::S_IRWXU).unwrap();
+
+        let bridge = CliBridge::new(std::time::Duration::from_secs(5));
+        let (mut turn, mut out, mut child) = turn_with_store(&bridge, Some(store.clone()));
+        run_task_call(&mut turn, &mut out, "h1", "toolu_t1").await;
+        let plan = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_for_plan(&bridge, &turn.thread),
+        )
+        .await
+        .expect("the FIFO must not hang the refresh");
+        assert_eq!(plan, ["Plan"]);
+
+        // A store folder that is itself a link is never followed.
+        let linked = dir.path().join("tasks").join("session-2");
+        std::os::unix::fs::symlink(&store, &linked).unwrap();
+        assert!(super::super::tasks::read_plan(&linked).await.is_none());
+        assert!(
+            super::super::tasks::read_plan(&dir.path().join("missing"))
+                .await
+                .is_none()
+        );
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
+        let _ = child.kill().await;
+    }
+
+    /// Two task calls finish close together and the first re-read is the
+    /// slower one: the plan ends on the second (newer) read, not the first.
+    #[tokio::test]
+    async fn a_slower_older_task_refresh_never_replaces_a_newer_plan() {
+        use ironclaw_host_api::agent_plan::{AgentPlan, PlanEntry, PlanEntryStatus};
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader: super::super::tasks::PlanReader = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |_store| {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move {
+                    let (delay, subject) = if call == 0 { (300, "old") } else { (0, "new") };
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    Some(AgentPlan::new(
+                        [PlanEntry::new(
+                            subject.to_string(),
+                            PlanEntryStatus::Pending,
+                        )],
+                        None,
+                        chrono::Utc::now(),
+                    ))
+                })
+            })
+        };
+        let bridge = CliBridge::new(std::time::Duration::from_secs(5));
+        let (turn, mut out, mut child) = turn_over_cat(&bridge);
+        let mut turn = turn.with_task_refresher(super::super::tasks::TaskRefresher::with_reader(
+            PathBuf::from("unused"),
+            reader,
+        ));
+        run_task_call(&mut turn, &mut out, "h1", "toolu_a").await;
+        // The first read has started (and sleeps) before the second call.
+        for _ in 0..100 {
+            if calls.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        run_task_call(&mut turn, &mut out, "h2", "toolu_b").await;
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(wait_for_plan(&bridge, &turn.thread).await, ["new"]);
         #[expect(
             clippy::let_underscore_must_use,
             reason = "test teardown; the child may already have exited"

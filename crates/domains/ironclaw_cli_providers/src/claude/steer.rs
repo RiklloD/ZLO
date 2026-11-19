@@ -17,6 +17,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use ironclaw_orchestrator::runtime::UnreadSteer;
 use serde_json::Value;
 
 /// After the turn's result, how long a written steer may go unacknowledged
@@ -129,11 +130,17 @@ impl SteerLedger {
     /// Steers the CLI never started, oldest first. Empty for a CLI that
     /// does not report lifecycle: there is no telling, and resending a
     /// steer it did read would deliver it twice.
-    pub(super) fn unread(&self) -> Vec<String> {
+    pub(super) fn unread(&self) -> Vec<UnreadSteer> {
         if !self.tracked {
             return Vec::new();
         }
-        self.unread.iter().map(|(_, text)| text.clone()).collect()
+        self.unread
+            .iter()
+            .map(|(id, text)| UnreadSteer {
+                id: id.clone(),
+                text: text.clone(),
+            })
+            .collect()
     }
 }
 
@@ -141,6 +148,10 @@ impl SteerLedger {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn texts(l: &SteerLedger) -> Vec<String> {
+        l.unread().into_iter().map(|s| s.text).collect()
+    }
 
     fn life(uuid: &str, state: &str) -> Value {
         json!({"type": "command_lifecycle", "command_uuid": uuid, "state": state})
@@ -165,7 +176,7 @@ mod tests {
         assert!(!l.waiting_for_ack(), "b was acknowledged");
         l.observe(&life("a", "completed"));
         l.observe(&life("b", "started"));
-        assert!(l.unread().is_empty(), "b was read");
+        assert!(texts(&l).is_empty(), "b was read");
         l.observe(&result("b"));
         assert!(l.may_close());
     }
@@ -181,7 +192,7 @@ mod tests {
         l.observe(&life("a", "completed"));
         l.observe(&life("b", "discarded"));
         assert!(l.may_close());
-        assert_eq!(l.unread(), vec!["also fix the docs".to_string()]);
+        assert_eq!(texts(&l), vec!["also fix the docs".to_string()]);
     }
 
     /// Stop or a crash before the CLI reached the steer.
@@ -192,9 +203,9 @@ mod tests {
         l.observe(&life("a", "started"));
         l.sent("b", "first");
         l.sent("c", "second");
-        assert_eq!(l.unread(), vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(texts(&l), vec!["first".to_string(), "second".to_string()]);
         l.unsent("c");
-        assert_eq!(l.unread(), vec!["first".to_string()]);
+        assert_eq!(texts(&l), vec!["first".to_string()]);
     }
 
     #[test]
@@ -209,7 +220,7 @@ mod tests {
         assert!(l.waiting_for_ack());
         l.abandon();
         assert!(!l.waiting_for_ack(), "given up once");
-        assert_eq!(l.unread(), vec!["late".to_string()]);
+        assert_eq!(texts(&l), vec!["late".to_string()]);
     }
 
     /// An older CLI without lifecycle or echoes: close at the result, as
@@ -221,6 +232,6 @@ mod tests {
         l.sent("b", "x");
         l.observe(&json!({"type": "result", "subtype": "success"}));
         assert!(l.may_close());
-        assert!(l.unread().is_empty());
+        assert!(texts(&l).is_empty());
     }
 }

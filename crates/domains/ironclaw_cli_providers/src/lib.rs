@@ -42,10 +42,20 @@ pub(crate) fn goal_note(goal: &str) -> String {
 
 /// What a CLI agent with a system prompt flag gets there: the profile's
 /// SOUL.md, the visuals format, then the thread goal.
-/// The CLI agents' own subagent tools. They are switched off: every
+/// The CLI agents' own subagent and agent-team tools. They are switched
+/// off (launch flags, and denied by the approval hook as a backstop): every
 /// subagent is an orchestrator thread (`t3_delegate`) the person can see.
-/// `Task` is the Claude CLI's older name for `Agent`.
-pub const BUILTIN_SUBAGENT_TOOLS: [&str; 3] = ["Agent", "Task", "Workflow"];
+/// `Task` is the Claude CLI's older name for `Agent`; `SendMessage` and
+/// `ListAgents` drive the CLI's own agents and teams; `TaskStop` stops its
+/// background tasks, which ZLO's own Stop covers.
+pub const BUILTIN_SUBAGENT_TOOLS: [&str; 6] = [
+    "Agent",
+    "Task",
+    "Workflow",
+    "SendMessage",
+    "ListAgents",
+    "TaskStop",
+];
 
 /// Whether `tool` is one of [`BUILTIN_SUBAGENT_TOOLS`].
 pub fn is_builtin_subagent_tool(tool: &str) -> bool {

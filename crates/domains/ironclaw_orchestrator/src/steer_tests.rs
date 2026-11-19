@@ -5,6 +5,31 @@ use crate::model::now_ms;
 use crate::runtime::*;
 use crate::tests::{finish, harness, scope, tid};
 
+fn steers(texts: &[&str]) -> Vec<UnreadSteer> {
+    texts
+        .iter()
+        .enumerate()
+        .map(|(i, text)| UnreadSteer {
+            id: format!("steer-{i}"),
+            text: (*text).to_string(),
+        })
+        .collect()
+}
+
+async fn queued(
+    h: &crate::tests::Harness,
+    thread: &ironclaw_host_api::ids::ThreadId,
+) -> Vec<String> {
+    h.engine
+        .store()
+        .queue(thread, false)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|q| q.text)
+        .collect()
+}
+
 /// A steer the runtime accepted but its agent never read is not lost: it is
 /// queued and sent as the next turn, after a Stop only once released.
 #[tokio::test]
@@ -18,7 +43,7 @@ async fn unread_steers_are_queued_as_the_next_turn() {
         .await
         .unwrap();
     h.engine
-        .steers_unread(&a, vec!["also fix the docs".into()])
+        .steers_unread(&a, "r1", steers(&["also fix the docs"]))
         .await;
     finish(&h.engine, &a, TurnOutcome::completed(Some("done".into()))).await;
     h.engine.tick().await;
@@ -34,7 +59,7 @@ async fn unread_steers_are_queued_as_the_next_turn() {
         .unwrap();
     h.engine.on_user_stop(&b).await.unwrap();
     h.engine
-        .steers_unread(&b, vec!["first".into(), "second".into()])
+        .steers_unread(&b, "r2", steers(&["first", "second"]))
         .await;
     finish(
         &h.engine,
@@ -44,14 +69,50 @@ async fn unread_steers_are_queued_as_the_next_turn() {
     .await;
     h.engine.tick().await;
     assert!(h.rt.starts_on(&b).is_empty(), "held by the Stop");
-    let queued: Vec<String> = h
-        .engine
-        .store()
-        .queue(&b, false)
-        .await
+    assert_eq!(
+        queued(&h, &b).await,
+        vec!["first".to_string(), "second".to_string()]
+    );
+}
+
+/// The queue write fails for the second steer of a batch (every retry):
+/// the first is queued, the second comes back to the runtime as
+/// undelivered instead of vanishing, and reporting the same batch again
+/// (a duplicate or late recovery) never queues the first twice.
+#[tokio::test]
+async fn a_steer_that_cannot_be_queued_is_reported_back_and_recovery_is_idempotent() {
+    let h = harness().await;
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    h.db.connect()
         .unwrap()
-        .into_iter()
-        .map(|q| q.text)
-        .collect();
-    assert_eq!(queued, vec!["first".to_string(), "second".to_string()]);
+        .execute(
+            "CREATE TRIGGER fail_second BEFORE INSERT ON orch_queue WHEN NEW.text = 'second' \
+             BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END",
+            (),
+        )
+        .await
+        .unwrap();
+    let batch = steers(&["first", "second"]);
+    let recovery = h.engine.steers_unread(&a, "r1", batch.clone()).await;
+    assert_eq!(recovery.undelivered, vec![batch[1].clone()]);
+    assert_eq!(queued(&h, &a).await, vec!["first".to_string()]);
+
+    let again = h.engine.steers_unread(&a, "r1", batch.clone()).await;
+    assert_eq!(again.undelivered, vec![batch[1].clone()]);
+    assert_eq!(
+        queued(&h, &a).await,
+        vec!["first".to_string()],
+        "not queued twice"
+    );
+
+    // The runtime's outcome names what was lost.
+    let outcome =
+        TurnOutcome::completed(Some("done".into())).with_undelivered_steers(&recovery.undelivered);
+    assert_eq!(outcome.status, TurnEndStatus::Failed);
+    let error = outcome.error.unwrap();
+    assert!(
+        error.contains("Not delivered") && error.contains("\"second\""),
+        "{error}"
+    );
 }

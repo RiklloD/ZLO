@@ -38,8 +38,8 @@ use tokio::sync::{broadcast, oneshot};
 mod detail;
 
 /// What the agent reads when it reaches for its own subagent tool.
-const BUILTIN_SUBAGENT_DENIAL: &str = "Built-in subagents are switched off here. Start a subagent with the \
-     T3 orchestrator instead: t3_delegate (mcp__ironclaw__t3_delegate on Claude Code), which opens a thread \
+const BUILTIN_SUBAGENT_DENIAL: &str = "Built-in subagents, agent teams and their tools are switched off \
+     here. Start a subagent with the T3 orchestrator instead: t3_delegate (mcp__ironclaw__t3_delegate on Claude Code), which opens a thread \
      the user can see and steer.";
 
 /// How long a tool call waits for a person before it is denied.
@@ -1313,6 +1313,9 @@ mod tests {
         let bridge = CliBridge::new(Duration::from_millis(200));
         let thread = tid();
         bridge.turn_started(&thread, "r1");
+        for tool in ["SendMessage", "ListAgents", "TaskStop"] {
+            assert!(crate::is_builtin_subagent_tool(tool), "{tool}");
+        }
         for tool in crate::BUILTIN_SUBAGENT_TOOLS {
             let claim = bridge.claim_call(&thread, "r1");
             let decision = bridge

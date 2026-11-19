@@ -37,8 +37,17 @@ impl TurnEventSink for Recorder {
     async fn turn_telemetry(&self, _: &ThreadId, t: TurnTelemetry, _: Millis) {
         self.telemetry.lock().unwrap().push(t);
     }
-    async fn steers_unread(&self, _: &ThreadId, texts: Vec<String>) {
-        self.unread.lock().unwrap().extend(texts);
+    async fn steers_unread(
+        &self,
+        _: &ThreadId,
+        _: &str,
+        steers: Vec<UnreadSteer>,
+    ) -> SteerRecovery {
+        self.unread
+            .lock()
+            .unwrap()
+            .extend(steers.into_iter().map(|s| s.text));
+        SteerRecovery::default()
     }
 }
 

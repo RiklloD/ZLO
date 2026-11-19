@@ -73,34 +73,17 @@ pub fn claude_task_tool_load(tool: &str, input: &Value) -> bool {
     names.peek().is_some() && names.all(|n| CLAUDE_TASK_TOOLS.contains(&n))
 }
 
-/// A Claude session's task store (the `<id>.json` files the task tools
-/// write) as a plan, in task-number order. Unreadable or foreign files are
-/// skipped; `None` when the store is missing or empty.
-pub async fn claude_task_plan(store: &std::path::Path) -> Option<AgentPlan> {
-    let mut dir = tokio::fs::read_dir(store).await.ok()?; // silent-ok: no store yet means no task list
-    let mut tasks: Vec<(u64, String, Value)> = Vec::new();
-    while let Ok(Some(entry)) = dir.next_entry().await {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let parsed = match tokio::fs::read(&path).await {
-            Ok(bytes) => serde_json::from_slice::<Value>(&bytes).map_err(|e| e.to_string()),
-            Err(error) => Err(error.to_string()),
-        };
-        let task = match parsed {
-            Ok(task) => task,
-            // A half-written entry is read again on the next update.
-            Err(error) => {
-                tracing::debug!(%error, "claude task store: entry skipped");
-                continue;
-            }
-        };
-        let Some(id) = text(&task, "id") else {
-            continue;
-        };
-        tasks.push((id.parse().unwrap_or(u64::MAX), id, task)); // silent-ok: a non-numeric id sorts last
-    }
+/// A Claude session's tasks (the parsed `<id>.json` entries of its task
+/// store, read by the driver) as a plan, in task-number order. Entries
+/// without an id or subject are skipped; `None` when nothing is left.
+pub fn claude_task_plan(tasks: Vec<Value>) -> Option<AgentPlan> {
+    let mut tasks: Vec<(u64, String, Value)> = tasks
+        .into_iter()
+        .filter_map(|task| {
+            let id = text(&task, "id")?;
+            Some((id.parse().unwrap_or(u64::MAX), id, task)) // silent-ok: a non-numeric id sorts last
+        })
+        .collect();
     if tasks.is_empty() {
         return None;
     }
@@ -561,29 +544,19 @@ mod tests {
         assert!(!claude_task_tool_load("Bash", &q("select:TaskCreate")));
     }
 
-    /// The store the 2.1.328 task tools write (recorded file shapes).
-    #[tokio::test]
-    async fn the_claude_task_store_becomes_a_plan_in_task_order() {
-        let dir = tempfile::tempdir().unwrap();
-        for (name, body) in [
-            (
-                "10.json",
-                r#"{"id":"10","subject":"Ship","status":"pending","blocks":[],"blockedBy":[]}"#,
-            ),
-            (
-                "2.json",
-                r#"{"id":"2","subject":"Build","description":"Build","status":"in_progress","blocks":[],"blockedBy":[]}"#,
-            ),
-            (
-                "1.json",
-                r#"{"id":"1","subject":"Plan","description":"Plan","status":"completed","blocks":[],"blockedBy":[]}"#,
-            ),
-            ("3.json", "{half written"),
-            (".lock", ""),
-        ] {
-            std::fs::write(dir.path().join(name), body).unwrap();
-        }
-        let plan = claude_task_plan(dir.path()).await.unwrap();
+    /// The entries the 2.1.328 task tools write (recorded file shapes).
+    #[test]
+    fn claude_tasks_become_a_plan_in_task_order() {
+        let tasks = [
+            r#"{"id":"10","subject":"Ship","status":"pending","blocks":[],"blockedBy":[]}"#,
+            r#"{"id":"2","subject":"Build","description":"Build","status":"in_progress","blocks":[],"blockedBy":[]}"#,
+            r#"{"id":"1","subject":"Plan","description":"Plan","status":"completed","blocks":[],"blockedBy":[]}"#,
+            r#"{"subject":"no id"}"#,
+        ]
+        .iter()
+        .map(|t| serde_json::from_str(t).unwrap())
+        .collect();
+        let plan = claude_task_plan(tasks).unwrap();
         let rows: Vec<(&str, PlanEntryStatus)> = plan
             .entries
             .iter()
@@ -597,11 +570,7 @@ mod tests {
                 ("Ship", PlanEntryStatus::Pending),
             ]
         );
-        assert!(
-            claude_task_plan(&dir.path().join("missing"))
-                .await
-                .is_none()
-        );
+        assert!(claude_task_plan(Vec::new()).is_none());
     }
 
     #[test]
