@@ -83,7 +83,6 @@ pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut
             &runtime,
             provider.as_deref().unwrap_or(NATIVE),
             14.,
-            ink,
         ));
     if !m.compact {
         pill = pill.child(txt(label.clone(), SM, p.text));
@@ -308,7 +307,6 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
             &provider.runtime,
             &provider.provider,
             18.,
-            if on { p.text } else { p.text_muted },
         );
         let mut item = rail_item(format!("rail-{key}"), mark, on, tip);
         if hidden {
@@ -633,7 +631,6 @@ fn model_row(
             &provider.runtime,
             &provider.provider,
             16.,
-            p.text_muted,
         ))
         .child(text_col);
     if hidden {
@@ -738,14 +735,13 @@ pub fn provider_mark(
     runtime: &str,
     provider: &str,
     size: f32,
-    ink: Color,
 ) -> El {
     let ids: Vec<&str> = [brand, Some(provider), Some(runtime)]
         .into_iter()
         .flatten()
         .filter(|id| !id.is_empty())
         .collect();
-    crate::design::brands::provider_logo_mono(s, &ids, size, ink)
+    crate::design::brands::provider_logo(s, &ids, size)
 }
 
 #[cfg(test)]

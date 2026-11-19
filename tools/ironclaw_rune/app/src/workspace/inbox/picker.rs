@@ -433,8 +433,8 @@ fn profile_row(
     let p = &s.palette;
     let profile = &item.profile;
     let id = profile.profile_id.clone();
-    // The selection wears a neutral wash, the mark at full strength.
-    let wash = profile_color(p, 1.).alpha(if p.light { 0.1 } else { 0.16 });
+    // The selection wears the profile's color, the mark at full strength.
+    let wash = profile_color(p, &profile.profile_id, 1.).alpha(if p.light { 0.1 } else { 0.16 });
     let mut r = row()
         .key(format!("pick-profile-{ix}"))
         .role("button")
