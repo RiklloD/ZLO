@@ -83,6 +83,11 @@ pub(super) async fn timeline(
     for (i, row) in rows.iter_mut().enumerate() {
         row["sequence"] = json!(i + 1);
     }
+    let steers = engine
+        .thread_steers(id)
+        .await
+        .map_err(ProductSurfaceError::internal_from)?;
+    external::annotate_steers(&mut rows, &steers);
     let (rows, next) = external::page_rows(rows, limit, cursor.as_deref());
     if let Some(item) = envelope.items.first_mut() {
         item["messages"] = Value::Array(rows);

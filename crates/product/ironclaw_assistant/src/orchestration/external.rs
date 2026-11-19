@@ -22,9 +22,11 @@ use ironclaw_host_api::product_adapter::{AdapterInstallationId, ProductAdapterId
 use ironclaw_host_api::turn::{
     AcceptedMessageRef, EventCursor, ReplyTargetBindingRef, TurnRunId, TurnStatus,
 };
+use ironclaw_orchestrator::model::SteerState;
 use ironclaw_orchestrator::model::ThreadRecord;
 use ironclaw_orchestrator::profile_runtime::UserTurn;
 use ironclaw_orchestrator::runtime::{HistoryMessage, HistoryRole};
+use ironclaw_orchestrator::steers::{STEER_UNCONFIRMED_TITLE, SteerRecord};
 use ironclaw_product_contracts::outbound::CliDetailKind;
 use ironclaw_product_contracts::outbound::{
     CapabilityActivityStatusView, CapabilityActivityView, CapabilityActivityViewInput,
@@ -33,7 +35,7 @@ use ironclaw_product_contracts::outbound::{
 };
 use ironclaw_product_contracts::product_wire::{
     RebornCancelRunResponse, RebornResolveGateResponse, RebornResumeGateResponse,
-    RebornSubmitTurnResponse,
+    RebornSubmitDelivery, RebornSubmitTurnResponse,
 };
 use ironclaw_product_contracts::surface::{
     ProductSurfaceError, ProductSurfaceEventSubscription, ProductSurfaceQueryPage,
@@ -66,31 +68,49 @@ pub(super) fn submit_response(
     turn: UserTurn,
 ) -> Option<RebornSubmitTurnResponse> {
     let accepted = AcceptedMessageRef::new(format!("external:{}", Uuid::new_v4())).ok()?;
-    Some(match turn {
-        UserTurn::Started { run_id: raw } => {
-            let run = run_id(raw.as_deref());
-            RebornSubmitTurnResponse::Submitted {
-                thread_id: thread.clone(),
-                accepted_message_ref: accepted,
-                turn_id: run.to_string(),
-                run_id: run,
-                status: TurnStatus::Running,
-                resolved_run_profile_id: "external".to_string(),
-                resolved_run_profile_version: 1,
-                event_cursor: EventCursor(0),
-            }
+    let started = |raw: Option<String>, delivery| {
+        let run = run_id(raw.as_deref());
+        RebornSubmitTurnResponse::Submitted {
+            thread_id: thread.clone(),
+            accepted_message_ref: accepted.clone(),
+            turn_id: run.to_string(),
+            run_id: run,
+            status: TurnStatus::Running,
+            resolved_run_profile_id: "external".to_string(),
+            resolved_run_profile_version: 1,
+            event_cursor: EventCursor(0),
+            delivery: Some(delivery),
         }
-        UserTurn::Steered { active_run_id } => RebornSubmitTurnResponse::DeferredBusy {
+    };
+    Some(match turn {
+        UserTurn::Started { run_id: raw } => started(raw, RebornSubmitDelivery::Started),
+        UserTurn::Restarted { run_id: raw } => started(raw, RebornSubmitDelivery::Restarted),
+        UserTurn::Steered {
+            active_run_id,
+            steer_id,
+            waiting_for_turn,
+            queued_id,
+        } => RebornSubmitTurnResponse::DeferredBusy {
             thread_id: thread.clone(),
             accepted_message_ref: accepted,
             active_run_id: run_id(active_run_id.as_deref()),
             status: TurnStatus::Running,
             event_cursor: EventCursor(0),
-            notice: "Sent to the running turn; the agent reads it at its next step.".to_string(),
+            notice: if waiting_for_turn {
+                "Sent to the running turn; it takes it as soon as it is ready."
+            } else {
+                "Sent to the running turn; the agent reads it at its next step."
+            }
+            .to_string(),
+            delivery: Some(RebornSubmitDelivery::Steered),
+            steer_id: steer_id.map(|id| id.as_str().to_string()),
+            queued_id: queued_id.map(|id| id.as_str().to_string()),
+            waiting_for_turn,
         },
         UserTurn::Queued {
             active_run_id,
             steerable,
+            queued_id,
         } => RebornSubmitTurnResponse::DeferredBusy {
             thread_id: thread.clone(),
             accepted_message_ref: accepted,
@@ -103,6 +123,10 @@ pub(super) fn submit_response(
                 "Queued: this engine can't steer mid-turn; it runs when the current turn ends."
             }
             .to_string(),
+            delivery: Some(RebornSubmitDelivery::Queued),
+            steer_id: None,
+            queued_id: Some(queued_id.as_str().to_string()),
+            waiting_for_turn: false,
         },
     })
 }
@@ -245,6 +269,58 @@ pub(super) fn timeline_values(thread: &ThreadId, history: &[HistoryMessage]) -> 
             })
         })
         .collect()
+}
+
+/// Mark a CLI timeline's steers from the engine's ledger (t3code's marker):
+/// a user row that is a steer gets `steer` (`{id, state,
+/// waiting_to_be_read}`: "Steer · waiting to be read" until the agent
+/// reads it), and the last row of a run whose steers a Stop left unread
+/// gets `steer_notices` ("Steer delivery not confirmed", with the text).
+/// Rows are annotated in place, so row positions and cursors never shift.
+pub(super) fn annotate_steers(rows: &mut [Value], steers: &[SteerRecord]) {
+    let mut used = vec![false; steers.len()];
+    for row in rows.iter_mut().filter(|r| r["kind"] == "user") {
+        let content = row["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let run = row["turn_run_id"].as_str().map(str::to_string);
+        let found = steers.iter().enumerate().position(|(i, steer)| {
+            !used[i]
+                && steer.state != SteerState::Unconfirmed
+                && steer.text.trim() == content
+                && (run.is_none() || steer.run_id.is_none() || run == steer.run_id)
+        });
+        if let Some(i) = found {
+            used[i] = true;
+            let steer = &steers[i];
+            row["steer"] = json!({
+                "id": steer.id.as_str(),
+                "state": steer.state.as_str(),
+                "waiting_to_be_read": steer.waiting_to_be_read(),
+            });
+        }
+    }
+    for steer in steers.iter().filter(|s| s.state == SteerState::Unconfirmed) {
+        let at = rows
+            .iter()
+            .rposition(|r| {
+                steer.run_id.is_some() && r["turn_run_id"].as_str() == steer.run_id.as_deref()
+            })
+            .or_else(|| rows.len().checked_sub(1));
+        let Some(at) = at else { continue };
+        let notice = json!({
+            "steer_id": steer.id.as_str(),
+            "title": STEER_UNCONFIRMED_TITLE,
+            "text": steer.text,
+            "content": steer.unconfirmed_notice(),
+        });
+        match rows[at]["steer_notices"].as_array_mut() {
+            Some(list) => list.push(notice),
+            None => rows[at]["steer_notices"] = json!([notice]),
+        }
+    }
 }
 
 /// Cursor of a CLI timeline page: the position (in all rows, oldest first)

@@ -579,6 +579,7 @@ mod openai_compat_mount_tests {
                             .to_string(),
                         resolved_run_profile_version: 1,
                         event_cursor: EventCursor::default(),
+                        delivery: None,
                     })
                     .map_err(ProductSurfaceError::internal_from)?
                 }
@@ -705,6 +706,7 @@ mod openai_compat_mount_tests {
                             resolved_run_profile_id: resolved_run_profile_id.as_str().to_string(),
                             resolved_run_profile_version: resolved_run_profile_version.as_u64(),
                             event_cursor,
+                            delivery: None,
                         },
                         Err(TurnError::ThreadBusy(busy)) => {
                             RebornSubmitTurnResponse::RejectedBusy {
@@ -980,6 +982,7 @@ impl ironclaw_product_contracts::surface::ProductSurface for StubServices {
                     resolved_run_profile_id: RunProfileId::default_profile().as_str().to_string(),
                     resolved_run_profile_version: RunProfileVersion::new(1).as_u64(),
                     event_cursor: EventCursor(1),
+                    delivery: None,
                 })
                 .map_err(ProductSurfaceError::internal_from)?
             }

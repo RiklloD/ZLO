@@ -22,11 +22,22 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   `take_next_message_context`, and the operations behind the tools and
   routes (`delegate`, `task_status`, `task_list`, `cancel_task`, `queue_*`,
   `send`, `runs`, `fork`, `merge_back`, `lineage`, `capabilities`, `status`).
-  It implements `runtime::TurnEventSink`; its `steers_unread` queues the
-  steers a runtime accepted into a turn but its agent never read (reported
-  before that turn's `turn_finished`), so each is sent as a later turn,
-  after a Stop only once the thread is released. Each is keyed by thread,
-  run and the runtime's steer id (a repeated report queues nothing new);
+  It implements `runtime::TurnEventSink`. Steering follows t3code
+  (`steers`): every steer gets a `SteerId` and a row in the `orch_steers`
+  ledger the timeline reads ("Steer · waiting to be read" until
+  `steer_updated` reports it read, on runtimes whose
+  `reports_steer_reads` is on). A steer still unread when its turn ends
+  (found in the ledger, or reported by `steers_unread`) is queued ahead of
+  messages queued after it was sent, several in send order; after a Stop it
+  is kept as a "Steer delivery not confirmed" notice instead. A send right
+  after a turn end runs behind that turn's recovered steers. A steer
+  answered `SteerOutcome::NotReady` waits in the queue as a deferred steer
+  and is delivered on `turn_ready` (or the tick), or runs next if the turn
+  ends; one answered `TurnEnded` starts the next turn right away. Delegated
+  results and context handoffs steer a busy parent only on a runtime whose
+  `steer_interrupts_tools` is false. `profile_runtime::UserTurn` is the
+  typed delivery (started / steered / queued / restarted). Recovery is
+  keyed by thread, run and steer id (a repeated report queues nothing new);
   a write that fails after retries is returned in `SteerRecovery`, and the
   runtime ends the turn failed naming it
   (`TurnOutcome::with_undelivered_steers`).

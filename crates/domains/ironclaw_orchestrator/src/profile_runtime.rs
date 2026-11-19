@@ -16,24 +16,34 @@ use crate::error::OrchestratorError;
 use crate::model::*;
 use crate::profiles::ProfileRecord;
 use crate::runtime::*;
+use crate::steers::SteerAttempt;
 use ironclaw_product_contracts::profiles::ProfileSettings;
 
-/// What a user turn on an external-runtime thread did.
+/// What a user turn on an external-runtime thread did (t3code's delivery:
+/// started / steered / queued / restarted).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserTurn {
-    Started {
-        run_id: Option<String>,
-    },
-    /// The thread was busy and the runtime folded the message into the
-    /// running turn.
+    /// The thread was idle (or its turn had just ended): a new turn runs
+    /// this message.
+    Started { run_id: Option<String> },
+    /// The runtime stopped the running turn and started over with it.
+    Restarted { run_id: Option<String> },
+    /// The message is part of the running turn. `steer_id` keys its read
+    /// state in the steer ledger. `waiting_for_turn`: the turn could not
+    /// take input yet, so the message waits in the queue (`queued_id`) and
+    /// is steered once the turn is ready, or runs next if the turn ends.
     Steered {
         active_run_id: Option<String>,
+        steer_id: Option<SteerId>,
+        waiting_for_turn: bool,
+        queued_id: Option<QueueItemId>,
     },
-    /// The thread was busy; the message waits in its queue. `steerable` is
-    /// false when the runtime cannot take input mid-turn at all.
+    /// The message waits in the thread's queue (`queued_id`). `steerable`
+    /// is false when the runtime cannot take input mid-turn at all.
     Queued {
         active_run_id: Option<String>,
         steerable: bool,
+        queued_id: QueueItemId,
     },
 }
 
@@ -180,59 +190,167 @@ impl Engine {
 
     /// A message the user typed into an external-runtime thread: start a
     /// turn, steer it into the running one, or queue it behind that turn
-    /// when the runtime cannot steer. A steer never restarts the turn.
+    /// when the runtime cannot steer. A steer never restarts the turn. A
+    /// steer the turn cannot take yet waits for it; one that is too late
+    /// starts the next turn right away. Steers the last turn never read
+    /// run before this message.
     pub async fn user_turn(&self, thread: &ThreadRecord, text: &str) -> Result<UserTurn> {
-        self.on_user_prompt(&thread.thread_id).await?;
-        if self
-            .deliver(
-                &thread.thread_id,
-                text.to_string(),
-                TurnOrigin::UserPrompt,
-                false,
-            )
-            .await?
-        {
-            let run_id = self
-                .store
-                .thread(&thread.thread_id)
-                .await?
-                .and_then(|t| t.active_run_id);
-            return Ok(UserTurn::Started { run_id });
+        let thread_id = &thread.thread_id;
+        self.on_user_prompt(thread_id).await?;
+        if let Some(turn) = self.start_user_turn(thread_id, text).await? {
+            return Ok(turn);
         }
-        let current = self.store.thread(&thread.thread_id).await?;
+        let current = self.store.thread(thread_id).await?;
         let mut steerable = false;
+        let mut front = false;
         if let Some(current) = current.as_ref().filter(|t| t.is_running()) {
-            steerable = self
-                .runtime(&current.runtime_id)?
-                .capabilities()
-                .steer_in_turn;
-            match self.steer(current, text, SteerHow::Steer).await {
-                Ok(SteerOutcome::Steered) => {
+            let runtime = self.runtime(&current.runtime_id)?;
+            steerable = runtime.capabilities().steer_in_turn;
+            match self
+                .steer_text(current, text, SteerHow::Steer, Author::User)
+                .await
+            {
+                Ok(SteerAttempt {
+                    outcome: SteerOutcome::Steered,
+                    id,
+                }) => {
                     return Ok(UserTurn::Steered {
                         active_run_id: current.active_run_id.clone(),
+                        steer_id: Some(id),
+                        waiting_for_turn: false,
+                        queued_id: None,
                     });
                 }
                 // A runtime that restarted anyway already sent the text:
                 // queuing it too would deliver it twice.
-                Ok(SteerOutcome::Restarted) => {
-                    let run_id = self
-                        .store
-                        .thread(&thread.thread_id)
-                        .await?
-                        .and_then(|t| t.active_run_id);
-                    return Ok(UserTurn::Started { run_id });
+                Ok(SteerAttempt {
+                    outcome: SteerOutcome::Restarted,
+                    ..
+                }) => {
+                    return Ok(UserTurn::Restarted {
+                        run_id: self.active_run(thread_id).await?,
+                    });
                 }
-                Ok(SteerOutcome::Rejected) => {}
+                Ok(SteerAttempt {
+                    outcome: SteerOutcome::NotReady,
+                    ..
+                }) => {
+                    let queued = self
+                        .defer_steer(
+                            thread_id,
+                            text,
+                            Author::User,
+                            current.active_run_id.as_deref(),
+                        )
+                        .await?;
+                    return Ok(UserTurn::Steered {
+                        active_run_id: current.active_run_id.clone(),
+                        steer_id: None,
+                        waiting_for_turn: true,
+                        queued_id: Some(queued),
+                    });
+                }
+                Ok(SteerAttempt {
+                    outcome: SteerOutcome::TurnEnded,
+                    ..
+                }) => {
+                    // Too late to steer: the next turn, right away.
+                    if self.wait_turn_end(thread_id).await?
+                        && let Some(turn) = self.start_user_turn(thread_id, text).await?
+                    {
+                        return Ok(turn);
+                    }
+                    front = true;
+                }
+                Ok(SteerAttempt {
+                    outcome: SteerOutcome::Rejected,
+                    ..
+                }) => {}
                 // The queue below still keeps the message.
                 Err(error) => tracing::debug!(%error, "user steer failed; queued instead"),
             }
+            // The turn may have ended while the steer was refused.
+            if !front
+                && !self
+                    .store
+                    .thread(thread_id)
+                    .await?
+                    .is_some_and(|t| t.is_running())
+                && let Some(turn) = self.start_user_turn(thread_id, text).await?
+            {
+                return Ok(turn);
+            }
         }
-        self.queue_add(&thread.thread_id, text, Author::User)
+        let queued_id = self
+            .store
+            .queue_add_kind(
+                thread_id,
+                text,
+                Author::User,
+                QueueKind::Message,
+                None,
+                front,
+            )
             .await?;
         Ok(UserTurn::Queued {
-            active_run_id: current.and_then(|t| t.active_run_id),
+            active_run_id: self.active_run(thread_id).await?,
             steerable,
+            queued_id,
         })
+    }
+
+    async fn active_run(&self, thread_id: &ThreadId) -> Result<Option<String>> {
+        Ok(self
+            .store
+            .thread(thread_id)
+            .await?
+            .and_then(|t| t.active_run_id))
+    }
+
+    /// The idle half of [`Self::user_turn`]: `None` when the thread is busy.
+    /// Steers the last turn never read go first: the message queues behind
+    /// them and the queue starts now.
+    async fn start_user_turn(&self, thread_id: &ThreadId, text: &str) -> Result<Option<UserTurn>> {
+        let recovered = self
+            .store
+            .queue(thread_id, false)
+            .await?
+            .iter()
+            .any(|q| q.kind == QueueKind::RecoveredSteer && q.status == QueueStatus::Pending);
+        if recovered
+            && !self
+                .store
+                .thread(thread_id)
+                .await?
+                .is_some_and(|t| t.is_running())
+        {
+            let queued_id = self
+                .store
+                .queue_add_kind(
+                    thread_id,
+                    text,
+                    Author::User,
+                    QueueKind::Message,
+                    None,
+                    false,
+                )
+                .await?;
+            self.drain_thread(thread_id).await?;
+            return Ok(Some(UserTurn::Queued {
+                active_run_id: self.active_run(thread_id).await?,
+                steerable: true,
+                queued_id,
+            }));
+        }
+        if self
+            .deliver(thread_id, text.to_string(), TurnOrigin::UserPrompt, false)
+            .await?
+        {
+            return Ok(Some(UserTurn::Started {
+                run_id: self.active_run(thread_id).await?,
+            }));
+        }
+        Ok(None)
     }
 
     /// Stop on an external-runtime thread: the usual Stop (hold, cancel the

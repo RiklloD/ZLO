@@ -359,6 +359,21 @@ pub struct RebornGlobalAutoApproveResponse {
     pub enabled: bool,
 }
 
+/// What a submitted message became (t3code's delivery): surfaces read
+/// this, never the notice text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebornSubmitDelivery {
+    /// A new turn runs it.
+    Started,
+    /// It is part of the running turn (a steer).
+    Steered,
+    /// It waits in the thread's queue for a later turn.
+    Queued,
+    /// The running turn was stopped and started over with it.
+    Restarted,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum RebornSubmitTurnResponse {
@@ -371,6 +386,10 @@ pub enum RebornSubmitTurnResponse {
         resolved_run_profile_id: String,
         resolved_run_profile_version: u64,
         event_cursor: EventCursor,
+        /// `started`, or `restarted` when the running turn started over with
+        /// it. Absent from servers older than the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<RebornSubmitDelivery>,
     },
     RejectedBusy {
         thread_id: ThreadId,
@@ -395,7 +414,23 @@ pub enum RebornSubmitTurnResponse {
         active_run_id: TurnRunId,
         status: TurnStatus,
         event_cursor: EventCursor,
+        /// Human text; display only. `delivery` is the typed outcome.
         notice: String,
+        /// `steered` (part of the running turn) or `queued` (a later turn).
+        /// Absent from servers older than the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<RebornSubmitDelivery>,
+        /// The steer's ledger id, keying its "waiting to be read" state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steer_id: Option<String>,
+        /// The queue item holding it: a queued message, or a steer waiting
+        /// for the turn to take input.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queued_id: Option<String>,
+        /// A steer the turn could not take yet: delivered once it can, or
+        /// run as the next turn if the turn ends first.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        waiting_for_turn: bool,
     },
     AlreadySubmitted {
         thread_id: ThreadId,

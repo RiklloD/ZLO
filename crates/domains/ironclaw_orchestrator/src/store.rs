@@ -206,7 +206,7 @@ impl<'a> Cols<'a> {
         self.oint()?
             .ok_or_else(|| OrchestratorError::Corrupt(format!("column {col} is null")))
     }
-    fn real(&mut self) -> Result<f64> {
+    pub(crate) fn real(&mut self) -> Result<f64> {
         match self.value()? {
             Value::Integer(i) => Ok(i as f64),
             Value::Real(r) => Ok(r),
@@ -334,8 +334,8 @@ fn task_row(row: &libsql::Row) -> Result<TaskRecord> {
     })
 }
 
-const QUEUE_COLS: &str =
-    "id, thread_id, position, text, status, created_by, created_at, updated_at, sent_at";
+const QUEUE_COLS: &str = "id, thread_id, position, text, status, created_by, created_at, updated_at, sent_at, \
+     COALESCE(kind, 'message'), steer_run";
 
 fn queue_row(row: &libsql::Row) -> Result<QueueItem> {
     let mut c = Cols::new(row);
@@ -349,6 +349,8 @@ fn queue_row(row: &libsql::Row) -> Result<QueueItem> {
         created_at: c.int()?,
         updated_at: c.int()?,
         sent_at: c.oint()?,
+        kind: QueueKind::parse(&c.text()?)?,
+        steer_run: c.otext()?,
     })
 }
 
@@ -509,11 +511,13 @@ impl Store {
             conn.execute_batch(crate::peer::PEER_SCHEMA).await?;
             conn.execute_batch(crate::agent_requests::AGENT_REQUESTS_SCHEMA)
                 .await?;
+            conn.execute_batch(crate::steers::STEERS_SCHEMA).await?;
         }
         crate::schedules::upgrade_schema(self).await?;
         self.upgrade_inbox_schema().await?;
         self.upgrade_goals_schema().await?;
         self.upgrade_worktree_schema().await?;
+        self.upgrade_queue_schema().await?;
         self.close_interrupted_cli_approvals(crate::model::now_ms())
             .await?;
         self.import_legacy_threads(legacy_runtime).await
