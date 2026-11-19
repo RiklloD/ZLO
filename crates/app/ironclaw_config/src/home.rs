@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::home_migration::{HomeMigration, current_data_location, migrate_legacy_home};
+use crate::profile::RebornProfile;
 
 /// Environment variable that selects the ZLO state root (default `~/.zlo`).
 pub const REBORN_HOME_ENV: &str = "ZLO_HOME";
@@ -464,10 +465,16 @@ impl fmt::Display for RebornConfigError {
                 formatter,
                 "HOME or USERPROFILE must be set when {REBORN_HOME_ENV} is unset"
             ),
-            Self::InvalidProfile { name, value } => write!(
-                formatter,
-                "{name} must be one of local-dev, local-dev-yolo, hosted-single-tenant, hosted-single-tenant-volume, production, migration-dry-run; got {value:?}"
-            ),
+            Self::InvalidProfile { name, value } => {
+                write!(formatter, "{name} must be one of ")?;
+                for (index, profile) in RebornProfile::all().iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str(", ")?;
+                    }
+                    formatter.write_str(profile.as_str())?;
+                }
+                write!(formatter, "; got {value:?}")
+            }
             Self::HomeMigration { from, to, reason } => write!(
                 formatter,
                 "could not move the IronClaw data folder {} to the ZLO data folder {}: {reason}. \
