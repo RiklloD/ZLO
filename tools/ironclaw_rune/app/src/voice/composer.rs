@@ -14,7 +14,7 @@
 //! to its mirror in the main state and, as the same edit, to the window
 //! (`workspace::quick::voice_edit`).
 
-use rune::{TextEdit, Tx};
+use rune::{Ime, TextEdit, Tx};
 
 use super::transcript::{Change, Stabilizer};
 use crate::state::State;
@@ -129,15 +129,7 @@ impl Live {
         let done = self.target.edit(s, move |edit| {
             // Drop the old tail and insert the newly committed words at the
             // caret; then show the new tail as the preedit.
-            let volatile = &tail;
-            edit.preedit = None;
-            if !append.is_empty() {
-                edit.insert(&append);
-            }
-            if !volatile.is_empty() {
-                let end = volatile.len();
-                edit.preedit = Some((volatile.clone(), Some((end, end))));
-            }
+            show_change(edit, &append, &tail);
         });
         if done.is_some() {
             self.shown = volatile;
@@ -150,12 +142,9 @@ impl Live {
             return;
         }
         let _ = self.target.edit(s, |edit| {
-            // What the field still shows: typing may have ended the preedit.
-            if let Some((tail, _)) = edit.preedit.take()
-                && !tail.is_empty()
-            {
-                edit.insert(&tail);
-            }
+            // What the field still shows (typing may have ended the preedit)
+            // becomes typed text.
+            edit.finish_composition();
         });
         self.shown.clear();
     }
@@ -165,8 +154,26 @@ impl Live {
         if self.shown.is_empty() {
             return;
         }
-        let _ = self.target.edit(s, |edit| edit.preedit = None);
+        let _ = self.target.edit(s, |edit| edit.cancel_composition());
         self.shown.clear();
+    }
+}
+
+/// Drops the old volatile tail, inserts `append` at the caret and shows
+/// `volatile` as the field's preedit (an input-method composition, so it is
+/// drawn but not yet text).
+fn show_change(edit: &mut TextEdit, append: &str, volatile: &str) {
+    edit.cancel_composition();
+    if !append.is_empty() {
+        edit.insert(append);
+    }
+    if !volatile.is_empty() {
+        let end = volatile.len();
+        edit.ime(&Ime::Preedit(
+            volatile.to_owned(),
+            Some((end, end)),
+            Vec::new(),
+        ));
     }
 }
 
@@ -202,17 +209,9 @@ mod tests {
         changes.push(words.finish(final_text));
         for change in changes {
             let (append, volatile) = led(lead, &change);
-            edit.preedit = None;
-            if !append.is_empty() {
-                edit.insert(&append);
-            }
-            if !volatile.is_empty() {
-                edit.preedit = Some((volatile, None));
-            }
+            show_change(&mut edit, &append, &volatile);
         }
-        if let Some((tail, _)) = edit.preedit.take() {
-            edit.insert(&tail);
-        }
+        edit.finish_composition();
         edit.text.clone()
     }
 

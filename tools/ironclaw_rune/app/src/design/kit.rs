@@ -63,7 +63,7 @@ pub(crate) mod loops;
 
 pub use editor::mono_editor;
 
-pub use loops::{claw_mark, gradient_spinner, pulse_dots, shimmer_text, status_dot};
+pub use loops::{Spinner, claw_mark, gradient_spinner, pulse_dots, shimmer_text, status_dot};
 
 use std::rc::Rc;
 
