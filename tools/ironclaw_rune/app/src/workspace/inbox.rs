@@ -148,9 +148,21 @@ impl Inbox {
             Some(InboxStatus::Working | InboxStatus::Background | InboxStatus::NeedsInput) => {
                 row.status
             }
-            _ if self.sent.contains_key(&row.thread_id) => Some(InboxStatus::Working),
+            _ if self.sent_live(&row.thread_id) => Some(InboxStatus::Working),
             status => status,
         }
+    }
+
+    /// A prompt sent here still within its grace: its own clock, so failed
+    /// inbox reads cannot keep it claiming Working.
+    fn sent_live(&self, thread_id: &str) -> bool {
+        self.sent
+            .get(thread_id)
+            .is_some_and(|at| at.elapsed() < SENT_GRACE)
+    }
+
+    fn any_sent_live(&self) -> bool {
+        self.sent.values().any(|at| at.elapsed() < SENT_GRACE)
     }
 
     pub fn row(&self, thread_id: &str) -> Option<&InboxRow> {
@@ -180,7 +192,7 @@ impl Inbox {
     }
 
     fn needs_poll(&self) -> bool {
-        !self.sent.is_empty()
+        self.any_sent_live()
             || Utc::now().timestamp_millis() < self.settle_poll_until
             || self.list.rows.iter().any(|r| {
                 r.title_pending
@@ -532,6 +544,11 @@ fn ensure_poll(s: &mut State) {
 
 /// The working poll came due.
 pub(super) fn poll_due(s: &mut State) {
+    // Expire sent prompts here too: a read that keeps failing never applies.
+    s.workspace
+        .inbox
+        .sent
+        .retain(|_, at| at.elapsed() < SENT_GRACE);
     if !s.workspace.inbox.needs_poll() {
         return;
     }
@@ -842,6 +859,15 @@ mod tests {
         apply(&mut s, list(vec![done]));
         assert!(s.workspace.inbox.sent.is_empty());
         apply(&mut s, list(vec![row("a", InboxState::Inbox, None)]));
+
+        // The grace runs out on its own clock, even with no inbox read.
+        note_sent(&mut s, "b");
+        if let Some(at) = s.workspace.inbox.sent.get_mut("b") {
+            *at = Instant::now() - SENT_GRACE;
+        }
+        assert!(!s.workspace.inbox.any_sent_live());
+        poll_due(&mut s);
+        assert!(s.workspace.inbox.sent.is_empty(), "the poll drops it");
 
         // A run that ends before the backend ever showed it clears too.
         note_sent(&mut s, "a");
