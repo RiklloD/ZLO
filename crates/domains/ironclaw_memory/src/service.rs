@@ -458,8 +458,7 @@ impl MemoryServiceError {
     /// absence check for callers (the owner's Memory page) that map a missing
     /// document to "no document" rather than to a failure.
     pub fn is_not_found(&self) -> bool {
-        self.kind == MemoryServiceErrorKind::Operation
-            && self.message == NOT_FOUND_MESSAGE
+        self.kind == MemoryServiceErrorKind::Operation && self.message == NOT_FOUND_MESSAGE
     }
 
     pub fn unavailable() -> Self {
