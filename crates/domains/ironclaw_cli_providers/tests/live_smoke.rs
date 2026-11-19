@@ -124,13 +124,102 @@ async fn one_turn(rt: &dyn TurnRuntime, recorder: &Recorder) {
 #[ignore = "calls the real Antigravity agent"]
 async fn antigravity_live_turn() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = antigravity::default_config(&home()).expect("antigravity acp runtime");
+    let mut config = antigravity::default_config(&home())
+        .await
+        .expect("antigravity acp runtime");
+    config.state_dir = dir.path().join("state");
+    config.work_dir = dir.path().join("work");
+    let recorder = Arc::new(Recorder::default());
+    let sink: Weak<dyn TurnEventSink> = Arc::downgrade(&recorder) as Weak<dyn TurnEventSink>;
+    eprintln!("launch: {:?}", config.launch);
+    let rt = antigravity::AntigravityRuntime::new(config, sink, None).unwrap();
+    one_turn(&rt, &recorder).await;
+}
+
+/// The native `agy acp` takes a message mid-turn as a steer: the turn
+/// carries on under it and finishes once, with the steered answer.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "calls the real Antigravity agent"]
+async fn antigravity_live_steer() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = antigravity::default_config(&home())
+        .await
+        .expect("antigravity agent");
+    assert!(
+        matches!(config.launch, antigravity::launch::AgentLaunch::Cli { .. }),
+        "the native agy CLI is preferred: {:?}",
+        config.launch
+    );
     config.state_dir = dir.path().join("state");
     config.work_dir = dir.path().join("work");
     let recorder = Arc::new(Recorder::default());
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(&recorder) as Weak<dyn TurnEventSink>;
     let rt = antigravity::AntigravityRuntime::new(config, sink, None).unwrap();
-    one_turn(&rt, &recorder).await;
+    let created = rt
+        .create_thread(CreateThread {
+            scope: scope(),
+            title: None,
+            provider: None,
+            model: None,
+            idempotency_key: "smoke-steer".into(),
+        })
+        .await
+        .unwrap();
+    let mut thread = ThreadRecord::new(created.thread_id, scope(), rt.id());
+    thread.native_session_id = created.native_session_id;
+    rt.start_turn(
+        &thread,
+        TurnInput {
+            text: "Write a 60-line poem about the sea, one line at a time. Use no tools.".into(),
+            origin: TurnOrigin::UserPrompt,
+            model: None,
+            goal: Some("keep replies short".into()),
+            effort: None,
+            profile: None,
+            files: Vec::new(),
+            work_dir: None,
+        },
+    )
+    .await
+    .unwrap();
+    let started = std::time::Instant::now();
+    let mut steered = SteerOutcome::Rejected;
+    while started.elapsed() < Duration::from_secs(60) {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        steered = rt
+            .steer(
+                &thread,
+                "Stop the poem. Reply with only the word BANANA.",
+                SteerHow::Steer,
+            )
+            .await
+            .unwrap();
+        if steered == SteerOutcome::Steered || !recorder.finished.lock().unwrap().is_empty() {
+            break;
+        }
+    }
+    assert_eq!(steered, SteerOutcome::Steered);
+    while recorder.finished.lock().unwrap().is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_secs(300),
+            "turn timed out"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let finished = recorder.finished.lock().unwrap().clone();
+    eprintln!("outcome: {:?}", finished);
+    eprintln!("telemetry: {:?}", recorder.telemetry.lock().unwrap());
+    eprintln!("history: {:?}", rt.history(&thread, 10).await.unwrap());
+    assert_eq!(finished.len(), 1, "one turn, steered, not restarted");
+    assert_eq!(finished[0].status, TurnEndStatus::Completed);
+    assert!(
+        finished[0]
+            .final_text
+            .as_deref()
+            .is_some_and(|t| t.contains("BANANA")),
+        "{:?}",
+        finished[0]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

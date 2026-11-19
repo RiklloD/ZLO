@@ -533,9 +533,14 @@ impl Engine {
         run_id: Option<&str>,
         at: Millis,
     ) -> Result<()> {
-        self.store
+        if !self
+            .store
             .set_turn_running(&thread.thread_id, run_id, at)
-            .await?;
+            .await?
+        {
+            tracing::debug!("run already ended before its admission returned");
+            return Ok(());
+        }
         self.store
             .put_live_work(
                 &thread.thread_id,

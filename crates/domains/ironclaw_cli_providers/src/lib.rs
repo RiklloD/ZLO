@@ -23,6 +23,7 @@ pub mod muse;
 pub mod permissions;
 mod rpc;
 pub mod session_import;
+mod slot;
 mod workspace;
 
 use std::path::PathBuf;
@@ -132,7 +133,7 @@ pub(crate) fn injected_context(
     sample
 }
 
-fn join_notes(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+pub(crate) fn join_notes(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {
     let parts: Vec<String> = parts.into_iter().flatten().collect();
     (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
@@ -169,10 +170,10 @@ impl Primed {
 /// Register every installed coding-agent CLI on `engine`, all with their
 /// tools behind `bridge`'s approvals, which are recorded in the engine's
 /// store. Returns how many runtimes were registered.
-pub fn register_cli_runtimes(engine: &Arc<Engine>, bridge: &Arc<bridge::CliBridge>) -> usize {
+pub async fn register_cli_runtimes(engine: &Arc<Engine>, bridge: &Arc<bridge::CliBridge>) -> usize {
     bridge.record_to(engine.store().clone());
     register_claude_runtimes(engine, Some(Arc::clone(bridge)))
-        + register_antigravity_runtime(engine, Some(Arc::clone(bridge)))
+        + register_antigravity_runtime(engine, Some(Arc::clone(bridge))).await
         + register_muse_runtime(engine, Some(Arc::clone(bridge)))
         + register_codex_runtime(engine, Some(Arc::clone(bridge)))
 }
@@ -260,16 +261,19 @@ fn spawn_version_check(binary: PathBuf) {
 
 /// Register the Antigravity runtime when its ACP server is installed. With
 /// `bridge`, its permission requests become IronClaw approvals; without,
-/// they are denied. Returns how many were registered (0 or 1).
-pub fn register_antigravity_runtime(
+/// they are denied. Returns how many were registered (0 or 1). Finding the
+/// agent asks `agy --version` under a short deadline, without blocking.
+pub async fn register_antigravity_runtime(
     engine: &Arc<Engine>,
     bridge: Option<Arc<bridge::CliBridge>>,
 ) -> usize {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return 0;
     };
-    let Some(config) = antigravity::default_config(&home) else {
-        tracing::debug!("antigravity acp runtime not found; antigravity runtime not registered");
+    let Some(config) = antigravity::default_config(&home).await else {
+        tracing::debug!(
+            "antigravity agent (agy acp or the ACP runtime) not found; antigravity runtime not registered"
+        );
         return 0;
     };
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
