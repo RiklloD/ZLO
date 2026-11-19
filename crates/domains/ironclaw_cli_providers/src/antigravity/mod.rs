@@ -674,13 +674,13 @@ impl Turn {
                 )
             };
         }
-        let earlier = superseded.error.take();
-        if let Some(earlier) = &earlier
-            && !self.cancelled.load(Ordering::SeqCst)
+        let earlier = std::mem::take(&mut superseded.errors);
+        if !self.cancelled.load(Ordering::SeqCst)
+            && let Some(earlier_outcome) =
+                superseded::pick(earlier.iter().map(|e| fold.outcome(false, e)).collect())
         {
             // A superseded prompt failed: a later success does not undo it,
             // and a quota reached there still arms the resume.
-            let earlier_outcome = fold.outcome(false, earlier);
             if outcome.status == TurnEndStatus::Completed
                 || (is_usage_limit(&earlier_outcome) && !is_usage_limit(&outcome))
             {
@@ -691,9 +691,7 @@ impl Turn {
             }
         }
         if fold.lost_thinking_signature(&answer)
-            || earlier
-                .as_ref()
-                .is_some_and(|e| fold.lost_thinking_signature(e))
+            || earlier.iter().any(|e| fold.lost_thinking_signature(e))
         {
             store::retire_session(&self.config.session_file(&self.key)).await;
             outcome = TurnOutcome::ended(

@@ -678,19 +678,25 @@ impl Store {
         Ok(())
     }
 
+    /// Mark the turn running, unless `run_id` already ended: a runtime may
+    /// report a run's end before its admission returns (Stop during
+    /// preparation), and that terminal log must win. `false` when refused.
     pub async fn set_turn_running(
         &self,
         id: &ThreadId,
         run_id: Option<&str>,
         at: Millis,
-    ) -> Result<()> {
-        self.exec(
-            "UPDATE orch_threads SET turn_state = 'running', active_run_id = COALESCE(?2, active_run_id), \
-             turn_started_at = ?3, updated_at = ?3 WHERE thread_id = ?1",
-            vec![s(id.as_str()), opt(run_id), at.into()],
-        )
-        .await?;
-        Ok(())
+    ) -> Result<bool> {
+        let n = self
+            .exec(
+                "UPDATE orch_threads SET turn_state = 'running', active_run_id = COALESCE(?2, active_run_id), \
+                 turn_started_at = ?3, updated_at = ?3 WHERE thread_id = ?1 \
+                 AND (?2 IS NULL OR NOT EXISTS \
+                      (SELECT 1 FROM orch_turns WHERE thread_id = ?1 AND run_id = ?2))",
+                vec![s(id.as_str()), opt(run_id), at.into()],
+            )
+            .await?;
+        Ok(n > 0)
     }
 
     /// Mark the turn ended unless a newer turn already started (a late

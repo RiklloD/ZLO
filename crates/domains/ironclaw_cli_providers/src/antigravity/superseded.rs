@@ -8,14 +8,15 @@ use crate::rpc::RpcError;
 
 /// Replies still owed to prompts a steer superseded. Their ordinary stop
 /// (`end_turn`, `cancelled`) means nothing; any other answer (a quota
-/// error, a lost thinking signature, another failure) is kept so it is
-/// classified like the turn's own answer instead of being masked by the
-/// steer that followed.
+/// error, a lost thinking signature, another failure) is kept, every one of
+/// them, so the turn's outcome is decided over all of them (see [`pick`])
+/// instead of being masked by the steer that followed or by an earlier,
+/// less actionable failure. Arrival order does not matter.
 #[derive(Default)]
 pub(super) struct Superseded {
     pending: Vec<PromptFuture>,
-    /// The first actionable reply, in arrival order.
-    pub(super) error: Option<Result<Value, RpcError>>,
+    /// Every actionable reply that settled.
+    pub(super) errors: Vec<Result<Value, RpcError>>,
 }
 
 impl Superseded {
@@ -59,7 +60,7 @@ impl Superseded {
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         #[expect(
             clippy::let_underscore_must_use,
-            reason = "what settled is recorded in `error`; pending replies are dropped"
+            reason = "what settled is recorded in `errors`; pending replies are dropped"
         )]
         let _ = self.poll_settled(&mut cx);
     }
@@ -71,10 +72,23 @@ impl Superseded {
                 Some("end_turn") | Some("cancelled")
             )
         });
-        if !ordinary && self.error.is_none() {
-            self.error = Some(reply);
+        if !ordinary {
+            self.errors.push(reply);
         }
     }
+}
+
+/// The superseded outcome that decides the turn: a usage limit first (the
+/// latest reset wins, so the resume waits long enough), else the first.
+pub(super) fn pick(outcomes: Vec<TurnOutcome>) -> Option<TurnOutcome> {
+    let limit = outcomes
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| is_usage_limit(o))
+        .max_by_key(|(_, o)| o.usage_limit_resets_at)
+        .map(|(i, _)| i);
+    let index = limit.unwrap_or(0);
+    outcomes.into_iter().nth(index)
 }
 
 pub(super) fn is_usage_limit(outcome: &TurnOutcome) -> bool {
@@ -82,4 +96,32 @@ pub(super) fn is_usage_limit(outcome: &TurnOutcome) -> bool {
         .error
         .as_deref()
         .is_some_and(|e| e.starts_with("usage_limit"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ironclaw_orchestrator::runtime::TurnEndStatus;
+
+    fn failed(error: &str, reset: Option<i64>) -> TurnOutcome {
+        TurnOutcome {
+            usage_limit_resets_at: reset,
+            ..TurnOutcome::ended(TurnEndStatus::Failed, Some(error.into()))
+        }
+    }
+
+    #[test]
+    fn a_usage_limit_wins_over_any_order_and_the_latest_reset_wins() {
+        let picked = pick(vec![
+            failed("antigravity error", None),
+            failed("usage_limit: a", Some(10)),
+            failed("usage_limit: b", Some(30)),
+            failed("other", None),
+        ])
+        .unwrap();
+        assert_eq!(picked.usage_limit_resets_at, Some(30));
+        let first = pick(vec![failed("one", None), failed("two", None)]).unwrap();
+        assert_eq!(first.error.as_deref(), Some("one"));
+        assert!(pick(Vec::new()).is_none());
+    }
 }

@@ -116,3 +116,37 @@ async fn a_steer_that_cannot_be_queued_is_reported_back_and_recovery_is_idempote
         "{error}"
     );
 }
+
+/// A runtime can report a run's end before its admission returns (Stop
+/// while the turn prepares): the admission bookkeeping that follows must
+/// not mark the ended run running again or leave live work behind.
+#[tokio::test]
+async fn a_run_reported_ended_before_admission_returns_stays_ended() {
+    let h = harness().await;
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    *h.rt.next_run.lock().unwrap() = Some("early".into());
+    h.engine
+        .turn_finished(
+            &a,
+            Some("early".into()),
+            TurnOutcome::completed(None),
+            now_ms(),
+        )
+        .await;
+    h.engine.steers_unread(&a, "r0", steers(&["go"])).await;
+    h.engine.tick().await;
+    assert_eq!(h.rt.starts_on(&a), vec!["go".to_string()]);
+    let thread = h.engine.store().thread(&a).await.unwrap().unwrap();
+    assert!(!thread.is_running(), "{:?}", thread.turn_state);
+    assert!(
+        h.engine
+            .store()
+            .live_work()
+            .await
+            .unwrap()
+            .iter()
+            .all(|w| w.thread_id != a),
+        "live work left for an ended run"
+    );
+}

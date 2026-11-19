@@ -444,6 +444,9 @@ async fn antigravity_stop_kills_the_process_group() {
 /// - `steerquota` / `steersig`: like `steer`, but the superseded first
 ///   prompt answers with a quota error / a lost-thinking-signature error
 ///   while the steer itself succeeds.
+/// - `mixquota` / `mixsig`: two steers; the first prompt fails with a
+///   generic error, the second with a quota / lost-signature error, and the
+///   last steer succeeds.
 const AGY_CLI: &str = r#"#!/bin/sh
 LOG=__LOG__
 MODE=__MODE__
@@ -467,6 +470,18 @@ while IFS= read -r line; do
       else reply "$id" "{\"configOptions\":$OPTS}"; fi ;;
     *'"method":"session/set_config_option"'*) reply "$id" '{}' ;;
     *'"method":"session/prompt"'*)
+      if [ "$MODE" = mixquota ] || [ "$MODE" = mixsig ]; then
+        if [ -z "$P1" ]; then P1=$id; chunk "Par"
+        elif [ -z "$P2" ]; then P2=$id; chunk "More"
+        else
+          printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"internal failure"}}\n' "$P1"
+          if [ "$MODE" = mixquota ]; then printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"RESOURCE_EXHAUSTED quota exceeded [quotaResetDelay:1h]"}}\n' "$P2"
+          else printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"messages.1.content.0.thinking.signature: Field required"}}\n' "$P2"; fi
+          chunk "Steered"
+          reply "$id" '{"stopReason":"end_turn","usage":{"inputTokens":10,"outputTokens":2}}'
+        fi
+        continue
+      fi
       if [ -n "$P1" ]; then
         [ "$MODE" = steerslow ] && sleep 0.3
         if [ "$MODE" = steerquota ]; then printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"RESOURCE_EXHAUSTED quota exceeded [quotaResetDelay:1h]"}}\n' "$P1"
@@ -662,6 +677,40 @@ async fn antigravity_cli_superseded_prompt_errors_still_classify_the_turn() {
                 .filter_map(Result::ok)
                 .any(|e| e.file_name().to_string_lossy().contains("retired-"));
             assert!(retired, "the pointer is renamed, never deleted");
+        }
+    }
+}
+
+/// Two steers: an earlier generic failure never hides a later quota (the
+/// resume still arms) or lost signature (the session is still retired).
+#[tokio::test]
+async fn antigravity_cli_every_superseded_error_counts() {
+    for (mode, quota) in [("mixquota", true), ("mixsig", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = Arc::new(Recorder::default());
+        let rt = antigravity_cli(dir.path(), mode, &recorder, None);
+        let thread = thread(&rt, "default").await;
+        rt.start_turn(&thread, input()).await.unwrap();
+        wait_for(|| agy_log(dir.path()).contains(r#""method":"session/prompt""#)).await;
+        for text in ["more", "go on"] {
+            assert_eq!(
+                rt.steer(&thread, text, SteerHow::Steer).await.unwrap(),
+                SteerOutcome::Steered
+            );
+        }
+        wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+        let outcome = recorder.finished.lock().unwrap()[0].clone();
+        assert_eq!(outcome.status, TurnEndStatus::Failed, "{mode}: {outcome:?}");
+        let error = outcome.error.clone().unwrap_or_default();
+        let key = thread.native_session_id.clone().unwrap();
+        let pointer = dir.path().join("state/sessions").join(&key);
+        if quota {
+            assert!(error.starts_with("usage_limit"), "{mode}: {error}");
+            assert!(outcome.usage_limit_resets_at.is_some(), "{mode}");
+            assert!(pointer.exists(), "a quota keeps the session");
+        } else {
+            assert!(error.contains("fresh session"), "{mode}: {error}");
+            assert!(!pointer.exists(), "session pointer not retired");
         }
     }
 }
