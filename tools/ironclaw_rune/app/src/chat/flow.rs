@@ -790,9 +790,16 @@ fn output_tail(s: &State, output: &CliBody, running: bool) -> El {
 /// column, a faint wash rather than a colored bubble.
 pub fn user_pill(s: &State, key: &str, body: El, pending: bool, column: f32) -> El {
     let p = &s.palette;
-    // An opaque step off the canvas, so the bubble reads the same over a
-    // wallpaper, a solid canvas and either scheme.
-    let wash = p.bg.mix(p.text, if p.light { 0.06 } else { 0.11 });
+    // The composer's own surface and rim, so a sent message reads as the
+    // card it was typed in: opaque, one step off the canvas. A light theme
+    // whose card is the canvas's own white takes a faint ink wash instead,
+    // so the bubble still reads.
+    let (card, rim) = super::composer::composer_surface(p, false);
+    let wash = if p.light && card.to_oklab()[0] >= p.bg.to_oklab()[0] - 0.005 {
+        p.bg.mix(p.text, 0.05)
+    } else {
+        card
+    };
     row().w_full().justify_end().child(
         // `shrink` on the pill and its body: without it the row lays the
         // body out at its unwrapped width and long lines run past the pill.
@@ -800,7 +807,8 @@ pub fn user_pill(s: &State, key: &str, body: El, pending: bool, column: f32) -> 
             .shrink()
             .max_w(column * 0.8)
             .fill(wash)
-            .radius(crate::design::BUBBLE_RADIUS)
+            .border(1., rim)
+            .radius(crate::design::COMPOSER_RADIUS)
             .px(16.)
             .py(10.)
             .opacity(if pending { 0.65 } else { 1. })

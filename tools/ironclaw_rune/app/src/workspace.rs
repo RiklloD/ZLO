@@ -442,7 +442,7 @@ pub fn in_settings(s: &State) -> bool {
     !matches!(s.page, Page::Chat | Page::Draft)
 }
 
-/// Esc closes what the user last opened: the model or thinking picker, else
+/// Esc closes what the user last opened: a model picker, else
 /// the settings pages. The command menu handles its own Esc.
 fn dismiss(s: &mut State) -> bool {
     if s.workspace.command.is_some() {

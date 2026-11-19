@@ -17,7 +17,7 @@ use rune_kit::Kit;
 use rune_kit::shell::{PaneMotion, SidebarPeek, SidebarToggle, SplitView, TOOLBAR_HEIGHT, Toolbar};
 
 use super::super::ui::{MEDIUM, t, tw};
-use super::super::{active_id, draft, settings_pages};
+use super::super::{active_id, settings_pages};
 use super::main_area::{chat_shown, main_area};
 use super::sidebar::sidebar;
 use crate::design::{self, Palette, panels, styles::Style};
@@ -134,6 +134,11 @@ fn sidebar_toggle(s: &State) -> El {
 /// open thread's actions at its right end. The frame keeps the crumbs clear
 /// of the titlebar cluster while the sidebar is folded.
 fn breadcrumb(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> Toolbar {
+    // The new-thread screen names its project beside its heading; the bar
+    // stays an empty drag strip there.
+    if s.page == Page::Draft {
+        return Toolbar::new();
+    }
     let (parent, leaf): (String, String) = match s.page {
         Page::Chat => {
             let id = active_id(s).unwrap_or("");
@@ -148,7 +153,6 @@ fn breadcrumb(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut V
                 .unwrap_or_else(|| "New conversation".into());
             (profile, title)
         }
-        Page::Draft => (draft::profile_name(s), "New thread".into()),
         page => {
             let label = settings_pages(s)
                 .into_iter()

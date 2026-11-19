@@ -75,7 +75,7 @@ pub struct Form {
 
 /// Where the form's model picker lives, and where its events go: a failed
 /// pick shows as the form's save error (GPUI `PickerEvent::Failed`).
-const FORM_PICKER: Slot = Slot::Fixed(FixedSlot {
+pub(crate) const FORM_PICKER: Slot = Slot::Fixed(FixedSlot {
     get: |s| s.pages.automations.form.as_ref()?.picker.as_ref(),
     get_mut: |s| s.pages.automations.form.as_mut()?.picker.as_mut(),
     event: |s, event| {

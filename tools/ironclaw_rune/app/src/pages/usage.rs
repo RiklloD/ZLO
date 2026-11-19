@@ -462,10 +462,11 @@ fn ahead_of_pace(used_pct: f64, elapsed: f64) -> Option<String> {
 
 /// Green until 70 %, amber until 90 %, then red.
 pub fn level_color(p: &Palette, pct: f64) -> Color {
+    // Quiet until it matters: colour only as a limit nears.
     match pct {
         x if x >= 90. => p.danger,
         x if x >= 70. => p.warning,
-        _ => p.success,
+        _ => p.text_faint,
     }
 }
 

@@ -402,15 +402,15 @@ pub(in crate::workspace) fn draft_mark(p: &Palette) -> El {
     ui::glyph(&icons::SQUARE_PEN, 14., p.accent)
 }
 
-/// The profile badge: a colored tile with the first letter. `lit` 0 draws
+/// The profile badge: a neutral tile with the first letter. `lit` 0 draws
 /// the mark at rest, 1 at full strength on hover or open.
 pub(in crate::workspace) fn profile_mark(
     p: &Palette,
-    profile_id: &str,
+    _profile_id: &str,
     name: &str,
     lit: f32,
 ) -> El {
-    let color = profile_color(p, profile_id, lit);
+    let color = profile_color(p, lit);
     let letter = name
         .chars()
         .find(|c| c.is_alphanumeric())
@@ -423,19 +423,11 @@ pub(in crate::workspace) fn profile_mark(
         .child(tw(letter.to_string(), 10., SEMIBOLD, color))
 }
 
-/// A profile's own color, from its id. Identity keeps its color at rest (T3
-/// reversed its grayscale pass); `lit` 1 (hover, selection) only brings it
-/// to full strength.
-pub(in crate::workspace) fn profile_color(p: &Palette, profile_id: &str, lit: f32) -> Color {
-    let colors = [p.accent, p.success, p.warning, p.danger, p.text_muted];
-    let hash = profile_id
-        .bytes()
-        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-    mix(
-        p.text_muted,
-        colors[hash as usize % colors.len()],
-        0.7 + 0.3 * lit,
-    )
+/// A profile mark's ink: muted at rest, `lit` 1 (hover, selection) brings
+/// it to the text colour. One neutral for every profile (the flat pass).
+pub(in crate::workspace) fn profile_color(p: &Palette, lit: f32) -> Color {
+    // Neutral for every profile: the name tells them apart, not a hue.
+    mix(p.text_muted, p.text, lit)
 }
 
 /// Linear mix in OKLab, `t` 0 → `a`, 1 → `b`.

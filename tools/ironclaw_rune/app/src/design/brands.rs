@@ -232,10 +232,21 @@ fn recolor(bytes: &[u8], hex: &str) -> Arc<[u8]> {
 /// The logo for the first id that has one, else a lettered tile from the
 /// first id.
 pub fn provider_logo(s: &State, ids: &[&str], size: f32) -> El {
+    logo_in(s, ids, size, None)
+}
+
+/// [`provider_logo`] in one ink for every vector logo, its brand tint
+/// dropped: the composer and the model picker stay monochrome. Raster logos
+/// keep their own pixels.
+pub fn provider_logo_mono(s: &State, ids: &[&str], size: f32, ink: Color) -> El {
+    logo_in(s, ids, size, Some(ink))
+}
+
+fn logo_in(s: &State, ids: &[&str], size: f32, ink: Option<Color>) -> El {
     let p = &s.palette;
     let found = ids.iter().find_map(|id| logo_for(id));
     let image = found.as_ref().and_then(|logo| {
-        let color = logo.tint.map(super::rgb).unwrap_or(p.text);
+        let color = ink.unwrap_or_else(|| logo.tint.map(super::rgb).unwrap_or(p.text));
         s.look.logos.image(logo, color, size)
     });
     match image {
@@ -243,7 +254,7 @@ pub fn provider_logo(s: &State, ids: &[&str], size: f32) -> El {
             .size(size, size)
             .a11y_hidden()
             .pixels_fit(image.pixels(), SurfaceFit::Fit),
-        _ => letter_tile(s, ids.first().copied().unwrap_or("?"), size),
+        _ => letter_tile(s, ids.first().copied().unwrap_or("?"), size, ink),
     }
 }
 
@@ -261,8 +272,11 @@ pub fn preload(s: &State, ids: &[&str], size: f32) {
     }
 }
 
-fn letter_tile(s: &State, id: &str, size: f32) -> El {
+/// A lettered tile for a provider without a logo: in the accent, or in
+/// `ink` where the caller keeps marks monochrome.
+fn letter_tile(s: &State, id: &str, size: f32, ink: Option<Color>) -> El {
     let p = &s.palette;
+    let tone = ink.unwrap_or(p.accent);
     let letter = id
         .chars()
         .find(|c| c.is_alphanumeric())
@@ -270,13 +284,13 @@ fn letter_tile(s: &State, id: &str, size: f32) -> El {
         .unwrap_or_else(|| "?".into());
     el().size(size, size)
         .radius(size / 2.)
-        .border(1., p.accent.alpha(0.5))
-        .fill(p.accent.alpha(0.12))
+        .border(1., tone.alpha(if ink.is_some() { 0.35 } else { 0.5 }))
+        .fill(tone.alpha(0.12))
         .center()
         .child(
             text(letter)
                 .font(rune::tok::TextStyle::new((size * 0.55).round(), 500.))
-                .color(p.accent),
+                .color(tone),
         )
 }
 
