@@ -5,8 +5,16 @@
 //! be a real directory (not a link), each entry is opened without following
 //! a link and non-blocking (a FIFO never hangs the read), checked to be the
 //! regular file that was listed, and the read is bounded per file, in entry
-//! count and in total bytes. A missing store is simply "no tasks yet"; any
-//! other failure is logged at `debug` and leaves the plan as it was.
+//! count and in total bytes (every byte read counts, malformed entries
+//! too). A store with no tasks is an empty plan; a missing store is "no
+//! tasks yet"; any other failure is logged at `debug` and leaves the plan as
+//! it was.
+//!
+//! Threat model: the store lives in the CLI's own config folder, owned by
+//! the person ZLO runs as. Checks are path-based, so a process running as
+//! that same person could swap a parent folder between check and read; such
+//! a process can already write the store directly, so this is out of scope.
+//! The checks guard against stray links, oversize files and FIFOs.
 //!
 //! Refreshes run off the read loop and may overlap; each carries a
 //! generation, and only the newest one publishes, so an older, slower read
@@ -32,9 +40,15 @@ pub(super) const MAX_FILE_BYTES: u64 = 64 * 1024;
 /// All task files of one read together.
 pub(super) const MAX_TOTAL_BYTES: u64 = 1024 * 1024;
 
-/// The store read into a plan; `None` when there is none (or it could not
-/// be read).
+/// The store read into a plan (empty when it holds no tasks); `None` when
+/// there is no store (or it could not be read).
 pub(super) async fn read_plan(store: &Path) -> Option<AgentPlan> {
+    let (tasks, _read) = read_store(store).await?;
+    Some(interaction::claude_task_plan(tasks))
+}
+
+/// The store's parsed entries and the bytes read to get them.
+pub(super) async fn read_store(store: &Path) -> Option<(Vec<Value>, u64)> {
     match tokio::fs::symlink_metadata(store).await {
         Ok(meta) if meta.file_type().is_dir() => {}
         Ok(_) => {
@@ -76,11 +90,10 @@ pub(super) async fn read_plan(store: &Path) -> Option<AgentPlan> {
             continue;
         }
         match read_entry(&path, MAX_TOTAL_BYTES - total).await {
-            Ok(Some((len, task))) => {
+            Ok((len, task)) => {
                 total += len;
-                tasks.push(task);
+                tasks.extend(task);
             }
-            Ok(None) => {}
             // A half-written or vanished entry is read again next time.
             Err(error) => tracing::debug!(%error, "claude task store: entry skipped"),
         }
@@ -89,16 +102,17 @@ pub(super) async fn read_plan(store: &Path) -> Option<AgentPlan> {
             break;
         }
     }
-    interaction::claude_task_plan(tasks)
+    Some((tasks, total))
 }
 
-/// One entry, if it is a regular file within `budget` bytes holding JSON.
-async fn read_entry(path: &Path, budget: u64) -> std::io::Result<Option<(u64, Value)>> {
+/// One entry: the bytes read (charged to the budget whatever they held) and
+/// the task, if it is a regular file within `budget` bytes holding JSON.
+async fn read_entry(path: &Path, budget: u64) -> std::io::Result<(u64, Option<Value>)> {
     // `symlink_metadata`: a link is reported as a link, never followed.
     let meta = tokio::fs::symlink_metadata(path).await?;
     if !meta.file_type().is_file() {
         tracing::debug!("claude task store: not a regular file; skipped");
-        return Ok(None);
+        return Ok((0, None));
     }
     let limit = MAX_FILE_BYTES.min(budget);
     if meta.len() > limit {
@@ -106,7 +120,7 @@ async fn read_entry(path: &Path, budget: u64) -> std::io::Result<Option<(u64, Va
             size = meta.len(),
             "claude task store: entry too large; skipped"
         );
-        return Ok(None);
+        return Ok((0, None));
     }
     let file = files::open_regular(path, &files::info(&meta).id).await?;
     let mut bytes = Vec::new();
@@ -114,13 +128,13 @@ async fn read_entry(path: &Path, budget: u64) -> std::io::Result<Option<(u64, Va
     let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX); // silent-ok: usize always fits u64 here
     if len > limit {
         tracing::debug!("claude task store: entry grew past the limit; skipped");
-        return Ok(None);
+        return Ok((len, None));
     }
     match serde_json::from_slice(&bytes) {
-        Ok(task) => Ok(Some((len, task))),
+        Ok(task) => Ok((len, Some(task))),
         Err(error) => {
             tracing::debug!(%error, "claude task store: entry not JSON yet; skipped");
-            Ok(None)
+            Ok((len, None))
         }
     }
 }
@@ -178,5 +192,31 @@ impl TaskRefresher {
                 publish(plan);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Malformed entries cost what was read: forty near-limit files of junk
+    /// never read past the shared budget.
+    #[tokio::test]
+    async fn malformed_entries_count_against_the_read_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let junk = "x".repeat(60 * 1024);
+        for n in 0..40 {
+            std::fs::write(dir.path().join(format!("{n}.json")), &junk).unwrap();
+        }
+        let (tasks, read) = read_store(dir.path()).await.unwrap();
+        assert!(tasks.is_empty());
+        assert!(read <= MAX_TOTAL_BYTES, "read {read} bytes");
+    }
+
+    #[tokio::test]
+    async fn an_empty_store_is_an_empty_plan_and_a_missing_one_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_plan(dir.path()).await.unwrap().entries.is_empty());
+        assert!(read_plan(&dir.path().join("missing")).await.is_none());
     }
 }

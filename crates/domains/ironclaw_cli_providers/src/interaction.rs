@@ -75,8 +75,9 @@ pub fn claude_task_tool_load(tool: &str, input: &Value) -> bool {
 
 /// A Claude session's tasks (the parsed `<id>.json` entries of its task
 /// store, read by the driver) as a plan, in task-number order. Entries
-/// without an id or subject are skipped; `None` when nothing is left.
-pub fn claude_task_plan(tasks: Vec<Value>) -> Option<AgentPlan> {
+/// without an id or subject are skipped; no tasks is an empty plan, so a
+/// deleted last task clears what was shown.
+pub fn claude_task_plan(tasks: Vec<Value>) -> AgentPlan {
     let mut tasks: Vec<(u64, String, Value)> = tasks
         .into_iter()
         .filter_map(|task| {
@@ -84,14 +85,11 @@ pub fn claude_task_plan(tasks: Vec<Value>) -> Option<AgentPlan> {
             Some((id.parse().unwrap_or(u64::MAX), id, task)) // silent-ok: a non-numeric id sorts last
         })
         .collect();
-    if tasks.is_empty() {
-        return None;
-    }
     tasks.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
     let entries = tasks.iter().filter_map(|(_, _, t)| {
         Some(PlanEntry::new(text(t, "subject")?, status(t)).with_active_form(text(t, "activeForm")))
     });
-    Some(AgentPlan::new(entries, None, now()))
+    AgentPlan::new(entries, None, now())
 }
 
 /// Codex's `turn/plan/updated` params as a plan.
@@ -556,7 +554,7 @@ mod tests {
         .iter()
         .map(|t| serde_json::from_str(t).unwrap())
         .collect();
-        let plan = claude_task_plan(tasks).unwrap();
+        let plan = claude_task_plan(tasks);
         let rows: Vec<(&str, PlanEntryStatus)> = plan
             .entries
             .iter()
@@ -570,7 +568,7 @@ mod tests {
                 ("Ship", PlanEntryStatus::Pending),
             ]
         );
-        assert!(claude_task_plan(Vec::new()).is_none());
+        assert!(claude_task_plan(Vec::new()).entries.is_empty());
     }
 
     #[test]

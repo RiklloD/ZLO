@@ -786,6 +786,23 @@ mod tests {
         .expect("the FIFO must not hang the refresh");
         assert_eq!(plan, ["Plan"]);
 
+        // Deleting the last task clears the shown plan.
+        let (seq, _, _) = bridge.plan_of(&turn.thread).unwrap();
+        std::fs::remove_file(store.join("1.json")).unwrap();
+        run_task_call(&mut turn, &mut out, "h2", "toolu_t2").await;
+        let mut cleared = false;
+        for _ in 0..250 {
+            if let Some((next, _, plan)) = bridge.plan_of(&turn.thread)
+                && next > seq
+            {
+                assert!(plan.entries.is_empty(), "{:?}", plan.entries);
+                cleared = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(cleared, "the emptied store was never published");
+
         // A store folder that is itself a link is never followed.
         let linked = dir.path().join("tasks").join("session-2");
         std::os::unix::fs::symlink(&store, &linked).unwrap();
