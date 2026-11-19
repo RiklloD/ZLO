@@ -91,6 +91,11 @@ pub struct MuseConfig {
     pub usage_file: Option<PathBuf>,
     /// Reasoning tier sent with every turn; `None` keeps the model default.
     pub reasoning_effort: Option<String>,
+    /// Offer IronClaw's orchestrator tools as a session MCP server. Off by
+    /// default: the MCP route does not gate calls itself, and that Muse asks
+    /// the client before each MCP call under `:ask-me` is not yet verified
+    /// against a live host, so the tools stay away until it is.
+    pub orchestrator_tools: bool,
 }
 
 impl MuseConfig {
@@ -118,6 +123,94 @@ struct ActiveTurn {
     done: watch::Receiver<bool>,
 }
 
+/// One thread's turn slot: claimed before any await or spawn, filled once
+/// the host runs, released only by the [`Claim`] that took it.
+struct Slot {
+    claim: u64,
+    turn: Option<ActiveTurn>,
+}
+
+type Slots = Arc<Mutex<HashMap<ThreadId, Slot>>>;
+
+static NEXT_CLAIM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The right to run one turn, compaction or probe on a thread. Dropping it
+/// (normal end, error, panic or a cancelled future) frees the slot, and only
+/// the slot this claim took.
+pub(super) struct Claim {
+    slots: Slots,
+    thread: ThreadId,
+    id: u64,
+}
+
+impl Claim {
+    /// Takes the thread's slot, or `None` when something already holds it.
+    fn take(slots: &Slots, thread: &ThreadId) -> Option<Self> {
+        let mut map = slots.lock().ok()?; // silent-ok: a poisoned map reads as busy, which fails closed
+        if map.contains_key(thread) {
+            return None;
+        }
+        let id = NEXT_CLAIM.fetch_add(1, Ordering::Relaxed);
+        map.insert(
+            thread.clone(),
+            Slot {
+                claim: id,
+                turn: None,
+            },
+        );
+        Some(Self {
+            slots: Arc::clone(slots),
+            thread: thread.clone(),
+            id,
+        })
+    }
+
+    /// Publishes the running host so Stop, steer and the live view find it.
+    fn fill(&self, turn: ActiveTurn) {
+        if let Ok(mut map) = self.slots.lock()
+            && let Some(slot) = map.get_mut(&self.thread)
+            && slot.claim == self.id
+        {
+            slot.turn = Some(turn);
+        }
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        if let Ok(mut map) = self.slots.lock()
+            && map.get(&self.thread).is_some_and(|s| s.claim == self.id)
+        {
+            map.remove(&self.thread);
+        }
+    }
+}
+
+/// Ends a host's whole process group if its owner is dropped before the
+/// normal teardown ran (`kill_on_drop` reaches only the direct child).
+pub(super) struct GroupGuard {
+    pgid: i32,
+    armed: bool,
+}
+
+impl GroupGuard {
+    pub(super) fn new(pgid: i32) -> Self {
+        Self { pgid, armed: true }
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            rpc::kill_group(self.pgid, "muse: dropped host group");
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct Catalog {
     at: Option<Instant>,
@@ -130,7 +223,7 @@ pub struct MuseRuntime {
     sink: Weak<dyn TurnEventSink>,
     // arch-exempt: optional_arc, a host without the gateway keeps shell and writes off, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
-    active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
+    active: Slots,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
     primed: crate::Primed,
 }
@@ -152,11 +245,8 @@ impl MuseRuntime {
         })
     }
 
-    fn is_active(&self, thread: &ThreadId) -> bool {
-        self.active
-            .lock()
-            .map(|a| a.contains_key(thread))
-            .unwrap_or(false) // silent-ok: a poisoned map only happens after a panic elsewhere
+    pub(super) fn claim(&self, thread: &ThreadId) -> Option<Claim> {
+        Claim::take(&self.active, thread)
     }
 
     fn spawn_host(&self, read_only: bool) -> Result<(Child, i32), RuntimeError> {
@@ -197,6 +287,7 @@ impl MuseRuntime {
 
     async fn spawn_turn(
         &self,
+        claim: Claim,
         thread: &ThreadRecord,
         text: &str,
         context: Option<&str>,
@@ -210,23 +301,19 @@ impl MuseRuntime {
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("work dir: {}", e.kind())))?;
         let (mut child, pgid) = self.spawn_host(false)?;
+        let mut group = GroupGuard::new(pgid);
         let (client, inbound) = connect(&mut child, pgid)?;
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let cancelled = Arc::new(AtomicBool::new(false));
         let live = Arc::new(Mutex::new(None));
         let (done_tx, done_rx) = watch::channel(false);
-        if let Ok(mut active) = self.active.lock() {
-            active.insert(
-                thread.thread_id.clone(),
-                ActiveTurn {
-                    pgid,
-                    cancelled: Arc::clone(&cancelled),
-                    live: Arc::clone(&live),
-                    done: done_rx,
-                },
-            );
-        }
+        claim.fill(ActiveTurn {
+            pgid,
+            cancelled: Arc::clone(&cancelled),
+            live: Arc::clone(&live),
+            done: done_rx,
+        });
 
         // Never wait on a catalog probe in flight; the rows are fallbacks.
         let models = self
@@ -252,7 +339,6 @@ impl MuseRuntime {
         };
         let bridge = self.bridge.clone();
         let sink = self.sink.clone();
-        let active = Arc::clone(&self.active);
         let thread_id = thread.thread_id.clone();
         let run = run_id.clone();
         tokio::spawn(async move {
@@ -265,15 +351,14 @@ impl MuseRuntime {
             }
             let (outcome, telemetry) = turn.run(client, inbound).await;
             close_host(&mut child, pgid).await;
+            group.disarm();
             if let Some(bridge) = &bridge {
                 if let Some(mcp) = &mcp {
                     bridge.revoke_token(&mcp.token);
                 }
                 bridge.turn_ended(&thread_id, &run, outcome.status.as_str());
             }
-            if let Ok(mut map) = active.lock() {
-                map.remove(&thread_id);
-            }
+            drop(claim);
             if let Some(sink) = sink.upgrade() {
                 if let Some(telemetry) = telemetry {
                     sink.turn_telemetry(&thread_id, telemetry, now_ms()).await;
@@ -293,6 +378,9 @@ impl MuseRuntime {
     /// A bearer token for the loopback MCP route, bound to this turn; `None`
     /// without a bridge or before the gateway reported its URL.
     fn mcp_grant(&self, thread: &ThreadId, run_id: &str) -> Option<McpGrant> {
+        if !self.config.orchestrator_tools {
+            return None;
+        }
         let bridge = self.bridge.as_ref()?;
         let url = bridge.mcp_url()?.to_string();
         let token = bridge.mint_token(
@@ -306,10 +394,10 @@ impl MuseRuntime {
     }
 
     fn live(&self, thread: &ThreadId) -> Option<LiveTurn> {
-        self.active
-            .lock()
-            .ok()
-            .and_then(|a| a.get(thread).and_then(|t| t.live.lock().ok()?.clone()))
+        self.active.lock().ok().and_then(|a| {
+            let turn = a.get(thread)?.turn.as_ref()?;
+            turn.live.lock().ok()?.clone()
+        })
     }
 
     /// `turn/interrupt`, then the process group if the turn does not settle
@@ -317,6 +405,7 @@ impl MuseRuntime {
     async fn stop(&self, thread: &ThreadId) {
         let entry = self.active.lock().ok().and_then(|a| {
             a.get(thread)
+                .and_then(|s| s.turn.as_ref())
                 .map(|t| (t.pgid, Arc::clone(&t.cancelled), t.done.clone()))
         });
         let Some((pgid, cancelled, mut done)) = entry else {
@@ -996,9 +1085,9 @@ impl TurnRuntime for MuseRuntime {
         thread: &ThreadRecord,
         input: TurnInput,
     ) -> Result<TurnAdmission, RuntimeError> {
-        if self.is_active(&thread.thread_id) {
+        let Some(claim) = self.claim(&thread.thread_id) else {
             return Ok(TurnAdmission::Busy);
-        }
+        };
         let mut thread = thread.clone();
         if input.model.is_some() {
             thread.model = input.model;
@@ -1009,6 +1098,7 @@ impl TurnRuntime for MuseRuntime {
         );
         let run_id = self
             .spawn_turn(
+                claim,
                 &thread,
                 &input.text,
                 context.as_deref(),
@@ -1064,7 +1154,11 @@ impl TurnRuntime for MuseRuntime {
             return Ok(SteerOutcome::Rejected);
         }
         self.stop(&thread.thread_id).await;
-        self.spawn_turn(thread, text, None, None).await?;
+        // Something else took the slot meanwhile: the engine queues the text.
+        let Some(claim) = self.claim(&thread.thread_id) else {
+            return Ok(SteerOutcome::Rejected);
+        };
+        self.spawn_turn(claim, thread, text, None, None).await?;
         Ok(SteerOutcome::Restarted)
     }
 
@@ -1146,12 +1240,33 @@ pub fn default_config(home: &Path, binary: &Path) -> MuseConfig {
         state_dir: state,
         usage_file: Some(home.join(".ironclaw").join("usage").join("muse-code.json")),
         reasoning_effort: None,
+        orchestrator_tools: false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_claim_is_exclusive_and_frees_only_its_own_slot() {
+        let slots: Slots = Arc::default();
+        let thread = ThreadId::new("t1").unwrap();
+        let first = Claim::take(&slots, &thread).unwrap();
+        assert!(Claim::take(&slots, &thread).is_none(), "second admission");
+        drop(first);
+        let second = Claim::take(&slots, &thread).unwrap();
+        // A stale claim (already released) never frees a newer holder.
+        let stale = Claim {
+            slots: Arc::clone(&slots),
+            thread: thread.clone(),
+            id: 0,
+        };
+        drop(stale);
+        assert!(Claim::take(&slots, &thread).is_none(), "newer slot freed");
+        drop(second);
+        assert!(Claim::take(&slots, &thread).is_some());
+    }
 
     #[test]
     fn denial_takes_the_once_denied_choice_else_abort() {

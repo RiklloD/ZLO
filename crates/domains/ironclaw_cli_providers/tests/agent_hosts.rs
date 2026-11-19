@@ -507,11 +507,60 @@ fn muse_with(
             state_dir: dir.join("state"),
             usage_file: Some(dir.join("usage").join("muse-code.json")),
             reasoning_effort: None,
+            orchestrator_tools: true,
         },
         sink(recorder),
         bridge,
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn muse_compaction_holds_the_thread_and_a_dropped_one_frees_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    // A compaction that never settles, with a host descendant to outlive.
+    let settles = r#"emit item/completed "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"k1\",\"kind\":\"compaction\",\"status\":\"completed\",\"outcome\":\"compacted\",\"revision\":1}}" ;;"#;
+    assert!(MUSE.contains(settles));
+    let hangs = MUSE.replace(settles, r#"sleep 30 & printf '%s' $! > "$LOG.cpid" ;;"#);
+    let rt = muse_with(dir.path(), None, &recorder, None, &hangs);
+    let thread = thread(&rt, "muse-wonder-1.0").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+
+    let cpid = dir.path().join("muse.log.cpid");
+    {
+        let compaction = rt.thread_action(&thread, ThreadAction::Compact);
+        tokio::pin!(compaction);
+        for _ in 0..400 {
+            tokio::select! {
+                end = &mut compaction => panic!("compaction ended: {end:?}"),
+                () = tokio::time::sleep(Duration::from_millis(25)) => {}
+            }
+            if std::fs::read_to_string(&cpid).is_ok_and(|s| !s.is_empty()) {
+                break;
+            }
+        }
+        assert!(alive(&cpid), "compaction host never started");
+        // The admitted compaction holds the slot against a turn and another
+        // compaction.
+        assert_eq!(
+            rt.start_turn(&thread, input()).await.unwrap(),
+            TurnAdmission::Busy
+        );
+        assert_eq!(
+            rt.thread_action(&thread, ThreadAction::Compact)
+                .await
+                .unwrap(),
+            ThreadActionOutcome::Busy
+        );
+    } // The caller drops the compaction mid-flight.
+    wait_for(|| !alive(&cpid)).await;
+    assert!(matches!(
+        rt.start_turn(&thread, input()).await.unwrap(),
+        TurnAdmission::Started { .. }
+    ));
+    wait_for(|| recorder.finished.lock().unwrap().len() == 2).await;
 }
 
 #[tokio::test]

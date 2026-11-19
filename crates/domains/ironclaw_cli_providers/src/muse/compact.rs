@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
 
 use super::{
-    ActiveTurn, COMMAND_TIMEOUT, MuseRuntime, PERMISSION_PROFILE, close_host, command_id, connect,
-    handshake,
+    ActiveTurn, COMMAND_TIMEOUT, GroupGuard, MuseRuntime, PERMISSION_PROFILE, close_host,
+    command_id, connect, handshake,
 };
 use crate::rpc::{Inbound, RpcClient};
 
@@ -36,9 +36,11 @@ impl MuseRuntime {
         &self,
         thread: &ThreadRecord,
     ) -> Result<ThreadActionOutcome, RuntimeError> {
-        if self.is_active(&thread.thread_id) {
+        // Claimed before any await: a turn or another compaction admitted
+        // meanwhile gets `Busy`, and a dropped future frees the slot.
+        let Some(claim) = self.claim(&thread.thread_id) else {
             return Ok(ThreadActionOutcome::Busy);
-        }
+        };
         let session = thread
             .native_session_id
             .clone()
@@ -52,28 +54,23 @@ impl MuseRuntime {
             });
         }
         let (mut child, pgid) = self.spawn_host(false)?;
+        let mut group = GroupGuard::new(pgid);
         let (client, inbound) = connect(&mut child, pgid)?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let (done_tx, done_rx) = watch::channel(false);
-        if let Ok(mut active) = self.active.lock() {
-            active.insert(
-                thread.thread_id.clone(),
-                ActiveTurn {
-                    pgid,
-                    cancelled: Arc::clone(&cancelled),
-                    live: Arc::default(),
-                    done: done_rx,
-                },
-            );
-        }
+        claim.fill(ActiveTurn {
+            pgid,
+            cancelled: Arc::clone(&cancelled),
+            live: Arc::default(),
+            done: done_rx,
+        });
         let result = tokio::time::timeout(COMPACT_TIMEOUT, run(&client, inbound, &session))
             .await
             .unwrap_or_else(|_| Compacted::Failed("timed out".into()));
         drop(client);
         close_host(&mut child, pgid).await;
-        if let Ok(mut active) = self.active.lock() {
-            active.remove(&thread.thread_id);
-        }
+        group.disarm();
+        drop(claim);
         #[expect(clippy::let_underscore_must_use, reason = "nobody waits on this slot")]
         let _ = done_tx.send(true);
         if cancelled.load(std::sync::atomic::Ordering::SeqCst) {

@@ -230,7 +230,10 @@ dependency: its facade has no `turn/interrupt`, `model/list` or
   bridge, shell and writes are off too (`--disable-shell --disable-write`).
   t3code's "Full access" (`allowAll`, `:unrestricted`,
   `--disable-sandbox`) is deliberately not offered.
-- **Orchestrator tools:** with a bridge whose MCP route is known, the turn
+- **Orchestrator tools:** off by default (`MuseConfig::orchestrator_tools`).
+  The MCP route does not gate calls itself, and that Muse asks before each
+  MCP call under `:ask-me` is unverified live, so they stay off until a live
+  canary shows it. When on, with a bridge whose MCP route is known, the turn
   asks for the `sessionMcp` capability and, when granted, names the route as
   an `optional` streamable-HTTP session MCP server (`ironclaw`, bearer token
   bound to the turn, revoked when it ends). Optional, because Muse fails a
