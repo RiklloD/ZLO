@@ -243,7 +243,7 @@ fn round_button(
         .role("button")
         .label(label)
         .size(28., 28.)
-        .radius(14.)
+        .radius(7.)
         .center()
         .cursor(Cursor::Pointer)
         .fill(fill)

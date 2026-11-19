@@ -1,13 +1,14 @@
-//! The model picker's pills and popovers (GPUI `ModelPicker::render`,
-//! `render_popover`, `render_effort*`, `group_header`, `model_row`).
+//! The model picker's one pill ("model · thinking") and its popover (GPUI
+//! `ModelPicker::render`, `render_popover`, `group_header`, `model_row`),
+//! with the thinking levels as a segmented row under the models.
 
 use rune::{Color, Cx, El, Key, Modifier, Phase, TextEdit, col, el, row};
 use rune_kit::{Kit, Placement, TextInput, popover, scrim};
 use zlo_client::orchestration::RouteProvider;
 
 use super::{
-    ModelPickerState, NATIVE, Rail, Slot, cycle_rail, edit_prefs, effort_label, hidden_summary,
-    pick, pick_effort, pretty_model, reorder, toggle_provider,
+    ModelPickerState, NATIVE, Rail, Slot, cycle_rail, edit_prefs, effort_label, effort_short,
+    hidden_summary, pick, pick_effort, pretty_model, reorder, toggle_provider,
 };
 use crate::design::kit::compact::{
     ICON_SM, ICON_XS, SM, XS, ghost_icon, ico, panel_surface, spacer, spinner, txt, txt_medium,
@@ -21,7 +22,7 @@ use crate::state::State;
 const POPOVER_WIDTH: f32 = 380.;
 /// A fixed height on every tab, so switching tabs never resizes the panel;
 /// a longer list scrolls.
-const POPOVER_HEIGHT: f32 = 300.;
+const POPOVER_HEIGHT: f32 = 344.;
 /// Opening below, the panel clears the composer card: the pill's 28 px, the
 /// row's 2 px slack, the card's 8 px bottom padding and its rim, then an
 /// 8 px gap. Rune anchors from the pill's edge, so the gap is this less 28.
@@ -35,13 +36,15 @@ const PILL_H: f32 = 28.;
 /// A rail icon plus the rail's gap: one slot of travel when dragging.
 const RAIL_STEP: f32 = 34.;
 
-/// The model and thinking pills of the chat showing `thread_id` (the open
-/// chat or a side chat), popovers into `layer`.
+/// The model pill of the chat showing `thread_id` (the open chat or a side
+/// chat), its popover into `layer`.
 pub fn pills(s: &State, thread_id: &str, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     pills_for(s, Slot::chat(thread_id), cx, k, layer)
 }
 
-/// The pills of the picker `slot` finds (the chat's, or the draft screen's).
+/// The pill of the picker `slot` finds (the chat's, or the draft screen's):
+/// the model's mark and name, then the thinking level when the model has
+/// levels, one control opening one popover.
 pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let Some(m) = slot.get(s) else { return el() };
     if m.route.as_ref().is_none_or(|r| r.providers.is_empty()) && m.current.is_none() {
@@ -56,10 +59,15 @@ pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut
         .map(|x| (x.runtime.clone(), x.brand.clone()))
         .unwrap_or_default();
     let ink = if m.open { p.text } else { p.text_muted };
+    let thinking = thinking_label(m);
+    let full = match &thinking {
+        Some(t) => format!("{label} · {t}"),
+        None => label.clone(),
+    };
     let mut pill = row()
         .key(slot.key("model-pill"))
         .role("button")
-        .label(format!("Model: {label}"))
+        .label(format!("Model: {full}"))
         .expanded(m.open)
         .gap(6.)
         .px(8.)
@@ -75,9 +83,13 @@ pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut
             &runtime,
             provider.as_deref().unwrap_or(NATIVE),
             14.,
+            ink,
         ));
     if !m.compact {
-        pill = pill.child(txt(label.clone(), SM, ink));
+        pill = pill.child(txt(label.clone(), SM, p.text));
+        if let Some(t) = &thinking {
+            pill = pill.child(txt(format!("· {t}"), SM, p.text_faint));
+        }
     }
     if m.busy {
         pill = pill.child(spinner(k, ICON_XS, ink));
@@ -85,7 +97,7 @@ pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut
         pill = pill.child(ico(&icons::CHEVRON_DOWN, ICON_XS, ink));
     }
     if m.compact && !m.open {
-        pill = pill.help(label);
+        pill = pill.help(full);
     }
     let toggle = slot.clone();
     let pill = pill.on_press(move |s: &mut State| {
@@ -108,15 +120,20 @@ pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut
             gap,
         ));
     }
-    let mut out = row()
-        .key(slot.key("model-pills"))
-        .gap(2.)
-        .center_y()
-        .child(pill);
-    if let Some(effort) = effort_pill(s, m, &slot, (placement, gap), k, layer) {
-        out = out.child(effort);
+    row().key(slot.key("model-pills")).center_y().child(pill)
+}
+
+/// The thinking level the pill shows, when the current model has levels.
+fn thinking_label(m: &ModelPickerState) -> Option<String> {
+    let model = m.current_model().unwrap_or("default");
+    if m.efforts_of(m.current_provider(), model).is_empty() {
+        return None;
     }
-    out
+    Some(
+        m.effort
+            .as_deref()
+            .map_or_else(|| "Auto".to_string(), effort_label),
+    )
 }
 
 fn close(s: &mut State, slot: &Slot) {
@@ -260,6 +277,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
             &provider.runtime,
             &provider.provider,
             18.,
+            if on { p.text } else { p.text_muted },
         );
         let mut item = rail_item(format!("rail-{key}"), mark, on, tip);
         if hidden {
@@ -358,6 +376,9 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                 .wheel_glide("model-list")
                 .child(rows),
         );
+    if let Some(bar) = thinking_row(s, m, slot) {
+        main = main.child(el().h(1.).w_full().fill(p.border)).child(bar);
+    }
     if hidden > 0 {
         let label = if m.show_hidden {
             "Done showing hidden".to_string()
@@ -578,6 +599,7 @@ fn model_row(
             &provider.runtime,
             &provider.provider,
             16.,
+            p.text_muted,
         ))
         .child(text_col);
     if hidden {
@@ -598,7 +620,7 @@ fn model_row(
     // A fixed check column, so picking never shifts the labels.
     .child(
         if on {
-            ico(&icons::CHECK, ICON_SM, p.text)
+            ico(&icons::CHECK, ICON_SM, p.accent)
         } else {
             spacer(16.)
         }
@@ -607,81 +629,70 @@ fn model_row(
     .on_press(move |s: &mut State| pick(s, pick_slot.clone(), pv.clone(), md.clone()))
 }
 
-/// The thinking pill, when the current model has levels.
-fn effort_pill(
-    s: &State,
-    m: &ModelPickerState,
-    slot: &Slot,
-    (placement, gap): (Placement, f32),
-    k: &Kit,
-    layer: &mut Vec<El>,
-) -> Option<El> {
+/// The popover's thinking row: the current model's levels as one segmented
+/// control, "Auto" first (the provider's default). Picking a level keeps
+/// the popover open; picking a model closes it. `None` when the model has
+/// no levels.
+fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot) -> Option<El> {
     let model = m.current_model().unwrap_or("default");
     let efforts = m.efforts_of(m.current_provider(), model).to_vec();
     if efforts.is_empty() {
         return None;
     }
     let p = &s.palette;
-    let label = m
-        .effort
-        .as_deref()
-        .map_or_else(|| "Default".to_string(), effort_label);
-    let ink = if m.effort_open { p.text } else { p.text_muted };
-    let mut pill = row()
-        .key(slot.key("effort-pill"))
-        .role("button")
-        .label(format!("Thinking: {label}"))
-        .expanded(m.effort_open)
-        .gap(4.)
-        .px(8.)
-        .h(PILL_H)
-        .center_y()
-        .radius(design::CONTROL_RADIUS)
-        .fill(if m.effort_open {
-            p.active
-        } else {
-            Color::TRANSPARENT
-        })
-        .hover(p.hover)
-        .cursor(rune::Cursor::Pointer)
-        .child(ico(&icons::SPARKLES, ICON_XS, ink));
-    if !m.compact {
-        pill =
-            pill.child(txt(label.clone(), SM, ink))
-                .child(ico(&icons::CHEVRON_DOWN, ICON_XS, ink));
-    } else if !m.effort_open {
-        pill = pill.help(format!("Thinking: {label}"));
-    }
-    let toggle = slot.clone();
-    let pill = pill.on_press(move |s: &mut State| {
-        if let Some(m) = toggle.get_mut(s) {
-            m.open = false;
-            m.effort_open = !m.effort_open;
-        }
-    });
-    // rune-kit's menu: a radio list under its heading; Escape and a press
-    // outside close it, and it holds focus while open.
-    let closing = slot.clone();
-    let mut menu = rune_kit::Menu::new(slot.key("effort"))
-        .trigger(pill)
-        .open(m.effort_open)
-        .standard()
-        .placement(placement)
-        .gutter(gap)
-        .min_width(180.)
-        .group_label("Thinking")
-        .on_close(move |s: &mut State| close(s, &closing));
-    let choices = std::iter::once((None, "Default".to_string()))
-        .chain(efforts.iter().map(|e| (Some(e.clone()), effort_label(e))));
+    let choices = std::iter::once((None, "Auto".to_string()))
+        .chain(efforts.iter().map(|e| (Some(e.clone()), effort_short(e))));
+    let mut track = row()
+        .key("thinking-track")
+        .role("radiogroup")
+        .label("Thinking")
+        .grow(1.)
+        .min_w(0.)
+        .h(26.)
+        .padding(2.)
+        .gap(2.)
+        .radius(design::CONTROL_RADIUS + 1.)
+        .fill(p.bg)
+        .border(1., p.border);
     for (value, title) in choices {
+        let on = m.effort == value;
+        let key = value.clone().unwrap_or_else(|| "auto".into());
+        let full = value
+            .as_deref()
+            .map_or_else(|| "Auto".to_string(), effort_label);
         let pick = slot.clone();
-        menu = menu.item(
-            rune_kit::MenuItem::new(title)
-                .checked(m.effort == value)
-                .on_select(move |s: &mut State| pick_effort(s, pick.clone(), value.clone())),
+        track = track.child(
+            el().key(format!("thinking-{key}"))
+                .role("radio")
+                .label(full)
+                .checked(on)
+                .grow(1.)
+                .w(0.)
+                .min_w(0.)
+                .h_full()
+                .center()
+                .radius(design::CONTROL_RADIUS - 1.)
+                .fill(if on {
+                    p.surface_raised
+                } else {
+                    Color::TRANSPARENT
+                })
+                .hover(p.hover)
+                .cursor(rune::Cursor::Pointer)
+                .child(txt(title, XS, if on { p.text } else { p.text_muted }).truncate())
+                .on_press(move |s: &mut State| pick_effort(s, pick.clone(), value.clone())),
         );
     }
-    Some(menu.build(k, layer))
+    Some(
+        row()
+            .key("model-thinking")
+            .px(10.)
+            .py(8.)
+            .gap(10.)
+            .center_y()
+            .child(txt_medium("Thinking", XS, p.text_faint))
+            .child(track),
+    )
 }
 
 /// A provider's logo; `brand` (the vendor behind a runtime row) wins, then
@@ -692,11 +703,12 @@ pub fn provider_mark(
     runtime: &str,
     provider: &str,
     size: f32,
+    ink: Color,
 ) -> El {
     let ids: Vec<&str> = [brand, Some(provider), Some(runtime)]
         .into_iter()
         .flatten()
         .filter(|id| !id.is_empty())
         .collect();
-    crate::design::brands::provider_logo(s, &ids, size)
+    crate::design::brands::provider_logo_mono(s, &ids, size, ink)
 }

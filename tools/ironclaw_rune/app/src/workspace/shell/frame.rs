@@ -170,7 +170,13 @@ fn breadcrumb(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut V
             el().min_w(0.0)
                 .child(tw(leaf, 13., MEDIUM, p.text).truncate()),
         );
-    let mut bar = Toolbar::new().leading(crumbs);
+    // The new-thread screen names its project beside its heading; the bar
+    // stays an empty drag strip there.
+    let mut bar = if s.page == Page::Draft {
+        Toolbar::new()
+    } else {
+        Toolbar::new().leading(crumbs)
+    };
     let actions = match s.page {
         Page::Chat if s.chat.is_some() => crate::chat::titlebar_actions(s, cx, k, layer),
         _ => None,

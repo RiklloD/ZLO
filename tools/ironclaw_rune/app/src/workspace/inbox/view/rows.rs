@@ -423,19 +423,11 @@ pub(in crate::workspace) fn profile_mark(
         .child(tw(letter.to_string(), 10., SEMIBOLD, color))
 }
 
-/// A profile's own color, from its id. Identity keeps its color at rest (T3
-/// reversed its grayscale pass); `lit` 1 (hover, selection) only brings it
-/// to full strength.
-pub(in crate::workspace) fn profile_color(p: &Palette, profile_id: &str, lit: f32) -> Color {
-    let colors = [p.accent, p.success, p.warning, p.danger, p.text_muted];
-    let hash = profile_id
-        .bytes()
-        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-    mix(
-        p.text_muted,
-        colors[hash as usize % colors.len()],
-        0.7 + 0.3 * lit,
-    )
+/// A profile mark's ink: faint at rest, `lit` 1 (hover, selection) brings
+/// it to the muted text. One neutral for every profile (the flat pass).
+pub(in crate::workspace) fn profile_color(p: &Palette, _profile_id: &str, lit: f32) -> Color {
+    // Neutral for every profile: the name tells them apart, not a hue.
+    mix(p.text_faint, p.text_muted, lit)
 }
 
 /// Linear mix in OKLab, `t` 0 → `a`, 1 → `b`.

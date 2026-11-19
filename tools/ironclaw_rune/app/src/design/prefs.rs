@@ -27,7 +27,7 @@ pub enum Wallpaper {
 }
 
 /// Preference file layout version; see [`Prefs::load`].
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -103,9 +103,7 @@ impl Default for Prefs {
             reduce_motion: "system".into(),
             ui_font_size: 0.,
             conversation_width: 800.,
-            wallpaper: Wallpaper::Scene {
-                name: "auto".into(),
-            },
+            wallpaper: Wallpaper::None,
             wallpaper_effect: "dither".into(),
             wallpaper_area: "window".into(),
             wallpaper_opacity: 0.2,
@@ -156,9 +154,15 @@ impl Prefs {
         if let Some(serde_json::Value::Object(keys)) = &raw {
             *baseline().lock().unwrap_or_else(|e| e.into_inner()) = Some(keys.clone());
         }
-        let mut prefs: Self = raw
+        let prefs: Self = raw
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
+        prefs.migrate()
+    }
+
+    /// Bring a file of an older layout version up to this one.
+    fn migrate(mut self) -> Self {
+        let prefs = &mut self;
         if prefs.version < 3 {
             let fresh = Self::default();
             prefs.theme = fresh.theme;
@@ -168,12 +172,20 @@ impl Prefs {
                 prefs.wallpaper = fresh.wallpaper;
             }
         }
+        if prefs.version < 6
+            && matches!(prefs.wallpaper, Wallpaper::Scene { .. } | Wallpaper::Aurora)
+        {
+            // Version 6 is the flat look: the painted scenes are no longer
+            // laid over the window unless picked again. A picture or folder
+            // of the user's own stays.
+            prefs.wallpaper = Wallpaper::None;
+        }
         if prefs.version < 5 && prefs.conversation_width == 720. {
             // Version 5 widens the default reading column.
             prefs.conversation_width = Self::default().conversation_width;
         }
         prefs.version = VERSION;
-        prefs
+        self
     }
 
     /// Save to disk off the UI thread. Callers edit `State::prefs` in place,
@@ -223,6 +235,32 @@ fn changed(base: Option<&Keys>, new: &Keys) -> Keys {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The flat look drops the painted scenes from older files; a picture of
+    /// the user's own stays, and a scene picked again after it stays too.
+    #[test]
+    fn version_6_drops_painted_scenes_only() {
+        let old = |wallpaper| Prefs {
+            version: 5,
+            wallpaper,
+            ..Prefs::default()
+        };
+        let scene = Wallpaper::Scene {
+            name: "night".into(),
+        };
+        assert_eq!(old(scene.clone()).migrate().wallpaper, Wallpaper::None);
+        assert_eq!(old(Wallpaper::Aurora).migrate().wallpaper, Wallpaper::None);
+        let image = Wallpaper::Image {
+            path: "/tmp/x.png".into(),
+        };
+        assert_eq!(old(image.clone()).migrate().wallpaper, image);
+        let current = Prefs {
+            wallpaper: scene.clone(),
+            ..Prefs::default()
+        };
+        assert_eq!(current.migrate().wallpaper, scene);
+        assert_eq!(Prefs::default().wallpaper, Wallpaper::None);
+    }
 
     #[test]
     fn only_changed_keys_are_patched() {

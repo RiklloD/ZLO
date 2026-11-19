@@ -76,7 +76,7 @@ pub(super) fn bar(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
                 .trim_start_matches("https://")
                 .trim_end_matches('/')
                 .to_string();
-            (p.success, format!("Connected · {host}"))
+            (p.text_faint, format!("Connected · {host}"))
         }
     };
     let mut status_dot = ui::dot(dot, 6.);

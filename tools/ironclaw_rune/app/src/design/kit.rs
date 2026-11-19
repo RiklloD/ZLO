@@ -153,19 +153,16 @@ pub fn neutral(st: &Style, p: &Palette, lit: f32) -> Plate {
     }
 }
 
-/// The accent plate (primary buttons, the send button): a flat accent fill,
-/// a lit top edge and a coloured halo.
+/// The primary plate (primary buttons): the text colour as a flat fill,
+/// no gradient, rim or halo. Monochrome, as the composer's Send: the accent
+/// marks state, not actions.
 pub fn accent(_st: &Style, p: &Palette) -> Plate {
-    let base = p.accent;
     Plate {
-        fill: base,
-        gradient: Some((lift(base, 0.04), base)),
-        rim: lift(base, 0.12).alpha(0.6),
-        shadows: vec![
-            shadow(white(0.22), 1., 0., 0., true),
-            shadow(base.alpha(0.22), 2., 12., 0., false),
-        ],
-        hover: white(0.08),
+        fill: p.text,
+        gradient: None,
+        rim: Color::TRANSPARENT,
+        shadows: Vec::new(),
+        hover: if p.light { white(0.12) } else { black(0.12) },
     }
 }
 
@@ -377,7 +374,7 @@ impl Button {
         });
         // Ink at rest and while hovered.
         let (ink, hover_ink) = match self.variant {
-            Variant::Primary => (p.on_accent(), p.on_accent()),
+            Variant::Primary => (p.bg, p.bg),
             Variant::Danger => (p.danger, p.danger),
             _ if self.selected => (p.text, p.text),
             _ => (p.text_muted, p.text),

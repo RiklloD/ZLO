@@ -1,7 +1,7 @@
 //! Theme presets: IronClaw's own pair plus a short, curated list of
 //! Zeron's built-in themes (MIT, see `THIRD_PARTY_NOTICES.md`) and popular
-//! editor palettes. Every one is checked to keep the sidebar a step darker
-//! than the content, so the layers read without hairlines;
+//! editor palettes. The others keep the sidebar a step darker than the
+//! content; IronClaw's dark one is a single plane parted by a hairline;
 //! [`super::Palette::from_seed`] derives every other token from these eleven
 //! colors.
 
@@ -37,8 +37,10 @@ macro_rules! seeds {
 }
 
 seeds! {
-    // IronClaw's own pair: graphite and paper, lit in ember.
-    "ironclaw" "ZLO" 0x141417 0x0c0c0e 0x27272c 0x1c1c20 0xededef 0xa1a1aa 0x71717a 0xff8a4c 0xf87171 0xfbbf24 0x4ade80;
+    // IronClaw's own pair: flat neutral graphite and paper, lit in ember.
+    // The dark one is one plane: the sidebar shares the panel's fill and a
+    // hairline parts them; colour is kept for state, not chrome.
+    "ironclaw" "ZLO" 0x151515 0x151515 0x262626 0x1d1d1d 0xededed 0x9e9e9e 0x666666 0xff8a4c 0xf87171 0xfbbf24 0x4ade80;
     "ironclaw-light" "IronClaw Light" 0xfdfdfc 0xf3f2ef 0xe9e8e4 0xffffff 0x1c1b1a 0x5f5e5a 0x8f8d88 0xe8590c 0xdc2626 0xb45309 0x15803d;
     // Dark, from Zeron (MIT) and each project's published palette.
     "zeron-dark" "Zeron Dark" 0x111113 0x080808 0x2c2c30 0x18181b 0xe8e8ea 0xa9a9ae 0x85858a 0x8b7cf6 0xf87171 0xfacc15 0x34d399;

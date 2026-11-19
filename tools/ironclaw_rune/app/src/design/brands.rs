@@ -232,10 +232,21 @@ fn recolor(bytes: &[u8], hex: &str) -> Arc<[u8]> {
 /// The logo for the first id that has one, else a lettered tile from the
 /// first id.
 pub fn provider_logo(s: &State, ids: &[&str], size: f32) -> El {
+    logo_in(s, ids, size, None)
+}
+
+/// [`provider_logo`] in one ink for every vector logo, its brand tint
+/// dropped: the composer and the model picker stay monochrome. Raster logos
+/// keep their own pixels.
+pub fn provider_logo_mono(s: &State, ids: &[&str], size: f32, ink: rune::Color) -> El {
+    logo_in(s, ids, size, Some(ink))
+}
+
+fn logo_in(s: &State, ids: &[&str], size: f32, ink: Option<rune::Color>) -> El {
     let p = &s.palette;
     let found = ids.iter().find_map(|id| logo_for(id));
     let image = found.as_ref().and_then(|logo| {
-        let color = logo.tint.map(super::rgb).unwrap_or(p.text);
+        let color = ink.unwrap_or_else(|| logo.tint.map(super::rgb).unwrap_or(p.text));
         s.look.logos.image(logo, color, size)
     });
     match image {

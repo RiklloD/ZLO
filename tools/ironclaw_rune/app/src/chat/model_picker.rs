@@ -19,8 +19,9 @@
 //! There is no "Default" row: IronClaw lists its profile model first, and a
 //! new thread preselects the last pick (or that profile model) by name.
 //!
-//! Beside the model pill, a thinking pill picks the reasoning effort when the
-//! model has one (t3code's "Reasoning" option): the levels come from the
+//! The one pill reads "model · thinking" and its popover holds both: the
+//! models above, and a thinking row below them when the current model has
+//! reasoning levels (t3code's "Reasoning" option). The levels come from the
 //! catalog per model, and the pick rides the same route, per thread.
 //!
 //! # Entry points
@@ -31,7 +32,7 @@
 //!
 //! - `start(s, id)`: after a chat starts, binds its picker to its thread and
 //!   loads the route.
-//! - `pills(s, id, cx, k, layer) -> El`: the model and thinking pills for
+//! - `pills(s, id, cx, k, layer) -> El`: the model pill for
 //!   `id`'s composer, popovers pushed into `layer`.
 //! - `open(s)`: ⇧⌘M (`workspace::on_key`) toggles the focused chat's
 //!   picker (`focused_slot`: the side chat's while its composer has focus
@@ -96,7 +97,6 @@ pub struct ModelPickerState {
     pub(crate) show_hidden: bool,
     /// The reasoning effort; `None`: the provider's default.
     pub(crate) effort: Option<String>,
-    pub(crate) effort_open: bool,
     pub(crate) busy: bool,
     /// The draft's profile default `(provider, model)`; it wins over the
     /// recent picks until the user picks by hand.
@@ -157,14 +157,13 @@ impl ModelPickerState {
         self.generation != Generation::default()
     }
 
-    /// The model list or the thinking menu is showing.
+    /// The popover is showing.
     pub fn is_open(&self) -> bool {
-        self.open || self.effort_open
+        self.open
     }
 
     pub fn close(&mut self) {
         self.open = false;
-        self.effort_open = false;
         self.cmd_held = false;
     }
 
@@ -173,7 +172,6 @@ impl ModelPickerState {
     }
 
     pub fn toggle(&mut self) {
-        self.effort_open = false;
         self.open = !self.open;
         self.cmd_held = false;
         if self.open {
@@ -475,7 +473,6 @@ pub fn set_profile(s: &mut State, slot: Slot, profile_id: String) {
 
 pub(crate) fn pick_effort(s: &mut State, slot: Slot, effort: Option<String>) {
     let Some(p) = slot.get_mut(s) else { return };
-    p.effort_open = false;
     let previous = std::mem::replace(&mut p.effort, effort.clone());
     let Some(thread_id) = p.thread_id.clone() else {
         return;
@@ -651,6 +648,16 @@ pub(crate) fn effort_label(effort: &str) -> String {
     }
 }
 
+/// A thinking level as one short word, for the popover's segmented row.
+pub(crate) fn effort_short(effort: &str) -> String {
+    match effort {
+        "xhigh" => "XHigh".into(),
+        "medium" => "Med".into(),
+        "minimal" => "Min".into(),
+        other => pretty_model(other),
+    }
+}
+
 /// "claude-opus-5-5" -> "Claude Opus 5.5", "gpt-6.1-sol" -> "GPT 6.1 Sol".
 pub fn pretty_model(id: &str) -> String {
     let tail = id.rsplit('/').next().unwrap_or(id);
@@ -740,7 +747,7 @@ pub fn fixture() -> ModelPickerState {
 }
 
 /// Scene `model-picker` (`effort`: `model-picker-effort`): the open chat
-/// with its picker's popover (or the thinking menu) open.
+/// with its picker's popover open (on a model with thinking levels).
 pub fn scene(s: &mut State, effort: bool) {
     crate::scenes::chat(s);
     s.prefs.recent_models = vec![
@@ -750,10 +757,9 @@ pub fn scene(s: &mut State, effort: bool) {
     if let Some(c) = s.chat.as_mut() {
         c.model_picker = fixture();
         if effort {
-            c.model_picker.effort_open = true;
-        } else {
-            c.model_picker.toggle();
+            c.model_picker.effort = Some("high".into());
         }
+        c.model_picker.toggle();
     }
 }
 
@@ -779,7 +785,7 @@ pub fn draft_set_profile(s: &mut State, profile: String, catalog_thread: Option<
     }
 }
 
-/// The draft screen's model and thinking pills.
+/// The draft screen's model pill.
 pub fn draft_pill(
     s: &State,
     cx: &mut rune::Cx<State>,
@@ -822,6 +828,38 @@ mod tests {
             panel[1] + panel[3],
             card[1]
         );
+    }
+
+    /// One control: the pill carries the thinking level and its popover
+    /// holds the levels under the models; there is no second pill.
+    #[test]
+    fn model_and_thinking_are_one_pill_and_one_popover() {
+        use rune::{Env, Runtime};
+        let mut s = crate::chat::fixtures::test_state();
+        super::scene(&mut s, true);
+        let mut rt = Runtime::new(s, crate::view, (1440., 900.), Env::new(true, 1.));
+        let mut t = 0.;
+        for _ in 0..60 {
+            t += 1. / 60.;
+            rt.frame(t);
+        }
+        assert!(rt.presented("model-pill:t1").is_some(), "the pill is drawn");
+        assert!(
+            rt.presented("effort-pill:t1").is_none(),
+            "no separate thinking pill"
+        );
+        let (popover, _) = rt.presented("model-popover").expect("panel drawn");
+        let (row, _) = rt.presented("model-thinking").expect("thinking row drawn");
+        assert!(
+            row[1] >= popover[1] && row[1] + row[3] <= popover[1] + popover[3] + 0.5,
+            "the thinking row sits inside the popover"
+        );
+        for level in ["auto", "low", "medium", "high", "xhigh"] {
+            assert!(
+                rt.presented(&format!("thinking-{level}")).is_some(),
+                "level {level} offered"
+            );
+        }
     }
 
     #[test]

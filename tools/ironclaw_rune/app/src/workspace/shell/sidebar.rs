@@ -23,7 +23,7 @@ use crate::icons;
 use crate::state::{Page, State};
 
 /// The sidebar/panel hairline's width.
-const HAIRLINE: f32 = 1.5;
+const HAIRLINE: f32 = 1.;
 
 pub(super) fn sidebar(
     s: &State,
@@ -98,7 +98,7 @@ pub(super) fn sidebar(
             .fill(if s.workspace.sidebar.is_resizing() {
                 p.accent.alpha(0.6)
             } else {
-                p.border_strong
+                p.border
             }),
     )
 }
@@ -155,9 +155,9 @@ fn footer(s: &State, p: &Palette) -> El {
                     row()
                         .size(18., 18.)
                         .radius(9.)
-                        .fill(p.accent)
+                        .fill(p.surface_raised)
                         .center()
-                        .child(tw("L", 10., SEMIBOLD, p.on_accent())),
+                        .child(tw("L", 10., SEMIBOLD, p.text)),
                 )
                 .child(ui::side_t(
                     "Local",
