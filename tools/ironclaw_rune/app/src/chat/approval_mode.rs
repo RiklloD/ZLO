@@ -248,7 +248,7 @@ pub fn pill(s: &State, chat: &ChatState, _k: &Kit) -> El {
         );
     }
     if a.busy {
-        pill = pill.child(rune_kit::Spinner::new().size(12.).build(_k));
+        pill = pill.child(crate::design::kit::Spinner::new().size(12.).build(_k));
     } else if !a.compact {
         pill = pill.child(icon(&icons::CHEVRON_DOWN, 12.).color(p.text_muted));
     }

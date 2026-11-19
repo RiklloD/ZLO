@@ -95,7 +95,7 @@ impl Synced {
         Self {
             text: edit.text.clone(),
             caret: (edit.anchor, edit.focus),
-            preedit: edit.preedit.as_ref().map(|(p, _)| p.clone()),
+            preedit: edit.preedit().map(|(p, _)| p.to_owned()),
         }
     }
 }

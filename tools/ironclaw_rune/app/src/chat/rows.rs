@@ -610,7 +610,7 @@ fn render_gate(s: &State, chat: &ChatState, g: Gate<'_>, k: &Kit) -> El {
             row()
                 .gap(8.)
                 .center_y()
-                .child(rune_kit::Spinner::new().size(12.).build(k))
+                .child(crate::design::kit::Spinner::new().size(12.).build(k))
                 .child(
                     text(match decision {
                         GateDecision::Decline => "Declined, waiting for IronClaw to confirm",
