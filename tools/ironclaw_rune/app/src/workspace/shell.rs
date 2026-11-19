@@ -52,13 +52,14 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         .fill(p.surface.alpha(st.shell_alpha))
         .child(el().w_full().grow(1.0).min_h(0.0).child(body));
     if !s.prefs.status_bar_hidden {
-        // On the panel's fill, so the bar is the same plane as the panel
-        // above it rather than a darker strip of the shell.
-        root = root.child(
-            el().w_full()
-                .fill(p.bg.alpha(st.panel_alpha))
-                .child(status::bar(s, &k, &mut layer)),
-        );
+        // Connected, on the panel's fill, so the bar is the same plane as
+        // the panel above it rather than a darker strip of the shell; while
+        // connecting or failed there is no panel, and it stays on the shell.
+        let mut bar = el().w_full();
+        if matches!(s.conn, Conn::Ready) {
+            bar = bar.fill(p.bg.alpha(st.panel_alpha));
+        }
+        root = root.child(bar.child(status::bar(s, &k, &mut layer)));
     }
     if let Some(over) = crate::design::look::wallpaper_layer(s, "window") {
         root = root.child(over);

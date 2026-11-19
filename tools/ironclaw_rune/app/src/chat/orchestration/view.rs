@@ -141,7 +141,7 @@ fn queued(s: &State, thread: &str, o: &OrchestrationState, k: &Kit) -> Option<El
                             .max_w(bubble_max)
                             .px(16.)
                             .py(10.)
-                            .radius(design::BUBBLE_RADIUS)
+                            .radius(design::COMPOSER_RADIUS)
                             .border(1., p.border_strong)
                             .border_dash(4., 3.)
                             .child(

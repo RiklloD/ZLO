@@ -560,6 +560,8 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         .hover(p.hover)
         .cursor(rune::Cursor::Pointer)
         .hover_group()
+        .max_w(240.)
+        .min_w(0.)
         .child(ui::glyph(&icons::FOLDER, 13., p.text_faint))
         .child(
             t(
@@ -571,7 +573,9 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
                     p.text_muted
                 },
             )
-            .group_color(p.text),
+            .group_color(p.text)
+            .min_w(0.)
+            .truncate(),
         )
         .child(ui::glyph(&icons::CHEVRON_DOWN, 12., p.text_faint))
         .on_press(picker::toggle_draft_menu);

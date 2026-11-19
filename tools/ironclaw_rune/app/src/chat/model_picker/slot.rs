@@ -101,6 +101,7 @@ pub fn close_open(s: &mut State) -> bool {
         .collect();
     slots.extend(s.chat.as_ref().map(|c| Slot::chat(&c.thread_id)));
     slots.push(DRAFT);
+    slots.push(crate::pages::automations::form::FORM_PICKER);
     for slot in slots {
         if let Some(p) = slot.get_mut(s)
             && p.is_open()

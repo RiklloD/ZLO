@@ -20,18 +20,16 @@ use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::State;
 
-/// The composer's fill and rim, `focused` its focus: one opaque step above
-/// the panel, so it never reads darker than what is behind it (a see-through
-/// fill over a translucent window did). The model picker's panel wears the
-/// same surface so it reads as part of the composer. `_solid` is kept for
-/// callers that drew text over the transcript; the fill is always opaque.
-pub fn composer_surface(p: &Palette, focused: bool, _solid: bool) -> (Color, Color) {
-    let fill = if p.light {
-        Color::WHITE
-    } else {
-        p.surface_card
-    };
-    (fill, if focused { p.border_strong } else { p.border })
+/// The composer's fill and rim, `focused` its focus: the theme's card, one
+/// opaque step off the panel, so it never reads darker than what is behind
+/// it (a see-through fill over a translucent window did). The model
+/// picker's panel wears the same surface so it reads as part of the
+/// composer.
+pub fn composer_surface(p: &Palette, focused: bool) -> (Color, Color) {
+    (
+        p.surface_card,
+        if focused { p.border_strong } else { p.border },
+    )
 }
 
 /// Zeron's composer pill: the text on top; below it the model, its thinking
@@ -52,7 +50,7 @@ pub fn composer_card(
     let p = &s.palette;
     // One flat plate. Docked over the transcript it takes one short shadow
     // so text scrolling under it stays behind; the hero card has none.
-    let (fill, rim) = composer_surface(p, focused, false);
+    let (fill, rim) = composer_surface(p, focused);
     let shadow = if !compact {
         Color::TRANSPARENT
     } else if p.light {
@@ -135,14 +133,16 @@ pub fn round_button(
             .size(28., 28.)
             .radius(7.)
             .fill(fill)
-            .hover(if filled { p.text_muted } else { wash })
+            .hover(if filled {
+                p.bg.alpha(0.15)
+            } else {
+                Color::TRANSPARENT
+            })
             .child(icon(glyph, 14.).color(ink));
     }
     let mut b = base.size(28., 28.).radius(7.);
     b = if filled {
         b.fill(p.text).hover(p.bg.alpha(0.15))
-    } else if id == "send" {
-        b.fill(wash)
     } else {
         b.hover(wash)
     };

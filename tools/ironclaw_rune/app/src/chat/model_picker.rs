@@ -97,6 +97,9 @@ pub struct ModelPickerState {
     pub(crate) show_hidden: bool,
     /// The reasoning effort; `None`: the provider's default.
     pub(crate) effort: Option<String>,
+    /// Bumped by every effort or model pick: a failed effort write only
+    /// rolls back while no later pick has replaced it.
+    pub(crate) effort_seq: u64,
     pub(crate) busy: bool,
     /// The draft's profile default `(provider, model)`; it wins over the
     /// recent picks until the user picks by hand.
@@ -474,6 +477,8 @@ pub fn set_profile(s: &mut State, slot: Slot, profile_id: String) {
 pub(crate) fn pick_effort(s: &mut State, slot: Slot, effort: Option<String>) {
     let Some(p) = slot.get_mut(s) else { return };
     let previous = std::mem::replace(&mut p.effort, effort.clone());
+    p.effort_seq += 1;
+    let seq = p.effort_seq;
     let Some(thread_id) = p.thread_id.clone() else {
         return;
     };
@@ -485,7 +490,10 @@ pub(crate) fn pick_effort(s: &mut State, slot: Slot, effort: Option<String>) {
         move |c| async move { c.set_thread_effort(&thread_id, &wire).await },
         move |s, result, _| {
             if let Err(e) = result {
-                if let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) {
+                if let Some(p) = slot
+                    .get_mut(s)
+                    .filter(|p| p.generation == generation && p.effort_seq == seq)
+                {
                     p.effort = previous;
                 }
                 slot.event(s, PickerEvent::Failed(e.to_string()));
@@ -504,6 +512,7 @@ pub(crate) fn pick(s: &mut State, slot: Slot, provider: String, model: String) {
     let Some(p) = slot.get_mut(s) else { return };
     p.open = false;
     p.cmd_held = false;
+    p.effort_seq += 1;
     // The effort carries over when the new model takes the same level.
     let effort = p
         .effort
@@ -747,7 +756,7 @@ pub fn fixture() -> ModelPickerState {
 }
 
 /// Scene `model-picker` (`effort`: `model-picker-effort`): the open chat
-/// with its picker's popover open (on a model with thinking levels).
+/// with its picker's popover open, thinking on Auto (or on High).
 pub fn scene(s: &mut State, effort: bool) {
     crate::scenes::chat(s);
     s.prefs.recent_models = vec![
@@ -756,8 +765,8 @@ pub fn scene(s: &mut State, effort: bool) {
     ];
     if let Some(c) = s.chat.as_mut() {
         c.model_picker = fixture();
-        if effort {
-            c.model_picker.effort = Some("high".into());
+        if !effort {
+            c.model_picker.effort = None;
         }
         c.model_picker.toggle();
     }

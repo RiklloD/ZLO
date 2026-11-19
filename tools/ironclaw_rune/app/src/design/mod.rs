@@ -39,8 +39,9 @@ pub const SIDEBAR_SEARCH_HEIGHT: f32 = 44.;
 pub const SIDEBAR_TITLE_SIZE: f32 = 15.;
 pub const SIDEBAR_META_SIZE: f32 = 13.;
 pub const SIDEBAR_CONTROL: f32 = 32.;
-// Radius scale, after T3 Code's design pass: 4/6/8/12/16. Controls 6, rows
-// 8, cards and popovers 12, composer and bubbles 16. Nothing off the scale.
+// Radius scale, after T3 Code's design pass: 4/6/8/12/14/16. Controls 6,
+// rows 8, cards and popovers 12, the composer and user messages 14, other
+// bubbles 16. Nothing off the scale.
 pub const PANEL_RADIUS: f32 = 12.;
 pub const CONTROL_RADIUS: f32 = 6.;
 pub const ROW_RADIUS: f32 = 8.;

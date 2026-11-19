@@ -274,7 +274,7 @@ type Press = Rc<dyn Fn(&mut State, &mut Tx)>;
 
 /// The app's button: the hover
 /// fades in the wash, `selected` morphs the wash in, Primary carries the
-/// accent plate, `loading` swaps the icon for breathing dots.
+/// monochrome primary plate, `loading` swaps the icon for breathing dots.
 pub struct Button {
     key: String,
     label: Option<String>,

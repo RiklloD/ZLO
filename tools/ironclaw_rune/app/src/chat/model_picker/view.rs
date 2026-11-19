@@ -169,12 +169,17 @@ fn placement(m: &ModelPickerState, slot: &Slot, cx: &Cx<State>) -> (Placement, f
     }
 }
 
-/// The search field's keys: Ctrl+Tab / Ctrl+Shift+Tab walk the rail, ⌘1..⌘9
-/// pick a row, Escape closes, and holding ⌘ numbers the rows.
+/// The search field's keys: Ctrl+Tab / Ctrl+Shift+Tab walk the rail, Tab /
+/// Shift+Tab step the thinking level, ⌘1..⌘9 pick a row, Escape closes, and
+/// holding ⌘ numbers the rows.
 fn search_key(s: &mut State, slot: &Slot, ev: &rune::KeyEvent) -> bool {
     match &ev.key {
         Key::Tab if ev.mods.ctrl => {
             cycle_rail(s, slot.clone(), !ev.mods.shift);
+            true
+        }
+        Key::Tab if !ev.mods.cmd && !ev.mods.alt => {
+            step_thinking(s, slot, !ev.mods.shift);
             true
         }
         Key::Command(c) if !ev.mods.ctrl && !ev.mods.alt && !ev.mods.shift => {
@@ -212,6 +217,32 @@ fn search_key(s: &mut State, slot: &Slot, ev: &rune::KeyEvent) -> bool {
         }
         _ => false,
     }
+}
+
+/// Move the thinking level one step along the row (Auto, then the model's
+/// levels), wrapping; nothing when the model has no levels.
+fn step_thinking(s: &mut State, slot: &Slot, forward: bool) {
+    let Some(m) = slot.get(s) else { return };
+    let model = m.current_model().unwrap_or("default");
+    let choices: Vec<Option<String>> = std::iter::once(None)
+        .chain(
+            m.efforts_of(m.current_provider(), model)
+                .iter()
+                .cloned()
+                .map(Some),
+        )
+        .collect();
+    if choices.len() < 2 {
+        return;
+    }
+    let at = choices.iter().position(|c| *c == m.effort).unwrap_or(0);
+    let n = choices.len();
+    let next = if forward {
+        (at + 1) % n
+    } else {
+        (at + n - 1) % n
+    };
+    pick_effort(s, slot.clone(), choices[next].clone());
 }
 
 fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
@@ -407,6 +438,9 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
             .key("model-popover")
             .role("dialog")
             .label("Models")
+            // A press inside (a thinking level, the rail) leaves the search
+            // field focused, so its keys and Escape keep working.
+            .preserve_focus_on_press(true)
             .w(POPOVER_WIDTH)
             .h(POPOVER_HEIGHT)
             .items_stretch()
@@ -631,8 +665,9 @@ fn model_row(
 
 /// The popover's thinking row: the current model's levels as one segmented
 /// control, "Auto" first (the provider's default). Picking a level keeps
-/// the popover open; picking a model closes it. `None` when the model has
-/// no levels.
+/// the popover open; picking a model closes it; Tab / Shift+Tab in the
+/// search field step it from the keyboard. `None` when the model has no
+/// levels.
 fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot) -> Option<El> {
     let model = m.current_model().unwrap_or("default");
     let efforts = m.efforts_of(m.current_provider(), model).to_vec();
@@ -648,7 +683,7 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot) -> Option<El> {
         .label("Thinking")
         .grow(1.)
         .min_w(0.)
-        .h(26.)
+        .min_h(26.)
         .padding(2.)
         .gap(2.)
         .radius(design::CONTROL_RADIUS + 1.)
@@ -669,7 +704,7 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot) -> Option<El> {
                 .grow(1.)
                 .w(0.)
                 .min_w(0.)
-                .h_full()
+                .py(3.)
                 .center()
                 .radius(design::CONTROL_RADIUS - 1.)
                 .fill(if on {
@@ -711,4 +746,27 @@ pub fn provider_mark(
         .filter(|id| !id.is_empty())
         .collect();
     crate::design::brands::provider_logo_mono(s, &ids, size, ink)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::step_thinking;
+    use crate::chat::model_picker::{Slot, scene};
+
+    /// Tab and Shift+Tab in the search field step the thinking level along
+    /// the row, wrapping past Auto.
+    #[test]
+    fn tab_steps_the_thinking_level() {
+        let mut s = crate::chat::fixtures::test_state();
+        scene(&mut s, true);
+        let slot = Slot::chat("t1");
+        let effort = |s: &crate::state::State| slot.get(s).and_then(|m| m.effort.clone());
+        assert_eq!(effort(&s).as_deref(), Some("high"));
+        step_thinking(&mut s, &slot, true);
+        assert_eq!(effort(&s).as_deref(), Some("xhigh"));
+        step_thinking(&mut s, &slot, true);
+        assert_eq!(effort(&s), None, "wraps to Auto");
+        step_thinking(&mut s, &slot, false);
+        assert_eq!(effort(&s).as_deref(), Some("xhigh"));
+    }
 }

@@ -144,7 +144,8 @@ impl Prefs {
 
     /// Read the saved file. A file from before the appearance redesign
     /// (version 1, four styles and fifty themes) keeps its layout choices
-    /// and moves to the new look: IronClaw's themes and the painted scene.
+    /// and moves to the new look: IronClaw's themes (the painted scene it
+    /// once moved to is dropped again by version 6, the flat look).
     pub fn load() -> Self {
         let raw: Option<serde_json::Value> = Self::file()
             .and_then(|f| std::fs::read(f).ok())

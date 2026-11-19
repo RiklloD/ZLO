@@ -99,6 +99,14 @@ pub const SCENES: &[Scene] = &[
     ("context-meter", ws::fixture_context_meter),
     ("disconnected", ws::fixture_disconnected),
     ("draft", ws::fixture_draft),
+    ("draft-light-theme", |s| {
+        ws::fixture_draft(s);
+        light_theme(s);
+    }),
+    ("chat-light-theme", |s| {
+        crate::chat::fixtures::chat(s);
+        light_theme(s);
+    }),
     ("draft-files", ws::fixture_draft_files),
     ("draft-mention", ws::fixture_draft_mention),
     ("extensions", crate::pages::extensions::fixtures::extensions),
@@ -363,4 +371,10 @@ fn snapshot_chip(s: &mut State) {
 pub fn chat(s: &mut State) {
     shell(s);
     s.chat = Some(crate::chat::ChatState::new("t1".into()));
+}
+
+/// The light scheme on IronClaw's light theme, for the light renders.
+fn light_theme(s: &mut State) {
+    s.prefs.scheme = "light".into();
+    s.palette = crate::design::resolve(&s.prefs, false);
 }
