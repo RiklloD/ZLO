@@ -452,6 +452,12 @@ pub trait TurnEventSink: Send + Sync {
         at: Millis,
     );
 
+    /// Steers the runtime accepted into the running turn but its agent never
+    /// read (dropped, or the turn ended first), oldest first. Reported before
+    /// that turn's `turn_finished`; the engine queues them so each is sent as
+    /// a later turn instead of being lost.
+    async fn steers_unread(&self, _thread_id: &ThreadId, _texts: Vec<String>) {}
+
     /// Latest context/speed/cache figures of a thread; reported after every
     /// model call or turn, whichever the runtime can measure.
     async fn turn_telemetry(&self, _thread_id: &ThreadId, _telemetry: TurnTelemetry, _at: Millis) {}

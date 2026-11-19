@@ -22,7 +22,10 @@ agent loop is the first (`ironclaw_assistant::orchestration`).
   `take_next_message_context`, and the operations behind the tools and
   routes (`delegate`, `task_status`, `task_list`, `cancel_task`, `queue_*`,
   `send`, `runs`, `fork`, `merge_back`, `lineage`, `capabilities`, `status`).
-  It implements `runtime::TurnEventSink`.
+  It implements `runtime::TurnEventSink`; its `steers_unread` queues the
+  steers a runtime accepted into a turn but its agent never read (reported
+  before that turn's `turn_finished`), so each is sent as a later turn,
+  after a Stop only once the thread is released.
 - `runtime::TurnRuntime` — the runtime seam (create thread, start turn,
   steer, cancel, history, optional native fork, catalog, and
   `thread_action` for runtime-native operations — Codex review and

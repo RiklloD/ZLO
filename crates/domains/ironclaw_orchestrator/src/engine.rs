@@ -1089,6 +1089,16 @@ impl TurnEventSink for Engine {
         log_step("turn started", result);
     }
 
+    /// They wait in the queue (held by a Stop), even when shutdown cuts the
+    /// turn: they are the person's words.
+    async fn steers_unread(&self, thread_id: &ThreadId, texts: Vec<String>) {
+        for text in &texts {
+            if let Err(error) = self.store.queue_add(thread_id, text, Author::User).await {
+                tracing::debug!(%error, "unread steer could not be queued");
+            }
+        }
+    }
+
     async fn turn_finished(
         &self,
         thread_id: &ThreadId,

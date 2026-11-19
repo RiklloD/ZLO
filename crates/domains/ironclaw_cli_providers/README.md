@@ -44,14 +44,56 @@ One `claude -p --output-format stream-json --input-format stream-json
 for the control protocol until the result arrives. The thread's
 `native_session_id` is minted at creation; the first turn passes
 `--session-id`, later turns `--resume`. Stop sends SIGTERM to the process
-group, SIGKILL after 2 s. A rejected `rate_limit_event` (or a limit-shaped
-error result) becomes `usage_limit_resets_at`. History reads the CLI's own
-session journal. The CLI child dies with the backend, so
+group, SIGKILL after 2 s. A rejected `rate_limit_event`, the same reading
+repeated on a blocked assistant frame (`api_error_params.rate_limit_info`,
+whose reset counts only while still ahead), or a limit-shaped error result
+becomes `usage_limit_resets_at`, and the error names the limit
+(`usage_limit: the Claude 5-hour limit is reached`; weekly, weekly Opus,
+weekly Sonnet, extra-usage). History reads the CLI's own session journal. The CLI child dies with the backend, so
 `reports_restart_cuts` stays off and the engine's live-work rows cover cuts.
 
 Wire types come from `claude-codes`, pinned to the checked CLI release
-(`claude::EXPECTED_CLI_VERSION`, `2.1.302`); a different installed version
+(`claude::EXPECTED_CLI_VERSION`, `2.1.328`); a different installed version
 is logged at `debug`.
+
+`ZLO_CLAUDE_AUTOCOMPACT` (tokens, 100000 to 1000000) is passed as
+`--autocompact`: the CLI compacts at about that much context instead of its
+default. It does not change the model's window; out-of-range values are
+ignored. Idle compaction (below) is separate.
+
+### Steering
+
+With the bridge, a message sent while a turn runs is written into its open
+stdin as a user message with `priority: "next"`: Claude reads it once the
+tool calls in flight finish, in the same turn (an approval still waiting is
+declined with the person's words). `claude/steer.rs` follows each command
+written (the prompt and every steer, by uuid) through the CLI's
+`command_lifecycle` frames (`queued`, `started`, `completed`, or dropped as
+`cancelled` / `discarded` / `refused`) and the `user_message_uuids` echoes:
+
+- stdin closes only once every command is done, not at the first `result`,
+  so the approval hook can still answer a steer's tool calls. A steer the
+  CLI never acknowledges stops holding stdin 15 s after the result.
+- a steer the CLI never started (dropped, Stop, a crash, the turn ending
+  first) is handed back through `TurnEventSink::steers_unread` before the
+  turn ends; the engine queues it, so it is sent as a later turn (after a
+  Stop, once the thread is released) instead of being lost.
+
+A CLI without lifecycle frames or echoes keeps the old behaviour: stdin
+closes at the first result and every steer counts as read.
+
+### Task lists
+
+Claude CLI 2.1.3xx has no `TodoWrite` in headless runs; with
+`CLAUDE_CODE_ENABLE_TODO_TOOLS=1` (always set) it offers `TaskCreate`,
+`TaskUpdate`, `TaskList` and `TaskGet`, deferred behind `ToolSearch`. The
+hook allows those, and a `ToolSearch` that only loads them
+(`select:TaskCreate,...`), without a gate: they touch nothing but the
+session's task store, `<config>/tasks/<session>/<id>.json`. After each
+successful call the driver re-reads that store into the thread's plan (task
+order, `pending` / `in_progress` / `completed`), so the list carries across
+turns. `TodoWrite` is still handled for older CLIs. Any other `ToolSearch`
+asks as before.
 
 ## Tools and approvals
 

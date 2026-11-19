@@ -19,6 +19,10 @@ use serde_json::{Map, Value, json};
 
 /// The Claude CLI's checklist tool.
 pub const CLAUDE_TODO_TOOL: &str = "TodoWrite";
+/// The task-list tools that replace `TodoWrite` in Claude CLI 2.1.3xx
+/// (offered with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`). They only touch the
+/// session's own task store (`<config>/tasks/<session>/<id>.json`).
+pub const CLAUDE_TASK_TOOLS: [&str; 4] = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
 /// The Claude CLI's question tool.
 pub const CLAUDE_QUESTION_TOOL: &str = "AskUserQuestion";
 
@@ -46,6 +50,63 @@ pub fn claude_todo_plan(input: &Value) -> Option<AgentPlan> {
     let todos = input.get("todos")?.as_array()?;
     let entries = todos.iter().filter_map(|t| {
         Some(PlanEntry::new(text(t, "content")?, status(t)).with_active_form(text(t, "activeForm")))
+    });
+    Some(AgentPlan::new(entries, None, now()))
+}
+
+/// Whether a `ToolSearch` call only loads task-list tools
+/// (`select:TaskCreate,TaskUpdate`): in 2.1.3xx they are deferred, so the
+/// model loads them first. Loading a schema runs nothing; any other search
+/// still asks.
+pub fn claude_task_tool_load(tool: &str, input: &Value) -> bool {
+    if tool != "ToolSearch" {
+        return false;
+    }
+    let Some(names) = input
+        .get("query")
+        .and_then(Value::as_str)
+        .and_then(|q| q.trim().strip_prefix("select:"))
+    else {
+        return false;
+    };
+    let mut names = names.split(',').map(str::trim).peekable();
+    names.peek().is_some() && names.all(|n| CLAUDE_TASK_TOOLS.contains(&n))
+}
+
+/// A Claude session's task store (the `<id>.json` files the task tools
+/// write) as a plan, in task-number order. Unreadable or foreign files are
+/// skipped; `None` when the store is missing or empty.
+pub async fn claude_task_plan(store: &std::path::Path) -> Option<AgentPlan> {
+    let mut dir = tokio::fs::read_dir(store).await.ok()?; // silent-ok: no store yet means no task list
+    let mut tasks: Vec<(u64, String, Value)> = Vec::new();
+    while let Ok(Some(entry)) = dir.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let parsed = match tokio::fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes).map_err(|e| e.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
+        let task = match parsed {
+            Ok(task) => task,
+            // A half-written entry is read again on the next update.
+            Err(error) => {
+                tracing::debug!(%error, "claude task store: entry skipped");
+                continue;
+            }
+        };
+        let Some(id) = text(&task, "id") else {
+            continue;
+        };
+        tasks.push((id.parse().unwrap_or(u64::MAX), id, task)); // silent-ok: a non-numeric id sorts last
+    }
+    if tasks.is_empty() {
+        return None;
+    }
+    tasks.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    let entries = tasks.iter().filter_map(|(_, _, t)| {
+        Some(PlanEntry::new(text(t, "subject")?, status(t)).with_active_form(text(t, "activeForm")))
     });
     Some(AgentPlan::new(entries, None, now()))
 }
@@ -481,6 +542,66 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect(),
         }
+    }
+
+    #[test]
+    fn only_a_task_tool_load_is_a_task_tool_search() {
+        let q = |query: &str| json!({"query": query, "max_results": 5});
+        assert!(claude_task_tool_load("ToolSearch", &q("select:TaskCreate")));
+        assert!(claude_task_tool_load(
+            "ToolSearch",
+            &q("select:TaskCreate, TaskUpdate")
+        ));
+        assert!(!claude_task_tool_load(
+            "ToolSearch",
+            &q("select:TaskCreate,Bash")
+        ));
+        assert!(!claude_task_tool_load("ToolSearch", &q("task create")));
+        assert!(!claude_task_tool_load("ToolSearch", &q("select:")));
+        assert!(!claude_task_tool_load("Bash", &q("select:TaskCreate")));
+    }
+
+    /// The store the 2.1.328 task tools write (recorded file shapes).
+    #[tokio::test]
+    async fn the_claude_task_store_becomes_a_plan_in_task_order() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, body) in [
+            (
+                "10.json",
+                r#"{"id":"10","subject":"Ship","status":"pending","blocks":[],"blockedBy":[]}"#,
+            ),
+            (
+                "2.json",
+                r#"{"id":"2","subject":"Build","description":"Build","status":"in_progress","blocks":[],"blockedBy":[]}"#,
+            ),
+            (
+                "1.json",
+                r#"{"id":"1","subject":"Plan","description":"Plan","status":"completed","blocks":[],"blockedBy":[]}"#,
+            ),
+            ("3.json", "{half written"),
+            (".lock", ""),
+        ] {
+            std::fs::write(dir.path().join(name), body).unwrap();
+        }
+        let plan = claude_task_plan(dir.path()).await.unwrap();
+        let rows: Vec<(&str, PlanEntryStatus)> = plan
+            .entries
+            .iter()
+            .map(|e| (e.content.as_str(), e.status))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("Plan", PlanEntryStatus::Completed),
+                ("Build", PlanEntryStatus::InProgress),
+                ("Ship", PlanEntryStatus::Pending),
+            ]
+        );
+        assert!(
+            claude_task_plan(&dir.path().join("missing"))
+                .await
+                .is_none()
+        );
     }
 
     #[test]
