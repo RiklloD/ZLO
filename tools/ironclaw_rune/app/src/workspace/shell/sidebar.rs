@@ -155,9 +155,9 @@ fn footer(s: &State, p: &Palette) -> El {
                     row()
                         .size(18., 18.)
                         .radius(9.)
-                        .fill(p.surface_raised)
+                        .fill(p.accent)
                         .center()
-                        .child(tw("L", 10., SEMIBOLD, p.text)),
+                        .child(tw("L", 10., SEMIBOLD, p.on_accent())),
                 )
                 .child(ui::side_t(
                     "Local",

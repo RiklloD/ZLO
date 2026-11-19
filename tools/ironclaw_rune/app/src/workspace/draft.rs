@@ -26,7 +26,7 @@ pub use snapshot::stage_snapshot;
 use submit::{Origin, Submission, send_with, submit};
 
 use super::inbox::{self, picker};
-use super::ui::{self, MEDIUM, SM, XS, t, tw};
+use super::ui::{self, SEMIBOLD, SM, XS, t, tw};
 use crate::chat::menu::{self, ComposerMenu, MenuKey, MenuKeyName};
 use crate::chat::model_picker::ModelPickerState;
 use crate::chat::{composer, inline_files};
@@ -540,29 +540,18 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
                 d.worktree = !d.worktree;
             }
         });
-    // The project chip at the heading's right end: a quiet bordered control,
-    // so where the thread will run sits with the card it starts from.
+    // Under the heading, no resting underline (T3's pass): a chevron says
+    // it opens. A long name truncates instead of widening the column.
     let profile_switch = row()
         .key("draft-profile")
         .role("button")
         .label(format!("Profile: {name}"))
-        .gap(6.)
-        .h(28.)
-        .px(10.)
+        .gap(4.)
         .center_y()
-        .radius(crate::design::CONTROL_RADIUS)
-        .border(1., p.border)
-        .fill(if draft.menu_open {
-            p.hover
-        } else {
-            rune::Color::TRANSPARENT
-        })
-        .hover(p.hover)
         .cursor(rune::Cursor::Pointer)
         .hover_group()
-        .max_w(240.)
+        .max_w(HERO_WIDTH)
         .min_w(0.)
-        .child(ui::glyph(&icons::FOLDER, 13., p.text_faint))
         .child(
             t(
                 name,
@@ -590,7 +579,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
                 })
                 .child(picker::profile_picker(s, k)),
             "draft-profile",
-            Placement::BottomEnd,
+            Placement::Bottom,
             6.,
         ));
     }
@@ -687,44 +676,29 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             on_pick,
         );
     }
-    // One column, the card's width: the heading and the project chip on one
-    // line, the card under them.
-    let header = row()
-        .key("draft-header")
-        .w_full()
-        .max_w(HERO_WIDTH)
-        .center_y()
-        .gap(12.)
-        .child(
-            el().grow(1.)
-                .min_w(0.)
-                .child(tw("What should we work on?", 22., MEDIUM, p.text).truncate()),
-        )
-        .child(profile_switch);
-    let mut column = col()
-        .key("draft-column")
-        .w_full()
-        .items_center()
-        .gap(14.)
-        .child(header)
-        .child(card);
-    if let Some(error) = draft.error.clone() {
-        column = column.child(
-            el().w_full()
-                .max_w(HERO_WIDTH)
-                .child(t(error, SM, p.danger).wrap()),
-        );
-    }
-    // The column rests a little above the middle (about 38 % down), leaving
-    // the room below for the model and command menus that open under it.
-    let body = col()
+    // The centred hero: the big question, the project switcher under it,
+    // then the card.
+    let mut body = col()
         .key("draft-body")
         .w_full()
         .h_full()
+        .items_center()
+        .justify_center()
         .px(24.)
-        .child(el().grow(38.).min_h(0.))
-        .child(column)
-        .child(el().grow(62.).min_h(0.));
+        .gap(24.)
+        .child(
+            col()
+                .items_center()
+                .gap(8.)
+                .child(tw("What should we work on?", 32., SEMIBOLD, p.text))
+                .child(profile_switch),
+        )
+        .child(card);
+    if let Some(error) = draft.error.clone() {
+        body = body.child(el().max_w(HERO_WIDTH).child(t(error, SM, p.danger).wrap()));
+    }
+    // Room under the card so it sits just above the middle, like t3code.
+    let body = body.child(el().h(80.));
     // A flat panel: no glow, no band; a wallpaper, when one is picked, is
     // laid over the panel by the frame.
     el().key("draft")

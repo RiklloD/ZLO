@@ -312,7 +312,6 @@ fn model_popover(s: &State, k: &Kit) -> El {
                     &rp.runtime,
                     &rp.provider,
                     14.0,
-                    p.text_muted,
                 ))
                 .child(
                     styled(rp.name.clone(), sm(), p.text)
