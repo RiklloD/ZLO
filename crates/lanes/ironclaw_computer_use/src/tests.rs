@@ -626,7 +626,6 @@ fn weak_model_arguments_are_repaired_against_the_tool_schema() {
         "include_ax": "true",
         "max_tree_depth": "64",
         "text_limit": "500",
-        "window_placement": "keep",
         "window_title": "null",
         "window_id": 0,
     });
@@ -638,7 +637,6 @@ fn weak_model_arguments_are_repaired_against_the_tool_schema() {
             "include_ax": true,
             "max_tree_depth": 64,
             "text_limit": 500,
-            "window_placement": "keep",
         })
     );
     // Values the schema accepts pass unchanged, enum strings included.
