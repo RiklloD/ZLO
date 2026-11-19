@@ -293,6 +293,16 @@ pub fn release_session_import(s: &mut State) {
 }
 
 /// Read the inbox again (after setup imported threads).
+/// A prompt went out in `thread_id`: its sidebar card shows Working now.
+pub fn prompt_sent(s: &mut State, thread_id: &str) {
+    inbox::note_sent(s, thread_id);
+}
+
+/// The send to `thread_id` failed: its card stops showing Working.
+pub fn send_failed(s: &mut State, thread_id: &str) {
+    inbox::forget_sent(s, thread_id);
+}
+
 pub fn refresh_inbox(s: &mut State) {
     inbox::refresh(s);
 }
@@ -574,6 +584,7 @@ pub fn thread_updated(s: &mut State) {
 pub fn run_ended(s: &mut State, thread_id: String, failed: bool) {
     status::refresh_telemetry(s);
     crate::run_clock::end(s, &thread_id);
+    inbox::forget_sent(s, &thread_id);
     if !failed {
         inbox::poll_for_title(s);
     }

@@ -43,7 +43,7 @@ pub(super) fn card(
     let pinned = row_data.state == InboxState::Pinned;
     let menu_open = inbox.snooze_menu.as_deref() == Some(id.as_str());
     let unread = inbox.unread.contains(&id);
-    let recede = !active && row_data.status.is_none() && !unread;
+    let recede = !active && inbox.shown_status(row_data).is_none() && !unread;
     // An unsent draft waits here: t3code's pen mark and warm tint.
     let drafted = !active && crate::drafts::has(s, &id);
     let rest = if active {
@@ -468,8 +468,10 @@ pub(in crate::workspace) fn status_label(
     now: i64,
 ) -> El {
     let p = &s.palette;
-    let status = row_data
-        .status
+    let status = s
+        .workspace
+        .inbox
+        .shown_status(row_data)
         .filter(|st| !(active && matches!(st, InboxStatus::Done | InboxStatus::Woke)));
     let key = format!("status-{}-{:?}", row_data.thread_id, status);
     let plain = |text: String, color: Color| t(text, XS, color);

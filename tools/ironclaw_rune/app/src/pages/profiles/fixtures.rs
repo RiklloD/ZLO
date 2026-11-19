@@ -86,5 +86,20 @@ pub fn fixture_pickers(s: &mut State) {
 /// The editor on "Work", no menu open.
 pub fn fixture_editor(s: &mut State) {
     fixture_list(s);
+    // A long SOUL.md, as real ones are: more wrapped lines than the editor
+    // shows at once, so the page's bottom and the footer are exercised.
+    let soul = (1..=30)
+        .map(|n| format!("- Rule {n}: say the point first, then the reason; keep numbers with their units and dates, and cut words before cutting precision."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Some(work) = s
+        .pages
+        .profiles
+        .items
+        .iter_mut()
+        .find(|p| p.profile_id == "work")
+    {
+        work.settings.soul = soul;
+    }
     select(s, Some("work".into()));
 }

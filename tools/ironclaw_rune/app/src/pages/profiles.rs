@@ -661,9 +661,13 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         .radius(12.0)
         .fill(block_fill(p))
         .child(
+            // Grows to the whole text, no inner scroll: a capped box under
+            // the pointer took the page's wheel at its end, so the footer
+            // could not be reached. The page scrolls, and follows the caret.
             TextArea::new(&ps.soul)
                 .width(None)
-                .auto_grow(1, 24)
+                .rows(6)
+                .animate_edit_layout()
                 .placeholder("SOUL.md: who this profile is and how it works")
                 .label("SOUL.md")
                 .on_edit(|s: &mut State| &mut s.pages.profiles.soul)
