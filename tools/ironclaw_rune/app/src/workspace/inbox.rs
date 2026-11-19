@@ -90,7 +90,32 @@ pub struct Inbox {
     /// working yet, with when they were sent. The read after a send can
     /// land before the backend marks the run; without this the card read
     /// "now" and nothing polled until the run ended.
-    pub(super) sent: BTreeMap<String, Instant>,
+    pub(super) sent: BTreeMap<String, Sent>,
+}
+
+/// A prompt sent from this window, waiting for the backend to list its run.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Sent {
+    pub(super) at: Instant,
+    /// The row's status when the prompt went out: a read still carrying it
+    /// (an answered "Needs you") is stale, not the new run's.
+    pub(super) before: Option<InboxStatus>,
+}
+
+impl Sent {
+    fn live(&self) -> bool {
+        self.at.elapsed() < SENT_GRACE
+    }
+
+    /// The backend lists the new run: `status` is live and not the one the
+    /// row had before the send.
+    fn confirmed_by(&self, status: Option<InboxStatus>) -> bool {
+        match status {
+            Some(InboxStatus::Working | InboxStatus::Background) => true,
+            Some(InboxStatus::NeedsInput) => self.before != status,
+            _ => false,
+        }
+    }
 }
 
 impl Inbox {
@@ -128,7 +153,14 @@ impl Inbox {
     /// rows stay pinned.
     pub fn shown_state(&self, row: &InboxRow) -> InboxState {
         match row.state {
-            InboxState::Inbox if self.sent_live(&row.thread_id) => InboxState::Working,
+            InboxState::Inbox
+                if self
+                    .sent
+                    .get(&row.thread_id)
+                    .is_some_and(|sent| sent.live() && !sent.confirmed_by(row.status)) =>
+            {
+                InboxState::Working
+            }
             state => state,
         }
     }
@@ -136,25 +168,16 @@ impl Inbox {
     /// The status `row` shows: the backend's, or Working while a prompt
     /// sent here waits for the backend to list its run.
     pub fn shown_status(&self, row: &InboxRow) -> Option<InboxStatus> {
-        match row.status {
-            Some(InboxStatus::Working | InboxStatus::Background | InboxStatus::NeedsInput) => {
-                row.status
+        match self.sent.get(&row.thread_id) {
+            Some(sent) if sent.live() && !sent.confirmed_by(row.status) => {
+                Some(InboxStatus::Working)
             }
-            _ if self.sent_live(&row.thread_id) => Some(InboxStatus::Working),
-            status => status,
+            _ => row.status,
         }
     }
 
-    /// A prompt sent here still within its grace: its own clock, so failed
-    /// inbox reads cannot keep it claiming Working.
-    fn sent_live(&self, thread_id: &str) -> bool {
-        self.sent
-            .get(thread_id)
-            .is_some_and(|at| at.elapsed() < SENT_GRACE)
-    }
-
     fn any_sent_live(&self) -> bool {
-        self.sent.values().any(|at| at.elapsed() < SENT_GRACE)
+        self.sent.values().any(Sent::live)
     }
 
     pub fn row(&self, thread_id: &str) -> Option<&InboxRow> {
@@ -168,7 +191,9 @@ impl Inbox {
             .rows
             .iter()
             .filter(|r| !has_listed_parent(&self.list.rows, r))
-            .find(|r| !matches!(r.state, InboxState::Snoozed | InboxState::Settled))
+            .filter(|r| !matches!(r.state, InboxState::Snoozed | InboxState::Settled))
+            // A card on screen before one on the folded Working shelf.
+            .min_by_key(|r| self.shown_state(r) == InboxState::Working)
             .map(|r| r.thread_id.clone())
     }
 
@@ -285,8 +310,10 @@ fn next_after_settle(rows: &[InboxRow], settled: &str) -> Option<String> {
     rows.iter()
         .filter(|r| r.state == InboxState::Pinned)
         .chain(
+            // The list before the folded Working shelf.
             rows.iter()
-                .filter(|r| matches!(r.state, InboxState::Inbox | InboxState::Working)),
+                .filter(|r| r.state == InboxState::Inbox)
+                .chain(rows.iter().filter(|r| r.state == InboxState::Working)),
         )
         .filter(|r| !has_listed_parent(rows, r))
         .find(|r| r.thread_id != settled)
@@ -344,19 +371,12 @@ pub(super) fn apply(s: &mut State, list: InboxListResponse) {
     });
     // A sent prompt stops claiming its card once the backend lists the run
     // or the grace runs out. A new thread may not be listed yet: it waits.
-    s.workspace.inbox.sent.retain(|id, at| {
-        at.elapsed() < SENT_GRACE
-            && !list.rows.iter().any(|r| {
-                r.thread_id == *id
-                    && matches!(
-                        r.status,
-                        Some(
-                            InboxStatus::Working
-                                | InboxStatus::Background
-                                | InboxStatus::NeedsInput
-                        )
-                    )
-            })
+    s.workspace.inbox.sent.retain(|id, sent| {
+        sent.live()
+            && !list
+                .rows
+                .iter()
+                .any(|r| r.thread_id == *id && sent.confirmed_by(r.status))
     });
     s.workspace.inbox.list = list;
     super::draft::bind_catalog(s);
@@ -393,10 +413,14 @@ pub(super) fn tick_due(s: &mut State) -> bool {
 /// A prompt went out from this window: its card shows Working now, and the
 /// inbox polls quickly until the backend lists the run.
 pub fn note_sent(s: &mut State, thread_id: &str) {
-    s.workspace
-        .inbox
-        .sent
-        .insert(thread_id.to_string(), Instant::now());
+    let before = s.workspace.inbox.row(thread_id).and_then(|r| r.status);
+    s.workspace.inbox.sent.insert(
+        thread_id.to_string(),
+        Sent {
+            at: Instant::now(),
+            before,
+        },
+    );
     let soon = Instant::now() + SENT_POLL;
     let timer = &mut s.workspace.timers.inbox;
     *timer = Some(timer.map_or(soon, |at| at.min(soon)));
@@ -512,10 +536,7 @@ fn ensure_poll(s: &mut State) {
 /// The working poll came due.
 pub(super) fn poll_due(s: &mut State) {
     // Expire sent prompts here too: a read that keeps failing never applies.
-    s.workspace
-        .inbox
-        .sent
-        .retain(|_, at| at.elapsed() < SENT_GRACE);
+    s.workspace.inbox.sent.retain(|_, sent| sent.live());
     if !s.workspace.inbox.needs_poll() {
         return;
     }
@@ -563,7 +584,18 @@ pub(super) fn reveal_active_subagent(s: &mut State) {
     if let Some(id) = active {
         let tree = subagents::Tree::new(&s.workspace.inbox.list.rows);
         let above = tree.ancestors(&id);
+        // A thread opened on the folded Working shelf unfolds it, so the
+        // selection is never hidden.
+        let inbox = &s.workspace.inbox;
+        let on_shelf = above.iter().chain(std::iter::once(&id)).any(|t| {
+            inbox
+                .row(t)
+                .is_some_and(|r| !tree.is_nested(t) && inbox.shown_state(r) == InboxState::Working)
+        });
         s.workspace.inbox.expanded.extend(above);
+        if on_shelf {
+            s.workspace.inbox.show_working = true;
+        }
     }
 }
 
@@ -781,6 +813,51 @@ mod tests {
         assert_eq!(shelf_of(&s, "a"), "main");
     }
 
+    /// Answering a "Needs you" thread: a read still carrying the old status
+    /// is stale, so the card stays on the shelf until the new run shows.
+    #[test]
+    fn a_stale_needs_you_does_not_bounce_the_card() {
+        let list = |rows| InboxListResponse {
+            rows,
+            ..Default::default()
+        };
+        let needs = || {
+            let mut r = row("a", InboxState::Inbox, None);
+            r.status = Some(InboxStatus::NeedsInput);
+            r
+        };
+        let mut s = crate::chat::fixtures::test_state();
+        apply(&mut s, list(vec![needs()]));
+        note_sent(&mut s, "a");
+        apply(&mut s, list(vec![needs()]));
+        assert_eq!(shelf_of(&s, "a"), "working");
+        let inbox = &s.workspace.inbox;
+        assert_eq!(
+            inbox.shown_status(inbox.row("a").expect("row")),
+            Some(InboxStatus::Working)
+        );
+        assert!(!s.workspace.inbox.sent.is_empty(), "not confirmed yet");
+    }
+
+    /// Opening by itself never lands on a folded, hidden card: a card on
+    /// screen comes first, and a thread opened on the shelf unfolds it.
+    #[test]
+    fn automatic_opening_prefers_cards_on_screen() {
+        let mut working = row("w", InboxState::Working, None);
+        working.status = Some(InboxStatus::Working);
+        let rows = vec![working, row("b", InboxState::Inbox, None)];
+        let mut s = crate::chat::fixtures::test_state();
+        apply(
+            &mut s,
+            InboxListResponse {
+                rows: rows.clone(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(s.workspace.inbox.first_open().as_deref(), Some("b"));
+        assert_eq!(next_after_settle(&rows, "x").as_deref(), Some("b"));
+    }
+
     /// A prompt sent here shows its card as working at once, even when the
     /// inbox read after the send came back before the backend marked the
     /// run (the 2026-11-19 report: "now", no Working, until the run ended).
@@ -821,8 +898,8 @@ mod tests {
 
         // The grace runs out on its own clock, even with no inbox read.
         note_sent(&mut s, "b");
-        if let Some(at) = s.workspace.inbox.sent.get_mut("b") {
-            *at = Instant::now() - SENT_GRACE;
+        if let Some(sent) = s.workspace.inbox.sent.get_mut("b") {
+            sent.at = Instant::now() - SENT_GRACE;
         }
         assert!(!s.workspace.inbox.any_sent_live());
         poll_due(&mut s);
