@@ -1,7 +1,7 @@
 //! Live dictation into a composer.
 //!
 //! Committed words go in as ordinary text at the caret; the volatile tail
-//! goes in as the field's IME preedit (`TextEdit::preedit`), so it shows
+//! goes in as the field's IME composition (`TextEdit::preedit`), so it shows
 //! exactly like macOS's own dictation and input methods, and is replaced
 //! in place as the recognizer revises it. Commit inserts the tail as typed
 //! text; discard drops it.
@@ -126,10 +126,11 @@ impl Live {
             return;
         }
         let tail = volatile.clone();
+        let shown = self.shown.clone();
         let done = self.target.edit(s, move |edit| {
             // Drop the old tail and insert the newly committed words at the
             // caret; then show the new tail as the preedit.
-            show_change(edit, &append, &tail);
+            show_change(edit, &shown, &append, &tail);
         });
         if done.is_some() {
             self.shown = volatile;
@@ -154,7 +155,11 @@ impl Live {
         if self.shown.is_empty() {
             return;
         }
-        let _ = self.target.edit(s, |edit| edit.cancel_composition());
+        let shown = self.shown.clone();
+        let _ = self.target.edit(s, move |edit| {
+            take_back_finished(edit, &shown);
+            edit.cancel_composition();
+        });
         self.shown.clear();
     }
 }
@@ -162,7 +167,8 @@ impl Live {
 /// Drops the old volatile tail, inserts `append` at the caret and shows
 /// `volatile` as the field's preedit (an input-method composition, so it is
 /// drawn but not yet text).
-fn show_change(edit: &mut TextEdit, append: &str, volatile: &str) {
+fn show_change(edit: &mut TextEdit, shown: &str, append: &str, volatile: &str) {
+    take_back_finished(edit, shown);
     edit.cancel_composition();
     if !append.is_empty() {
         edit.insert(append);
@@ -174,6 +180,27 @@ fn show_change(edit: &mut TextEdit, append: &str, volatile: &str) {
             Some((end, end)),
             Vec::new(),
         ));
+    }
+}
+
+/// When the field finished the tail's composition on its own (Rune writes a
+/// composition into the text when the window or field loses focus), the
+/// words shown as volatile are now ordinary text just before the caret, and
+/// the recognizer will send them again. Take that copy back out so it is not
+/// typed twice. Text the user has typed since is left alone.
+fn take_back_finished(edit: &mut TextEdit, shown: &str) {
+    if shown.is_empty() || edit.is_composing() {
+        return;
+    }
+    let (start, end) = edit.range();
+    if start != end {
+        return;
+    }
+    if let Some(from) = end.checked_sub(shown.len())
+        && edit.text.get(from..end) == Some(shown)
+    {
+        edit.set_selection(from, end);
+        edit.insert("");
     }
 }
 
@@ -207,9 +234,11 @@ mod tests {
         let mut words = Stabilizer::default();
         let mut changes: Vec<Change> = partials.iter().map(|p| words.update(p)).collect();
         changes.push(words.finish(final_text));
+        let mut shown = String::new();
         for change in changes {
             let (append, volatile) = led(lead, &change);
-            show_change(&mut edit, &append, &volatile);
+            show_change(&mut edit, &shown, &append, &volatile);
+            shown = volatile;
         }
         edit.finish_composition();
         edit.text.clone()
@@ -226,6 +255,22 @@ mod tests {
             type_out("", &["one", "one two"], "one two three"),
             "one two three"
         );
+    }
+
+    #[test]
+    fn a_tail_finished_by_focus_loss_is_not_typed_twice() {
+        let mut edit = TextEdit::new("Hi");
+        edit.set_caret(2);
+        let mut words = Stabilizer::default();
+        let (append, volatile) = led(" ", &words.update("hello"));
+        show_change(&mut edit, "", &append, &volatile);
+        // The window loses focus: Rune writes the composition into the text.
+        edit.finish_composition();
+        assert_eq!(edit.text, format!("Hi{volatile}"));
+        let (append2, volatile2) = led(" ", &words.finish("hello"));
+        show_change(&mut edit, &volatile, &append2, &volatile2);
+        edit.finish_composition();
+        assert_eq!(edit.text, "Hi hello");
     }
 
     #[test]
