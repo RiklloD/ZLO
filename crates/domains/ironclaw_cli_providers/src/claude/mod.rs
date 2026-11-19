@@ -124,7 +124,8 @@ struct ActiveTurn {
     /// The turn's stdin. A bridged turn keeps it open until the result,
     /// which is how a steer reaches the running turn.
     stdin: SharedStdin,
-    /// True once the original prompt is written; steers wait for it.
+    /// True once the original prompt is written; steers before it are held
+    /// and written right after it.
     ready: Arc<std::sync::atomic::AtomicBool>,
     /// What the CLI has read of the prompt and the steers (see `steer.rs`).
     steers: SharedSteers,
@@ -147,6 +148,9 @@ pub struct ClaudeCliRuntime {
     compactor: Arc<compact::IdleCompactor>,
     /// How long after the result an unacknowledged steer may hold stdin.
     steer_ack_timeout: Duration,
+    /// How long the CLI may stay silent after the result while steers it
+    /// acknowledged keep stdin open.
+    steer_idle_timeout: Duration,
     /// How long the CLI may outlive its closed input after the result.
     exit_grace: Duration,
 }
@@ -189,6 +193,7 @@ impl ClaudeCliRuntime {
             work_dirs: Mutex::new(HashMap::new()),
             compactor: Arc::default(),
             steer_ack_timeout: steer::ACK_TIMEOUT,
+            steer_idle_timeout: steer::IDLE_TIMEOUT,
             exit_grace: EXIT_GRACE,
         })
     }
@@ -197,6 +202,13 @@ impl ClaudeCliRuntime {
     /// [`steer::ACK_TIMEOUT`]); tests shorten it.
     pub fn with_steer_ack_timeout(mut self, timeout: Duration) -> Self {
         self.steer_ack_timeout = timeout;
+        self
+    }
+
+    /// Bound the post-result silence while acknowledged steers keep stdin
+    /// open (default [`steer::IDLE_TIMEOUT`]); tests shorten it.
+    pub fn with_steer_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.steer_idle_timeout = timeout;
         self
     }
 
@@ -617,6 +629,7 @@ impl ClaudeCliRuntime {
         let usage_file = self.config.usage_file.clone();
         let run = run_id.clone();
         let steer_ack_timeout = self.steer_ack_timeout;
+        let steer_idle_timeout = self.steer_idle_timeout;
         let exit_grace = self.exit_grace;
         let input = Arc::clone(&stdin);
         tokio::spawn(async move {
@@ -647,7 +660,30 @@ impl ClaudeCliRuntime {
                 if !steer_wait {
                     steer_deadline = None;
                 }
-                let next = if steer_wait {
+                // Acknowledged steers still open after the result: Claude
+                // works on them as its next native turn, and streams while
+                // it does. Silence with nothing running is a CLI that will
+                // not, so input closes and the steers it never started are
+                // reported unread (t3code bounds the same wait).
+                let idle_wait = !steer_wait
+                    && exit_deadline.is_none()
+                    && bridged
+                        .as_ref()
+                        .is_some_and(|t| t.holding_open() && !t.busy());
+                let next = if idle_wait {
+                    match tokio::time::timeout(steer_idle_timeout, lines.next_line()).await {
+                        Ok(next) => next,
+                        Err(_) => {
+                            tracing::debug!(
+                                "claude cli: idle with steers open after the result; input closed"
+                            );
+                            if let Some(turn) = &bridged {
+                                turn.give_up_on_steers().await;
+                            }
+                            continue;
+                        }
+                    }
+                } else if steer_wait {
                     let deadline = *steer_deadline
                         .get_or_insert_with(|| tokio::time::Instant::now() + steer_ack_timeout);
                     match tokio::time::timeout_at(deadline, lines.next_line()).await {
@@ -769,44 +805,59 @@ impl ClaudeCliRuntime {
         Ok(run_id)
     }
 
-    /// Fold `text` into the running turn: write it to the turn's open stdin
-    /// as a user message, then decline any approval still waiting, with the
-    /// person's words as the reason, so the turn moves on to them. `Rejected`
-    /// when no turn runs or its stdin is already closed (the result is in);
-    /// the engine then queues the text instead.
+    /// Fold `text` into the running turn (T3 Code's Claude steer):
+    /// - a tool call waits for approval: it is declined with the person's
+    ///   words as the hook's reason, which Claude hands the model as the
+    ///   call's result, and nothing else is written (the model reads the
+    ///   words once, not twice);
+    /// - the prompt is not written yet: the steer is held and written right
+    ///   after it, in order (never a separate later turn);
+    /// - otherwise it goes on the turn's open stdin as a user message.
+    ///
+    /// `Rejected` when no turn runs or its stdin is already closed (the
+    /// result is in); the engine then queues the text instead. A held steer
+    /// the turn never writes is reported unread at its end.
     async fn steer_in_turn(&self, thread: &ThreadId, text: &str) -> SteerOutcome {
         let entry = self.active.lock().ok().and_then(|a| {
-            a.get(thread)
-                .filter(|t| t.ready.load(std::sync::atomic::Ordering::SeqCst))
-                .map(|t| {
-                    (
-                        Arc::clone(&t.stdin),
-                        Arc::clone(&t.steers),
-                        t.run_id.clone(),
-                    )
-                })
+            a.get(thread).map(|t| {
+                (
+                    Arc::clone(&t.stdin),
+                    Arc::clone(&t.steers),
+                    Arc::clone(&t.ready),
+                    t.run_id.clone(),
+                )
+            })
         }); // silent-ok: a poisoned map only follows a panic elsewhere
-        // No turn, or its prompt is not written yet: the text queues.
-        let Some((stdin, steers, run_id)) = entry else {
+        let Some((stdin, steers, ready, run_id)) = entry else {
             return SteerOutcome::Rejected;
         };
+        if control::input_open(&stdin).await
+            && let Some(bridge) = &self.bridge
+            && bridge.decline_pending(
+                thread,
+                &run_id,
+                &format!("The user declined this call and said instead: {text}"),
+            ) > 0
+        {
+            return SteerOutcome::Steered;
+        }
         // A fresh uuid: the steer belongs to the running run, it does not
         // start one in the journal. The ledger tracks it by this uuid until
         // the CLI starts it; one it never starts is queued at turn end.
         let uuid = uuid::Uuid::new_v4().to_string();
-        let message = control::steer_message(&uuid, text).await;
-        if let Err(error) = control::write_steer(&stdin, &steers, &uuid, text, &message).await {
-            tracing::debug!(%error, "claude cli: steer not delivered");
-            return SteerOutcome::Rejected;
+        let line = control::steer_message(&uuid, text).await;
+        let steer = steer::HeldSteer {
+            uuid,
+            text: text.to_string(),
+            line,
+        };
+        match control::steer_or_hold(&stdin, &steers, &ready, steer).await {
+            Ok(_) => SteerOutcome::Steered,
+            Err(error) => {
+                tracing::debug!(%error, "claude cli: steer not delivered");
+                SteerOutcome::Rejected
+            }
         }
-        if let Some(bridge) = &self.bridge {
-            bridge.decline_pending(
-                thread,
-                &run_id,
-                &format!("The user declined this call and said instead: {text}"),
-            );
-        }
-        SteerOutcome::Steered
     }
 
     /// Kill the turn's process group and wait until it is reported finished.

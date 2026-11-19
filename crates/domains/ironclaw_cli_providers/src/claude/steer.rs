@@ -13,6 +13,17 @@
 //!
 //! A CLI that reports neither lifecycle nor echoes keeps the old behaviour:
 //! stdin closes at the first result and every steer counts as read.
+//!
+//! A steer that arrives before the prompt is written (the CLI has not
+//! acknowledged the hook registration yet) is held here and written right
+//! after the prompt, in order (T3 Code's "steer when ready"); one the turn
+//! never got to write is unread whatever the CLI reports.
+//!
+//! After the result, open commands keep stdin open only while the CLI shows
+//! life: an unacknowledged steer is bounded by [`ACK_TIMEOUT`] from the
+//! result, and an acknowledged one by [`IDLE_TIMEOUT`] of silence with no
+//! tool call or hook answer in flight. Then input closes and every steer it
+//! never started is reported unread.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -26,6 +37,23 @@ use serde_json::Value;
 /// ignores one, which would otherwise hold the turn open forever.
 pub(super) const ACK_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// After the turn's result, how long the CLI may stay silent (no output,
+/// no tool call running, no hook waiting on a person) while commands it
+/// acknowledged are still open. Claude answers a queued steer as its next
+/// native turn and streams while it does; this only bounds a CLI that
+/// acknowledged a steer and then never worked on it, which would otherwise
+/// keep the turn on "Working" forever.
+pub(super) const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// A steer accepted before the prompt was written: written right after it.
+#[derive(Debug, Clone)]
+pub(super) struct HeldSteer {
+    pub uuid: String,
+    pub text: String,
+    /// The stream-json frame, ready to write.
+    pub line: String,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct SteerLedger {
     /// Commands written to stdin that have not completed or been dropped.
@@ -34,6 +62,8 @@ pub(super) struct SteerLedger {
     acked: HashSet<String>,
     /// Steers the CLI has not started, oldest first: (uuid, text).
     unread: Vec<(String, String)>,
+    /// Steers accepted before the prompt was written, oldest first.
+    held: Vec<HeldSteer>,
     /// The CLI reports which command it is on.
     tracked: bool,
     /// A result has arrived.
@@ -53,6 +83,16 @@ impl SteerLedger {
     pub(super) fn sent(&mut self, uuid: &str, text: &str) {
         self.open.insert(uuid.to_string());
         self.unread.push((uuid.to_string(), text.to_string()));
+    }
+
+    /// A steer that came before the prompt: kept until the prompt is out.
+    pub(super) fn hold(&mut self, steer: HeldSteer) {
+        self.held.push(steer);
+    }
+
+    /// The held steers, oldest first, to write now that the prompt is out.
+    pub(super) fn take_held(&mut self) -> Vec<HeldSteer> {
+        std::mem::take(&mut self.held)
     }
 
     pub(super) fn unsent(&mut self, uuid: &str) {
@@ -122,25 +162,36 @@ impl SteerLedger {
             && self.open.iter().all(|u| !self.acked.contains(u))
     }
 
+    /// A result is in and commands the CLI acknowledged are still open: the
+    /// read loop bounds that wait by [`IDLE_TIMEOUT`] of silence.
+    pub(super) fn held_open(&self) -> bool {
+        !self.abandoned && self.settled && self.tracked && !self.open.is_empty()
+    }
+
     /// Input closed without them; they stay unread.
     pub(super) fn abandon(&mut self) {
         self.abandoned = true;
     }
 
-    /// Steers the CLI never started, oldest first. Empty for a CLI that
-    /// does not report lifecycle: there is no telling, and resending a
-    /// steer it did read would deliver it twice.
+    /// Steers the CLI never started, oldest first: the ones never written
+    /// (held for a prompt that did not go out), then the written ones the
+    /// CLI did not start. Written ones are left out for a CLI that does not
+    /// report lifecycle: there is no telling, and resending a steer it did
+    /// read would deliver it twice.
     pub(super) fn unread(&self) -> Vec<UnreadSteer> {
-        if !self.tracked {
-            return Vec::new();
-        }
-        self.unread
+        let held = self.held.iter().map(|h| UnreadSteer {
+            id: h.uuid.clone(),
+            text: h.text.clone(),
+        });
+        let written = self
+            .unread
             .iter()
+            .filter(|_| self.tracked)
             .map(|(id, text)| UnreadSteer {
                 id: id.clone(),
                 text: text.clone(),
-            })
-            .collect()
+            });
+        held.chain(written).collect()
     }
 }
 
@@ -221,6 +272,41 @@ mod tests {
         l.abandon();
         assert!(!l.waiting_for_ack(), "given up once");
         assert_eq!(texts(&l), vec!["late".to_string()]);
+    }
+
+    /// The CLI acknowledged a steer and went quiet after the result: the
+    /// read loop's idle bound applies, and the steer stays unread.
+    #[test]
+    fn an_acknowledged_steer_held_open_after_the_result_is_idle_bounded() {
+        let mut l = SteerLedger::default();
+        l.prompt("a");
+        l.observe(&life("a", "started"));
+        l.sent("b", "queued but never started");
+        l.observe(&life("b", "queued"));
+        l.observe(&result("a"));
+        l.observe(&life("a", "completed"));
+        assert!(!l.may_close());
+        assert!(!l.waiting_for_ack(), "b was acknowledged");
+        assert!(l.held_open());
+        l.abandon();
+        assert!(!l.held_open(), "given up once");
+        assert_eq!(texts(&l), vec!["queued but never started".to_string()]);
+    }
+
+    /// A steer held for a prompt that never went out is unread, even from
+    /// a CLI that reports no lifecycle.
+    #[test]
+    fn a_held_steer_never_written_is_unread() {
+        let mut l = SteerLedger::default();
+        l.hold(HeldSteer {
+            uuid: "h".into(),
+            text: "early".into(),
+            line: "{}".into(),
+        });
+        assert_eq!(texts(&l), vec!["early".to_string()]);
+        let held = l.take_held();
+        assert_eq!(held.len(), 1);
+        assert!(texts(&l).is_empty());
     }
 
     /// An older CLI without lifecycle or echoes: close at the result, as

@@ -134,6 +134,7 @@ impl IdleArm {
             work_dirs: Mutex::new(HashMap::new()),
             compactor: Arc::clone(&rt.compactor),
             steer_ack_timeout: rt.steer_ack_timeout,
+            steer_idle_timeout: rt.steer_idle_timeout,
             exit_grace: rt.exit_grace,
         });
         Self {

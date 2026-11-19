@@ -16,7 +16,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
 
-use super::steer::SteerLedger;
+use super::steer::{HeldSteer, SteerLedger};
 use super::tasks::TaskRefresher;
 use crate::bridge::{CliBridge, ToolDecision};
 use crate::interaction;
@@ -93,30 +93,92 @@ pub(super) async fn steer_message(uuid: &str, text: &str) -> String {
     }
 }
 
-/// Write a steer into the running turn, recorded in the ledger under the
-/// stdin lock: a concurrent close either sees it open or happened first
-/// (and the write fails, so the engine queues the text instead).
-pub(super) async fn write_steer(
+/// What [`steer_or_hold`] did with a steer.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SteerWrite {
+    /// On the wire, recorded in the ledger.
+    Written,
+    /// The prompt is not written yet: held, and written right after it.
+    Held,
+}
+
+/// Write a steer into the running turn, or hold it until the prompt is out,
+/// decided under the stdin lock: the prompt write takes the same lock, so a
+/// steer is never left behind a prompt that already went out, and a
+/// concurrent close either sees it open or happened first (the write fails,
+/// so the engine queues the text instead).
+pub(super) async fn steer_or_hold(
     stdin: &SharedStdin,
     steers: &SharedSteers,
-    uuid: &str,
-    text: &str,
-    line: &str,
+    ready: &std::sync::atomic::AtomicBool,
+    steer: HeldSteer,
+) -> std::io::Result<SteerWrite> {
+    let mut guard = stdin.lock().await;
+    let Some(pipe) = guard.as_mut() else {
+        return Err(std::io::ErrorKind::BrokenPipe.into());
+    };
+    if !ready.load(std::sync::atomic::Ordering::SeqCst) {
+        with_ledger(steers, |l| l.hold(steer));
+        return Ok(SteerWrite::Held);
+    }
+    write_recorded(pipe, steers, &steer).await?;
+    Ok(SteerWrite::Written)
+}
+
+/// One steer on the wire, in the ledger before the write (undone on
+/// failure). The caller holds the stdin lock.
+async fn write_recorded(
+    pipe: &mut ChildStdin,
+    steers: &SharedSteers,
+    steer: &HeldSteer,
+) -> std::io::Result<()> {
+    with_ledger(steers, |l| l.sent(&steer.uuid, &steer.text));
+    let written = async {
+        pipe.write_all(format!("{}\n", steer.line).as_bytes())
+            .await?;
+        pipe.flush().await
+    }
+    .await;
+    if written.is_err() {
+        with_ledger(steers, |l| l.unsent(&steer.uuid));
+    }
+    written
+}
+
+/// The turn's prompt, then every steer held for it, in order, under one
+/// stdin lock; `ready` is set once the prompt is out, so later steers are
+/// written directly. A held steer whose write fails stays out of the
+/// ledger's open set and is reported unread at the end of the turn.
+async fn write_prompt(
+    stdin: &SharedStdin,
+    steers: &SharedSteers,
+    ready: &std::sync::atomic::AtomicBool,
+    run_id: &str,
+    prompt: &str,
 ) -> std::io::Result<()> {
     let mut guard = stdin.lock().await;
     let Some(pipe) = guard.as_mut() else {
         return Err(std::io::ErrorKind::BrokenPipe.into());
     };
-    with_ledger(steers, |l| l.sent(uuid, text));
-    let written = async {
-        pipe.write_all(format!("{line}\n").as_bytes()).await?;
-        pipe.flush().await
+    with_ledger(steers, |l| l.prompt(run_id));
+    pipe.write_all(format!("{prompt}\n").as_bytes()).await?;
+    pipe.flush().await?;
+    ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    let held = with_ledger(steers, SteerLedger::take_held);
+    let mut held = held.into_iter();
+    for steer in held.by_ref() {
+        if let Err(error) = write_recorded(pipe, steers, &steer).await {
+            // This one and the rest were never written: back to unread.
+            with_ledger(steers, |l| {
+                l.hold(steer);
+                for rest in held {
+                    l.hold(rest);
+                }
+            });
+            return Err(error);
+        }
     }
-    .await;
-    if written.is_err() {
-        with_ledger(steers, |l| l.unsent(uuid));
-    }
-    written
+    Ok(())
 }
 
 pub(super) fn with_ledger<T>(steers: &SharedSteers, f: impl FnOnce(&mut SteerLedger) -> T) -> T {
@@ -150,6 +212,11 @@ pub(super) async fn write_line(stdin: &SharedStdin, line: &str) -> std::io::Resu
     };
     pipe.write_all(format!("{line}\n").as_bytes()).await?;
     pipe.flush().await
+}
+
+/// The turn's stdin still takes input.
+pub(super) async fn input_open(stdin: &SharedStdin) -> bool {
+    stdin.lock().await.is_some()
 }
 
 /// EOF on stdin: the CLI finishes and exits.
@@ -239,6 +306,26 @@ pub(super) struct BridgedTurn {
     /// The next text delta opens a new text block.
     new_block: bool,
     new_thinking_block: bool,
+    /// Tool calls the model made whose results are not back yet.
+    inflight: HashSet<String>,
+    /// Hook and elicitation answers still waiting (on a person, mostly).
+    answering: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Counts one answer in flight until dropped.
+struct Answering(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Answering {
+    fn new(count: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for Answering {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl BridgedTurn {
@@ -255,6 +342,8 @@ impl BridgedTurn {
             task_calls: HashSet::new(),
             new_block: false,
             new_thinking_block: false,
+            inflight: HashSet::new(),
+            answering: Arc::default(),
         }
     }
 
@@ -271,6 +360,17 @@ impl BridgedTurn {
     /// The result is in and only unacknowledged steers hold stdin open.
     pub(super) fn waiting_for_steer_ack(&self) -> bool {
         with_ledger(&self.steers, |l| l.waiting_for_ack())
+    }
+
+    /// The result is in and commands the CLI acknowledged keep stdin open.
+    pub(super) fn holding_open(&self) -> bool {
+        with_ledger(&self.steers, |l| l.held_open())
+    }
+
+    /// A tool call runs or a hook waits for its answer: silence then is
+    /// work, not a stuck CLI.
+    pub(super) fn busy(&self) -> bool {
+        !self.inflight.is_empty() || self.answering.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 
     /// The CLI ignored a steer for [`super::steer::ACK_TIMEOUT`]: end its
@@ -291,6 +391,7 @@ impl BridgedTurn {
             Some("stream_event") if frame["parent_tool_use_id"].is_null() => {
                 self.on_stream_event(&frame["event"])
             }
+            Some("assistant") if frame["parent_tool_use_id"].is_null() => self.on_tool_uses(&frame),
             // Tool results come back as the user's turn: they finish the rows.
             Some("user") if frame["parent_tool_use_id"].is_null() => self.on_tool_results(&frame),
             // Input ends once every command written is done (see `steer.rs`).
@@ -310,12 +411,17 @@ impl BridgedTurn {
             close(&self.stdin).await;
             return Step::InitRefused;
         }
-        if let Some(prompt) = self.prompt.take() {
-            with_ledger(&self.steers, |l| l.prompt(&self.run_id));
-            match write_line(&self.stdin, &prompt).await {
-                Ok(()) => self.ready.store(true, std::sync::atomic::Ordering::SeqCst),
-                Err(error) => tracing::debug!(%error, "claude cli: prompt write failed"),
-            }
+        if let Some(prompt) = self.prompt.take()
+            && let Err(error) = write_prompt(
+                &self.stdin,
+                &self.steers,
+                &self.ready,
+                &self.run_id,
+                &prompt,
+            )
+            .await
+        {
+            tracing::debug!(%error, "claude cli: prompt write failed");
         }
         Step::Continue
     }
@@ -347,8 +453,10 @@ impl BridgedTurn {
                 // Claimed here, in stream order, before the answer is spawned.
                 let call_id = input["tool_use_id"].as_str().map(str::to_string);
                 let claim = known.then(|| bridge.claim_call(&thread, &run).with_call_id(call_id));
+                let answering = Answering::new(&self.answering);
                 // Answered off the read loop: the CLI keeps streaming meanwhile.
                 tokio::spawn(async move {
+                    let _answering = answering;
                     let decision = if let Some(claim) = claim {
                         bridge
                             .decide_call(&thread, &run, &tool, &tool_input, reason, claim)
@@ -425,7 +533,9 @@ impl BridgedTurn {
                 let claim = bridge.claim_call(&thread, &run);
                 let request_id = request_id.to_string();
                 let tool = tool.to_string();
+                let answering = Answering::new(&self.answering);
                 tokio::spawn(async move {
+                    let _answering = answering;
                     let outcome = bridge.ask(&thread, &run, &tool, form.clone(), claim).await;
                     let reply = match outcome.answer() {
                         Some(answer) => interaction::claude_question_reply(&form, Some(answer)),
@@ -456,7 +566,9 @@ impl BridgedTurn {
         let (bridge, stdin) = (Arc::clone(&self.bridge), Arc::clone(&self.stdin));
         let (thread, run) = (self.thread.clone(), self.run_id.clone());
         let claim = form.as_ref().map(|_| bridge.claim_call(&thread, &run));
+        let answering = Answering::new(&self.answering);
         tokio::spawn(async move {
+            let _answering = answering;
             let reply = match (form, claim) {
                 (Some(form), Some(claim)) => {
                     let outcome = bridge
@@ -472,6 +584,17 @@ impl BridgedTurn {
         });
     }
 
+    fn on_tool_uses(&mut self, frame: &Value) {
+        let Some(blocks) = frame["message"]["content"].as_array() else {
+            return;
+        };
+        for block in blocks.iter().filter(|b| b["type"] == "tool_use") {
+            if let Some(id) = block["id"].as_str() {
+                self.inflight.insert(id.to_string());
+            }
+        }
+    }
+
     fn on_tool_results(&mut self, frame: &Value) {
         let Some(blocks) = frame["message"]["content"].as_array() else {
             return;
@@ -479,6 +602,7 @@ impl BridgedTurn {
         let mut tasks_changed = false;
         for block in blocks.iter().filter(|b| b["type"] == "tool_result") {
             if let Some(id) = block["tool_use_id"].as_str() {
+                self.inflight.remove(id);
                 let failed = block["is_error"].as_bool().unwrap_or(false);
                 if self.task_calls.remove(id) {
                     tasks_changed |= !failed;

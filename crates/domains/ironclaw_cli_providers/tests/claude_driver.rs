@@ -1131,3 +1131,213 @@ async fn a_cli_that_outlives_its_input_after_the_result_still_ends_the_turn() {
         );
     }
 }
+
+/// A steer the CLI acknowledged (queued) and then never works on: after the
+/// result it streams a while (still working, so input stays open), then
+/// goes silent with nothing running. Before the idle bound this held stdin
+/// open forever and the turn sat on "Working". Now input closes after the
+/// silence, the steer comes back unread for the engine to queue, and the
+/// turn ends with its answer.
+const ACKED_STEER_GOES_IDLE: &str = r#"#!/bin/sh
+uuid_of() { echo "$1" | sed 's/.*"uuid":"\([^"]*\)".*/\1/'; }
+life() { echo "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$1\",\"state\":\"$2\",\"session_id\":\"s\"}"; }
+read -r init
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"ironclaw-init","response":{}}}'
+read -r prompt
+a=$(uuid_of "$prompt")
+life "$a" started
+touch @DIR@/ready
+read -r steer
+b=$(uuid_of "$steer")
+life "$b" queued
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":5,\"duration_api_ms\":5,\"num_turns\":1,\"result\":\"done\",\"session_id\":\"s\",\"total_cost_usd\":0,\"user_message_uuids\":[\"$a\"]}"
+life "$a" completed
+i=0; while [ $i -lt 15 ]; do echo '{"type":"stream_event","event":{"type":"ping"},"session_id":"s","uuid":"p"}'; sleep 0.1; i=$((i+1)); done
+date +%s > @DIR@/quiet
+read -r _eof
+"#;
+
+#[tokio::test]
+async fn an_acknowledged_steer_the_cli_never_works_on_ends_the_turn_after_silence() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = script(
+        dir.path(),
+        "claude",
+        &ACKED_STEER_GOES_IDLE.replace("@DIR@", &dir.path().display().to_string()),
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)))
+        .with_steer_idle_timeout(Duration::from_millis(800))
+        .with_exit_grace(Duration::from_millis(500));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("ready").exists()).await;
+    assert_eq!(
+        rt.steer(&thread, "also check the logs", SteerHow::Steer)
+            .await
+            .unwrap(),
+        SteerOutcome::Steered
+    );
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    // The 1.5 s of output after the result kept input open: the silence
+    // bound only counts from the last frame.
+    assert!(
+        dir.path().join("quiet").exists(),
+        "closed while the CLI still streamed"
+    );
+    assert_eq!(
+        *sink.unread.lock().unwrap(),
+        vec!["also check the logs".to_string()]
+    );
+    let outcome = sink.finished.lock().unwrap()[0].clone();
+    assert_eq!(outcome.status, TurnEndStatus::Completed);
+    assert_eq!(outcome.final_text.as_deref(), Some("done"));
+}
+
+/// The hook registration is acknowledged only once `@DIR@/go` exists, so a
+/// steer sent meanwhile arrives before the prompt is written. `@MODE@=ok`
+/// acks and runs both; `refuse` refuses the registration.
+const STEER_BEFORE_READY: &str = r#"#!/bin/sh
+uuid_of() { echo "$1" | sed 's/.*"uuid":"\([^"]*\)".*/\1/'; }
+life() { echo "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$1\",\"state\":\"$2\",\"session_id\":\"s\"}"; }
+read -r init
+touch @DIR@/init
+while [ ! -e @DIR@/go ]; do sleep 0.05; done
+if [ "@MODE@" = refuse ]; then
+  echo '{"type":"control_response","response":{"subtype":"error","request_id":"ironclaw-init","error":"no hooks"}}'
+  read -r _eof
+  exit 0
+fi
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"ironclaw-init","response":{}}}'
+read -r prompt
+echo "$prompt" >> @DIR@/input.log
+a=$(uuid_of "$prompt")
+read -r steer
+echo "$steer" >> @DIR@/input.log
+b=$(uuid_of "$steer")
+life "$a" started
+life "$b" queued
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":5,\"duration_api_ms\":5,\"num_turns\":1,\"result\":\"first\",\"session_id\":\"s\",\"total_cost_usd\":0,\"user_message_uuids\":[\"$a\"]}"
+life "$a" completed
+life "$b" started
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":5,\"duration_api_ms\":5,\"num_turns\":1,\"result\":\"steered\",\"session_id\":\"s\",\"total_cost_usd\":0,\"user_message_uuids\":[\"$b\"]}"
+life "$b" completed
+read -r _eof
+"#;
+
+#[tokio::test]
+async fn a_steer_before_the_prompt_is_written_joins_the_turn_or_comes_back_unread() {
+    for mode in ["ok", "refuse"] {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = Arc::new(Recorder::default());
+        let bridge = CliBridge::new(Duration::from_secs(10));
+        let binary = script(
+            dir.path(),
+            "claude",
+            &STEER_BEFORE_READY
+                .replace("@DIR@", &dir.path().display().to_string())
+                .replace("@MODE@", mode),
+        );
+        let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)));
+        let thread = thread(&rt).await;
+        rt.start_turn(&thread, input()).await.unwrap();
+        wait_for(|| dir.path().join("init").exists()).await;
+        // Not a separate later turn: the running one takes it.
+        assert_eq!(
+            rt.steer(&thread, "early words", SteerHow::Steer)
+                .await
+                .unwrap(),
+            SteerOutcome::Steered,
+            "{mode}"
+        );
+        std::fs::write(dir.path().join("go"), "").unwrap();
+        wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+        let outcome = sink.finished.lock().unwrap()[0].clone();
+        if mode == "ok" {
+            let log = std::fs::read_to_string(dir.path().join("input.log")).unwrap();
+            let lines: Vec<&str> = log.lines().collect();
+            assert_eq!(lines.len(), 2, "{log}");
+            assert!(!lines[0].contains("early words"), "prompt first: {log}");
+            assert!(lines[1].contains("early words"), "{log}");
+            assert!(lines[1].contains(r#""priority":"next""#), "{log}");
+            assert!(sink.unread.lock().unwrap().is_empty());
+            assert_eq!(outcome.status, TurnEndStatus::Completed);
+            assert_eq!(outcome.final_text.as_deref(), Some("first\n\nsteered"));
+        } else {
+            assert_eq!(
+                *sink.unread.lock().unwrap(),
+                vec!["early words".to_string()],
+                "never written, so the engine queues it"
+            );
+            assert_eq!(outcome.status, TurnEndStatus::Failed);
+        }
+    }
+}
+
+/// A steer while a tool call waits for approval: the call is declined with
+/// the person's words as the hook's reason, and no steer frame follows (the
+/// model would read the words twice).
+const STEER_AT_GATE: &str = r#"#!/bin/sh
+uuid_of() { echo "$1" | sed 's/.*"uuid":"\([^"]*\)".*/\1/'; }
+life() { echo "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$1\",\"state\":\"$2\",\"session_id\":\"s\"}"; }
+read -r init
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"ironclaw-init","response":{}}}'
+read -r prompt
+a=$(uuid_of "$prompt")
+life "$a" started
+echo '{"type":"control_request","request_id":"h1","request":{"subtype":"hook_callback","callback_id":"ironclaw-approval","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf build"},"tool_use_id":"tu1"}}}'
+read -r answer
+echo "$answer" >> @DIR@/answer.log
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":5,\"duration_api_ms\":5,\"num_turns\":1,\"result\":\"ok\",\"session_id\":\"s\",\"total_cost_usd\":0,\"user_message_uuids\":[\"$a\"]}"
+life "$a" completed
+while IFS= read -r line; do echo "$line" >> @DIR@/input.log; done
+"#;
+
+#[tokio::test]
+async fn a_steer_at_a_pending_approval_declines_it_with_the_words_and_writes_nothing_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = script(
+        dir.path(),
+        "claude",
+        &STEER_AT_GATE.replace("@DIR@", &dir.path().display().to_string()),
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("gate")
+            .unwrap();
+        if matches!(event, LiveEvent::GateOpened { .. }) {
+            break;
+        }
+    }
+    assert_eq!(
+        rt.steer(&thread, "keep the build folder", SteerHow::Steer)
+            .await
+            .unwrap(),
+        SteerOutcome::Steered
+    );
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let answer = std::fs::read_to_string(dir.path().join("answer.log")).unwrap();
+    assert!(
+        answer.contains(r#""permissionDecision":"deny""#)
+            && answer.contains("keep the build folder"),
+        "{answer}"
+    );
+    let after = std::fs::read_to_string(dir.path().join("input.log")).unwrap_or_default();
+    assert!(
+        !after.contains("keep the build folder"),
+        "the words went twice: {after}"
+    );
+    assert!(sink.unread.lock().unwrap().is_empty());
+    assert_eq!(
+        sink.finished.lock().unwrap()[0].status,
+        TurnEndStatus::Completed
+    );
+}
