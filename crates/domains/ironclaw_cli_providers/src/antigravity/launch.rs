@@ -133,45 +133,70 @@ const USER_SKILL_DIRS: [&str; 2] = ["config/skills", "antigravity-cli/skills"];
 /// user's own global skills (`~/.gemini/config/skills`,
 /// `~/.gemini/antigravity-cli/skills`) are linked into it. Only a missing
 /// entry, an empty placeholder folder (the agent makes one on launch) or a
-/// link of ours is replaced: a folder with content is never touched.
+/// link of ours (to exactly the managed target) is replaced; a folder with
+/// content and a link pointing anywhere else are the user's and stay. No
+/// symlinked folder inside the profile is followed on the way there.
 pub(super) async fn link_user_skills(profile: &Path, user_gemini: &Path) {
     for rel in USER_SKILL_DIRS {
         let (link, target) = (profile.join(rel), user_gemini.join(rel));
         if link == target {
             continue;
         }
-        if let Err(error) = link_one(&link, &target).await {
+        if let Err(error) = link_one(profile, Path::new(rel), &target).await {
             tracing::debug!(%error, rel, "antigravity: user skills not linked");
         }
     }
 }
 
-async fn link_one(link: &Path, target: &Path) -> std::io::Result<()> {
-    let existing = tokio::fs::read_link(link).await.ok(); // silent-ok: not a link (or absent) is handled below
-    if !tokio::fs::try_exists(target).await.unwrap_or(false) {
-        // silent-ok: an unreadable target is treated as absent
-        // Nothing to share; drop a link of ours that now dangles.
-        if existing.is_some() {
-            tokio::fs::remove_file(link).await?;
+/// Make `profile/rel` a link to `target`, or drop a dangling link of ours.
+async fn link_one(profile: &Path, rel: &Path, target: &Path) -> std::io::Result<()> {
+    let link = profile.join(rel);
+    // Every folder between the profile and the link must be a real folder
+    // (or not exist yet): a symlink there would send the changes below
+    // outside the private profile.
+    let mut dir = profile.to_path_buf();
+    if let Some(parent) = rel.parent() {
+        for part in parent.components() {
+            dir.push(part);
+            match tokio::fs::symlink_metadata(&dir).await {
+                Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                    return Err(std::io::Error::other(
+                        "a folder on the way to the skills link is not a plain folder",
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
         }
+    }
+    let target_exists = tokio::fs::try_exists(target).await.unwrap_or(false); // silent-ok: an unreadable target is treated as absent
+    match tokio::fs::symlink_metadata(&link).await {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if tokio::fs::read_link(&link).await? != target {
+                // The user's own link: never ours to change.
+                return Ok(());
+            }
+            if !target_exists {
+                // Ours, and now dangling.
+                tokio::fs::remove_file(&link).await?;
+            }
+            return Ok(());
+        }
+        // `remove_dir` refuses a folder with content: only the placeholder
+        // goes.
+        Ok(meta) if meta.is_dir() && target_exists => tokio::fs::remove_dir(&link).await?,
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if !target_exists {
         return Ok(());
     }
-    match existing {
-        Some(current) if current == target => return Ok(()),
-        Some(_) => tokio::fs::remove_file(link).await?,
-        None => match tokio::fs::symlink_metadata(link).await {
-            // `remove_dir` refuses a folder with content: only the
-            // placeholder goes.
-            Ok(meta) if meta.is_dir() => tokio::fs::remove_dir(link).await?,
-            Ok(_) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        },
+    if let Some(parent) = link.parent() {
+        tokio::fs::create_dir_all(parent).await?;
     }
-    if let Some(dir) = link.parent() {
-        tokio::fs::create_dir_all(dir).await?;
-    }
-    tokio::fs::symlink(target, link).await
+    tokio::fs::symlink(target, &link).await
 }
 
 /// `major.minor.patch` at the start of `raw`.
@@ -204,11 +229,16 @@ pub(super) fn appends_system_prompt(initialize: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// How long `agy --version` may take, output included.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The most of `agy --version`'s output read.
+const VERSION_PROBE_CAP: u64 = 4096;
+
 /// The installed `agy`, when it is new enough to serve ACP. Asks
 /// `agy --version` with a clean environment and a short deadline.
-pub fn find_cli(home: &Path) -> Option<PathBuf> {
+pub async fn find_cli(home: &Path) -> Option<PathBuf> {
     let agy = crate::rpc::find_on_path(home, "agy")?;
-    let version = cli_version(&agy)?;
+    let version = cli_version(&agy).await?;
     if version < FIRST_ACP_CLI {
         tracing::debug!(?version, "antigravity: agy has no ACP server");
         return None;
@@ -223,8 +253,13 @@ pub fn find_cli(home: &Path) -> Option<PathBuf> {
     Some(agy)
 }
 
-fn cli_version(agy: &Path) -> Option<(u64, u64, u64)> {
-    let mut child = std::process::Command::new(agy)
+/// `agy --version`, bounded: one deadline covers the first output line
+/// (read up to [`VERSION_PROBE_CAP`]) and the exit, and the probe's whole
+/// process group is killed afterwards, so a descendant holding stdout open
+/// neither blocks the probe nor outlives it.
+async fn cli_version(agy: &Path) -> Option<(u64, u64, u64)> {
+    use tokio::io::AsyncBufReadExt;
+    let child = Command::new(agy)
         .arg("--version")
         .env_clear()
         .envs(
@@ -235,31 +270,45 @@ fn cli_version(agy: &Path) -> Option<(u64, u64, u64)> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .ok()?; // silent-ok: an agy that does not start is no ACP agent
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20));
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            // An agy that does not start is no ACP agent.
+            tracing::debug!(%error, "antigravity: agy --version did not start");
+            return None;
+        }
+    };
+    let pgid = crate::rpc::group_of(&child);
+    let stdout = child.stdout.take()?;
+    let probe = async {
+        let mut line = String::new();
+        let mut reader =
+            tokio::io::BufReader::new(tokio::io::AsyncReadExt::take(stdout, VERSION_PROBE_CAP));
+        let read = reader.read_line(&mut line).await;
+        let exited = child.wait().await;
+        (read, exited, line)
+    };
+    let outcome = tokio::time::timeout(VERSION_PROBE_TIMEOUT, probe).await;
+    if let Some(pgid) = pgid {
+        crate::rpc::kill_group(pgid, "antigravity: agy --version group");
+    }
+    match outcome {
+        Ok((Ok(_), Ok(_), line)) => parse_version(&line),
+        Ok((read, exited, _)) => {
+            tracing::debug!(?read, ?exited, "antigravity: agy --version unreadable");
+            None
+        }
+        Err(_elapsed) => {
+            tracing::debug!("antigravity: agy --version timed out");
+            if let Err(error) = child.kill().await {
+                tracing::debug!(%error, "antigravity: agy --version not stopped");
             }
-            _ => {
-                if let Err(error) = child.kill() {
-                    tracing::debug!(%error, "antigravity: agy --version not stopped");
-                }
-                #[expect(
-                    clippy::let_underscore_must_use,
-                    reason = "reaping a killed probe; its status is irrelevant"
-                )]
-                let _ = child.wait();
-                return None;
-            }
+            None
         }
     }
-    let mut out = String::new();
-    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?; // silent-ok: unreadable output is no version
-    parse_version(&out)
 }
 
 /// The legacy ACP runtime: Hermes's managed copy, then T3 Code's.
@@ -289,10 +338,11 @@ pub fn find_runtime(home: &Path) -> Option<AgentLaunch> {
 
 /// The agent to run: the native CLI when it serves ACP, else the legacy
 /// runtime.
-pub fn find_agent(home: &Path) -> Option<AgentLaunch> {
-    find_cli(home)
-        .map(|agy| AgentLaunch::Cli { agy })
-        .or_else(|| find_runtime(home))
+pub async fn find_agent(home: &Path) -> Option<AgentLaunch> {
+    match find_cli(home).await {
+        Some(agy) => Some(AgentLaunch::Cli { agy }),
+        None => find_runtime(home),
+    }
 }
 
 #[cfg(test)]
@@ -340,5 +390,81 @@ mod tests {
             std::fs::symlink_metadata(profile.join("config/skills")).is_err(),
             "dangling link removed"
         );
+    }
+
+    // Review: a link the user made (pointing anywhere but the managed
+    // target) is theirs, present target or not.
+    #[tokio::test]
+    async fn user_skills_link_keeps_foreign_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let (profile, user) = (dir.path().join("profile"), dir.path().join("gemini"));
+        let elsewhere = dir.path().join("my-skills");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(profile.join("config")).unwrap();
+        std::fs::create_dir_all(profile.join("antigravity-cli")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, profile.join("config/skills")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, profile.join("antigravity-cli/skills")).unwrap();
+        // The global target exists for one entry and is absent for the other.
+        std::fs::create_dir_all(user.join("config/skills")).unwrap();
+        link_user_skills(&profile, &user).await;
+        for rel in ["config/skills", "antigravity-cli/skills"] {
+            assert_eq!(
+                std::fs::read_link(profile.join(rel)).unwrap(),
+                elsewhere,
+                "{rel}: a foreign link is kept"
+            );
+        }
+    }
+
+    // Review: a symlinked parent inside the profile is never followed, so
+    // nothing lands outside the private profile.
+    #[tokio::test]
+    async fn user_skills_link_never_follows_a_symlinked_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (profile, user) = (dir.path().join("profile"), dir.path().join("gemini"));
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::create_dir_all(user.join("config/skills")).unwrap();
+        std::os::unix::fs::symlink(&outside, profile.join("config")).unwrap();
+        link_user_skills(&profile, &user).await;
+        assert!(
+            std::fs::symlink_metadata(outside.join("skills")).is_err(),
+            "a link was made outside the profile"
+        );
+    }
+
+    // Review: the version probe is bounded even when a descendant keeps
+    // its stdout open, and the descendant goes with the probe's group.
+    #[tokio::test]
+    async fn version_probe_is_bounded_when_a_descendant_holds_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let agy = dir.path().join("agy");
+        std::fs::write(
+            &agy,
+            format!(
+                "#!/bin/sh\necho 1.5.11\nsleep 30 &\necho $! > '{}'\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let version = cli_version(&agy).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "probe blocked for {:?}",
+            started.elapsed()
+        );
+        assert_eq!(version, Some((1, 5, 11)));
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "the probe's descendant survived");
     }
 }

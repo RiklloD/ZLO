@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
 
 use super::{
-    ActiveTurn, COMMAND_TIMEOUT, GroupGuard, MuseRuntime, PERMISSION_PROFILE, close_host,
-    command_id, connect, handshake,
+    ActiveTurn, COMMAND_TIMEOUT, MuseRuntime, PERMISSION_PROFILE, close_host, command_id, connect,
+    handshake,
 };
 use crate::rpc::{Inbound, RpcClient};
 
@@ -54,7 +54,7 @@ impl MuseRuntime {
             });
         }
         let (mut child, pgid) = self.spawn_host(false)?;
-        let mut group = GroupGuard::new(pgid);
+        let mut group = crate::slot::GroupGuard::new(pgid, "muse: dropped host group");
         let (client, inbound) = connect(&mut child, pgid)?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let (done_tx, done_rx) = watch::channel(false);

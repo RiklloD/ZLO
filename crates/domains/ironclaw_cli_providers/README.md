@@ -138,8 +138,20 @@ is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
   `/usr/bin/true`: a missing sign-in fails the turn after `auth_timeout`
   instead of opening a browser. The user's global skills
   (`~/.gemini/config/skills`, `~/.gemini/antigravity-cli/skills`) are
-  linked into the private profile; only a missing entry or an empty
-  placeholder folder is replaced.
+  linked into the private profile; only a missing entry, an empty
+  placeholder folder or a link to exactly that target is replaced (a link
+  pointing elsewhere is the user's and stays), and nothing is changed when
+  a folder on the way inside the profile is a symlink.
+- **Finding the agent:** `agy --version` runs asynchronously
+  (`register_antigravity_runtime` and `register_cli_runtimes` are `async`)
+  in its own process group, under one 5 s deadline for its first output
+  line (4 KiB cap) and its exit; the group is killed afterwards, so a
+  descendant holding stdout open neither blocks startup nor outlives it.
+- **Admission:** one turn per thread, claimed atomically before any await
+  (`slot.rs`, shared with Muse): a racing start is `Busy`, and the claim
+  and a guard on the agent's process group live in the turn task, so a
+  dropped, panicking or aborted turn still frees the thread and ends the
+  agent.
 - **Turns:** one agent process per turn: `initialize`, `authenticate`,
   `session/new` on the first turn (the agent's session id is kept in
   `~/.ironclaw/antigravity/sessions/<key>`), then `session/resume`. The
@@ -156,13 +168,19 @@ is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
 - **Steer:** on `agy acp` a message sent mid-turn is another
   `session/prompt` into the same session (`steer_in_turn`): the running
   prompt answers `end_turn`, the turn carries on under the new one, and the
-  agent's tools and subagents are left alone. The legacy runtime refuses
-  (the engine queues); `SteerHow::Restart` stops and restarts.
+  agent's tools and subagents are left alone. A steer is acknowledged only
+  after its `session/prompt` frame is queued on the wire (frames go out in
+  order), so steers sent at once all reach the agent. The legacy runtime
+  refuses (the engine queues); `SteerHow::Restart` stops and restarts.
 - **Background commands:** `agy` ends a prompt while a command it
   backgrounded still runs and replies on its own when it finishes. The turn
   stays open until the command is done and that reply closes with a
   `usage_update` (or 60 s of silence with nothing running); a daemon
   (`IsDaemon`) never holds a turn, and an agent exit while held fails it.
+  A hold is bounded: a command whose end the agent never reports, with no
+  word from it for `background_hold` (30 minutes by default), ends the
+  turn `Interrupted` with an "ended unverified" error, keeping what the
+  agent said in the answer and the journal.
 - **Stop:** `session/cancel` (which also ends `agy`'s background commands),
   then SIGTERM/SIGKILL of the process group after 2 s each.
 - **Live turn:** reply text, thinking, tool rows with their output and
@@ -171,7 +189,10 @@ is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
 - **History:** IronClaw's own journal,
   `~/.ironclaw/antigravity/transcripts/<key>.jsonl` (user prompts and
   steers, answers, tool call names). When the agent has lost a thread's
-  session, the fresh one gets a recap of that journal.
+  session, the fresh one gets a recap of that journal, fenced in
+  `<prior_conversation>` tags and labeled untrusted data, not
+  instructions; the tag inside the recapped text is defused
+  (`prior-conversation`) so it cannot close the fence.
 - **Models:** the list the last session reported
   (`~/.ironclaw/antigravity/models.json`, with the thinking levels), else
   Hermes's cache in the shared profile, else `default`. A signed-in catalog
@@ -225,6 +246,8 @@ dependency: its facade has no `turn/interrupt`, `model/list` or
   SIGTERM/SIGKILL of the process group.
 - **Fork:** no native fork; the engine's portable handoff starts a new
   session with the context (as t3code does).
+- **Admission:** the same shared claim as Antigravity (`slot.rs`): one turn,
+  compaction or probe per thread, taken before any await.
 - **Compaction:** Muse compacts near the window by itself
   (`RuntimeCompaction::automatic`); `ThreadAction::Compact` resumes the
   session on a host of its own, sends `session/compact` and waits up to

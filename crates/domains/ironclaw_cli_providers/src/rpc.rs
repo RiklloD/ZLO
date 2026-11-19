@@ -150,6 +150,17 @@ impl RpcClient {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, RpcError> {
+        self.start_request(method, params)?.wait(timeout).await
+    }
+
+    /// Queue the request frame now, before anything awaits, and hand back
+    /// the handle its answer arrives on. Frames go out in the order they
+    /// were started, so a caller can report "sent" as soon as this returns.
+    pub(crate) fn start_request(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<PendingReply, RpcError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         if let Ok(mut map) = self.pending.lock() {
@@ -161,14 +172,11 @@ impl RpcClient {
             self.forget(id);
             return Err(error);
         }
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_dropped)) => Err(RpcError::Closed),
-            Err(_elapsed) => {
-                self.forget(id);
-                Err(RpcError::Timeout)
-            }
-        }
+        Ok(PendingReply {
+            client: self.clone(),
+            id,
+            rx,
+        })
     }
 
     fn forget(&self, id: i64) {
@@ -196,6 +204,26 @@ impl RpcClient {
         message: &str,
     ) -> Result<(), RpcError> {
         self.send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}))
+    }
+}
+
+/// The answer to a request whose frame is already queued.
+pub(crate) struct PendingReply {
+    client: RpcClient,
+    id: i64,
+    rx: oneshot::Receiver<Result<Value, RpcError>>,
+}
+
+impl PendingReply {
+    pub(crate) async fn wait(self, timeout: Duration) -> Result<Value, RpcError> {
+        match tokio::time::timeout(timeout, self.rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_dropped)) => Err(RpcError::Closed),
+            Err(_elapsed) => {
+                self.client.forget(self.id);
+                Err(RpcError::Timeout)
+            }
+        }
     }
 }
 

@@ -102,7 +102,9 @@ async fn one_turn(rt: &dyn TurnRuntime, recorder: &Recorder) {
 #[ignore = "calls the real Antigravity agent"]
 async fn antigravity_live_turn() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = antigravity::default_config(&home()).expect("antigravity acp runtime");
+    let mut config = antigravity::default_config(&home())
+        .await
+        .expect("antigravity acp runtime");
     config.state_dir = dir.path().join("state");
     config.work_dir = dir.path().join("work");
     let recorder = Arc::new(Recorder::default());
@@ -118,7 +120,9 @@ async fn antigravity_live_turn() {
 #[ignore = "calls the real Antigravity agent"]
 async fn antigravity_live_steer() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = antigravity::default_config(&home()).expect("antigravity agent");
+    let mut config = antigravity::default_config(&home())
+        .await
+        .expect("antigravity agent");
     assert!(
         matches!(config.launch, antigravity::launch::AgentLaunch::Cli { .. }),
         "the native agy CLI is preferred: {:?}",

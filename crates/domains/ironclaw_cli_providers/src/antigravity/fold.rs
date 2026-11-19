@@ -90,7 +90,7 @@ impl PromptFold {
     }
 
     /// The answer without the marker a native `/goal` run ends with.
-    fn answer_text(&self) -> String {
+    pub(crate) fn answer_text(&self) -> String {
         self.answer
             .replace(GOAL_COMPLETE_MARKER, "")
             .trim()
@@ -227,7 +227,7 @@ fn usage_limited(resets_at: Option<i64>) -> TurnOutcome {
     }
 }
 
-/// When a quota error says it resets: Google's `quotaResetTimeStamp`
+/// When a quota error says it resets: the provider's `quotaResetTimeStamp`
 /// (RFC 3339), else a `quotaResetDelay` or `retryDelay` Go duration from
 /// `now` (ms).
 pub(crate) fn reset_at(text: &str, now: i64) -> Option<i64> {
