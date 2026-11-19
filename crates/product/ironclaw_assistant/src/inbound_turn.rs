@@ -41,6 +41,7 @@ use ironclaw_turns::{
 };
 use uuid::Uuid;
 
+use crate::approval_interaction::ApprovalInteractionService;
 use crate::binding_ref::{
     DEFAULT_BINDING_REF_RAW_MAX_BYTES, bounded_idempotency_key, bounded_reply_target_binding_ref,
     bounded_source_binding_ref,
@@ -295,6 +296,15 @@ pub struct DefaultInboundTurnService<B, T, C> {
     llm_config: Option<Arc<dyn LlmConfigService>>,
     input_enqueue: Arc<dyn HostInputEnqueuePort>,
     session_skill_activation: Option<SessionSkillActivationPorts>,
+    approval_interactions: Option<Arc<dyn ApprovalInteractionService>>,
+}
+
+/// The ports a busy submit steers through: the run's input queue, and the
+/// approval service a steer declines a pending approval with.
+#[derive(Clone, Copy)]
+struct SteeringPorts<'a> {
+    input_enqueue: &'a dyn HostInputEnqueuePort,
+    approvals: Option<&'a dyn ApprovalInteractionService>,
 }
 
 impl<B, T, C> DefaultInboundTurnService<B, T, C>
@@ -322,6 +332,25 @@ where
             llm_config: None,
             input_enqueue,
             session_skill_activation: None,
+            approval_interactions: None,
+        }
+    }
+
+    /// Wire the approval service a message sent while the run waits on an
+    /// approval declines that approval with (the message then steers the
+    /// run). Without it the steer waits until the approval is answered.
+    pub fn with_approval_interactions(
+        mut self,
+        approval_interactions: Arc<dyn ApprovalInteractionService>,
+    ) -> Self {
+        self.approval_interactions = Some(approval_interactions);
+        self
+    }
+
+    fn steering_ports(&self) -> SteeringPorts<'_> {
+        SteeringPorts {
+            input_enqueue: self.input_enqueue.as_ref(),
+            approvals: self.approval_interactions.as_deref(),
         }
     }
 
@@ -791,7 +820,7 @@ where
         submit_or_replay_accepted_message(
             &self.thread_service,
             &self.turn_coordinator,
-            self.input_enqueue.as_ref(),
+            self.steering_ports(),
             self.session_skill_activation.as_ref(),
             replay,
             prepared.submit_idempotency_key.clone(),
@@ -969,7 +998,7 @@ where
             .submit_or_replay(
                 &self.thread_service,
                 &self.turn_coordinator,
-                self.input_enqueue.as_ref(),
+                self.steering_ports(),
                 self.session_skill_activation.as_ref(),
             )
             .await?;
@@ -1115,7 +1144,7 @@ fn inbound_model_resolution_failure(error: LlmConfigServiceError) -> ProductSurf
 async fn submit_or_replay_accepted_message<T, C>(
     thread_service: &T,
     turn_coordinator: &C,
-    input_enqueue: &dyn HostInputEnqueuePort,
+    steering: SteeringPorts<'_>,
     session_skill_activation: Option<&SessionSkillActivationPorts>,
     replay: AcceptedInboundMessageReplay,
     submit_idempotency_key: String,
@@ -1135,7 +1164,7 @@ where
     .submit_or_replay(
         thread_service,
         turn_coordinator,
-        input_enqueue,
+        steering,
         session_skill_activation,
     )
     .await
@@ -1342,7 +1371,7 @@ impl ProductInboundTurnHandoff {
         self,
         thread_service: &T,
         turn_coordinator: &C,
-        input_enqueue: &dyn HostInputEnqueuePort,
+        steering: SteeringPorts<'_>,
         session_skill_activation: Option<&SessionSkillActivationPorts>,
     ) -> Result<InboundTurnOutcome, ProductSurfaceFailure>
     where
@@ -1389,7 +1418,7 @@ impl ProductInboundTurnHandoff {
                 );
                 match crate::steering::readmit_queued_steering(
                     turn_coordinator,
-                    input_enqueue,
+                    steering.input_enqueue,
                     thread_service,
                     crate::steering::SteeringAdmissionRequest {
                         turn_scope,
@@ -1412,14 +1441,16 @@ impl ProductInboundTurnHandoff {
                             }),
                         })
                     }
-                    Ok(crate::steering::SteeringAdmission::Rejected) => {
-                        Ok(InboundTurnOutcome::RejectedBusy {
-                            accepted_message_ref,
-                            active_run_id: Some(active_run_id),
-                            binding,
-                            busy: None,
-                        })
-                    }
+                    // A replay never reports a run as ending: it settles.
+                    Ok(
+                        crate::steering::SteeringAdmission::Rejected
+                        | crate::steering::SteeringAdmission::RunEnding { .. },
+                    ) => Ok(InboundTurnOutcome::RejectedBusy {
+                        accepted_message_ref,
+                        active_run_id: Some(active_run_id),
+                        binding,
+                        busy: None,
+                    }),
                     Err(error) => Err(steering_admission_failure(error)),
                 }
             }
@@ -1428,7 +1459,7 @@ impl ProductInboundTurnHandoff {
                     .submit(
                         thread_service,
                         turn_coordinator,
-                        input_enqueue,
+                        steering,
                         session_skill_activation,
                     )
                     .await
@@ -1458,7 +1489,7 @@ impl AcceptedProductInboundTurn {
         self,
         thread_service: &T,
         turn_coordinator: &C,
-        input_enqueue: &dyn HostInputEnqueuePort,
+        steering: SteeringPorts<'_>,
         session_skill_activation: Option<&SessionSkillActivationPorts>,
     ) -> Result<InboundTurnOutcome, ProductSurfaceFailure>
     where
@@ -1565,99 +1596,155 @@ impl AcceptedProductInboundTurn {
             &accepted_message_ref,
         )?;
 
-        match turn_coordinator.submit_turn(request).await {
-            Ok(SubmitTurnResponse::Accepted {
-                turn_id,
-                run_id,
-                status,
-                resolved_run_profile_id,
-                resolved_run_profile_version,
-                event_cursor,
-                ..
-            }) => {
-                mark_message_submitted_or_reconcile(
-                    thread_service,
-                    &thread_scope,
-                    &binding,
-                    message_id,
-                    lane,
-                    &source_binding_id,
-                    &idempotency_key_raw,
-                    turn_id.to_string(),
-                    run_id.to_string(),
-                )
-                .await?;
-                Ok(InboundTurnOutcome::Submitted {
-                    accepted_message_ref,
-                    submitted_run_id: run_id,
-                    binding,
-                    submission: Some(AcceptedTurnSubmission {
-                        turn_id: turn_id.to_string(),
-                        status,
-                        resolved_run_profile_id: resolved_run_profile_id.as_str().to_string(),
-                        resolved_run_profile_version: resolved_run_profile_version.as_u64(),
-                        event_cursor,
-                    }),
-                })
-            }
-            Err(TurnError::ThreadBusy(busy)) => {
-                clear_session_skill_activation(
-                    lane,
-                    session_skill_activation,
-                    &turn_scope,
-                    &accepted_message_ref,
-                )?;
-                match crate::steering::admit_busy_steering(
-                    turn_coordinator,
-                    input_enqueue,
-                    thread_service,
-                    crate::steering::SteeringAdmissionRequest {
-                        turn_scope,
-                        thread_scope,
+        // A run that is ending cannot read a steer, but it is about to
+        // release the thread: wait for that and submit again, so the
+        // message starts the next turn (t3code: a steer that arrives too late
+        // starts the next turn right away) instead of being bounced.
+        let ending_deadline = tokio::time::Instant::now() + RUN_ENDING_WAIT;
+        let mut ending_pause = RUN_ENDING_FIRST_PAUSE;
+        loop {
+            match turn_coordinator.submit_turn(request.clone()).await {
+                Ok(SubmitTurnResponse::Accepted {
+                    turn_id,
+                    run_id,
+                    status,
+                    resolved_run_profile_id,
+                    resolved_run_profile_version,
+                    event_cursor,
+                    ..
+                }) => {
+                    mark_message_submitted_or_reconcile(
+                        thread_service,
+                        &thread_scope,
+                        &binding,
+                        message_id,
+                        lane,
+                        &source_binding_id,
+                        &idempotency_key_raw,
+                        turn_id.to_string(),
+                        run_id.to_string(),
+                    )
+                    .await?;
+                    return Ok(InboundTurnOutcome::Submitted {
+                        accepted_message_ref,
+                        submitted_run_id: run_id,
+                        binding,
+                        submission: Some(AcceptedTurnSubmission {
+                            turn_id: turn_id.to_string(),
+                            status,
+                            resolved_run_profile_id: resolved_run_profile_id.as_str().to_string(),
+                            resolved_run_profile_version: resolved_run_profile_version.as_u64(),
+                            event_cursor,
+                        }),
+                    });
+                }
+                Err(TurnError::ThreadBusy(busy)) => {
+                    clear_session_skill_activation(
+                        lane,
+                        session_skill_activation,
+                        &turn_scope,
+                        &accepted_message_ref,
+                    )?;
+                    let steering_request = crate::steering::SteeringAdmissionRequest {
+                        turn_scope: turn_scope.clone(),
+                        thread_scope: thread_scope.clone(),
                         message_id,
                         accepted_message_ref: accepted_message_ref.clone(),
                         active_run_id: busy.active_run_id,
-                    },
-                )
-                .await
-                {
-                    Ok(crate::steering::SteeringAdmission::Deferred { run }) => {
-                        Ok(InboundTurnOutcome::DeferredBusy {
-                            accepted_message_ref,
-                            active_run_id: busy.active_run_id,
-                            binding,
-                            busy: Some(BusyRunSnapshot {
-                                status: run.status,
-                                event_cursor: run.event_cursor,
-                            }),
-                        })
+                    };
+                    let admission = crate::steering::admit_busy_steering(
+                        turn_coordinator,
+                        steering.input_enqueue,
+                        thread_service,
+                        steering.approvals,
+                        steering_request,
+                    )
+                    .await
+                    .map_err(steering_admission_failure)?;
+                    match admission {
+                        crate::steering::SteeringAdmission::Deferred { run } => {
+                            return Ok(InboundTurnOutcome::DeferredBusy {
+                                accepted_message_ref,
+                                active_run_id: busy.active_run_id,
+                                binding,
+                                busy: Some(BusyRunSnapshot {
+                                    status: run.status,
+                                    event_cursor: run.event_cursor,
+                                }),
+                            });
+                        }
+                        crate::steering::SteeringAdmission::Rejected => {
+                            return Ok(InboundTurnOutcome::RejectedBusy {
+                                accepted_message_ref,
+                                active_run_id: Some(busy.active_run_id),
+                                binding,
+                                busy: Some(BusyRunSnapshot {
+                                    status: busy.status,
+                                    event_cursor: busy.event_cursor,
+                                }),
+                            });
+                        }
+                        crate::steering::SteeringAdmission::RunEnding { run } => {
+                            if tokio::time::Instant::now() + ending_pause > ending_deadline {
+                                // The run never released the thread: this
+                                // message truly could not be delivered.
+                                tracing::debug!(
+                                    active_run_id = %busy.active_run_id,
+                                    "the ending run did not release the thread in time"
+                                );
+                                crate::steering::settle_rejected(
+                                    thread_service,
+                                    &crate::steering::SteeringAdmissionRequest {
+                                        turn_scope: turn_scope.clone(),
+                                        thread_scope: thread_scope.clone(),
+                                        message_id,
+                                        accepted_message_ref: accepted_message_ref.clone(),
+                                        active_run_id: busy.active_run_id,
+                                    },
+                                )
+                                .await
+                                .map_err(steering_admission_failure)?;
+                                return Ok(InboundTurnOutcome::RejectedBusy {
+                                    accepted_message_ref,
+                                    active_run_id: Some(busy.active_run_id),
+                                    binding,
+                                    busy: Some(BusyRunSnapshot {
+                                        status: run.status,
+                                        event_cursor: run.event_cursor,
+                                    }),
+                                });
+                            }
+                            tokio::time::sleep(ending_pause).await;
+                            ending_pause = (ending_pause * 2).min(RUN_ENDING_MAX_PAUSE);
+                            record_session_skill_activation(
+                                lane,
+                                session_skill_activation,
+                                skill_activation_text.as_deref(),
+                                &turn_scope,
+                                &accepted_message_ref,
+                            )?;
+                        }
                     }
-                    Ok(crate::steering::SteeringAdmission::Rejected) => {
-                        Ok(InboundTurnOutcome::RejectedBusy {
-                            accepted_message_ref,
-                            active_run_id: Some(busy.active_run_id),
-                            binding,
-                            busy: Some(BusyRunSnapshot {
-                                status: busy.status,
-                                event_cursor: busy.event_cursor,
-                            }),
-                        })
-                    }
-                    Err(error) => Err(steering_admission_failure(error)),
                 }
-            }
-            Err(error) => {
-                clear_session_skill_activation(
-                    lane,
-                    session_skill_activation,
-                    &turn_scope,
-                    &accepted_message_ref,
-                )?;
-                Err(ProductSurfaceFailure::TurnSubmissionFailed { error })
+                Err(error) => {
+                    clear_session_skill_activation(
+                        lane,
+                        session_skill_activation,
+                        &turn_scope,
+                        &accepted_message_ref,
+                    )?;
+                    return Err(ProductSurfaceFailure::TurnSubmissionFailed { error });
+                }
             }
         }
     }
 }
+
+/// How long a submit waits for an ending run (terminal or cancelling) to
+/// release the thread before the message is settled as not delivered.
+const RUN_ENDING_WAIT: Duration = Duration::from_secs(10);
+const RUN_ENDING_FIRST_PAUSE: Duration = Duration::from_millis(25);
+const RUN_ENDING_MAX_PAUSE: Duration = Duration::from_millis(400);
 
 /// Record the session skill-activation bookkeeping between message acceptance
 /// and turn submission. Webhook-lane submissions skip it entirely.

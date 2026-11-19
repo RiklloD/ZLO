@@ -9,8 +9,9 @@
 //! [`TurnCoordinator`] so every cancel caller (WebUI cancel, gate deny, auth
 //! cancel, automation) inherits the reconciliation: after a successful
 //! `cancel_run`, the run's undrained queue entries are claimed and their rows
-//! flipped `Queued` → `RejectedBusy` (resend affordance, never auto-resubmit)
-//! via [`HostInputQueueReconcile::reject_unconsumed`].
+//! flipped `Queued` → `RejectedBusy` ("not delivered", the person decides —
+//! a cancel is a Stop) via [`HostInputQueueReconcile::settle_unconsumed`]
+//! with [`RunQueueEnding::Stopped`].
 //!
 //! [`SteeringReconcilingProcessTransitions`] applies the same reconciliation
 //! at the other choke point — the ONE composed
@@ -19,11 +20,14 @@
 //! cancellation, and the executor/scheduler failure fallbacks) — so a run
 //! that reaches `Completed` or `Failed` without a cancel also reclaims its
 //! queue record and settles any stranded rows, instead of leaking one queue
-//! record per steered run for the life of the deployment.
+//! record per steered run for the life of the deployment. A run that ends by
+//! itself ([`RunQueueEnding::Ended`]) hands steers it never read to the
+//! queue's redelivery handler, which starts the next turn with them; only a
+//! cancel settles them as not delivered.
 //!
 //! The flip is best-effort by design — the terminal outcome must never be
 //! failed or delayed by transcript bookkeeping. A run that consumed an input
-//! first keeps its `Submitted` row (`reject_unconsumed` claims-then-flips, so
+//! first keeps its `Submitted` row (`settle_unconsumed` claims-then-flips, so
 //! the race resolves to whichever side claimed first, and a consumed row
 //! whose `Submitted` flip is still pending is repaired rather than
 //! rejected).
@@ -32,7 +36,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ironclaw_host_api::ids::ProcessId;
-use ironclaw_loop_host::HostInputQueueReconcile;
+use ironclaw_loop_host::{HostInputQueueReconcile, RunQueueEnding};
 use ironclaw_processes::{
     ClaimProcessesRequest, ClaimedProcess, FailProcessRequest, JournaledProcessSnapshot,
     ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalKind,
@@ -104,7 +108,11 @@ impl TurnCoordinator for CancelReconcilingTurnCoordinator {
         // will not drain its queue again, so claim the stranded entries and
         // flip their rows to the resend affordance. Best-effort — the cancel
         // outcome is already settled and must not be failed by bookkeeping.
-        match self.input_queue.reject_unconsumed(run_id).await {
+        match self
+            .input_queue
+            .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+            .await
+        {
             Ok(rejected) if !rejected.is_empty() => {
                 debug!(
                     %run_id,
@@ -181,7 +189,11 @@ impl ProcessJournalCommitObserver for SteeringReconcileCommitObserver {
             return Ok(());
         }
         let run_id = TurnRunId::from_uuid(commit.state.process_id.as_uuid());
-        match self.input_queue.reject_unconsumed(run_id).await {
+        let ending = match commit.kind {
+            ProcessJournalKind::Cancelled | ProcessJournalKind::Stopped => RunQueueEnding::Stopped,
+            _ => RunQueueEnding::Ended,
+        };
+        match self.input_queue.settle_unconsumed(run_id, ending).await {
             Ok(rejected) if !rejected.is_empty() => {
                 debug!(
                     %run_id,
@@ -214,7 +226,7 @@ impl ProcessJournalCommitObserver for SteeringReconcileCommitObserver {
 /// `fail_process`, `cancel_process`). Non-terminal methods forward untouched.
 ///
 /// This is the reclamation path for runs that end WITHOUT a cancel: the
-/// (idempotent) `reject_unconsumed` closes the run's queue, settles any rows
+/// (idempotent) `settle_unconsumed` closes the run's queue, settles any rows
 /// still `Queued`, and reclaims the per-run queue record once settled — so
 /// normally-completed steered runs do not accumulate queue records. Process
 /// ids are the run uuid (`process_id_from_turn_run_id` in `ironclaw_turns`),
@@ -237,9 +249,14 @@ impl<E> SteeringReconcilingProcessTransitions<E> {
     /// Best-effort post-terminal reconciliation: the terminal transition is
     /// already committed and must not be failed or delayed by transcript
     /// bookkeeping.
-    async fn reconcile(&self, process_id: &ProcessId, operation: &'static str) {
+    async fn reconcile(
+        &self,
+        process_id: &ProcessId,
+        operation: &'static str,
+        ending: RunQueueEnding,
+    ) {
         let run_id = TurnRunId::from_uuid(process_id.as_uuid());
-        match self.input_queue.reject_unconsumed(run_id).await {
+        match self.input_queue.settle_unconsumed(run_id, ending).await {
             Ok(rejected) if !rejected.is_empty() => {
                 debug!(
                     %run_id,
@@ -307,7 +324,8 @@ where
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         let process_id = request.lease.process_id;
         let snapshot = self.inner.complete_process(request).await?;
-        self.reconcile(&process_id, "complete_process").await;
+        self.reconcile(&process_id, "complete_process", RunQueueEnding::Ended)
+            .await;
         Ok(snapshot)
     }
 
@@ -317,7 +335,8 @@ where
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         let process_id = request.lease.process_id;
         let snapshot = self.inner.cancel_process(request).await?;
-        self.reconcile(&process_id, "cancel_process").await;
+        self.reconcile(&process_id, "cancel_process", RunQueueEnding::Stopped)
+            .await;
         Ok(snapshot)
     }
 
@@ -327,7 +346,8 @@ where
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         let process_id = request.process_id;
         let snapshot = self.inner.fail_process(request).await?;
-        self.reconcile(&process_id, "fail_process").await;
+        self.reconcile(&process_id, "fail_process", RunQueueEnding::Ended)
+            .await;
         Ok(snapshot)
     }
 
@@ -515,9 +535,10 @@ mod tests {
 
     #[async_trait]
     impl HostInputQueueReconcile for RecordingQueue {
-        async fn reject_unconsumed(
+        async fn settle_unconsumed(
             &self,
             run_id: TurnRunId,
+            _ending: RunQueueEnding,
         ) -> Result<Vec<ThreadMessageId>, HostInputQueueError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.rejected_runs.lock().expect("lock").push(run_id);
@@ -595,9 +616,10 @@ mod tests {
 
     #[async_trait]
     impl HostInputQueueReconcile for FailingQueue {
-        async fn reject_unconsumed(
+        async fn settle_unconsumed(
             &self,
             _run_id: TurnRunId,
+            _ending: RunQueueEnding,
         ) -> Result<Vec<ThreadMessageId>, HostInputQueueError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err(HostInputQueueError::Unavailable {
@@ -610,7 +632,7 @@ mod tests {
     async fn failed_reconciliation_does_not_fail_the_successful_cancel() {
         // The decorator's contract: reconciliation is best-effort — a
         // successful cancellation stays successful when the queue's
-        // reject_unconsumed fails.
+        // settle_unconsumed fails.
         let run_id = TurnRunId::new();
         let queue = Arc::new(FailingQueue {
             calls: AtomicUsize::new(0),
@@ -785,9 +807,10 @@ mod transition_decorator_tests {
 
     #[async_trait]
     impl HostInputQueueReconcile for RecordingQueue {
-        async fn reject_unconsumed(
+        async fn settle_unconsumed(
             &self,
             run_id: TurnRunId,
+            _ending: RunQueueEnding,
         ) -> Result<Vec<ThreadMessageId>, HostInputQueueError> {
             self.reconciled_runs.lock().expect("lock").push(run_id);
             Ok(Vec::new())
@@ -877,9 +900,10 @@ mod transition_decorator_tests {
 
         #[async_trait]
         impl HostInputQueueReconcile for FailingQueue {
-            async fn reject_unconsumed(
+            async fn settle_unconsumed(
                 &self,
                 _run_id: TurnRunId,
+                _ending: RunQueueEnding,
             ) -> Result<Vec<ThreadMessageId>, HostInputQueueError> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 Err(HostInputQueueError::Unavailable {
@@ -954,9 +978,10 @@ mod observer_tests {
 
     #[async_trait]
     impl HostInputQueueReconcile for RecordingQueue {
-        async fn reject_unconsumed(
+        async fn settle_unconsumed(
             &self,
             run_id: TurnRunId,
+            _ending: RunQueueEnding,
         ) -> Result<Vec<ThreadMessageId>, HostInputQueueError> {
             self.reconciled_runs.lock().expect("lock").push(run_id);
             Ok(Vec::new())
@@ -1119,9 +1144,10 @@ mod observer_tests {
 
         #[async_trait]
         impl HostInputQueueReconcile for FailingQueue {
-            async fn reject_unconsumed(
+            async fn settle_unconsumed(
                 &self,
                 _run_id: TurnRunId,
+                _ending: RunQueueEnding,
             ) -> Result<Vec<ThreadMessageId>, HostInputQueueError> {
                 Err(HostInputQueueError::Unavailable {
                     reason: "scripted reconcile failure".to_string(),

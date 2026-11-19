@@ -23,7 +23,11 @@ import { useChat } from "./hooks/useChat";
 import { useChatCommands } from "./hooks/useChatCommands";
 import { matchCommand } from "./lib/chat-commands";
 import { channelConnectionDisplayName } from "../../lib/channel-connection-events";
-import { channelConnectionFromGate, gateIsDeviceLink } from "./lib/gates";
+import {
+  channelConnectionFromGate,
+  gateBlocksComposer,
+  gateIsDeviceLink,
+} from "./lib/gates";
 import { NEW_DRAFT_KEY } from "./lib/draft-store";
 import { buildScopedLogsPath } from "../logs/lib/logs-data";
 import { useInterfacePreferences } from "../../lib/interface-preferences";
@@ -151,6 +155,10 @@ export function Chat({
   }, [onConnectionStatusChange, sseStatus]);
 
   const activeThreadHasGate = Boolean(activeThreadId) && Boolean(pendingGate);
+  // Only a gate that needs the person's input first blocks sending; a
+  // message sent during a pending approval declines it and steers the run.
+  const activeThreadHasBlockingGate =
+    activeThreadHasGate && gateBlocksComposer(pendingGate);
   // A channel connection gate is a host-issued PAIRING gate that carries the
   // manifest-derived `connection` context (provider names never select
   // presentation). Deriving it through the shared `channelConnectionFromGate`
@@ -225,19 +233,20 @@ export function Chat({
   const showLanding = !historyLoading && !hasMessages && !historyLoadError;
   const approvalSubmitWarning = activeThreadHasChannelConnectionGate
     ? t("chat.finishPairingBeforeSend")
-    : activeThreadHasGate
+    : activeThreadHasBlockingGate
       ? t("chat.resolveApprovalBeforeSend")
       : activeThreadHasOnboarding
         ? t("chat.finishPairingBeforeSend", {
             name: pendingOnboardingLabel(pendingOnboarding),
           })
         : "";
-  // Queued-message UX: a running thread no longer disables the composer — a
-  // follow-up sent while a run is active is accepted and queued. Only a
-  // pending gate / onboarding step (which needs the user's input first) or an
-  // active cooldown blocks a send.
+  // Steering UX: a running thread never disables the composer — a message
+  // sent while a run is active steers it, and one sent during a pending
+  // approval declines that approval and steers the run. Only an auth gate /
+  // onboarding step (which needs the user's input first) or an active
+  // cooldown blocks a send.
   const composerSendDisabled =
-    activeThreadHasGate ||
+    activeThreadHasBlockingGate ||
     activeThreadHasOnboarding ||
     cooldownSeconds > 0;
   const composerSendBlockedRef = React.useRef(composerSendDisabled);
@@ -283,7 +292,7 @@ export function Chat({
       content: string,
       { images = [], attachments = [], displayContent }: ChatComposerOptions = {},
     ) => {
-      if (activeThreadHasGate) {
+      if (activeThreadHasBlockingGate) {
         throw new Error(approvalSubmitWarning);
       }
       if (composerSendBlockedRef.current) return null;
@@ -350,7 +359,7 @@ export function Chat({
     },
     [
       activeThreadId,
-      activeThreadHasGate,
+      activeThreadHasBlockingGate,
       approvalSubmitWarning,
       chatCommands,
       composerSendDisabled,

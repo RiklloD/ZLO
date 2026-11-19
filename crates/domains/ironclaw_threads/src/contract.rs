@@ -191,8 +191,12 @@ pub enum MessageStatus {
     /// steering/input boundary.
     Queued,
     Submitted,
-    /// Message arrived while the thread was busy; it will NOT be auto-resubmitted.
-    /// The user must resend the message once the current task finishes.
+    /// Message was not delivered: the running task could not take it (its
+    /// queue was full, its profile disallows steering, or the ending run never
+    /// released the thread), or a cancel (a Stop) ended the run before the
+    /// agent read it. It is NOT auto-resubmitted; the person decides whether
+    /// to send it again. (A steer an ended-by-itself run never read is
+    /// redelivered as the next turn instead.)
     RejectedBusy,
     /// Legacy status — no longer written by new code; kept for deserializing
     /// existing rows in storage.

@@ -1404,7 +1404,7 @@ impl RebornIntegrationGroupBuilder {
             Arc::new(ironclaw_assistant::inspector_store::InMemoryDiagnosticStore::default());
         let parts = DefaultPlannedRuntimeParts {
             process_system: process_system.clone(),
-            thread_service: runtime_thread_service,
+            thread_service: Arc::clone(&runtime_thread_service),
             thread_scope: group_thread_scope,
             model_gateway,
             loop_checkpoint_store,
@@ -1578,6 +1578,24 @@ impl RebornIntegrationGroupBuilder {
         let planned_runtime_parts_shape = harness_planned_runtime_parts_shape(&parts);
         let composition = build_default_planned_runtime(parts)?;
 
+        // Production parity: the composed coordinator is decorated with the
+        // cancel-time steering-queue reconciler, exactly like
+        // `build_reborn_runtime` wires it, and the queue redelivers steers a
+        // run ended without reading through that same coordinator.
+        let coordinator: Arc<dyn ironclaw_turns::TurnCoordinator> = Arc::new(
+            ironclaw_turn_runner::steering_reconcile::CancelReconcilingTurnCoordinator::new(
+                composition.coordinator,
+                host_input_queue_for_cancel_reconcile,
+            ),
+        );
+        host_input_queue
+            .bind_steer_redelivery(Arc::new(ironclaw_assistant::SteeringRedelivery::new(
+                Arc::clone(&coordinator),
+                Arc::clone(&runtime_thread_service),
+                host_input_queue.clone() as Arc<dyn ironclaw_loop_host::HostInputEnqueuePort>,
+            )))
+            .map_err(|error| format!("steering redelivery bind failed: {error}"))?;
+
         Ok(RebornIntegrationGroup {
             shared: Arc::new(GroupSharedStorage {
                 restart_builder,
@@ -1586,15 +1604,7 @@ impl RebornIntegrationGroupBuilder {
                 turn_root: base.turn_root,
                 product_harness: base.product_harness,
                 capability,
-                // Production parity: the composed coordinator is decorated with
-                // the cancel-time steering-queue reconciler, exactly like
-                // `build_reborn_runtime` wires it.
-                coordinator: Arc::new(
-                    ironclaw_turn_runner::steering_reconcile::CancelReconcilingTurnCoordinator::new(
-                        composition.coordinator,
-                        host_input_queue_for_cancel_reconcile,
-                    ),
-                ),
+                coordinator,
                 scheduler_handle: composition.scheduler_handle,
                 scope_gateway,
                 process_system,
@@ -2001,23 +2011,6 @@ impl<'g> RebornThreadBuilder<'g> {
         // --- per-thread workflow over the SHARED coordinator --------------------
         let binding_service: Arc<dyn ProductBindingResolver> =
             Arc::new(shared.product_harness.binding_service()?);
-        let mut inbound_service = DefaultInboundTurnService::new(
-            Arc::clone(&binding_service),
-            thread_harness.service_instance()?,
-            Arc::clone(&shared.coordinator),
-            Arc::clone(&shared.input_enqueue),
-        );
-        // C-ATTACH: wire the real lander when the backend has one (`attachment_tools()`)
-        // so `submit_inbound_with_attachments` lands through it instead of
-        // failing closed. `None` for every other group (unchanged behavior).
-        if let Some(support) = capability_recorder.attachment_test_support() {
-            inbound_service = inbound_service.with_inbound_attachments(support.lander);
-        }
-        let inbound: Arc<dyn InboundTurnService> = Arc::new(inbound_service);
-        let ledger: Arc<dyn IdempotencyLedger> =
-            Arc::new(shared.product_harness.idempotency_ledger());
-        let mut workflow = DefaultProductSurface::new(inbound, ledger, binding_service);
-
         // Real gate-dispatch seam: wire the harness's own local-dev interaction
         // services, but over the GROUP's shared `turn_store` (not the harness's
         // own disjoint `local_runtime.turn_state`) — otherwise their turn-run
@@ -2025,6 +2018,7 @@ impl<'g> RebornThreadBuilder<'g> {
         // opted in (`with_real_gate_dispatch_services`); every other group's
         // workflow keeps the default Rejecting stubs.
         let mut approval_interactions = None;
+        let mut gate_services = None;
         if shared.real_gate_dispatch_services {
             let harness = match &shared.capability {
                 GroupCapability::HostRuntime(arc) => arc,
@@ -2064,6 +2058,31 @@ impl<'g> RebornThreadBuilder<'g> {
                     "local-dev auth interaction service unavailable (harness has no local runtime)",
                 )?;
             approval_interactions = Some(Arc::clone(&approval_interaction_service));
+            gate_services = Some((approval_interaction_service, auth_interaction_service));
+        }
+
+        let mut inbound_service = DefaultInboundTurnService::new(
+            Arc::clone(&binding_service),
+            thread_harness.service_instance()?,
+            Arc::clone(&shared.coordinator),
+            Arc::clone(&shared.input_enqueue),
+        );
+        // C-ATTACH: wire the real lander when the backend has one (`attachment_tools()`)
+        // so `submit_inbound_with_attachments` lands through it instead of
+        // failing closed. `None` for every other group (unchanged behavior).
+        if let Some(support) = capability_recorder.attachment_test_support() {
+            inbound_service = inbound_service.with_inbound_attachments(support.lander);
+        }
+        // Production parity (`channel_workflow`): a message sent while the
+        // run waits on an approval declines it through the same service.
+        if let Some(approval) = &approval_interactions {
+            inbound_service = inbound_service.with_approval_interactions(Arc::clone(approval));
+        }
+        let inbound: Arc<dyn InboundTurnService> = Arc::new(inbound_service);
+        let ledger: Arc<dyn IdempotencyLedger> =
+            Arc::new(shared.product_harness.idempotency_ledger());
+        let mut workflow = DefaultProductSurface::new(inbound, ledger, binding_service);
+        if let Some((approval_interaction_service, auth_interaction_service)) = gate_services {
             workflow = workflow
                 .with_approval_interaction_service(approval_interaction_service)
                 .with_auth_interaction_service(auth_interaction_service);

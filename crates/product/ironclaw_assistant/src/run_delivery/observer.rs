@@ -336,9 +336,10 @@ impl RunDeliveryObserver {
         {
             return;
         }
-        // Busy-thread hint: the user's message was dropped because a run is
-        // busy. Post a one-shot state-aware hint (approve/deny/wait) rather
-        // than leaving the user in silence.
+        // Busy-thread hint: the user's message was NOT delivered (a steered
+        // message is part of the running task and gets none). Post a
+        // one-shot state-aware hint (approve/deny/wait) rather than leaving
+        // the user in silence.
         if let Some(active_run_id) = busy_hint_user_message_run_id(&envelope, &ack) {
             self.post_busy_hint(&envelope, active_run_id).await;
             return;
@@ -1773,14 +1774,15 @@ impl RunDeliveryObserver {
                         };
                         match what {
                             Some(tool) => format!(
-                                "Ironclaw is waiting on your approval for `{tool}` before taking new \
-                                 messages — reply `approve {ref}` to authorize it or `deny {ref}` to \
-                                 decline.",
+                                "Ironclaw couldn't add this message: the task is waiting on an \
+                                 approval for `{tool}` — reply `approve {ref}` to authorize it or \
+                                 `deny {ref}` to decline, then send your message again.",
                                 ref = gate_ref.as_str()
                             ),
                             None => format!(
-                                "Ironclaw is waiting on a pending approval (`{ref}`) before taking new \
-                                 messages — reply `approve {ref}` or `deny {ref}` to respond.",
+                                "Ironclaw couldn't add this message: the task is waiting on a \
+                                 pending approval (`{ref}`) — reply `approve {ref}` or \
+                                 `deny {ref}` to respond, then send your message again.",
                                 ref = gate_ref.as_str()
                             ),
                         }
@@ -1792,9 +1794,10 @@ impl RunDeliveryObserver {
                 // ref so the user can decline it here.
                 TurnStatus::BlockedAuth => match state.gate_ref.as_ref() {
                     Some(gate_ref) => format!(
-                        "Ironclaw is waiting on authentication before taking new messages. Reply \
-                         `auth deny {ref}` to decline it here, or complete the connection in the \
-                         Ironclaw web app to resume.",
+                        "Ironclaw couldn't add this message: the task is waiting on \
+                         authentication. Reply `auth deny {ref}` to decline it here, or complete \
+                         the connection in the Ironclaw web app to resume, then send your message \
+                         again.",
                         ref = gate_ref.as_str()
                     ),
                     None => prompts::BUSY_GENERIC_MESSAGE.to_string(),
@@ -1997,10 +2000,14 @@ fn rejection_hint_for_resolution(
 }
 
 /// `Some(active_run_id)` when the ack + payload combination should trigger
-/// the busy-thread hint flow: a `DeferredBusy` (legacy) or `RejectedBusy`
-/// ack on a `UserMessage` payload. `Duplicate` unwraps to the prior ack —
-/// a settled `RejectedBusy` retried by the transport still carries the
-/// blocking run id (the per-event throttle prevents double posts).
+/// the busy-thread hint flow: a `RejectedBusy` ack on a `UserMessage`
+/// payload — the message was not delivered. A `DeferredBusy` ack is a
+/// steered message the agent reads at its next step (or a declined
+/// approval's replacement), so it gets no hint: telling the person to resend
+/// would duplicate words the model already has. `Duplicate` unwraps to the
+/// prior ack — a settled `RejectedBusy` retried by the transport still
+/// carries the blocking run id (the per-event throttle prevents double
+/// posts).
 fn busy_hint_user_message_run_id(
     envelope: &ProductInboundEnvelope,
     ack: &ProductInboundAck,
@@ -2009,7 +2016,7 @@ fn busy_hint_user_message_run_id(
         return None;
     }
     match ack {
-        ProductInboundAck::DeferredBusy { active_run_id, .. } => Some(*active_run_id),
+        ProductInboundAck::DeferredBusy { .. } => None,
         ProductInboundAck::RejectedBusy {
             active_run_id: Some(run_id),
             ..

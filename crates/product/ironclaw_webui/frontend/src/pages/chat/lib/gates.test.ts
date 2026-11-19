@@ -14,6 +14,7 @@ const GATES_EXPORTS = [
   "channelConnectionFromGate",
   "deviceLinkFromGate",
   "gateIsDeviceLink",
+  "gateBlocksComposer",
 ];
 
 function loadGates() {
@@ -426,4 +427,19 @@ test("gateFromProjectionGate normalizes the device-link frame from auth_context"
   assert.equal(deviceLinkFromGate(gate).secretLabel, "Login code");
   assert.equal(deviceLinkFromGate(gate).inputKind, "code");
   assert.equal(deviceLinkFromGate(gate).revision, 5);
+});
+
+test("a pending approval does not block the composer; other gates do", () => {
+  const { gateFromEvent, gateBlocksComposer } = loadGates();
+  const approval = gateFromEvent("gate", {
+    turn_run_id: "run-1",
+    gate_ref: "gate:approval",
+    headline: "Approval required",
+    body: "Review the action.",
+  });
+  // A message sent now declines the approval and steers the run.
+  assert.equal(gateBlocksComposer(approval), false);
+  assert.equal(gateBlocksComposer({ kind: "auth_required", gateKind: "auth" }), true);
+  assert.equal(gateBlocksComposer({ kind: "gate", gateKind: "generic" }), true);
+  assert.equal(gateBlocksComposer(null), false);
 });
