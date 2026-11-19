@@ -39,6 +39,12 @@ pub(super) use shelves::{jump_target, shelves};
 
 /// Poll period while a row is working.
 const POLL: Duration = Duration::from_secs(5);
+/// Poll period while a prompt sent here waits for the backend to list its
+/// run as working.
+const SENT_POLL: Duration = Duration::from_secs(1);
+/// How long a sent prompt shows its card as working without the backend
+/// confirming it (a send that never started a run stops claiming it).
+const SENT_GRACE: Duration = Duration::from_secs(30);
 /// How long the inbox keeps polling after a run ends.
 const TITLE_SETTLE_MS: i64 = 20_000;
 /// Settled rows shown before "Show more".
@@ -85,6 +91,11 @@ pub struct Inbox {
     /// the card down to the Working shelf and back up when the run ends;
     /// its badge says it works. Cleared once the row stops working.
     pub(super) working_in_place: BTreeMap<String, InboxState>,
+    /// Prompts sent from this window whose run the inbox has not listed as
+    /// working yet, with when they were sent. The read after a send can
+    /// land before the backend marks the run; without this the card read
+    /// "now" and nothing polled until the run ended.
+    pub(super) sent: BTreeMap<String, Instant>,
 }
 
 impl Inbox {
@@ -113,6 +124,7 @@ impl Inbox {
             cmd_held: false,
             shelf_gap: view::list::ShelfGap::default(),
             working_in_place: BTreeMap::new(),
+            sent: BTreeMap::new(),
         }
     }
 
@@ -127,6 +139,30 @@ impl Inbox {
                 .unwrap_or(InboxState::Working),
             state => state,
         }
+    }
+
+    /// The status `row` shows: the backend's, or Working while a prompt
+    /// sent here waits for the backend to list its run.
+    pub fn shown_status(&self, row: &InboxRow) -> Option<InboxStatus> {
+        match row.status {
+            Some(InboxStatus::Working | InboxStatus::Background | InboxStatus::NeedsInput) => {
+                row.status
+            }
+            _ if self.sent_live(&row.thread_id) => Some(InboxStatus::Working),
+            status => status,
+        }
+    }
+
+    /// A prompt sent here still within its grace: its own clock, so failed
+    /// inbox reads cannot keep it claiming Working.
+    fn sent_live(&self, thread_id: &str) -> bool {
+        self.sent
+            .get(thread_id)
+            .is_some_and(|at| at.elapsed() < SENT_GRACE)
+    }
+
+    fn any_sent_live(&self) -> bool {
+        self.sent.values().any(|at| at.elapsed() < SENT_GRACE)
     }
 
     pub fn row(&self, thread_id: &str) -> Option<&InboxRow> {
@@ -152,11 +188,12 @@ impl Inbox {
         self.list
             .rows
             .iter()
-            .any(|r| r.status == Some(InboxStatus::Working))
+            .any(|r| self.shown_status(r) == Some(InboxStatus::Working))
     }
 
     fn needs_poll(&self) -> bool {
-        Utc::now().timestamp_millis() < self.settle_poll_until
+        self.any_sent_live()
+            || Utc::now().timestamp_millis() < self.settle_poll_until
             || self.list.rows.iter().any(|r| {
                 r.title_pending
                     || matches!(
@@ -315,6 +352,22 @@ pub(super) fn apply(s: &mut State, list: InboxListResponse) {
     });
     let in_place = working_in_place(&s.workspace.inbox, &list.rows, active_id(s));
     s.workspace.inbox.working_in_place = in_place;
+    // A sent prompt stops claiming its card once the backend lists the run
+    // or the grace runs out. A new thread may not be listed yet: it waits.
+    s.workspace.inbox.sent.retain(|id, at| {
+        at.elapsed() < SENT_GRACE
+            && !list.rows.iter().any(|r| {
+                r.thread_id == *id
+                    && matches!(
+                        r.status,
+                        Some(
+                            InboxStatus::Working
+                                | InboxStatus::Background
+                                | InboxStatus::NeedsInput
+                        )
+                    )
+            })
+    });
     s.workspace.inbox.list = list;
     super::draft::bind_catalog(s);
     if finished {
@@ -368,6 +421,24 @@ pub(super) fn tick_due(s: &mut State) -> bool {
     }
     s.workspace.timers.tick = Some(Instant::now() + Duration::from_secs(1));
     true
+}
+
+/// A prompt went out from this window: its card shows Working now, and the
+/// inbox polls quickly until the backend lists the run.
+pub fn note_sent(s: &mut State, thread_id: &str) {
+    s.workspace
+        .inbox
+        .sent
+        .insert(thread_id.to_string(), Instant::now());
+    let soon = Instant::now() + SENT_POLL;
+    let timer = &mut s.workspace.timers.inbox;
+    *timer = Some(timer.map_or(soon, |at| at.min(soon)));
+    ensure_tick(s);
+}
+
+/// The run of `thread_id` ended (or its send failed): stop claiming it.
+pub(super) fn forget_sent(s: &mut State, thread_id: &str) {
+    s.workspace.inbox.sent.remove(thread_id);
 }
 
 /// A run ended: poll a little longer to pick up its generated title.
@@ -473,6 +544,11 @@ fn ensure_poll(s: &mut State) {
 
 /// The working poll came due.
 pub(super) fn poll_due(s: &mut State) {
+    // Expire sent prompts here too: a read that keeps failing never applies.
+    s.workspace
+        .inbox
+        .sent
+        .retain(|_, at| at.elapsed() < SENT_GRACE);
     if !s.workspace.inbox.needs_poll() {
         return;
     }
@@ -483,7 +559,12 @@ pub(super) fn poll_due(s: &mut State) {
         return;
     }
     refresh(s);
-    s.workspace.timers.inbox = Some(Instant::now() + POLL);
+    let every = if s.workspace.inbox.sent.is_empty() {
+        POLL
+    } else {
+        SENT_POLL
+    };
+    s.workspace.timers.inbox = Some(Instant::now() + every);
 }
 
 fn schedule_wake(s: &mut State) {
@@ -744,5 +825,54 @@ mod tests {
         apply(&mut s, list(vec![row("a", InboxState::Settled, None)]));
         apply(&mut s, list(vec![row("a", InboxState::Working, None)]));
         assert_eq!(shelf_of(&s, "a"), "working");
+    }
+
+    /// A prompt sent here shows its card as working at once, even when the
+    /// inbox read after the send came back before the backend marked the
+    /// run (the 2026-11-19 report: "now", no Working, until the run ended).
+    /// The inbox polls until it catches up; the run's end clears it.
+    #[test]
+    fn a_sent_prompt_shows_working_before_the_inbox_catches_up() {
+        let list = |rows| InboxListResponse {
+            rows,
+            ..Default::default()
+        };
+        let mut s = crate::chat::fixtures::test_state();
+        apply(&mut s, list(vec![row("a", InboxState::Inbox, None)]));
+        assert!(s.workspace.timers.inbox.is_none(), "nothing to follow yet");
+
+        note_sent(&mut s, "a");
+        // The read right after the send: the backend has not seen the run.
+        apply(&mut s, list(vec![row("a", InboxState::Inbox, None)]));
+        let inbox = &s.workspace.inbox;
+        let shown = inbox.shown_status(inbox.row("a").expect("row"));
+        assert_eq!(shown, Some(InboxStatus::Working));
+        assert!(
+            s.workspace.timers.inbox.is_some(),
+            "the inbox keeps polling"
+        );
+        assert!(s.workspace.timers.tick.is_some(), "the Working timer ticks");
+
+        // The backend catches up: its status rules from then on.
+        let mut done = row("a", InboxState::Inbox, None);
+        done.status = Some(InboxStatus::Working);
+        apply(&mut s, list(vec![done]));
+        assert!(s.workspace.inbox.sent.is_empty());
+        apply(&mut s, list(vec![row("a", InboxState::Inbox, None)]));
+
+        // The grace runs out on its own clock, even with no inbox read.
+        note_sent(&mut s, "b");
+        if let Some(at) = s.workspace.inbox.sent.get_mut("b") {
+            *at = Instant::now() - SENT_GRACE;
+        }
+        assert!(!s.workspace.inbox.any_sent_live());
+        poll_due(&mut s);
+        assert!(s.workspace.inbox.sent.is_empty(), "the poll drops it");
+
+        // A run that ends before the backend ever showed it clears too.
+        note_sent(&mut s, "a");
+        crate::workspace::run_ended(&mut s, "a".into(), false);
+        let inbox = &s.workspace.inbox;
+        assert_eq!(inbox.shown_status(inbox.row("a").expect("row")), None);
     }
 }
