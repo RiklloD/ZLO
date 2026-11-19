@@ -19,6 +19,7 @@ use ironclaw_host_api::turn::DenialFeedback;
 use ironclaw_orchestrator::model::{Millis, ThreadRecord, ThreadScope};
 use ironclaw_orchestrator::runtime::*;
 use ironclaw_orchestrator::telemetry::TurnTelemetry;
+use ironclaw_product_contracts::orchestration::{ThreadAction, ThreadActionOutcome};
 
 #[derive(Default)]
 struct Recorder {
@@ -427,10 +428,15 @@ while IFS= read -r line; do
   printf '%s\n' "$line" >> "$LOG"
   id=$(id_of "$line")
   case "$line" in
-    *'"method":"initialize"'*) reply "$id" '{"schema":{"version":1}}' ;;
+    *'"method":"initialize"'*'sessionMcp'*) reply "$id" '{"schema":{"version":1},"grantedCapabilities":["sessionMcp"]}' ;;
+    *'"method":"initialize"'*) reply "$id" '{"schema":{"version":1},"grantedCapabilities":[]}' ;;
     *'"method":"initialized"'*) ;;
     *'"method":"usage/read"'*) reply "$id" '{"usage":{"window":{"usedPercent":42}}}' ;;
-    *'"method":"model/list"'*) reply "$id" '{"providerId":"meta","models":[{"modelId":"muse-wonder-1.0","providerId":"meta","contextLimit":1007997,"isDefault":false},{"modelId":"muse-spark-1.3","providerId":"meta","contextLimit":1007997,"isDefault":true}]}' ;;
+    *'"method":"model/list"'*) reply "$id" '{"providerId":"meta","models":[{"modelId":"muse-wonder-1.0","providerId":"meta","contextLimit":1007997,"isDefault":false,"variants":["low","medium"],"defaultReasoningEffort":"medium"},{"modelId":"muse-spark-1.3","providerId":"meta","contextLimit":1007997,"isDefault":true}]}' ;;
+    *'"method":"session/compact"'*)
+      SID=$(field "$line" sessionId)
+      reply "$id" '{"status":"accepted"}'
+      emit item/completed "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"k1\",\"kind\":\"compaction\",\"status\":\"completed\",\"outcome\":\"compacted\",\"revision\":1}}" ;;
     *'"method":"session/start"'*|*'"method":"session/resume"'*)
       SID=$(field "$line" sessionId)
       reply "$id" "{\"session\":{\"sessionId\":\"$SID\",\"modelId\":\"muse-spark-1.3\"}}" ;;
@@ -450,8 +456,17 @@ while IFS= read -r line; do
     *'"method":"turn/start"'*)
       TID=$(field "$line" commandId)
       reply "$id" "{\"turnId\":\"$TID\",\"disposition\":\"started\"}"
-      if [ -n "$PIDF" ]; then sleep 30 & printf '%s' $! > "$PIDF"; continue; fi
+      if [ -n "$PIDF" ]; then
+        # A turn Muse runs on its own inside this one (a finished workflow).
+        emit turn/started "{\"sessionId\":\"$SID\",\"turnId\":\"joined-1\"}"
+        sleep 30 & printf '%s' $! > "$PIDF"; continue
+      fi
       emit turn/started "{\"sessionId\":\"$SID\",\"turnId\":\"$TID\"}"
+      emit item/started "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"r1\",\"turnId\":\"$TID\",\"kind\":\"reasoning\",\"status\":\"inProgress\",\"revision\":1}}"
+      emit item/delta "{\"sessionId\":\"$SID\",\"itemId\":\"r1\",\"field\":\"summary.0\",\"delta\":\"Look first.\"}"
+      emit session/todoListChanged "{\"sessionId\":\"$SID\",\"items\":[{\"text\":\"Read the note\",\"status\":\"inProgress\"}]}"
+      emit item/started "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"c1\",\"turnId\":\"$TID\",\"kind\":\"toolCall\",\"tool\":\"read_file\",\"args\":\"{\\\"path\\\":\\\"note.txt\\\"}\",\"status\":\"inProgress\",\"revision\":1}}"
+      emit item/completed "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"c1\",\"turnId\":\"$TID\",\"kind\":\"toolCall\",\"tool\":\"read_file\",\"visibleOutput\":\"hello\",\"status\":\"completed\",\"revision\":2}}"
       emit item/started "{\"sessionId\":\"$SID\",\"item\":{\"itemId\":\"m1\",\"turnId\":\"$TID\",\"kind\":\"agentMessage\",\"status\":\"inProgress\",\"revision\":1}}"
       emit item/delta "{\"sessionId\":\"$SID\",\"itemId\":\"m1\",\"field\":\"text\",\"delta\":\"Hel\"}"
       emit approval/requested "{\"sessionId\":\"$SID\",\"approvalId\":\"a1\",\"turnId\":\"$TID\",\"status\":\"pending\",\"toolName\":\"bash\",\"currentRequirementId\":\"r1\",\"subject\":{\"command\":\"rm -rf /\"},\"availableChoices\":[{\"choiceId\":\"ok\",\"decision\":\"approved\",\"scope\":\"once\"},{\"choiceId\":\"stop\",\"decision\":\"abort\"}]}" ;;
@@ -508,13 +523,44 @@ async fn muse_starts_then_resumes_denies_approvals_and_reports_telemetry() {
     let catalog = rt.catalog(&scope()).await.unwrap();
     assert!(catalog[0].authenticated);
     assert_eq!(catalog[0].models, ["muse-spark-1.3", "muse-wonder-1.0"]);
+    // Each model's own tiers; one that reports none takes the fallback.
+    assert_eq!(
+        catalog[0].model_efforts.get("muse-wonder-1.0").cloned(),
+        Some(vec!["low".to_string(), "medium".to_string()])
+    );
+    assert!(!catalog[0].model_efforts.contains_key("muse-spark-1.3"));
+    assert_eq!(
+        catalog[0].efforts,
+        ["low", "medium", "high", "xhigh", "max"]
+    );
 
     let thread = thread(&rt, "muse-wonder-1.0").await;
     let session = thread.native_session_id.clone().unwrap();
+    // Nothing to compact before the session's first turn.
+    assert_eq!(
+        rt.thread_action(&thread, ThreadAction::Compact)
+            .await
+            .unwrap(),
+        ThreadActionOutcome::Done {
+            note: "Nothing to compact yet.".into()
+        }
+    );
     for n in 1..=2 {
-        rt.start_turn(&thread, input()).await.unwrap();
+        // The second turn picks a tier the model lacks: its default goes.
+        let effort = (n == 2).then(|| "max".to_string());
+        rt.start_turn(&thread, TurnInput { effort, ..input() })
+            .await
+            .unwrap();
         wait_for(|| recorder.finished.lock().unwrap().len() == n).await;
     }
+    assert_eq!(
+        rt.thread_action(&thread, ThreadAction::Compact)
+            .await
+            .unwrap(),
+        ThreadActionOutcome::Done {
+            note: "Compacted the thread's context.".into()
+        }
+    );
 
     let log = std::fs::read_to_string(dir.path().join("muse.log")).unwrap();
     for argv in log.lines().filter(|l| l.starts_with("argv")) {
@@ -534,15 +580,30 @@ async fn muse_starts_then_resumes_denies_approvals_and_reports_telemetry() {
         1,
         "{log}"
     );
+    // The second turn and the compaction resume the session.
     assert_eq!(
         log.matches(r#""method":"session/resume""#).count(),
-        1,
+        2,
         "{log}"
     );
     assert!(log.contains(&format!(r#""sessionId":"{session}""#)));
     assert!(log.contains(r#""approvalMode":"denyUnmatched""#));
     assert!(log.contains(r#""mode":"denyUnmatched""#));
     assert!(log.contains(r#""modelId":"muse-wonder-1.0""#));
+    // Never Muse's own reviewer: start, resume and compaction ask the client.
+    assert_eq!(
+        log.matches(r#""permissionProfile":":ask-me""#).count(),
+        3,
+        "{log}"
+    );
+    assert!(log.contains(r#""reasoningEffort":"medium""#), "{log}");
+    assert!(!log.contains(r#""reasoningEffort":"max""#), "{log}");
+    // No bridge, no session MCP server.
+    assert!(
+        !log.contains("sessionMcp") && !log.contains("mcpServers"),
+        "{log}"
+    );
+    assert_eq!(log.matches(r#""method":"session/compact""#).count(), 1);
     // The approval is answered, with the abort choice, never "ok".
     assert_eq!(log.matches(r#""choiceId":"stop""#).count(), 2, "{log}");
     assert!(!log.contains(r#""choiceId":"ok""#));
@@ -579,6 +640,7 @@ async fn muse_starts_then_resumes_denies_approvals_and_reports_telemetry() {
     let history = rt.history(&thread, 10).await.unwrap();
     assert_eq!(history.len(), 4);
     assert_eq!(history[3].text, "Hello");
+    assert_eq!(history[3].tool_calls, ["read_file()"]);
 }
 
 /// With the bridge, shell and writes are on and Muse's approval waits as
@@ -588,6 +650,8 @@ async fn muse_with_a_bridge_asks_the_owner_and_runs_the_approved_call() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
     let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    bridge.set_mcp_url("http://127.0.0.1:9/api/cli-bridge/mcp".into());
+    let mut events = bridge.subscribe();
     let rt = muse(dir.path(), None, &recorder, Some(Arc::clone(&bridge)));
     let thread = thread(&rt, "default").await;
     rt.start_turn(&thread, input()).await.unwrap();
@@ -623,6 +687,49 @@ async fn muse_with_a_bridge_asks_the_owner_and_runs_the_approved_call() {
         TurnEndStatus::Completed
     );
     assert!(bridge.snapshot(&thread.thread_id).is_none(), "turn ended");
+
+    // The orchestrator tools ride along as an optional session MCP server.
+    let start = log
+        .lines()
+        .find(|l| l.contains(r#""method":"session/start""#))
+        .unwrap();
+    let start: serde_json::Value = serde_json::from_str(start).unwrap();
+    let server = &start["params"]["config"]["mcpServers"]["ironclaw"];
+    assert_eq!(server["mode"], "optional", "{start}");
+    assert_eq!(server["url"], "http://127.0.0.1:9/api/cli-bridge/mcp");
+    let token = server["headers"]["Authorization"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("Bearer ")
+        .unwrap();
+    assert!(bridge.resolve_token(token).is_none(), "revoked at turn end");
+
+    // The turn streamed: reasoning, the tool row, the plan, the reply.
+    use ironclaw_cli_providers::bridge::LiveEvent;
+    let mut seen = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        seen.push(event);
+    }
+    assert!(
+        seen.iter()
+            .any(|e| matches!(e, LiveEvent::Thinking { body, .. } if body == "Look first.")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|e| matches!(e, LiveEvent::Tool { tool, .. }
+            if tool.tool_name == "read_file" && tool.subject.as_deref() == Some("note.txt"))),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|e| matches!(e, LiveEvent::Plan { plan, .. }
+            if plan.entries[0].content == "Read the note")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|e| matches!(e, LiveEvent::Text { body, .. } if body.starts_with("Hel"))),
+        "{seen:?}"
+    );
 }
 
 #[tokio::test]
@@ -652,6 +759,11 @@ async fn muse_steers_in_turn_and_stop_interrupts_and_clears_the_group() {
         "{log}"
     );
     assert!(log.contains(r#""method":"turn/interrupt""#));
+    assert!(
+        log.lines()
+            .any(|l| l.contains(r#""method":"turn/interrupt""#) && l.contains("joined-1")),
+        "the joined turn is interrupted too: {log}"
+    );
     assert!(
         !log.contains("session/setModel"),
         "default model keeps Muse's choice"

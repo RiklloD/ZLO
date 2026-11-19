@@ -162,24 +162,58 @@ The protocol is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
 ## Muse Code (`muse-code`)
 
 Runs `muse serve` and speaks the Muse Session Protocol directly over the same
-JSON-RPC module, mirroring the Hermes t3code driver. `muse-code-sdk` is not a
+JSON-RPC module, mirroring the Hermes t3code driver and checked against Muse
+Code `1.4.24` (`muse::EXPECTED_HOST_VERSION`). `muse-code-sdk` is not a
 dependency: its facade has no `turn/interrupt`, `model/list` or
 `usage/read`, and its spawn does not start a process group.
 
 - **Turns:** one host per turn. The thread's `native_session_id` is a UUIDv7
   minted at creation; the first turn calls `session/start` with it, later
   turns `session/resume` (`excludeItems`). Commands carry UUIDv7 ids.
+- **Live view (with a bridge, `muse/live.rs`):** reply and reasoning text
+  (whole `item/*` snapshots and `item/delta` appends, only the unshown part
+  sent), one tool row per tool item (`toolCall`, `userShell`, `subagent`,
+  `workflow`; subject from the command, path, query or objective) with its
+  streamed `visibleOutput`, and `session/todoListChanged` as the thread's
+  plan. Muse's own housekeeping calls (`write_todos`, `request_user_input`,
+  `workflow`) draw no row. The journal still keeps only prompt and answer.
 - **Steer:** `turn/steer` with `expectedTurnId` into the running turn
   (`steer_in_turn`); a refused steer or `SteerHow::Restart` restarts.
-- **Stop:** `turn/interrupt`, then SIGTERM/SIGKILL of the process group.
+- **Stop:** `turn/interrupt` for every turn Muse started on its own inside
+  this one (a finished workflow) and then the admitted one; then
+  SIGTERM/SIGKILL of the process group.
+- **Fork:** no native fork; the engine's portable handoff starts a new
+  session with the context (as t3code does).
+- **Compaction:** Muse compacts near the window by itself
+  (`RuntimeCompaction::automatic`); `ThreadAction::Compact` resumes the
+  session on a host of its own, sends `session/compact` and waits up to
+  5 minutes for the compaction item to settle (`noop` and a session with no
+  turn yet answer "Nothing to compact yet."). The host holds the thread's
+  turn slot meanwhile, so a turn is `Busy` and Stop ends it.
 - **History:** IronClaw's journal,
   `~/.ironclaw/muse-code/transcripts/<session>.jsonl`, which also marks the
   session as started.
 - **Models and sign-in:** `model/list` from a read-only host
   (`--no-session-log`), cached 10 minutes; MSP has no sign-in signal, so a
-  non-empty catalog counts as authenticated, as in Hermes.
-- **Limits:** `turn/completed.error.quota.resetsAtMs` becomes
-  `usage_limit_resets_at`. The `usage/read` / `usage/changed` subscription
+  non-empty catalog counts as authenticated, as in Hermes. Each model's
+  reported `variants` become its `model_efforts` (known tiers only); a model
+  that reports none, or an unlisted custom model id, takes
+  `low`…`max`. A picked tier the model lacks is replaced by the model's
+  `defaultReasoningEffort` before `turn/start`.
+- **Sign-in only:** every inherited `META_API_KEY` (any spelling) is removed
+  from the host's environment, so the `muse login` credential is used and no
+  stray key bills another account. (t3code honors a key set on one provider
+  instance; ZLO has no per-runtime environment, so it never passes one.)
+- **Failures:** classes only, never the raw text (it carries request ids,
+  paths and billing URLs): sign-in required; "does not exist or you lack
+  access" (Muse lists models an account cannot use) names the model and
+  asks for another; HTTP 402 / billing; otherwise `muse turn <terminal>
+  (<kind>)`.
+- **Limits:** a usage limit is `error.quota`, or a 429 whose text says
+  quota or usage limit (credential proxies drop `quota`). It becomes a
+  `usage_limit:` failure resuming at the latest future reset among
+  `quota.resetsAtMs`, a "resets at <RFC 3339>" in the text, and the
+  subscription windows at or over 100%. The `usage/read` / `usage/changed`
   windows are saved to `~/.ironclaw/usage/muse-code.json`
   (`{"observedAt", "usage"}`).
 - **Telemetry:** context used and window from `session/contextUsage`
@@ -187,11 +221,25 @@ dependency: its facade has no `turn/interrupt`, `model/list` or
   the last `session/tokenUsage`, TPS as output tokens over the summed
   `durationMs` of the turn's model calls.
 - **Tools:** `--disable-request-user-input`, no `--trust-workspace`
-  (workspace rules cannot allow anything), approval mode `denyUnmatched`,
-  and every approval Muse raises goes through `permissions::decide`: with
-  the bridge it waits for the owner and picks the once-scoped `approved`
-  choice, else `denied` (or `abort`). Without a bridge, shell and writes
-  are off too (`--disable-shell --disable-write`).
+  (workspace rules cannot allow anything), approval mode `promptUnmatched`
+  with a bridge (`denyUnmatched` without), and permission profile `:ask-me`
+  on start, resume and compaction, because Muse's default profile may let
+  its own AI reviewer decide a call. Every approval Muse raises goes through
+  `permissions::decide`: with the bridge it waits for the owner and picks
+  the once-scoped `approved` choice, else `denied` (or `abort`). Without a
+  bridge, shell and writes are off too (`--disable-shell --disable-write`).
+  t3code's "Full access" (`allowAll`, `:unrestricted`,
+  `--disable-sandbox`) is deliberately not offered.
+- **Orchestrator tools:** with a bridge whose MCP route is known, the turn
+  asks for the `sessionMcp` capability and, when granted, names the route as
+  an `optional` streamable-HTTP session MCP server (`ironclaw`, bearer token
+  bound to the turn, revoked when it ends). Optional, because Muse fails a
+  run whose required server is unreachable. Its calls are subject to the
+  session's approval mode like any other.
+- **Not ported:** update detection (t3code reads Meta's release channel
+  over HTTP and drives the launcher's `MUSE_SYNC_UPDATE`; hosts here run
+  with `MUSE_NO_AUTO_UPDATE=1`), retry rows (`turn/retryScheduled`),
+  subagent child threads, and `view/gap` recovery (one host per turn).
 
 ## The approval seam
 
