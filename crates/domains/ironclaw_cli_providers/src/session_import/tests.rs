@@ -133,6 +133,7 @@ async fn harness() -> Harness {
             login_file: root.join(".claude.json"),
             projects_dir: root.join(".claude/projects"),
             usage_file: None,
+            autocompact: None,
         },
         sink,
         None,

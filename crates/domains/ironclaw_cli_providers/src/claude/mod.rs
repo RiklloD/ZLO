@@ -14,13 +14,16 @@
 //! (`--mcp-config`, this session's token only, `--strict-mcp-config`).
 //! Without a bridge, tools stay off (`--tools ""`). Either way: no allow
 //! rules, prompts answered "no", never `--dangerously-skip-permissions`,
-//! and the CLI's own subagent tools (`Agent`, `Workflow`) are disallowed:
-//! subagents are orchestrator threads (`t3_delegate`).
+//! and the CLI's own subagent and agent-team tools
+//! ([`crate::BUILTIN_SUBAGENT_TOOLS`]) are disallowed: subagents are
+//! orchestrator threads (`t3_delegate`).
 
 mod compact;
 mod control;
 pub(crate) mod import;
+mod steer;
 mod stream;
+mod tasks;
 mod transcript;
 
 use std::collections::HashMap;
@@ -40,12 +43,29 @@ use tokio::process::Command;
 use tokio::sync::watch;
 
 use crate::bridge::{CliBridge, SESSION_TOKEN_TTL, SessionGrant, mcp_config_json};
-use control::{BridgedTurn, SharedStdin, Step};
+use control::{BridgedTurn, SharedStdin, SharedSteers, Step, TurnIo};
 use stream::TurnFold;
 
 /// The CLI release the wire handling was checked against (`claude --version`).
 /// `claude-codes` in Cargo.toml is pinned to the same number.
-pub const EXPECTED_CLI_VERSION: &str = "2.1.302";
+pub const EXPECTED_CLI_VERSION: &str = "2.1.328";
+
+/// The task list the CLI's task tools write (2.1.328: this variable first,
+/// then a team's list, then the session id).
+const TASK_LIST_ENV: &str = "CLAUDE_CODE_TASK_LIST_ID";
+/// Inherited variables that would route a session into another task list
+/// or the CLI's own agent teams (ZLO never uses those: subagents are
+/// orchestrator threads). Removed from every child.
+const TASK_ROUTING_ENV: [&str; 5] = [
+    "CLAUDE_INTERNAL_SESSION_TASK_LIST_ID",
+    "CLAUDE_INTERNAL_ASSISTANT_TEAM_NAME",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+    "CLAUDE_CODE_TEAMMATE_COMMAND",
+    "CLAUDE_CODE_TEAM_TEARDOWN_PARK_TIMEOUT_MS",
+];
+
+/// `--autocompact` bounds the CLI accepts (tokens).
+const AUTOCOMPACT_RANGE: std::ops::RangeInclusive<u64> = 100_000..=1_000_000;
 
 /// Models offered in the catalog; the CLI resolves them itself.
 /// `claude --effort` levels.
@@ -82,6 +102,9 @@ pub struct ClaudeCliConfig {
     /// Where each turn's rate-limit windows are written for the Usage page
     /// (`~/.ironclaw/usage/<runtime_id>.json`); `None` writes nothing.
     pub usage_file: Option<PathBuf>,
+    /// Compact at about this many context tokens (`--autocompact`) instead
+    /// of the CLI's default; it does not change the model's window.
+    pub autocompact: Option<u64>,
 }
 
 struct ActiveTurn {
@@ -94,6 +117,8 @@ struct ActiveTurn {
     stdin: SharedStdin,
     /// True once the original prompt is written; steers wait for it.
     ready: Arc<std::sync::atomic::AtomicBool>,
+    /// What the CLI has read of the prompt and the steers (see `steer.rs`).
+    steers: SharedSteers,
     run_id: String,
 }
 
@@ -111,6 +136,8 @@ pub struct ClaudeCliRuntime {
     work_dirs: Mutex<HashMap<ThreadId, PathBuf>>,
     /// Idle `/compact` timers, one per thread (see `compact.rs`).
     compactor: Arc<compact::IdleCompactor>,
+    /// How long after the result an unacknowledged steer may hold stdin.
+    steer_ack_timeout: Duration,
 }
 
 /// What one turn's process is started with, besides the session.
@@ -144,7 +171,24 @@ impl ClaudeCliRuntime {
             profiles: Mutex::new(HashMap::new()),
             work_dirs: Mutex::new(HashMap::new()),
             compactor: Arc::default(),
+            steer_ack_timeout: steer::ACK_TIMEOUT,
         })
+    }
+
+    /// Bound the post-result wait on unacknowledged steers (default
+    /// [`steer::ACK_TIMEOUT`]); tests shorten it.
+    pub fn with_steer_ack_timeout(mut self, timeout: Duration) -> Self {
+        self.steer_ack_timeout = timeout;
+        self
+    }
+
+    /// The session's task store (`<config>/tasks/<session>`), beside the
+    /// account's `projects` folder.
+    fn task_store(&self, session_id: &str) -> Option<PathBuf> {
+        self.config
+            .projects_dir
+            .parent()
+            .map(|config| config.join("tasks").join(session_id))
     }
 
     fn transcript_path(&self, dir: &Path, session_id: &str) -> PathBuf {
@@ -282,6 +326,16 @@ impl ClaudeCliRuntime {
         // Identify our headless runs instead of inheriting the SDK/host
         // entrypoint, which Anthropic meters differently on subscription plans.
         cmd.env("CLAUDE_CODE_ENTRYPOINT", "ironclaw");
+        // The task-list tools (TaskCreate/TaskUpdate/...), which replace
+        // TodoWrite in 2.1.3xx headless runs; they become the thread's plan.
+        cmd.env("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1");
+        // They run without a gate because they touch only this session's
+        // store, so the store is pinned here: the CLI's resolver prefers an
+        // inherited list id or team over the session id.
+        for var in TASK_ROUTING_ENV {
+            cmd.env_remove(var);
+        }
+        cmd.env(TASK_LIST_ENV, session_id);
         cmd.args([
             "-p",
             "--output-format",
@@ -320,6 +374,9 @@ impl ClaudeCliRuntime {
         }
         if let Some(effort) = plan.effort {
             cmd.args(["--effort", effort]);
+        }
+        if let Some(tokens) = self.config.autocompact {
+            cmd.arg("--autocompact").arg(tokens.to_string());
         }
         if let Some(note) = crate::system_note(plan.profile, plan.goal) {
             cmd.arg("--append-system-prompt").arg(note);
@@ -461,16 +518,22 @@ impl ClaudeCliRuntime {
         let stdin: SharedStdin = Arc::new(tokio::sync::Mutex::new(Some(stdin)));
         let prompt = control::prompt_with_images(&run_id, text).await;
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let steers = SharedSteers::default();
         // Bridged: register the hook first; the prompt follows its ack and
         // stdin stays open for hook answers. Otherwise: prompt, then EOF.
+        let task_store = self.task_store(&session_id);
         let mut bridged = self.bridge.as_ref().map(|bridge| {
             BridgedTurn::new(
-                Arc::clone(bridge),
-                Arc::clone(&stdin),
-                thread.thread_id.clone(),
-                run_id.clone(),
+                TurnIo {
+                    bridge: Arc::clone(bridge),
+                    stdin: Arc::clone(&stdin),
+                    thread: thread.thread_id.clone(),
+                    run_id: run_id.clone(),
+                    ready: Arc::clone(&ready),
+                    steers: Arc::clone(&steers),
+                },
                 prompt.clone(),
-                Arc::clone(&ready),
+                task_store,
             )
         });
         let first = if bridged.is_some() {
@@ -501,6 +564,7 @@ impl ClaudeCliRuntime {
                     done: done_rx,
                     stdin: Arc::clone(&stdin),
                     ready,
+                    steers: Arc::clone(&steers),
                     run_id: run_id.clone(),
                 },
             );
@@ -527,6 +591,7 @@ impl ClaudeCliRuntime {
         let provider = self.config.runtime_id.clone();
         let usage_file = self.config.usage_file.clone();
         let run = run_id.clone();
+        let steer_ack_timeout = self.steer_ack_timeout;
         tokio::spawn(async move {
             if let Some(sink) = sink.upgrade() {
                 sink.turn_started(&thread_id, Some(run.clone()), now_ms())
@@ -538,10 +603,32 @@ impl ClaudeCliRuntime {
             let mut fold = TurnFold::default();
             let mut refused = None;
             let mut lines = BufReader::new(stdout).lines();
+            // Absolute deadlines: unrelated output must not extend a wait.
+            let init_deadline = tokio::time::Instant::now() + INIT_TIMEOUT;
+            let mut steer_deadline: Option<tokio::time::Instant> = None;
             loop {
                 let waiting = bridged.as_ref().is_some_and(BridgedTurn::awaiting_ack);
-                let next = if waiting {
-                    match tokio::time::timeout(INIT_TIMEOUT, lines.next_line()).await {
+                let steer_wait = bridged
+                    .as_ref()
+                    .is_some_and(BridgedTurn::waiting_for_steer_ack);
+                if !steer_wait {
+                    steer_deadline = None;
+                }
+                let next = if steer_wait {
+                    let deadline = *steer_deadline
+                        .get_or_insert_with(|| tokio::time::Instant::now() + steer_ack_timeout);
+                    match tokio::time::timeout_at(deadline, lines.next_line()).await {
+                        Ok(next) => next,
+                        Err(_) => {
+                            tracing::debug!("claude cli: steer never acknowledged; input closed");
+                            if let Some(turn) = &bridged {
+                                turn.give_up_on_steers().await;
+                            }
+                            continue;
+                        }
+                    }
+                } else if waiting {
+                    match tokio::time::timeout_at(init_deadline, lines.next_line()).await {
                         Ok(next) => next,
                         Err(_) => {
                             refused = Some("claude cli did not acknowledge the approval hook");
@@ -576,6 +663,23 @@ impl ClaudeCliRuntime {
                 fold.outcome(cancelled.load(std::sync::atomic::Ordering::SeqCst), exit);
             if let Some(reason) = refused {
                 outcome = TurnOutcome::ended(TurnEndStatus::Failed, Some(reason.to_string()));
+            }
+            // Steers the CLI never started go back to the engine's queue,
+            // before the turn ends so no drain runs between the two. Input is
+            // closed first: no steer can be written after the ledger is read.
+            // One the engine could not keep fails the turn, naming it.
+            control::close(&stdin).await;
+            let unread = control::with_ledger(&steers, |l| l.unread());
+            if !unread.is_empty() {
+                let lost = match sink.upgrade() {
+                    Some(sink) => {
+                        sink.steers_unread(&thread_id, &run, unread)
+                            .await
+                            .undelivered
+                    }
+                    None => unread,
+                };
+                outcome = outcome.with_undelivered_steers(&lost);
             }
             // Armed while the turn is still live: a Stop or delete either
             // waits on this turn (then preempts the timer) or comes after it
@@ -619,16 +723,24 @@ impl ClaudeCliRuntime {
         let entry = self.active.lock().ok().and_then(|a| {
             a.get(thread)
                 .filter(|t| t.ready.load(std::sync::atomic::Ordering::SeqCst))
-                .map(|t| (Arc::clone(&t.stdin), t.run_id.clone()))
+                .map(|t| {
+                    (
+                        Arc::clone(&t.stdin),
+                        Arc::clone(&t.steers),
+                        t.run_id.clone(),
+                    )
+                })
         }); // silent-ok: a poisoned map only follows a panic elsewhere
         // No turn, or its prompt is not written yet: the text queues.
-        let Some((stdin, run_id)) = entry else {
+        let Some((stdin, steers, run_id)) = entry else {
             return SteerOutcome::Rejected;
         };
         // A fresh uuid: the steer belongs to the running run, it does not
-        // start one in the journal.
-        let message = control::prompt_with_images(&uuid::Uuid::new_v4().to_string(), text).await;
-        if let Err(error) = control::write_line(&stdin, &message).await {
+        // start one in the journal. The ledger tracks it by this uuid until
+        // the CLI starts it; one it never starts is queued at turn end.
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let message = control::steer_message(&uuid, text).await;
+        if let Err(error) = control::write_steer(&stdin, &steers, &uuid, text, &message).await {
             tracing::debug!(%error, "claude cli: steer not delivered");
             return SteerOutcome::Rejected;
         }
@@ -698,10 +810,10 @@ impl TurnRuntime for ClaudeCliRuntime {
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             native_fork: false,
-            // A bridged turn reads stdin until its result, and the CLI takes
-            // a user message sent mid-turn at its next step (checked against
-            // 2.1.310: one turn, one result, the steer journaled as a
-            // `queued_command`). Without the bridge stdin closes at once.
+            // A bridged turn keeps stdin open until every command written
+            // is done, and the CLI takes a user message sent mid-turn at its
+            // next step (checked against 2.1.328, see `steer.rs`). Without
+            // the bridge stdin closes at once.
             steer_in_turn: self.bridge.is_some(),
             reports_usage: true,
             // The CLI child dies with the backend; live-work rows cover it.
@@ -870,7 +982,23 @@ async fn write_limit_windows(path: &Path, windows: &serde_json::Value, at: i64) 
     }
 }
 
+/// `ZLO_CLAUDE_AUTOCOMPACT` (tokens, 100000 to 1000000): when Claude CLI
+/// sessions compact. Anything else keeps the CLI's default.
+pub fn autocompact_setting(raw: Option<&str>) -> Option<u64> {
+    let tokens = raw?.trim().replace('_', "").parse::<u64>().ok()?; // silent-ok: a malformed value keeps the CLI default
+    if AUTOCOMPACT_RANGE.contains(&tokens) {
+        Some(tokens)
+    } else {
+        tracing::debug!(
+            tokens,
+            "claude cli: ZLO_CLAUDE_AUTOCOMPACT out of range; ignored"
+        );
+        None
+    }
+}
+
 pub fn default_accounts(home: &Path, binary: &Path) -> Vec<ClaudeCliConfig> {
+    let autocompact = autocompact_setting(std::env::var("ZLO_CLAUDE_AUTOCOMPACT").ok().as_deref());
     let work_dir = home.join(".ironclaw").join("claude-cli");
     let usage_dir = home.join(".ironclaw").join("usage");
     let second = home.join(".claude-account2");
@@ -884,6 +1012,7 @@ pub fn default_accounts(home: &Path, binary: &Path) -> Vec<ClaudeCliConfig> {
             login_file: home.join(".claude.json"),
             projects_dir: home.join(".claude").join("projects"),
             usage_file: Some(usage_dir.join("claude-cli.json")),
+            autocompact,
         },
         ClaudeCliConfig {
             runtime_id: "claude-cli-2".into(),
@@ -894,6 +1023,22 @@ pub fn default_accounts(home: &Path, binary: &Path) -> Vec<ClaudeCliConfig> {
             login_file: second.join(".claude.json"),
             projects_dir: second.join("projects"),
             usage_file: Some(usage_dir.join("claude-cli-2.json")),
+            autocompact,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::autocompact_setting;
+
+    #[test]
+    fn autocompact_takes_only_what_the_cli_accepts() {
+        assert_eq!(autocompact_setting(Some("300000")), Some(300_000));
+        assert_eq!(autocompact_setting(Some(" 1_000_000 ")), Some(1_000_000));
+        assert_eq!(autocompact_setting(Some("99999")), None);
+        assert_eq!(autocompact_setting(Some("2000000")), None);
+        assert_eq!(autocompact_setting(Some("auto")), None);
+        assert_eq!(autocompact_setting(None), None);
+    }
 }

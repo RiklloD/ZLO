@@ -22,6 +22,9 @@ use ironclaw_orchestrator::telemetry::TurnTelemetry;
 #[derive(Default)]
 struct Recorder {
     finished: Mutex<Vec<TurnOutcome>>,
+    unread: Mutex<Vec<String>>,
+    /// Report every unread steer back as not kept (a failing queue).
+    refuse_steers: std::sync::atomic::AtomicBool,
     telemetry: Mutex<Vec<TurnTelemetry>>,
 }
 
@@ -39,6 +42,26 @@ impl TurnEventSink for Recorder {
     }
     async fn turn_telemetry(&self, _: &ThreadId, telemetry: TurnTelemetry, _: Millis) {
         self.telemetry.lock().unwrap().push(telemetry);
+    }
+    async fn steers_unread(
+        &self,
+        _: &ThreadId,
+        run_id: &str,
+        steers: Vec<UnreadSteer>,
+    ) -> SteerRecovery {
+        assert!(
+            self.finished.lock().unwrap().is_empty(),
+            "reported before the turn ends"
+        );
+        assert!(!run_id.is_empty());
+        self.unread
+            .lock()
+            .unwrap()
+            .extend(steers.iter().map(|s| s.text.clone()));
+        let refuse = self.refuse_steers.load(std::sync::atomic::Ordering::SeqCst);
+        SteerRecovery {
+            undelivered: if refuse { steers } else { Vec::new() },
+        }
     }
 }
 
@@ -90,6 +113,16 @@ fn bridged_runtime(
     sink: &Arc<Recorder>,
     bridge: Option<Arc<CliBridge>>,
 ) -> ClaudeCliRuntime {
+    configured_runtime(dir, binary, sink, bridge, None)
+}
+
+fn configured_runtime(
+    dir: &Path,
+    binary: PathBuf,
+    sink: &Arc<Recorder>,
+    bridge: Option<Arc<CliBridge>>,
+    autocompact: Option<u64>,
+) -> ClaudeCliRuntime {
     let work_dir = dir.join("work");
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(sink) as Weak<dyn TurnEventSink>;
     ClaudeCliRuntime::new(
@@ -102,6 +135,7 @@ fn bridged_runtime(
             login_file: dir.join(".claude.json"),
             projects_dir: dir.join("projects"),
             usage_file: Some(dir.join("usage").join("claude-cli.json")),
+            autocompact,
         },
         sink,
         bridge,
@@ -230,7 +264,7 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
         assert!(line.contains("--model claude-haiku-5-5"), "{line}");
         // The CLI's own subagents are off: subagents are t3_delegate threads.
         assert!(
-            line.contains("--disallowedTools Agent,Task,Workflow"),
+            line.contains("--disallowedTools Agent,Task,Workflow,SendMessage,ListAgents,TaskStop"),
             "{line}"
         );
         assert!(
@@ -706,7 +740,7 @@ async fn bridged_turn_asks_before_each_tool_and_streams_text() {
     assert!(args.contains("--mcp-config") && args.contains("--strict-mcp-config"));
     assert!(args.contains("--permission-prompts none"), "{args}");
     assert!(
-        args.contains("--disallowedTools Agent,Task,Workflow"),
+        args.contains("--disallowedTools Agent,Task,Workflow,SendMessage,ListAgents,TaskStop"),
         "{args}"
     );
     assert!(
@@ -815,5 +849,214 @@ async fn unanswered_tool_call_is_denied_on_timeout() {
     assert!(
         !args.contains("--mcp-config") && !args.contains("--tools"),
         "{args}"
+    );
+}
+
+/// The 2.1.328 steering protocol, plus the task-list tools. The prompt runs
+/// a `TaskCreate` (allowed without a gate; the task store becomes the plan),
+/// then two steers arrive: the first is queued, its first result comes in,
+/// then Claude starts it and asks about a Bash call (so stdin must still be
+/// open to answer); the second is discarded unread.
+const STEERED: &str = r#"#!/bin/sh
+{ printf 'todo=%s list=%s teams=%s ' "$CLAUDE_CODE_ENABLE_TODO_TOOLS" "$CLAUDE_CODE_TASK_LIST_ID" "$CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"; echo "$@"; } >> @DIR@/args.log
+prev=""; sid=""
+for a in "$@"; do
+  if [ "$prev" = "--session-id" ] || [ "$prev" = "--resume" ]; then sid="$a"; fi
+  prev="$a"
+done
+# 2.1.328's resolver: an inherited list id wins over the session.
+list="${CLAUDE_CODE_TASK_LIST_ID:-$sid}"
+uuid_of() { echo "$1" | sed 's/.*"uuid":"\([^"]*\)".*/\1/'; }
+life() { echo "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$1\",\"state\":\"$2\",\"uuid\":\"l$2\",\"session_id\":\"s\"}"; }
+result() { echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":5,\"duration_api_ms\":5,\"num_turns\":1,\"result\":\"$2\",\"session_id\":\"s\",\"total_cost_usd\":0,\"user_message_uuids\":[\"$1\"]}"; }
+read -r init
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"ironclaw-init","response":{}}}'
+read -r prompt
+a=$(uuid_of "$prompt")
+life "$a" queued; life "$a" started
+echo '{"type":"control_request","request_id":"h0","request":{"subtype":"hook_callback","callback_id":"ironclaw-approval","input":{"hook_event_name":"PreToolUse","tool_name":"TaskCreate","tool_input":{"subject":"Plan","description":"Plan"},"tool_use_id":"tk1"}}}'
+read -r task_answer
+echo "$task_answer" >> @DIR@/answer.log
+mkdir -p "@DIR@/tasks/$list"
+echo '{"id":"1","subject":"Plan","description":"Plan","status":"in_progress","blocks":[],"blockedBy":[]}' > "@DIR@/tasks/$list/1.json"
+echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tk1","content":"Task #1 created successfully: Plan"}]},"parent_tool_use_id":null,"session_id":"s","uuid":"r0","tool_use_result":{"task":{"id":"1","subject":"Plan"}}}'
+touch @DIR@/ready
+read -r steer1
+echo "$steer1" >> @DIR@/input.log
+b=$(uuid_of "$steer1")
+life "$b" queued
+read -r steer2
+c=$(uuid_of "$steer2")
+life "$c" queued
+result "$a" "Answer to the brief"
+life "$a" completed
+life "$b" started
+echo '{"type":"control_request","request_id":"h2","request":{"subtype":"hook_callback","callback_id":"ironclaw-approval","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls docs"},"tool_use_id":"tu2"}}}'
+read -r answer
+echo "$answer" >> @DIR@/answer.log
+result "$b" "Steered"
+life "$b" completed
+life "$c" discarded
+read -r _eof
+"#;
+
+#[tokio::test]
+async fn a_steer_is_read_in_turn_and_a_dropped_one_comes_back_unread() {
+    // Inherited from a parent Claude session or agent team: the task list
+    // must still be this session's own (the hook lets task tools through
+    // because they touch nothing else).
+    // SAFETY: the runtime overrides or removes both in every child, so no
+    // other test's child can observe them.
+    unsafe {
+        std::env::set_var("CLAUDE_CODE_TASK_LIST_ID", "shared-team-list");
+        std::env::set_var("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = script(
+        dir.path(),
+        "claude",
+        &STEERED.replace("@DIR@", &dir.path().display().to_string()),
+    );
+    let rt = configured_runtime(
+        dir.path(),
+        binary,
+        &sink,
+        Some(Arc::clone(&bridge)),
+        Some(300_000),
+    );
+    let thread = thread(&rt).await;
+    let mut events = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("ready").exists()).await;
+    for text in ["also list the docs", "drop me"] {
+        let mut outcome = SteerOutcome::Rejected;
+        for _ in 0..100 {
+            outcome = rt.steer(&thread, text, SteerHow::Steer).await.unwrap();
+            if outcome == SteerOutcome::Steered {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(outcome, SteerOutcome::Steered, "{text}");
+    }
+    let seen = follow_turn(
+        &bridge,
+        &mut events,
+        &thread.thread_id,
+        Some(GateAnswer::Approve),
+    )
+    .await;
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+
+    // TaskCreate ran without a gate; only the Bash call asked.
+    let gates: Vec<String> = seen
+        .iter()
+        .filter_map(|e| match e {
+            LiveEvent::GateOpened { gate, .. } => Some(gate.tool_name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(gates, ["Bash"]);
+    let (_, _, plan) = bridge.plan_of(&thread.thread_id).expect("task plan");
+    assert_eq!(plan.entries[0].content, "Plan");
+    // The steer's Bash call was answered after the first result: stdin
+    // stayed open while the steer ran.
+    let answers = std::fs::read_to_string(dir.path().join("answer.log")).unwrap();
+    let answers: Vec<&str> = answers.lines().collect();
+    assert_eq!(answers.len(), 2, "{answers:?}");
+    assert!(answers[0].contains(r#""request_id":"h0""#) && answers[0].contains("allow"));
+    assert!(answers[1].contains(r#""request_id":"h2""#) && answers[1].contains("allow"));
+    // A steer waits for the tools in flight instead of cancelling them.
+    let steer = std::fs::read_to_string(dir.path().join("input.log")).unwrap();
+    assert!(steer.contains(r#""priority":"next""#), "{steer}");
+
+    let outcome = sink.finished.lock().unwrap()[0].clone();
+    assert_eq!(outcome.status, TurnEndStatus::Completed);
+    assert_eq!(
+        outcome.final_text.as_deref(),
+        Some("Answer to the brief\n\nSteered")
+    );
+    assert_eq!(*sink.unread.lock().unwrap(), vec!["drop me".to_string()]);
+    let args = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
+    let session = thread.native_session_id.as_deref().unwrap();
+    assert!(
+        args.starts_with(&format!("todo=1 list={session} teams= ")),
+        "{args}"
+    );
+    assert!(args.contains("--autocompact 300000"), "{args}");
+    assert!(!dir.path().join("tasks").join("shared-team-list").exists());
+}
+
+/// A steer written before the result that the CLI never acknowledges,
+/// while unrelated frames keep streaming: stdin still closes once the
+/// ack wait's absolute deadline passes (not that long after the last
+/// frame). The steer comes back unread; the engine cannot keep it, so the
+/// turn ends failed and says the message was not delivered.
+const UNACKED_STEER: &str = r#"#!/bin/sh
+uuid_of() { echo "$1" | sed 's/.*"uuid":"\([^"]*\)".*/\1/'; }
+read -r init
+echo '{"type":"control_response","response":{"subtype":"success","request_id":"ironclaw-init","response":{}}}'
+read -r prompt
+a=$(uuid_of "$prompt")
+echo "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$a\",\"state\":\"started\",\"session_id\":\"s\"}"
+touch @DIR@/ready
+read -r steer
+( i=0; while [ $i -lt 100 ]; do echo '{"type":"stream_event","event":{"type":"ping"},"session_id":"s","uuid":"p"}'; sleep 0.1; i=$((i+1)); done ) &
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":5,\"duration_api_ms\":5,\"num_turns\":1,\"result\":\"done\",\"session_id\":\"s\",\"total_cost_usd\":0,\"user_message_uuids\":[\"$a\"]}"
+echo "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$a\",\"state\":\"completed\",\"session_id\":\"s\"}"
+read -r _eof
+date +%s > @DIR@/closed
+kill $! 2>/dev/null
+"#;
+
+#[tokio::test]
+async fn an_unacknowledged_steer_closes_input_at_an_absolute_deadline_and_is_never_lost() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    sink.refuse_steers
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = script(
+        dir.path(),
+        "claude",
+        &UNACKED_STEER.replace("@DIR@", &dir.path().display().to_string()),
+    );
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)))
+        .with_steer_ack_timeout(Duration::from_secs(1));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("ready").exists()).await;
+    let mut outcome = SteerOutcome::Rejected;
+    for _ in 0..100 {
+        outcome = rt
+            .steer(&thread, "also check the logs", SteerHow::Steer)
+            .await
+            .unwrap();
+        if outcome == SteerOutcome::Steered {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(outcome, SteerOutcome::Steered);
+    let sent = std::time::Instant::now();
+    // The pings run for 10 s; an inactivity timeout would wait them out.
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    assert!(
+        sent.elapsed() < Duration::from_secs(4),
+        "input closed only after {:?}",
+        sent.elapsed()
+    );
+    assert_eq!(
+        *sink.unread.lock().unwrap(),
+        vec!["also check the logs".to_string()]
+    );
+    let outcome = sink.finished.lock().unwrap()[0].clone();
+    assert_eq!(outcome.status, TurnEndStatus::Failed);
+    let error = outcome.error.unwrap_or_default();
+    assert!(
+        error.contains("Not delivered") && error.contains("also check the logs"),
+        "{error}"
     );
 }

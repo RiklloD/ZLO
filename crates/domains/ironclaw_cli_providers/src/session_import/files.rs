@@ -27,7 +27,7 @@ pub(crate) struct FileInfo {
     pub(crate) id: String,
 }
 
-fn info(meta: &std::fs::Metadata) -> FileInfo {
+pub(crate) fn info(meta: &std::fs::Metadata) -> FileInfo {
     let mtime_ms = meta
         .modified()
         .ok() // silent-ok: a filesystem without mtimes compares on identity and digest
