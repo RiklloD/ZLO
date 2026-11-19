@@ -17,16 +17,6 @@ impl PromptContextSelection {
     pub(crate) fn len(&self) -> usize {
         self.selected.len()
     }
-
-    #[cfg(test)]
-    fn is_empty(&self) -> bool {
-        self.selected.is_empty()
-    }
-
-    #[cfg(test)]
-    fn iter(&self) -> std::slice::Iter<'_, SelectedPromptContextMessage> {
-        self.selected.iter()
-    }
 }
 
 impl IntoIterator for PromptContextSelection {
@@ -129,6 +119,7 @@ mod tests {
 
         assert_eq!(
             selected
+                .selected
                 .iter()
                 .map(|(message, _)| message.sequence)
                 .collect::<Vec<_>>(),
@@ -151,7 +142,7 @@ mod tests {
                 omitted_through_kind: MessageKind::User,
             })
         );
-        assert!(selected.is_empty());
+        assert!(selected.selected.is_empty());
     }
 
     #[test]
@@ -163,7 +154,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(selected.is_empty());
+        assert!(selected.selected.is_empty());
     }
 
     #[test]
@@ -188,6 +179,7 @@ mod tests {
 
         assert_eq!(
             selected
+                .selected
                 .iter()
                 .map(|(message, _)| message.sequence)
                 .collect::<Vec<_>>(),
@@ -210,6 +202,7 @@ mod tests {
 
         assert_eq!(
             selected
+                .selected
                 .iter()
                 .map(|(message, _)| message.sequence)
                 .collect::<Vec<_>>(),
@@ -248,6 +241,6 @@ mod tests {
         )
         .expect("a non-user accepted ref must not become a mandatory task");
 
-        assert!(selected.is_empty());
+        assert!(selected.selected.is_empty());
     }
 }
