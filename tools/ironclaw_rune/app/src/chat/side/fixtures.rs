@@ -259,6 +259,7 @@ fn user(key: &str, text: &str) -> Row {
         text: text.into(),
         pending: false,
         attachments: Vec::new(),
+        steer: None,
     }
 }
 
@@ -428,7 +429,6 @@ fn session_with(s: &mut State, card: bool, picker: bool) {
         queue.queue.items.truncate(1);
         queue.queue.held = false;
         queue.tasks.clear();
-        queue.queue_open = false;
         chat.orchestration = queue;
         x.chat = Some(SideChat {
             thread_id: "sc2".into(),

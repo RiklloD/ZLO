@@ -72,6 +72,9 @@ pub enum Row {
         text: String,
         pending: bool,
         attachments: Vec<AttachmentChip>,
+        /// Set when the message steered a turn already running (t3code's
+        /// "Steer" marker), rather than starting one.
+        steer: Option<SteerMark>,
     },
     Assistant {
         key: String,
@@ -132,6 +135,16 @@ pub enum Row {
         failed: bool,
         retryable: bool,
     },
+    /// A steer the agent did not confirm reading before Stop: not requeued,
+    /// so the person decides (t3code's "Steer delivery not confirmed").
+    SteerNotice {
+        key: String,
+        title: String,
+        /// The notice sentence, with the steer's words.
+        text: String,
+        /// The steer's own words, to put back in the composer.
+        words: String,
+    },
     /// A slash command's answer. Local to this view: the gateway does not
     /// store command results in the timeline.
     Command {
@@ -156,6 +169,18 @@ pub enum Row {
         form: QuestionForm,
         state: QuestionState,
     },
+}
+
+/// A steer's marker on its row.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SteerMark {
+    /// The agent has not read it yet ("Steer · waiting to be read").
+    pub waiting: bool,
+    /// The row above is a steer too: the label shows once for the run.
+    pub continues: bool,
+    /// How long the turn kept working after it, once the turn has ended;
+    /// `None` while it runs ("Continued").
+    pub continued_ms: Option<i64>,
 }
 
 /// A file on a user message. `message_id` is set once the gateway stored the
@@ -184,6 +209,7 @@ impl Row {
             | Row::Delegated { key, .. }
             | Row::Gate { key, .. }
             | Row::RunNotice { key, .. }
+            | Row::SteerNotice { key, .. }
             | Row::Command { key, .. }
             | Row::Plan { key, .. }
             | Row::Question { key, .. } => key,
@@ -358,6 +384,26 @@ struct PendingUser {
     chips: Vec<AttachmentChip>,
     /// Newest durable sequence when it was sent; its server copy is newer.
     after: Option<u64>,
+    /// Sent into the running turn: `Some(waiting)` until the timeline has it.
+    steer: Option<bool>,
+}
+
+/// Back-to-back steers show their label once (t3code's `continuesSteer`).
+fn mark_steer_runs(rows: &mut [Row]) {
+    let mut after_steer = false;
+    for row in rows.iter_mut() {
+        let steer = match row {
+            Row::User { steer, .. } => steer.as_mut(),
+            _ => None,
+        };
+        match steer {
+            Some(mark) => {
+                mark.continues = after_steer;
+                after_steer = true;
+            }
+            None => after_steer = false,
+        }
+    }
 }
 
 fn pending_key(id: u64) -> String {
@@ -461,6 +507,7 @@ fn borrowed_rows(messages: &[TimelineMessage], prefix: &str, rows: &mut Vec<Row>
                 text,
                 pending: false,
                 attachments: Vec::new(),
+                steer: None,
             },
             MessageKind::Assistant => Row::Assistant {
                 key,
@@ -657,8 +704,17 @@ impl Transcript {
             acked: false,
             chips,
             after: self.durable.iter().map(|m| m.sequence).max(),
+            steer: None,
         });
         id
+    }
+
+    /// Mark pending message `id` as a steer of the running turn
+    /// (`Some(waiting)`), or as the start of its own turn (`None`).
+    pub fn set_pending_steer(&mut self, id: u64, steer: Option<bool>) {
+        if let Some(entry) = self.pending_user.iter_mut().find(|p| p.id == id) {
+            entry.steer = steer;
+        }
     }
 
     /// The row key of durable message `message_id`.
@@ -1263,6 +1319,40 @@ impl Transcript {
                 && !groups.iter().any(|(r, _)| r.as_deref() == Some(run))
         };
 
+        // Steers: a person's message in a run that a message of theirs
+        // already started (or one the steer ledger marked). A run's last
+        // stored time measures the work after a steer once it ended.
+        let mut started_runs: HashSet<&str> = HashSet::new();
+        let mut run_last_at: HashMap<&str, i64> = HashMap::new();
+        for m in &self.durable {
+            if let (Some(run), Some(at)) = (m.turn_run_id.as_deref(), m.created_at) {
+                let at = at.timestamp_millis();
+                run_last_at
+                    .entry(run)
+                    .and_modify(|t| *t = (*t).max(at))
+                    .or_insert(at);
+            }
+        }
+        let active = self.active_run();
+        // Notices a Stop left on a run's last row (stored or not) show
+        // after the last row drawn at or before it.
+        let mut owed: Vec<Row> = Vec::new();
+        let notice_rows = |m: &TimelineMessage| -> Vec<Row> {
+            m.steer_notices
+                .iter()
+                .map(|n| Row::SteerNotice {
+                    key: format!("steer-notice:{}", n.steer_id),
+                    title: if n.title.trim().is_empty() {
+                        "Steer delivery not confirmed".into()
+                    } else {
+                        n.title.clone()
+                    },
+                    text: n.content.clone(),
+                    words: n.text.clone(),
+                })
+                .collect()
+        };
+
         // A fork's source, keyed apart so its rows carry no fork action.
         borrowed_rows(&self.prefix, PREFIX_KEY, &mut rows);
         if !self.prefix.is_empty() {
@@ -1288,7 +1378,13 @@ impl Transcript {
                 });
             }
         };
-        for message in self.durable.iter().filter(|m| m.is_visible()) {
+        for message in &self.durable {
+            if !message.is_visible() {
+                owed.extend(notice_rows(message));
+                continue;
+            }
+            rows.append(&mut owed);
+            owed = notice_rows(message);
             while let Some((_, note)) = notes.next_if(|(anchor, _)| *anchor < message.sequence) {
                 rows.push(note.clone());
             }
@@ -1346,12 +1442,31 @@ impl Transcript {
                             shown.extend(before);
                         }
                     }
+                    let queued = message.status == MessageStatus::Queued;
+                    let run = message.turn_run_id.as_deref();
+                    let later = run.is_some_and(|r| !started_runs.insert(r));
+                    let steer = match (&message.steer, later) {
+                        (Some(ann), _) => Some(ann.waiting_to_be_read),
+                        (None, true) => Some(queued),
+                        (None, false) => None,
+                    }
+                    .map(|waiting| SteerMark {
+                        waiting,
+                        continues: false,
+                        continued_ms: run
+                            .filter(|r| active != Some(*r))
+                            .and_then(|r| run_last_at.get(r))
+                            .zip(sent)
+                            .map(|(end, at)| end - at)
+                            .filter(|ms| *ms > 0),
+                    });
                     rows.push(Row::User {
                         key,
                         text,
                         // Queued until the model reads it.
-                        pending: message.status == MessageStatus::Queued,
+                        pending: queued,
                         attachments,
+                        steer,
                     });
                     if let Some(run) = message.turn_run_id.as_deref()
                         && quiet_run(run)
@@ -1449,6 +1564,7 @@ impl Transcript {
             }
         }
 
+        rows.append(&mut owed);
         for merge in merges {
             merge_rows(merge, &mut rows);
         }
@@ -1459,6 +1575,10 @@ impl Transcript {
                 text: p.text.clone(),
                 pending: !p.acked,
                 attachments: p.chips.clone(),
+                steer: p.steer.map(|waiting| SteerMark {
+                    waiting,
+                    ..SteerMark::default()
+                }),
             });
         }
 
@@ -1497,6 +1617,7 @@ impl Transcript {
                 self.notice_row(run, &mut rows);
             }
         }
+        mark_steer_runs(&mut rows);
         rows
     }
 
@@ -2506,5 +2627,98 @@ mod tests {
         );
         assert_eq!(t.key_of_message("m3"), format!("pending:{id}"));
         assert_eq!(t.key_of_message("m1"), "msg:m1");
+    }
+
+    fn page(messages: serde_json::Value) -> TimelinePage {
+        serde_json::from_value(serde_json::json!({
+            "thread": { "thread_id": "t1" }, "messages": messages
+        }))
+        .expect("timeline decodes")
+    }
+
+    fn steers(rows: &[Row]) -> Vec<(String, Option<SteerMark>)> {
+        rows.iter()
+            .filter_map(|r| match r {
+                Row::User { text, steer, .. } => Some((text.clone(), steer.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_later_message_of_the_same_run_is_a_steer_and_back_to_back_ones_label_once() {
+        let mut t = Transcript::default();
+        t.set_timeline(page(serde_json::json!([
+            {"message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+             "turn_run_id": RUN, "content": "port it", "created_at": "2026-11-19T10:00:00Z"},
+            {"message_id": "m2", "sequence": 2, "kind": "user", "status": "accepted",
+             "turn_run_id": RUN, "content": "use rune", "created_at": "2026-11-19T10:00:10Z",
+             "steer": {"id": "s1", "state": "read", "waiting_to_be_read": false}},
+            {"message_id": "m3", "sequence": 3, "kind": "user", "status": "queued",
+             "turn_run_id": RUN, "content": "and test it", "created_at": "2026-11-19T10:00:20Z"},
+            {"message_id": "m4", "sequence": 4, "kind": "assistant", "status": "finalized",
+             "turn_run_id": RUN, "content": "Done.", "created_at": "2026-11-19T10:02:10Z"},
+            {"message_id": "m5", "sequence": 5, "kind": "user", "status": "accepted",
+             "turn_run_id": "run-2", "content": "next", "created_at": "2026-11-19T10:03:00Z"},
+        ])));
+        let marks = steers(&t.rows());
+        assert_eq!(
+            marks[0],
+            ("port it".into(), None),
+            "the run's first message starts it"
+        );
+        let first = marks[1].1.clone().expect("a steer");
+        assert!(!first.waiting && !first.continues);
+        assert_eq!(first.continued_ms, Some(120_000), "worked 2 min after it");
+        let second = marks[2].1.clone().expect("a steer");
+        assert!(second.waiting, "queued until the model reads it");
+        assert!(second.continues, "the label shows once");
+        assert_eq!(marks[3], ("next".into(), None));
+    }
+
+    #[test]
+    fn the_ledger_waiting_flag_wins_and_a_pending_steer_shows_waiting() {
+        let mut t = Transcript::default();
+        t.set_timeline(page(serde_json::json!([
+            {"message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+             "turn_run_id": RUN, "content": "hi"},
+            {"message_id": "m2", "sequence": 2, "kind": "user", "status": "accepted",
+             "turn_run_id": RUN, "content": "steer",
+             "steer": {"id": "s1", "state": "pending", "waiting_to_be_read": true}},
+        ])));
+        let id = t.push_pending_user("more", &[]);
+        t.set_pending_steer(id, Some(true));
+        let marks = steers(&t.rows());
+        assert!(marks[1].1.as_ref().is_some_and(|m| m.waiting));
+        let pending = marks[2].1.clone().expect("the optimistic row is a steer");
+        assert!(pending.waiting && pending.continues);
+        t.set_pending_steer(id, None);
+        assert_eq!(steers(&t.rows())[2].1, None, "a send that started a turn");
+    }
+
+    #[test]
+    fn unconfirmed_steer_notices_follow_their_run_even_from_a_hidden_row() {
+        let mut t = Transcript::default();
+        t.set_timeline(page(serde_json::json!([
+            {"message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+             "turn_run_id": RUN, "content": "hi"},
+            {"message_id": "m2", "sequence": 2, "kind": "assistant", "status": "finalized",
+             "turn_run_id": RUN, "content": "Stopped."},
+            {"message_id": "m3", "sequence": 3, "kind": "tool_result_reference", "status": "finalized",
+             "turn_run_id": RUN, "content": "",
+             "steer_notices": [{"steer_id": "s9", "title": "Steer delivery not confirmed",
+                "text": "use rune", "content": "The agent did not confirm reading your steer before Stop."}]},
+            {"message_id": "m4", "sequence": 4, "kind": "user", "status": "accepted",
+             "turn_run_id": "run-2", "content": "again"},
+        ])));
+        let rows = t.rows();
+        let at = rows
+            .iter()
+            .position(|r| matches!(r, Row::SteerNotice { .. }))
+            .expect("the notice shows");
+        assert!(matches!(&rows[at], Row::SteerNotice { title, words, .. }
+            if title == "Steer delivery not confirmed" && words == "use rune"));
+        assert!(matches!(&rows[at - 1], Row::Assistant { text, .. } if text == "Stopped."));
+        assert!(matches!(&rows[at + 1], Row::User { text, .. } if text == "again"));
     }
 }

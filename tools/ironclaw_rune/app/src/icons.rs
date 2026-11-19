@@ -120,6 +120,21 @@ pub static CIRCLE_X: Icon = Icon {
     view: 24.0,
     body: r##"<circle fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" cx="12" cy="12" r="10" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m15 9-6 6" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m9 9 6 6" />"##,
 };
+pub static CORNER_UP_RIGHT: Icon = Icon {
+    name: "corner-up-right",
+    view: 24.0,
+    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m15 14 5-5-5-5" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M4 20v-7a4 4 0 0 1 4-4h12" />"##,
+};
+pub static LIST_PLUS: Icon = Icon {
+    name: "list-plus",
+    view: 24.0,
+    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M11 12H3" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M16 6H3" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M16 18H3" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M18 9v6" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M21 12h-6" />"##,
+};
+pub static REDO_2: Icon = Icon {
+    name: "redo-2",
+    view: 24.0,
+    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m15 14 5-5-5-5" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13" />"##,
+};
 pub static CLOSE: Icon = Icon {
     name: "close",
     view: 24.0,

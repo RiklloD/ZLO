@@ -385,6 +385,7 @@ mod tests {
             text: t.into(),
             pending: false,
             attachments: Vec::new(),
+            steer: None,
         }
     }
 

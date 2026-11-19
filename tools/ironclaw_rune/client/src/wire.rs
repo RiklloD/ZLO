@@ -166,6 +166,41 @@ pub struct TimelineMessage {
     pub content: Option<String>,
     #[serde(default)]
     pub attachments: Vec<AttachmentView>,
+    /// Set on a user row that steered its run (the engine's steer ledger,
+    /// CLI threads): drives "Steer · waiting to be read".
+    #[serde(default)]
+    pub steer: Option<SteerAnnotation>,
+    /// On a run's last row: steers a Stop left unread ("Steer delivery not
+    /// confirmed").
+    #[serde(default)]
+    pub steer_notices: Vec<SteerNoticeView>,
+}
+
+/// A steer's read state on its timeline row (`steer`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SteerAnnotation {
+    #[serde(default)]
+    pub id: String,
+    /// `pending`, `read`, `dropped` or `unconfirmed`.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub waiting_to_be_read: bool,
+}
+
+/// A steer the agent never confirmed reading before Stop (`steer_notices`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SteerNoticeView {
+    #[serde(default)]
+    pub steer_id: String,
+    #[serde(default)]
+    pub title: String,
+    /// The steer's own words.
+    #[serde(default)]
+    pub text: String,
+    /// The notice as a sentence, with the words quoted.
+    #[serde(default)]
+    pub content: String,
 }
 
 /// Content the web UI sends for a message that is only attachments.
@@ -209,6 +244,69 @@ pub struct SubmitAck {
     pub status: Option<String>,
     #[serde(default)]
     pub notice: Option<String>,
+    /// What the message became (`started` / `steered` / `queued` /
+    /// `restarted`). Absent from servers older than the field.
+    #[serde(default)]
+    pub delivery: Option<SubmitDelivery>,
+    /// The steer's ledger id, keying its "waiting to be read" state.
+    #[serde(default)]
+    pub steer_id: Option<String>,
+    /// The queue item holding it (a queued message, or a steer waiting for
+    /// the turn to take input).
+    #[serde(default)]
+    pub queued_id: Option<String>,
+    /// A steer the turn could not take yet: it goes in once the turn can,
+    /// or runs as the next turn if this one ends first.
+    #[serde(default)]
+    pub waiting_for_turn: bool,
+}
+
+/// `RebornSubmitDelivery`: what a submitted message became.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitDelivery {
+    Started,
+    Steered,
+    Queued,
+    Restarted,
+    #[serde(other)]
+    Other,
+}
+
+/// How a send landed, read from the ack's typed fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Landed {
+    /// A new turn runs it (`restarted` counts: the turn started over with it).
+    Started,
+    /// Part of the running turn. `waiting`: the turn takes it once it can.
+    Steered { waiting: bool },
+    /// In the thread's queue for a later turn.
+    Queued,
+    /// The running turn refused it; nothing was kept.
+    Refused,
+}
+
+impl SubmitAck {
+    /// Where the message went. An older gateway without `delivery` is read
+    /// by outcome alone: `deferred_busy` was a message the running turn kept.
+    pub fn landed(&self) -> Landed {
+        if self.outcome.as_deref() == Some("rejected_busy") {
+            return Landed::Refused;
+        }
+        match self.delivery {
+            Some(SubmitDelivery::Steered) => Landed::Steered {
+                waiting: self.waiting_for_turn,
+            },
+            Some(SubmitDelivery::Queued) => Landed::Queued,
+            Some(SubmitDelivery::Started | SubmitDelivery::Restarted) => Landed::Started,
+            Some(SubmitDelivery::Other) | None => match self.outcome.as_deref() {
+                Some("deferred_busy") => Landed::Steered {
+                    waiting: self.waiting_for_turn,
+                },
+                _ => Landed::Started,
+            },
+        }
+    }
 }
 
 /// One SSE frame (`WebChatV2EventFrame`): `{cursor, type, ...payload}`.
@@ -403,4 +501,48 @@ pub struct PairingStatus {
 pub struct HostedMcpRegistered {
     pub message: String,
     pub package_ref: LifecyclePackageRef,
+}
+
+#[cfg(test)]
+mod landed_tests {
+    use super::*;
+
+    fn ack(v: serde_json::Value) -> SubmitAck {
+        serde_json::from_value(v).expect("ack decodes")
+    }
+
+    #[test]
+    fn the_typed_delivery_decides_where_a_send_went() {
+        let steered = ack(
+            serde_json::json!({"outcome": "deferred_busy", "delivery": "steered",
+            "steer_id": "s1", "notice": "Queued is not read"}),
+        );
+        assert_eq!(steered.landed(), Landed::Steered { waiting: false });
+        let waiting = ack(
+            serde_json::json!({"outcome": "deferred_busy", "delivery": "steered",
+            "waiting_for_turn": true, "queued_id": "q1"}),
+        );
+        assert_eq!(waiting.landed(), Landed::Steered { waiting: true });
+        // The notice text never decides it.
+        let queued = ack(
+            serde_json::json!({"outcome": "deferred_busy", "delivery": "queued",
+            "notice": "Sent to the running turn"}),
+        );
+        assert_eq!(queued.landed(), Landed::Queued);
+        let started = ack(serde_json::json!({"outcome": "submitted", "delivery": "started"}));
+        assert_eq!(started.landed(), Landed::Started);
+        let restarted = ack(serde_json::json!({"outcome": "submitted", "delivery": "restarted"}));
+        assert_eq!(restarted.landed(), Landed::Started);
+        let refused = ack(serde_json::json!({"outcome": "rejected_busy"}));
+        assert_eq!(refused.landed(), Landed::Refused);
+    }
+
+    #[test]
+    fn an_older_gateway_is_read_by_outcome_alone() {
+        let old = ack(serde_json::json!({"outcome": "deferred_busy",
+            "notice": "Queued: it runs when the current turn ends"}));
+        assert_eq!(old.landed(), Landed::Steered { waiting: false });
+        let old = ack(serde_json::json!({"outcome": "submitted"}));
+        assert_eq!(old.landed(), Landed::Started);
+    }
 }

@@ -603,6 +603,7 @@ mod tests {
             text: text.into(),
             pending: false,
             attachments: Vec::new(),
+            steer: None,
         }
     }
 

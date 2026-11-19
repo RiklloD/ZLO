@@ -140,6 +140,26 @@ pub struct QueueItem {
     pub status: String,
     #[serde(default)]
     pub created_at: Millis,
+    #[serde(default)]
+    pub kind: QueueItemKind,
+    /// A deferred steer's target run.
+    #[serde(default)]
+    pub steer_run: Option<String>,
+}
+
+/// What a queue item is (t3code's queued run vs. steer follow-up).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueItemKind {
+    /// A message queued for a later turn.
+    #[default]
+    Message,
+    /// A steer the agent never read, queued again ahead of newer messages.
+    RecoveredSteer,
+    /// A steer waiting for the running turn to take input.
+    DeferredSteer,
+    #[serde(other)]
+    Other,
 }
 
 /// The queue document every queue route answers with.

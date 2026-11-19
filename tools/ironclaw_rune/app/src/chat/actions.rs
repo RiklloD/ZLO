@@ -339,6 +339,16 @@ pub(crate) fn mention_roots(s: &mut State, id: &str, text: &str) -> Vec<String> 
 /// Enter in the composer: a goal or slash command runs, a message joins the
 /// running turn (steer), else it starts a new turn.
 pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
+    send_as(s, id, false, tx);
+}
+
+/// A send from `id`'s composer. `alternate` is ⌘↵ or ⌘-click: while a turn
+/// runs it does the other of steer and queue (Settings → Follow-ups) for
+/// this message. Editing a queued message, it saves the edit instead.
+pub fn send_as(s: &mut State, id: &str, alternate: bool, tx: &mut Tx) {
+    if chat_ref(s, id).is_some_and(|c| c.orchestration.editing.is_some()) {
+        return super::steer::submit_edit(s, id, alternate, tx);
+    }
     let Some(c) = chat_for(s, id) else { return };
     // Talk mode's claim on this send, if it pressed this Enter.
     let voice = c.voice_send.take();
@@ -371,7 +381,7 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
         return;
     }
     if c.running_run().is_some() {
-        return super::steer::steer(s, id, voice, tx);
+        return super::steer::send_running(s, id, alternate, voice, tx);
     }
     let Some(channel) = c.channel.clone() else {
         refuse(s, "This gateway has no chat channel configured.", voice);

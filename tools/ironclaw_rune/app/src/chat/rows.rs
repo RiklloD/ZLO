@@ -108,6 +108,26 @@ pub(crate) fn with_actions(
         })
 }
 
+/// "Steer" (or "Steer · waiting to be read") above a steer's bubble, with
+/// t3code's tooltip.
+fn steer_marker(s: &State, key: &str, waiting: bool) -> El {
+    let p = &s.palette;
+    let (label, tip) = super::dispatch::steer_marker(waiting);
+    row()
+        .key(format!("{key}-steer"))
+        .gap(4.)
+        .center_y()
+        .role("note")
+        .label(label)
+        .help(tip)
+        .child(icon(&icons::REDO_2, 12.).color(p.text_faint))
+        .child(
+            text(label)
+                .font(flow::type_at(s, 12., 16., 400.))
+                .color(p.text_faint),
+        )
+}
+
 /// Show the check, then one wake when it should turn back.
 fn mark_copied(s: &mut State, thread: &str, key: &str, tx: &mut Tx) {
     if let Some(c) = chat_for(s, thread) {
@@ -126,6 +146,7 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
             text: words,
             pending,
             attachments,
+            steer,
         } => {
             let parts = placed_parts(words);
             let placed: HashSet<usize> = parts
@@ -151,6 +172,10 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
                 .w_full()
                 .items_end()
                 .gap(4.);
+            // t3code's marker above a steer; back-to-back steers show it once.
+            if let Some(mark) = steer.as_ref().filter(|m| !m.continues) {
+                out = out.child(steer_marker(s, key, mark.waiting));
+            }
             if !words.is_empty() {
                 out = out.child(flow::user_pill(
                     s,
@@ -336,6 +361,58 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
                     );
                 }
                 out = out.child(buttons);
+            }
+            out
+        }
+        Row::SteerNotice {
+            key,
+            title,
+            text: words,
+            words: steer_words,
+        } => {
+            let mut out = card(s, format!("{key}-notice")).child(
+                row()
+                    .gap(8.)
+                    .items_start()
+                    .child(icon(&icons::TRIANGLE_ALERT, 14.).color(p.text_muted).mt(2.))
+                    .child(
+                        col()
+                            .gap(2.)
+                            .grow(1.)
+                            .min_w(0.)
+                            .child(
+                                text(title.clone())
+                                    .font(flow::type_at(s, 13., 19., 500.))
+                                    .color(p.text),
+                            )
+                            .child(
+                                text(words.clone())
+                                    .key(format!("{key}-text"))
+                                    .font(flow::type_at(s, 13., 19., 400.))
+                                    .color(p.text_muted)
+                                    .wrap()
+                                    .selectable(true),
+                            ),
+                    ),
+            );
+            if !steer_words.trim().is_empty() {
+                let (thread, again) = (thread.to_string(), steer_words.clone());
+                out = out.child(
+                    row().child(
+                        Button::new("Put back in the composer")
+                            .variant(ButtonVariant::Ghost)
+                            .control_size(ControlSize::Regular)
+                            .help("Your steer's words, to send again if the agent needs them")
+                            .on_press(move |s: &mut State| {
+                                if super::composer_text(s, &thread).trim().is_empty() {
+                                    super::set_composer_text(s, &thread, again.clone());
+                                }
+                                super::focus_composer_of(s, &thread);
+                            })
+                            .build(k)
+                            .key(format!("{key}-again")),
+                    ),
+                );
             }
             out
         }

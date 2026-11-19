@@ -21,6 +21,8 @@ pub mod approval_mode;
 mod approval_reason;
 pub mod composer;
 pub mod computer;
+mod dispatch;
+pub(crate) use dispatch::FOLLOW_UPS_HELP;
 pub(crate) mod downloads;
 mod file_links;
 pub mod flow;
@@ -40,7 +42,7 @@ pub(crate) mod reject_feedback;
 mod rows;
 pub mod side;
 pub mod snapshot;
-mod steer;
+pub(crate) mod steer;
 mod view;
 mod visual;
 

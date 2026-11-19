@@ -93,6 +93,11 @@ pub const SCENES: &[Scene] = &[
     ("chat-menu", crate::chat::fixtures::menu),
     ("chat-question", crate::chat::fixtures::question),
     ("chat-running", crate::chat::fixtures::running),
+    ("chat-steering", crate::chat::fixtures::steering),
+    ("chat-steering-queue-default", |s| {
+        crate::chat::fixtures::steering(s);
+        s.prefs.follow_ups = crate::design::prefs::FollowUps::Queue;
+    }),
     ("command-menu", ws::fixture_command_menu),
     ("computer", |s| crate::chat::computer::scene(s, false)),
     ("computer-big", |s| crate::chat::computer::scene(s, true)),

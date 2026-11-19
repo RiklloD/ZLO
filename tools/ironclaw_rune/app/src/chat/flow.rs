@@ -71,6 +71,9 @@ pub enum Item {
         key: String,
         rows: Vec<Row>,
         live: bool,
+        /// The work after a steer: `Some(how long it ran)`, drawn as
+        /// "Continued for {duration}" (t3code's steer segment).
+        after_steer: Option<Option<i64>>,
     },
     Pending {
         stopping: bool,
@@ -117,6 +120,8 @@ fn is_activity(row: &Row) -> bool {
 /// activity group is then the one being written and opens by itself.
 pub fn fold(rows: &[Row], live: bool, stopping: bool, tail: bool, reserve: bool) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::with_capacity(rows.len() + 2);
+    // The steer whose work the next group is, until the next prompt.
+    let mut steer: Option<Option<i64>> = None;
     for row in rows {
         if is_activity(row) {
             if let Some(Item::Activity { rows, .. }) = items.last_mut() {
@@ -127,8 +132,12 @@ pub fn fold(rows: &[Row], live: bool, stopping: bool, tail: bool, reserve: bool)
                 key: format!("act-{}", row.key()),
                 rows: vec![row.clone()],
                 live: false,
+                after_steer: steer.take(),
             });
         } else {
+            if let Row::User { steer: mark, .. } = row {
+                steer = mark.as_ref().map(|m| m.continued_ms);
+            }
             items.push(Item::Row(row.clone()));
         }
     }
@@ -222,6 +231,15 @@ fn tool_kind(title: &str) -> ToolKind {
     } else {
         ToolKind::Other
     }
+}
+
+/// "Ran 2 commands" → "ran 2 commands", to follow a lead-in.
+fn lower_first(line: &str) -> String {
+    let mut out = line.to_string();
+    if let Some(first) = out.get_mut(..1) {
+        first.make_ascii_lowercase();
+    }
+    out
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -546,13 +564,24 @@ pub fn render_activity(
     key: &str,
     rows: &[Row],
     live: bool,
+    after_steer: Option<Option<i64>>,
     open: bool,
     toggles: &HashMap<String, bool>,
     outputs: &HashMap<String, CliBody>,
     k: &Kit,
 ) -> El {
     let p = &s.palette;
-    let label = summary(rows);
+    let label = match after_steer {
+        // A live run has no length yet: "Continued".
+        Some(ms) => {
+            let head = super::dispatch::continued_label(if live { None } else { ms });
+            match summary(rows) {
+                rest if rest.is_empty() => head,
+                rest => format!("{head} · {}", lower_first(&rest)),
+            }
+        }
+        None => summary(rows),
+    };
     let small = type_at(s, 12., LABEL_LINE, 400.);
     let toggle_key = key.to_string();
     let head_key = format!("{key}-head");
@@ -815,4 +844,65 @@ pub fn user_pill(s: &State, key: &str, body: El, pending: bool, column: f32) -> 
             .transition(rise(6.))
             .child(body.shrink()),
     )
+}
+
+#[cfg(test)]
+mod steer_fold_tests {
+    use zlo_client::transcript::SteerMark;
+
+    use super::*;
+
+    fn user(key: &str, steer: Option<SteerMark>) -> Row {
+        Row::User {
+            key: key.into(),
+            text: key.into(),
+            pending: false,
+            attachments: Vec::new(),
+            steer,
+        }
+    }
+
+    fn tool(key: &str) -> Row {
+        Row::Tool {
+            key: key.into(),
+            title: "cli.bash".into(),
+            detail: None,
+            status: ToolStatus::Completed,
+            reason: None,
+        }
+    }
+
+    fn after_steer(items: &[Item]) -> Vec<Option<Option<i64>>> {
+        items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Activity { after_steer, .. } => Some(*after_steer),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_work_after_a_steer_folds_under_continued() {
+        let mark = SteerMark {
+            continued_ms: Some(90_000),
+            ..SteerMark::default()
+        };
+        let rows = vec![
+            user("prompt", None),
+            tool("t1"),
+            user("steer", Some(mark)),
+            tool("t2"),
+            tool("t3"),
+            user("next", None),
+            tool("t4"),
+        ];
+        let items = fold(&rows, false, false, false, false);
+        assert_eq!(after_steer(&items), vec![None, Some(Some(90_000)), None]);
+        assert_eq!(
+            super::super::dispatch::continued_label(Some(90_000)),
+            "Continued for 1 min"
+        );
+        assert_eq!(lower_first("Ran 2 commands"), "ran 2 commands");
+    }
 }

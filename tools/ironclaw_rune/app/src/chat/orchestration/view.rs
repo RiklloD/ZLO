@@ -1,15 +1,17 @@
 //! Orchestration's views.
 
 use chrono::Utc;
-use rune::{El, Icon, TextEdit, col, el, row};
-use rune_kit::{ButtonVariant, Kit, TextInput};
-use zlo_client::orchestration::{HoldReason, QueueAction, TaskStatus, TaskView};
+use rune::{El, Icon, col, el, row};
+use rune_kit::{ButtonVariant, Kit};
+use zlo_client::orchestration::{
+    HoldReason, QueueAction, QueueItem, QueueItemKind, TaskStatus, TaskView,
+};
 
 use super::{
-    OrchestrationState, add_queued, cancel_task, countdown, delegation, duration, merge_back,
-    queue_action, toggle_queue,
+    OrchestrationState, cancel_task, countdown, delegation, duration, merge_back, queue_action,
 };
 use crate::chat::ChatState;
+use crate::chat::dispatch;
 use crate::design::kit::compact::{
     ICON_XS, SM, XS, ghost_button, ghost_icon, ico, spinner, txt, txt_medium, variant_button,
 };
@@ -23,19 +25,18 @@ fn content_width(s: &State) -> f32 {
 }
 
 /// What stays on the composer: notices that change what a send does (the
-/// strip), the queue's controls, and the goal editor while open. `plan` is
+/// strip), the queued messages (t3code's QueuedRunsControl), and the goal
+/// editor while open. `plan` is
 /// the chat's plan strip, drawn first. Work, goals and queued turns live at
 /// the transcript's end ([`tail`]), as in T3 Code's timeline pass.
 pub fn composer(s: &State, chat: &ChatState, k: &Kit, plan: Option<El>) -> Option<El> {
-    let o = &chat.orchestration;
-    let id = chat.thread_id.as_str();
     let goal = chat
         .goals
         .editing()
         .then(|| crate::chat::goals::view(s, chat, k))
         .flatten();
     let strip = strip(s, chat, k);
-    let queue = o.queue_open.then(|| queue_panel(&s.palette, id, o, k));
+    let queue = queue_panel(s, chat, k);
     if goal.is_none() && strip.is_none() && queue.is_none() && plan.is_none() {
         return None;
     }
@@ -59,7 +60,7 @@ pub fn composer(s: &State, chat: &ChatState, k: &Kit, plan: Option<El>) -> Optio
 }
 
 /// The transcript's last row, in T3's order: live subagents (work that may
-/// need you), the goal, then queued turns that are not sent yet.
+/// need you), then the goal.
 pub fn tail(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
     let o = &chat.orchestration;
     let id = chat.thread_id.as_str();
@@ -67,8 +68,7 @@ pub fn tail(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
     let goal = (!chat.goals.editing())
         .then(|| crate::chat::goals::view(s, chat, k))
         .flatten();
-    let queued = queued(s, id, o, k);
-    if frame.is_none() && goal.is_none() && queued.is_none() {
+    if frame.is_none() && goal.is_none() {
         return None;
     }
     Some(
@@ -77,93 +77,174 @@ pub fn tail(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
             .w_full()
             .gap(8.)
             .children(frame)
-            .children(goal)
-            .children(queued),
+            .children(goal),
     )
 }
 
-/// Queued follow-ups as unsent messages: dashed, unfilled bubbles on the
-/// sender's side, with Send next and Remove on hover.
-fn queued(s: &State, thread: &str, o: &OrchestrationState, k: &Kit) -> Option<El> {
-    if o.queue.items.is_empty() {
+/// The queued messages above the composer, t3code's QueuedRunsControl:
+/// dashed unsent bubbles on the sender's side, "Queued message i of n",
+/// and per row Send now, Edit and Remove. A queue longer than three shows
+/// its first two and "Show all n queued".
+fn queue_panel(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
+    let o = &chat.orchestration;
+    let n = o.queue.items.len();
+    if n == 0 {
         return None;
     }
+    let thread = chat.thread_id.as_str();
+    let running = chat.running_run().is_some();
+    let (shown, toggle) = dispatch::queue_rows(n, o.queue_expanded);
+    let mut list = col()
+        .key("queued")
+        .w_full()
+        .gap(8.)
+        .role("list")
+        .label(format!("{n} queued"));
+    for (ix, item) in o.queue.items.iter().enumerate().take(shown) {
+        list = list.child(queued_row(s, thread, o, item, ix, n, running, k));
+    }
+    if let Some(label) = toggle {
+        let chat_id = thread.to_string();
+        list = list.child(row().w_full().justify_end().child(ghost_button(
+            k,
+            "queue-more",
+            &label,
+            None,
+            false,
+            move |s| {
+                if let Some(c) = crate::chat::chat_for(s, &chat_id) {
+                    c.orchestration.queue_expanded = !c.orchestration.queue_expanded;
+                }
+            },
+        )));
+    }
+    Some(list)
+}
+
+/// What a queued row says under its bubble.
+pub(crate) fn queued_caption(item: &QueueItem, ix: usize, n: usize, held: bool) -> String {
+    let mut line = format!("Queued message {} of {n}", ix + 1);
+    match item.kind {
+        QueueItemKind::RecoveredSteer => line.push_str(" · a steer the agent didn't read"),
+        QueueItemKind::DeferredSteer => line.push_str(" · steers in once the turn is ready"),
+        QueueItemKind::Message | QueueItemKind::Other => {}
+    }
+    if held {
+        line.push_str(" · on hold");
+    }
+    line
+}
+
+#[allow(clippy::too_many_arguments)]
+fn queued_row(
+    s: &State,
+    thread: &str,
+    o: &OrchestrationState,
+    item: &QueueItem,
+    ix: usize,
+    n: usize,
+    running: bool,
+    k: &Kit,
+) -> El {
     let p = &s.palette;
     let busy = o.busy;
-    let first = o.queue.items.first().map(|i| i.id.clone());
+    let editing = o.editing.as_ref().is_some_and(|e| e.item_id == item.id);
     let bubble_max = content_width(s) * 0.8;
-    let mut rows = col().key("queued").w_full().gap(12.);
-    for (ix, item) in o.queue.items.iter().enumerate() {
-        let mut actions = row().gap(1.).group_opacity(0., 1.);
-        if ix > 0 {
-            let (id, before, chat) = (item.id.clone(), first.clone(), thread.to_string());
-            actions = actions.child(ghost_button(
+    let mut actions = row().gap(1.).center_y();
+    if editing {
+        let chat = thread.to_string();
+        actions = actions
+            .child(txt("Editing in the composer", XS, p.text_muted))
+            .child(ghost_button(
                 k,
-                format!("promote-{id}"),
-                "Send next",
+                format!("queued-cancel-{}", item.id),
+                "Cancel",
                 None,
-                busy,
-                move |s| {
-                    queue_action(
-                        s,
-                        &chat,
-                        QueueAction::Reorder {
-                            item_id: id.clone(),
-                            before_id: before.clone(),
+                false,
+                move |s| crate::chat::steer::cancel_edit(s, &chat),
+            ));
+    } else {
+        let mut hover = row().gap(1.).center_y().group_opacity(0., 1.);
+        let send_tip = match (running, ix) {
+            (false, _) => "Start a turn with this message".to_string(),
+            (true, 0) => "Send into the current turn (⇧⌘↩)".to_string(),
+            (true, _) => "Send into the current turn".to_string(),
+        };
+        let edit_tip = if ix + 1 == n {
+            "Edit in the composer (⌥↑)"
+        } else {
+            "Edit in the composer"
+        };
+        let (send_id, edit_id, remove_id) = (item.id.clone(), item.id.clone(), item.id.clone());
+        let (c1, c2, c3) = (thread.to_string(), thread.to_string(), thread.to_string());
+        if !busy {
+            hover = hover
+                .child(ghost_icon(
+                    k,
+                    format!("queued-send-{}", item.id),
+                    &icons::ARROW_UP,
+                    &send_tip,
+                    move |s| crate::chat::steer::send_now(s, &c1, &send_id),
+                ))
+                .child(ghost_icon(
+                    k,
+                    format!("queued-edit-{}", item.id),
+                    &icons::PENCIL,
+                    edit_tip,
+                    move |s| crate::chat::steer::edit_queued(s, &c2, &edit_id),
+                ))
+                .child(ghost_icon(
+                    k,
+                    format!("queued-remove-{}", item.id),
+                    &icons::CLOSE,
+                    "Remove from queue",
+                    move |s| queue_action(s, &c3, QueueAction::Remove(remove_id.clone())),
+                ));
+        }
+        actions = actions.child(hover);
+    }
+    let caption = queued_caption(item, ix, n, o.queue.held);
+    let text = if item.text.trim().is_empty() {
+        "Queued message".to_string()
+    } else {
+        item.text.clone()
+    };
+    col()
+        .key(format!("queued-row-{}", item.id))
+        .hover_group()
+        .w_full()
+        .items_end()
+        .gap(4.)
+        .role("listitem")
+        .label(format!("Queued message {} of {n}, not sent", ix + 1))
+        // In a full-width row, as the person's own bubbles: the row
+        // shrinks it to a narrow pane (a side chat's).
+        .child(
+            row().w_full().justify_end().child(
+                el().shrink()
+                    .max_w(bubble_max)
+                    .px(16.)
+                    .py(10.)
+                    .radius(design::COMPOSER_RADIUS)
+                    .border(
+                        1.,
+                        if editing {
+                            p.text_muted
+                        } else {
+                            p.border_strong
                         },
                     )
-                },
-            ));
-        }
-        let (id, chat) = (item.id.clone(), thread.to_string());
-        actions = actions.child(ghost_button(
-            k,
-            format!("unqueue-{id}"),
-            "Remove",
-            None,
-            busy,
-            move |s| queue_action(s, &chat, QueueAction::Remove(id.clone())),
-        ));
-        rows = rows.child(
-            col()
-                .key(format!("queued-row-{}", item.id))
-                .hover_group()
-                .w_full()
-                .items_end()
+                    .border_dash(4., 3.)
+                    .child(txt(text, SM, p.text_muted).wrap().max_lines(4).shrink()),
+            ),
+        )
+        .child(
+            row()
                 .gap(4.)
-                .role("status")
-                .label(format!("Not sent yet: {}", item.text))
-                // In a full-width row, as the person's own bubbles: the row
-                // shrinks it to a narrow pane (a side chat's).
-                .child(
-                    row().w_full().justify_end().child(
-                        el().shrink()
-                            .max_w(bubble_max)
-                            .px(16.)
-                            .py(10.)
-                            .radius(design::COMPOSER_RADIUS)
-                            .border(1., p.border_strong)
-                            .border_dash(4., 3.)
-                            .child(
-                                txt(item.text.clone(), SM, p.text_muted)
-                                    .wrap()
-                                    .max_lines(4)
-                                    .shrink(),
-                            ),
-                    ),
-                )
-                .child(row().gap(4.).center_y().child(actions).child(txt(
-                    if o.queue.held {
-                        "Queued, on hold"
-                    } else {
-                        "Queued"
-                    },
-                    XS,
-                    p.text_faint,
-                ))),
-        );
-    }
-    Some(rows)
+                .center_y()
+                .child(actions)
+                .child(txt(caption, XS, p.text_faint)),
+        )
 }
 
 /// A clickable muted line in the strip.
@@ -300,32 +381,6 @@ fn strip(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
         );
     }
 
-    let queued = o.queue.items.len();
-    if queued > 0 || o.queue_open {
-        let label = match queued {
-            0 => "Queue".to_string(),
-            1 => "1 queued follow-up".to_string(),
-            n => format!("{n} queued follow-ups"),
-        };
-        let toggling = id.clone();
-        let toggle = ghost_button(
-            k,
-            "queue-toggle",
-            &label,
-            Some(&icons::INBOX),
-            false,
-            move |s| toggle_queue(s, &toggling),
-        );
-        // Selected while the panel is open.
-        chips.push(if o.queue_open {
-            el().radius(design::CONTROL_RADIUS)
-                .fill(p.active)
-                .child(toggle)
-        } else {
-            toggle
-        });
-    }
-
     if let Some(note) = o.note.clone() {
         chips.push(text_chip(
             p,
@@ -432,107 +487,29 @@ fn frame(p: &Palette, thread: &str, o: &OrchestrationState, k: &Kit) -> Option<E
     Some(rows)
 }
 
-/// The queue's controls: hold or release, clear, and add a follow-up. The
-/// queued turns themselves show at the transcript's end.
-fn queue_panel(p: &Palette, thread: &str, o: &OrchestrationState, k: &Kit) -> El {
-    let busy = o.busy;
-    let held = o.queue.held;
-    let empty = o.queue.items.is_empty();
-    let id = thread.to_string();
-    let hold_id = id.clone();
-    let mut header = row()
-        .px(8.)
-        .pt(4.)
-        .gap(8.)
-        .center_y()
-        .child(
-            txt(
-                if held {
-                    "On hold: nothing queued is sent"
-                } else {
-                    "Follow-ups are sent in order once the current turn ends"
-                },
-                XS,
-                p.text_muted,
-            )
-            .grow(1.)
-            .min_w(0.),
-        )
-        .child(ghost_button(
-            k,
-            "queue-hold",
-            if held { "Release" } else { "Hold" },
-            Some(if held { &icons::PLAY } else { &icons::PAUSE }),
-            busy,
-            move |s| {
-                queue_action(
-                    s,
-                    &hold_id,
-                    if held {
-                        QueueAction::Release
-                    } else {
-                        QueueAction::Hold
-                    },
-                )
-            },
-        ));
-    if !empty {
-        let clear_id = id.clone();
-        header = header.child(ghost_button(
-            k,
-            "queue-clear",
-            "Clear",
-            None,
-            busy,
-            move |s| queue_action(s, &clear_id, QueueAction::Clear),
-        ));
-    }
-    let mut panel = col()
-        .key("queue-panel")
-        .gap(4.)
-        .padding(4.)
-        .radius(design::PANEL_RADIUS)
-        .border(1., p.border)
-        .fill(p.surface_raised)
-        .child(header);
-    if empty {
-        panel = panel.child(el().px(8.).child(txt("Nothing queued.", XS, p.text_muted)));
-    }
-    if let Some(input) = &o.queue_input {
-        let (edit_id, submit_id, add_id) = (id.clone(), id.clone(), id);
-        panel = panel.child(
-            row()
-                .gap(8.)
-                .px(4.)
-                .pb(4.)
-                .center_y()
-                .child(
-                    el().grow(1.).min_w(0.).child(
-                        TextInput::new(input)
-                            .placeholder("Add a follow-up to the queue")
-                            .width(None)
-                            .on_edit(move |s: &mut State| queue_edit(s, &edit_id))
-                            .on_submit(move |s: &mut State, _| add_queued(s, &submit_id))
-                            .build(k)
-                            .key("queue-input"),
-                    ),
-                )
-                .child(if busy {
-                    el().size(24., 24.)
-                } else {
-                    ghost_icon(k, "queue-add", &icons::PLUS, "Add to the queue", move |s| {
-                        add_queued(s, &add_id)
-                    })
-                }),
-        );
-    }
-    panel
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn queue_edit<'a>(s: &'a mut State, id: &str) -> &'a mut TextEdit {
-    match crate::chat::chat_for(s, id).and_then(|c| c.orchestration.queue_input.as_mut()) {
-        Some(edit) => edit,
-        // A late edit after the panel closed lands in a scratch field.
-        None => crate::chat::orphan_edit(),
+    fn item(kind: &str) -> QueueItem {
+        serde_json::from_value(serde_json::json!({"id": "q", "text": "hi", "kind": kind}))
+            .expect("item decodes")
+    }
+
+    #[test]
+    fn queued_rows_say_where_they_stand_and_what_kind_they_are() {
+        assert_eq!(
+            queued_caption(&item("message"), 0, 3, false),
+            "Queued message 1 of 3"
+        );
+        assert_eq!(
+            queued_caption(&item("recovered_steer"), 1, 3, true),
+            "Queued message 2 of 3 · a steer the agent didn't read · on hold"
+        );
+        assert_eq!(
+            queued_caption(&item("deferred_steer"), 0, 1, false),
+            "Queued message 1 of 1 · steers in once the turn is ready"
+        );
+        assert_eq!(item("something_new").kind, QueueItemKind::Other);
     }
 }

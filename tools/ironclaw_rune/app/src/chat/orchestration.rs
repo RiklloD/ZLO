@@ -19,7 +19,7 @@
 //! - `opened(s, id)`: after a chat starts.
 //! - `refresh(s, id)`: when the stream reports a run end or a timeline reload.
 //! - `ensure_poll(s, id)`: after a send starts a run.
-//! - `queue_follow_up(s, id, text) -> bool`: the composer's ⌥Enter.
+//! - `queue_follow_up(s, id, text) -> bool`: a send that queues (`steer`).
 //! - `fork(s, id, at_run: Option<u32>)`, `cancel_task(s, id, task_id)`.
 //! - `running_run(s, id)`, `thread_runtime(s, id)`, `tail_summary(s, id)`
 //!   (the jump-to-end button).
@@ -33,7 +33,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use rune::TextEdit;
 use zlo_client::ClientError;
 use zlo_client::orchestration::{ForkOptions, Lineage, QueueAction, QueueDoc, TaskView};
 
@@ -52,8 +51,10 @@ pub struct OrchestrationState {
     pub(crate) queue: QueueDoc,
     pub lineage: Lineage,
     lineage_loaded: bool,
-    pub(crate) queue_open: bool,
-    pub(crate) queue_input: Option<TextEdit>,
+    /// A queued message being edited in the composer.
+    pub(crate) editing: Option<super::steer::Editing>,
+    /// The queue panel shows every queued message, not the first two.
+    pub(crate) queue_expanded: bool,
     /// A mutation is in flight; its buttons wait for it.
     pub(crate) busy: bool,
     /// Merge-back outcome, shown in the strip until the next action.
@@ -96,6 +97,11 @@ fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut OrchestrationSt
 /// with [`slot_of`] (goals and orchestration share it).
 pub(crate) fn instance_of(s: &mut State, thread_id: &str) -> Option<jobs::Instance> {
     slot(s, thread_id).map(|o| o.instance)
+}
+
+/// `o`'s instance, for a reply to check with [`is_current`].
+pub(crate) fn instance_of_state(o: &OrchestrationState) -> jobs::Instance {
+    o.instance
 }
 
 /// Whether `instance` is still the chat extras showing `thread_id`.
@@ -293,17 +299,16 @@ fn needs_poll(s: &State, id: &str) -> bool {
         || c.goals.check_in_flight()
 }
 
-/// Whether [`tail`] has anything to show for `id`'s chat: live subagents,
-/// the goal (when its editor is closed) or queued follow-ups. The chat folds
+/// Whether [`tail`] has anything to show for `id`'s chat: live subagents
+/// or the goal (when its editor is closed). Queued messages sit above the
+/// composer. The chat folds
 /// a tail row into its transcript while this holds.
 pub fn has_tail(s: &State, id: &str) -> bool {
     let Some(c) = crate::chat::chat_ref(s, id) else {
         return false;
     };
     let o = &c.orchestration;
-    o.tasks.iter().any(|t| t.status.is_live())
-        || (!c.goals.editing() && c.goals.goal.is_some())
-        || !o.queue.items.is_empty()
+    o.tasks.iter().any(|t| t.status.is_live()) || (!c.goals.editing() && c.goals.goal.is_some())
 }
 
 /// Start the slow poll if something is moving. It stops by itself.
@@ -346,8 +351,8 @@ fn tick(s: &mut State, thread_id: String, instance: jobs::Instance) -> bool {
     true
 }
 
-/// Queue `text` as a follow-up for after the current turn (the composer's
-/// ⌥Enter). `false` while another queue change is in flight. When the
+/// Queue `text` as a follow-up for after the current turn (a send that
+/// queues, `steer::send_running`). `false` while another queue change is in flight. When the
 /// server refuses it, the text goes back into an empty composer so it is
 /// never lost.
 pub fn queue_follow_up(s: &mut State, id: &str, text: String) -> bool {
@@ -520,27 +525,6 @@ pub(crate) fn merge_back(s: &mut State, id: &str) {
     );
 }
 
-pub(crate) fn toggle_queue(s: &mut State, id: &str) {
-    let Some(o) = slot(s, id) else { return };
-    o.queue_open = !o.queue_open;
-    if o.queue_open && o.queue_input.is_none() {
-        o.queue_input = Some(TextEdit::new(""));
-    }
-}
-
-pub(crate) fn add_queued(s: &mut State, id: &str) {
-    let Some(o) = slot(s, id) else { return };
-    let Some(input) = o.queue_input.as_mut() else {
-        return;
-    };
-    let text = input.text.trim().to_string();
-    if text.is_empty() || o.busy {
-        return;
-    }
-    input.clear();
-    queue_action(s, id, QueueAction::Add(text));
-}
-
 /// A short line for the jump-to-end button: "2 queued", "1 working".
 pub fn tail_summary(s: &State, id: &str) -> Option<String> {
     let o = &crate::chat::chat_ref(s, id)?.orchestration;
@@ -622,8 +606,6 @@ pub fn fixture() -> OrchestrationState {
         queue,
         lineage,
         lineage_loaded: true,
-        queue_open: true,
-        queue_input: Some(TextEdit::new("")),
         ..Default::default()
     }
 }

@@ -13,7 +13,9 @@ use zlo_client::GateDecision;
 use zlo_client::commands::MenuSources;
 use zlo_client::contract::ProductGateKind;
 use zlo_client::product_wire::RebornProductCommandInfo;
-use zlo_client::transcript::{AttachmentChip, GateState, QuestionState, Row, ToolStatus};
+use zlo_client::transcript::{
+    AttachmentChip, GateState, QuestionState, Row, SteerMark, ToolStatus,
+};
 
 use super::{ChatState, flow, question_form};
 use crate::state::{Conn, Page, State};
@@ -26,6 +28,7 @@ fn user(key: &str, text: &str) -> Row {
         text: text.into(),
         pending: false,
         attachments: Vec::new(),
+        steer: None,
     }
 }
 
@@ -143,6 +146,7 @@ fn history() -> Vec<Row> {
             key: "msg:3".into(),
             text: "Compare these two {{attachment:0}} and summarize.".into(),
             pending: false,
+            steer: None,
             attachments: vec![
                 AttachmentChip {
                     message_id: Some("m3".into()),
@@ -204,6 +208,59 @@ pub fn running(s: &mut State) {
     shell_with(s, rows, true);
     if let Some(c) = s.chat.as_mut() {
         c.composer.replace_text("also check clippy");
+    }
+}
+
+/// Mid-turn steering (t3code's): a finished run with a steer, the work
+/// after it folded under "Continued for", an unconfirmed steer notice, and
+/// a running turn with a steer still waiting to be read; four queued
+/// messages above the composer (two shown and "Show all").
+pub fn steering(s: &mut State) {
+    let steer =
+        |key: &str, text: &str, waiting: bool, continues: bool, ms: Option<i64>| Row::User {
+            key: key.into(),
+            text: text.into(),
+            pending: false,
+            attachments: Vec::new(),
+            steer: Some(SteerMark {
+                waiting,
+                continues,
+                continued_ms: ms,
+            }),
+        };
+    let rows = vec![
+        user("msg:1", "Port the queue panel to Rune."),
+        tool("tool:1", "cli.read", "app/src/chat/orchestration/view.rs", ToolStatus::Completed),
+        steer("msg:2", "Match t3code's dashed bubbles.", false, false, Some(185_000)),
+        steer("msg:3", "And keep the flat look.", false, true, Some(170_000)),
+        tool("tool:2", "cli.edit", "app/src/chat/orchestration/view.rs", ToolStatus::Completed),
+        tool("tool:3", "cli.bash", "cargo test -p ironclaw_rune", ToolStatus::Completed),
+        reply("msg:4", "Done: the queue sits above the composer now.", false),
+        Row::SteerNotice {
+            key: "steer-notice:s9".into(),
+            title: "Steer delivery not confirmed".into(),
+            text: "The agent did not confirm reading your steer before Stop. It may not have been delivered. Resend it if needed: \u{201c}Also update the docs.\u{201d}".into(),
+            words: "Also update the docs.".into(),
+        },
+        user("msg:5", "Now run clippy and fix the warnings."),
+        tool("tool:9", "cli.bash", "cargo clippy --all-targets", ToolStatus::Running),
+        steer("msg:6", "Skip the bench targets.", true, false, None),
+    ];
+    shell_with(s, rows, true);
+    if let Some(c) = s.chat.as_mut() {
+        c.composer.replace_text("then commit");
+        let items: Vec<_> = [
+            ("q1", "Then run the headless scenes.", "recovered_steer"),
+            ("q2", "Compare the PNGs with main.", "message"),
+            ("q3", "Commit on the branch.", "message"),
+            ("q4", "Write the report.", "message"),
+        ]
+        .iter()
+        .map(|(id, text, kind)| serde_json::json!({"id": id, "text": text, "kind": kind}))
+        .collect();
+        if let Ok(queue) = serde_json::from_value(serde_json::json!({ "items": items })) {
+            c.orchestration.queue = queue;
+        }
     }
 }
 
