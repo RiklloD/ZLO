@@ -50,7 +50,7 @@ done
 
 ENGINE_TAG=engine-v0.7.0
 ENGINE_URL=https://github.com/RiklloD/hermes-plugin-computer-use-plus/releases/download/$ENGINE_TAG/open-computer-use-engine-arm64.zip
-ENGINE_SHA256=f69cf629a9afda257123b0da0b3c27b3e9e243a60a8684e74073fbf16c73a691
+ENGINE_SHA256=d2322d74910f9d26e97ab2deddbcd0df64ffdd0ba247617f7e37e17591067083
 
 BUNDLE_ID=com.numoh.desktop
 NAME=ZLO
