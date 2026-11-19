@@ -65,8 +65,13 @@ ignored. Idle compaction (below) is separate.
 
 With the bridge, a message sent while a turn runs is written into its open
 stdin as a user message with `priority: "next"`: Claude reads it once the
-tool calls in flight finish, in the same turn (an approval still waiting is
-declined with the person's words). `claude/steer.rs` follows each command
+tool calls in flight finish, in the same turn. An approval still waiting
+is declined instead, with the person's words as the PreToolUse deny reason
+(Claude hands it to the model as the call's result), and no steer frame is
+written: the model reads the words once. A steer sent before the prompt is
+written (the CLI has not acknowledged the hook registration yet) is held
+and written right after the prompt, in order, never as a later turn; one
+the turn never writes is reported unread. `claude/steer.rs` follows each command
 written (the prompt and every steer, by uuid) through the CLI's
 `command_lifecycle` frames (`queued`, `started`, `completed`, or dropped as
 `cancelled` / `discarded` / `refused`) and the `user_message_uuids` echoes:
@@ -75,7 +80,11 @@ written (the prompt and every steer, by uuid) through the CLI's
   so the approval hook can still answer a steer's tool calls. A steer the
   CLI never acknowledges stops holding stdin 15 s after it began waiting
   for it: an absolute deadline, so unrelated output does not extend it.
-  The 60 s hook-registration wait is absolute too.
+  The 60 s hook-registration wait is absolute too. A steer the CLI did
+  acknowledge keeps stdin open while Claude works on it (its next native
+  turn streams), but 90 s of silence with no tool call or hook answer in
+  flight (`steer::IDLE_TIMEOUT`) closes input: a CLI that queued a steer
+  and never got to it no longer holds the turn on "Working".
 - a steer the CLI never started (dropped, Stop, a crash, the turn ending
   first) is handed back through `TurnEventSink::steers_unread` (with the
   run id and each steer's own uuid) before the turn ends; the engine queues
@@ -88,6 +97,20 @@ written (the prompt and every steer, by uuid) through the CLI's
 
 A CLI without lifecycle frames or echoes keeps the old behaviour: stdin
 closes at the first result and every steer counts as read.
+
+On Codex and Muse a steer meets the turn at a `SteerDoor`
+(`steer_door.rs`): while the turn is still starting (host spawning, session
+opening, `turn/start` unanswered) it is accepted and held, then sent in
+order as soon as the turn has an id (a steer arriving meanwhile joins the
+held ones rather than overtaking them); a turn that never starts reports
+the held steers through `steers_unread`. At a pending approval the steer
+declines it first (neither protocol carries a message on a decline), then
+goes as `turn/steer`. A `turn/steer` unanswered within 15 s counts as
+delivered while the turn still runs (it is on the wire; queueing it as well
+could deliver it twice) and as refused once the turn has ended (the door
+closes as the loop sees `turn/completed`). Codex journals the reply so far
+as its own entry before the steer row; Muse journals the prompt, steers and
+reply under the run id.
 
 ### Task lists
 
@@ -245,7 +268,13 @@ is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
   prompt answers `end_turn`, the turn carries on under the new one, and the
   agent's tools and subagents are left alone. A steer is acknowledged only
   after its `session/prompt` frame is queued on the wire (frames go out in
-  order), so steers sent at once all reach the agent. The superseded
+  order), so steers sent at once all reach the agent. A steer while the
+  ACP session is still opening is accepted at once and sent after the
+  first prompt (or reported unread if the turn never gets there); one at a
+  pending permission rejects it first. A requester that gives up waiting
+  (10 s) withdraws its request under a ticket the drive loop must take
+  before sending, so a steer reported refused (and queued) is never also
+  sent (`antigravity/steer.rs`). The superseded
   prompt's reply is still awaited: its `end_turn`/`cancelled` is ignored,
   but an error (a quota, a lost thinking signature, anything else) is kept
   and classified like the turn's own answer, so a later success does not
@@ -320,7 +349,9 @@ dependency: its facade has no `turn/interrupt`, `model/list` or
   plan. Muse's own housekeeping calls (`write_todos`, `request_user_input`,
   `workflow`) draw no row. The journal still keeps only prompt and answer.
 - **Steer:** `turn/steer` with `expectedTurnId` into the running turn
-  (`steer_in_turn`); a refused steer or `SteerHow::Restart` restarts.
+  (`steer_in_turn`), through the shared `SteerDoor` (see Steering above);
+  a refused steer is queued by the engine, `SteerHow::Restart` restarts.
+  An idle compaction takes no steers (they queue).
 - **Stop:** `turn/interrupt` for every turn Muse started on its own inside
   this one (a finished workflow) and then the admitted one; then
   SIGTERM/SIGKILL of the process group.

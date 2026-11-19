@@ -30,6 +30,7 @@
 mod fold;
 pub mod launch;
 mod live;
+mod steer;
 mod store;
 mod superseded;
 
@@ -49,7 +50,7 @@ use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 
 use crate::bridge::{CallClaim, CliBridge};
 use crate::interaction;
@@ -60,6 +61,7 @@ use crate::slot::{Claim, GroupGuard, Slots};
 use fold::PromptFold;
 use launch::AgentLaunch;
 use live::LiveFold;
+use steer::{SteerRequest, SteerTx, offer_steer};
 use store::{INIT_TIMEOUT, SESSION_TIMEOUT};
 use superseded::{Superseded, is_usage_limit};
 
@@ -155,21 +157,12 @@ impl AntigravityConfig {
     }
 }
 
-/// A message for the running turn; the turn answers whether it took it.
-struct SteerRequest {
-    text: String,
-    /// A person's message (journaled), not scaffolding such as a rejection.
-    journal: bool,
-    taken: oneshot::Sender<bool>,
-}
-
-type SteerTx = mpsc::UnboundedSender<SteerRequest>;
-
 struct ActiveTurn {
     pgid: i32,
     /// The live connection and ACP session, once the session is open.
     session: Arc<Mutex<Option<(RpcClient, String)>>>,
     steer: SteerTx,
+    run_id: String,
     done: watch::Receiver<bool>,
 }
 
@@ -285,6 +278,7 @@ impl AntigravityRuntime {
             pgid,
             session: Arc::clone(&session),
             steer: steer_tx.clone(),
+            run_id: run_id.clone(),
             done: done_rx,
         });
         if !published {
@@ -335,8 +329,12 @@ impl AntigravityRuntime {
             if let Some(bridge) = &bridge {
                 bridge.turn_started(&thread_id, &run);
             }
-            let (outcome, telemetry) = turn.run(client, inbound, steer_rx).await;
+            let (outcome, telemetry, unread) = turn.run(client, inbound, steer_rx).await;
             store::close_host(&mut child, pgid).await;
+            // Steers accepted before the session opened that the turn never
+            // sent go back to the engine before the turn is reported.
+            let outcome =
+                crate::steer_door::report_unread(&sink, &thread_id, &run, unread, outcome).await;
             group.disarm();
             report.disarm();
             if let Some(bridge) = &bridge {
@@ -360,20 +358,43 @@ impl AntigravityRuntime {
     }
 
     /// Hand `text` to the running turn as a steer. `false` when there is no
-    /// turn, its session is not open yet, or the agent cannot be steered.
+    /// turn or it refused the steer (the engine queues the text).
+    /// - Session not open yet: accepted at once and held in the turn's steer
+    ///   channel; the turn sends it as soon as its prompt is out, in order,
+    ///   or reports it unread (T3 Code's "steer when ready").
+    /// - Session open: a pending approval is declined first, then the steer
+    ///   goes out as another `session/prompt`; this waits until it is on the
+    ///   wire (bounded, race-free: see [`Ticket`]).
     async fn steer_running(&self, thread: &ThreadId, text: &str) -> bool {
-        let Some(steer) = self
-            .active
-            .with_turn(thread, |t| {
-                t.session
-                    .lock()
-                    .is_ok_and(|s| s.is_some())
-                    .then(|| t.steer.clone())
-            })
-            .flatten()
-        else {
+        let Some((steer, open, run_id)) = self.active.with_turn(thread, |t| {
+            (
+                t.steer.clone(),
+                t.session.lock().is_ok_and(|s| s.is_some()),
+                t.run_id.clone(),
+            )
+        }) else {
             return false;
         };
+        if !open {
+            let held = SteerRequest {
+                id: uuid::Uuid::new_v4().to_string(),
+                text: text.to_string(),
+                journal: true,
+                waiter: None,
+            };
+            // Fails only once the turn stopped taking steers.
+            return steer.send(held).is_ok();
+        }
+        if let Some(bridge) = &self.bridge
+            && bridge.decline_pending(
+                thread,
+                &run_id,
+                &format!("The user declined this call and said instead: {text}"),
+            ) > 0
+        {
+            // Lets the decline's answer go out ahead of the steer.
+            tokio::task::yield_now().await;
+        }
         offer_steer(&steer, text.to_string(), true).await
     }
 
@@ -425,25 +446,6 @@ impl AntigravityRuntime {
     }
 }
 
-/// Offer a steer to a turn and wait (briefly) for it to be taken.
-async fn offer_steer(steer: &SteerTx, text: String, journal: bool) -> bool {
-    let (taken, answer) = oneshot::channel();
-    if steer
-        .send(SteerRequest {
-            text,
-            journal,
-            taken,
-        })
-        .is_err()
-    {
-        return false;
-    }
-    matches!(
-        tokio::time::timeout(STEER_ACK_TIMEOUT, answer).await,
-        Ok(Ok(true))
-    )
-}
-
 /// What the agent's `initialize` answer says it can do.
 #[derive(Debug, Clone, Copy, Default)]
 struct AgentTraits {
@@ -492,24 +494,40 @@ type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
 impl Turn {
     /// Run the turn, then drop every handle on the connection so the agent
     /// sees stdin close and exits.
+    /// Also returns the steers accepted before the session opened that the
+    /// turn never sent: the steer channel is closed first, so nothing more
+    /// can join it, then drained.
     async fn run(
         self,
         client: RpcClient,
         inbound: mpsc::UnboundedReceiver<Inbound>,
-        steer_rx: mpsc::UnboundedReceiver<SteerRequest>,
-    ) -> (TurnOutcome, Telemetry) {
-        let result = self.drive(client, inbound, steer_rx).await;
+        mut steer_rx: mpsc::UnboundedReceiver<SteerRequest>,
+    ) -> (TurnOutcome, Telemetry, Vec<UnreadSteer>) {
+        let mut unread = Vec::new();
+        let (outcome, telemetry) = self
+            .drive(client, inbound, &mut steer_rx, &mut unread)
+            .await;
+        steer_rx.close();
+        while let Ok(request) = steer_rx.try_recv() {
+            // A waiting requester hears `false` (its answer is dropped).
+            if request.take()
+                && let Some(steer) = request.answer(false)
+            {
+                unread.push(steer);
+            }
+        }
         if let Ok(mut slot) = self.session.lock() {
             *slot = None;
         }
-        result
+        (outcome, telemetry, unread)
     }
 
     async fn drive(
         &self,
         client: RpcClient,
         mut inbound: mpsc::UnboundedReceiver<Inbound>,
-        mut steer_rx: mpsc::UnboundedReceiver<SteerRequest>,
+        steer_rx: &mut mpsc::UnboundedReceiver<SteerRequest>,
+        unread: &mut Vec<UnreadSteer>,
     ) -> (TurnOutcome, Telemetry) {
         let mut fold = PromptFold::default();
         let mut live = LiveFold::default();
@@ -611,9 +629,13 @@ impl Turn {
                     }
                 },
                 Some(request) = steer_rx.recv() => {
+                    // Its requester gave up waiting and reported it refused:
+                    // the engine queued it, so it must not go out as well.
+                    if !request.take() {
+                        continue;
+                    }
                     if !agent.steers || self.cancelled.load(Ordering::SeqCst) {
-                        #[expect(clippy::let_underscore_must_use, reason = "the steerer may have given up waiting")]
-                        let _ = request.taken.send(false);
+                        unread.extend(request.answer(false));
                         continue;
                     }
                     // What the agent said so far (including updates already
@@ -645,8 +667,7 @@ impl Turn {
                             false
                         }
                     };
-                    #[expect(clippy::let_underscore_must_use, reason = "the steerer may have given up waiting")]
-                    let _ = request.taken.send(sent);
+                    unread.extend(request.answer(sent));
                 }
                 () = superseded.settle(), if !superseded.is_empty() => {}
                 () = tokio::time::sleep(HOLD_TICK), if prompt.is_none() => {}
@@ -1355,6 +1376,7 @@ pub async fn default_config(home: &Path) -> Option<AntigravityConfig> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     // Review (2nd round, B): a Stop that lands while the turn prepares (no

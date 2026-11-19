@@ -162,7 +162,7 @@ mod tests {
             ActiveTurn {
                 pgid: 0,
                 cancelled: Arc::new(AtomicBool::new(false)),
-                live: Arc::new(Mutex::new(None)),
+                door: Arc::default(),
                 done: done_rx.clone(),
             },
         )])));

@@ -43,6 +43,12 @@ pub(crate) struct TurnFold {
     error: Option<Value>,
     /// A review turn's findings (`exitedReviewMode`); they are its answer.
     review: Option<String>,
+    /// Agent messages Codex reported complete.
+    finished: HashSet<String>,
+    /// Agent messages already journaled ahead of a steer.
+    journaled: HashSet<String>,
+    /// Tool labels already journaled ahead of a steer.
+    tools_journaled: usize,
 }
 
 fn n(v: &Value, key: &str) -> u64 {
@@ -149,6 +155,7 @@ impl TurnFold {
             if let Some(text) = item.get("text").and_then(Value::as_str) {
                 entry.1 = text.to_string();
             }
+            self.finished.insert(id.to_string());
             return;
         }
         if self.push_review(kind, item) {
@@ -200,10 +207,46 @@ impl TurnFold {
             .map(|(_, text)| text.trim().to_string())
     }
 
+    /// The last non-empty agent message among those `keep` selects.
+    fn last_message(&self, keep: impl Fn(&str) -> bool) -> String {
+        self.messages
+            .iter()
+            .filter(|(id, (_, text))| keep(id) && !text.trim().is_empty())
+            .max_by_key(|(_, (order, _))| *order)
+            .map(|(_, (_, text))| text.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    /// What the agent said and ran before a steer, as its own transcript
+    /// entry, so the steer's row lands after it (T3 Code places a steer
+    /// inside the run, after the work it interrupts). Only finished agent
+    /// messages: one still streaming goes on into the next entry. `None`
+    /// when nothing new happened since the last cut.
+    pub(crate) fn take_segment(&mut self) -> Option<HistoryMessage> {
+        let text =
+            self.last_message(|id| self.finished.contains(id) && !self.journaled.contains(id));
+        let tools = self.tools[self.tools_journaled..].to_vec();
+        let ids: Vec<String> = self
+            .finished
+            .iter()
+            .filter(|id| !self.journaled.contains(*id))
+            .cloned()
+            .collect();
+        self.journaled.extend(ids);
+        self.tools_journaled = self.tools.len();
+        (!text.is_empty() || !tools.is_empty())
+            .then(|| journal::message(HistoryRole::Assistant, text, tools))
+    }
+
+    /// The turn's (last) transcript entry: everything after the last cut.
     pub(crate) fn assistant_message(&self) -> Option<HistoryMessage> {
-        let text = self.answer().unwrap_or_default();
-        (!text.is_empty() || !self.tools.is_empty())
-            .then(|| journal::message(HistoryRole::Assistant, text, self.tools.clone()))
+        let text = match &self.review {
+            Some(review) => review.clone(),
+            None => self.last_message(|id| !self.journaled.contains(id)),
+        };
+        let tools = self.tools[self.tools_journaled..].to_vec();
+        (!text.is_empty() || !tools.is_empty())
+            .then(|| journal::message(HistoryRole::Assistant, text, tools))
     }
 
     pub(crate) fn telemetry(&self, provider: &str) -> Option<TurnTelemetry> {
@@ -368,6 +411,44 @@ mod tests {
         assert_eq!(entry.text, "Hello");
         assert_eq!(entry.tool_calls, vec!["shell()".to_string()]);
         assert_eq!(f.telemetry("codex").unwrap().context_max, Some(272000));
+    }
+
+    /// A steer cuts the reply: what came before it is one entry, the rest
+    /// the next; the turn's answer is still its last message.
+    #[test]
+    fn a_steer_cuts_the_transcript_entry_but_not_the_answer() {
+        let mut f = fold();
+        f.push(
+            "item/agentMessage/delta",
+            &json!({"turnId": "t1", "itemId": "m1", "delta": "Looking"}),
+        );
+        f.push("item/completed", &json!({"turnId": "t1", "item": {"id": "m1", "type": "agentMessage", "text": "Looking at it"}}));
+        f.push(
+            "item/completed",
+            &json!({"turnId": "t1", "item": {"id": "c1", "type": "commandExecution"}}),
+        );
+        // Still streaming when the steer lands: stays for the next entry.
+        f.push(
+            "item/agentMessage/delta",
+            &json!({"turnId": "t1", "itemId": "m2", "delta": "Now"}),
+        );
+        let before = f.take_segment().expect("segment");
+        assert_eq!(
+            (before.text.as_str(), before.tool_calls.clone()),
+            ("Looking at it", vec!["shell()".to_string()])
+        );
+        assert!(f.take_segment().is_none(), "nothing new");
+        f.push("item/completed", &json!({"turnId": "t1", "item": {"id": "m2", "type": "agentMessage", "text": "Now shorter"}}));
+        let after = f.assistant_message().expect("rest");
+        assert_eq!(
+            (after.text.as_str(), after.tool_calls.len()),
+            ("Now shorter", 0)
+        );
+        f.push(
+            "turn/completed",
+            &json!({"turn": {"id": "t1", "status": "completed"}}),
+        );
+        assert_eq!(f.outcome(false).final_text.as_deref(), Some("Now shorter"));
     }
 
     #[test]

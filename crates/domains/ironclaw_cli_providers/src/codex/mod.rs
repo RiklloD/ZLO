@@ -53,6 +53,7 @@ use crate::bridge::CliBridge;
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
+use crate::steer_door::{Knock, SteerDoor, report_unread};
 use fold::TurnFold;
 use ironclaw_product_contracts::orchestration::{ThreadAction, ThreadActionOutcome};
 
@@ -60,6 +61,9 @@ use ironclaw_product_contracts::orchestration::{ThreadAction, ThreadActionOutcom
 pub const EXPECTED_CLI_VERSION: &str = "0.166.0";
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a `turn/steer` may take before it is judged without its
+/// answer (see [`steer_live`]): short, since the person's send waits on it.
+const STEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// Codex features that let the agent spawn its own subagents.
 const CODEX_SUBAGENT_FEATURES: [&str; 2] = ["multi_agent", "multi_agent_v2"];
 
@@ -133,16 +137,23 @@ pub fn state_dir(home: &Path) -> PathBuf {
 #[derive(Clone)]
 struct LiveTurn {
     client: RpcClient,
+    /// How long a `turn/steer` waits for its answer (see [`steer_live`]).
+    steer_timeout: Duration,
     codex_thread: String,
     turn_id: String,
     /// IronClaw's run id, which steers are journaled under.
     run_id: String,
+    /// Steers Codex accepted, for the turn's loop to journal in place
+    /// (after the reply they cut short).
+    steered: mpsc::UnboundedSender<String>,
 }
+
+type Door = Arc<SteerDoor<LiveTurn>>;
 
 struct ActiveTurn {
     pgid: i32,
     cancelled: Arc<AtomicBool>,
-    live: Arc<Mutex<Option<LiveTurn>>>,
+    door: Door,
     done: watch::Receiver<bool>,
 }
 
@@ -161,6 +172,8 @@ pub struct CodexRuntime {
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
     primed: crate::Primed,
+    /// How long a `turn/steer` waits for its answer ([`STEER_TIMEOUT`]).
+    steer_timeout: Duration,
     /// Idle compaction timers, one per thread (see `compact.rs`).
     compactor: Arc<compact::IdleCompactor>,
     /// One holder per session: turns, thread actions, idle compaction.
@@ -181,9 +194,17 @@ impl CodexRuntime {
             active: Arc::new(Mutex::new(HashMap::new())),
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
             primed: crate::Primed::default(),
+            steer_timeout: STEER_TIMEOUT,
             compactor: Arc::default(),
             admission: Arc::default(),
         })
+    }
+
+    /// Bound how long a steer waits for `turn/steer`'s answer (default
+    /// [`STEER_TIMEOUT`]); tests shorten it.
+    pub fn with_steer_timeout(mut self, timeout: Duration) -> Self {
+        self.steer_timeout = timeout;
+        self
     }
 
     /// Reserve `thread`'s session for `what`: a running compaction is
@@ -231,7 +252,7 @@ impl CodexRuntime {
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let cancelled = Arc::new(AtomicBool::new(false));
-        let live = Arc::new(Mutex::new(None));
+        let door: Door = Arc::default();
         let (done_tx, done_rx) = watch::channel(false);
         if let Ok(mut active) = self.active.lock() {
             active.insert(
@@ -239,7 +260,7 @@ impl CodexRuntime {
                 ActiveTurn {
                     pgid,
                     cancelled: Arc::clone(&cancelled),
-                    live: Arc::clone(&live),
+                    door: Arc::clone(&door),
                     done: done_rx,
                 },
             );
@@ -253,7 +274,8 @@ impl CodexRuntime {
             context: context.map(str::to_string),
             effort: effort.map(str::to_string),
             cancelled,
-            live,
+            door,
+            steer_timeout: self.steer_timeout,
             bridge: self.bridge.clone(),
             thread_id: thread.thread_id.clone(),
             run_id: run_id.clone(),
@@ -283,8 +305,11 @@ impl CodexRuntime {
             if let Some(bridge) = &bridge {
                 bridge.turn_started(&thread_id, &run);
             }
-            let (outcome, telemetry) = turn.run(client, inbound).await;
+            let (outcome, telemetry, unread) = turn.run(client, inbound).await;
             close_server(&mut child, pgid).await;
+            // Steers held for a start that never came go back to the engine
+            // before the turn is reported (and before the session frees).
+            let outcome = report_unread(&sink, &thread_id, &run, unread, outcome).await;
             end.settle(outcome.status.as_str());
             let context_used = telemetry.as_ref().and_then(|t| t.context_used);
             let status = outcome.status;
@@ -302,11 +327,15 @@ impl CodexRuntime {
         Ok(run_id)
     }
 
-    fn live(&self, thread: &ThreadId) -> Option<LiveTurn> {
+    fn door(&self, thread: &ThreadId) -> Option<Door> {
         self.active
             .lock()
-            .ok()
-            .and_then(|a| a.get(thread).and_then(|t| t.live.lock().ok()?.clone()))
+            .ok() // silent-ok: a poisoned map only follows a panic elsewhere
+            .and_then(|a| a.get(thread).map(|t| Arc::clone(&t.door)))
+    }
+
+    fn live(&self, thread: &ThreadId) -> Option<LiveTurn> {
+        self.door(thread)?.live()
     }
 
     /// `turn/interrupt`, then the process group if the turn does not settle
@@ -467,7 +496,8 @@ struct Turn {
     /// The thread's effort pick; over the configured default.
     effort: Option<String>,
     cancelled: Arc<AtomicBool>,
-    live: Arc<Mutex<Option<LiveTurn>>>,
+    door: Door,
+    steer_timeout: Duration,
     // arch-exempt: optional_arc, a host without the gateway asks nothing, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
@@ -478,17 +508,18 @@ struct Turn {
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
 
 impl Turn {
+    /// Drive the turn, then close its door (dropping every handle, so the
+    /// server sees stdin close). Also returns the steers it never
+    /// delivered: held for a start that never came, or refused.
     async fn run(
         self,
         client: RpcClient,
         inbound: mpsc::UnboundedReceiver<Inbound>,
-    ) -> (TurnOutcome, Telemetry) {
-        let result = self.drive(client, inbound).await;
-        // Drop every handle so the server sees stdin close.
-        if let Ok(mut slot) = self.live.lock() {
-            *slot = None;
-        }
-        result
+    ) -> (TurnOutcome, Telemetry, Vec<UnreadSteer>) {
+        let mut unread = Vec::new();
+        let (outcome, telemetry) = self.drive(client, inbound, &mut unread).await;
+        unread.extend(self.door.close());
+        (outcome, telemetry, unread)
     }
 
     fn policy(&self) -> (&'static str, &'static str) {
@@ -499,6 +530,7 @@ impl Turn {
         &self,
         client: RpcClient,
         mut inbound: mpsc::UnboundedReceiver<Inbound>,
+        unread: &mut Vec<UnreadSteer>,
     ) -> (TurnOutcome, Telemetry) {
         let mut fold = TurnFold::default();
         let codex_thread = match self.open(&client, &mut fold).await {
@@ -556,13 +588,30 @@ impl Turn {
         if !matches!(self.kind, TurnKind::Prompt) {
             journal::append(&transcript, std::slice::from_ref(&user_row)).await;
         }
-        if let Ok(mut slot) = self.live.lock() {
-            *slot = Some(LiveTurn {
-                client: client.clone(),
-                codex_thread: codex_thread.clone(),
-                turn_id,
-                run_id: self.run_id.clone(),
-            });
+        let (steered_tx, mut steered_rx) = mpsc::unbounded_channel();
+        let live_turn = LiveTurn {
+            client: client.clone(),
+            steer_timeout: self.steer_timeout,
+            codex_thread: codex_thread.clone(),
+            turn_id,
+            run_id: self.run_id.clone(),
+            steered: steered_tx,
+        };
+        // Steers sent while the turn was starting join it now, in order; the
+        // door opens once none is left, so a later one cannot overtake them.
+        loop {
+            let held = self.door.drain_or_open(&live_turn);
+            if held.is_empty() {
+                break;
+            }
+            for steer in held {
+                if steer_live(&live_turn, &self.door, &steer.text).await {
+                    let row = self.steer_row(&steer.text);
+                    journal::append(&transcript, &[row]).await;
+                } else {
+                    unread.push(steer);
+                }
+            }
         }
 
         let mut live = live::LiveFold::for_turn(fold.turn_id.clone());
@@ -570,6 +619,10 @@ impl Turn {
         loop {
             let message = tokio::select! {
                 message = inbound.recv() => message,
+                Some(text) = steered_rx.recv() => {
+                    self.journal_steer(&transcript, &mut fold, &text).await;
+                    continue;
+                }
                 _ = flush.tick() => {
                     if let Some(bridge) = &self.bridge {
                         bridge.flush_details(&self.thread_id, &self.run_id);
@@ -615,6 +668,13 @@ impl Turn {
             }
         }
 
+        // The turn is over: a steer still unanswered now is refused, and
+        // later ones are refused at the door.
+        unread.extend(self.door.close());
+        // Steers accepted as the turn completed still land before its end.
+        while let Ok(text) = steered_rx.try_recv() {
+            self.journal_steer(&transcript, &mut fold, &text).await;
+        }
         let outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst));
         if let Some(entry) = fold.assistant_message() {
             let entry = HistoryMessage {
@@ -624,6 +684,28 @@ impl Turn {
             journal::append(&transcript, &[entry]).await;
         }
         (outcome, fold.telemetry(&self.config.runtime_id))
+    }
+
+    fn steer_row(&self, text: &str) -> HistoryMessage {
+        HistoryMessage {
+            run_id: Some(self.run_id.clone()),
+            ..journal::message(HistoryRole::User, text.to_string(), Vec::new())
+        }
+    }
+
+    /// A steer Codex accepted, in the transcript where it happened: what
+    /// the agent said and ran before it is cut into its own entry first.
+    async fn journal_steer(&self, transcript: &Path, fold: &mut TurnFold, text: &str) {
+        let mut entries: Vec<HistoryMessage> = fold
+            .take_segment()
+            .map(|entry| HistoryMessage {
+                run_id: Some(self.run_id.clone()),
+                ..entry
+            })
+            .into_iter()
+            .collect();
+        entries.push(self.steer_row(text));
+        journal::append(transcript, &entries).await;
     }
 
     /// `turn/start` with the prompt, or `review/start` for a review.
@@ -740,7 +822,7 @@ impl Turn {
         };
         let client = client.clone();
         let bridge = self.bridge.clone();
-        let live = Arc::clone(&self.live);
+        let door = Arc::clone(&self.door);
         let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
         let claim = permissions::claim(bridge.as_deref(), &thread, &run);
         // The decision waits for a person; the turn's events keep flowing.
@@ -762,7 +844,7 @@ impl Turn {
                 return;
             }
             if let Some(feedback) = feedback
-                && !steer_rejection_feedback(&live, &feedback).await
+                && !steer_rejection_feedback(&door, &feedback).await
             {
                 deliver_later(bridge.as_deref(), &thread, &feedback).await;
             }
@@ -859,10 +941,10 @@ fn session_policy(bridged: bool) -> (&'static str, &'static str) {
 /// `true` once the turn acknowledged the steer; otherwise the caller queues
 /// the feedback for the next turn.
 async fn steer_rejection_feedback(
-    live: &Mutex<Option<LiveTurn>>,
+    door: &SteerDoor<LiveTurn>,
     feedback: &ironclaw_host_api::turn::DenialFeedback,
 ) -> bool {
-    let Some(live) = live.lock().ok().and_then(|l| l.clone()) else {
+    let Some(live) = door.live() else {
         tracing::debug!("codex: rejection feedback not steered (no live turn)");
         return false;
     };
@@ -883,6 +965,39 @@ async fn steer_rejection_feedback(
         Ok(_) => true,
         Err(error) => {
             tracing::debug!(error = %error.label(), "codex: rejection feedback not steered");
+            false
+        }
+    }
+}
+
+/// Send a steer into the live turn. `true` once Codex has it:
+/// - answered: delivered;
+/// - refused (an error answer) or the connection closed: not delivered, the
+///   caller queues it;
+/// - no answer within [`STEER_TIMEOUT`]: the request is on the wire, so it
+///   counts as delivered while the turn still runs (queueing it too
+///   could deliver it twice); once the turn has ended without answering,
+///   Codex provably did not fold it into that turn, and it is queued.
+async fn steer_live(live: &LiveTurn, door: &SteerDoor<LiveTurn>, text: &str) -> bool {
+    let params = json!({
+        "threadId": live.codex_thread,
+        "expectedTurnId": live.turn_id,
+        "input": codex_input(text).await,
+    });
+    match live
+        .client
+        .request("turn/steer", params, live.steer_timeout)
+        .await
+    {
+        Ok(_) => true,
+        Err(RpcError::Timeout) => {
+            // The door closes as the turn's loop sees it end.
+            let running = !door.is_closed();
+            tracing::debug!(running, "codex: steer unanswered");
+            running
+        }
+        Err(error) => {
+            tracing::debug!(error = %error.label(), "codex: steer refused");
             false
         }
     }
@@ -1002,45 +1117,53 @@ impl TurnRuntime for CodexRuntime {
         })
     }
 
+    /// A steer joins the running turn (T3 Code's Codex steer):
+    /// - the turn is still starting (no turn id yet): held, and sent in
+    ///   order as soon as it has one; a turn that never starts reports it
+    ///   unread, so the engine queues it;
+    /// - an approval is pending: it is declined first (Codex's reply has no
+    ///   message field), then the words go as a `turn/steer`;
+    /// - otherwise `turn/steer` right away (see [`steer_live`]).
     async fn steer(
         &self,
         thread: &ThreadRecord,
         text: &str,
         how: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError> {
-        if how == SteerHow::Steer
-            && let Some(live) = self.live(&thread.thread_id)
-        {
-            let params = json!({
-                "threadId": live.codex_thread,
-                "expectedTurnId": live.turn_id,
-                "input": codex_input(text).await,
-            });
-            match live
-                .client
-                .request("turn/steer", params, COMMAND_TIMEOUT)
-                .await
-            {
-                Ok(_) => {
-                    if let Some(session) = thread.native_session_id.as_deref() {
-                        let row = HistoryMessage {
-                            run_id: Some(live.run_id.clone()),
-                            ..journal::message(HistoryRole::User, text.to_string(), Vec::new())
-                        };
-                        journal::append(&self.config.transcript(session), &[row]).await;
-                    }
-                    return Ok(SteerOutcome::Steered);
-                }
-                // The turn ended or moved on: the engine queues the text.
-                Err(error) => {
-                    tracing::debug!(error = %error.label(), "codex: steer refused");
-                    return Ok(SteerOutcome::Rejected);
-                }
-            }
-        }
-        // A steer with no live turn queues; only an explicit Restart restarts.
         if how == SteerHow::Steer {
-            return Ok(SteerOutcome::Rejected);
+            let Some(door) = self.door(&thread.thread_id) else {
+                return Ok(SteerOutcome::Rejected);
+            };
+            let live = match door.knock(text) {
+                Knock::Held => return Ok(SteerOutcome::Steered),
+                Knock::Closed => return Ok(SteerOutcome::Rejected),
+                Knock::Live(live) => live,
+            };
+            if let Some(bridge) = &self.bridge
+                && bridge.decline_pending(
+                    &thread.thread_id,
+                    &live.run_id,
+                    &format!("The user declined this call and said instead: {text}"),
+                ) > 0
+            {
+                // Lets the decline's answer go out ahead of the steer.
+                tokio::task::yield_now().await;
+            }
+            if !steer_live(&live, &door, text).await {
+                return Ok(SteerOutcome::Rejected);
+            }
+            // The turn's loop journals it after the reply it cut short; a
+            // loop already gone means the turn ended: journal it here.
+            if let Err(unsent) = live.steered.send(text.to_string())
+                && let Some(session) = thread.native_session_id.as_deref()
+            {
+                let row = HistoryMessage {
+                    run_id: Some(live.run_id.clone()),
+                    ..journal::message(HistoryRole::User, unsent.0, Vec::new())
+                };
+                journal::append(&self.config.transcript(session), &[row]).await;
+            }
+            return Ok(SteerOutcome::Steered);
         }
         self.stop(&thread.thread_id).await;
         let Some(claim) = self.admit(&thread.thread_id, "turn").await else {

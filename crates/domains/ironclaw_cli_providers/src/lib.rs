@@ -24,6 +24,7 @@ pub mod permissions;
 mod rpc;
 pub mod session_import;
 mod slot;
+mod steer_door;
 mod workspace;
 
 use std::path::PathBuf;

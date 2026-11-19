@@ -63,7 +63,8 @@ impl MuseRuntime {
         let (done_tx, done_rx) = watch::channel(false);
         let published = claim.fill(ActiveTurn {
             pgid,
-            live: Arc::default(),
+            // Compaction takes no steers: they queue for the next turn.
+            door: Arc::new(crate::steer_door::SteerDoor::closed()),
             done: done_rx,
         });
         if !published {

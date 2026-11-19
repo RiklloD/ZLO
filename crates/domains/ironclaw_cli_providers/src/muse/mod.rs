@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -50,6 +50,7 @@ use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
 use crate::slot::GroupGuard;
+use crate::steer_door::{Knock, SteerDoor, report_unread};
 use fold::{ModelRow, TurnFold};
 use ironclaw_product_contracts::orchestration::{ThreadAction, ThreadActionOutcome};
 
@@ -72,6 +73,9 @@ const FALLBACK_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The session MCP server carrying the orchestrator tools.
 const MCP_SERVER: &str = "ironclaw";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a `turn/steer` may take before it is judged without its
+/// answer (see [`steer_live`]): short, since the person's send waits on it.
+const STEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long a host may drain after stdin closes before its group is killed.
 const DRAIN: Duration = Duration::from_secs(10);
 /// How long a `model/list` answer is reused.
@@ -111,15 +115,21 @@ impl MuseConfig {
 #[derive(Clone)]
 struct LiveTurn {
     client: RpcClient,
+    /// How long a `turn/steer` waits for its answer (see [`steer_live`]).
+    steer_timeout: Duration,
     session_id: String,
     turn_id: String,
     /// Turns Muse started on its own inside this one; Stop ends them too.
     joined: Vec<String>,
+    /// IronClaw's run id, which steers are journaled and gates matched under.
+    run_id: String,
 }
+
+type Door = Arc<SteerDoor<LiveTurn>>;
 
 struct ActiveTurn {
     pgid: i32,
-    live: Arc<Mutex<Option<LiveTurn>>>,
+    door: Door,
     done: watch::Receiver<bool>,
 }
 
@@ -141,6 +151,8 @@ pub struct MuseRuntime {
     active: Slots,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
     primed: crate::Primed,
+    /// How long a `turn/steer` waits for its answer ([`STEER_TIMEOUT`]).
+    steer_timeout: Duration,
     #[cfg(test)]
     prep_gate: Option<Arc<crate::slot::PrepGate>>,
 }
@@ -159,9 +171,17 @@ impl MuseRuntime {
             active: Slots::default(),
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
             primed: crate::Primed::default(),
+            steer_timeout: STEER_TIMEOUT,
             #[cfg(test)]
             prep_gate: None,
         })
+    }
+
+    /// Bound how long a steer waits for `turn/steer`'s answer (default
+    /// [`STEER_TIMEOUT`]); tests shorten it.
+    pub fn with_steer_timeout(mut self, timeout: Duration) -> Self {
+        self.steer_timeout = timeout;
+        self
     }
 
     fn claim(&self, thread: &ThreadId) -> Option<Claim> {
@@ -237,11 +257,11 @@ impl MuseRuntime {
         let (client, inbound) = connect(&mut child, pgid)?;
 
         let cancelled = claim.cancel_flag();
-        let live = Arc::new(Mutex::new(None));
+        let door: Door = Arc::default();
         let (done_tx, done_rx) = watch::channel(false);
         let published = claim.fill(ActiveTurn {
             pgid,
-            live: Arc::clone(&live),
+            door: Arc::clone(&door),
             done: done_rx,
         });
         if !published {
@@ -273,7 +293,8 @@ impl MuseRuntime {
             context: context.map(str::to_string),
             effort: effort.map(str::to_string),
             cancelled,
-            live,
+            door,
+            steer_timeout: self.steer_timeout,
             models,
             mcp: mcp.clone(),
             bridge: self.bridge.clone(),
@@ -300,8 +321,11 @@ impl MuseRuntime {
             if let Some(bridge) = &bridge {
                 bridge.turn_started(&thread_id, &run);
             }
-            let (outcome, telemetry) = turn.run(client, inbound).await;
+            let (outcome, telemetry, unread) = turn.run(client, inbound).await;
             close_host(&mut child, pgid).await;
+            // Steers held for a start that never came go back to the engine
+            // before the turn is reported.
+            let outcome = report_unread(&sink, &thread_id, &run, unread, outcome).await;
             group.disarm();
             report.disarm();
             if let Some(bridge) = &bridge {
@@ -345,10 +369,12 @@ impl MuseRuntime {
         Some(McpGrant { url, token })
     }
 
+    fn door(&self, thread: &ThreadId) -> Option<Door> {
+        self.active.with_turn(thread, |turn| Arc::clone(&turn.door))
+    }
+
     fn live(&self, thread: &ThreadId) -> Option<LiveTurn> {
-        self.active
-            .with_turn(thread, |turn| turn.live.lock().ok()?.clone())
-            .flatten()
+        self.door(thread)?.live()
     }
 
     /// `turn/interrupt`, then the process group if the turn does not settle
@@ -519,7 +545,8 @@ struct Turn {
     /// The thread's effort pick; over the configured default.
     effort: Option<String>,
     cancelled: Arc<AtomicBool>,
-    live: Arc<Mutex<Option<LiveTurn>>>,
+    door: Door,
+    steer_timeout: Duration,
     /// The catalog's rows by model id: context limits and reasoning tiers.
     models: HashMap<String, ModelRow>,
     /// The orchestrator tools' route, when the bridge serves one.
@@ -533,23 +560,33 @@ struct Turn {
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
 
 impl Turn {
+    /// Drive the turn, then close its door (dropping every handle, so the
+    /// host sees stdin close). Also returns the steers it never delivered:
+    /// held for a start that never came, or refused.
     async fn run(
         self,
         client: RpcClient,
         inbound: mpsc::UnboundedReceiver<Inbound>,
-    ) -> (TurnOutcome, Telemetry) {
-        let result = self.drive(client, inbound).await;
-        // Drop every handle so the host sees stdin close.
-        if let Ok(mut slot) = self.live.lock() {
-            *slot = None;
+    ) -> (TurnOutcome, Telemetry, Vec<UnreadSteer>) {
+        let mut unread = Vec::new();
+        let (outcome, telemetry) = self.drive(client, inbound, &mut unread).await;
+        unread.extend(self.door.close());
+        (outcome, telemetry, unread)
+    }
+
+    /// One of this turn's transcript rows, grouped under its run.
+    fn row(&self, role: HistoryRole, text: String, tools: Vec<String>) -> HistoryMessage {
+        HistoryMessage {
+            run_id: Some(self.run_id.clone()),
+            ..journal::message(role, text, tools)
         }
-        result
     }
 
     async fn drive(
         &self,
         client: RpcClient,
         mut inbound: mpsc::UnboundedReceiver<Inbound>,
+        unread: &mut Vec<UnreadSteer>,
     ) -> (TurnOutcome, Telemetry) {
         let mut fold = TurnFold::default();
         if let Err(error) = self.open(&client, &mut fold).await {
@@ -561,11 +598,7 @@ impl Turn {
         let transcript = self.config.transcript(&self.session_id);
         journal::append(
             &transcript,
-            &[journal::message(
-                HistoryRole::User,
-                self.text.clone(),
-                Vec::new(),
-            )],
+            &[self.row(HistoryRole::User, self.text.clone(), Vec::new())],
         )
         .await;
 
@@ -610,13 +643,29 @@ impl Turn {
             }
         };
         fold.turn_id = Some(turn_id.clone());
-        if let Ok(mut slot) = self.live.lock() {
-            *slot = Some(LiveTurn {
-                client: client.clone(),
-                session_id: self.session_id.clone(),
-                turn_id,
-                joined: Vec::new(),
-            });
+        let live_turn = LiveTurn {
+            client: client.clone(),
+            steer_timeout: self.steer_timeout,
+            session_id: self.session_id.clone(),
+            turn_id,
+            joined: Vec::new(),
+            run_id: self.run_id.clone(),
+        };
+        // Steers sent while the turn was starting join it now, in order; the
+        // door opens once none is left, so a later one cannot overtake them.
+        loop {
+            let held = self.door.drain_or_open(&live_turn);
+            if held.is_empty() {
+                break;
+            }
+            for steer in held {
+                if steer_live(&live_turn, &self.door, &steer.text).await {
+                    let row = self.row(HistoryRole::User, steer.text, Vec::new());
+                    journal::append(&transcript, &[row]).await;
+                } else {
+                    unread.push(steer);
+                }
+            }
         }
 
         let mut asked = HashSet::new();
@@ -636,11 +685,9 @@ impl Turn {
                         self.approval(&client, &params, &mut asked);
                     }
                     let done = fold.push(&method, &params);
-                    if method == "turn/started"
-                        && let Ok(mut slot) = self.live.lock()
-                        && let Some(live) = slot.as_mut()
-                    {
-                        live.joined = fold.joined();
+                    if method == "turn/started" {
+                        let joined = fold.joined();
+                        self.door.update(|live| live.joined = joined);
                     }
                     self.show(&mut shown, &fold, &root, &method, &params);
                     if done {
@@ -661,8 +708,15 @@ impl Turn {
             }
         }
 
+        // The turn is over: a steer still unanswered now is refused, and
+        // later ones are refused at the door.
+        unread.extend(self.door.close());
         let outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst), now_ms());
         if let Some(entry) = fold.assistant_message() {
+            let entry = HistoryMessage {
+                run_id: Some(self.run_id.clone()),
+                ..entry
+            };
             journal::append(&transcript, &[entry]).await;
         }
         if let (Some(path), Some(reading)) = (&self.config.usage_file, &fold.limit_reading) {
@@ -843,7 +897,7 @@ impl Turn {
         let approval_id = approval_id.to_string();
         let session_id = self.session_id.clone();
         let bridge = self.bridge.clone();
-        let live = Arc::clone(&self.live);
+        let door = Arc::clone(&self.door);
         let (thread, run) = (self.thread_id.clone(), self.run_id.clone());
         let claim = permissions::claim(bridge.as_deref(), &thread, &run);
         // The decision waits for a person; the turn's events keep flowing.
@@ -881,7 +935,7 @@ impl Turn {
             let Some(feedback) = feedback else {
                 return;
             };
-            if !admitted || ends_turn || !steer_rejection_feedback(&live, &feedback).await {
+            if !admitted || ends_turn || !steer_rejection_feedback(&door, &feedback).await {
                 deliver_later(bridge.as_deref(), &thread, &feedback).await;
             }
         });
@@ -893,10 +947,10 @@ impl Turn {
 /// turn. `true` once the turn acknowledged it; otherwise the caller queues
 /// the feedback for the next turn.
 async fn steer_rejection_feedback(
-    live: &Mutex<Option<LiveTurn>>,
+    door: &SteerDoor<LiveTurn>,
     feedback: &ironclaw_host_api::turn::DenialFeedback,
 ) -> bool {
-    let Some(live) = live.lock().ok().and_then(|l| l.clone()) else {
+    let Some(live) = door.live() else {
         tracing::debug!("muse: rejection feedback not steered (no live turn)");
         return false;
     };
@@ -914,6 +968,40 @@ async fn steer_rejection_feedback(
         Ok(_) => true,
         Err(error) => {
             tracing::debug!(error = %error.label(), "muse: rejection feedback not steered");
+            false
+        }
+    }
+}
+
+/// Send a steer into the live turn. `true` once Muse has it:
+/// - answered: delivered;
+/// - refused (an error answer) or the connection closed: not delivered, the
+///   caller queues it;
+/// - no answer within [`STEER_TIMEOUT`]: the command is on the wire, so it
+///   counts as delivered while the turn still runs (queueing it too
+///   could deliver it twice); once the turn has ended without answering,
+///   Muse provably did not fold it into that turn, and it is queued.
+async fn steer_live(live: &LiveTurn, door: &SteerDoor<LiveTurn>, text: &str) -> bool {
+    let params = json!({
+        "sessionId": live.session_id,
+        "commandId": command_id(),
+        "expectedTurnId": live.turn_id,
+        "input": [{"type": "text", "text": text}],
+    });
+    match live
+        .client
+        .request("turn/steer", params, live.steer_timeout)
+        .await
+    {
+        Ok(_) => true,
+        Err(RpcError::Timeout) => {
+            // The door closes as the turn's loop sees it end.
+            let running = !door.is_closed();
+            tracing::debug!(running, "muse: steer unanswered");
+            running
+        }
+        Err(error) => {
+            tracing::debug!(error = %error.label(), "muse: steer refused");
             false
         }
     }
@@ -1060,48 +1148,47 @@ impl TurnRuntime for MuseRuntime {
         })
     }
 
+    /// A steer joins the running turn (T3 Code's Muse steer):
+    /// - the turn is still starting (no turn id yet): held, and sent in
+    ///   order as soon as it has one; a turn that never starts reports it
+    ///   unread, so the engine queues it;
+    /// - an approval is pending: it is declined first (Muse's choice has no
+    ///   message field), then the words go as a `turn/steer`;
+    /// - otherwise `turn/steer` right away (see [`steer_live`]).
     async fn steer(
         &self,
         thread: &ThreadRecord,
         text: &str,
         how: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError> {
-        if how == SteerHow::Steer
-            && let Some(live) = self.live(&thread.thread_id)
-        {
-            let params = json!({
-                "sessionId": live.session_id,
-                "commandId": command_id(),
-                "expectedTurnId": live.turn_id,
-                "input": [{"type": "text", "text": text}],
-            });
-            match live
-                .client
-                .request("turn/steer", params, COMMAND_TIMEOUT)
-                .await
-            {
-                Ok(_) => {
-                    journal::append(
-                        &self.config.transcript(&live.session_id),
-                        &[journal::message(
-                            HistoryRole::User,
-                            text.to_string(),
-                            Vec::new(),
-                        )],
-                    )
-                    .await;
-                    return Ok(SteerOutcome::Steered);
-                }
-                // The turn ended or moved on: the engine queues the text.
-                Err(error) => {
-                    tracing::debug!(error = %error.label(), "muse: steer refused");
-                    return Ok(SteerOutcome::Rejected);
-                }
-            }
-        }
-        // A steer with no live turn queues; only an explicit Restart restarts.
         if how == SteerHow::Steer {
-            return Ok(SteerOutcome::Rejected);
+            let Some(door) = self.door(&thread.thread_id) else {
+                return Ok(SteerOutcome::Rejected);
+            };
+            let live = match door.knock(text) {
+                Knock::Held => return Ok(SteerOutcome::Steered),
+                Knock::Closed => return Ok(SteerOutcome::Rejected),
+                Knock::Live(live) => live,
+            };
+            if let Some(bridge) = &self.bridge
+                && bridge.decline_pending(
+                    &thread.thread_id,
+                    &live.run_id,
+                    &format!("The user declined this call and said instead: {text}"),
+                ) > 0
+            {
+                // Lets the decline's answer go out ahead of the steer.
+                tokio::task::yield_now().await;
+            }
+            if !steer_live(&live, &door, text).await {
+                return Ok(SteerOutcome::Rejected);
+            }
+            let row = HistoryMessage {
+                run_id: Some(live.run_id.clone()),
+                ..journal::message(HistoryRole::User, text.to_string(), Vec::new())
+            };
+            journal::append(&self.config.transcript(&live.session_id), &[row]).await;
+            return Ok(SteerOutcome::Steered);
         }
         self.stop(&thread.thread_id).await;
         // Something else took the slot meanwhile: the engine queues the text.
