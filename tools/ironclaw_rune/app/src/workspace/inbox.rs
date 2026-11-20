@@ -488,20 +488,28 @@ pub fn settle(s: &mut State, thread_id: String) {
                     return;
                 }
             };
-            let open = s.page == Page::Chat && active_id(s) == Some(thread_id.as_str());
-            apply(s, list);
-            let next = next_after_settle(s, &thread_id);
-            match next {
-                None => {
-                    s.chat = None;
-                    s.workspace.draft = None;
-                    draft::start_in_profile(s, DEFAULT_PROFILE_ID.into());
-                }
-                Some(next) if open => super::open_thread(s, next),
-                Some(_) => {}
-            }
+            settled(s, &thread_id, list);
         },
     );
+}
+
+/// The gateway confirmed the settle. Only the thread on screen moves the
+/// screen: settling a background card (found by search, say) leaves the
+/// open chat where it is.
+fn settled(s: &mut State, thread_id: &str, list: InboxListResponse) {
+    let open = s.page == Page::Chat && active_id(s) == Some(thread_id);
+    apply(s, list);
+    if !open {
+        return;
+    }
+    match next_after_settle(s, thread_id) {
+        Some(next) => super::open_thread(s, next),
+        None => {
+            s.chat = None;
+            s.workspace.draft = None;
+            draft::start_in_profile(s, DEFAULT_PROFILE_ID.into());
+        }
+    }
 }
 
 /// Opening a row with an unseen result clears its Done / Woke badge.
@@ -685,6 +693,34 @@ mod tests {
             &[],
         );
         assert_eq!(next_after_settle(&s, "last"), Some("next".into()));
+    }
+
+    /// Settling a background card that a filter found leaves the open
+    /// chat alone, even with no card left to show; settling the open one
+    /// with nothing left shows a fresh draft.
+    #[test]
+    fn only_settling_the_open_thread_moves_the_screen() {
+        let rows = || {
+            vec![
+                row("a", InboxState::Inbox, None),
+                row("b", InboxState::Settled, None),
+            ]
+        };
+        let mut s = crate::chat::fixtures::test_state();
+        s.page = Page::Chat;
+        s.chat = Some(crate::chat::ChatState::new("a".into()));
+        s.workspace.inbox.profile = Some("elsewhere".into());
+        let list = |rows| InboxListResponse {
+            rows,
+            ..Default::default()
+        };
+        settled(&mut s, "b", list(rows()));
+        assert_eq!(active_id(&s), Some("a"));
+
+        let mut last = rows();
+        last[0].state = InboxState::Settled;
+        settled(&mut s, "a", list(last));
+        assert_eq!(active_id(&s), None);
     }
 
     /// A side chat (a fork handoff) is an open row the sidebar hides under
