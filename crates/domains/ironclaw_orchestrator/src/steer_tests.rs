@@ -53,6 +53,18 @@ async fn reading_harness() -> Harness {
     .await
 }
 
+/// Wait (bounded) until the thread's queue holds `len` items: readiness
+/// delivers deferred steers from a task of its own.
+async fn until_queued(h: &Harness, thread: &ThreadId, len: usize) {
+    for _ in 0..200 {
+        if queued(h, thread).await.len() == len {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("queue never reached {len}: {:?}", queued(h, thread).await);
+}
+
 /// Distinct millisecond stamps for "sent before / queued after".
 async fn tick_clock() {
     tokio::time::sleep(std::time::Duration::from_millis(3)).await;
@@ -303,8 +315,8 @@ async fn a_steer_before_the_turn_is_ready_is_delivered_when_it_is() {
     assert_eq!(queued(&h, &a.thread_id).await, vec!["hold on"]);
     // Ready: delivered into the same run.
     h.engine.turn_ready(&a.thread_id, Some("r1")).await;
+    until_queued(&h, &a.thread_id, 0).await;
     assert_eq!(h.rt.steered_on(&a.thread_id).len(), 3);
-    assert!(queued(&h, &a.thread_id).await.is_empty());
     let item = h
         .engine
         .store()
@@ -346,7 +358,7 @@ async fn promote_and_agent_send_keep_t3code_semantics() {
     assert_eq!(view["steerStatus"], json!("waiting_for_turn"));
     assert_eq!(view["items"][0]["kind"], json!("deferred_steer"));
     h.engine.turn_ready(&a.thread_id, Some("r1")).await;
-    assert!(queued(&h, &a.thread_id).await.is_empty());
+    until_queued(&h, &a.thread_id, 0).await;
 
     // Agent sends.
     let idle = tid("idle");

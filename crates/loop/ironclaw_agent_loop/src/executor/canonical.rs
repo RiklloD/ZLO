@@ -268,7 +268,54 @@ impl DefaultExecutorPipeline {
                             },
                         ),
                     )?;
-                    match self.stop.apply_fresh_completion_nudge(host, stop_step) {
+                    let stop_step = self.stop.apply_fresh_completion_nudge(host, stop_step);
+                    // Any graceful end reads pending steers first, like the
+                    // reply-only follow-up above (which already drained):
+                    // a steer sent before the run ends is answered by this
+                    // run, never stranded for terminal reconciliation.
+                    let stop_step = match stop_step {
+                        StopStep::Stop {
+                            state: stop_state,
+                            kind: crate::strategies::StopKind::GracefulStop,
+                        } if completed_kind != TurnEndKind::ReplyOnly => {
+                            match latency::stage!(
+                                "input_drain_before_stop",
+                                host.run_context(),
+                                stop_state.iteration,
+                                self.input.process(
+                                    ctx,
+                                    DrainInput {
+                                        state: stop_state,
+                                        mode: UserFacingInputDrainMode::FollowUp,
+                                    },
+                                ),
+                            )? {
+                                InputStep::Continue {
+                                    state: next,
+                                    drained: true,
+                                } => {
+                                    debug!(
+                                        iteration = next.iteration,
+                                        "agent loop continuing with steering read before a graceful stop"
+                                    );
+                                    let mut next = *next;
+                                    next.iteration = next.iteration.saturating_add(1);
+                                    state = next;
+                                    continue;
+                                }
+                                InputStep::Continue {
+                                    state: next,
+                                    drained: false,
+                                } => StopStep::Stop {
+                                    state: *next,
+                                    kind: crate::strategies::StopKind::GracefulStop,
+                                },
+                                InputStep::Exit(exit) => return Ok(exit),
+                            }
+                        }
+                        other => other,
+                    };
+                    match stop_step {
                         StopStep::Stop {
                             state: stop_state,
                             kind,

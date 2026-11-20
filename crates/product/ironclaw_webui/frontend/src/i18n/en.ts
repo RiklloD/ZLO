@@ -135,9 +135,11 @@ registerPack("en", {
   "chat.workedFor": "Worked for {duration}",
   "chat.reloadHistory": "Reload history",
   "chat.busyRejectedResend":
-    "This message wasn't sent because IronClaw was busy. Resend it to try again.",
+    "This message wasn't delivered to the running task. Send it again if you still need it.",
   "chat.jumpToLatest": "Jump to latest",
-  "chat.queued": "Queued",
+  "chat.steer": "Steer",
+  "chat.steerWaiting": "Steer · waiting to be read",
+  "chat.steerTooltip": "Sent into the running turn. The agent reads steers between steps.",
   "shortcuts.title": "Keyboard shortcuts",
   "shortcuts.send": "Send message",
   "shortcuts.newline": "New line",

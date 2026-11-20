@@ -9,8 +9,9 @@
 
 use std::collections::HashSet;
 
+use crate::design::kit::Spinner;
 use rune::{Color, El, col, el, row};
-use rune_kit::{ControlSize, Kit, Placement, Spinner};
+use rune_kit::{ControlSize, Kit, Placement};
 use zlo_client::orchestration::ForkOptions;
 use zlo_client::usage::{
     ContextCategory, ContextLevel, ContextSource, ContextToolOwner, ThreadContextReport,

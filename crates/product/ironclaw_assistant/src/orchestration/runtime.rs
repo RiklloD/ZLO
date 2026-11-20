@@ -430,6 +430,7 @@ impl TurnRuntime for AgentLoopRuntime {
                     run_id: m.turn_run_id.clone(),
                     hidden,
                     at: m.created_at.or(m.updated_at).map(|t| t.timestamp_millis()),
+                    steer_id: None,
                 })
             })
             .collect())

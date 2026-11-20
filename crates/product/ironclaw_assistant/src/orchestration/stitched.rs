@@ -90,6 +90,7 @@ pub(super) async fn timeline(
     external::annotate_steers(&mut rows, &steers);
     let (rows, next) = external::page_rows(rows, limit, cursor.as_deref());
     if let Some(item) = envelope.items.first_mut() {
+        item["steer_marks"] = external::steer_marks(&rows);
         item["messages"] = Value::Array(rows);
         item["next_cursor"] = next.clone().map_or(Value::Null, Value::String);
     }

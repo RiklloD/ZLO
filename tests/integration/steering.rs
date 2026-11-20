@@ -205,3 +205,82 @@ async fn queued_steering_survives_runtime_restart() {
         "the resumed run must flip the persisted row Queued → Submitted"
     );
 }
+
+/// t3code: "a message sent while approvals are pending redirects the agent".
+/// A message sent while the run waits on an approval is steered into it AND
+/// declines the pending approval, so the run continues with the message
+/// right away — nobody has to answer the approval first, the gated call
+/// never runs, and the message's text reaches the model exactly once (as the
+/// person's message, not repeated as decline feedback).
+#[tokio::test]
+async fn steer_during_an_approval_declines_it_and_the_run_continues_with_it() {
+    use ironclaw_approvals::ApprovalStatus;
+    use reborn_support::group::RebornIntegrationGroup;
+
+    let group = RebornIntegrationGroup::builder()
+        .with_real_gate_dispatch_services()
+        .live_approvals()
+        .await
+        .expect("live-approvals group builds");
+    let h = group
+        .thread("steer-declines-approval")
+        .script([
+            RebornScriptedReply::tool_call(
+                "builtin.write_file",
+                serde_json::json!({
+                    "path": "/workspace/should_not_exist.txt",
+                    "content": "never written"
+                }),
+            ),
+            RebornScriptedReply::text("redirected reply"),
+        ])
+        .build()
+        .await
+        .expect("thread builds");
+    let (run_id, gate_ref) = h
+        .submit_turn_until_blocked("write the file")
+        .await
+        .expect("run parks on the approval");
+
+    let ack = h
+        .submit_turn_ack("no, write nothing and just say hello")
+        .await
+        .expect("busy submit does not error");
+    let ProductInboundAck::DeferredBusy { active_run_id, .. } = ack else {
+        panic!("a message during an approval must steer the run, got {ack:?}");
+    };
+    assert_eq!(active_run_id, run_id);
+
+    h.wait_for_status(run_id, TurnStatus::Completed)
+        .await
+        .expect("the run continues without anyone answering the approval");
+    assert!(
+        matches!(
+            h.approval_status(&gate_ref).await.expect("approval status"),
+            ApprovalStatus::Denied
+        ),
+        "the pending approval is declined by the steer"
+    );
+    h.assert_workspace_file_absent("should_not_exist.txt")
+        .await
+        .expect("the declined call never ran");
+    h.assert_model_saw_user_message("no, write nothing and just say hello")
+        .await
+        .expect("the steer reaches the model as the person's message");
+    h.assert_model_saw_text("the person sent a new message instead")
+        .await
+        .expect("the declined call tells the model why, without repeating the message");
+    h.assert_reply_contains("redirected reply")
+        .await
+        .expect("the run answers after the steer");
+    let row = h
+        .user_message_record("no, write nothing and just say hello")
+        .await
+        .expect("steer row");
+    assert_eq!(row.status, MessageStatus::Submitted);
+    assert_eq!(
+        row.turn_run_id.as_deref(),
+        Some(run_id.to_string().as_str()),
+        "the steer is part of the same run"
+    );
+}

@@ -441,6 +441,39 @@ pub enum RebornSubmitTurnResponse {
     },
 }
 
+/// A steer's read state on one timeline message (t3code's marker: "Steer ·
+/// waiting to be read" until the agent reads it, then "Steer").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebornSteerMark {
+    /// The engine's steer id (the one SUBMIT_TURN answered).
+    pub id: String,
+    /// `sending`, `pending`, `read`, `dropped`, `requeued` or `unconfirmed`.
+    pub state: String,
+    pub waiting_to_be_read: bool,
+}
+
+/// "Steer delivery not confirmed": a steer a Stop left unread, shown after
+/// the last message of its run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebornSteerNotice {
+    pub steer_id: String,
+    pub title: String,
+    /// The steer's text, for a resend.
+    pub text: String,
+    /// The notice body.
+    pub content: String,
+}
+
+/// Steer annotations of one timeline message, keyed by its `message_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebornTimelineSteerMark {
+    pub message_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<RebornSteerMark>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<RebornSteerNotice>,
+}
+
 /// One active suggestion projected for any product surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RebornSuggestion {

@@ -12,13 +12,14 @@
 // Wire/record status values produced by the backend (send `outcome` or
 // persisted `ThreadMessageRecord.status`).
 export const RECORD_STATUS = Object.freeze({
-  // Accepted but deferred because the thread was busy: it is queued to run
-  // once the active run yields. Renders as queued, never as an error.
+  // Sent while the thread was busy and steered into the running turn: the
+  // agent reads it at its next step (a pending approval is declined for
+  // it). Renders as a steer — never "queued", never an error.
   DEFERRED_BUSY: "deferred_busy",
-  // Rejected because the thread was busy: it was NOT accepted and must be
-  // resent. Renders as an error.
+  // Not delivered: the running turn could not take it (or a Stop ended the
+  // turn before the agent read it). Renders as an error with resend copy.
   REJECTED_BUSY: "rejected_busy",
-  // Explicitly queued.
+  // A persisted steer the agent has not read yet.
   QUEUED: "queued",
   // The run actively processing this message.
   RUNNING: "running",
@@ -26,7 +27,10 @@ export const RECORD_STATUS = Object.freeze({
 
 // UI-facing status values consumed by `MessageBubble`.
 export const UI_MESSAGE_STATUS = Object.freeze({
-  QUEUED: "queued",
+  // Part of the running turn (live send outcome).
+  STEERED: "steered",
+  // A steer the agent has not read yet (persisted `queued` row).
+  STEER_PENDING: "steer_pending",
   ERROR: "error",
   RUNNING: "running",
 } as const);
@@ -37,8 +41,9 @@ export const UI_MESSAGE_STATUS = Object.freeze({
 export function uiStatusFromRecordStatus(recordStatus) {
   switch (recordStatus) {
     case RECORD_STATUS.DEFERRED_BUSY:
+      return UI_MESSAGE_STATUS.STEERED;
     case RECORD_STATUS.QUEUED:
-      return UI_MESSAGE_STATUS.QUEUED;
+      return UI_MESSAGE_STATUS.STEER_PENDING;
     case RECORD_STATUS.REJECTED_BUSY:
       return UI_MESSAGE_STATUS.ERROR;
     default:
@@ -46,9 +51,17 @@ export function uiStatusFromRecordStatus(recordStatus) {
   }
 }
 
-// True when a busy outcome means the message was rejected (not accepted),
-// so the UI must attach the durable "resend it" copy. A deferred-busy
-// message was accepted-and-queued and gets no error copy.
+// True for a user message that steered the running turn (read or not).
+export function isSteerStatus(uiStatus) {
+  return (
+    uiStatus === UI_MESSAGE_STATUS.STEERED ||
+    uiStatus === UI_MESSAGE_STATUS.STEER_PENDING
+  );
+}
+
+// True when a busy outcome means the message was not delivered, so the UI
+// must attach the durable "resend it" copy. A deferred-busy message was
+// steered into the running turn and gets no error copy.
 export function isBusyRejectedStatus(recordStatus) {
   return recordStatus === RECORD_STATUS.REJECTED_BUSY;
 }

@@ -37,13 +37,14 @@ use ironclaw_filesystem::{
 use ironclaw_host_api::{path::ScopedPath, resource::ResourceScope};
 use ironclaw_loop_contracts::{LoopInputAckToken, LoopInputCursorToken};
 use ironclaw_threads::{SessionThreadService, ThreadMessageId};
-use ironclaw_turns::TurnRunId;
+use ironclaw_turns::{TurnRunId, TurnScope};
 
 use crate::input_queue::{
     EnqueueDisposition, EnqueueQueuedMessageRequest, HostInputAckEffectHandler, HostInputBatch,
     HostInputEnqueuePort, HostInputEnvelope, HostInputQueue, HostInputQueueError,
-    HostInputQueueReconcile, QueuedMessageStatusUpdate, RunQueueModel, cursor_sequence,
-    envelope_for, flip_rejected_busy, flip_submitted,
+    HostInputQueueReconcile, HostStrandedSteerRedelivery, QueuedMessageStatusUpdate,
+    RunQueueEnding, RunQueueModel, bind_steer_redelivery, cursor_sequence, envelope_for,
+    flip_rejected_busy, flip_submitted, redeliver,
 };
 
 /// Bounds the CAS retry loop so persistent contention surfaces as a host error
@@ -60,6 +61,7 @@ where
     owner_scope: ResourceScope,
     thread_service: Arc<dyn SessionThreadService>,
     ack_effect_handler: OnceLock<Arc<dyn HostInputAckEffectHandler>>,
+    steer_redelivery: OnceLock<Arc<dyn HostStrandedSteerRedelivery>>,
 }
 
 impl<F> std::fmt::Debug for FilesystemHostInputQueue<F>
@@ -98,7 +100,18 @@ where
             owner_scope,
             thread_service,
             ack_effect_handler: OnceLock::new(),
+            steer_redelivery: OnceLock::new(),
         }
+    }
+
+    /// Bind the handler that starts the next turn with steers an ended run
+    /// never read. Composition performs this once, after the coordinator
+    /// exists; without it stranded steers settle `RejectedBusy`.
+    pub fn bind_steer_redelivery(
+        &self,
+        handler: Arc<dyn HostStrandedSteerRedelivery>,
+    ) -> Result<(), HostInputQueueError> {
+        bind_steer_redelivery(&self.steer_redelivery, handler)
     }
 
     /// Bind the callback used for deferred queue acknowledgment effects.
@@ -180,7 +193,24 @@ where
         rejected: &[ThreadMessageId],
         ack_effects: &[u64],
     ) {
-        if submitted.is_empty() && rejected.is_empty() && ack_effects.is_empty() {
+        self.confirm_settlements(run_id, submitted, rejected, &[], ack_effects)
+            .await;
+    }
+
+    /// [`Self::confirm_flips`] that also confirms settled redeliveries.
+    async fn confirm_settlements(
+        &self,
+        run_id: TurnRunId,
+        submitted: &[u64],
+        rejected: &[ThreadMessageId],
+        redelivered: &[ThreadMessageId],
+        ack_effects: &[u64],
+    ) {
+        if submitted.is_empty()
+            && rejected.is_empty()
+            && redelivered.is_empty()
+            && ack_effects.is_empty()
+        {
             return;
         }
         for _ in 0..MAX_CAS_RETRIES {
@@ -203,6 +233,7 @@ where
             };
             model.confirm_submit_flips(submitted);
             model.confirm_reject_flips(rejected);
+            model.confirm_redeliveries(redelivered);
             model.confirm_ack_effects(ack_effects);
             let result = if model.is_settled() {
                 let path = match queue_path(run_id) {
@@ -288,6 +319,27 @@ where
         &self,
         request: EnqueueQueuedMessageRequest,
     ) -> Result<HostInputEnvelope, HostInputQueueError> {
+        self.enqueue_scoped(request, None).await
+    }
+
+    async fn enqueue_user_steer(
+        &self,
+        request: EnqueueQueuedMessageRequest,
+        turn_scope: TurnScope,
+    ) -> Result<HostInputEnvelope, HostInputQueueError> {
+        self.enqueue_scoped(request, Some(turn_scope)).await
+    }
+}
+
+impl<F> FilesystemHostInputQueue<F>
+where
+    F: RootFilesystem + ?Sized + 'static,
+{
+    async fn enqueue_scoped(
+        &self,
+        request: EnqueueQueuedMessageRequest,
+        turn_scope: Option<TurnScope>,
+    ) -> Result<HostInputEnvelope, HostInputQueueError> {
         let status = QueuedMessageStatusUpdate {
             turn_id: request.turn_id,
             scope: request.scope,
@@ -296,7 +348,11 @@ where
         };
         for _ in 0..MAX_CAS_RETRIES {
             let (mut model, version) = self.load(request.run_id).await?;
-            match model.enqueue_dedup(request.input.clone(), status.clone())? {
+            match model.enqueue_dedup_scoped(
+                request.input.clone(),
+                status.clone(),
+                turn_scope.clone(),
+            )? {
                 EnqueueDisposition::Inserted { sequence } => {
                     model.attach_ack_effect(sequence, request.ack_effect.clone())?;
                     match self.store(request.run_id, &model, version).await {
@@ -407,10 +463,12 @@ impl<F> HostInputQueueReconcile for FilesystemHostInputQueue<F>
 where
     F: RootFilesystem + ?Sized + 'static,
 {
-    async fn reject_unconsumed(
+    async fn settle_unconsumed(
         &self,
         run_id: TurnRunId,
+        ending: RunQueueEnding,
     ) -> Result<Vec<ThreadMessageId>, HostInputQueueError> {
+        let redelivery = self.steer_redelivery.get().cloned();
         // Phase 1: durably CLOSE the queue and claim every live entry (CAS).
         // The closed document rejects late enqueues and no-ops late duplicate
         // acks, while a racing drain can no longer load the claimed entries.
@@ -420,6 +478,7 @@ where
         // left to reconcile from.
         let mut submit_flips = Vec::new();
         let mut reject_flips = Vec::new();
+        let mut redeliveries = Vec::new();
         let mut committed = false;
         for _ in 0..MAX_CAS_RETRIES {
             let (mut model, version) = self.load(run_id).await?;
@@ -427,9 +486,10 @@ where
                 // No durable queue for this run: nothing to reconcile.
                 return Ok(Vec::new());
             };
-            model.close_and_claim();
+            model.close_and_claim(ending, redelivery.is_some());
             submit_flips = model.due_submit_flips();
             reject_flips = model.due_reject_flips();
+            redeliveries = model.due_redeliveries();
             if model.is_settled() {
                 // Nothing left to flip: reclaim the document immediately.
                 let path = queue_path(run_id)?;
@@ -453,7 +513,7 @@ where
             }
         }
         if !committed {
-            return Err(cas_exhausted("reject_unconsumed"));
+            return Err(cas_exhausted("settle_unconsumed"));
         }
         // Phase 2: best-effort transcript flips (see the shared helpers'
         // docs) — consumed-but-unflipped rows converge to `Submitted`,
@@ -463,8 +523,17 @@ where
         let submitted = flip_submitted(self.thread_service.as_ref(), run_id, submit_flips).await;
         let reject_outcome =
             flip_rejected_busy(self.thread_service.as_ref(), run_id, reject_flips).await;
-        self.confirm_flips(run_id, &submitted, &reject_outcome.confirmable(), &[])
-            .await;
+        // Claimed steers start the next turn. The document stays the retry
+        // source until the handler confirms each one.
+        let redelivered = redeliver(redelivery.as_deref(), run_id, redeliveries).await;
+        self.confirm_settlements(
+            run_id,
+            &submitted,
+            &reject_outcome.confirmable(),
+            &redelivered,
+            &[],
+        )
+        .await;
         self.retry_pending_ack_effects(run_id).await;
         Ok(reject_outcome.flipped)
     }

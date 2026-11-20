@@ -4,11 +4,13 @@
 use ironclaw_host_api::ids::ThreadId;
 use serde_json::{Value, json};
 
+use crate::admission::{Admitted, SendIntent};
 use crate::delegation::Target;
 use crate::engine::{CallContext, Engine, Result, continue_prompt, json_ok};
 use crate::error::OrchestratorError;
 use crate::handoff;
 use crate::model::*;
+use crate::profile_runtime::UserTurn;
 use crate::runtime::*;
 
 fn require_text(text: &str, field: &str) -> Result<String> {
@@ -46,7 +48,11 @@ impl Engine {
                   "activeRunId": record.as_ref().and_then(|t| t.active_run_id.as_deref())}))
     }
 
-    async fn pending_item(&self, thread: &ThreadId, id: &QueueItemId) -> Result<QueueItem> {
+    pub(crate) async fn pending_item(
+        &self,
+        thread: &ThreadId,
+        id: &QueueItemId,
+    ) -> Result<QueueItem> {
         let item = self.store.queue_item(thread, id).await?.ok_or_else(|| {
             OrchestratorError::not_found(
                 "not_found",
@@ -125,61 +131,6 @@ impl Engine {
         self.queue_list(thread).await.map(json_ok)
     }
 
-    /// Deliver a queued item into the running turn (steer) or redirect it.
-    /// A turn that cannot take input yet gets it as soon as it can (the
-    /// item waits as a deferred steer).
-    pub async fn queue_promote(
-        &self,
-        thread: &ThreadRecord,
-        id: &QueueItemId,
-        how: SteerHow,
-    ) -> Result<Value> {
-        let item = self.pending_item(&thread.thread_id, id).await?;
-        if !thread.is_running() {
-            return Err(OrchestratorError::request(
-                "no_active_run",
-                "The thread has no active turn to steer; it will run from the queue.",
-            ));
-        }
-        let attempt = self
-            .steer_text(thread, &item.text, how, item.created_by)
-            .await?;
-        match attempt.outcome {
-            SteerOutcome::Steered | SteerOutcome::Restarted => {
-                self.store
-                    .set_queue_status(id, QueueStatus::Pending, QueueStatus::Sent)
-                    .await?;
-            }
-            SteerOutcome::NotReady => {
-                self.store
-                    .set_queue_kind(
-                        id,
-                        QueueKind::DeferredSteer,
-                        thread.active_run_id.as_deref(),
-                    )
-                    .await?;
-            }
-            SteerOutcome::TurnEnded => {
-                return Err(OrchestratorError::request(
-                    "turn_ended",
-                    "The turn ended before it could take the message; it runs next from the queue.",
-                ));
-            }
-            SteerOutcome::Rejected => {
-                return Err(OrchestratorError::request(
-                    "steer_rejected",
-                    "The active turn can't take it mid-turn; it stays queued and runs when the turn ends.",
-                ));
-            }
-        }
-        let mut view = self.queue_list(&thread.thread_id).await?;
-        view["steerStatus"] = json!(steer_label(&attempt.outcome));
-        if attempt.outcome == SteerOutcome::Steered {
-            view["steerId"] = json!(attempt.id.as_str());
-        }
-        Ok(json_ok(view))
-    }
-
     // ── send ────────────────────────────────────────────────────────────
 
     /// T3's `t3_thread send`: `auto` starts an idle thread, steers an
@@ -201,12 +152,13 @@ impl Engine {
             ));
         }
         let record = self.owned_thread(thread, &ctx.scope).await?;
-        match mode {
+        let intent = match mode {
             SendMode::Queue => {
                 let mut view = self.queue_add(thread, &text, Author::Agent).await?;
                 view["delivery"] = json!("queued");
-                Ok(view)
+                return Ok(view);
             }
+            SendMode::Auto => SendIntent::Auto,
             SendMode::Steer | SendMode::Restart => {
                 if !record.is_running() {
                     return Err(OrchestratorError::request(
@@ -214,100 +166,45 @@ impl Engine {
                         format!("mode={mode} needs an active turn in the target thread."),
                     ));
                 }
-                let how = if mode == SendMode::Steer {
-                    SteerHow::Steer
+                if mode == SendMode::Steer {
+                    SendIntent::Steer
                 } else {
-                    SteerHow::Restart
-                };
-                let attempt = self.steer_text(&record, &text, how, Author::Agent).await?;
-                match attempt.outcome {
-                    SteerOutcome::Rejected => Ok(json!({"ok": false, "status": "rejected"})),
-                    outcome => {
-                        self.agent_steer_followup(&record, &text, &attempt, outcome, false)
-                            .await
-                    }
+                    SendIntent::Restart
                 }
             }
-            SendMode::Auto => {
-                if record.is_running() {
-                    let attempt = self
-                        .steer_text(&record, &text, SteerHow::Steer, Author::Agent)
-                        .await?;
-                    if attempt.outcome != SteerOutcome::Rejected {
-                        return self
-                            .agent_steer_followup(&record, &text, &attempt, attempt.outcome, true)
-                            .await;
-                    }
-                    let mut view = self.queue_add(thread, &text, Author::Agent).await?;
-                    view["delivery"] = json!("queued");
-                    return Ok(view);
-                }
-                self.agent_start(thread, &text).await
+        };
+        let auto = intent == SendIntent::Auto;
+        Ok(match self.agent_send(thread, &text, intent).await? {
+            Admitted::Refused => json!({"ok": false, "status": "rejected"}),
+            Admitted::Turn(UserTurn::Started { .. }) => {
+                json!({"ok": true, "status": "started", "delivery": "started"})
             }
-        }
-    }
-
-    /// An agent send to an idle thread: a new turn, or the queue when the
-    /// thread turned busy meanwhile.
-    async fn agent_start(&self, thread: &ThreadId, text: &str) -> Result<Value> {
-        // An explicit agent send is not an automatic wake: no hold check.
-        if self
-            .deliver(thread, text.to_string(), TurnOrigin::AgentSend, false)
-            .await?
-        {
-            Ok(json!({"ok": true, "status": "started", "delivery": "started"}))
-        } else {
-            let mut view = self.queue_add(thread, text, Author::Agent).await?;
-            view["delivery"] = json!("queued");
-            Ok(view)
-        }
-    }
-
-    /// The answer to an agent steer the runtime did not refuse.
-    async fn agent_steer_followup(
-        &self,
-        record: &ThreadRecord,
-        text: &str,
-        attempt: &crate::steers::SteerAttempt,
-        outcome: SteerOutcome,
-        auto: bool,
-    ) -> Result<Value> {
-        let thread = &record.thread_id;
-        match outcome {
-            SteerOutcome::Steered | SteerOutcome::Restarted => {
-                let label = steer_label(&outcome);
+            Admitted::Turn(UserTurn::Restarted { .. }) => {
                 let status = if auto {
-                    format!("steered ({label})")
+                    "steered (restarted)"
                 } else {
-                    label.to_string()
+                    "restarted"
                 };
-                Ok(json!({"ok": true, "status": status, "delivery": label,
-                          "steerId": attempt.id.as_str()}))
+                json!({"ok": true, "status": status, "delivery": "restarted"})
             }
-            SteerOutcome::NotReady => {
-                let queued = self
-                    .defer_steer(thread, text, Author::Agent, record.active_run_id.as_deref())
-                    .await?;
-                Ok(
-                    json!({"ok": true, "status": "steer_when_ready", "delivery": "steered",
-                          "queuedId": queued.as_str()}),
-                )
+            Admitted::Turn(UserTurn::Steered {
+                waiting_for_turn: true,
+                queued_id,
+                ..
+            }) => json!({"ok": true, "status": "steer_when_ready", "delivery": "steered",
+                         "queuedId": queued_id.as_ref().map(QueueItemId::as_str)}),
+            Admitted::Turn(UserTurn::Steered { steer_id, .. }) => {
+                let status = if auto { "steered (steered)" } else { "steered" };
+                json!({"ok": true, "status": status, "delivery": "steered",
+                       "steerId": steer_id.as_ref().map(SteerId::as_str)})
             }
-            // Too late to steer: the next turn starts with it right away.
-            SteerOutcome::TurnEnded | SteerOutcome::Rejected => {
-                if self.wait_turn_end(thread).await? {
-                    return self.agent_start(thread, text).await;
-                }
-                let queued = self
-                    .store
-                    .queue_add_kind(thread, text, Author::Agent, QueueKind::Message, None, true)
-                    .await?;
+            Admitted::Turn(UserTurn::Queued { queued_id, .. }) => {
                 let mut view = self.queue_list(thread).await?;
-                view["queuedId"] = json!(queued.as_str());
+                view["queuedId"] = json!(queued_id.as_str());
                 view["delivery"] = json!("queued");
-                Ok(json_ok(view))
+                json_ok(view)
             }
-        }
+        })
     }
 
     // ── runs, fork, merge-back ──────────────────────────────────────────
@@ -616,16 +513,6 @@ impl Engine {
             "mergesIn": pick(TransferKind::MergeBack, false),
             "mergesOut": pick(TransferKind::MergeBack, true),
         }))
-    }
-}
-
-fn steer_label(outcome: &SteerOutcome) -> &'static str {
-    match outcome {
-        SteerOutcome::Steered => "steered",
-        SteerOutcome::Restarted => "restarted",
-        SteerOutcome::Rejected => "rejected",
-        SteerOutcome::NotReady => "waiting_for_turn",
-        SteerOutcome::TurnEnded => "turn_ended",
     }
 }
 

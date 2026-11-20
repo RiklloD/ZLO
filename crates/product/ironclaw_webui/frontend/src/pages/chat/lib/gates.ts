@@ -141,6 +141,16 @@ export function gateFromProjectionGate(gate) {
 // `connection` is populated only when `challenge_kind == pairing`, never on
 // `manual_token`/`oauth_url`. Requiring the pairing kind here keeps the
 // frontend consistent even if that invariant is ever relaxed upstream.
+// Whether a pending gate keeps the composer from sending. An approval does
+// not: a message sent while it is pending declines it and steers the run
+// (t3code: "a message sent while approvals are pending redirects the agent";
+// the backend does the decline for every surface). Any other gate does — an
+// auth gate needs the credential or the pairing first.
+export function gateBlocksComposer(gate) {
+  if (!gate) return false;
+  return !(gate.kind === "gate" && gate.gateKind === "approval");
+}
+
 export function channelConnectionFromGate(gate) {
   if (!gate || gate.kind !== "auth_required") return null;
   if (gate.challengeKind !== "pairing") return null;

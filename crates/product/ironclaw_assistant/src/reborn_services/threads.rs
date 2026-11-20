@@ -507,6 +507,7 @@ where
             messages,
             summary_artifacts,
             next_cursor,
+            steer_marks: Vec::new(),
         })
     }
 

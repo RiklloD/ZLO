@@ -367,6 +367,12 @@ impl PausedReplyGateway {
         self.release.add_permits(1);
     }
 
+    /// Let every later model call through without pausing.
+    fn release_all(&self) {
+        self.release
+            .add_permits(tokio::sync::Semaphore::MAX_PERMITS / 2);
+    }
+
     async fn wait_for_run_id(&self) -> TurnRunId {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -3623,11 +3629,11 @@ async fn paired_telegram_bot_actor_turns_attribute_to_the_user_and_disconnect_re
     ingress.drain().await;
     assert_delivered_attempt(services, &repaired_scope).await;
 
-    // 8. Overlapping-message feedback and reply anchoring (#6643/#6644): a
-    // second DM arriving while a turn is still running gets an IMMEDIATE
-    // busy notice quoting that second message, the working indicator and the
-    // final reply quote the first message, and nothing is silently dropped
-    // or left positionally ambiguous.
+    // 8. Overlapping messages (#6643/#6644, steering): a second DM arriving
+    // while a turn is still running STEERS that turn — the agent reads it at
+    // its next step, so it gets no "please resend" busy notice; the working
+    // indicator and the final reply quote the first message, and nothing is
+    // silently dropped or left positionally ambiguous.
     const RACE_REPLY: &str = "anchored answer for the deferred-race leg";
     let race_first_body = dm_body(608, 717171, "what's the weather right now?");
     let (race_scope, _) = preresolve_vendor_turn_scope(
@@ -3694,38 +3700,61 @@ async fn paired_telegram_bot_actor_turns_attribute_to_the_user_and_disconnect_re
             })
             .count()
     };
-    // The busy notice must land while the first run is STILL parked on its
-    // model call — immediacy is the #6643 contract (feedback arrives during
-    // the run, not after it finishes). The paused gateway holds the first
-    // run open, so this poll can only pass on admission-time feedback.
+    // Let the second DM's admission finish while the first run is still
+    // parked (it steers that run), then release the paused model calls: the
+    // run reads the steer at its next step and answers.
+    let race_threads = inbound
+        .thread_service_for_test()
+        .expect("group thread service");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if anchored_count(&race_bodies(), "still working on a previous message", 619) == 1 {
+        let history = race_threads
+            .list_thread_history(ironclaw_threads::ThreadHistoryRequest {
+                scope: thread_scope_for_turn(&race_scope),
+                thread_id: race_scope.thread_id.clone(),
+            })
+            .await
+            .expect("race thread history");
+        let steered = history
+            .messages
+            .iter()
+            .find(|message| message.content.as_deref() == Some("and what about tomorrow?"));
+        if let Some(row) = steered
+            && row.status == ironclaw_threads::MessageStatus::Queued
+        {
+            assert_eq!(
+                row.turn_run_id.as_deref(),
+                Some(first_run.to_string().as_str()),
+                "the overlapping DM steers the running turn"
+            );
             break;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the overlapping DM must get its anchored busy notice while the \
-             first run is still executing; saw: {:?}",
-            race_bodies()
+            "the overlapping DM must be steered into the parked run; rows: {:?}",
+            history
+                .messages
+                .iter()
+                .map(|message| (message.content.clone(), message.status))
+                .collect::<Vec<_>>()
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    paused.release();
+    paused.release_all();
     let coordinator = inbound.turn_coordinator_for_test();
     wait_for_run_status_in_scope(&coordinator, &race_scope, first_run, TurnStatus::Completed).await;
     ingress.drain().await;
-    // Every race-chat sendMessage quotes the message it belongs to: exactly
-    // one working indicator and one final reply anchored to the FIRST
-    // message (dm_body assigns update_id + 10 → 618), the one busy notice
-    // anchored to the SECOND (619), and no other anchors. Bounded poll —
-    // the final reply lands observer-driven after drain returns.
+    // That the steer then reaches the model is pinned end to end in
+    // `tests/integration/steering.rs`; this leg pins the channel side: the
+    // steered DM is part of the running turn and gets no resend notice.
+    // Every race-chat sendMessage quotes the message it belongs to: one
+    // working indicator and one final reply anchored to the FIRST message
+    // (dm_body assigns update_id + 10 → 618), and NO busy notice for the
+    // steered second message (619). Bounded poll — the final reply lands
+    // observer-driven after drain returns.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let bodies = race_bodies();
-        // The working indicator is the race-chat message anchored to 618 that is
-        // not the final reply (its copy varies per run, so it can't be matched by
-        // literal — content is pinned in the assistant's prompt unit test).
         let working_indicator_anchored_to_618 = bodies
             .iter()
             .filter(|body| {
@@ -3735,25 +3764,26 @@ async fn paired_telegram_bot_actor_turns_attribute_to_the_user_and_disconnect_re
                         .is_some_and(|text| text.contains(RACE_REPLY))
             })
             .count();
-        if anchored_count(&bodies, RACE_REPLY, 618) == 1 && working_indicator_anchored_to_618 == 1 {
-            assert_eq!(
-                anchored_count(&bodies, "still working on a previous message", 619),
-                1,
-                "the busy notice stays a single anchored message: {bodies:?}"
+        if anchored_count(&bodies, RACE_REPLY, 618) == 1 && working_indicator_anchored_to_618 >= 1 {
+            assert!(
+                bodies.iter().all(|body| !body["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("couldn't add this message")
+                        || text.contains("still working on a previous message"))),
+                "a steered message gets no busy notice: {bodies:?}"
             );
             assert!(
                 bodies
                     .iter()
-                    .all(|body| matches!(body["reply_to_message_id"].as_i64(), Some(618 | 619))),
-                "every race-chat message must anchor to one of the two prompting \
-                 messages: {bodies:?}"
+                    .all(|body| body["reply_to_message_id"].as_i64() == Some(618)),
+                "every race-chat message anchors to the turn's prompting message: {bodies:?}"
             );
             break;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the working indicator and final reply must each anchor to their \
-             own prompt exactly once; saw: {bodies:?}"
+            "the working indicator and final reply must anchor to the first \
+             prompt; saw: {bodies:?}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

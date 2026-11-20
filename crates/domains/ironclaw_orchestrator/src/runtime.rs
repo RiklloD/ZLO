@@ -419,6 +419,10 @@ pub struct HistoryMessage {
     /// When the message was written, if the runtime records it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Millis>,
+    /// The engine's [`SteerId`] when this user row is a steer the runtime
+    /// journaled under it: the transcript marks exactly that row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer_id: Option<String>,
 }
 
 /// One provider and its models, as `t3_capabilities` shows them.

@@ -334,10 +334,10 @@ fn task_row(row: &libsql::Row) -> Result<TaskRecord> {
     })
 }
 
-const QUEUE_COLS: &str = "id, thread_id, position, text, status, created_by, created_at, updated_at, sent_at, \
-     COALESCE(kind, 'message'), steer_run";
+pub(crate) const QUEUE_COLS: &str = "id, thread_id, position, text, status, created_by, created_at, updated_at, sent_at, \
+     COALESCE(kind, 'message'), steer_run, COALESCE(seq, 0), claim, claimed_at, claim_run";
 
-fn queue_row(row: &libsql::Row) -> Result<QueueItem> {
+pub(crate) fn queue_row(row: &libsql::Row) -> Result<QueueItem> {
     let mut c = Cols::new(row);
     Ok(QueueItem {
         id: QueueItemId::new(c.text()?)?,
@@ -351,6 +351,10 @@ fn queue_row(row: &libsql::Row) -> Result<QueueItem> {
         sent_at: c.oint()?,
         kind: QueueKind::parse(&c.text()?)?,
         steer_run: c.otext()?,
+        seq: c.int()?,
+        claim: c.otext()?,
+        claimed_at: c.oint()?,
+        claim_run: c.otext()?,
     })
 }
 
@@ -1049,7 +1053,7 @@ impl Store {
         };
         self.rows(
             &format!(
-                "SELECT {QUEUE_COLS} FROM orch_queue WHERE thread_id = ?1{filter} ORDER BY position, created_at"
+                "SELECT {QUEUE_COLS} FROM orch_queue WHERE thread_id = ?1{filter} ORDER BY position, seq, created_at"
             ),
             vec![s(thread.as_str())],
             queue_row,
@@ -1103,9 +1107,10 @@ impl Store {
         let now = now_ms();
         let n = self
             .exec(
-                "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, updated_at) \
+                "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, updated_at, seq) \
                  VALUES (?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM orch_queue WHERE thread_id = ?2), \
-                 ?3, 'pending', ?4, ?5, ?5) ON CONFLICT(id) DO NOTHING",
+                 ?3, 'pending', ?4, ?5, ?5, (SELECT COALESCE(MAX(seq), 0) + 1 FROM orch_queue)) \
+                 ON CONFLICT(id) DO NOTHING",
                 vec![
                     s(id.as_str()),
                     s(thread.as_str()),
@@ -1196,46 +1201,6 @@ impl Store {
             })
             .collect();
         self.tx(statements).await
-    }
-
-    /// Claim the current head (pending → sending) atomically.
-    pub async fn claim_queue_head(&self, thread: &ThreadId) -> Result<Option<QueueItem>> {
-        let conn = self.db.write().await?;
-        let tx = conn
-            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
-            .await?;
-        let mut rows = tx
-            .query(
-                &format!(
-                    "SELECT {QUEUE_COLS} FROM orch_queue WHERE thread_id = ?1 AND status = 'pending' \
-                     ORDER BY position, created_at LIMIT 1"
-                ),
-                vec![s(thread.as_str())],
-            )
-            .await?;
-        let head = match rows.next().await? {
-            Some(row) => Some(queue_row(&row)?),
-            None => None,
-        };
-        drop(rows);
-        if let Some(item) = &head {
-            tx.execute(
-                "UPDATE orch_queue SET status = 'sending', updated_at = ?2 WHERE id = ?1",
-                vec![s(item.id.as_str()), now_ms().into()],
-            )
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(head)
-    }
-
-    /// Boot: sends a crash cut mid-flight go back to pending.
-    pub async fn requeue_sending(&self) -> Result<u64> {
-        self.exec(
-            "UPDATE orch_queue SET status = 'pending', updated_at = ?1 WHERE status = 'sending'",
-            vec![now_ms().into()],
-        )
-        .await
     }
 
     // ── holds ───────────────────────────────────────────────────────────

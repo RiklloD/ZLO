@@ -318,7 +318,7 @@ fn card(s: &State, k: &Kit) -> El {
             item = item.fill(p.active);
         }
         if shown && running {
-            item = item.child(rune_kit::Spinner::new().size(12.).build(k));
+            item = item.child(crate::design::kit::Spinner::new().size(12.).build(k));
         }
         list = list.child(item.on_press(move |s: &mut State| open(s, id.clone())));
     }
@@ -335,7 +335,7 @@ fn card(s: &State, k: &Kit) -> El {
     )
     .label("New side chat");
     new_chat = if busy {
-        new_chat.child(rune_kit::Spinner::new().size(12.).build(k))
+        new_chat.child(crate::design::kit::Spinner::new().size(12.).build(k))
     } else {
         new_chat.child(hint("⌥⌘N"))
     };

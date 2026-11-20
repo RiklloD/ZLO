@@ -3,13 +3,14 @@
 //! Supermemory account — what was captured there, semantic search, and
 //! deleting a wrong document or forgetting a wrong memory.
 
+use crate::design::kit::Spinner;
 use crate::pages::common::controls::{
     Look, press_button, press_icon, press_icon_disabled, rule, styled,
 };
 use crate::pages::common::empty_state;
 use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs};
 use rune::{El, TextEdit, col, row};
-use rune_kit::{Kit, Spinner, TextInput};
+use rune_kit::{Kit, TextInput};
 use zlo_client::memory_page::{
     SupermemoryBindingInfo, SupermemoryBindingOrigin, SupermemoryDocumentPage,
     SupermemoryDocumentSummary, SupermemoryMemoryHit, SupermemoryStatus,
