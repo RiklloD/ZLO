@@ -45,8 +45,11 @@ mod view;
 mod visual;
 
 pub mod fixtures;
+mod stream_inbox;
 #[cfg(test)]
 mod stream_tests;
+#[cfg(test)]
+mod burst_tests;
 #[cfg(test)]
 mod tests;
 
@@ -106,6 +109,9 @@ pub struct ChatState {
     /// Bumped with `rows`; with the other fold inputs it tells `sync_items`
     /// when there is nothing to redo.
     pub(crate) rows_gen: u64,
+    /// The transcript moved since `rows` was built: the next poll rebuilds
+    /// them, once per frame however many stream bursts landed before it.
+    rows_stale: bool,
     folded: Option<(u64, bool, bool, bool, bool)>,
     /// What the list shows: `rows` folded, plus the pending and reserve rows.
     pub items: Rc<Vec<Item>>,
@@ -208,6 +214,7 @@ impl ChatState {
             transcript: Transcript::default(),
             rows: Rc::new(Vec::new()),
             rows_gen: 0,
+            rows_stale: false,
             folded: None,
             items: Rc::new(Vec::new()),
             toggles: HashMap::new(),
@@ -421,20 +428,30 @@ pub(crate) fn open_stream(s: &mut State, id: &str) {
     c.stream = None;
     let (stream, mut rx) = backend.subscribe(&thread);
     c.stream = Some(stream);
+    let inbox = std::sync::Arc::new(stream_inbox::StreamInbox::default());
     backend.spawn(move |_| async move {
         while let Some(first) = rx.recv().await {
-            // Drain whatever else is queued so a burst renders once.
+            // Drain whatever else is queued so a burst lands at once.
             let mut batch = vec![first];
             while let Ok(next) = rx.try_recv() {
                 batch.push(next);
             }
+            // One update waits per stream at most: bursts that arrive
+            // before it runs join it instead of queueing their own.
+            if !inbox.push(batch) {
+                continue;
+            }
             let thread = thread.clone();
+            let inbox = inbox.clone();
             // Only a burst that changes what shows rebuilds the view: one
-            // the pacer folds in at its next step, or that changed nothing,
-            // costs no frame.
+            // the next frame's poll folds in, or that changed nothing,
+            // costs no frame here.
             handle.update_if(move |s, tx| {
                 crate::energy::hit(crate::energy::C::UpdateStream);
-                !s.fixture && on_stream(s, &thread, generation, batch, tx)
+                let batch = inbox.take();
+                !s.fixture
+                    && !batch.is_empty()
+                    && on_stream(s, &thread, generation, batch, tx)
             });
         }
     });
@@ -525,10 +542,7 @@ fn on_stream(
     }
     // The CLI agent's turn diff and review, to tell the Changes tab (area
     // S) when either moves.
-    let cli_before = (
-        c.transcript.cli_turn_diff().cloned(),
-        c.transcript.cli_review().cloned(),
-    );
+    let cli_before = c.transcript.cli_report_rev();
     let mut changed = false;
     let mut visible = false;
     let mut ended = None;
@@ -566,12 +580,18 @@ fn on_stream(
         visible = true;
     }
     if changed {
-        visible |= !refresh_rows(s, id, tx);
+        if ended.is_some() {
+            // The run's end reads the settled rows (voice, alerts) now.
+            visible |= !refresh_rows(s, id, tx);
+        } else if let Some(c) = chat_for(s, id) {
+            // Rows are rebuilt from the whole transcript: leave that to the
+            // next frame's poll, so a burst of deltas costs one rebuild per
+            // frame, not one per burst that landed before it.
+            c.rows_stale = true;
+            tx.wake_after(Duration::ZERO);
+        }
     }
-    let cli_moved = chat_ref(s, id).is_some_and(|c| {
-        (c.transcript.cli_turn_diff(), c.transcript.cli_review())
-            != (cli_before.0.as_ref(), cli_before.1.as_ref())
-    });
+    let cli_moved = chat_ref(s, id).is_some_and(|c| c.transcript.cli_report_rev() != cli_before);
     if cli_moved && is_main(s, id) {
         side::on_cli_report(s);
         visible = true;
@@ -611,6 +631,7 @@ pub(crate) fn refresh_rows(s: &mut State, id: &str, tx: &mut Tx) -> bool {
         return false;
     };
     crate::energy::hit(crate::energy::C::RowsRebuilt);
+    c.rows_stale = false;
     c.rows = Rc::new(c.transcript.rows());
     c.rows_gen += 1;
     question_form::sync_drafts(c);
@@ -784,6 +805,14 @@ fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
         return false;
     };
     let mut changed = false;
+    if c.rows_stale {
+        // Stream bursts since the last frame, folded in once.
+        let deferred = refresh_rows(s, id, tx);
+        changed = crate::energy::polled(crate::energy::C::PollChatStream, !deferred);
+    }
+    let Some(c) = chat_for(s, id) else {
+        return changed;
+    };
     if c.pacing {
         // The pacer reveals more on each step, once a step is due.
         match c

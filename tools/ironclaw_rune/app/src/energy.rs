@@ -48,6 +48,8 @@ counters! {
     PollWorkspace => "poll_changed_workspace",
     PollQuick => "poll_changed_quick",
     PollChatPace => "poll_changed_chat_pace",
+    // Stream bursts folded into rows at the frame's poll.
+    PollChatStream => "poll_changed_chat_stream",
     PollChatClock => "poll_changed_chat_clock",
     PollChatCopied => "poll_changed_chat_copied",
     PollComputer => "poll_changed_computer",
