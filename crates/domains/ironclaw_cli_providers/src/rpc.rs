@@ -83,7 +83,7 @@ pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// always ends: the writer reports every frame, and a frame it never got to
 /// (pipe broken, writer gone) is `false`.
 #[derive(Clone)]
-pub(crate) struct Written(watch::Receiver<Option<bool>>);
+pub(crate) struct Written(pub(crate) watch::Receiver<Option<bool>>);
 
 impl Written {
     fn pending() -> (watch::Sender<Option<bool>>, Self) {
@@ -111,11 +111,6 @@ impl Written {
             // The writer dropped the report without settling it: not written.
             Err(_) => self.now().unwrap_or(false), // silent-ok: no report means never written
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_watch(rx: watch::Receiver<Option<bool>>) -> Self {
-        Self(rx)
     }
 }
 
@@ -298,11 +293,6 @@ impl RpcClient {
             },
             written,
         ))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn registered(&self) -> usize {
-        self.pending.lock().map(|m| m.len()).unwrap_or(0) // silent-ok: a poisoned map only follows a panic elsewhere
     }
 
     fn forget(&self, id: i64) {
@@ -574,11 +564,11 @@ mod tests {
             "t",
         );
         let reply = client.start_request("x", json!({})).unwrap();
-        assert_eq!(client.registered(), 1);
+        assert_eq!(client.pending.lock().unwrap().len(), 1);
         drop(reply);
-        assert_eq!(client.registered(), 0);
+        assert_eq!(client.pending.lock().unwrap().len(), 0);
         let reply = client.start_request("y", json!({})).unwrap();
         assert!(reply.wait(Duration::from_millis(50)).await.is_err());
-        assert_eq!(client.registered(), 0);
+        assert_eq!(client.pending.lock().unwrap().len(), 0);
     }
 }

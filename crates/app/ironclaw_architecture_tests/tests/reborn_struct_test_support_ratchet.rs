@@ -77,7 +77,11 @@ struct FrozenPathCount {
 // and setter) and its test budget override (`set_limits`). They prove an
 // interrupted import retries instead of being skipped or duplicated, which
 // needs a seam between each filesystem write and the store commit.
-const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 74;
+// 74 -> 76 (2026-11-20, steering parity): the Antigravity and Muse runtimes'
+// `prep_gate` — the slot test seam that parks a turn between admission and its
+// host launch, so the Stop-during-preparation race tests can force that
+// schedule. Two new paths, one field each.
+const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 76;
 // 269 -> 268 (2026-08-31/09-01): the delivery-coordinator handle on
 // `RebornRuntime` became an ungated production field (shutdown reads it);
 // its accessor stays test-support (integration harnesses wiring their own
@@ -87,9 +91,22 @@ const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 74;
 // overrides and the child-run spawn-tree handle that let
 // `reborn_integration_unattended_surface` drive mutating synthetic tools on
 // every admission path through the production runtime. No new path.
-const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 259;
+// 259 -> 261 (2026-11-20): the two `prep_gate` fields above.
+const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 261;
 
 const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
+    FrozenPathCount {
+        category: "test-support",
+        item_kind: "field",
+        path: "crates/domains/ironclaw_cli_providers/src/antigravity/mod.rs",
+        count: 1,
+    },
+    FrozenPathCount {
+        category: "test-support",
+        item_kind: "field",
+        path: "crates/domains/ironclaw_cli_providers/src/muse/mod.rs",
+        count: 1,
+    },
     FrozenPathCount {
         category: "test-support",
         item_kind: "field",

@@ -714,7 +714,7 @@ mod tests {
 
     fn written(ok: Option<bool>) -> (tokio::sync::watch::Sender<Option<bool>>, Written) {
         let (tx, rx) = tokio::sync::watch::channel(ok);
-        (tx, Written::from_watch(rx))
+        (tx, Written(rx))
     }
 
     fn entry(

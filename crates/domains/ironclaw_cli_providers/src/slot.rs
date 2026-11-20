@@ -196,16 +196,19 @@ pub(crate) struct Claim<T> {
 
 /// What a released claim keeps: the Stop waiting on an unfilled slot
 /// returns once this is dropped, after the turn was reported.
-pub(crate) struct Released(
-    #[expect(dead_code, reason = "held only to be dropped")] Option<watch::Sender<()>>,
-);
+pub(crate) struct Released {
+    /// Held only to be dropped.
+    _held: Option<watch::Sender<()>>,
+}
 
 impl<T> Claim<T> {
     /// Free the slot now (so the engine may admit the next turn from its
     /// `turn_finished`) while a Stop waiting on it keeps waiting until the
     /// returned value is dropped.
     pub(crate) fn release(mut self) -> Released {
-        Released(self._release.take())
+        Released {
+            _held: self._release.take(),
+        }
     }
 
     /// Publishes the running turn so Stop, steer and the live view find it.

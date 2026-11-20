@@ -273,12 +273,6 @@ impl SteerLedger {
         }
         settlement
     }
-
-    /// Unread steers when the turn was not stopped (see [`Self::settle`]).
-    #[cfg(test)]
-    pub(super) fn unread(&self) -> Vec<UnreadSteer> {
-        self.settle(false).unread
-    }
 }
 
 /// How a turn's steers settled (see [`SteerLedger::settle`]).
@@ -302,7 +296,7 @@ mod tests {
     }
 
     fn texts(l: &SteerLedger) -> Vec<String> {
-        l.unread().into_iter().map(|s| s.text).collect()
+        l.settle(false).unread.into_iter().map(|s| s.text).collect()
     }
 
     fn life(uuid: &str, state: &str) -> Value {

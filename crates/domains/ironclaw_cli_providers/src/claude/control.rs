@@ -237,12 +237,6 @@ impl BridgedTurn {
         }
     }
 
-    #[cfg(test)]
-    fn with_task_refresher(mut self, tasks: TaskRefresher) -> Self {
-        self.tasks = Some(tasks);
-        self
-    }
-
     pub(super) fn awaiting_ack(&self) -> bool {
         self.prompt.is_some()
     }
@@ -910,7 +904,8 @@ mod tests {
         };
         let bridge = CliBridge::new(std::time::Duration::from_secs(5));
         let (turn, mut out, mut child) = turn_over_cat(&bridge);
-        let mut turn = turn.with_task_refresher(super::super::tasks::TaskRefresher::with_reader(
+        let mut turn = turn;
+        turn.tasks = Some(super::super::tasks::TaskRefresher::with_reader(
             PathBuf::from("unused"),
             reader,
         ));

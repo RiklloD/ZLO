@@ -480,17 +480,7 @@ impl RunQueueModel {
     /// Rejects a closed queue ([`HostInputQueueError::RunClosed`]) and a full
     /// queue ([`HostInputQueueError::CapacityExhausted`]); dedup and repair
     /// are checked first so retries of an already-accepted message never
-    /// bounce off the capacity ceiling.
-    #[cfg(test)]
-    pub(crate) fn enqueue_dedup(
-        &mut self,
-        input: LoopInput,
-        status: QueuedMessageStatusUpdate,
-    ) -> Result<EnqueueDisposition, HostInputQueueError> {
-        self.enqueue_dedup_scoped(input, status, None)
-    }
-
-    /// [`Self::enqueue_dedup`] recording the steer's turn scope (see
+    /// bounce off the capacity ceiling. Records the steer's turn scope (see
     /// [`QueueEntry::turn_scope`]).
     pub(crate) fn enqueue_dedup_scoped(
         &mut self,
@@ -1292,6 +1282,25 @@ pub(crate) fn ack_sequence(token: &LoopInputAckToken) -> Result<u64, HostInputQu
 mod tests {
     use super::*;
     use ironclaw_host_api::ids::{AgentId, TenantId};
+
+    /// Unscoped enqueue, as the tests drive it.
+    trait EnqueueDedup {
+        fn enqueue_dedup(
+            &mut self,
+            input: LoopInput,
+            status: QueuedMessageStatusUpdate,
+        ) -> Result<EnqueueDisposition, HostInputQueueError>;
+    }
+
+    impl EnqueueDedup for RunQueueModel {
+        fn enqueue_dedup(
+            &mut self,
+            input: LoopInput,
+            status: QueuedMessageStatusUpdate,
+        ) -> Result<EnqueueDisposition, HostInputQueueError> {
+            self.enqueue_dedup_scoped(input, status, None)
+        }
+    }
     use ironclaw_turns::{LoopMessageRef, TurnScope};
 
     #[test]
