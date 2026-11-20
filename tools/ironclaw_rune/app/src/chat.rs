@@ -35,6 +35,7 @@ mod outline;
 mod pace;
 mod pending;
 pub mod plan_strip;
+pub mod prewarm;
 mod question_form;
 pub(crate) mod reject_feedback;
 mod rows;
@@ -346,7 +347,9 @@ pub fn open(s: &mut State, thread_id: String) {
     if s.chat.as_ref().is_some_and(|c| c.thread_id == thread_id) {
         return;
     }
-    let chat = build(s, thread_id.clone(), false);
+    let mut chat = build(s, thread_id.clone(), false);
+    // Rows fetched while the pointer rested on its row show at once.
+    prewarm::adopt(s, &mut chat);
     s.chat = Some(chat);
     start(s, &thread_id);
 }
