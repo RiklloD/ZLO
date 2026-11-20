@@ -60,6 +60,7 @@ import { useT } from "../../../lib/i18n";
 import {
   RECORD_STATUS,
   uiStatusFromRecordStatus,
+  uiStatusFromSendResponse,
 } from "../lib/message-status";
 import { buildOptimisticMessage } from "../lib/optimistic-message";
 import { useHistory } from "./useHistory";
@@ -728,19 +729,17 @@ export function useChat(threadId) {
           updateCurrentThread(markAccepted);
           updateSeededTarget(markAccepted);
         }
-        // A busy outcome (deferred or rejected) started no NEW local run, so
-        // resolve it through the shared status mapper: `deferred_busy` was
-        // accepted-and-queued behind the active run (renders queued, keeps
-        // processing, no notice); `rejected_busy` was dropped (renders error,
-        // frees the run, surfaces the busy notice). The mapper is the same one
-        // `messagesFromTimeline` uses, so the optimistic bubble matches what a
-        // reload renders.
+        // A busy outcome (deferred or rejected) started no NEW local run. The
+        // typed `delivery` decides how it renders: `steered` is part of the
+        // running turn ("Steer"), `queued` waits for a later turn ("Queued");
+        // `rejected_busy` was dropped (renders error, frees the run, surfaces
+        // the busy notice). Keeps the optimistic bubble matching a reload.
         const busyOutcome = BUSY_OUTCOME[response?.outcome];
         if (busyOutcome) {
           if (shouldTrackLocalRun) {
             localRunAdmissionRef.current = null;
           }
-          const uiStatus = uiStatusFromRecordStatus(response.outcome);
+          const uiStatus = uiStatusFromSendResponse(response);
           const markBusy = (prev) =>
             prev.map((m) =>
               m.id === optimisticId

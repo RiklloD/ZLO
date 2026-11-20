@@ -256,6 +256,39 @@ fn preview_tool_call(content: &str) -> Option<String> {
     Some(format!("{name}({hint})"))
 }
 
+/// What a submit became for [`TurnRuntime::start_turn`], from the typed
+/// `delivery` (a response without one reads by its shape).
+fn admission_for(response: &RebornSubmitTurnResponse) -> TurnAdmission {
+    match response {
+        RebornSubmitTurnResponse::Submitted { run_id, .. }
+        | RebornSubmitTurnResponse::AlreadySubmitted { run_id, .. } => TurnAdmission::Started {
+            run_id: Some(run_id.to_string()),
+        },
+        // Native busy input is always part of the running turn.
+        RebornSubmitTurnResponse::DeferredBusy { active_run_id, .. } => TurnAdmission::Steered {
+            run_id: Some(active_run_id.to_string()),
+        },
+        RebornSubmitTurnResponse::RejectedBusy { .. } => TurnAdmission::Busy,
+    }
+}
+
+/// What a submit sent as a steer became, from the typed `delivery`. A
+/// message that started a turn (the running one had ended, or a restart
+/// cancelled it) was delivered as that turn: `Restarted`, which the engine
+/// counts as delivered — never `TurnEnded`, which would send it again.
+fn steer_outcome_for(response: &RebornSubmitTurnResponse) -> SteerOutcome {
+    use ironclaw_product_contracts::product_wire::RebornSubmitDelivery as Delivery;
+    match response {
+        RebornSubmitTurnResponse::DeferredBusy { delivery, .. } => match delivery {
+            Some(Delivery::Started | Delivery::Restarted) => SteerOutcome::Restarted,
+            Some(Delivery::Steered | Delivery::Queued) | None => SteerOutcome::Steered,
+        },
+        RebornSubmitTurnResponse::Submitted { .. }
+        | RebornSubmitTurnResponse::AlreadySubmitted { .. } => SteerOutcome::Restarted,
+        RebornSubmitTurnResponse::RejectedBusy { .. } => SteerOutcome::Rejected,
+    }
+}
+
 fn surface_error(error: ProductSurfaceError) -> RuntimeError {
     match error.status_code {
         404 => RuntimeError::ThreadNotFound,
@@ -314,22 +347,9 @@ impl TurnRuntime for AgentLoopRuntime {
     ) -> Result<TurnAdmission, RuntimeError> {
         let model = native_turn_model(thread, input.model, input.effort.as_deref());
         let attachments = host_attachments(&input.files).await;
-        Ok(
-            match self.submit(thread, &input.text, model, attachments).await? {
-                RebornSubmitTurnResponse::Submitted { run_id, .. }
-                | RebornSubmitTurnResponse::AlreadySubmitted { run_id, .. } => {
-                    TurnAdmission::Started {
-                        run_id: Some(run_id.to_string()),
-                    }
-                }
-                RebornSubmitTurnResponse::DeferredBusy { active_run_id, .. } => {
-                    TurnAdmission::Steered {
-                        run_id: Some(active_run_id.to_string()),
-                    }
-                }
-                RebornSubmitTurnResponse::RejectedBusy { .. } => TurnAdmission::Busy,
-            },
-        )
+        Ok(admission_for(
+            &self.submit(thread, &input.text, model, attachments).await?,
+        ))
     }
 
     async fn steer(
@@ -341,13 +361,14 @@ impl TurnRuntime for AgentLoopRuntime {
         if how == SteerHow::Restart {
             self.cancel(thread, "redirected").await?;
         }
-        Ok(match self.submit(thread, text, None, Vec::new()).await? {
-            RebornSubmitTurnResponse::DeferredBusy { .. } => SteerOutcome::Steered,
-            RebornSubmitTurnResponse::RejectedBusy { .. } => SteerOutcome::Rejected,
-            _ if how == SteerHow::Restart => SteerOutcome::Restarted,
-            // The turn ended meanwhile; the text started a new one.
-            _ => SteerOutcome::Restarted,
-        })
+        Ok(steer_outcome_for(
+            &self.submit(thread, text, None, Vec::new()).await?,
+        ))
+    }
+
+    /// The loop reads steers between steps; tools run to completion.
+    fn steer_interrupts_tools(&self) -> bool {
+        false
     }
 
     async fn cancel(&self, thread: &ThreadRecord, reason: &str) -> Result<(), RuntimeError> {
@@ -515,6 +536,8 @@ impl TurnRuntime for AgentLoopRuntime {
 mod tests {
     use super::*;
     use ironclaw_host_api::ids::ThreadId;
+    use ironclaw_host_api::turn::{AcceptedMessageRef, EventCursor, TurnRunId, TurnStatus};
+    use ironclaw_product_contracts::product_wire::RebornSubmitDelivery;
 
     fn native(provider: Option<&str>, runtime: &str) -> ThreadRecord {
         let mut thread = ThreadRecord::new(
@@ -529,6 +552,67 @@ mod tests {
         );
         thread.provider = provider.map(str::to_string);
         thread
+    }
+
+    fn deferred(delivery: Option<RebornSubmitDelivery>) -> RebornSubmitTurnResponse {
+        RebornSubmitTurnResponse::DeferredBusy {
+            thread_id: ThreadId::new("t").unwrap(),
+            accepted_message_ref: AcceptedMessageRef::new("msg:1").unwrap(),
+            active_run_id: TurnRunId::new(),
+            status: TurnStatus::Running,
+            event_cursor: EventCursor::default(),
+            notice: String::new(),
+            delivery,
+            steer_id: None,
+            queued_id: None,
+            waiting_for_turn: false,
+        }
+    }
+
+    /// The native loop's steer outcome follows the typed `delivery`, and a
+    /// message that started a turn counts as delivered (`Restarted`) — a
+    /// `TurnEnded` would make the engine send the same words again.
+    #[test]
+    fn steer_outcomes_follow_the_typed_delivery() {
+        assert_eq!(
+            steer_outcome_for(&deferred(Some(RebornSubmitDelivery::Steered))),
+            SteerOutcome::Steered
+        );
+        assert_eq!(steer_outcome_for(&deferred(None)), SteerOutcome::Steered);
+        assert_eq!(
+            steer_outcome_for(&deferred(Some(RebornSubmitDelivery::Started))),
+            SteerOutcome::Restarted
+        );
+        let started = RebornSubmitTurnResponse::Submitted {
+            thread_id: ThreadId::new("t").unwrap(),
+            accepted_message_ref: AcceptedMessageRef::new("msg:1").unwrap(),
+            turn_id: "turn".into(),
+            run_id: TurnRunId::new(),
+            status: TurnStatus::Queued,
+            resolved_run_profile_id: "default".into(),
+            resolved_run_profile_version: 1,
+            event_cursor: EventCursor::default(),
+            delivery: Some(RebornSubmitDelivery::Started),
+        };
+        assert_eq!(steer_outcome_for(&started), SteerOutcome::Restarted);
+        assert!(matches!(
+            admission_for(&started),
+            TurnAdmission::Started { .. }
+        ));
+        assert!(matches!(
+            admission_for(&deferred(Some(RebornSubmitDelivery::Steered))),
+            TurnAdmission::Steered { .. }
+        ));
+        let rejected = RebornSubmitTurnResponse::RejectedBusy {
+            thread_id: ThreadId::new("t").unwrap(),
+            accepted_message_ref: AcceptedMessageRef::new("msg:1").unwrap(),
+            active_run_id: None,
+            status: None,
+            event_cursor: None,
+            notice: String::new(),
+        };
+        assert_eq!(steer_outcome_for(&rejected), SteerOutcome::Rejected);
+        assert!(matches!(admission_for(&rejected), TurnAdmission::Busy));
     }
 
     #[test]

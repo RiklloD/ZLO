@@ -12,6 +12,7 @@ import { attachmentUrl } from "../../../lib/api";
 import {
   isBusyRejectedStatus,
   uiStatusFromRecordStatus,
+  uiStatusFromSteerMark,
 } from "./message-status";
 import { workspaceFilePathFromHref } from "../../../lib/workspace-file-links";
 
@@ -54,9 +55,23 @@ function attachmentsFromRecord(record, threadId) {
   });
 }
 
-export function messagesFromTimeline(records, pendingMessages = [], threadId = null) {
+// `steerMarks` is the timeline's `steer_marks` (orchestrator threads): a
+// user row the engine sent as a steer shows "Steer" ("waiting to be read"
+// until the agent reads it), and a steer a Stop left unread gets its
+// "Steer delivery not confirmed" notice after the message it anchors to.
+export function messagesFromTimeline(
+  records,
+  pendingMessages = [],
+  threadId = null,
+  steerMarks = [],
+) {
   const seen = new Set();
   const messages = [];
+  const marksByMessage = new Map(
+    (steerMarks || [])
+      .filter((mark) => mark && mark.message_id)
+      .map((mark) => [mark.message_id, mark]),
+  );
 
   for (const record of records || []) {
     if (record.kind === "tool_result_reference") {
@@ -95,6 +110,8 @@ export function messagesFromTimeline(records, pendingMessages = [], threadId = n
     // queued); only a rejected-busy message was dropped (renders error and
     // carries the durable resend copy).
     const isBusyRejected = role === "user" && isBusyRejectedStatus(record.status);
+    const mark = marksByMessage.get(record.message_id);
+    const steerStatus = role === "user" ? uiStatusFromSteerMark(mark?.steer) : null;
     const attachments = attachmentsFromRecord(record, threadId);
     const storedContent =
       role === "user" &&
@@ -110,7 +127,8 @@ export function messagesFromTimeline(records, pendingMessages = [], threadId = n
       timestamp: timestampForRecord(record),
       kind: record.kind,
       status:
-        role === "user" ? uiStatusFromRecordStatus(record.status) : record.status,
+        steerStatus ||
+        (role === "user" ? uiStatusFromRecordStatus(record.status) : record.status),
       ...(isBusyRejected && {
         errorKey: "chat.busyRejectedResend",
       }),
@@ -118,6 +136,19 @@ export function messagesFromTimeline(records, pendingMessages = [], threadId = n
       sequence: record.sequence,
       turnRunId: record.turn_run_id || null,
     });
+    for (const notice of mark?.notices || []) {
+      const noticeId = `steer-notice-${notice.steer_id}`;
+      if (seen.has(noticeId)) continue;
+      seen.add(noticeId);
+      messages.push({
+        id: noticeId,
+        role: "system",
+        content: notice.title ? `${notice.title}: ${notice.content}` : notice.content,
+        timestamp: timestampForRecord(record),
+        sequence: record.sequence,
+        turnRunId: record.turn_run_id || null,
+      });
+    }
   }
 
   // Pending rows are dropped from the ref by the caller as soon as

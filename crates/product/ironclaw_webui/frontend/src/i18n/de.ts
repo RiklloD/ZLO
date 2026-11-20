@@ -134,6 +134,7 @@ registerPack("de", {
   "chat.reloadHistory": "Verlauf neu laden",
   "chat.busyRejectedResend": "Diese Nachricht wurde nicht gesendet, weil IronClaw beschäftigt war. Sende sie erneut, um es noch einmal zu versuchen.",
   "chat.jumpToLatest": "Zum Neuesten springen",
+  "chat.queued": "In Warteschlange",
   "chat.steer": "Steuerung",
   "chat.steerWaiting": "Steuerung · noch nicht gelesen",
   "chat.steerTooltip": "In den laufenden Durchgang gesendet. Der Agent liest sie zwischen zwei Schritten.",

@@ -27,6 +27,9 @@ export const RECORD_STATUS = Object.freeze({
 
 // UI-facing status values consumed by `MessageBubble`.
 export const UI_MESSAGE_STATUS = Object.freeze({
+  // Waiting in the thread's queue for a later turn (typed delivery
+  // `queued`) — the only case that shows "Queued".
+  QUEUED: "queued",
   // Part of the running turn (live send outcome).
   STEERED: "steered",
   // A steer the agent has not read yet (persisted `queued` row).
@@ -49,6 +52,38 @@ export function uiStatusFromRecordStatus(recordStatus) {
     default:
       return recordStatus;
   }
+}
+
+// Typed `delivery` of a send response (A's RebornSubmitDelivery).
+export const SUBMIT_DELIVERY = Object.freeze({
+  STARTED: "started",
+  STEERED: "steered",
+  QUEUED: "queued",
+  RESTARTED: "restarted",
+} as const);
+
+// UI status of a just-sent message from its send response: the typed
+// `delivery` decides (queued shows "Queued", steered shows "Steer"); an
+// older server without it falls back to the outcome mapping.
+export function uiStatusFromSendResponse(response) {
+  switch (response?.delivery) {
+    case SUBMIT_DELIVERY.QUEUED:
+      return UI_MESSAGE_STATUS.QUEUED;
+    case SUBMIT_DELIVERY.STEERED:
+      return response?.waiting_for_turn
+        ? UI_MESSAGE_STATUS.STEER_PENDING
+        : UI_MESSAGE_STATUS.STEERED;
+    default:
+      return uiStatusFromRecordStatus(response?.outcome);
+  }
+}
+
+// UI status from a timeline steer mark (A's `steer_marks[].steer`).
+export function uiStatusFromSteerMark(steer) {
+  if (!steer) return null;
+  return steer.waiting_to_be_read
+    ? UI_MESSAGE_STATUS.STEER_PENDING
+    : UI_MESSAGE_STATUS.STEERED;
 }
 
 // True for a user message that steered the running turn (read or not).

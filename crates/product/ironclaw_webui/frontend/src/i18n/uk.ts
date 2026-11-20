@@ -134,6 +134,7 @@ registerPack("uk", {
   "chat.reloadHistory": "Перезавантажити історію",
   "chat.busyRejectedResend": "Це повідомлення не було надіслано, оскільки IronClaw був зайнятий. Надішліть його ще раз.",
   "chat.jumpToLatest": "Перейти до останнього",
+  "chat.queued": "У черзі",
   "chat.steer": "Скерування",
   "chat.steerWaiting": "Скерування · ще не прочитано",
   "chat.steerTooltip": "Надіслано в поточний хід. Агент читає між кроками.",

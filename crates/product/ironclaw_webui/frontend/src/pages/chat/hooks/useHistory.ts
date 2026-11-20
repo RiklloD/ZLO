@@ -171,6 +171,7 @@ export function useHistory(threadId, options: HistoryHookOptions = {}) {
           timelineRecords,
           pendingMessages,
           threadId,
+          Array.isArray(data.steer_marks) ? data.steer_marks : [],
         );
         const nextCursor = data.next_cursor || null;
 

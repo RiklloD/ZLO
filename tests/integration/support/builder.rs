@@ -846,6 +846,8 @@ impl RebornIntegrationHarnessBuilder {
 /// Full-stack Reborn integration harness with a scripted raw provider beneath
 /// the real decorator chain. See module docs.
 pub struct RebornIntegrationHarness {
+    /// The group's steering queue (the one the loop drains).
+    pub(crate) input_enqueue: Arc<dyn ironclaw_loop_host::HostInputEnqueuePort>,
     pub(crate) ingress: RebornTestIngress,
     pub(crate) workflow: std::sync::Arc<DefaultProductSurface>,
     /// The REAL approval interaction service the workflow dispatches to, when
@@ -1233,6 +1235,13 @@ impl RebornIntegrationHarness {
                 context_mode,
             })
             .await?)
+    }
+
+    /// The group-shared steering queue every thread's runs drain.
+    pub(crate) fn input_enqueue_for_test(
+        &self,
+    ) -> Arc<dyn ironclaw_loop_host::HostInputEnqueuePort> {
+        Arc::clone(&self.input_enqueue)
     }
 
     /// The group-shared turn coordinator every thread's runs execute on.

@@ -2107,6 +2107,7 @@ impl<'g> RebornThreadBuilder<'g> {
             turn_runtime: Arc::clone(&shared.turn_runtime),
             thread_harness,
             coordinator: Arc::clone(&shared.coordinator),
+            input_enqueue: Arc::clone(&shared.input_enqueue),
             event_seq: AtomicU64::new(1),
             capability_recorder,
             scripted_llm,

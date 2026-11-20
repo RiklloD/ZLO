@@ -352,6 +352,9 @@ struct PausedReplyGateway {
     reply: &'static str,
     release: tokio::sync::Semaphore,
     run_id: Mutex<Option<TurnRunId>>,
+    /// Every request served: (run, serialized messages), so a test can prove
+    /// a steered message reached the SAME run's model call.
+    requests: Mutex<Vec<(TurnRunId, String)>>,
 }
 
 impl PausedReplyGateway {
@@ -360,11 +363,20 @@ impl PausedReplyGateway {
             reply,
             release: tokio::sync::Semaphore::new(0),
             run_id: Mutex::new(None),
+            requests: Mutex::new(Vec::new()),
         }
     }
 
     fn release(&self) {
         self.release.add_permits(1);
+    }
+
+    fn run_saw(&self, run_id: TurnRunId, needle: &str) -> bool {
+        self.requests
+            .lock()
+            .expect("paused gateway request lock")
+            .iter()
+            .any(|(run, messages)| *run == run_id && messages.contains(needle))
     }
 
     /// Let every later model call through without pausing.
@@ -395,6 +407,13 @@ impl HostManagedModelGateway for PausedReplyGateway {
         request: HostManagedModelRequest,
     ) -> Result<HostManagedModelResponse, HostManagedModelError> {
         *self.run_id.lock().expect("paused gateway run-id lock") = Some(request.run_id);
+        self.requests
+            .lock()
+            .expect("paused gateway request lock")
+            .push((
+                request.run_id,
+                serde_json::to_string(&request.messages).unwrap_or_default(),
+            ));
         let permit = self
             .release
             .acquire()
@@ -1112,6 +1131,7 @@ fn start_channel_host_assembly(
                 .thread_service_for_test()
                 .expect("group thread service"),
             turn_coordinator: inbound.turn_coordinator_for_test(),
+            input_enqueue: inbound.input_enqueue_for_test(),
             run_delivery_settings: RunDeliverySettings::default(),
             reply_projection: inbound.reply_projection_for_test(),
             identity: ChannelHostIdentity {
@@ -2114,6 +2134,7 @@ async fn telegram_update_becomes_a_turn_and_a_coordinated_reply_impl(storage: St
                 .thread_service_for_test()
                 .expect("group thread service"),
             turn_coordinator: inbound.turn_coordinator_for_test(),
+            input_enqueue: inbound.input_enqueue_for_test(),
             run_delivery_settings: RunDeliverySettings::default(),
             reply_projection: inbound.reply_projection_for_test(),
             identity: ChannelHostIdentity {
@@ -3080,6 +3101,7 @@ async fn telegram_install_reports_already_linked_for_a_caller_with_a_satisfied_d
                 .thread_service_for_test()
                 .expect("group thread service"),
             turn_coordinator: lifecycle.turn_coordinator_for_test(),
+            input_enqueue: lifecycle.input_enqueue_for_test(),
             run_delivery_settings: RunDeliverySettings::default(),
             reply_projection: lifecycle.reply_projection_for_test(),
             identity: ChannelHostIdentity {
@@ -3323,6 +3345,7 @@ async fn paired_telegram_bot_actor_turns_attribute_to_the_user_and_disconnect_re
                 .thread_service_for_test()
                 .expect("group thread service"),
             turn_coordinator: inbound.turn_coordinator_for_test(),
+            input_enqueue: inbound.input_enqueue_for_test(),
             run_delivery_settings: RunDeliverySettings::default(),
             reply_projection: inbound.reply_projection_for_test(),
             identity: ChannelHostIdentity {
@@ -3744,9 +3767,10 @@ async fn paired_telegram_bot_actor_turns_attribute_to_the_user_and_disconnect_re
     let coordinator = inbound.turn_coordinator_for_test();
     wait_for_run_status_in_scope(&coordinator, &race_scope, first_run, TurnStatus::Completed).await;
     ingress.drain().await;
-    // That the steer then reaches the model is pinned end to end in
-    // `tests/integration/steering.rs`; this leg pins the channel side: the
-    // steered DM is part of the running turn and gets no resend notice.
+    assert!(
+        paused.run_saw(first_run, "and what about tomorrow?"),
+        "the steered DM must reach the SAME run's next model call"
+    );
     // Every race-chat sendMessage quotes the message it belongs to: one
     // working indicator and one final reply anchored to the FIRST message
     // (dm_body assigns update_id + 10 → 618), and NO busy notice for the
