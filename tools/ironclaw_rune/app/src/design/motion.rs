@@ -54,6 +54,14 @@ pub const DOCK: Spring = Spring::new(0.34, 0.0);
 /// cards; Rune animates frame, radius and fill between them.
 pub const COMPOSER_MATCH: &str = "composer";
 
+/// The composers' `El::matched` id in flight generation `generation`
+/// (`WorkspaceState::dock_flight`): [`COMPOSER_MATCH`] plus the generation,
+/// which a thread switch bumps so one docked composer never flies onto the
+/// next at the same rect.
+pub fn composer_match(generation: u64) -> String {
+    format!("{COMPOSER_MATCH}:{generation}")
+}
+
 // ---- Presence transitions (GPUI `fade_in` / `pop_in` / `collapse`) ------
 
 /// Popover and menu entrance: fades in while travelling `from` points
