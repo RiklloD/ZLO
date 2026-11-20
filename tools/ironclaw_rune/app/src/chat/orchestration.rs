@@ -19,7 +19,6 @@
 //! - `opened(s, id)`: after a chat starts.
 //! - `refresh(s, id)`: when the stream reports a run end or a timeline reload.
 //! - `ensure_poll(s, id)`: after a send starts a run.
-//! - `queue_follow_up(s, id, text) -> bool`: the composer's ⌥Enter.
 //! - `fork(s, id, at_run: Option<u32>)`, `cancel_task(s, id, task_id)`.
 //! - `running_run(s, id)`, `thread_runtime(s, id)`, `tail_summary(s, id)`
 //!   (the jump-to-end button).
@@ -33,7 +32,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use rune::TextEdit;
 use zlo_client::ClientError;
 use zlo_client::orchestration::{ForkOptions, Lineage, QueueAction, QueueDoc, TaskView};
 
@@ -52,8 +50,13 @@ pub struct OrchestrationState {
     pub(crate) queue: QueueDoc,
     pub lineage: Lineage,
     lineage_loaded: bool,
-    pub(crate) queue_open: bool,
-    pub(crate) queue_input: Option<TextEdit>,
+    /// A queued message being edited in the composer.
+    pub(crate) editing: Option<super::steer::Editing>,
+    /// The queue panel shows every queued message, not the first two.
+    pub(crate) queue_expanded: bool,
+    /// When Stop was pressed: the button in its place waits out
+    /// `steer::STOP_CLICK_GUARD` before it takes a click.
+    pub(crate) stopped_at: Option<std::time::Instant>,
     /// A mutation is in flight; its buttons wait for it.
     pub(crate) busy: bool,
     /// Merge-back outcome, shown in the strip until the next action.
@@ -92,10 +95,23 @@ fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut OrchestrationSt
     crate::chat::chat_for(s, thread_id).map(|c| &mut c.orchestration)
 }
 
+impl OrchestrationState {
+    /// Within the Stop click guard: a click on the send button is ignored.
+    pub(crate) fn stop_guard(&self) -> bool {
+        self.stopped_at
+            .is_some_and(|at| at.elapsed() < crate::chat::steer::STOP_CLICK_GUARD)
+    }
+}
+
 /// The chat extras instance showing `thread_id` now, for a reply to check
 /// with [`slot_of`] (goals and orchestration share it).
 pub(crate) fn instance_of(s: &mut State, thread_id: &str) -> Option<jobs::Instance> {
     slot(s, thread_id).map(|o| o.instance)
+}
+
+/// `o`'s instance, for a reply to check with [`is_current`].
+pub(crate) fn instance_of_state(o: &OrchestrationState) -> jobs::Instance {
+    o.instance
 }
 
 /// Whether `instance` is still the chat extras showing `thread_id`.
@@ -114,6 +130,7 @@ fn slot_of<'a>(
 
 /// The chat opened: read everything once.
 pub fn opened(s: &mut State, id: &str) {
+    crate::chat::steer::recover(s, id);
     refresh(s, id);
 }
 
@@ -167,6 +184,7 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
         return;
     };
     let mut reload_timeline = false;
+    let mut edit_gone = false;
     let (mut load_prefix, mut load_merge_list) = (false, false);
     o.loading = false;
     // silent-ok: a thread the orchestrator has not seen yet (no message
@@ -183,6 +201,11 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
             if queue.external_run().is_some() || o.queue.external_run().is_some() {
                 reload_timeline = true;
             }
+            // The message being edited left the queue (the turn took it).
+            edit_gone = o
+                .editing
+                .as_ref()
+                .is_some_and(|e| !e.saving && !queue.items.iter().any(|i| i.id == e.item_id));
             o.queue = queue;
         }
         Err(e) if e.is_not_found() => o.queue = QueueDoc::default(),
@@ -229,6 +252,9 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
     }
     if reload_timeline {
         crate::chat::load_timeline(s, asked);
+    }
+    if edit_gone {
+        crate::chat::steer::edit_target_gone(s, asked);
     }
     if stale {
         refresh(s, asked);
@@ -293,17 +319,16 @@ fn needs_poll(s: &State, id: &str) -> bool {
         || c.goals.check_in_flight()
 }
 
-/// Whether [`tail`] has anything to show for `id`'s chat: live subagents,
-/// the goal (when its editor is closed) or queued follow-ups. The chat folds
+/// Whether [`tail`] has anything to show for `id`'s chat: live subagents
+/// or the goal (when its editor is closed). Queued messages sit above the
+/// composer. The chat folds
 /// a tail row into its transcript while this holds.
 pub fn has_tail(s: &State, id: &str) -> bool {
     let Some(c) = crate::chat::chat_ref(s, id) else {
         return false;
     };
     let o = &c.orchestration;
-    o.tasks.iter().any(|t| t.status.is_live())
-        || (!c.goals.editing() && c.goals.goal.is_some())
-        || !o.queue.items.is_empty()
+    o.tasks.iter().any(|t| t.status.is_live()) || (!c.goals.editing() && c.goals.goal.is_some())
 }
 
 /// Start the slow poll if something is moving. It stops by itself.
@@ -343,47 +368,6 @@ fn tick(s: &mut State, thread_id: String, instance: jobs::Instance) -> bool {
         refresh(s, &thread_id);
     }
     schedule_tick(s, thread_id, instance);
-    true
-}
-
-/// Queue `text` as a follow-up for after the current turn (the composer's
-/// ⌥Enter). `false` while another queue change is in flight. When the
-/// server refuses it, the text goes back into an empty composer so it is
-/// never lost.
-pub fn queue_follow_up(s: &mut State, id: &str, text: String) -> bool {
-    let Some(o) = slot(s, id) else { return false };
-    let thread_id = id.to_string();
-    if o.busy {
-        return false;
-    }
-    o.busy = true;
-    // Only this instance's Busy is this reply's to clear.
-    let instance = o.instance;
-    o.note = None;
-    let asked = thread_id.clone();
-    let action = QueueAction::Add(text.clone());
-    jobs::run(
-        s,
-        "orchestration",
-        move |c| async move { c.mutate_queue(&thread_id, &action).await },
-        move |s, result, _| {
-            // A closed (or closed and reopened) chat's reply is dropped.
-            let Some(o) = slot_of(s, &asked, instance) else {
-                return;
-            };
-            o.busy = false;
-            match result {
-                Ok(queue) => o.queue = queue,
-                Err(e) => {
-                    if crate::chat::composer_text(s, &asked).trim().is_empty() {
-                        crate::chat::set_composer_text(s, &asked, text);
-                    }
-                    crate::chat::report_error(s, &asked, e.to_string());
-                }
-            }
-            ensure_poll(s, &asked);
-        },
-    );
     true
 }
 
@@ -520,27 +504,6 @@ pub(crate) fn merge_back(s: &mut State, id: &str) {
     );
 }
 
-pub(crate) fn toggle_queue(s: &mut State, id: &str) {
-    let Some(o) = slot(s, id) else { return };
-    o.queue_open = !o.queue_open;
-    if o.queue_open && o.queue_input.is_none() {
-        o.queue_input = Some(TextEdit::new(""));
-    }
-}
-
-pub(crate) fn add_queued(s: &mut State, id: &str) {
-    let Some(o) = slot(s, id) else { return };
-    let Some(input) = o.queue_input.as_mut() else {
-        return;
-    };
-    let text = input.text.trim().to_string();
-    if text.is_empty() || o.busy {
-        return;
-    }
-    input.clear();
-    queue_action(s, id, QueueAction::Add(text));
-}
-
 /// A short line for the jump-to-end button: "2 queued", "1 working".
 pub fn tail_summary(s: &State, id: &str) -> Option<String> {
     let o = &crate::chat::chat_ref(s, id)?.orchestration;
@@ -622,8 +585,6 @@ pub fn fixture() -> OrchestrationState {
         queue,
         lineage,
         lineage_loaded: true,
-        queue_open: true,
-        queue_input: Some(TextEdit::new("")),
         ..Default::default()
     }
 }
@@ -649,7 +610,7 @@ pub fn scene(s: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{Snapshot, apply_snapshot, countdown, duration, fixture, queue_follow_up};
+    use super::{Snapshot, apply_snapshot, countdown, duration, fixture, queue_action};
     use crate::chat::chat_ref;
     use crate::chat::fixtures::{close_side_chat, test_state, with_side_chat};
 
@@ -687,12 +648,13 @@ mod tests {
     fn a_side_chat_queues_into_its_own_thread() {
         let mut s = test_state();
         with_side_chat(&mut s, "sc2");
-        assert!(queue_follow_up(&mut s, "sc2", "after this".into()));
+        queue_action(&mut s, "sc2", QueueAction::Hold);
         assert!(chat_ref(&s, "sc2").is_some_and(|c| c.orchestration.busy));
         assert!(chat_ref(&s, "t1").is_some_and(|c| !c.orchestration.busy));
         // A closed chat has nothing to queue into.
         close_side_chat(&mut s);
-        assert!(!queue_follow_up(&mut s, "sc2", "after this".into()));
+        queue_action(&mut s, "sc2", QueueAction::Hold);
+        assert!(chat_ref(&s, "t1").is_some_and(|c| !c.orchestration.busy));
     }
 
     #[test]

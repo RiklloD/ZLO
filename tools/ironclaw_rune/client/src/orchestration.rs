@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::api::{Client, V2, seg};
 use crate::error::ClientError;
 use crate::wire::{MessageKind, TimelineMessage};
+use ironclaw_product_contracts::inbound_requests::ProductInboundAttachment;
 
 /// Unix milliseconds, as the engine sends them.
 pub type Millis = i64;
@@ -140,6 +141,34 @@ pub struct QueueItem {
     pub status: String,
     #[serde(default)]
     pub created_at: Millis,
+    #[serde(default)]
+    pub kind: QueueItemKind,
+    /// A deferred steer's target run.
+    #[serde(default)]
+    pub steer_run: Option<String>,
+}
+
+impl QueueItem {
+    /// Taken by a delivery in flight (`sending`): not editable, removable
+    /// or sendable until it settles.
+    pub fn is_sending(&self) -> bool {
+        self.status == "sending"
+    }
+}
+
+/// What a queue item is (t3code's queued run vs. steer follow-up).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueItemKind {
+    /// A message queued for a later turn.
+    #[default]
+    Message,
+    /// A steer the agent never read, queued again ahead of newer messages.
+    RecoveredSteer,
+    /// A steer waiting for the running turn to take input.
+    DeferredSteer,
+    #[serde(other)]
+    Other,
 }
 
 /// The queue document every queue route answers with.
@@ -162,6 +191,13 @@ pub struct QueueDoc {
     pub running: bool,
     #[serde(default)]
     pub active_run_id: Option<String>,
+    /// The running turn is a context compaction: follow-ups queue.
+    #[serde(default)]
+    pub compacting: bool,
+    /// What `send_now` / `promote` did: `steered`, `started`,
+    /// `waiting_for_turn` or `restarted`.
+    #[serde(default)]
+    pub delivery: Option<String>,
 }
 
 impl QueueDoc {
@@ -176,11 +212,21 @@ impl QueueDoc {
 /// A queue mutation (`POST /threads/{id}/queue`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueAction {
-    Add(String),
+    /// Queue words, with files: the backend lands them beside the thread
+    /// and the queued text names them.
+    Add {
+        text: String,
+        attachments: Vec<ProductInboundAttachment>,
+    },
     Edit {
         item_id: String,
         text: String,
+        attachments: Vec<ProductInboundAttachment>,
     },
+    /// t3code's Send now: steer the item into the running turn, or start it
+    /// on an idle thread (a held queue stays held). Atomic on the backend:
+    /// an item the queue already took answers `not_queued`.
+    SendNow(String),
     Remove(String),
     /// Move `item_id` before `before_id`, or to the end when `None`.
     Reorder {
@@ -196,10 +242,25 @@ pub enum QueueAction {
 impl QueueAction {
     fn body(&self) -> Value {
         match self {
-            Self::Add(text) => json!({"action": "add", "text": text}),
-            Self::Edit { item_id, text } => {
-                json!({"action": "edit", "item_id": item_id, "text": text})
+            Self::Add { text, attachments } => {
+                let mut body = json!({"action": "add", "text": text});
+                if !attachments.is_empty() {
+                    body["attachments"] = json!(attachments);
+                }
+                body
             }
+            Self::Edit {
+                item_id,
+                text,
+                attachments,
+            } => {
+                let mut body = json!({"action": "edit", "item_id": item_id, "text": text});
+                if !attachments.is_empty() {
+                    body["attachments"] = json!(attachments);
+                }
+                body
+            }
+            Self::SendNow(id) => json!({"action": "send_now", "item_id": id}),
             Self::Remove(id) => json!({"action": "remove", "item_id": id}),
             Self::Reorder { item_id, before_id } => {
                 let mut body = json!({"action": "reorder", "item_id": item_id});
@@ -633,6 +694,37 @@ mod tests {
             reorder.body(),
             json!({"action": "reorder", "item_id": "q2", "before_id": "q1"})
         );
+    }
+
+    #[test]
+    fn send_now_and_queued_files_reach_the_wire() {
+        assert_eq!(
+            QueueAction::SendNow("q1".into()).body(),
+            json!({"action": "send_now", "item_id": "q1"})
+        );
+        let file = ProductInboundAttachment {
+            mime_type: "text/plain".into(),
+            filename: Some("a.txt".into()),
+            data_base64: "aGk=".into(),
+            path: None,
+        };
+        let add = QueueAction::Add {
+            text: "read it".into(),
+            attachments: vec![file],
+        };
+        let body = add.body();
+        assert_eq!(body["action"], "add");
+        assert_eq!(body["attachments"][0]["filename"], "a.txt");
+        let plain = QueueAction::Add {
+            text: "words".into(),
+            attachments: Vec::new(),
+        };
+        assert!(plain.body().get("attachments").is_none());
+        let doc: QueueDoc =
+            serde_json::from_value(json!({"compacting": true, "delivery": "started",
+            "items": [{"id": "q", "text": "t", "status": "sending"}]}))
+            .unwrap();
+        assert!(doc.compacting && doc.items[0].is_sending());
     }
 }
 

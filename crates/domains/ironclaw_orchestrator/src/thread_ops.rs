@@ -45,6 +45,7 @@ impl Engine {
                   "holdReason": hold.map(HoldReason::as_str), "items": items,
                   "runtime": record.as_ref().map(|t| t.runtime_id.as_str()),
                   "running": record.as_ref().is_some_and(ThreadRecord::is_running),
+                  "compacting": self.compacting(thread).await?,
                   "activeRunId": record.as_ref().and_then(|t| t.active_run_id.as_deref())}))
     }
 
@@ -106,9 +107,17 @@ impl Engine {
 
     pub async fn queue_remove(&self, thread: &ThreadId, id: &QueueItemId) -> Result<Value> {
         self.pending_item(thread, id).await?;
-        self.store
+        // A drain or Send now may claim it between the check and here.
+        if !self
+            .store
             .set_queue_status(id, QueueStatus::Pending, QueueStatus::Cancelled)
-            .await?;
+            .await?
+        {
+            return Err(OrchestratorError::request(
+                "not_queued",
+                "The message was sent meanwhile.",
+            ));
+        }
         self.queue_list(thread).await.map(json_ok)
     }
 

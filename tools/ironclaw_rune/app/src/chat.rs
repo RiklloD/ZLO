@@ -21,6 +21,8 @@ pub mod approval_mode;
 mod approval_reason;
 pub mod composer;
 pub mod computer;
+mod dispatch;
+pub(crate) use dispatch::FOLLOW_UPS_HELP;
 pub(crate) mod downloads;
 mod file_links;
 pub mod flow;
@@ -40,7 +42,7 @@ pub(crate) mod reject_feedback;
 mod rows;
 pub mod side;
 pub mod snapshot;
-mod steer;
+pub(crate) mod steer;
 mod view;
 mod visual;
 
@@ -66,9 +68,9 @@ use crate::state::State;
 
 pub use flow::Item;
 pub use hooks::{
-    active_run, approval_mode_changed, composer_text, embedded, focus_composer, focus_composer_of,
-    open_error, reload_timeline, set_composer_text, set_fork_prefix, set_merges, stage_snapshot,
-    stop_run, voice_composer, voice_composer_mut, voice_press_enter, with_tx,
+    active_run, approval_mode_changed, embedded, focus_composer, focus_composer_of, open_error,
+    reload_timeline, set_composer_text, set_fork_prefix, set_merges, stage_snapshot, stop_run,
+    voice_composer, voice_composer_mut, voice_press_enter, with_tx,
 };
 pub use view::view;
 

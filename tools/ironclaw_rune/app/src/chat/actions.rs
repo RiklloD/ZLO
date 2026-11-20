@@ -339,6 +339,16 @@ pub(crate) fn mention_roots(s: &mut State, id: &str, text: &str) -> Vec<String> 
 /// Enter in the composer: a goal or slash command runs, a message joins the
 /// running turn (steer), else it starts a new turn.
 pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
+    send_as(s, id, false, tx);
+}
+
+/// A send from `id`'s composer. `alternate` is ⌘↵ or ⌘-click: while a turn
+/// runs it does the other of steer and queue (Settings → Follow-ups) for
+/// this message. Editing a queued message, it saves the edit instead.
+pub fn send_as(s: &mut State, id: &str, alternate: bool, tx: &mut Tx) {
+    if chat_ref(s, id).is_some_and(|c| c.orchestration.editing.is_some()) {
+        return super::steer::submit_edit(s, id, alternate, tx);
+    }
     let Some(c) = chat_for(s, id) else { return };
     // Talk mode's claim on this send, if it pressed this Enter.
     let voice = c.voice_send.take();
@@ -371,101 +381,49 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
         return;
     }
     if c.running_run().is_some() {
-        return super::steer::steer(s, id, voice, tx);
+        return super::steer::send_running(s, id, alternate, voice, tx);
     }
-    let Some(channel) = c.channel.clone() else {
-        refuse(s, "This gateway has no chat channel configured.", voice);
-        set_error(s, id, "This gateway has no chat channel configured.");
+    // Checked before anything leaves the composer.
+    if let Some(why) = super::steer::send_blocked(s, id) {
+        let shown = if why.is_empty() { "Not sent." } else { why };
+        refuse(s, shown, voice);
+        if !why.is_empty() {
+            set_error(s, id, why);
+        }
         return;
+    }
+    let Some(draft) = super::steer::take(s, id) else {
+        return refuse(s, "There was nothing to send.", voice);
     };
     let Some(c) = chat_for(s, id) else { return };
-    let draft_text = c.composer.text.clone();
-    let draft_pills = inline_files::pills(&c.composer);
-    c.composer.clear();
-    c.error = None;
-    c.staged.clear();
-    let names: Vec<String> = files.iter().map(|f| f.filename.clone()).collect();
-    let pending = c.transcript.push_pending_user(&text, &names);
     // Zeron's turn: the message moves to the top and the answer streams
     // into the room kept below it.
     c.turn_heights.clear();
     c.reserve = Some(Reserve { held: true });
     c.pin_next = true;
     c.far_from_bottom = false;
-    let running = c.running_run().is_some();
-    record_draft(s, id);
     // MonoCode's prompt rise: the scroll that carries the sent prompt from
     // the composer to the top of the list (and the composer emptying) runs
     // on its 560 ms curve; the row itself only fades in (`view::prompt_rise`).
     tx.motion(super::view::PROMPT_RISE_SPRING);
-    super::refresh_rows(s, id, tx);
-    // A prompt sent here starts its run's clock now; a steer keeps it.
-    if !running {
-        crate::run_clock::end(s, id);
-        crate::run_clock::start(s, id, None, None);
-        crate::workspace::prompt_sent(s, id);
-    }
+    // A prompt sent here starts its run's clock now.
+    crate::run_clock::end(s, id);
+    crate::run_clock::start(s, id, None, None);
+    crate::workspace::prompt_sent(s, id);
     // The project's working tree as it stands now, for the turn's card.
     if super::is_main(s, id) {
         super::side::on_turn_started(s);
     }
-
-    let thread_id = id.to_string();
-    let req = thread_id.clone();
-    let body = text.clone();
-    let wire = files.iter().map(StagedFile::to_wire).collect();
-    let roots = mention_roots(s, id, &text);
-    jobs::run(
-        s,
-        "chat",
-        move |c| async move {
-            c.send_message_with_roots(&channel, &req, &body, wire, roots)
-                .await
-        },
-        move |s, result, tx| {
-            match result {
-                Ok(ack) => {
-                    if let Some(sub) = voice {
-                        super::steer::report_voice(s, &thread_id, sub, &ack, None);
-                    }
-                    let Some(c) = chat_for(s, &thread_id) else {
-                        return;
-                    };
-                    c.transcript.ack_pending_user(pending);
-                    if let Some(notice) = ack.notice.filter(|n| !n.trim().is_empty()) {
-                        c.error = Some(notice);
-                    }
-                    super::load_timeline(s, &thread_id);
-                    // A CLI-runtime turn has no stream; the poll follows it.
-                    super::refresh_extras(s, &thread_id);
-                }
-                Err(e) => {
-                    if let Some(sub) = voice {
-                        crate::voice::submission_refused(s, sub, &e.to_string());
-                    }
-                    crate::workspace::send_failed(s, &thread_id);
-                    let Some(c) = chat_for(s, &thread_id) else {
-                        return;
-                    };
-                    c.transcript.drop_pending_user(pending);
-                    if let Some(r) = c.reserve.as_mut() {
-                        r.held = false;
-                    }
-                    c.climb_until = None;
-                    let error = restore_failed(c, &draft_text, &draft_pills, files, e.to_string());
-                    record_draft(s, &thread_id);
-                    set_error(s, &thread_id, error);
-                    super::refresh_rows(s, &thread_id, tx);
-                }
-            }
-        },
-    );
+    // One settlement path with steers (`steer::apply_landed`): a gateway
+    // that had a turn running after all answers steered, queued or refused.
+    super::steer::deliver(s, id, draft.idle(), voice, tx);
 }
 
 /// A send failed: put its text and cards back so a retry needs no
-/// re-picking (GPUI's behaviour), but only into an empty composer with no
-/// files staged. When the person has typed or attached since, that stays,
-/// and the error names the unsent message instead. Returns the error to show.
+/// re-picking (GPUI's behaviour). Into an empty composer they go as they
+/// were; when the person has typed or attached since, the unsent message is
+/// added below that, never dropped, and the error says so. Returns the
+/// error to show.
 pub(super) fn restore_failed(
     c: &mut super::ChatState,
     text: &str,
@@ -473,13 +431,70 @@ pub(super) fn restore_failed(
     files: Vec<StagedFile>,
     error: String,
 ) -> String {
-    if c.composer.text.is_empty() && c.staged.is_empty() {
+    if put_back(c, text, pills, files) {
+        format!("{error} The unsent message is back in the composer, below what you typed.")
+    } else {
+        error
+    }
+}
+
+/// Put words (and their file pills and files) back into `c`'s composer.
+/// An empty composer takes them as they were; an occupied one keeps what it
+/// holds and gets them added below, so no words are ever lost. `true` when
+/// they were added below something.
+pub(crate) fn put_back(
+    c: &mut super::ChatState,
+    text: &str,
+    pills: &[(std::ops::Range<usize>, String)],
+    files: Vec<StagedFile>,
+) -> bool {
+    if text.trim().is_empty() && files.is_empty() {
+        return false;
+    }
+    if c.composer.text.trim().is_empty() && c.staged.is_empty() {
         c.staged = files;
         inline_files::set_content(&mut c.composer, text, pills);
-        error
-    } else {
-        format!("{error} Not sent: \u{201c}{}\u{201d}", text.trim())
+        return false;
     }
+    let (joined, joined_pills) = join_drafts(
+        &c.composer.text,
+        &inline_files::pills(&c.composer),
+        text,
+        pills,
+    );
+    c.staged.extend(files);
+    inline_files::set_content(&mut c.composer, &joined, &joined_pills);
+    true
+}
+
+/// `first` with `second` below it after a blank line; `second`'s pill
+/// ranges (byte offsets) move with it.
+pub(crate) fn join_drafts(
+    first: &str,
+    first_pills: &[(std::ops::Range<usize>, String)],
+    second: &str,
+    second_pills: &[(std::ops::Range<usize>, String)],
+) -> (String, Vec<(std::ops::Range<usize>, String)>) {
+    if first.trim().is_empty() {
+        return (second.to_string(), second_pills.to_vec());
+    }
+    if second.trim().is_empty() {
+        return (first.to_string(), first_pills.to_vec());
+    }
+    let head = first.trim_end_matches('\n');
+    let joined = format!("{head}\n\n{second}");
+    let shift = head.len() + 2;
+    let mut pills: Vec<_> = first_pills
+        .iter()
+        .filter(|(r, _)| r.end <= head.len())
+        .cloned()
+        .collect();
+    pills.extend(
+        second_pills
+            .iter()
+            .map(|(r, id)| (r.start + shift..r.end + shift, id.clone())),
+    );
+    (joined, pills)
 }
 
 /// Stop the running turn. The row flips to "Stopping" on the click itself;
@@ -601,9 +616,18 @@ pub(crate) fn recall_last(s: &mut State, id: &str) -> bool {
 /// Note the composer as the thread's draft, so an unsent message comes back
 /// (every edit, and the clear after a send).
 pub(crate) fn record_draft(s: &mut State, id: &str) {
+    // Mid-edit of a queued message the composer holds that message; the
+    // thread's draft keeps what was set aside, the edit its own key.
+    let editing = super::steer::draft_while_editing(s, id);
     let Some(c) = chat_ref(s, id) else { return };
-    let text = c.composer.text.clone();
-    let tokens = inline_files::pills(&c.composer)
+    let (text, pills, files) = editing.unwrap_or_else(|| {
+        (
+            c.composer.text.clone(),
+            inline_files::pills(&c.composer),
+            c.staged.clone(),
+        )
+    });
+    let tokens = pills
         .into_iter()
         .filter_map(|(range, id)| {
             let shown = text.get(range.clone())?.to_string();
@@ -618,7 +642,7 @@ pub(crate) fn record_draft(s: &mut State, id: &str) {
     let draft = crate::drafts::Draft {
         text,
         tokens,
-        files: c.staged.clone(),
+        files,
         profile: None,
     };
     crate::drafts::record(s, id, draft);
@@ -695,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_send_restores_only_into_an_empty_composer() {
+    fn a_failed_send_never_drops_its_words() {
         let mut c = super::super::ChatState::new("t1".into());
         let error = restore_failed(&mut c, "first try", &[], Vec::new(), "boom".into());
         assert_eq!(
@@ -707,10 +731,10 @@ mod tests {
         c.composer.replace_text("typed since");
         let error = restore_failed(&mut c, "first try", &[], Vec::new(), "boom".into());
         assert_eq!(
-            c.composer.text, "typed since",
-            "what was typed since survives"
+            c.composer.text, "typed since\n\nfirst try",
+            "what was typed since survives, and the unsent words come back below it"
         );
-        assert!(error.contains("\u{201c}first try\u{201d}"), "{error}");
+        assert!(error.contains("back in the composer"), "{error}");
     }
 
     #[test]

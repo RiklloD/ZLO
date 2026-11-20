@@ -26,6 +26,19 @@ pub enum Wallpaper {
     },
 }
 
+/// What a message sent while a turn runs does by default (Settings →
+/// Follow-ups); ⌘↵ does the other for one message. t3code's
+/// `followUpBehavior`, default Steer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowUps {
+    /// It joins the running turn.
+    #[default]
+    Steer,
+    /// It waits in the queue for the turn to end.
+    Queue,
+}
+
 /// Preference file layout version; see [`Prefs::load`].
 const VERSION: u32 = 6;
 
@@ -90,6 +103,8 @@ pub struct Prefs {
     /// and the last one picked, offered to threads without their own.
     pub project_folders: std::collections::HashMap<String, PathBuf>,
     pub last_project: Option<PathBuf>,
+    /// Steer or queue a message sent while a turn runs.
+    pub follow_ups: FollowUps,
 }
 
 impl Default for Prefs {
@@ -124,6 +139,7 @@ impl Default for Prefs {
             side_chats: Default::default(),
             project_folders: Default::default(),
             last_project: None,
+            follow_ups: FollowUps::Steer,
         }
     }
 }

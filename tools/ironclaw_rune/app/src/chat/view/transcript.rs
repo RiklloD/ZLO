@@ -209,6 +209,7 @@ impl Rows {
                 key,
                 rows: group,
                 live,
+                after_steer,
             } => {
                 let open = chat.activity_open(key, *live);
                 flow::render_activity(
@@ -217,6 +218,7 @@ impl Rows {
                     key,
                     group,
                     *live,
+                    *after_steer,
                     open,
                     &chat.toggles,
                     &self.outputs,

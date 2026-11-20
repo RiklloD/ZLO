@@ -35,9 +35,15 @@ pub struct OrchestratorTaskCancelRequest {
     pub reason: Option<String>,
 }
 
-/// One queue mutation. `action`: `add` (text), `edit` (item_id, text),
-/// `remove` (item_id), `reorder` (item_id, before_id; none = end), `clear`,
-/// `hold`, `release`.
+/// One queue mutation. `action`: `add` (text, attachments), `edit`
+/// (item_id, text, attachments), `remove` (item_id), `reorder` (item_id,
+/// before_id; none = end), `clear`, `hold`, `release`, `promote` (item_id:
+/// steer it into the running turn), `send_now` (item_id: steer it, or start
+/// it on an idle thread without releasing a held queue).
+///
+/// `attachments` on `add`/`edit` land as files beside the thread and the
+/// queued text names them (what a CLI send does), so a queued message keeps
+/// its files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrchestratorQueueMutationRequest {
@@ -49,6 +55,8 @@ pub struct OrchestratorQueueMutationRequest {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::inbound_requests::ProductInboundAttachment>,
 }
 
 /// Fork `thread_id` from run `run` (1-based; latest when absent).

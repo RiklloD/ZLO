@@ -3,10 +3,14 @@
 //! key routing). `composer_card`, `round_button`, `composer_surface` and
 //! `attachment_card` are shared with the new-thread and quick composers.
 //!
-//! Keys, in GPUI's order: ⌥↵ queues after the turn (`steer_key`), ⌘↵
-//! approves the newest open approval (⇧⌘↵ always allows it), then the `/`
-//! and `@` menu takes ↑ ↓ Tab Esc ↵ while it is open; ↑ in an empty composer
-//! recalls the last message. Plain ↵ sends (`on_submit`).
+//! Keys (t3code's, `dispatch::key_action`): ⌘↵ with a draft while a turn
+//! runs does the other of steer and queue for one message; ⇧⌘↵ sends the
+//! first queued message now, and ⌥↑ with the caret at the start edits the
+//! last one. The newest open approval has its own chords, ⌥⌘↵ (approve) and
+//! ⌥⇧⌘↵ (always allow), so no send chord can grant a tool. A held chord
+//! acts once. Then the `/` and `@` menu takes ↑ ↓ Tab
+//! Esc ↵ while it is open; ↑ in an empty composer recalls the last message.
+//! Plain ↵ sends (`on_submit`): Settings → Follow-ups while a turn runs.
 
 use rune::{Color, Cx, El, Icon, KeyEvent, Tx, auto_grow, col, el, icon, row, text, text_input};
 use rune_kit::Kit;
@@ -14,6 +18,7 @@ use zlo_client::GateDecision;
 use zlo_client::attachments::format_bytes;
 use zlo_client::transcript::AttachmentChip;
 
+use super::dispatch::{self, KeyAction};
 use super::menu::{MenuKey, MenuKeyName};
 use super::{ChatState, actions, chat_for, chat_ref, flow, inline_files, menu, steer};
 use crate::design::{self, Palette};
@@ -300,17 +305,48 @@ pub fn dock_matched(s: &State, card: El) -> El {
 
 /// The composer's keys, before the field edits with them.
 fn on_key(s: &mut State, id: &str, ev: &KeyEvent, tx: &mut Tx) -> bool {
-    if steer::steer_key(s, id, ev, tx) {
-        return true;
+    let Some(c) = chat_ref(s, id) else {
+        return false;
+    };
+    // An IME composition owns its keys (Enter commits it, not a send).
+    if c.composer.preedit().is_some() {
+        return false;
     }
-    // ⌘↵ approves the newest open approval, ⇧⌘↵ always allows it.
-    if ev.key == rune::Key::Enter
-        && ev.mods.cmd
-        && let Some((run, gate, allow_always)) = chat_ref(s, id).and_then(|c| c.open_approval())
-    {
-        let always = ev.mods.shift && allow_always;
-        actions::resolve_gate(s, id, run, gate, GateDecision::Approve { always }, tx);
-        return true;
+    let gate = c.open_approval();
+    let cx = dispatch::KeyContext {
+        running: c.running_run().is_some(),
+        draft_empty: c.staged.is_empty() && c.composer.text.trim().is_empty(),
+        caret_at_start: c.composer.anchor == 0 && c.composer.focus == 0,
+        queued: c
+            .orchestration
+            .queue
+            .items
+            .iter()
+            .filter(|i| !i.is_sending())
+            .count(),
+        editing: c.orchestration.editing.is_some(),
+        approval: gate.as_ref().map(|(_, _, always)| *always),
+        repeat: tx.key_repeat(),
+    };
+    match dispatch::key_action(ev, cx) {
+        Some(KeyAction::Swallow) => return true,
+        Some(KeyAction::SendAlternate) => {
+            actions::send_as(s, id, true, tx);
+            return true;
+        }
+        Some(KeyAction::Send) => {
+            actions::send(s, id, tx);
+            return true;
+        }
+        Some(KeyAction::SendFirstQueued) => return steer::send_first_queued(s, id, tx),
+        Some(KeyAction::EditLastQueued) => return steer::edit_last_queued(s, id),
+        Some(KeyAction::Approve { always }) => {
+            if let Some((run, gate, _)) = gate {
+                actions::resolve_gate(s, id, run, gate, GateDecision::Approve { always }, tx);
+                return true;
+            }
+        }
+        None => {}
     }
     let Some(name) = MenuKeyName::of(ev) else {
         return false;
@@ -327,6 +363,8 @@ fn on_key(s: &mut State, id: &str, ev: &KeyEvent, tx: &mut Tx) -> bool {
             actions::pick_command(s, id, &command, tx);
             true
         }
+        // Esc the menu did not take leaves the edit of a queued message.
+        MenuKey::Unused if name == MenuKeyName::Escape => cx.editing && steer::escape_edit(s, id),
         MenuKey::Unused => name == MenuKeyName::Up && actions::recall_last(s, id),
     }
 }

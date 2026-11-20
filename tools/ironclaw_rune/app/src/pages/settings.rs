@@ -19,7 +19,7 @@ use zlo_client::product_wire::SettingsToolPermissionState;
 use zlo_client::wire::ToolPermission;
 
 use super::common::{
-    error_line, group_header, header, notice_line, page_body, refresh_button, rows_card,
+    error_line, group_header, header, notice_line, page_body, refresh_button, rows_card, segmented,
     setting_row, switch,
 };
 use crate::jobs;
@@ -200,6 +200,34 @@ fn render_desktop(s: &State, k: &Kit) -> El {
     )
 }
 
+/// Follow-ups: what a message sent while the agent works does (t3code's
+/// Settings → Follow-ups). Kept with the app's other preferences.
+fn render_follow_ups(s: &State, k: &Kit) -> El {
+    use crate::design::prefs::FollowUps;
+    let p = &s.palette;
+    let picked = match s.prefs.follow_ups {
+        FollowUps::Steer => 0,
+        FollowUps::Queue => 1,
+    };
+    let control = segmented(k, &["Steer", "Queue"], picked, false, |s, ix, _| {
+        let pick = if ix == 1 {
+            FollowUps::Queue
+        } else {
+            FollowUps::Steer
+        };
+        s.update_prefs(|p| p.follow_ups = pick);
+    });
+    rows_card(
+        p,
+        [setting_row(
+            p,
+            "Follow-ups",
+            Some(crate::chat::FOLLOW_UPS_HELP),
+            control.key("follow-ups"),
+        )],
+    )
+}
+
 pub fn view(s: &State, page: Page, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let this = &s.pages.settings;
@@ -225,6 +253,7 @@ pub fn view(s: &State, page: Page, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec
             .child(render_desktop(s, k))
             .child(snapshots::view(s, k))
             .child(group_header(p, "Conversations", None))
+            .child(render_follow_ups(s, k))
             .child(compaction::view(s, k))
             .child(group_header(
                 p,

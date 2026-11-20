@@ -490,6 +490,8 @@ impl Engine {
         {
             return Ok(false);
         }
+        // A context compaction runs as its own turn; steers wait for it.
+        let maintenance = is_maintenance_prompt(&text);
         let goal = self
             .store
             .goal(thread_id)
@@ -513,7 +515,7 @@ impl Engine {
             .await?;
         match admission {
             TurnAdmission::Started { run_id } => {
-                self.mark_running(&thread, run_id.as_deref(), now_ms())
+                self.mark_running(&thread, run_id.as_deref(), now_ms(), maintenance)
                     .await?;
                 // Provenance for history search: this run's prompt is the
                 // engine's text, not the person's.
@@ -538,6 +540,7 @@ impl Engine {
         thread: &ThreadRecord,
         run_id: Option<&str>,
         at: Millis,
+        maintenance: bool,
     ) -> Result<()> {
         if !self
             .store
@@ -551,9 +554,28 @@ impl Engine {
             .put_live_work(
                 &thread.thread_id,
                 &self.instance_id,
-                &json!({"run_id": run_id, "runtime": thread.runtime_id.as_str(), "turn_started_at": at}),
+                &json!({"run_id": run_id, "runtime": thread.runtime_id.as_str(), "turn_started_at": at,
+                        "maintenance": maintenance}),
             )
             .await
+    }
+
+    /// Whether `thread`'s running turn is a context compaction (its prompt
+    /// was `/compact`): t3code queues follow-ups instead of steering one.
+    pub async fn compacting(&self, thread: &ThreadId) -> Result<bool> {
+        let Some(record) = self
+            .store
+            .thread(thread)
+            .await?
+            .filter(ThreadRecord::is_running)
+        else {
+            return Ok(false);
+        };
+        Ok(self.store.live_work().await?.iter().any(|w| {
+            w.thread_id == *thread
+                && w.detail["maintenance"].as_bool() == Some(true)
+                && w.detail["run_id"].as_str() == record.active_run_id.as_deref()
+        }))
     }
 
     // ── tick steps ──────────────────────────────────────────────────────
@@ -1058,7 +1080,8 @@ impl TurnEventSink for Engine {
                 }
                 return Ok(());
             }
-            self.mark_running(&thread, run_id.as_deref(), at).await?;
+            self.mark_running(&thread, run_id.as_deref(), at, false)
+                .await?;
             if let Some(task) = self.store.task_for_child(thread_id).await? {
                 self.store
                     .move_task(
@@ -1286,4 +1309,10 @@ pub(crate) fn skip_note(reason: SkipReason) -> &'static str {
 
 pub(crate) fn continue_prompt() -> String {
     restart::CONTINUE_PROMPT.to_string()
+}
+
+/// A maintenance command that runs as its own turn (t3code's
+/// `isNativeMaintenanceCommand`, compaction only here).
+pub(crate) fn is_maintenance_prompt(text: &str) -> bool {
+    text.trim() == "/compact"
 }

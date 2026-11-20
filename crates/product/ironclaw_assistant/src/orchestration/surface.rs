@@ -308,6 +308,30 @@ impl OrchestratedProductSurface {
         Some(thread)
     }
 
+    /// `text` with `attachments` landed beside thread `id` and named in it
+    /// (the CLI prompt shape), validated against the same budgets as a send.
+    async fn queued_with_files(
+        &self,
+        id: &ThreadId,
+        text: &str,
+        attachments: Vec<ironclaw_product_contracts::inbound_requests::ProductInboundAttachment>,
+    ) -> Result<String, ProductSurfaceError> {
+        let mut body = ironclaw_product_contracts::inbound_requests::ProductSubmitTurnRequest {
+            content: Some(text.to_string()),
+            attachments,
+            ..Default::default()
+        };
+        let local = super::cli_attachments::take_local(&mut body).await?;
+        let files = crate::DecodeInboundAttachments::decode_attachments(&body)?;
+        let root = self
+            .home()
+            .map(|home| home.attachments())
+            .map_err(ProductSurfaceError::internal_from)?;
+        super::cli_attachments::prompt_with_files(&root, id, text, files, local)
+            .await
+            .map_err(ProductSurfaceError::internal_from)
+    }
+
     async fn owned(
         &self,
         raw: &str,
@@ -435,6 +459,12 @@ impl OrchestratedProductSurface {
         result.map(Some)
     }
 
+    /// Serve from `home` instead of `$HOME` (profiles, landed attachments).
+    pub fn with_home(mut self, home: ProfileHome) -> Self {
+        self.home = Some(home);
+        self
+    }
+
     fn home(&self) -> Result<&ProfileHome, OrchestratorError> {
         self.home.as_ref().ok_or_else(|| {
             OrchestratorError::request("profiles_unavailable", "The backend has no home folder.")
@@ -548,7 +578,25 @@ impl OrchestratedProductSurface {
                 )
             }
             ORCHESTRATOR_QUEUE_MUTATE_COMMAND_ID => {
-                let req: OrchestratorQueueMutationRequest = decode(input)?;
+                let mut req: OrchestratorQueueMutationRequest = decode(input)?;
+                // Files of a queued message land now (ownership first), and
+                // the queued text names them, as a CLI send's prompt does.
+                let mut landed: Option<String> = None;
+                if !req.attachments.is_empty() && matches!(req.action.as_str(), "add" | "edit") {
+                    let thread = match self.owned(&req.thread_id, scope).await {
+                        Ok(thread) => thread,
+                        Err(error) => return answer(Err(error)).map(Some),
+                    };
+                    let attachments = std::mem::take(&mut req.attachments);
+                    landed = Some(
+                        self.queued_with_files(
+                            &thread.thread_id,
+                            req.text.as_deref().unwrap_or(""),
+                            attachments,
+                        )
+                        .await?,
+                    );
+                }
                 answer(
                     async {
                         let thread = self.owned(&req.thread_id, scope).await?;
@@ -556,10 +604,20 @@ impl OrchestratedProductSurface {
                         let item = || -> Result<QueueItemId, OrchestratorError> {
                             QueueItemId::new(req.item_id.clone().unwrap_or_default())
                         };
-                        let text = req.text.as_deref().unwrap_or("");
+                        let text = landed.as_deref().or(req.text.as_deref()).unwrap_or("");
                         match req.action.as_str() {
                             "add" => engine.queue_add(id, text, Author::User).await,
                             "edit" => engine.queue_edit(id, &item()?, text).await,
+                            "promote" => {
+                                engine
+                                    .queue_promote(
+                                        &thread,
+                                        &item()?,
+                                        ironclaw_orchestrator::runtime::SteerHow::Steer,
+                                    )
+                                    .await
+                            }
+                            "send_now" => engine.queue_send_now(&thread, &item()?).await,
                             "remove" => engine.queue_remove(id, &item()?).await,
                             "reorder" => {
                                 let before =

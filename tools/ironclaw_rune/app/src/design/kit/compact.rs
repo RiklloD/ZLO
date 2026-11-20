@@ -48,6 +48,24 @@ pub fn ghost_icon(
         .key(key)
 }
 
+/// [`ghost_icon`] whose press also gets the transaction.
+pub fn ghost_icon_tx(
+    k: &Kit,
+    key: impl Into<String>,
+    i: &'static Icon,
+    tip: &str,
+    press: impl Fn(&mut State, &mut rune::Tx) + 'static,
+) -> El {
+    IconButton::new(i)
+        .variant(IconButtonVariant::Ghost)
+        .control_size(ControlSize::Small)
+        .label(tip)
+        .help(tip)
+        .on_press_tx(press)
+        .build(k)
+        .key(key)
+}
+
 /// A ghost labelled button, optionally with a leading icon (GPUI
 /// `Button::new(..).label(..).ghost().xsmall()`). `press` is dropped when
 /// disabled.

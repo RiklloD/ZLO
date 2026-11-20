@@ -123,13 +123,6 @@ pub fn embedded(s: &State, id: &str) -> bool {
     chat_ref(s, id).is_some_and(|c| c.embedded)
 }
 
-/// `id`'s composer text.
-pub fn composer_text(s: &State, id: &str) -> String {
-    chat_ref(s, id)
-        .map(|c| c.composer.text.clone())
-        .unwrap_or_default()
-}
-
 /// Put `text` into `id`'s composer (caret at its end) and note the draft.
 pub fn set_composer_text(s: &mut State, id: &str, text: String) {
     let Some(c) = chat_for(s, id) else { return };

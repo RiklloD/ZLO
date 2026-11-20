@@ -729,3 +729,107 @@ async fn steer_markers_follow_the_steer_id_and_retries_steer_once() {
         steer_id.as_str()
     );
 }
+
+/// The queue route takes files and Send now (GPT review of Rune's queue):
+/// a queued message with an attachment lands the file and names it in the
+/// queued text; `send_now` steers it into the running turn once, and a
+/// second `send_now` or a `remove` of it answers `not_queued` instead of a
+/// silent success.
+#[tokio::test]
+async fn queue_route_takes_files_and_sends_one_item_now_once() {
+    use base64::Engine as _;
+    use ironclaw_orchestrator::model::now_ms;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("o.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+    let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+    let thread = ThreadId::new("cli-queue").unwrap();
+    let owner = caller("owner");
+    let record = ThreadRecord::new(
+        thread.clone(),
+        scope_of(&owner),
+        RuntimeId::new("claude-cli").unwrap(),
+    );
+    engine.store().ensure_thread(&record).await.unwrap();
+    engine
+        .store()
+        .set_turn_running(&thread, Some("r1"), now_ms())
+        .await
+        .unwrap();
+    let steering = Arc::new(Steering {
+        steers: true,
+        taken: Default::default(),
+    });
+    engine.register_runtime(steering.clone());
+    let home = tempfile::tempdir().unwrap();
+    let surface = OrchestratedProductSurface::new(Arc::new(Inner), engine.clone(), None)
+        .with_home(super::profiles::ProfileHome::new(home.path().to_path_buf()));
+    let mutate = |input: serde_json::Value| {
+        surface.invoke(
+            owner.clone(),
+            ProductSurfaceInvokeRequest {
+                operation_id: CapabilityId::new(
+                    ironclaw_product_contracts::orchestration::ORCHESTRATOR_QUEUE_MUTATE_COMMAND_ID,
+                )
+                .unwrap(),
+                input,
+                activity_id: ActivityId::new(),
+            },
+        )
+    };
+    let data = base64::engine::general_purpose::STANDARD.encode(b"hello notes");
+    let out = mutate(json!({"thread_id": thread.as_str(), "action": "add",
+        "text": "read the notes",
+        "attachments": [{"mime_type": "text/plain", "filename": "notes.txt", "data_base64": data}]}))
+    .await
+    .unwrap()
+    .output;
+    let item = out["queuedId"].as_str().unwrap().to_string();
+    let queued = out["items"][0]["text"].as_str().unwrap();
+    assert!(queued.starts_with("read the notes"), "{queued}");
+    assert!(queued.contains("notes.txt"), "the file is named: {queued}");
+
+    let sent = mutate(json!({"thread_id": thread.as_str(), "action": "send_now", "item_id": item}))
+        .await
+        .unwrap()
+        .output;
+    assert_eq!(sent["delivery"], "steered", "{sent}");
+    assert_eq!(steering.taken.lock().unwrap().len(), 1);
+    for action in ["send_now", "remove"] {
+        let again =
+            mutate(json!({"thread_id": thread.as_str(), "action": action, "item_id": item}))
+                .await
+                .unwrap()
+                .output;
+        assert_eq!(again["error"], "not_queued", "{action}: {again}");
+    }
+    assert_eq!(steering.taken.lock().unwrap().len(), 1, "delivered once");
+}
+
+/// CLI timeline rows carry the time the runtime recorded, so a client can
+/// order steers and time the work after each one.
+#[test]
+fn cli_timeline_rows_carry_their_time() {
+    let row = |text: &str, at: Option<i64>| HistoryMessage {
+        role: HistoryRole::User,
+        text: text.to_string(),
+        tool_calls: Vec::new(),
+        run_id: Some("r1".into()),
+        hidden: false,
+        at,
+        steer_id: None,
+    };
+    let thread = ThreadId::new("cli-times").unwrap();
+    let rows = super::external::timeline_values(
+        &thread,
+        &[row("start", Some(1_763_600_000_000)), row("no time", None)],
+    );
+    assert_eq!(rows[0]["created_at"], "2025-11-20T00:53:20+00:00");
+    assert!(rows[1]["created_at"].is_null());
+}
