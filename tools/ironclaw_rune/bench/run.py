@@ -80,7 +80,14 @@ def run_once(name, tmp, pixels):
         cmd += ["--out", str(out), "--every", "1"]
     env = dict(os.environ, RUNE_FRAME_LOG=str(flog))
     env.pop("RUNE_PERF", None)
-    r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+    # Real time: a run lasts `secs`; a hung GPU init, readback or shutdown must
+    # fail the suite, not stall it. Generous, since pixel capture is slow.
+    limit = max(120.0, secs * 20)
+    try:
+        r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=limit)
+    except subprocess.TimeoutExpired as e:
+        err = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        sys.exit(f"{name}: zlo did not finish within {limit:.0f} s (killed):\n{err[-3000:]}")
     if r.returncode != 0:
         sys.exit(f"{name}: zlo failed ({r.returncode}):\n{r.stderr[-3000:]}")
     rows = [x for x in read_jsonl(flog) if "k" in x]
