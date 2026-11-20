@@ -202,9 +202,10 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
                 reload_timeline = true;
             }
             // The message being edited left the queue (the turn took it).
-            edit_gone = o.editing.as_ref().is_some_and(|e| {
-                !e.saving && !queue.items.iter().any(|i| i.id == e.item_id)
-            });
+            edit_gone = o
+                .editing
+                .as_ref()
+                .is_some_and(|e| !e.saving && !queue.items.iter().any(|i| i.id == e.item_id));
             o.queue = queue;
         }
         Err(e) if e.is_not_found() => o.queue = QueueDoc::default(),

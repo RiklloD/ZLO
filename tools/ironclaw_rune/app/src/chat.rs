@@ -68,9 +68,9 @@ use crate::state::State;
 
 pub use flow::Item;
 pub use hooks::{
-    active_run, approval_mode_changed, embedded, focus_composer, focus_composer_of,
-    open_error, reload_timeline, set_composer_text, set_fork_prefix, set_merges, stage_snapshot,
-    stop_run, voice_composer, voice_composer_mut, voice_press_enter, with_tx,
+    active_run, approval_mode_changed, embedded, focus_composer, focus_composer_of, open_error,
+    reload_timeline, set_composer_text, set_fork_prefix, set_merges, stage_snapshot, stop_run,
+    voice_composer, voice_composer_mut, voice_press_enter, with_tx,
 };
 pub use view::view;
 

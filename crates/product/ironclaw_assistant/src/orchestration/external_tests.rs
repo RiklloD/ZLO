@@ -802,10 +802,11 @@ async fn queue_route_takes_files_and_sends_one_item_now_once() {
     assert_eq!(sent["delivery"], "steered", "{sent}");
     assert_eq!(steering.taken.lock().unwrap().len(), 1);
     for action in ["send_now", "remove"] {
-        let again = mutate(json!({"thread_id": thread.as_str(), "action": action, "item_id": item}))
-            .await
-            .unwrap()
-            .output;
+        let again =
+            mutate(json!({"thread_id": thread.as_str(), "action": action, "item_id": item}))
+                .await
+                .unwrap()
+                .output;
         assert_eq!(again["error"], "not_queued", "{action}: {again}");
     }
     assert_eq!(steering.taken.lock().unwrap().len(), 1, "delivered once");

@@ -529,7 +529,11 @@ async fn send_now_steers_or_starts_one_item_once_and_keeps_a_hold() {
         let h = &h;
         let thread = a.thread_id.clone();
         async move {
-            let added = h.engine.queue_add(&thread, text, Author::User).await.unwrap();
+            let added = h
+                .engine
+                .queue_add(&thread, text, Author::User)
+                .await
+                .unwrap();
             QueueItemId::new(added["queuedId"].as_str().unwrap()).unwrap()
         }
     };
@@ -539,18 +543,35 @@ async fn send_now_steers_or_starts_one_item_once_and_keeps_a_hold() {
     assert_eq!(h.rt.steered_on(&a.thread_id), vec!["steer me"]);
     let again = h.engine.queue_send_now(&a, &first).await.unwrap_err();
     assert_eq!(again.code(), "not_queued", "never delivered twice");
-    let removed = h.engine.queue_remove(&a.thread_id, &first).await.unwrap_err();
-    assert_eq!(removed.code(), "not_queued", "a remove after it is refused, not a silent success");
+    let removed = h
+        .engine
+        .queue_remove(&a.thread_id, &first)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        removed.code(),
+        "not_queued",
+        "a remove after it is refused, not a silent success"
+    );
 
     // Idle and held after a Stop: only the chosen item starts.
     finish(&h.engine, &a.thread_id, TurnOutcome::completed(None)).await;
     h.engine.queue_hold(&a.thread_id, true).await.unwrap();
     let second = add("start me").await;
     let _third = add("stay queued").await;
-    let idle = h.engine.store().thread(&a.thread_id).await.unwrap().unwrap();
+    let idle = h
+        .engine
+        .store()
+        .thread(&a.thread_id)
+        .await
+        .unwrap()
+        .unwrap();
     let view = h.engine.queue_send_now(&idle, &second).await.unwrap();
     assert_eq!(view["delivery"], json!("started"));
-    assert_eq!(h.rt.starts_on(&a.thread_id).last().map(String::as_str), Some("start me"));
+    assert_eq!(
+        h.rt.starts_on(&a.thread_id).last().map(String::as_str),
+        Some("start me")
+    );
     assert_eq!(view["held"], json!(true), "the hold stays for the rest");
     assert_eq!(queued(&h, &a.thread_id).await, vec!["stay queued"]);
 }
@@ -562,7 +583,10 @@ async fn send_now_steers_or_starts_one_item_once_and_keeps_a_hold() {
 async fn a_compaction_turn_queues_follow_ups_instead_of_steering() {
     let h = harness().await;
     let thread = tid("c");
-    h.engine.ensure_thread(&thread, &scope(), None).await.unwrap();
+    h.engine
+        .ensure_thread(&thread, &scope(), None)
+        .await
+        .unwrap();
     let record = h.engine.store().thread(&thread).await.unwrap().unwrap();
     let turn = h.engine.user_turn(&record, "/compact").await.unwrap();
     assert!(matches!(turn, UserTurn::Started { .. }), "{turn:?}");
@@ -571,9 +595,14 @@ async fn a_compaction_turn_queues_follow_ups_instead_of_steering() {
     let running = h.engine.store().thread(&thread).await.unwrap().unwrap();
     let turn = h.engine.user_turn(&running, "after it").await.unwrap();
     assert!(matches!(turn, UserTurn::Queued { .. }), "{turn:?}");
-    assert!(h.rt.steered_on(&thread).is_empty(), "never steered into compaction");
+    assert!(
+        h.rt.steered_on(&thread).is_empty(),
+        "never steered into compaction"
+    );
     let id = QueueItemId::new(
-        h.engine.queue_list(&thread).await.unwrap()["items"][0]["id"].as_str().unwrap(),
+        h.engine.queue_list(&thread).await.unwrap()["items"][0]["id"]
+            .as_str()
+            .unwrap(),
     )
     .unwrap();
     let err = h.engine.queue_send_now(&running, &id).await.unwrap_err();

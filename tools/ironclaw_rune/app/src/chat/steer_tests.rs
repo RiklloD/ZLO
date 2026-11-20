@@ -79,7 +79,10 @@ fn enter_while_running_steers_the_turn_by_default() {
     running(&mut s);
     let mut tx = Tx::default();
     actions::send_as(&mut s, ID, false, &mut tx);
-    assert!(chat(&s).composer.text.is_empty(), "the words left the composer");
+    assert!(
+        chat(&s).composer.text.is_empty(),
+        "the words left the composer"
+    );
     assert_eq!(
         pending_rows(&s),
         vec![("also check clippy".into(), Some(true))],
@@ -96,13 +99,19 @@ fn the_alternate_queues_and_the_queue_setting_flips_both() {
     running(&mut s);
     actions::send_as(&mut s, ID, true, &mut tx);
     assert!(chat(&s).orchestration.busy, "⌘↵ queues it");
-    assert!(pending_rows(&s).is_empty(), "a queued message is not in the turn");
+    assert!(
+        pending_rows(&s).is_empty(),
+        "a queued message is not in the turn"
+    );
 
     let mut s = test_state();
     running(&mut s);
     s.prefs.follow_ups = FollowUps::Queue;
     actions::send_as(&mut s, ID, false, &mut tx);
-    assert!(chat(&s).orchestration.busy, "Enter queues under Follow-ups: Queue");
+    assert!(
+        chat(&s).orchestration.busy,
+        "Enter queues under Follow-ups: Queue"
+    );
 
     let mut s = test_state();
     running(&mut s);
@@ -124,7 +133,11 @@ fn files_can_wait_in_the_queue() {
     assert!(chat(&s).orchestration.busy, "queued");
     assert!(chat(&s).staged.is_empty() && chat(&s).composer.text.is_empty());
     let kept = crate::drafts::restore(&s, &outbox(&s)[0]).expect("outbox");
-    assert_eq!(kept.files.len(), 1, "the outbox keeps the file until the ack");
+    assert_eq!(
+        kept.files.len(),
+        1,
+        "the outbox keeps the file until the ack"
+    );
 }
 
 /// P1 (Send now): it is one atomic backend call. The words never leave the
@@ -141,9 +154,17 @@ fn send_now_is_one_atomic_call_that_never_takes_the_words() {
     }
     assert!(send_first_queued(&mut s, ID, &mut tx));
     assert!(chat(&s).orchestration.busy);
-    assert_eq!(chat(&s).composer.text, "also check clippy", "the draft stays");
+    assert_eq!(
+        chat(&s).composer.text,
+        "also check clippy",
+        "the draft stays"
+    );
     assert!(pending_rows(&s).is_empty(), "no optimistic copy to strand");
-    assert_eq!(chat(&s).orchestration.queue.items.len(), 2, "still queued until the answer");
+    assert_eq!(
+        chat(&s).orchestration.queue.items.len(),
+        2,
+        "still queued until the answer"
+    );
 
     let mut s = test_state();
     running(&mut s);
@@ -152,7 +173,10 @@ fn send_now_is_one_atomic_call_that_never_takes_the_words() {
         q.items[0].status = "sending".into();
         c.orchestration.queue = q;
     }
-    assert!(!send_first_queued(&mut s, ID, &mut tx), "a sending item is not offered");
+    assert!(
+        !send_first_queued(&mut s, ID, &mut tx),
+        "a sending item is not offered"
+    );
     send_now(&mut s, ID, "q0", &mut tx);
     assert!(!chat(&s).orchestration.busy);
 
@@ -182,20 +206,59 @@ fn a_queued_edit_waits_for_the_ack_and_a_refused_save_keeps_the_revision() {
     type_text(&mut s, "first, reworded");
     let mut tx = Tx::default();
     actions::send_as(&mut s, ID, false, &mut tx);
-    assert!(chat(&s).orchestration.editing.as_ref().is_some_and(|e| e.saving));
-    assert_eq!(chat(&s).composer.text, "first, reworded", "kept until the ack");
+    assert!(
+        chat(&s)
+            .orchestration
+            .editing
+            .as_ref()
+            .is_some_and(|e| e.saving)
+    );
+    assert_eq!(
+        chat(&s).composer.text,
+        "first, reworded",
+        "kept until the ack"
+    );
     actions::send_as(&mut s, ID, true, &mut tx);
-    assert_eq!(chat(&s).composer.text, "first, reworded", "a second submit does nothing");
+    assert_eq!(
+        chat(&s).composer.text,
+        "first, reworded",
+        "a second submit does nothing"
+    );
 
     settle_edit(&mut s, ID, inst, Err("server said no".into()), &mut tx);
-    assert_eq!(chat(&s).composer.text, "first, reworded", "the revision survives");
-    assert!(chat(&s).orchestration.editing.as_ref().is_some_and(|e| !e.saving));
-    assert!(chat(&s).error.as_deref().is_some_and(|e| e.contains("server said no")));
+    assert_eq!(
+        chat(&s).composer.text,
+        "first, reworded",
+        "the revision survives"
+    );
+    assert!(
+        chat(&s)
+            .orchestration
+            .editing
+            .as_ref()
+            .is_some_and(|e| !e.saving)
+    );
+    assert!(
+        chat(&s)
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("server said no"))
+    );
 
     actions::send_as(&mut s, ID, false, &mut tx);
-    settle_edit(&mut s, ID, inst, Ok((queue_of(&["first, reworded"]), None)), &mut tx);
+    settle_edit(
+        &mut s,
+        ID,
+        inst,
+        Ok((queue_of(&["first, reworded"]), None)),
+        &mut tx,
+    );
     assert!(chat(&s).orchestration.editing.is_none());
-    assert_eq!(chat(&s).composer.text, "also check clippy", "the set-aside draft is back");
+    assert_eq!(
+        chat(&s).composer.text,
+        "also check clippy",
+        "the set-aside draft is back"
+    );
 }
 
 /// P1 (queued edit): save-and-steer is the backend's edit then `send_now`;
@@ -212,7 +275,13 @@ fn save_and_steer_keeps_the_item_queued_when_the_send_is_refused() {
     type_text(&mut s, "steer this");
     let mut tx = Tx::default();
     actions::send_as(&mut s, ID, true, &mut tx);
-    assert!(chat(&s).orchestration.editing.as_ref().is_some_and(|e| e.saving));
+    assert!(
+        chat(&s)
+            .orchestration
+            .editing
+            .as_ref()
+            .is_some_and(|e| e.saving)
+    );
     let saved = queue_of(&["steer this"]);
     settle_edit(
         &mut s,
@@ -222,7 +291,12 @@ fn save_and_steer_keeps_the_item_queued_when_the_send_is_refused() {
         &mut tx,
     );
     assert_eq!(chat(&s).orchestration.queue.items[0].text, "steer this");
-    assert!(chat(&s).error.as_deref().is_some_and(|e| e.contains("stays queued")));
+    assert!(
+        chat(&s)
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("stays queued"))
+    );
     assert_eq!(chat(&s).composer.text, "also check clippy");
 }
 
@@ -244,7 +318,9 @@ fn a_thread_switch_mid_edit_keeps_both_drafts() {
         "the thread's draft is the set-aside composer"
     );
     assert_eq!(
-        crate::drafts::restore(&s, &edit_key(ID)).map(|d| d.text).as_deref(),
+        crate::drafts::restore(&s, &edit_key(ID))
+            .map(|d| d.text)
+            .as_deref(),
         Some("half-done edit"),
         "the edit has its own key"
     );
@@ -254,7 +330,10 @@ fn a_thread_switch_mid_edit_keeps_both_drafts() {
         c.composer.replace_text("also check clippy");
     }
     recover(&mut s, ID);
-    assert_eq!(chat(&s).composer.text, "also check clippy\n\nhalf-done edit");
+    assert_eq!(
+        chat(&s).composer.text,
+        "also check clippy\n\nhalf-done edit"
+    );
     assert!(!crate::drafts::has(&s, &edit_key(ID)));
 }
 
@@ -279,7 +358,12 @@ fn a_drained_item_or_a_switch_never_drops_an_edit() {
     edit_target_gone(&mut s, ID);
     assert!(chat(&s).orchestration.editing.is_none());
     assert_eq!(chat(&s).composer.text, "changed\n\nalso check clippy");
-    assert!(chat(&s).error.as_deref().is_some_and(|e| e.contains("still here")));
+    assert!(
+        chat(&s)
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("still here"))
+    );
 }
 
 /// P1 (failed follow-ups): a refused queue add puts words and files back
@@ -293,14 +377,24 @@ fn a_refused_queue_add_keeps_words_and_files_below_a_newer_draft() {
     let draft = take(&mut s, ID).expect("draft");
     type_text(&mut s, "typed since");
     settle_queue_add(&mut s, ID, inst, Err("queue full".into()), draft);
-    assert!(chat(&s).composer.text.starts_with("typed since\n\nalso check clippy"));
+    assert!(
+        chat(&s)
+            .composer
+            .text
+            .starts_with("typed since\n\nalso check clippy")
+    );
     assert_eq!(chat(&s).staged.len(), 1, "the pasted picture came back");
     assert_eq!(
         inline_files::pills(&chat(&s).composer).len(),
         1,
         "with its card, moved below the newer draft"
     );
-    assert!(chat(&s).error.as_deref().is_some_and(|e| e.contains("queue full")));
+    assert!(
+        chat(&s)
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("queue full"))
+    );
     assert!(outbox(&s).is_empty());
 }
 
@@ -315,7 +409,12 @@ fn a_failed_steer_keeps_files_below_a_newer_draft() {
     type_text(&mut s, "newer");
     let mut tx = Tx::default();
     apply_landed(&mut s, ID, pending, Err("offline".into()), draft, &mut tx);
-    assert!(chat(&s).composer.text.starts_with("newer\n\nalso check clippy"));
+    assert!(
+        chat(&s)
+            .composer
+            .text
+            .starts_with("newer\n\nalso check clippy")
+    );
     assert_eq!(chat(&s).staged.len(), 1);
     assert_eq!(inline_files::pills(&chat(&s).composer).len(), 1);
     assert!(pending_rows(&s).is_empty());
@@ -342,8 +441,17 @@ fn a_blocked_send_takes_nothing_from_the_composer() {
         c.orchestration.busy = true;
     }
     actions::send_as(&mut s, ID, true, &mut tx);
-    assert_eq!(chat(&s).composer.text, "also check clippy", "busy queue: kept");
-    assert!(chat(&s).error.as_deref().is_some_and(|e| e.contains("busy")));
+    assert_eq!(
+        chat(&s).composer.text,
+        "also check clippy",
+        "busy queue: kept"
+    );
+    assert!(
+        chat(&s)
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("busy"))
+    );
 }
 
 /// P1 (failed follow-ups): with the chat closed, a failed send lands in
@@ -367,7 +475,10 @@ fn unsent_words_survive_a_closed_chat_and_a_quit() {
     let draft = take(&mut s, ID).expect("draft");
     s.chat = Some(ChatState::new(ID.into()));
     recover(&mut s, ID);
-    assert!(chat(&s).composer.text.is_empty(), "still in flight: not recovered");
+    assert!(
+        chat(&s).composer.text.is_empty(),
+        "still in flight: not recovered"
+    );
     // A quit: this process no longer has it in flight.
     IN_FLIGHT.with(|f| f.borrow_mut().clear());
     recover(&mut s, ID);
@@ -390,23 +501,41 @@ fn the_typed_delivery_settles_the_row() {
         apply_landed(&mut s, ID, pending, Ok(ack(answer)), draft, &mut tx);
         s
     };
-    let s = settle(serde_json::json!({"outcome": "deferred_busy", "delivery": "steered",
-        "steer_id": "s1"}));
-    assert_eq!(pending_rows(&s), vec![("also check clippy".into(), Some(true))]);
+    let s = settle(
+        serde_json::json!({"outcome": "deferred_busy", "delivery": "steered",
+        "steer_id": "s1"}),
+    );
+    assert_eq!(
+        pending_rows(&s),
+        vec![("also check clippy".into(), Some(true))]
+    );
     assert!(outbox(&s).is_empty(), "confirmed");
-    let s = settle(serde_json::json!({"outcome": "deferred_busy", "delivery": "steered",
-        "waiting_for_turn": true, "queued_id": "q9"}));
+    let s = settle(
+        serde_json::json!({"outcome": "deferred_busy", "delivery": "steered",
+        "waiting_for_turn": true, "queued_id": "q9"}),
+    );
     assert!(pending_rows(&s).is_empty(), "shown once, as its queue row");
-    let s = settle(serde_json::json!({"outcome": "deferred_busy", "delivery": "queued",
-        "queued_id": "q9", "notice": "Sent to the running turn"}));
+    let s = settle(
+        serde_json::json!({"outcome": "deferred_busy", "delivery": "queued",
+        "queued_id": "q9", "notice": "Sent to the running turn"}),
+    );
     assert!(pending_rows(&s).is_empty(), "the notice text never decides");
     let s = settle(serde_json::json!({"outcome": "submitted", "delivery": "started"}));
     assert_eq!(pending_rows(&s), vec![("also check clippy".into(), None)]);
     let s = settle(serde_json::json!({"outcome": "deferred_busy"}));
-    assert_eq!(pending_rows(&s), vec![("also check clippy".into(), None)], "unresolved");
+    assert_eq!(
+        pending_rows(&s),
+        vec![("also check clippy".into(), None)],
+        "unresolved"
+    );
     let mut s = settle(serde_json::json!({"outcome": "rejected_busy"}));
     assert_eq!(chat(&s).composer.text, "also check clippy");
-    assert!(chat(&s).error.as_deref().is_some_and(|e| e.contains("⌘↵ to queue")));
+    assert!(
+        chat(&s)
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("⌘↵ to queue"))
+    );
     assert!(pending_rows(&s).is_empty());
     let _ = &mut s;
     let _ = &mut tx;
@@ -423,7 +552,11 @@ fn an_idle_send_settles_like_any_other() {
     let mut tx = Tx::default();
     actions::send_as(&mut s, ID, false, &mut tx);
     let pending = pending_rows(&s);
-    assert_eq!(pending, vec![("hello".into(), None)], "idle: a prompt, not a steer");
+    assert_eq!(
+        pending,
+        vec![("hello".into(), None)],
+        "idle: a prompt, not a steer"
+    );
     let key = outbox(&s)[0].clone();
     let sub = key.trim_start_matches(&outbox_prefix(ID)).to_string();
     let draft = Draft {
@@ -447,12 +580,17 @@ fn an_idle_send_settles_like_any_other() {
         &mut s,
         ID,
         id,
-        Ok(ack(serde_json::json!({"outcome": "deferred_busy", "delivery": "queued",
-            "queued_id": "q1"}))),
+        Ok(ack(
+            serde_json::json!({"outcome": "deferred_busy", "delivery": "queued",
+            "queued_id": "q1"}),
+        )),
         draft,
         &mut tx,
     );
-    assert!(pending_rows(&s).is_empty(), "queued after all: no sent bubble");
+    assert!(
+        pending_rows(&s).is_empty(),
+        "queued after all: no sent bubble"
+    );
     assert!(outbox(&s).is_empty());
 }
 
@@ -479,9 +617,13 @@ fn the_click_after_stop_is_ignored() {
     press_send(&mut s, ID, false, false, &mut tx);
     assert_eq!(chat(&s).composer.text, "also check clippy", "guarded");
     if let Some(c) = chat_for(&mut s, ID) {
-        c.orchestration.stopped_at =
-            Some(std::time::Instant::now() - STOP_CLICK_GUARD - std::time::Duration::from_millis(1));
+        c.orchestration.stopped_at = Some(
+            std::time::Instant::now() - STOP_CLICK_GUARD - std::time::Duration::from_millis(1),
+        );
     }
     press_send(&mut s, ID, false, false, &mut tx);
-    assert!(chat(&s).composer.text.is_empty(), "after the guard it sends");
+    assert!(
+        chat(&s).composer.text.is_empty(),
+        "after the guard it sends"
+    );
 }

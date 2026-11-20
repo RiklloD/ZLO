@@ -13,7 +13,8 @@ use super::{
 use crate::chat::ChatState;
 use crate::chat::dispatch;
 use crate::design::kit::compact::{
-    ICON_XS, SM, XS, ghost_button, ghost_icon, ghost_icon_tx, ico, spinner, txt, txt_medium, variant_button,
+    ICON_XS, SM, XS, ghost_button, ghost_icon, ghost_icon_tx, ico, spinner, txt, txt_medium,
+    variant_button,
 };
 use crate::design::{self, Palette};
 use crate::icons;

@@ -563,7 +563,12 @@ impl Engine {
     /// Whether `thread`'s running turn is a context compaction (its prompt
     /// was `/compact`): t3code queues follow-ups instead of steering one.
     pub async fn compacting(&self, thread: &ThreadId) -> Result<bool> {
-        let Some(record) = self.store.thread(thread).await?.filter(ThreadRecord::is_running) else {
+        let Some(record) = self
+            .store
+            .thread(thread)
+            .await?
+            .filter(ThreadRecord::is_running)
+        else {
             return Ok(false);
         };
         Ok(self.store.live_work().await?.iter().any(|w| {
@@ -1075,7 +1080,8 @@ impl TurnEventSink for Engine {
                 }
                 return Ok(());
             }
-            self.mark_running(&thread, run_id.as_deref(), at, false).await?;
+            self.mark_running(&thread, run_id.as_deref(), at, false)
+                .await?;
             if let Some(task) = self.store.task_for_child(thread_id).await? {
                 self.store
                     .move_task(

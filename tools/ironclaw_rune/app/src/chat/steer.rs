@@ -571,13 +571,7 @@ pub(crate) fn send_now(s: &mut State, id: &str, item_id: &str, tx: &mut Tx) {
 
 /// One queue call whose words stay on the backend either way; the answer
 /// replaces the queue, and the timeline reloads.
-fn queue_call(
-    s: &mut State,
-    id: &str,
-    action: QueueAction,
-    failure: &'static str,
-    tx: &mut Tx,
-) {
+fn queue_call(s: &mut State, id: &str, action: QueueAction, failure: &'static str, tx: &mut Tx) {
     let Some(c) = chat_for(s, id) else { return };
     let o = &mut c.orchestration;
     o.busy = true;

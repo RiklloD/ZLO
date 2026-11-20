@@ -159,9 +159,11 @@ pub(crate) enum KeyAction {
 pub(crate) fn key_action(ev: &KeyEvent, cx: KeyContext) -> Option<KeyAction> {
     let m = ev.mods;
     let action = match ev.key {
-        Key::Enter if m.cmd && m.alt && !m.ctrl_only() => cx
-            .approval
-            .map(|always| KeyAction::Approve { always: m.shift && always }),
+        Key::Enter if m.cmd && m.alt && !m.ctrl_only() => {
+            cx.approval.map(|always| KeyAction::Approve {
+                always: m.shift && always,
+            })
+        }
         Key::Enter if m.cmd && !m.alt && !m.ctrl_only() => {
             if m.shift {
                 (cx.queued > 0).then_some(KeyAction::SendFirstQueued)
@@ -347,10 +349,7 @@ mod tests {
             shift: true,
             ..cmd()
         };
-        let alt_cmd = Mods {
-            alt: true,
-            ..cmd()
-        };
+        let alt_cmd = Mods { alt: true, ..cmd() };
         let alt_shift_cmd = Mods {
             alt: true,
             shift: true,
@@ -409,7 +408,11 @@ mod tests {
             draft_empty: true,
             ..held
         };
-        assert_eq!(key_action(&key(Key::Enter, cmd()), cleared), None, "no approval either");
+        assert_eq!(
+            key_action(&key(Key::Enter, cmd()), cleared),
+            None,
+            "no approval either"
+        );
         let typed = KeyContext {
             draft_empty: false,
             ..held

@@ -459,9 +459,8 @@ impl OrchestratedProductSurface {
         result.map(Some)
     }
 
-    /// A test's own home folder instead of `$HOME`.
-    #[cfg(test)]
-    pub(super) fn with_home(mut self, home: ProfileHome) -> Self {
+    /// Serve from `home` instead of `$HOME` (profiles, landed attachments).
+    pub fn with_home(mut self, home: ProfileHome) -> Self {
         self.home = Some(home);
         self
     }

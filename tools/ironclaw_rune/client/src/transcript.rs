@@ -556,7 +556,10 @@ impl Transcript {
         let mut messages = page.messages;
         // The typed marks win over the rows' own fields.
         for mark in page.steer_marks {
-            if let Some(m) = messages.iter_mut().find(|m| m.message_id == mark.message_id) {
+            if let Some(m) = messages
+                .iter_mut()
+                .find(|m| m.message_id == mark.message_id)
+            {
                 if mark.steer.is_some() {
                     m.steer = mark.steer;
                 }
@@ -1362,6 +1365,19 @@ impl Transcript {
                     .or_insert(at);
             }
         }
+        // Where each steer's segment ends: the person's next message in the
+        // same run, else the run's last stored row.
+        let mut segment_end: HashMap<&str, i64> = HashMap::new();
+        {
+            let mut last_user: HashMap<&str, &str> = HashMap::new();
+            for m in self.durable.iter().filter(|m| m.kind == MessageKind::User) {
+                if let (Some(run), Some(at)) = (m.turn_run_id.as_deref(), m.created_at)
+                    && let Some(prev) = last_user.insert(run, m.message_id.as_str())
+                {
+                    segment_end.insert(prev, at.timestamp_millis());
+                }
+            }
+        }
         let active = self.active_run();
         // Notices a Stop left on a run's last row (stored or not) show
         // after the last row drawn at or before it.
@@ -1489,7 +1505,11 @@ impl Transcript {
                         continues: false,
                         continued_ms: run
                             .filter(|r| active != Some(*r))
-                            .and_then(|r| run_last_at.get(r))
+                            .and_then(|r| {
+                                segment_end
+                                    .get(message.message_id.as_str())
+                                    .or_else(|| run_last_at.get(r))
+                            })
                             .zip(sent)
                             .map(|(end, at)| end - at)
                             .filter(|ms| *ms > 0),
@@ -2712,10 +2732,19 @@ mod tests {
         );
         let first = marks[1].1.clone().expect("a steer");
         assert!(!first.waiting && !first.continues);
-        assert_eq!(first.continued_ms, Some(120_000), "worked 2 min after it");
+        assert_eq!(
+            first.continued_ms,
+            Some(10_000),
+            "its segment ends where the next steer starts"
+        );
         let second = marks[2].1.clone().expect("a steer");
         assert!(second.waiting, "queued until the model reads it");
         assert!(second.continues, "the label shows once");
+        assert_eq!(
+            second.continued_ms,
+            Some(110_000),
+            "the last steer's segment runs to the run's end"
+        );
         assert_eq!(marks[3], ("next".into(), None));
     }
 
@@ -2763,5 +2792,69 @@ mod tests {
             if title == "Steer delivery not confirmed" && words == "use rune"));
         assert!(matches!(&rows[at - 1], Row::Assistant { text, .. } if text == "Stopped."));
         assert!(matches!(&rows[at + 1], Row::User { text, .. } if text == "again"));
+    }
+
+    /// A's final wire: the page's typed `steer_marks` mark rows by message
+    /// id (and win over row fields); a native `rejected_busy` row is never
+    /// a steer and says it was not delivered; the ack's `steer_id` claims
+    /// its own row even when the text was reworded.
+    #[test]
+    fn steer_marks_rejected_rows_and_steer_ids_from_the_final_wire() {
+        let mut t = Transcript::default();
+        let page: TimelinePage = serde_json::from_value(serde_json::json!({
+            "thread": {"thread_id": "t1"},
+            "messages": [
+                {"message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+                 "turn_run_id": RUN, "content": "go"},
+                {"message_id": "m2", "sequence": 2, "kind": "user", "status": "accepted",
+                 "turn_run_id": "other-run", "content": "marked by id", "steer_id": "s7"},
+                {"message_id": "m3", "sequence": 3, "kind": "user", "status": "rejected_busy",
+                 "turn_run_id": RUN, "content": "too late"},
+            ],
+            "steer_marks": [
+                {"message_id": "m2", "steer": {"id": "s7", "state": "pending",
+                  "waiting_to_be_read": true},
+                 "notices": [{"steer_id": "s8", "title": "Steer delivery not confirmed",
+                  "text": "lost words", "content": "Not confirmed."}]},
+            ],
+        }))
+        .expect("page decodes");
+        t.set_timeline(page);
+        let rows = t.rows();
+        let marks = steers(&rows);
+        assert!(
+            marks[1].1.as_ref().is_some_and(|m| m.waiting),
+            "a mark by message id, though the row's run is its own"
+        );
+        assert_eq!(
+            marks[2].1, None,
+            "a message the turn never took is no steer"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, Row::SteerNotice { words, .. } if words == "lost words"))
+        );
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, Row::SteerNotice { title, words, .. }
+            if title == "Not delivered" && words == "too late"))
+        );
+
+        // The ack's steer id claims the stored row, whatever its text.
+        let mut t = Transcript::default();
+        let id = t.push_pending_user("my words", &[]);
+        t.set_pending_steer_id(id, Some("s9".into()));
+        t.ack_pending_user(id);
+        t.set_timeline(
+            serde_json::from_value(serde_json::json!({
+                "thread": {"thread_id": "t1"},
+                "messages": [
+                    {"message_id": "m9", "sequence": 9, "kind": "user", "status": "accepted",
+                     "turn_run_id": RUN, "content": "reworded by the runtime", "steer_id": "s9"},
+                ],
+            }))
+            .expect("page decodes"),
+        );
+        assert_eq!(t.key_of_message("m9"), format!("pending:{id}"));
     }
 }

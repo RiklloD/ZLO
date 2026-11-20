@@ -181,7 +181,10 @@ mod tests {
         };
         assert!(on_key(&mut s, &press(true), &mut tx), "held: rebuild");
         assert!(s.workspace.inbox.cmd_held);
-        assert!(!on_key(&mut s, &press(true), &mut tx), "no change: not taken");
+        assert!(
+            !on_key(&mut s, &press(true), &mut tx),
+            "no change: not taken"
+        );
         assert!(on_key(&mut s, &press(false), &mut tx), "released: rebuild");
         assert!(!s.workspace.inbox.cmd_held);
     }

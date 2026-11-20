@@ -582,7 +582,9 @@ impl Engine {
         };
         // `respect_hold: false` starts this one item; the hold itself (and
         // so every other queued item) is left as it is.
-        let delivered = self.deliver(thread_id, item.text.clone(), origin, false).await;
+        let delivered = self
+            .deliver(thread_id, item.text.clone(), origin, false)
+            .await;
         let started = matches!(delivered, Ok(true));
         let mut settle = Settle::to(if started {
             QueueStatus::Sent

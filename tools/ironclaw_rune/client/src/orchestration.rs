@@ -720,9 +720,10 @@ mod tests {
             attachments: Vec::new(),
         };
         assert!(plain.body().get("attachments").is_none());
-        let doc: QueueDoc = serde_json::from_value(json!({"compacting": true, "delivery": "started",
+        let doc: QueueDoc =
+            serde_json::from_value(json!({"compacting": true, "delivery": "started",
             "items": [{"id": "q", "text": "t", "status": "sending"}]}))
-        .unwrap();
+            .unwrap();
         assert!(doc.compacting && doc.items[0].is_sending());
     }
 }
