@@ -21,7 +21,7 @@
 //! | `dock.rs` composer hand-off | `El::matched(COMPOSER_MATCH)` on both composers ([`COMPOSER_MATCH`]) |
 //! | `flip.rs` resorted rows / sliding pills | keyed inbox rows on `.motion(ROW_RESORT)`; the side dock's tab pill on `.motion(PILL)` |
 //! | `pulse.rs` shared 30 Hz loop clock | `El::looping` / `El::cycle` (one render clock, frames only while visible) |
-//! | `smooth_scroll.rs` wheel glide | ported: Rune scrolls a wheel 1:1, so `design::smooth_scroll` glides notches per viewport (`.wheel_glide(key)`) |
+//! | `smooth_scroll.rs` wheel glide | Rune glides notches natively (Chromium curve, whole device pixels, chaining) on Windows/Linux only; on macOS a wheel still moves 1:1, so `design::smooth_scroll` glides the macOS notches per viewport (`.wheel_glide(key)`) and leaves `WheelEvent::notch` deltas to Rune |
 //!
 //! Reduced motion (the battery saver, `prefs.reduce_motion`) is one switch
 //! for all of it: `look::apply_motion` sets `Cx::reduced_motion`, under which

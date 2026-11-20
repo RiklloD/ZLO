@@ -1,10 +1,13 @@
-//! Mouse-wheel notches glide instead of jumping (GPUI `design/smooth_scroll.rs`).
+//! Mouse-wheel notches glide instead of jumping on macOS (GPUI
+//! `design/smooth_scroll.rs`).
 //!
-//! Rune scrolls a wheel 1:1: a notch arrives as one 40 pt delta and the
-//! viewport jumps by it, while a trackpad streams small precise deltas and
-//! already glides. GPUI wrapped its window root and replayed each notch over
-//! the next frames on Chrome's wheel curve (ease-in-out, 200 ms, a notch in
-//! flight moving the target on at the current speed).
+//! Rune glides notched wheels itself on Windows and Linux (Chromium's wheel
+//! curve on whole device pixels, retargeted mid-ease, chained across nested
+//! viewports: Rune #1150/#1137/#1123/#1214), but only for deltas its host
+//! marks `WheelEvent::notch`, and on macOS it never does: a mouse wheel's
+//! line delta still moves a viewport 1:1 there (`input/host_events.rs`).
+//! ZLO ships on macOS, so this wrapper stays for exactly that case and
+//! steps aside for any delta Rune glides natively.
 //!
 //! Here the same feel is a thin wrapper per scroll viewport, [`glide`]:
 //! the viewport's `on_wheel` takes each notch (an imprecise delta with no
@@ -115,11 +118,17 @@ fn wheel_notch(key: &str, ev: WheelEvent, tx: &mut Tx) -> bool {
     true
 }
 
-/// Whether `ev` is a notch the glide takes: a mouse wheel's line step, with
-/// no modifier that makes it something else (⌘/⌃ zoom, ⌥). Shift only picks
+/// Whether `ev` is a notch the glide takes: a mouse wheel's line step that
+/// Rune doesn't already ease (`ev.notch`: Windows and Linux), with no
+/// modifier that makes it something else (⌘/⌃ zoom, ⌥). Shift only picks
 /// the axis, and macOS already turned the delta for it.
 fn is_notch(ev: &WheelEvent) -> bool {
-    !ev.precise && !ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt && (ev.dx != 0. || ev.dy != 0.)
+    !ev.precise
+        && !ev.notch
+        && !ev.mods.cmd
+        && !ev.mods.ctrl
+        && !ev.mods.alt
+        && (ev.dx != 0. || ev.dy != 0.)
 }
 
 /// The offset a notch glides to, or `None` to leave the delta to Rune. Any
@@ -251,6 +260,13 @@ mod tests {
         assert_eq!(step(&mut t, notch(-40.), Instant::now()), Some([0., 1000.]));
         let mut top = track(0., 1000.);
         assert_eq!(step(&mut top, notch(40.), Instant::now()), None);
+    }
+
+    #[test]
+    fn a_notch_rune_glides_itself_is_left_to_rune() {
+        let mut t = track(100., 1000.);
+        let native = WheelEvent::new(0., -40.).precise(false).notch(true);
+        assert_eq!(step(&mut t, native, Instant::now()), None);
     }
 
     #[test]
