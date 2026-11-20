@@ -554,3 +554,29 @@ async fn send_now_steers_or_starts_one_item_once_and_keeps_a_hold() {
     assert_eq!(view["held"], json!(true), "the hold stays for the rest");
     assert_eq!(queued(&h, &a.thread_id).await, vec!["stay queued"]);
 }
+
+/// A `/compact` turn takes no steer (t3code queues follow-ups during
+/// compaction): a send queues, Send now refuses and keeps it queued, and
+/// the queue view says the thread is compacting.
+#[tokio::test]
+async fn a_compaction_turn_queues_follow_ups_instead_of_steering() {
+    let h = harness().await;
+    let thread = tid("c");
+    h.engine.ensure_thread(&thread, &scope(), None).await.unwrap();
+    let record = h.engine.store().thread(&thread).await.unwrap().unwrap();
+    let turn = h.engine.user_turn(&record, "/compact").await.unwrap();
+    assert!(matches!(turn, UserTurn::Started { .. }), "{turn:?}");
+    let view = h.engine.queue_list(&thread).await.unwrap();
+    assert_eq!(view["compacting"], json!(true));
+    let running = h.engine.store().thread(&thread).await.unwrap().unwrap();
+    let turn = h.engine.user_turn(&running, "after it").await.unwrap();
+    assert!(matches!(turn, UserTurn::Queued { .. }), "{turn:?}");
+    assert!(h.rt.steered_on(&thread).is_empty(), "never steered into compaction");
+    let id = QueueItemId::new(
+        h.engine.queue_list(&thread).await.unwrap()["items"][0]["id"].as_str().unwrap(),
+    )
+    .unwrap();
+    let err = h.engine.queue_send_now(&running, &id).await.unwrap_err();
+    assert_eq!(err.code(), "compacting");
+    assert_eq!(queued(&h, &thread).await, vec!["after it"]);
+}

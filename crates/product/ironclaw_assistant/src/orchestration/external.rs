@@ -271,6 +271,12 @@ pub(super) fn timeline_values(thread: &ThreadId, history: &[HistoryMessage]) -> 
                 "content": row.text,
                 "redaction_ref": null,
                 "steer_id": row.steer_id,
+                // When the runtime recorded it: clients order steers and
+                // measure the work after one ("Continued for").
+                "created_at": row
+                    .at
+                    .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+                    .map(|at| at.to_rfc3339()),
             })
         })
         .collect()

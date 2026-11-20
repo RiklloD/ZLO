@@ -45,6 +45,7 @@ impl Engine {
                   "holdReason": hold.map(HoldReason::as_str), "items": items,
                   "runtime": record.as_ref().map(|t| t.runtime_id.as_str()),
                   "running": record.as_ref().is_some_and(ThreadRecord::is_running),
+                  "compacting": self.compacting(thread).await?,
                   "activeRunId": record.as_ref().and_then(|t| t.active_run_id.as_deref())}))
     }
 

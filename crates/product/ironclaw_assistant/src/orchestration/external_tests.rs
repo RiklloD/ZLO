@@ -810,3 +810,25 @@ async fn queue_route_takes_files_and_sends_one_item_now_once() {
     }
     assert_eq!(steering.taken.lock().unwrap().len(), 1, "delivered once");
 }
+
+/// CLI timeline rows carry the time the runtime recorded, so a client can
+/// order steers and time the work after each one.
+#[test]
+fn cli_timeline_rows_carry_their_time() {
+    let row = |text: &str, at: Option<i64>| HistoryMessage {
+        role: HistoryRole::User,
+        text: text.to_string(),
+        tool_calls: Vec::new(),
+        run_id: Some("r1".into()),
+        hidden: false,
+        at,
+        steer_id: None,
+    };
+    let thread = ThreadId::new("cli-times").unwrap();
+    let rows = super::external::timeline_values(
+        &thread,
+        &[row("start", Some(1_763_600_000_000)), row("no time", None)],
+    );
+    assert_eq!(rows[0]["created_at"], "2025-11-20T00:53:20+00:00");
+    assert!(rows[1]["created_at"].is_null());
+}

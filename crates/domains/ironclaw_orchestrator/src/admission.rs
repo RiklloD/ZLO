@@ -243,6 +243,18 @@ impl Engine {
             .runtime(&current.runtime_id)?
             .capabilities()
             .steer_in_turn;
+        // A compaction turn takes no steer: the message waits behind it.
+        if self.compacting(thread_id).await? {
+            if intent != SendIntent::Auto {
+                self.store
+                    .queue_settle(&delivery, &claim, &Settle::to(QueueStatus::Cancelled))
+                    .await?;
+                return Ok(Admitted::Refused);
+            }
+            return self
+                .settle_queued(thread_id, &delivery, &claim, steerable, false)
+                .await;
+        }
         let how = if intent == SendIntent::Restart {
             SteerHow::Restart
         } else {
@@ -618,6 +630,12 @@ impl Engine {
                 "The thread has no active turn to steer; it will run from the queue.",
             ));
         };
+        if self.compacting(thread_id).await? {
+            return Err(OrchestratorError::request(
+                "compacting",
+                "The thread is compacting its context; the message stays queued and runs after it.",
+            ));
+        }
         let claim = new_claim();
         if !self.store.queue_claim(id, &claim).await? {
             return Err(OrchestratorError::request(
