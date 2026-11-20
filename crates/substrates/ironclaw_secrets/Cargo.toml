@@ -37,7 +37,7 @@ secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
 # provisioner. Never enabled by a shipped artifact.
 ironclaw_filesystem = { path = "../ironclaw_filesystem", features = ["test-support"] }
 # libSQL leg of the lease-listing conformance suite.
-libsql = { version = "0.9", default-features = false, features = ["core"] }
+libsql = { version = "0.10", default-features = false, features = ["core"] }
 # PostgreSQL leg of the lease-listing conformance suite: `DATABASE_URL` when
 # set (one isolated database per test), else a testcontainers server.
 deadpool-postgres = "0.14"

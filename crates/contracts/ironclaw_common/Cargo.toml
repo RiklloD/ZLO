@@ -20,7 +20,7 @@ dist = false
 [dependencies]
 base64 = { workspace = true }
 chrono-tz = "0.10"
-dirs = "6"
+dirs = "7"
 hex = "0.4"
 llm-prices = "1.1"
 rand = "0.10"
