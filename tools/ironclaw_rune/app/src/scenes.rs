@@ -16,6 +16,15 @@ pub type Scene = (&'static str, fn(&mut State));
 const LARGE_TYPE: f32 = 20.;
 
 pub const SCENES: &[Scene] = &[
+    // Frame-time bench scenes (`bench.rs`, `bench/run.py`).
+    ("bench-dock", crate::bench::dock),
+    ("bench-scroll", crate::bench::scroll),
+    ("bench-shelf", crate::bench::shelf),
+    ("bench-sidebar", crate::bench::sidebar),
+    ("bench-stream", crate::bench::stream),
+    ("bench-switch", crate::bench::switch),
+    ("bench-tools", crate::bench::tools),
+    ("bench-typing", crate::bench::typing),
     ("chat-context-banner", crate::chat::fixtures::context_banner),
     ("chat-long-draft", crate::chat::fixtures::long_draft),
     ("chat-wallpaper-conversation", |s| {

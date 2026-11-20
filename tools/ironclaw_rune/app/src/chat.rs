@@ -105,7 +105,7 @@ pub struct ChatState {
     pub rows: Rc<Vec<Row>>,
     /// Bumped with `rows`; with the other fold inputs it tells `sync_items`
     /// when there is nothing to redo.
-    rows_gen: u64,
+    pub(crate) rows_gen: u64,
     folded: Option<(u64, bool, bool, bool, bool)>,
     /// What the list shows: `rows` folded, plus the pending and reserve rows.
     pub items: Rc<Vec<Item>>,
