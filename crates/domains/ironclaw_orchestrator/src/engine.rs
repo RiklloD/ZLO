@@ -90,6 +90,8 @@ pub struct Engine {
     pub(crate) secret_vault: OnceLock<Arc<dyn crate::agent_requests::SecretVault>>,
     /// Tool calls waiting on an agent request, woken when it is answered.
     pub(crate) request_waiters: StdMutex<HashMap<String, Arc<Notify>>>,
+    /// One admission path per thread (`crate::admission`).
+    pub(crate) admission: crate::admission::AdmissionLocks,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -146,6 +148,7 @@ impl Engine {
             peer_links: OnceLock::new(),
             secret_vault: OnceLock::new(),
             request_waiters: StdMutex::new(HashMap::new()),
+            admission: StdMutex::new(HashMap::new()),
         }))
     }
 
@@ -296,6 +299,8 @@ impl Engine {
         log_step("cancels", self.process_cancels().await);
         log_step("schedules", self.fire_schedules().await);
         log_step("restarts", self.fire_restarts().await);
+        log_step("steer recovery", self.recover_all_stranded().await);
+        log_step("deferred steers", self.deliver_all_deferred_steers().await);
         log_step("queues", self.drain_queues().await);
         log_step("results", self.deliver_results().await);
         log_step("transfers", self.deliver_transfers_now().await);
@@ -422,6 +427,7 @@ impl Engine {
                 .set_hold(thread_id, Some(HoldReason::Stopped))
                 .await?;
             self.store.cancel_armed_recoveries(thread_id).await?;
+            self.steers_on_stop(thread_id).await?;
             self.cancel_goal_check(thread_id).await?;
             self.mark_cancel_tree(thread_id, "parent stopped").await?;
         }
@@ -553,7 +559,8 @@ impl Engine {
     // ── tick steps ──────────────────────────────────────────────────────
 
     async fn boot(&self) -> Result<()> {
-        self.store.requeue_sending().await?;
+        // Claims a crash left behind settle before anything drains.
+        self.store.reconcile_claims().await?;
         self.store.requeue_running_goal_checks().await?;
         // Live work another engine instance left behind was cut by its exit.
         for work in self.store.live_work().await? {
@@ -586,29 +593,7 @@ impl Engine {
 
     async fn drain_queues(&self) -> Result<()> {
         for thread_id in self.store.queued_threads().await? {
-            if self.store.hold(&thread_id).await?.is_some() {
-                continue;
-            }
-            match self.store.thread(&thread_id).await? {
-                Some(t) if !t.is_running() => {}
-                _ => continue,
-            }
-            let Some(item) = self.store.claim_queue_head(&thread_id).await? else {
-                continue;
-            };
-            let delivered = self
-                .deliver(&thread_id, item.text.clone(), TurnOrigin::QueueDrain, true)
-                .await;
-            let next = if matches!(delivered, Ok(true)) {
-                self.store.set_last_user(&thread_id, now_ms()).await?;
-                QueueStatus::Sent
-            } else {
-                QueueStatus::Pending
-            };
-            self.store
-                .set_queue_status(&item.id, QueueStatus::Sending, next)
-                .await?;
-            delivered?;
+            self.drain_thread(&thread_id).await?;
         }
         Ok(())
     }
@@ -622,17 +607,20 @@ impl Engine {
             }
         }
         for (parent, tasks) in by_parent {
-            // Stop holds wakes; the user's queued messages go first.
-            if self.store.hold(&parent).await?.is_some()
-                || !self.store.queue(&parent, false).await?.is_empty()
-            {
+            // Stop holds wakes.
+            if self.store.hold(&parent).await?.is_some() {
                 continue;
             }
             let text = result_turn_text(&tasks);
-            if self
-                .deliver(&parent, text, TurnOrigin::ResultDelivery, true)
-                .await?
-            {
+            // A busy parent whose runtime steers without cancelling tools
+            // reads the results mid-turn; otherwise they wait for its end,
+            // behind the user's queued messages.
+            let delivered = self.steer_automatic(&parent, &text).await?
+                || (self.store.queue(&parent, false).await?.is_empty()
+                    && self
+                        .deliver(&parent, text, TurnOrigin::ResultDelivery, true)
+                        .await?);
+            if delivered {
                 let now = now_ms();
                 for task in &tasks {
                     self.store
@@ -656,9 +644,10 @@ impl Engine {
                 "{}\n\nAcknowledge this context in one or two sentences; do not start new work.",
                 x.handoff.clone().unwrap_or_default()
             );
-            if self
-                .deliver(target, text, TurnOrigin::ContextHandoff, true)
-                .await?
+            if self.steer_automatic(target, &text).await?
+                || self
+                    .deliver(target, text, TurnOrigin::ContextHandoff, true)
+                    .await?
             {
                 self.store.consume_transfer(&x.id).await?;
             }
@@ -1094,25 +1083,42 @@ impl TurnEventSink for Engine {
         log_step("turn started", result);
     }
 
-    /// They wait in the queue (held by a Stop), even when shutdown cuts the
-    /// turn: they are the person's words. Each is queued under an id derived
-    /// from the run and the steer, so a repeated or late report of the same
-    /// steer never queues it twice; a failed write is retried, and what
-    /// still fails goes back to the runtime, which tells the person.
+    /// They go back to the queue ahead of messages queued after they were
+    /// sent, even when shutdown cuts the turn: they are the person's words.
+    /// After a Stop they are kept as "Steer delivery not confirmed" notices
+    /// instead. Each is queued under an id derived from the run and the
+    /// steer, so a repeated or late report never queues it twice; a failed
+    /// write is retried, and what still fails goes back to the runtime,
+    /// which tells the person.
     async fn steers_unread(
         &self,
         thread_id: &ThreadId,
         run_id: &str,
         steers: Vec<UnreadSteer>,
     ) -> SteerRecovery {
-        let mut undelivered = Vec::new();
-        for steer in steers {
-            if let Err(error) = self.queue_unread_steer(thread_id, run_id, &steer).await {
-                tracing::debug!(%error, "unread steer could not be queued; reported back");
-                undelivered.push(steer);
-            }
+        SteerRecovery {
+            undelivered: self.report_unread_steers(thread_id, run_id, steers).await,
         }
-        SteerRecovery { undelivered }
+    }
+
+    async fn steer_updated(
+        &self,
+        thread_id: &ThreadId,
+        _run_id: &str,
+        steer_id: &SteerId,
+        state: SteerReadState,
+        _at: Millis,
+    ) {
+        let result = self.record_steer_read(thread_id, steer_id, state).await;
+        log_step("steer updated", result);
+    }
+
+    async fn turn_ready(&self, thread_id: &ThreadId, run_id: Option<&str>) {
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        let result = self.note_turn_ready(thread_id, run_id).await;
+        log_step("turn ready", result);
     }
 
     async fn turn_finished(
@@ -1154,6 +1160,10 @@ impl TurnEventSink for Engine {
                 .set_turn_ended(thread_id, run_id.as_deref(), state, outcome.error.as_deref(), at)
                 .await?;
             self.store.delete_live_work(thread_id).await?;
+            // Unread steers go back to the queue once the end is recorded:
+            // a failed recovery stays retryable (the tick, the next send)
+            // and never leaves an ended run "running".
+            self.recover_first(thread_id).await;
             let settings = self.store.settings().await?;
             let usage_armed = match outcome.usage_limit_resets_at {
                 Some(reset) if settings.resume_on_usage_limit => {
@@ -1204,50 +1214,6 @@ impl TurnEventSink for Engine {
             other => log_step("turn finished", other.map(|_| ())),
         }
     }
-}
-
-/// Write attempts for one unread steer, and the pause before each retry.
-const STEER_QUEUE_RETRIES: [Duration; 2] = [Duration::from_millis(50), Duration::from_millis(250)];
-
-impl Engine {
-    async fn queue_unread_steer(
-        &self,
-        thread_id: &ThreadId,
-        run_id: &str,
-        steer: &UnreadSteer,
-    ) -> Result<()> {
-        let id = unread_steer_queue_id(thread_id, run_id, &steer.id)?;
-        let mut pauses = STEER_QUEUE_RETRIES.iter();
-        loop {
-            match self
-                .store
-                .queue_add_once(&id, thread_id, &steer.text, Author::User)
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(error) => match pauses.next() {
-                    Some(pause) => {
-                        tracing::debug!(%error, "unread steer not queued yet; retrying");
-                        tokio::time::sleep(*pause).await;
-                    }
-                    None => return Err(error),
-                },
-            }
-        }
-    }
-}
-
-/// The queue id of a recovered steer: one per (thread, run, steer).
-fn unread_steer_queue_id(thread: &ThreadId, run_id: &str, steer_id: &str) -> Result<QueueItemId> {
-    use sha2::Digest;
-    let mut hash = sha2::Sha256::new();
-    for part in [thread.as_str(), run_id, steer_id] {
-        hash.update(part.as_bytes());
-        hash.update([0u8]);
-    }
-    let digest = hash.finalize();
-    let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
-    QueueItemId::new(format!("q_steer_{hex}"))
 }
 
 fn non_empty(text: String) -> Option<String> {

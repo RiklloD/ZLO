@@ -16,7 +16,7 @@ use ironclaw_loop_contracts::{
     LoopInput, LoopInputAckEffect, LoopInputAckToken, LoopInputCursorToken,
 };
 use ironclaw_threads::{MessageStatus, SessionThreadService, ThreadMessageId, ThreadScope};
-use ironclaw_turns::{TurnId, TurnRunId};
+use ironclaw_turns::{LoopMessageRef, TurnId, TurnRunId, TurnScope};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -60,25 +60,75 @@ pub trait HostInputQueue: Send + Sync {
 }
 
 /// Host-side terminal reconciliation surface, separate from the loop-facing
-/// drain contract: its only caller is the runner's cancel-time reconciler, so
-/// the loop port never gains reject authority and drain-side test doubles need
+/// drain contract: its only callers are the runner's terminal reconcilers, so
+/// the loop port never gains settle authority and drain-side test doubles need
 /// no dead stubs.
 #[async_trait]
 pub trait HostInputQueueReconcile: Send + Sync {
-    /// Terminal reconciliation: consume every input still queued for `run_id`
-    /// and flip each bound transcript row `Queued` → `RejectedBusy` (resend
-    /// affordance) — never auto-resubmitting. Called after the run reaches a
-    /// terminal state with the queue undrained (e.g. a cancel before the
-    /// loop's next drain). Consumed entries are claimed first, so a
+    /// Terminal reconciliation: close the run's queue and settle every input
+    /// it never drained. How depends on how the run ended:
+    ///
+    /// - [`RunQueueEnding::Ended`] (completed or failed on its own): a user
+    ///   steer the agent never read is the person's words and is handed to
+    ///   the bound [`HostStrandedSteerRedelivery`], which starts the next
+    ///   turn with it (several keep their order). Nobody is asked to resend.
+    /// - [`RunQueueEnding::Stopped`] (cancelled: a Stop, a declined gate, a
+    ///   restart): the row is flipped `Queued` → `RejectedBusy`, which every
+    ///   surface renders as "not delivered" with the text — the person
+    ///   decides, as after a Stop in t3code.
+    ///
+    /// Inputs with no redelivery path (no handler bound, a background-result
+    /// input, a row queued before the turn scope was recorded) settle as
+    /// `RejectedBusy` either way. Entries are claimed before any write, so a
     /// still-running loop that races this call can no longer drain them; a
     /// row the loop already consumed (`Submitted`) is left untouched.
-    /// Idempotent.
+    /// Idempotent: a repeated call retries whatever did not settle.
     ///
-    /// Returns the message ids whose rows were flipped.
-    async fn reject_unconsumed(
+    /// Returns the message ids whose rows were flipped `RejectedBusy`.
+    async fn settle_unconsumed(
         &self,
         run_id: TurnRunId,
+        ending: RunQueueEnding,
     ) -> Result<Vec<ThreadMessageId>, HostInputQueueError>;
+}
+
+/// How the run whose queue is being settled ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunQueueEnding {
+    /// The run was cancelled: unread steers are not redelivered.
+    Stopped,
+    /// The run completed or failed by itself: unread steers start the next
+    /// turn.
+    Ended,
+}
+
+/// A user steer its run ended without reading, handed to
+/// [`HostStrandedSteerRedelivery`] in queue order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrandedSteer {
+    /// The turn scope the steer was admitted under (the ended run's scope).
+    pub turn_scope: TurnScope,
+    /// The transcript scope of the message row.
+    pub thread_scope: ThreadScope,
+    pub thread_id: ThreadId,
+    pub message_id: ThreadMessageId,
+    pub message_ref: LoopMessageRef,
+}
+
+/// Delivers steers an ended run never read: the first starts the next turn,
+/// the rest steer it. Bound once by composition on the queue (it needs the
+/// turn coordinator, which is built after the queue).
+#[async_trait]
+pub trait HostStrandedSteerRedelivery: Send + Sync {
+    /// Deliver `steers` (oldest first) left by `ended_run_id`. Returns the
+    /// message ids that are settled — delivered, or settled some other way —
+    /// so they are dropped from the queue's retry state; the rest are
+    /// retried by the next reconciliation of that run.
+    async fn redeliver(
+        &self,
+        ended_run_id: TurnRunId,
+        steers: Vec<StrandedSteer>,
+    ) -> Vec<ThreadMessageId>;
 }
 
 /// Raw queue batch returned by a host queue implementation.
@@ -113,9 +163,9 @@ pub enum HostInputQueueError {
     Disabled,
     /// The run's queue was closed by terminal reconciliation: the run will
     /// never drain again, so accepting the input would strand it. Callers
-    /// settle the message as rejected-busy (resend affordance), like
-    /// [`Self::Disabled`] — and unlike [`Self::Unavailable`], which stays a
-    /// retryable operational failure.
+    /// submit the message again once the run releases the thread (it starts
+    /// the next turn) — unlike [`Self::Unavailable`], which stays a retryable
+    /// operational failure.
     #[error("input queue for the run is closed")]
     RunClosed,
     /// The run's queue is at [`MAX_QUEUED_INPUTS_PER_RUN`]. A run can sit
@@ -158,14 +208,29 @@ pub trait HostInputEnqueuePort: Send + Sync {
     /// by a thread message, so the transition attempt can never be omitted.
     ///
     /// An enqueue can be refused with [`HostInputQueueError::RunClosed`]
-    /// (terminal reconciliation already closed the run's queue) or
+    /// (terminal reconciliation already closed the run's queue: the run is
+    /// ending, and callers submit the message again as the next turn) or
     /// [`HostInputQueueError::CapacityExhausted`]
-    /// ([`MAX_QUEUED_INPUTS_PER_RUN`]); callers settle those messages as
-    /// rejected-busy, exactly like [`HostInputQueueError::Disabled`].
+    /// ([`MAX_QUEUED_INPUTS_PER_RUN`]; callers settle it as rejected-busy,
+    /// exactly like [`HostInputQueueError::Disabled`]).
     async fn enqueue_queued_message(
         &self,
         request: EnqueueQueuedMessageRequest,
     ) -> Result<HostInputEnvelope, HostInputQueueError>;
+
+    /// [`Self::enqueue_queued_message`] for a user steer, recording the turn
+    /// scope it was admitted under so terminal reconciliation can start the
+    /// next turn with it if the run ends before reading it. Queues without a
+    /// redelivery path keep the plain enqueue (the steer then settles
+    /// `RejectedBusy` if stranded).
+    async fn enqueue_user_steer(
+        &self,
+        request: EnqueueQueuedMessageRequest,
+        turn_scope: TurnScope,
+    ) -> Result<HostInputEnvelope, HostInputQueueError> {
+        let _ = turn_scope;
+        self.enqueue_queued_message(request).await
+    }
 }
 
 /// Host-owned callback for durable queue acknowledgment effects.
@@ -235,6 +300,32 @@ pub(crate) struct QueueEntry {
     pub(crate) status: QueuedMessageStatusUpdate,
     #[serde(default)]
     pub(crate) ack_effect: Option<LoopInputAckEffect>,
+    /// The turn scope a user steer was admitted under; `None` for
+    /// background-result inputs and rows queued by older builds. Only an
+    /// entry carrying it can be redelivered when its run ends unread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) turn_scope: Option<TurnScope>,
+}
+
+/// A user steer claimed at close for redelivery, retained until the
+/// redelivery handler reports it settled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PendingRedelivery {
+    pub(crate) status: QueuedMessageStatusUpdate,
+    pub(crate) turn_scope: TurnScope,
+    pub(crate) message_ref: LoopMessageRef,
+}
+
+impl PendingRedelivery {
+    fn stranded(&self) -> StrandedSteer {
+        StrandedSteer {
+            turn_scope: self.turn_scope.clone(),
+            thread_scope: self.status.scope.clone(),
+            thread_id: self.status.thread_id.clone(),
+            message_id: self.status.message_id,
+            message_ref: self.message_ref.clone(),
+        }
+    }
 }
 
 /// A consumed (acked) entry whose `Queued` → `Submitted` transcript flip has
@@ -318,6 +409,11 @@ pub(crate) struct RunQueueModel {
     /// rows `Queued` forever.
     #[serde(default)]
     pending_reject_flips: Vec<QueuedMessageStatusUpdate>,
+    /// User steers claimed at close for redelivery as the next turn
+    /// ([`RunQueueEnding::Ended`]). Retained, like the reject flips, until the
+    /// redelivery handler confirms each one.
+    #[serde(default)]
+    pending_redeliveries: Vec<PendingRedelivery>,
 }
 
 impl Default for RunQueueModel {
@@ -332,6 +428,7 @@ impl Default for RunQueueModel {
             recently_consumed: Vec::new(),
             closed: false,
             pending_reject_flips: Vec::new(),
+            pending_redeliveries: Vec::new(),
         }
     }
 }
@@ -384,10 +481,22 @@ impl RunQueueModel {
     /// queue ([`HostInputQueueError::CapacityExhausted`]); dedup and repair
     /// are checked first so retries of an already-accepted message never
     /// bounce off the capacity ceiling.
+    #[cfg(test)]
     pub(crate) fn enqueue_dedup(
         &mut self,
         input: LoopInput,
         status: QueuedMessageStatusUpdate,
+    ) -> Result<EnqueueDisposition, HostInputQueueError> {
+        self.enqueue_dedup_scoped(input, status, None)
+    }
+
+    /// [`Self::enqueue_dedup`] recording the steer's turn scope (see
+    /// [`QueueEntry::turn_scope`]).
+    pub(crate) fn enqueue_dedup_scoped(
+        &mut self,
+        input: LoopInput,
+        status: QueuedMessageStatusUpdate,
+        turn_scope: Option<TurnScope>,
     ) -> Result<EnqueueDisposition, HostInputQueueError> {
         if self.closed {
             return Err(HostInputQueueError::RunClosed);
@@ -441,6 +550,7 @@ impl RunQueueModel {
             input,
             status,
             ack_effect: None,
+            turn_scope,
         });
         Ok(EnqueueDisposition::Inserted { sequence })
     }
@@ -585,23 +695,56 @@ impl RunQueueModel {
     }
 
     /// Terminal claim: close the queue (rejecting further enqueues) and move
-    /// every unacked entry to [`Self::pending_reject_flips`]. Idempotent — a
-    /// second call claims nothing new. The caller flips the claimed rows and
-    /// confirms via [`Self::confirm_reject_flips`]; the record is disposable
-    /// once [`Self::is_settled`].
-    pub(crate) fn close_and_claim(&mut self) {
+    /// every unacked entry to its settlement: a user steer of a run that
+    /// [`RunQueueEnding::Ended`] by itself goes to
+    /// [`Self::pending_redeliveries`] when `can_redeliver` (a redelivery
+    /// handler is bound); everything else to [`Self::pending_reject_flips`].
+    /// Idempotent — a second call claims nothing new. The caller settles the
+    /// claimed rows and confirms via [`Self::confirm_reject_flips`] /
+    /// [`Self::confirm_redeliveries`]; the record is disposable once
+    /// [`Self::is_settled`].
+    pub(crate) fn close_and_claim(&mut self, ending: RunQueueEnding, can_redeliver: bool) {
         self.closed = true;
-        let claimed: Vec<QueuedMessageStatusUpdate> = self
-            .entries
-            .iter()
+        let entries: Vec<QueueEntry> = std::mem::take(&mut self.entries)
+            .into_iter()
             .filter(|entry| !self.is_acked(entry.sequence))
-            .map(|entry| entry.status.clone())
             .collect();
-        self.pending_reject_flips.extend(claimed);
+        for entry in entries {
+            let redelivery = match (entry.input, entry.turn_scope, entry.ack_effect) {
+                (LoopInput::Steering { message_ref }, Some(turn_scope), None)
+                    if ending == RunQueueEnding::Ended && can_redeliver =>
+                {
+                    Some(PendingRedelivery {
+                        status: entry.status.clone(),
+                        turn_scope,
+                        message_ref,
+                    })
+                }
+                _ => None,
+            };
+            match redelivery {
+                Some(redelivery) => self.pending_redeliveries.push(redelivery),
+                None => self.pending_reject_flips.push(entry.status),
+            }
+        }
         self.entries.clear();
         // `closed` is now the authoritative tombstone, so replay identities
         // are unnecessary while a terminal document awaits flip settlement.
         self.recently_consumed.clear();
+    }
+
+    /// Drop the redeliveries the handler reported settled.
+    pub(crate) fn confirm_redeliveries(&mut self, settled: &[ThreadMessageId]) {
+        self.pending_redeliveries
+            .retain(|pending| !settled.contains(&pending.status.message_id));
+    }
+
+    /// The redeliveries currently awaiting (re)try, in queue order.
+    pub(crate) fn due_redeliveries(&self) -> Vec<StrandedSteer> {
+        self.pending_redeliveries
+            .iter()
+            .map(PendingRedelivery::stranded)
+            .collect()
     }
 
     /// Drop the pending `RejectedBusy` flips whose transcript writes
@@ -633,6 +776,7 @@ impl RunQueueModel {
             && self.pending_submit_flips.is_empty()
             && self.pending_ack_effects.is_empty()
             && self.pending_reject_flips.is_empty()
+            && self.pending_redeliveries.is_empty()
     }
 }
 
@@ -773,6 +917,7 @@ pub struct InMemoryHostInputQueue {
     state: Arc<Mutex<HashMap<TurnRunId, RunQueueModel>>>,
     thread_service: Arc<dyn SessionThreadService>,
     ack_effect_handler: OnceLock<Arc<dyn HostInputAckEffectHandler>>,
+    steer_redelivery: OnceLock<Arc<dyn HostStrandedSteerRedelivery>>,
 }
 
 impl std::fmt::Debug for InMemoryHostInputQueue {
@@ -789,6 +934,7 @@ impl InMemoryHostInputQueue {
             state: Arc::new(Mutex::new(HashMap::new())),
             thread_service,
             ack_effect_handler: OnceLock::new(),
+            steer_redelivery: OnceLock::new(),
         }
     }
 
@@ -809,6 +955,62 @@ impl InMemoryHostInputQueue {
                     reason: "input queue ack effect handler already bound".to_string(),
                 }
             })
+    }
+
+    /// Bind the handler that starts the next turn with steers an ended run
+    /// never read. Composition performs this once, after the coordinator
+    /// exists; without it stranded steers settle `RejectedBusy`.
+    pub fn bind_steer_redelivery(
+        &self,
+        handler: Arc<dyn HostStrandedSteerRedelivery>,
+    ) -> Result<(), HostInputQueueError> {
+        bind_steer_redelivery(&self.steer_redelivery, handler)
+    }
+
+    async fn enqueue_scoped(
+        &self,
+        request: EnqueueQueuedMessageRequest,
+        turn_scope: Option<TurnScope>,
+    ) -> Result<HostInputEnvelope, HostInputQueueError> {
+        let disposition = {
+            let mut state = self.state.lock().map_err(|_| poisoned_lock("enqueue"))?;
+            let model = state.entry(request.run_id).or_default();
+            let disposition = model.enqueue_dedup_scoped(
+                request.input.clone(),
+                QueuedMessageStatusUpdate {
+                    turn_id: request.turn_id,
+                    scope: request.scope,
+                    thread_id: request.thread_id,
+                    message_id: request.message_id,
+                },
+                turn_scope,
+            )?;
+            if let EnqueueDisposition::Inserted { sequence } = &disposition {
+                model.attach_ack_effect(*sequence, request.ack_effect.clone())?;
+            }
+            disposition
+        };
+        let envelope = match disposition {
+            EnqueueDisposition::Inserted { sequence }
+            | EnqueueDisposition::Duplicate { sequence } => envelope_for(sequence, request.input),
+            EnqueueDisposition::AlreadyConsumed { flip } => {
+                // Idempotent replay of a consumed message whose `Submitted`
+                // flip is still pending: repair the stale row instead of
+                // re-minting a sequence (which would deliver it twice).
+                let sequence = flip.sequence;
+                let flipped =
+                    flip_submitted(self.thread_service.as_ref(), request.run_id, vec![flip]).await;
+                if !flipped.is_empty() {
+                    let mut state = self.state.lock().map_err(|_| poisoned_lock("enqueue"))?;
+                    if let Some(model) = state.get_mut(&request.run_id) {
+                        model.confirm_submit_flips(&flipped);
+                    }
+                }
+                envelope_for(sequence, request.input)
+            }
+        }?;
+        self.retry_pending_ack_effects(request.run_id, &[]).await?;
+        Ok(envelope)
     }
 
     async fn retry_pending_ack_effects(
@@ -866,44 +1068,15 @@ impl HostInputEnqueuePort for InMemoryHostInputQueue {
         &self,
         request: EnqueueQueuedMessageRequest,
     ) -> Result<HostInputEnvelope, HostInputQueueError> {
-        let disposition = {
-            let mut state = self.state.lock().map_err(|_| poisoned_lock("enqueue"))?;
-            let model = state.entry(request.run_id).or_default();
-            let disposition = model.enqueue_dedup(
-                request.input.clone(),
-                QueuedMessageStatusUpdate {
-                    turn_id: request.turn_id,
-                    scope: request.scope,
-                    thread_id: request.thread_id,
-                    message_id: request.message_id,
-                },
-            )?;
-            if let EnqueueDisposition::Inserted { sequence } = &disposition {
-                model.attach_ack_effect(*sequence, request.ack_effect.clone())?;
-            }
-            disposition
-        };
-        let envelope = match disposition {
-            EnqueueDisposition::Inserted { sequence }
-            | EnqueueDisposition::Duplicate { sequence } => envelope_for(sequence, request.input),
-            EnqueueDisposition::AlreadyConsumed { flip } => {
-                // Idempotent replay of a consumed message whose `Submitted`
-                // flip is still pending: repair the stale row instead of
-                // re-minting a sequence (which would deliver it twice).
-                let sequence = flip.sequence;
-                let flipped =
-                    flip_submitted(self.thread_service.as_ref(), request.run_id, vec![flip]).await;
-                if !flipped.is_empty() {
-                    let mut state = self.state.lock().map_err(|_| poisoned_lock("enqueue"))?;
-                    if let Some(model) = state.get_mut(&request.run_id) {
-                        model.confirm_submit_flips(&flipped);
-                    }
-                }
-                envelope_for(sequence, request.input)
-            }
-        }?;
-        self.retry_pending_ack_effects(request.run_id, &[]).await?;
-        Ok(envelope)
+        self.enqueue_scoped(request, None).await
+    }
+
+    async fn enqueue_user_steer(
+        &self,
+        request: EnqueueQueuedMessageRequest,
+        turn_scope: TurnScope,
+    ) -> Result<HostInputEnvelope, HostInputQueueError> {
+        self.enqueue_scoped(request, Some(turn_scope)).await
     }
 }
 
@@ -964,38 +1137,46 @@ impl HostInputQueue for InMemoryHostInputQueue {
 
 #[async_trait]
 impl HostInputQueueReconcile for InMemoryHostInputQueue {
-    async fn reject_unconsumed(
+    async fn settle_unconsumed(
         &self,
         run_id: TurnRunId,
+        ending: RunQueueEnding,
     ) -> Result<Vec<ThreadMessageId>, HostInputQueueError> {
         // The run is terminal: close the queue (rejecting late enqueues,
         // no-oping late duplicate acks) and claim every unacked entry. The
-        // map entry is removed only once every claimed row's flip succeeded —
-        // a transient flip failure keeps the record so a repeated
-        // reconciliation retries it — which is also the in-memory lifetime
-        // bound: settled queues do not accumulate for the daemon's lifetime.
-        let (submit_flips, reject_flips) = {
+        // map entry is removed only once every claimed row settled — a
+        // transient failure keeps the record so a repeated reconciliation
+        // retries it — which is also the in-memory lifetime bound: settled
+        // queues do not accumulate for the daemon's lifetime.
+        let redelivery = self.steer_redelivery.get().cloned();
+        let (submit_flips, reject_flips, redeliveries) = {
             let mut state = self
                 .state
                 .lock()
-                .map_err(|_| poisoned_lock("reject_unconsumed"))?;
+                .map_err(|_| poisoned_lock("settle_unconsumed"))?;
             let Some(model) = state.get_mut(&run_id) else {
                 return Ok(Vec::new());
             };
-            model.close_and_claim();
-            (model.due_submit_flips(), model.due_reject_flips())
+            model.close_and_claim(ending, redelivery.is_some());
+            (
+                model.due_submit_flips(),
+                model.due_reject_flips(),
+                model.due_redeliveries(),
+            )
         };
         let submitted = flip_submitted(self.thread_service.as_ref(), run_id, submit_flips).await;
         let reject_outcome =
             flip_rejected_busy(self.thread_service.as_ref(), run_id, reject_flips).await;
+        let redelivered = redeliver(redelivery.as_deref(), run_id, redeliveries).await;
         {
             let mut state = self
                 .state
                 .lock()
-                .map_err(|_| poisoned_lock("reject_unconsumed"))?;
+                .map_err(|_| poisoned_lock("settle_unconsumed"))?;
             if let Some(model) = state.get_mut(&run_id) {
                 model.confirm_submit_flips(&submitted);
                 model.confirm_reject_flips(&reject_outcome.confirmable());
+                model.confirm_redeliveries(&redelivered);
                 if model.is_settled() {
                     state.remove(&run_id);
                 }
@@ -1004,6 +1185,34 @@ impl HostInputQueueReconcile for InMemoryHostInputQueue {
         self.retry_pending_ack_effects(run_id, &[]).await?;
         Ok(reject_outcome.flipped)
     }
+}
+
+/// Hand claimed steers to the redelivery handler (none bound: nothing is
+/// claimed for redelivery in the first place).
+pub(crate) async fn redeliver(
+    handler: Option<&dyn HostStrandedSteerRedelivery>,
+    run_id: TurnRunId,
+    steers: Vec<StrandedSteer>,
+) -> Vec<ThreadMessageId> {
+    match handler {
+        Some(handler) if !steers.is_empty() => handler.redeliver(run_id, steers).await,
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn bind_steer_redelivery(
+    slot: &OnceLock<Arc<dyn HostStrandedSteerRedelivery>>,
+    handler: Arc<dyn HostStrandedSteerRedelivery>,
+) -> Result<(), HostInputQueueError> {
+    slot.set(handler).map_err(|rejected| {
+        tracing::debug!(
+            handler_type = std::any::type_name_of_val(rejected.as_ref()),
+            "input queue steer redelivery handler already bound"
+        );
+        HostInputQueueError::Unavailable {
+            reason: "input queue steer redelivery handler already bound".to_string(),
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------

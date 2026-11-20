@@ -192,6 +192,7 @@ impl TurnRuntime for OneReply {
             run_id: None,
             hidden: false,
             at: None,
+            steer_id: None,
         }])
     }
 }
@@ -376,4 +377,355 @@ async fn thread_action_reaches_the_owners_runtime_only() {
     let answer = act(owner).await.unwrap();
     assert_eq!(answer.output["ok"], false, "{}", answer.output);
     assert_eq!(answer.output["error"], "unsupported");
+}
+
+/// A CLI runtime that steers (when `steers`) and reports steer reads; its
+/// history is the steers it took, in run `r1`.
+struct Steering {
+    steers: bool,
+    taken: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl TurnRuntime for Steering {
+    fn id(&self) -> RuntimeId {
+        RuntimeId::new("claude-cli").unwrap()
+    }
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            steer_in_turn: self.steers,
+            ..RuntimeCapabilities::default()
+        }
+    }
+    fn reports_steer_reads(&self) -> bool {
+        true
+    }
+    async fn create_thread(&self, _: CreateThread) -> Result<CreatedThread, RuntimeError> {
+        Err(RuntimeError::Unsupported("create"))
+    }
+    async fn start_turn(
+        &self,
+        _: &ThreadRecord,
+        _: TurnInput,
+    ) -> Result<TurnAdmission, RuntimeError> {
+        Ok(TurnAdmission::Busy)
+    }
+    async fn steer(
+        &self,
+        _: &ThreadRecord,
+        text: &str,
+        _: SteerHow,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        self.taken.lock().unwrap().push(text.to_string());
+        Ok(SteerOutcome::Steered)
+    }
+    async fn cancel(&self, _: &ThreadRecord, _: &str) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+    async fn history(
+        &self,
+        _: &ThreadRecord,
+        _: usize,
+    ) -> Result<Vec<HistoryMessage>, RuntimeError> {
+        let row = |text: &str| HistoryMessage {
+            role: HistoryRole::User,
+            text: text.to_string(),
+            tool_calls: Vec::new(),
+            run_id: Some("r1".into()),
+            hidden: false,
+            at: None,
+            steer_id: None,
+        };
+        // The run's prompt, then the steers it took.
+        let mut rows = vec![row("start")];
+        rows.extend(self.taken.lock().unwrap().iter().map(|text| row(text)));
+        Ok(rows)
+    }
+}
+
+/// SUBMIT_TURN into a busy CLI thread answers a typed delivery (PLAN 10):
+/// `steered` with the steer's ledger id, or `queued` with the queue item on
+/// a runtime that cannot steer; the notice stays for older clients. The
+/// timeline marks the steer "waiting to be read" until the runtime reports
+/// it read, and a steer a Stop left unread shows "Steer delivery not
+/// confirmed" on its run (PLAN 2, 5).
+#[tokio::test]
+async fn busy_cli_submit_reports_typed_delivery_and_steer_read_state() {
+    use ironclaw_orchestrator::model::now_ms;
+    use ironclaw_orchestrator::runtime::{SteerId, SteerReadState, TurnEventSink, TurnOutcome};
+
+    for steers in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(
+            libsql::Builder::new_local(dir.path().join("o.db"))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+        let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+        let thread = ThreadId::new("cli-busy").unwrap();
+        let owner = ProductSurfaceCaller::new(
+            TenantId::new("t").unwrap(),
+            UserId::new("owner").unwrap(),
+            Some(AgentId::new("agent").unwrap()),
+            None,
+        );
+        let record = ThreadRecord::new(
+            thread.clone(),
+            scope_of(&owner),
+            RuntimeId::new("claude-cli").unwrap(),
+        );
+        engine.store().ensure_thread(&record).await.unwrap();
+        engine
+            .store()
+            .set_turn_running(&thread, Some("r1"), now_ms())
+            .await
+            .unwrap();
+        engine.register_runtime(Arc::new(Steering {
+            steers,
+            taken: Default::default(),
+        }));
+        let surface = OrchestratedProductSurface::new(Arc::new(Inner), engine.clone(), None);
+        let submit = |text: &str| {
+            surface.invoke(
+                owner.clone(),
+                ProductSurfaceInvokeRequest {
+                    operation_id: CapabilityId::new(crate::reborn_services::SUBMIT_TURN_COMMAND_ID)
+                        .unwrap(),
+                    input: json!({"thread_id": thread.as_str(), "client_action_id": text,
+                                  "content": text}),
+                    activity_id: ActivityId::new(),
+                },
+            )
+        };
+        let timeline = || async {
+            let page = surface
+                .query(
+                    owner.clone(),
+                    ProductSurfaceQueryRequest {
+                        view_id: crate::reborn_services::TIMELINE_VIEW.id.to_string(),
+                        input: json!({"thread_id": thread.as_str(), "limit": 50}),
+                        cursor: None,
+                        limit: None,
+                    },
+                )
+                .await
+                .unwrap();
+            page.items[0]["messages"].as_array().unwrap().clone()
+        };
+
+        let out = submit("use tabs").await.unwrap().output;
+        assert_eq!(out["outcome"], "deferred_busy", "{out}");
+        if !steers {
+            assert_eq!(out["delivery"], "queued", "{out}");
+            assert!(out["queued_id"].is_string(), "{out}");
+            assert!(out["steer_id"].is_null());
+            assert!(out["notice"].as_str().unwrap().starts_with("Queued"));
+            continue;
+        }
+        assert_eq!(out["delivery"], "steered", "{out}");
+        let steer_id = SteerId::new(out["steer_id"].as_str().unwrap()).unwrap();
+        let rows = timeline().await;
+        assert_eq!(rows[1]["steer"]["waiting_to_be_read"], true, "{rows:?}");
+
+        engine
+            .steer_updated(&thread, "r1", &steer_id, SteerReadState::Read, now_ms())
+            .await;
+        let rows = timeline().await;
+        assert_eq!(rows[1]["steer"]["waiting_to_be_read"], false);
+        assert_eq!(rows[1]["steer"]["state"], "read");
+
+        // Unread at a Stop: a notice on the run, not a resend.
+        submit("and the docs").await.unwrap();
+        engine.on_user_stop(&thread).await.unwrap();
+        engine
+            .turn_finished(
+                &thread,
+                Some("r1".into()),
+                TurnOutcome::ended(
+                    ironclaw_orchestrator::runtime::TurnEndStatus::Cancelled,
+                    None,
+                ),
+                now_ms(),
+            )
+            .await;
+        let rows = timeline().await;
+        let notice = &rows.last().unwrap()["steer_notices"][0];
+        assert_eq!(notice["title"], "Steer delivery not confirmed", "{rows:?}");
+        assert_eq!(notice["text"], "and the docs");
+        assert!(
+            engine
+                .store()
+                .queue(&thread, false)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+/// A CLI runtime that journals each steer under the engine's id, after an
+/// opening prompt with the same text.
+struct Journaling {
+    taken: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+#[async_trait]
+impl TurnRuntime for Journaling {
+    fn id(&self) -> RuntimeId {
+        RuntimeId::new("claude-cli").unwrap()
+    }
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            steer_in_turn: true,
+            ..RuntimeCapabilities::default()
+        }
+    }
+    fn reports_steer_reads(&self) -> bool {
+        true
+    }
+    async fn create_thread(&self, _: CreateThread) -> Result<CreatedThread, RuntimeError> {
+        Err(RuntimeError::Unsupported("create"))
+    }
+    async fn start_turn(
+        &self,
+        _: &ThreadRecord,
+        _: TurnInput,
+    ) -> Result<TurnAdmission, RuntimeError> {
+        Ok(TurnAdmission::Busy)
+    }
+    async fn steer(
+        &self,
+        _: &ThreadRecord,
+        _: &str,
+        _: SteerHow,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        Err(RuntimeError::Unsupported("plain steer"))
+    }
+    async fn steer_message(
+        &self,
+        _: &ThreadRecord,
+        request: &ironclaw_orchestrator::runtime::SteerRequest,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        self.taken
+            .lock()
+            .unwrap()
+            .push((request.text.clone(), request.id.as_str().to_string()));
+        Ok(SteerOutcome::Steered)
+    }
+    async fn cancel(&self, _: &ThreadRecord, _: &str) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+    async fn history(
+        &self,
+        _: &ThreadRecord,
+        _: usize,
+    ) -> Result<Vec<HistoryMessage>, RuntimeError> {
+        let row = |text: &str, steer_id: Option<String>| HistoryMessage {
+            role: HistoryRole::User,
+            text: text.to_string(),
+            tool_calls: Vec::new(),
+            run_id: Some("r1".into()),
+            hidden: false,
+            at: None,
+            steer_id,
+        };
+        let mut rows = vec![row("go", None)];
+        for (text, id) in self.taken.lock().unwrap().iter() {
+            rows.push(row(text, Some(id.clone())));
+        }
+        Ok(rows)
+    }
+}
+
+/// The steer marker lands on the row the runtime journaled under the
+/// steer's id, not on an opening prompt with the same text; it survives
+/// the typed timeline (`steer_marks`, which the WebUI decodes); and a
+/// retried submit with the same client action id answers the first one
+/// without steering again (PLAN 10, Sol 7).
+#[tokio::test]
+async fn steer_markers_follow_the_steer_id_and_retries_steer_once() {
+    use ironclaw_orchestrator::model::now_ms;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("o.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+    let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+    let thread = ThreadId::new("cli-journal").unwrap();
+    let owner = ProductSurfaceCaller::new(
+        TenantId::new("t").unwrap(),
+        UserId::new("owner").unwrap(),
+        Some(AgentId::new("agent").unwrap()),
+        None,
+    );
+    let record = ThreadRecord::new(
+        thread.clone(),
+        scope_of(&owner),
+        RuntimeId::new("claude-cli").unwrap(),
+    );
+    engine.store().ensure_thread(&record).await.unwrap();
+    engine
+        .store()
+        .set_turn_running(&thread, Some("r1"), now_ms())
+        .await
+        .unwrap();
+    let cli = Arc::new(Journaling {
+        taken: Default::default(),
+    });
+    engine.register_runtime(cli.clone());
+    let surface = OrchestratedProductSurface::new(Arc::new(Inner), engine.clone(), None);
+    let submit = || {
+        surface.invoke(
+            owner.clone(),
+            ProductSurfaceInvokeRequest {
+                operation_id: CapabilityId::new(crate::reborn_services::SUBMIT_TURN_COMMAND_ID)
+                    .unwrap(),
+                input: json!({"thread_id": thread.as_str(), "client_action_id": "act-1",
+                              "content": "go"}),
+                activity_id: ActivityId::new(),
+            },
+        )
+    };
+    let first = submit().await.unwrap().output;
+    let again = submit().await.unwrap().output;
+    assert_eq!(first["delivery"], "steered", "{first}");
+    assert_eq!(first["steer_id"], again["steer_id"], "{again}");
+    assert_eq!(cli.taken.lock().unwrap().len(), 1, "a retry steered again");
+    let steer_id = first["steer_id"].as_str().unwrap().to_string();
+
+    let page = surface
+        .query(
+            owner.clone(),
+            ProductSurfaceQueryRequest {
+                view_id: crate::reborn_services::TIMELINE_VIEW.id.to_string(),
+                input: json!({"thread_id": thread.as_str(), "limit": 50}),
+                cursor: None,
+                limit: None,
+            },
+        )
+        .await
+        .unwrap();
+    let rows = page.items[0]["messages"].as_array().unwrap().clone();
+    assert!(
+        rows[0].get("steer").is_none(),
+        "the opening prompt is not a steer"
+    );
+    assert_eq!(rows[1]["steer"]["id"], steer_id.as_str());
+    let typed: crate::reborn_services::RebornTimelineResponse =
+        serde_json::from_value(page.items[0].clone()).unwrap();
+    assert_eq!(typed.steer_marks.len(), 1);
+    assert_eq!(
+        typed.steer_marks[0].message_id,
+        rows[1]["message_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        typed.steer_marks[0].steer.as_ref().unwrap().id,
+        steer_id.as_str()
+    );
 }

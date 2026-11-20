@@ -6,8 +6,9 @@
 
 use std::collections::HashSet;
 
+use crate::design::kit::Spinner;
 use rune::{El, col, el, icon, row};
-use rune_kit::{Kit, Spinner};
+use rune_kit::Kit;
 use zlo_client::GateDecision;
 use zlo_client::contract::ProductGateKind;
 use zlo_client::transcript::{GateState, Row, ToolStatus};

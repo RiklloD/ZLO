@@ -124,6 +124,7 @@ pub(crate) fn message(role: HistoryRole, text: String, tool_calls: Vec<String>) 
         run_id: None,
         hidden: false,
         at: None,
+        steer_id: None,
     }
 }
 

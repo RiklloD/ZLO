@@ -4,7 +4,7 @@ use ironclaw_loop_contracts::LoopInput;
 use ironclaw_threads::ThreadScope;
 use ironclaw_turns::TurnId;
 
-use crate::InMemoryHostInputQueue;
+use crate::{InMemoryHostInputQueue, RunQueueEnding};
 use ironclaw_host_api::{
     ids::{AgentId, ProjectId, TenantId, ThreadId},
     mount::{MountGrant, MountPermissions, MountView},
@@ -287,7 +287,7 @@ async fn durable_consumed_dedup_survives_store_reconstruction() {
     );
     assert!(
         queue
-            .reject_unconsumed(run_id)
+            .settle_unconsumed(run_id, RunQueueEnding::Stopped)
             .await
             .expect("terminal reconciliation")
             .is_empty()
@@ -476,7 +476,10 @@ async fn conformance_reject_unconsumed<Q: ConformanceQueue>(
         .await
         .expect("ack first");
 
-    let rejected = queue.reject_unconsumed(run_id).await.expect("reconcile");
+    let rejected = queue
+        .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+        .await
+        .expect("reconcile");
     assert_eq!(rejected, vec![message_ids[1]]);
 
     let history = thread_service
@@ -512,7 +515,10 @@ async fn conformance_reject_unconsumed<Q: ConformanceQueue>(
         .await
         .expect("poll after reconcile");
     assert!(after.inputs.is_empty());
-    let again = queue.reject_unconsumed(run_id).await.expect("idempotent");
+    let again = queue
+        .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+        .await
+        .expect("idempotent");
     assert!(again.is_empty());
 }
 
@@ -528,6 +534,233 @@ async fn in_memory_reject_unconsumed_flips_stranded_rows_and_stops_redelivery() 
     let thread_service = Arc::new(InMemorySessionThreadService::default());
     let queue = in_memory_queue(Arc::clone(&thread_service));
     conformance_reject_unconsumed(queue, thread_service).await;
+}
+
+/// Redelivery handler double: records each batch it is handed and settles
+/// nothing on its first call (a transient failure), everything afterwards.
+#[derive(Default)]
+struct RecordingRedelivery {
+    batches: std::sync::Mutex<Vec<(TurnRunId, Vec<crate::StrandedSteer>)>>,
+}
+
+#[async_trait::async_trait]
+impl crate::HostStrandedSteerRedelivery for RecordingRedelivery {
+    async fn redeliver(
+        &self,
+        ended_run_id: TurnRunId,
+        steers: Vec<crate::StrandedSteer>,
+    ) -> Vec<ThreadMessageId> {
+        let mut batches = self.batches.lock().expect("redelivery lock");
+        let first = batches.is_empty();
+        batches.push((ended_run_id, steers.clone()));
+        if first {
+            Vec::new()
+        } else {
+            steers.iter().map(|steer| steer.message_id).collect()
+        }
+    }
+}
+
+/// A run that ends by itself hands the user steers it never read to the
+/// redelivery handler, oldest first, instead of asking for a resend. A
+/// failed handoff is retried by the next reconciliation; an input with no
+/// recorded turn scope still settles `RejectedBusy`. A cancelled run never
+/// redelivers: its stranded steers settle as not delivered.
+async fn conformance_ended_run_redelivers_unread_steers<Q: ConformanceQueue>(
+    queue: Q,
+    stopped_queue: Q,
+    redelivery: Arc<RecordingRedelivery>,
+    thread_service: Arc<InMemorySessionThreadService>,
+) {
+    let scope = ghost_scope();
+    let thread = thread_service
+        .ensure_thread(EnsureThreadRequest {
+            scope: scope.clone(),
+            thread_id: None,
+            created_by_actor_id: "actor-iq".into(),
+            title: None,
+            metadata_json: None,
+        })
+        .await
+        .unwrap();
+    let turn_scope = TurnScope::new(
+        scope.tenant_id.clone(),
+        Some(scope.agent_id.clone()),
+        None,
+        thread.thread_id.clone(),
+    );
+    let run_id = TurnRunId::new();
+    let mut ids = Vec::new();
+    for text in ["read", "unread one", "unread two", "unscoped"] {
+        let accepted = thread_service
+            .accept_inbound_message(AcceptInboundMessageRequest {
+                scope: scope.clone(),
+                thread_id: thread.thread_id.clone(),
+                actor_id: "actor-iq".into(),
+                source_binding_id: None,
+                reply_target_binding_id: None,
+                external_event_id: None,
+                content: MessageContent::text(text),
+            })
+            .await
+            .unwrap();
+        thread_service
+            .mark_message_queued(
+                &scope,
+                &thread.thread_id,
+                accepted.message_id,
+                run_id.to_string(),
+            )
+            .await
+            .unwrap();
+        ids.push(accepted.message_id);
+    }
+    let request = |message_id: ThreadMessageId| EnqueueQueuedMessageRequest {
+        run_id,
+        turn_id: TurnId::new(),
+        scope: scope.clone(),
+        thread_id: thread.thread_id.clone(),
+        message_id,
+        input: steering(&format!("msg:{message_id}")),
+        ack_effect: None,
+    };
+    for message_id in &ids[..3] {
+        queue
+            .enqueue_user_steer(request(*message_id), turn_scope.clone())
+            .await
+            .expect("enqueue steer");
+    }
+    queue
+        .enqueue_queued_message(request(ids[3]))
+        .await
+        .expect("enqueue unscoped");
+    let batch = queue.next_after(run_id, origin(), 1).await.expect("poll");
+    queue
+        .ack_consumed(run_id, vec![batch.inputs[0].ack_token.clone()])
+        .await
+        .expect("ack first");
+
+    let rejected = queue
+        .settle_unconsumed(run_id, RunQueueEnding::Ended)
+        .await
+        .expect("settle");
+    assert_eq!(
+        rejected,
+        vec![ids[3]],
+        "only the unscoped input is rejected"
+    );
+    let retried = queue
+        .settle_unconsumed(run_id, RunQueueEnding::Ended)
+        .await
+        .expect("retry");
+    assert!(retried.is_empty());
+    let settled_again = queue
+        .settle_unconsumed(run_id, RunQueueEnding::Ended)
+        .await
+        .expect("settled");
+    assert!(settled_again.is_empty());
+    {
+        let batches = redelivery.batches.lock().expect("redelivery lock");
+        assert_eq!(
+            batches.len(),
+            2,
+            "the failed handoff is retried once, then nothing is left"
+        );
+        for (ended, steers) in batches.iter() {
+            assert_eq!(*ended, run_id);
+            let order: Vec<_> = steers.iter().map(|steer| steer.message_id).collect();
+            assert_eq!(order, vec![ids[1], ids[2]], "oldest first");
+            assert!(steers.iter().all(|steer| steer.turn_scope == turn_scope));
+            assert_eq!(
+                steers[0].message_ref.as_str(),
+                format!("msg:{}", ids[1]).as_str()
+            );
+        }
+    }
+    assert!(
+        queue
+            .next_after(run_id, origin(), 8)
+            .await
+            .expect("poll after settle")
+            .inputs
+            .is_empty()
+    );
+
+    // A cancelled run: the same kind of steer is not redelivered.
+    let stopped_run = TurnRunId::new();
+    let accepted = thread_service
+        .accept_inbound_message(AcceptInboundMessageRequest {
+            scope: scope.clone(),
+            thread_id: thread.thread_id.clone(),
+            actor_id: "actor-iq".into(),
+            source_binding_id: None,
+            reply_target_binding_id: None,
+            external_event_id: None,
+            content: MessageContent::text("sent before stop"),
+        })
+        .await
+        .unwrap();
+    thread_service
+        .mark_message_queued(
+            &scope,
+            &thread.thread_id,
+            accepted.message_id,
+            stopped_run.to_string(),
+        )
+        .await
+        .unwrap();
+    stopped_queue
+        .enqueue_user_steer(
+            EnqueueQueuedMessageRequest {
+                run_id: stopped_run,
+                ..request(accepted.message_id)
+            },
+            turn_scope.clone(),
+        )
+        .await
+        .expect("enqueue before stop");
+    let rejected = stopped_queue
+        .settle_unconsumed(stopped_run, RunQueueEnding::Stopped)
+        .await
+        .expect("settle stopped");
+    assert_eq!(rejected, vec![accepted.message_id]);
+    assert_eq!(
+        redelivery.batches.lock().expect("redelivery lock").len(),
+        2,
+        "a stopped run hands nothing to redelivery"
+    );
+}
+
+#[tokio::test]
+async fn durable_ended_run_redelivers_unread_steers() {
+    let thread_service = Arc::new(InMemorySessionThreadService::default());
+    let redelivery = Arc::new(RecordingRedelivery::default());
+    let queue = durable_queue(Arc::clone(&thread_service));
+    queue
+        .bind_steer_redelivery(Arc::clone(&redelivery) as Arc<_>)
+        .expect("bind");
+    let stopped = durable_queue(Arc::clone(&thread_service));
+    stopped
+        .bind_steer_redelivery(Arc::clone(&redelivery) as Arc<_>)
+        .expect("bind");
+    conformance_ended_run_redelivers_unread_steers(queue, stopped, redelivery, thread_service)
+        .await;
+}
+
+#[tokio::test]
+async fn in_memory_ended_run_redelivers_unread_steers() {
+    let thread_service = Arc::new(InMemorySessionThreadService::default());
+    let redelivery = Arc::new(RecordingRedelivery::default());
+    let queue = in_memory_queue(Arc::clone(&thread_service));
+    queue
+        .bind_steer_redelivery(Arc::clone(&redelivery) as Arc<_>)
+        .expect("bind");
+    let stopped = in_memory_queue(Arc::clone(&thread_service));
+    stopped
+        .bind_steer_redelivery(Arc::clone(&redelivery) as Arc<_>)
+        .expect("bind");
+    conformance_ended_run_redelivers_unread_steers(queue, stopped, redelivery, thread_service)
+        .await;
 }
 
 /// The origin cursor is the unique run-start position: the first enqueued
@@ -1088,7 +1321,10 @@ async fn conformance_terminal_reconcile_settles_and_stays_settled<Q: Conformance
         .await
         .expect("enqueue");
 
-    let rejected = queue.reject_unconsumed(run_id).await.expect("reconcile");
+    let rejected = queue
+        .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+        .await
+        .expect("reconcile");
     assert_eq!(rejected, vec![accepted.message_id]);
 
     // NOTE: once the closed queue fully settles, its record is reclaimed and
@@ -1098,7 +1334,10 @@ async fn conformance_terminal_reconcile_settles_and_stays_settled<Q: Conformance
     // layer's run-state re-check is what rejects it in production. What must
     // hold at THIS seam: reconciling again stays a no-op and nothing is
     // redelivered.
-    let again = queue.reject_unconsumed(run_id).await.expect("idempotent");
+    let again = queue
+        .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+        .await
+        .expect("idempotent");
     assert!(again.is_empty());
     let after = queue
         .next_after(run_id, origin(), 8)
@@ -1184,13 +1423,19 @@ async fn conformance_ack_and_reject_settle_exactly_once<Q: ConformanceQueue>(
             .ack_consumed(run_id, vec![token.clone()])
             .await
             .expect("ack");
-        let rejected = queue.reject_unconsumed(run_id).await.expect("reconcile");
+        let rejected = queue
+            .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+            .await
+            .expect("reconcile");
         assert!(
             rejected.is_empty(),
             "the ack claimed the input first; reconcile must not double-settle"
         );
     } else {
-        let rejected = queue.reject_unconsumed(run_id).await.expect("reconcile");
+        let rejected = queue
+            .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+            .await
+            .expect("reconcile");
         assert_eq!(rejected, vec![accepted.message_id]);
         // The late ack for the claimed input is an idempotent no-op.
         queue
@@ -1344,7 +1589,10 @@ async fn durable_reject_unconsumed_retains_document_until_flips_settle() {
         .expect("enqueue");
 
     // The ghost row's flip fails, so nothing reports flipped…
-    let rejected = queue.reject_unconsumed(run_id).await.expect("reconcile");
+    let rejected = queue
+        .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+        .await
+        .expect("reconcile");
     assert!(rejected.is_empty());
     // …and the document survives as the durable retry source.
     let path = queue_path(run_id).expect("path");
@@ -1374,7 +1622,10 @@ async fn durable_reject_unconsumed_retains_document_until_flips_settle() {
     );
     // A repeated reconciliation retries the pending flip (still failing
     // here) without erroring or redelivering.
-    let again = queue.reject_unconsumed(run_id).await.expect("retry");
+    let again = queue
+        .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+        .await
+        .expect("retry");
     assert!(again.is_empty());
 }
 
@@ -1437,7 +1688,10 @@ async fn durable_reject_unconsumed_reclaims_settled_document() {
         .await
         .expect("enqueue");
 
-    let rejected = queue.reject_unconsumed(run_id).await.expect("reconcile");
+    let rejected = queue
+        .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+        .await
+        .expect("reconcile");
     assert_eq!(rejected, vec![accepted.message_id]);
     let path = queue_path(run_id).expect("path");
     assert!(
@@ -1551,7 +1805,7 @@ async fn unacked_terminal_reject_does_not_invoke_background_ack_effect() {
         .await
         .expect("enqueue effect");
     queue
-        .reject_unconsumed(run_id)
+        .settle_unconsumed(run_id, RunQueueEnding::Stopped)
         .await
         .expect("terminal reconciliation");
     assert_eq!(calls.load(Ordering::SeqCst), 0);

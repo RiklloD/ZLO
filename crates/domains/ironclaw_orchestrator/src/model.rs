@@ -197,6 +197,36 @@ text_enum!(QueueStatus {
     Cancelled => "cancelled",
 });
 
+text_enum!(
+    /// What a queue item is. A recovered steer keeps its place ahead of
+    /// messages queued after it was sent; a deferred steer waits for its
+    /// run to take input (`steer_run`) and runs as a turn if that run ends.
+    QueueKind {
+        Message => "message",
+        RecoveredSteer => "recovered_steer",
+        DeferredSteer => "deferred_steer",
+    }
+);
+
+text_enum!(
+    /// Where one steer is (`crate::steers`).
+    SteerState {
+        // Handed to the runtime; its answer has not come back yet.
+        Sending => "sending",
+        // Accepted, waiting for the agent to read it.
+        Pending => "pending",
+        Read => "read",
+        // The runtime dropped it unread; recovered when its turn ends.
+        Dropped => "dropped",
+        // Never read: back in the queue ahead of later messages.
+        Requeued => "requeued",
+        // Never confirmed read before a Stop: shown as a notice, not resent.
+        Unconfirmed => "unconfirmed",
+        // The runtime did not take it (the text went elsewhere).
+        NotSent => "not_sent",
+    }
+);
+
 text_enum!(Author {
     User => "user",
     Agent => "agent",
@@ -383,6 +413,17 @@ pub struct QueueItem {
     pub created_at: Millis,
     pub updated_at: Millis,
     pub sent_at: Option<Millis>,
+    pub kind: QueueKind,
+    /// The run a deferred steer targets, or the run a recovered steer was
+    /// sent into.
+    pub steer_run: Option<String>,
+    /// Monotonic enqueue order across the database (ties of `position`).
+    pub seq: i64,
+    /// The admission attempt that holds a `sending` item.
+    pub claim: Option<String>,
+    pub claimed_at: Option<Millis>,
+    /// The run a delivered item became part of (started or steered into).
+    pub claim_run: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

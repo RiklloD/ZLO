@@ -908,3 +908,64 @@ async fn default_reply_admission_rejects_tool_history_echo_and_continues() {
     );
     assert_eq!(final_state.stop_state.turns_completed, 2);
 }
+
+#[tokio::test]
+async fn graceful_stop_after_capability_batch_drains_pending_steering() {
+    // Regression: the follow-up drain used to run only after a reply-only
+    // turn. A run that stops gracefully after a capability batch (every
+    // result asked to terminate) completed with a steer still queued, and
+    // the steer was stranded. Any graceful end must first read pending
+    // steers and continue with them (t3code: a steer sent before the end is
+    // answered by the same run).
+    let host = MockHost::new(vec![calls_response(), reply_response()]).with_batch_outcomes(vec![
+        ironclaw_host_api::resolution::ResolutionBatch {
+            resolutions: vec![resolution::completed(
+                LoopResultRef::new("result:terminating").expect("valid"),
+                "terminating result".to_string(),
+                ironclaw_loop_contracts::CapabilityProgress::MadeProgress,
+                true,
+                8,
+                None,
+                None,
+            )],
+            stopped_on_suspension: false,
+        },
+    ]);
+    let run_context = host.run_context().clone();
+    let host = host.with_input_batches(vec![
+        LoopInputBatch {
+            inputs: Vec::new(),
+            input_acks: Vec::new(),
+            next_cursor: input_cursor(&run_context, "input-cursor:no-input"),
+        },
+        LoopInputBatch {
+            inputs: vec![LoopInput::Steering {
+                message_ref: message_ref("msg:steer-before-stop"),
+            }],
+            input_acks: vec![input_ack(
+                &run_context,
+                "input-cursor:after-steer-before-stop",
+                "input-ack:after-steer-before-stop",
+            )],
+            next_cursor: input_cursor(&run_context, "input-cursor:after-steer-before-stop"),
+        },
+    ]);
+    let executor = CanonicalAgentLoopExecutor;
+    let state = LoopExecutionState::initial_for_run(host.run_context());
+
+    let exit = executor
+        .execute_family(&crate::families::default(), &host, state)
+        .await
+        .expect("execute");
+
+    assert!(matches!(exit, LoopExit::Completed(_)), "{exit:?}");
+    assert_eq!(
+        host.model_requests().len(),
+        2,
+        "the pending steer must force one more model iteration before the run ends"
+    );
+    assert_eq!(
+        host.acked_input_tokens(),
+        vec![LoopInputAckToken::new("input-ack:after-steer-before-stop").expect("valid")]
+    );
+}

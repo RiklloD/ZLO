@@ -4805,7 +4805,7 @@ test("useChat.send: rejected_busy without notice still clears isProcessing", asy
   assert.equal(lastIsProcessing?.value, false);
 });
 
-test("useChat.send: admits a follow-up while a run is active and renders it queued", async () => {
+test("useChat.send: admits a follow-up while a run is active and renders it as a steer", async () => {
   // Queued-message UX: an active run no longer blocks a local send. The
   // follow-up must reach the backend so Reborn can queue it (deferred_busy),
   // and the optimistic bubble renders as "queued" (not an error).
@@ -4872,7 +4872,7 @@ test("useChat.send: admits a follow-up while a run is active and renders it queu
   assert.equal(response.outcome, "deferred_busy");
   assert.equal(sendCalls, 1);
   assert.equal(renderedMessages.length, 1);
-  assert.equal(renderedMessages[0].status, "queued");
+  assert.equal(renderedMessages[0].status, "steered");
 });
 
 test("useChat.send: admits a follow-up submit while a prior run is still active", async () => {
@@ -5048,19 +5048,20 @@ test("useChat.send: created thread admits a follow-up send while its run is acti
   assert.equal(stateSlots.get(STATE_SLOT.isProcessing).value, true);
   assert.equal(stateSlots.get(STATE_SLOT.activeRun).value?.runId, "run-1");
 
-  // Queued-message UX: the still-active run on the just-created thread no
-  // longer blocks a follow-up — it reaches the backend, which queues it
-  // (deferred_busy), and the optimistic bubble renders as "queued".
+  // Steering UX: the still-active run on the just-created thread no longer
+  // blocks a follow-up — it reaches the backend, which steers it into the
+  // running turn (deferred_busy), and the bubble renders as a steer, never
+  // as "queued".
   const second = await chat.send("draft while the reply is still running", {
     threadId: createdThreadId,
   });
   assert.equal(second.outcome, "deferred_busy");
   assert.equal(sendCalls, 2);
   assert.equal(renderedMessages.length, 2);
-  assert.equal(renderedMessages[1].status, "queued");
+  assert.equal(renderedMessages[1].status, "steered");
   const seededMessages = seededByThread.get(createdThreadId);
-  assert.equal(seededMessages[seededMessages.length - 1].status, "queued");
-  // deferred_busy keeps the active run processing — it was queued, not dropped.
+  assert.equal(seededMessages[seededMessages.length - 1].status, "steered");
+  // deferred_busy keeps the active run processing — it was steered, not dropped.
   assert.equal(stateSlots.get(STATE_SLOT.isProcessing).value, true);
 });
 

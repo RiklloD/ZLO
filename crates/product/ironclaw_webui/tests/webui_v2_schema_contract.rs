@@ -128,6 +128,7 @@ fn accepted_ack() -> RebornSubmitTurnResponse {
         resolved_run_profile_id: RunProfileId::default_profile().as_str().to_string(),
         resolved_run_profile_version: RunProfileVersion::new(1).as_u64(),
         event_cursor: EventCursor(1),
+        delivery: None,
     }
 }
 

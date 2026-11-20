@@ -12,6 +12,7 @@ import {
 } from "../../../lib/api";
 import { saveBlob } from "../../../lib/download";
 import { COMMAND_RESULT_KIND, classifyCommandResponse } from "../lib/chat-commands";
+import { UI_MESSAGE_STATUS } from "../lib/message-status";
 import {
   CHAT_MESSAGE_ROLES,
   messageBelongsToActiveRun,
@@ -343,9 +344,16 @@ function MessageBubbleImpl({
   const contentWidthClass =
     isUser || isError ? "min-w-0 max-w-full" : "w-full min-w-0 max-w-full";
   const showRetryAction = status === "error" && onRetry;
-  // A user message accepted-and-queued behind an active run: render a distinct
-  // "queued" badge (never the error styling / resend action).
-  const showQueuedStatus = isUser && status === "queued";
+  // A user message sent while a turn ran steers that turn: mark it "Steer"
+  // ("Steer · waiting to be read" until the agent reads it) — never a
+  // "Queued" badge, the error styling, or a resend action.
+  const steerLabelKey = !isUser
+    ? null
+    : status === UI_MESSAGE_STATUS.STEER_PENDING
+    ? "chat.steerWaiting"
+    : status === UI_MESSAGE_STATUS.STEERED
+    ? "chat.steer"
+    : null;
   const showMetaRow = showActions || showRetryAction || timeLabel;
   const contentOpacityClass = isOptimistic ? "opacity-70" : "";
   const roleStyle =
@@ -388,10 +396,14 @@ function MessageBubbleImpl({
             </div>
           )}
 
-          {showQueuedStatus && (
+          {steerLabelKey && (
             <div className="mt-2 flex justify-end">
-              <span className="rounded border border-iron-700 bg-iron-900/70 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-normal text-iron-300">
-                {t("chat.queued")}
+              <span
+                data-testid="steer-marker"
+                title={t("chat.steerTooltip")}
+                className="rounded border border-iron-700 bg-iron-900/70 px-1.5 py-0.5 text-[11px] font-medium tracking-normal text-iron-300"
+              >
+                {t(steerLabelKey)}
               </span>
             </div>
           )}

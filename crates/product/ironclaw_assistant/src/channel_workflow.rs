@@ -415,6 +415,9 @@ impl ChannelWorkflowFactory for RebornChannelWorkflowFactory {
         if let Some(llm_config) = &self.services.llm_config {
             inbound = inbound.with_llm_config_service(Arc::clone(llm_config));
         }
+        if let Some(approval) = &self.services.approval_interaction {
+            inbound = inbound.with_approval_interactions(Arc::clone(approval));
+        }
         let inbound = Arc::new(inbound);
         let mut workflow = DefaultProductSurface::new(
             inbound,

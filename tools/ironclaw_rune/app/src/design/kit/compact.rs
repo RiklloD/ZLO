@@ -83,7 +83,10 @@ pub fn variant_button(
 
 /// A small spinner in `color`.
 pub fn spinner(k: &Kit, size: f32, color: Color) -> El {
-    rune_kit::Spinner::new().size(size).color(color).build(k)
+    crate::design::kit::Spinner::new()
+        .size(size)
+        .color(color)
+        .build(k)
 }
 
 /// The composer's fill and resting rim (`chat::composer::composer_surface`),

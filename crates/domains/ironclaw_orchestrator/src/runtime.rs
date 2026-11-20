@@ -291,11 +291,87 @@ pub enum SteerHow {
     Restart,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SteerOutcome {
     Steered,
     Restarted,
+    /// Not delivered, for no reason the engine can act on: the caller keeps
+    /// the text (queues it, or reports the refusal).
     Rejected,
+    /// The turn is running but cannot take input yet (session not open,
+    /// prompt not written): the engine holds the text and steers it once
+    /// the runtime reports [`TurnEventSink::turn_ready`] (t3code's "steer
+    /// when ready"), or sends it as the next turn if this one ends first.
+    NotReady,
+    /// The runtime no longer has the turn (it ended, or is closing its
+    /// input): the text starts the next turn right away instead of waiting
+    /// behind other queued messages.
+    TurnEnded,
+}
+
+/// The engine's id for one steer, a UUID. A runtime that tracks whether
+/// its agent read a steer uses it as the native message id (Claude's
+/// `uuid`), reports it in [`TurnEventSink::steer_updated`] and as
+/// [`UnreadSteer::id`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct SteerId(String);
+
+impl SteerId {
+    fn validate(raw: &str) -> Result<(), RuntimeError> {
+        if raw.is_empty() || raw.len() > 128 || raw.chars().any(char::is_control) {
+            return Err(RuntimeError::Rejected("invalid steer id".into()));
+        }
+        Ok(())
+    }
+
+    pub fn new(raw: impl Into<String>) -> Result<Self, RuntimeError> {
+        let raw = raw.into();
+        Self::validate(&raw)?;
+        Ok(Self(raw))
+    }
+
+    pub fn generate() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for SteerId {
+    type Error = RuntimeError;
+    fn try_from(value: String) -> Result<Self, RuntimeError> {
+        Self::validate(&value)?;
+        Ok(Self(value))
+    }
+}
+
+impl std::fmt::Display for SteerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// One steer the engine asks a runtime to deliver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SteerRequest {
+    pub id: SteerId,
+    pub text: String,
+    pub how: SteerHow,
+}
+
+/// Whether the agent has read a steer (t3code `steer.updated`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SteerReadState {
+    /// Accepted by the runtime, not read by the agent yet.
+    Pending,
+    /// The agent read it.
+    Read,
+    /// The runtime dropped it unread; the engine sends it as a later turn.
+    Dropped,
 }
 
 /// Request to create a thread in a runtime.
@@ -343,6 +419,10 @@ pub struct HistoryMessage {
     /// When the message was written, if the runtime records it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Millis>,
+    /// The engine's [`SteerId`] when this user row is a steer the runtime
+    /// journaled under it: the transcript marks exactly that row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer_id: Option<String>,
 }
 
 /// One provider and its models, as `t3_capabilities` shows them.
@@ -413,6 +493,32 @@ pub trait TurnRuntime: Send + Sync {
         text: &str,
         how: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError>;
+
+    /// [`Self::steer`] with the engine's id for this steer. A runtime that
+    /// reports read state ([`Self::reports_steer_reads`]) overrides this and
+    /// keys its reports by `request.id`; the default forwards to `steer`.
+    async fn steer_message(
+        &self,
+        thread: &ThreadRecord,
+        request: &SteerRequest,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        self.steer(thread, &request.text, request.how).await
+    }
+
+    /// The runtime reports [`TurnEventSink::steer_updated`] for its steers:
+    /// a steer starts "waiting to be read" and one still pending when its
+    /// turn ends is sent again. Off: a delivered steer counts as read.
+    fn reports_steer_reads(&self) -> bool {
+        false
+    }
+
+    /// A steer cancels the running turn's tool calls before the agent reads
+    /// it. Automatic input (delegated results, context handoffs) only steers
+    /// a runtime that answers false; true, the conservative default, queues
+    /// it for the next turn instead.
+    fn steer_interrupts_tools(&self) -> bool {
+        true
+    }
 
     /// Stop the running turn, if any. Idempotent.
     async fn cancel(&self, thread: &ThreadRecord, reason: &str) -> Result<(), RuntimeError>;
@@ -517,6 +623,26 @@ pub trait TurnEventSink: Send + Sync {
             undelivered: steers,
         }
     }
+
+    /// The agent read (or the runtime dropped) steer `steer_id` of run
+    /// `run_id` (t3code `steer.updated`). A steer still `Pending` when its
+    /// turn ends was never read: the engine sends it as the next turn, or,
+    /// after a Stop, notes "Steer delivery not confirmed".
+    async fn steer_updated(
+        &self,
+        _thread_id: &ThreadId,
+        _run_id: &str,
+        _steer_id: &SteerId,
+        _state: SteerReadState,
+        _at: Millis,
+    ) {
+    }
+
+    /// The running turn can take steers now (its prompt is written, the
+    /// session is open): the engine delivers steers it held after a
+    /// [`SteerOutcome::NotReady`]. Runtimes that never answer `NotReady`
+    /// need not call it.
+    async fn turn_ready(&self, _thread_id: &ThreadId, _run_id: Option<&str>) {}
 
     /// Latest context/speed/cache figures of a thread; reported after every
     /// model call or turn, whichever the runtime can measure.

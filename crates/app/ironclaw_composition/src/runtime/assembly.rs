@@ -1407,6 +1407,19 @@ pub(super) async fn assemble_runtime(
             host_input_queue_for_cancel_reconcile,
         ),
     );
+    // Deferred bind: a steer a run never read when it ended by itself starts
+    // the next turn instead of settling `RejectedBusy` (resend copy). The
+    // handler submits through the decorated coordinator, which only exists
+    // now; the queue was built before it.
+    host_input_queue
+        .bind_steer_redelivery(Arc::new(ironclaw_assistant::SteeringRedelivery::new(
+            Arc::clone(&planned_turn_coordinator),
+            Arc::clone(&thread_service),
+            Arc::clone(&host_input_enqueue),
+        )))
+        .map_err(|error| RebornRuntimeError::MalformedConfig {
+            reason: format!("steering redelivery bind failed: {error}"),
+        })?;
     let approval_interaction_service: Arc<dyn ApprovalInteractionService> =
         if let (Some(local_runtime), Some(builtin_capability_policy)) =
             (local_runtime, builtin_capability_policy.as_ref())

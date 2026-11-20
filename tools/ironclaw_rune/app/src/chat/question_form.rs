@@ -341,7 +341,7 @@ pub(crate) fn render_question(
         QuestionState::Sending(answered) => row()
             .gap(8.)
             .center_y()
-            .child(rune_kit::Spinner::new().size(12.).build(k))
+            .child(crate::design::kit::Spinner::new().size(12.).build(k))
             .child(
                 text(if answered {
                     "Answer sent, waiting for the agent"

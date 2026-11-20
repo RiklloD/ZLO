@@ -444,6 +444,7 @@ fn reborn_submit_from_ack(
                     resolved_run_profile_id: "test-profile".to_string(),
                     resolved_run_profile_version: 1,
                     event_cursor: EventCursor(0),
+                    delivery: None,
                 });
             }
             ProductInboundAck::Duplicate { prior } => ack = *prior,

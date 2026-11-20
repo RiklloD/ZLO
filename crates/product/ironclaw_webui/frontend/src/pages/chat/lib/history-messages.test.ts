@@ -129,7 +129,7 @@ test("messagesFromTimeline: rejected_busy user record maps to an i18n-backed res
   assert.equal(messages[0].error, undefined);
 });
 
-test("messagesFromTimeline: deferred_busy user record maps to queued status with no error copy", () => {
+test("messagesFromTimeline: deferred_busy user record maps to steered status with no error copy", () => {
   const messages = messagesFromTimeline([
     {
       message_id: "msg-db",
@@ -143,11 +143,26 @@ test("messagesFromTimeline: deferred_busy user record maps to queued status with
   assert.equal(messages.length, 1);
   assert.equal(messages[0].id, "msg-msg-db");
   assert.equal(messages[0].role, "user");
-  // A deferred-busy message was accepted-and-queued behind the active run, so
-  // it renders as "queued" (matching the optimistic live path), never as an
-  // error, and carries no "resend it" copy.
-  assert.equal(messages[0].status, "queued");
+  // A deferred-busy message was steered into the active run, so it renders
+  // as a steer (matching the optimistic live path), never as an error, and
+  // carries no "resend it" copy.
+  assert.equal(messages[0].status, "steered");
   assert.equal(messages[0].error, undefined);
+});
+
+test("messagesFromTimeline: a queued user row is a steer waiting to be read", () => {
+  const messages = messagesFromTimeline([
+    {
+      message_id: "msg-q",
+      kind: "user",
+      content: "also check the tests",
+      sequence: 1,
+      status: "queued",
+    },
+  ]);
+
+  assert.equal(messages[0].status, "steer_pending");
+  assert.equal(messages[0].errorKey, undefined);
 });
 
 test("messagesFromTimeline: finalized assistant records are marked as final replies", () => {

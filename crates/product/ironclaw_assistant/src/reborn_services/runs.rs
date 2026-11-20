@@ -2,6 +2,7 @@
 //! (`runs` charter row).
 
 use super::*;
+use ironclaw_product_contracts::product_wire::RebornSubmitDelivery;
 
 pub const SUBMIT_TURN_COMMAND_ID: &str = "turn.submit";
 
@@ -24,7 +25,8 @@ pub const RETRY_RUN_COMMAND: ProductSurfaceCommandDescriptor<
     RebornRetryRunResponse,
 > = ProductSurfaceCommandDescriptor::new(RETRY_RUN_COMMAND_ID);
 
-pub(super) const NOTICE_BUSY_GENERIC: &str = "Ironclaw is still working on a previous message — resend yours once the current task finishes.";
+pub(super) const NOTICE_BUSY_GENERIC: &str =
+    "Your message wasn't added to the running task — send it again once that task finishes.";
 
 pub(super) fn describe_turn_status(status: TurnStatus) -> (&'static str, Option<&'static str>) {
     match status {
@@ -394,7 +396,8 @@ where
             Arc::clone(&self.thread_service),
             Arc::clone(&self.turn_coordinator),
             Arc::clone(&self.input_enqueue),
-        );
+        )
+        .with_approval_interactions(Arc::clone(&self.approval_interactions));
         if let Some(lander) = &self.inbound_attachments {
             inbound = inbound.with_inbound_attachments(Arc::clone(lander));
         }
@@ -454,6 +457,7 @@ where
                 resolved_run_profile_id: submission.resolved_run_profile_id,
                 resolved_run_profile_version: submission.resolved_run_profile_version,
                 event_cursor: submission.event_cursor,
+                delivery: Some(RebornSubmitDelivery::Started),
             }),
             ProductInboundAck::Accepted {
                 accepted_message_ref,
@@ -534,6 +538,10 @@ where
                     status: busy.status,
                     event_cursor: busy.event_cursor,
                     notice: notice.to_string(),
+                    delivery: Some(RebornSubmitDelivery::Steered),
+                    steer_id: None,
+                    queued_id: None,
+                    waiting_for_turn: false,
                 })
             }
             ProductInboundAck::Rejected(rejection) => Err(session_rejection_error(&rejection)),

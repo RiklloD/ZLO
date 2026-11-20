@@ -98,12 +98,13 @@ pub(crate) const RUN_FAILED_MESSAGE: &str =
 /// cancel, so this is informational only — it closes the loop on a fire that
 /// would otherwise vanish (#6896).
 pub(crate) const TRIGGERED_RUN_CANCELED_MESSAGE: &str = "This scheduled run was canceled before it could finish. Open the Ironclaw web app for details.";
-/// Posted when the blocking run is `BlockedApproval` and no gate_ref is
-/// available.
-pub(crate) const BUSY_APPROVAL_MESSAGE: &str = "Ironclaw is waiting on a pending approval before taking new messages — reply `approve` or `deny` (or `approve gate:<ref>`) to resume.";
-/// Posted for any other non-terminal blocking state, or when the state
-/// lookup fails.
-pub(crate) const BUSY_GENERIC_MESSAGE: &str = "Ironclaw is still working on a previous message and can't take this one yet — please resend it once the current task finishes.";
+/// Posted when a message could not be delivered (never for a steered one)
+/// while the blocking run is `BlockedApproval` and no gate_ref is available.
+pub(crate) const BUSY_APPROVAL_MESSAGE: &str = "Ironclaw couldn't add this message to the task waiting on an approval — reply `approve` or `deny` (or `approve gate:<ref>`) to resume it, then send your message again.";
+/// Posted when a message could not be delivered to the running task (it was
+/// not steered), or when the state lookup fails. A steered message gets no
+/// notice: the agent already has it.
+pub(crate) const BUSY_GENERIC_MESSAGE: &str = "Ironclaw couldn't add this message to the task that's running — send it again once that task finishes.";
 
 /// Stable per-(run, kind) projection id for run-notification deliveries.
 ///

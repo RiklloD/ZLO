@@ -823,7 +823,7 @@ fn provider_card(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
                         .color(p.text)
                         .selectable(true),
                 )
-                .child(rune_kit::Spinner::new().size(12.).build(k))
+                .child(crate::design::kit::Spinner::new().size(12.).build(k))
                 .child(el().grow(1.))
                 .child(
                     button_sized("Open page", Look::Ghost, Size::XSmall)

@@ -15,19 +15,52 @@ use crate::store::Store;
 
 #[derive(Default)]
 pub(crate) struct FakeRuntime {
-    started: Mutex<Vec<(ThreadId, String)>>,
-    cancelled: Mutex<Vec<ThreadId>>,
-    history: Mutex<HashMap<ThreadId, Vec<HistoryMessage>>>,
-    created: Mutex<u32>,
+    pub(crate) started: Mutex<Vec<(ThreadId, String)>>,
+    pub(crate) cancelled: Mutex<Vec<ThreadId>>,
+    pub(crate) history: Mutex<HashMap<ThreadId, Vec<HistoryMessage>>>,
+    pub(crate) created: Mutex<u32>,
     /// A second runtime (a CLI driver stand-in) advertising one provider of
     /// this name; `None` is the default runtime `fake`.
-    name: Option<&'static str>,
-    history_reads: Mutex<u32>,
+    pub(crate) name: Option<&'static str>,
+    pub(crate) history_reads: Mutex<u32>,
     /// The run id the next admission returns, when a test pins it.
     pub(crate) next_run: Mutex<Option<String>>,
+    /// Outcomes the next steers return, in order; `Steered` once empty.
+    pub(crate) steer_script: Mutex<std::collections::VecDeque<SteerOutcome>>,
+    /// Every steer handed over: thread, engine id, text.
+    pub(crate) steers: Mutex<Vec<(ThreadId, SteerId, String)>>,
+    /// Reports steer read state (`reports_steer_reads`).
+    pub(crate) reads: bool,
+    /// Steers without cancelling tool calls (`steer_interrupts_tools`).
+    pub(crate) gentle: bool,
+    /// When set, each steer waits for a permit (a test releases it).
+    pub(crate) steer_gate: Option<Arc<tokio::sync::Semaphore>>,
+    /// When set, each turn start waits for a permit.
+    pub(crate) start_gate: Option<Arc<tokio::sync::Semaphore>>,
+    /// Told when a gated call is in flight.
+    pub(crate) entered: Arc<tokio::sync::Notify>,
+    /// The runtime's session lock, held through every steer.
+    pub(crate) session: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl FakeRuntime {
+    pub(crate) fn steered_on(&self, thread: &ThreadId) -> Vec<String> {
+        self.steers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _, _)| t == thread)
+            .map(|(_, _, text)| text.clone())
+            .collect()
+    }
+
+    pub(crate) fn script_steers(&self, outcomes: &[SteerOutcome]) {
+        self.steer_script
+            .lock()
+            .unwrap()
+            .extend(outcomes.iter().copied());
+    }
+
     pub(crate) fn starts_on(&self, thread: &ThreadId) -> Vec<String> {
         self.started
             .lock()
@@ -47,6 +80,7 @@ fn msg(role: HistoryRole, text: &str) -> HistoryMessage {
         run_id: None,
         hidden: false,
         at: None,
+        steer_id: None,
     }
 }
 
@@ -92,6 +126,10 @@ impl TurnRuntime for FakeRuntime {
         t: &ThreadRecord,
         input: TurnInput,
     ) -> Result<TurnAdmission, RuntimeError> {
+        if let Some(gate) = &self.start_gate {
+            self.entered.notify_one();
+            gate.acquire().await.unwrap().forget();
+        }
         self.started
             .lock()
             .unwrap()
@@ -113,6 +151,35 @@ impl TurnRuntime for FakeRuntime {
         _h: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError> {
         Ok(SteerOutcome::Steered)
+    }
+    async fn steer_message(
+        &self,
+        t: &ThreadRecord,
+        request: &SteerRequest,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        let _session = self.session.lock().await;
+        if let Some(gate) = &self.steer_gate {
+            self.entered.notify_one();
+            gate.acquire().await.unwrap().forget();
+        }
+        let outcome = self
+            .steer_script
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(SteerOutcome::Steered);
+        self.steers.lock().unwrap().push((
+            t.thread_id.clone(),
+            request.id.clone(),
+            request.text.clone(),
+        ));
+        Ok(outcome)
+    }
+    fn reports_steer_reads(&self) -> bool {
+        self.reads
+    }
+    fn steer_interrupts_tools(&self) -> bool {
+        !self.gentle
     }
     async fn cancel(&self, t: &ThreadRecord, _reason: &str) -> Result<(), RuntimeError> {
         self.cancelled.lock().unwrap().push(t.thread_id.clone());
@@ -175,7 +242,7 @@ pub(crate) fn tid(raw: &str) -> ThreadId {
     ThreadId::new(raw).unwrap()
 }
 
-fn ctx(thread: &str) -> CallContext {
+pub(crate) fn ctx(thread: &str) -> CallContext {
     CallContext {
         thread_id: tid(thread),
         scope: scope(),
@@ -192,6 +259,11 @@ pub(crate) async fn open_engine(db: &Arc<libsql::Database>) -> Arc<Engine> {
 }
 
 pub(crate) async fn harness() -> Harness {
+    harness_with(FakeRuntime::default()).await
+}
+
+/// [`harness`] over a runtime a test configured.
+pub(crate) async fn harness_with(rt: FakeRuntime) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let db = Arc::new(
         libsql::Builder::new_local(dir.path().join("o.db"))
@@ -200,7 +272,7 @@ pub(crate) async fn harness() -> Harness {
             .unwrap(),
     );
     let engine = open_engine(&db).await;
-    let rt = Arc::new(FakeRuntime::default());
+    let rt = Arc::new(rt);
     engine.register_runtime(rt.clone());
     Harness {
         _dir: dir,
