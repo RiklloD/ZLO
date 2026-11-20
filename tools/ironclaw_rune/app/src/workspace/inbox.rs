@@ -184,19 +184,6 @@ impl Inbox {
         self.list.rows.iter().find(|r| r.thread_id == thread_id)
     }
 
-    /// The thread to open first: the top open row. Never a parked one; with
-    /// none open the caller shows the new-thread screen.
-    pub fn first_open(&self) -> Option<String> {
-        self.list
-            .rows
-            .iter()
-            .filter(|r| !has_listed_parent(&self.list.rows, r))
-            .filter(|r| !matches!(r.state, InboxState::Snoozed | InboxState::Settled))
-            // A card on screen before one on the folded Working shelf.
-            .min_by_key(|r| self.shown_state(r) == InboxState::Working)
-            .map(|r| r.thread_id.clone())
-    }
-
     pub fn profile(&self, id: &str) -> Option<&InboxProfile> {
         self.list.profiles.iter().find(|p| p.profile_id == id)
     }
@@ -281,17 +268,14 @@ impl Inbox {
     }
 }
 
-/// A subagent drawn under its parent rather than as a row of its own.
-fn has_listed_parent(rows: &[InboxRow], row: &InboxRow) -> bool {
-    row.parent_thread_id
-        .as_deref()
-        .is_some_and(|p| p != row.thread_id && rows.iter().any(|r| r.thread_id == p))
-}
-
-/// Choose only a confirmed open row; an empty result always means a fresh
-/// draft. A settled subagent hands the screen back to its parent while the
-/// parent is open; otherwise the next top-level row takes it.
-fn next_after_settle(rows: &[InboxRow], settled: &str) -> Option<String> {
+/// Choose only a confirmed open row the sidebar shows; an empty result
+/// always means a fresh draft (as ⇧⌘O). A settled subagent hands the screen
+/// back to its parent while the parent is open; otherwise the next card on
+/// the sidebar takes it. Side chats and nested subagents are never picked:
+/// the sidebar hides them, so landing there reads as an old thread.
+/// Call after `apply`, so the shelves already read the confirmed list.
+fn next_after_settle(s: &State, settled: &str) -> Option<String> {
+    let rows = &s.workspace.inbox.list.rows;
     let open = |r: &InboxRow| {
         matches!(
             r.state,
@@ -307,16 +291,23 @@ fn next_after_settle(rows: &[InboxRow], settled: &str) -> Option<String> {
     if let Some(parent) = parent {
         return Some(parent.thread_id.clone());
     }
-    rows.iter()
-        .filter(|r| r.state == InboxState::Pinned)
-        .chain(
-            // The list before the folded Working shelf.
-            rows.iter()
-                .filter(|r| r.state == InboxState::Inbox)
-                .chain(rows.iter().filter(|r| r.state == InboxState::Working)),
-        )
-        .filter(|r| !has_listed_parent(rows, r))
-        .find(|r| r.thread_id != settled)
+    first_shown(s, Some(settled))
+}
+
+/// The thread to open by itself: the top card the sidebar shows, Pinned,
+/// then the list, then the folded Working shelf. Never a parked row, a side
+/// chat or a nested subagent; with none, the caller shows a fresh draft.
+pub(super) fn first_open(s: &State) -> Option<String> {
+    first_shown(s, None)
+}
+
+fn first_shown(s: &State, except: Option<&str>) -> Option<String> {
+    let sh = shelves(s);
+    sh.pinned
+        .iter()
+        .chain(sh.main.iter())
+        .chain(sh.working.iter())
+        .find(|r| Some(r.thread_id.as_str()) != except)
         .map(|r| r.thread_id.clone())
 }
 
@@ -497,9 +488,9 @@ pub fn settle(s: &mut State, thread_id: String) {
                     return;
                 }
             };
-            let next = next_after_settle(&list.rows, &thread_id);
             let open = s.page == Page::Chat && active_id(s) == Some(thread_id.as_str());
             apply(s, list);
+            let next = next_after_settle(s, &thread_id);
             match next {
                 None => {
                     s.chat = None;
@@ -655,20 +646,61 @@ mod tests {
         }
     }
 
+    fn settled_with(rows: Vec<InboxRow>, side_chats: &[(&str, &str)]) -> State {
+        let mut s = crate::chat::fixtures::test_state();
+        for (parent, child) in side_chats {
+            s.prefs
+                .side_chats
+                .entry((*parent).to_string())
+                .or_default()
+                .push((*child).to_string());
+        }
+        apply(
+            &mut s,
+            InboxListResponse {
+                rows,
+                ..Default::default()
+            },
+        );
+        s
+    }
+
     #[test]
     fn settling_the_last_open_row_never_selects_a_parked_thread() {
-        let rows = vec![
-            row("recent", InboxState::Settled, None),
-            row("last", InboxState::Settled, None),
-            row("later", InboxState::Snoozed, None),
-        ];
-        assert_eq!(next_after_settle(&rows, "last"), None);
-        let rows = vec![
-            row("old", InboxState::Settled, None),
-            row("next", InboxState::Inbox, None),
-            row("last", InboxState::Settled, None),
-        ];
-        assert_eq!(next_after_settle(&rows, "last"), Some("next".into()));
+        let s = settled_with(
+            vec![
+                row("recent", InboxState::Settled, None),
+                row("last", InboxState::Settled, None),
+                row("later", InboxState::Snoozed, None),
+            ],
+            &[],
+        );
+        assert_eq!(next_after_settle(&s, "last"), None);
+        let s = settled_with(
+            vec![
+                row("old", InboxState::Settled, None),
+                row("next", InboxState::Inbox, None),
+                row("last", InboxState::Settled, None),
+            ],
+            &[],
+        );
+        assert_eq!(next_after_settle(&s, "last"), Some("next".into()));
+    }
+
+    /// A side chat (a fork handoff) is an open row the sidebar hides under
+    /// its parent: settling the last card shows a fresh draft, never it.
+    #[test]
+    fn settling_the_last_card_never_opens_a_hidden_side_chat() {
+        let s = settled_with(
+            vec![
+                row("side", InboxState::Inbox, None),
+                row("parent", InboxState::Settled, None),
+                row("last", InboxState::Settled, None),
+            ],
+            &[("parent", "side")],
+        );
+        assert_eq!(next_after_settle(&s, "last"), None);
+        assert_eq!(first_open(&s), None);
     }
 
     #[test]
@@ -854,8 +886,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(s.workspace.inbox.first_open().as_deref(), Some("b"));
-        assert_eq!(next_after_settle(&rows, "x").as_deref(), Some("b"));
+        assert_eq!(first_open(&s).as_deref(), Some("b"));
+        assert_eq!(next_after_settle(&s, "x").as_deref(), Some("b"));
     }
 
     /// A prompt sent here shows its card as working at once, even when the

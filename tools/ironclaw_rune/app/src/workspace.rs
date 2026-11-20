@@ -271,7 +271,7 @@ pub(crate) fn connected(
     start_polling(s);
     status::start(s);
     let reopen = reopen.filter(|id| s.workspace.inbox.row(id).is_some());
-    match reopen.or_else(|| s.workspace.inbox.first_open()) {
+    match reopen.or_else(|| inbox::first_open(s)) {
         Some(first) => open_thread(s, first),
         // Nothing open: a fresh draft in the default profile.
         None => start_in_profile(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into()),
@@ -562,7 +562,7 @@ pub fn delete_thread(s: &mut State, thread_id: String) {
                 .retain(|t| t.thread_id != thread_id);
             if active_id(s) == Some(thread_id.as_str()) {
                 s.chat = None;
-                match s.workspace.inbox.first_open() {
+                match inbox::first_open(s) {
                     Some(next) => open_thread(s, next),
                     None => draft::open(s),
                 }
