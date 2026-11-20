@@ -943,6 +943,39 @@ impl RebornIntegrationHarness {
         .into())
     }
 
+    /// Assert route dispatch and one cached metadata lookup per selected model.
+    pub async fn assert_fallback_vendor_and_metadata_calls(
+        &self,
+        expected_primary: usize,
+        expected_fallback: usize,
+        expected_primary_metadata: usize,
+        expected_fallback_metadata: usize,
+    ) -> HarnessResult<()> {
+        let probe = self
+            .fallback_provider_call_probe
+            .as_ref()
+            .ok_or("fallback provider call probe is not enabled for this harness")?;
+        let actual = (
+            probe.primary_calls(),
+            probe.fallback_calls(),
+            probe.primary_metadata_calls(),
+            probe.fallback_metadata_calls(),
+        );
+        let expected = (
+            expected_primary,
+            expected_fallback,
+            expected_primary_metadata,
+            expected_fallback_metadata,
+        );
+        if actual == expected {
+            return Ok(());
+        }
+        Err(
+            format!("expected fallback vendor/metadata calls {expected:?}, observed {actual:?}")
+                .into(),
+        )
+    }
+
     /// Assert the exact number of times `needle` occurs across every request
     /// seen by the recoverable-failure provider, including injected failures
     /// that never reach the delegated `TraceLlm`.
@@ -1605,6 +1638,43 @@ impl RebornIntegrationHarness {
         .into())
     }
 
+    /// Assert one compaction durably reported summarizer-input-only truncation
+    /// without exposing or mutating the omitted transcript bytes.
+    pub async fn assert_compaction_input_truncated_once_since(
+        &self,
+        baseline: usize,
+        expected_messages: u32,
+    ) -> HarnessResult<()> {
+        let milestones = self.loop_milestones();
+        let Some(since) = milestones.get(baseline..) else {
+            return Err(format!(
+                "milestone baseline {baseline} exceeds current milestone count {} — stale baseline",
+                milestones.len()
+            )
+            .into());
+        };
+        let truncations: Vec<_> = since
+            .iter()
+            .filter_map(|milestone| match &milestone.kind {
+                LoopHostMilestoneKind::CompactionCompleted {
+                    input_truncation: Some(truncation),
+                    ..
+                } => Some(*truncation),
+                _ => None,
+            })
+            .collect();
+        if truncations.len() == 1
+            && truncations[0].message_count == expected_messages
+            && truncations[0].omitted_bytes > 0
+        {
+            return Ok(());
+        }
+        Err(format!(
+            "expected one compaction truncation for {expected_messages} message(s) since baseline {baseline}, saw {truncations:?}"
+        )
+        .into())
+    }
+
     /// Assert a captured model request carried a multimodal `data:` image part
     /// holding exactly `bytes` under `mime_type` (C-ATTACH) — proves the landed
     /// attachment round-tripped intact (lander → project filesystem →
@@ -2130,6 +2200,19 @@ impl RebornIntegrationHarness {
             return Ok(());
         }
         Err(format!("expected at least {minimum} durable summary artifact(s), saw {count}").into())
+    }
+
+    /// Assert the compactor persisted exactly `expected` durable summaries.
+    pub async fn assert_summary_artifact_count(&self, expected: usize) -> HarnessResult<()> {
+        let count = self
+            .thread_harness
+            .summary_artifacts(self.binding.thread_id.clone())
+            .await?
+            .len();
+        if count == expected {
+            return Ok(());
+        }
+        Err(format!("expected exactly {expected} durable summary artifact(s), saw {count}").into())
     }
 
     /// Assert no durable compaction summary contains forbidden content. The

@@ -312,6 +312,7 @@ async fn the_mcp_client_seam_needs_a_thread_and_a_known_capability() {
     let request = |scope: ResourceScope, capability: &str| McpClientRequest {
         provider: ExtensionId::new("computer_use").unwrap(),
         capability_id: CapabilityId::new(capability).unwrap(),
+        tool_name: None,
         scope,
         transport: crate::COMPUTER_USE_TRANSPORT.to_string(),
         command: Some("/bin/false".to_string()),

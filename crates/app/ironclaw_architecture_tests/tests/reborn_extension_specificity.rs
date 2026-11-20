@@ -1499,7 +1499,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "crates/ironclaw_assistant/src/blocked_auth_resume.rs",
         "slack",
     ),
-    ("crates/ironclaw_composition/src/factory.rs", "google"),
     (
         "crates/ironclaw_composition/src/factory/production_backend_assembly.rs",
         "google",
@@ -1755,7 +1754,9 @@ const ALLOWLIST: &[(&str, &str)] = &[
 // `ironclaw_config/src/capability_remediation.rs` for the package-support
 // crate (`ironclaw_extension_support::gsuite::remediation`, scan-exempt as the
 // sanctioned vendor home), retiring its "gmail" and "google" carve-outs.
-const WS0_EXTENSION_SPECIFICITY_ALLOWLIST_BASELINE: usize = 98;
+// 98 -> 97 (upstream #8102): `google_oauth_configured` left `factory.rs` when
+// provider-instance readiness became a live port.
+const WS0_EXTENSION_SPECIFICITY_ALLOWLIST_BASELINE: usize = 97;
 
 /// §11.2.8 vendor-scope shrink, armed at the WS0 baseline.
 ///

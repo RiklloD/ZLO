@@ -58,6 +58,7 @@ fn client_request(
         provider: ExtensionId::new("computer_use").map_err(unknown)?,
         capability_id: CapabilityId::new(format!("{COMPUTER_USE_CAPABILITY_PREFIX}{tool}"))
             .map_err(unknown)?,
+        tool_name: None,
         scope,
         transport: COMPUTER_USE_TRANSPORT.to_string(),
         command: None,
