@@ -372,6 +372,12 @@ pub enum SteerReadState {
     Read,
     /// The runtime dropped it unread; the engine sends it as a later turn.
     Dropped,
+    /// Written to the agent, with no word either way whether it was read
+    /// (the agent exited, the connection ended, its turn ended first): kept
+    /// as a "Steer delivery not confirmed" notice and never sent again,
+    /// since replaying words the agent may have read would deliver them
+    /// twice.
+    Unconfirmed,
 }
 
 /// Request to create a thread in a runtime.

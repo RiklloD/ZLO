@@ -191,6 +191,42 @@ async fn a_read_steer_is_not_requeued() {
     assert!(!ledger[0].waiting_to_be_read());
 }
 
+/// A steer the runtime wrote with no word either way (the agent exited,
+/// the connection ended) is reported unconfirmed: the ledger keeps the
+/// "Steer delivery not confirmed" notice and it is never resent, on a
+/// runtime that reports reads and on one whose steers start read.
+#[tokio::test]
+async fn an_unconfirmed_steer_is_a_notice_and_never_requeued() {
+    for reads in [true, false] {
+        let h = if reads {
+            reading_harness().await
+        } else {
+            harness().await
+        };
+        let a = running(&h, "a", "r1").await;
+        let UserTurn::Steered {
+            steer_id: Some(id), ..
+        } = h.engine.user_turn(&a, "maybe read").await.unwrap()
+        else {
+            panic!("not steered");
+        };
+        h.engine
+            .steer_updated(
+                &a.thread_id,
+                "r1",
+                &id,
+                SteerReadState::Unconfirmed,
+                now_ms(),
+            )
+            .await;
+        finish(&h.engine, &a.thread_id, TurnOutcome::completed(None)).await;
+        assert!(queued(&h, &a.thread_id).await.is_empty(), "reads={reads}");
+        let ledger = h.engine.thread_steers(&a.thread_id).await.unwrap();
+        assert_eq!(ledger[0].state, SteerState::Unconfirmed, "reads={reads}");
+        assert!(ledger[0].unconfirmed_notice().contains("maybe read"));
+    }
+}
+
 /// A runtime that does not report reads: a delivered steer counts as read
 /// and is never resent.
 #[tokio::test]

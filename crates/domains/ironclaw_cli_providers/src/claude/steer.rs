@@ -28,7 +28,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use ironclaw_orchestrator::runtime::UnreadSteer;
+use ironclaw_orchestrator::runtime::{SteerReadState, UnreadSteer};
 use serde_json::Value;
 
 /// After the turn's result, how long a written steer may go unacknowledged
@@ -89,6 +89,8 @@ pub(super) struct SteerLedger {
     settled: bool,
     /// Input was closed on open steers: stop waiting for them.
     abandoned: bool,
+    /// Read and drop reports not handed to the engine yet, in order.
+    events: Vec<(String, SteerReadState)>,
 }
 
 impl SteerLedger {
@@ -194,7 +196,14 @@ impl SteerLedger {
             .find(|s| s.held.uuid == uuid && s.stage == Stage::Written)
         {
             known.stage = Stage::Dropped;
+            self.events
+                .push((uuid.to_string(), SteerReadState::Dropped));
         }
+    }
+
+    /// Read and drop reports since the last call, in order.
+    pub(super) fn take_events(&mut self) -> Vec<(String, SteerReadState)> {
+        std::mem::take(&mut self.events)
     }
 
     fn read(&mut self, uuid: &str) {
@@ -205,6 +214,7 @@ impl SteerLedger {
             .find(|s| s.held.uuid == uuid && matches!(s.stage, Stage::Written | Stage::Dropped))
         {
             known.stage = Stage::Read;
+            self.events.push((uuid.to_string(), SteerReadState::Read));
         }
     }
 

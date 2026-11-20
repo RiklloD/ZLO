@@ -777,6 +777,7 @@ impl ClaudeCliRuntime {
                         if let Some(turn) = &bridged {
                             turn.observe_only(&line);
                         }
+                        report_reads(&sink, &thread_id, &run, &steers).await;
                     }
                     Ok(Some(line)) => {
                         fold.push_line(&line, Instant::now());
@@ -785,6 +786,9 @@ impl ClaudeCliRuntime {
                         {
                             refused = Some("claude cli refused the approval hook");
                         }
+                        // What the CLI said about its steers (`started` or an
+                        // echo: read; dropped): the timeline's marker follows.
+                        report_reads(&sink, &thread_id, &run, &steers).await;
                     }
                     Ok(None) => break,
                     Err(error) => {
@@ -817,28 +821,19 @@ impl ClaudeCliRuntime {
             // fails the turn, naming it.
             input.close_now().await;
             let stopped = cancelled.load(std::sync::atomic::Ordering::SeqCst);
+            report_reads(&sink, &thread_id, &run, &steers).await;
             let settlement = control::with_ledger(&steers, |l| l.settle(stopped));
-            if !settlement.unconfirmed.is_empty() {
-                // Written, no word either way: never requeued. The CLI's
-                // own journal is not ours to annotate; the notice needs the
-                // engine (see the crate README, "Settlement").
-                tracing::debug!(
-                    count = settlement.unconfirmed.len(),
-                    "claude cli: steers written with no word whether they were read"
-                );
-            }
-            let unread = settlement.unread;
-            if !unread.is_empty() {
-                let lost = match sink.upgrade() {
-                    Some(sink) => {
-                        sink.steers_unread(&thread_id, &run, unread)
-                            .await
-                            .undelivered
-                    }
-                    None => unread,
-                };
-                outcome = outcome.with_undelivered_steers(&lost);
-            }
+            // Unconfirmed ones (written, no word either way) become the
+            // engine's "Steer delivery not confirmed" notices, never resent.
+            outcome = crate::steer_door::report_settlement(
+                &sink,
+                &thread_id,
+                &run,
+                settlement.unread,
+                settlement.unconfirmed,
+                outcome,
+            )
+            .await;
             // Armed while the turn is still live: a Stop or delete either
             // waits on this turn (then preempts the timer) or comes after it
             // and finds the timer; it can never slip in between.
@@ -884,13 +879,13 @@ impl ClaudeCliRuntime {
     /// `Rejected` when no turn runs or its stdin is already closed (the
     /// result is in); the engine then queues the text instead. A held steer
     /// the turn never writes is reported unread at its end.
-    async fn steer_in_turn(&self, thread: &ThreadId, text: &str) -> SteerOutcome {
+    async fn steer_in_turn(&self, thread: &ThreadId, id: &str, text: &str) -> SteerOutcome {
         let entry = self.active.lock().ok().and_then(|a| {
             a.get(thread)
                 .map(|t| (t.input.clone(), Arc::clone(&t.admission), t.run_id.clone()))
         }); // silent-ok: a poisoned map only follows a panic elsewhere
         let Some((input, admission, run_id)) = entry else {
-            return SteerOutcome::Rejected;
+            return SteerOutcome::TurnEnded;
         };
         // One steer at a time: a second one cannot overtake this one's gate
         // answers, nor see gates this one already took.
@@ -910,7 +905,7 @@ impl ClaudeCliRuntime {
         // A fresh uuid: the steer belongs to the running run, it does not
         // start one in the journal. The ledger tracks it by this uuid until
         // the CLI starts it; one it never starts is queued at turn end.
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = id.to_string();
         let line = control::steer_message(&uuid, text).await;
         let steer = steer::HeldSteer {
             uuid,
@@ -919,7 +914,9 @@ impl ClaudeCliRuntime {
         };
         match input.steer(steer).await {
             SteerAdmit::Written | SteerAdmit::Held | SteerAdmit::Consumed => SteerOutcome::Steered,
-            SteerAdmit::Refused => SteerOutcome::Rejected,
+            // Input closed, closing (the turn is settling) or failed: the
+            // turn is gone; the engine starts the next one with the text.
+            SteerAdmit::Refused => SteerOutcome::TurnEnded,
         }
     }
 
@@ -1055,6 +1052,35 @@ impl TurnRuntime for ClaudeCliRuntime {
         })
     }
 
+    /// The engine's steer: its id is the message uuid written to the CLI,
+    /// so `command_lifecycle`, echoes, the journal's `source_uuid` and every
+    /// report about it carry the engine's id.
+    async fn steer_message(
+        &self,
+        thread: &ThreadRecord,
+        request: &SteerRequest,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        if request.how == SteerHow::Steer {
+            return Ok(self
+                .steer_in_turn(&thread.thread_id, request.id.as_str(), &request.text)
+                .await);
+        }
+        self.steer(thread, &request.text, request.how).await
+    }
+
+    /// The CLI says when it starts a steer (`started`, or an echo) and
+    /// when it drops one: the engine shows "waiting to be read" until then.
+    fn reports_steer_reads(&self) -> bool {
+        self.bridge.is_some()
+    }
+
+    /// `priority: "next"` waits for the tool calls in flight, but the CLI's
+    /// own queue may cut them short (t3code: Claude steering interrupts
+    /// tools), so automatic input never steers it.
+    fn steer_interrupts_tools(&self) -> bool {
+        true
+    }
+
     async fn steer(
         &self,
         thread: &ThreadRecord,
@@ -1063,7 +1089,8 @@ impl TurnRuntime for ClaudeCliRuntime {
     ) -> Result<SteerOutcome, RuntimeError> {
         // A steer never kills the turn; only an explicit Restart does.
         if how == SteerHow::Steer {
-            return Ok(self.steer_in_turn(&thread.thread_id, text).await);
+            let id = uuid::Uuid::new_v4().to_string();
+            return Ok(self.steer_in_turn(&thread.thread_id, &id, text).await);
         }
         self.stop(&thread.thread_id).await;
         let profile = self
@@ -1110,6 +1137,28 @@ impl TurnRuntime for ClaudeCliRuntime {
             model_efforts: Default::default(),
             brand: None,
         }])
+    }
+}
+
+/// Hand the CLI's read and drop reports to the engine, in order.
+async fn report_reads(
+    sink: &Weak<dyn TurnEventSink>,
+    thread: &ThreadId,
+    run: &str,
+    steers: &SharedSteers,
+) {
+    let events = control::with_ledger(steers, |l| l.take_events());
+    if events.is_empty() {
+        return;
+    }
+    let Some(sink) = sink.upgrade() else {
+        return;
+    };
+    for (id, state) in events {
+        match SteerId::new(id) {
+            Ok(id) => sink.steer_updated(thread, run, &id, state, now_ms()).await,
+            Err(error) => tracing::debug!(%error, "claude cli: steer id not reportable"),
+        }
     }
 }
 

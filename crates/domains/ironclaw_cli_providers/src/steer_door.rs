@@ -40,8 +40,10 @@ use std::sync::{Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use ironclaw_host_api::ids::ThreadId;
+use ironclaw_orchestrator::model::now_ms;
 use ironclaw_orchestrator::runtime::{
-    HistoryMessage, HistoryRole, SteerOutcome, TurnEventSink, TurnOutcome, UnreadSteer,
+    HistoryMessage, HistoryRole, SteerId, SteerOutcome, SteerReadState, TurnEventSink, TurnOutcome,
+    UnreadSteer,
 };
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -66,7 +68,7 @@ pub(crate) struct SteerRequest {
 impl SteerRequest {
     fn tell(&mut self, outcome: SteerOutcome) {
         if let Some(waiter) = self.waiter.take() {
-            self.told = Some(outcome.clone());
+            self.told = Some(outcome);
             if waiter.send(outcome).is_err() {
                 tracing::debug!("steer: the requester stopped waiting");
             }
@@ -166,23 +168,25 @@ impl<L: Clone> SteerDoor<L> {
 
     /// Accept `text` for the turn, decided under the door's lock: a close
     /// either sees it in the channel (and reports it) or came first.
-    pub(crate) fn knock(&self, text: &str) -> Knock {
-        self.knock_as(text, true)
+    /// `id` is the engine's id for the steer ([`SteerId`]): its row in
+    /// the transcript and every report about it carry that id.
+    pub(crate) fn knock(&self, id: &str, text: &str) -> Knock {
+        self.knock_as(id, text, true)
     }
 
     /// [`Self::knock`] for a rejection's feedback: delivered the same way,
     /// in the same order, but never journaled as the person's message.
     pub(crate) fn knock_feedback(&self, text: &str) -> Knock {
-        self.knock_as(text, false)
+        self.knock_as(&uuid::Uuid::new_v4().to_string(), text, false)
     }
 
-    fn knock_as(&self, text: &str, journal: bool) -> Knock {
+    fn knock_as(&self, id: &str, text: &str, journal: bool) -> Knock {
         let mut inner = self.lock();
         if inner.stopping {
             return Knock::Closed;
         }
         let steer = UnreadSteer {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: id.to_string(),
             text: text.to_string(),
         };
         let (waiter, knock) = match &inner.state {
@@ -325,12 +329,16 @@ pub(crate) struct Settled {
     /// Steers that never reached the agent and whose requester was already
     /// told `Steered` (held, or told on a late answer).
     pub(crate) unread: Vec<UnreadSteer>,
+    /// Written with no word either way: the engine keeps them as "Steer
+    /// delivery not confirmed" notices and never sends them again.
+    pub(crate) unconfirmed: Vec<UnreadSteer>,
 }
 
 impl Settled {
-    fn extend(&mut self, other: Settled) {
+    pub(crate) fn extend(&mut self, other: Settled) {
         self.entries.extend(other.entries);
         self.unread.extend(other.unread);
+        self.unconfirmed.extend(other.unconfirmed);
     }
 }
 
@@ -542,8 +550,8 @@ impl SteerPipe {
     /// A steer the loop will not send (Stop won, or the turn is over).
     pub(crate) fn refuse(&self, request: SteerRequest) -> Settled {
         Settled {
-            entries: Vec::new(),
             unread: request.refused(self.stopped).into_iter().collect(),
+            ..Settled::default()
         }
     }
 
@@ -567,27 +575,30 @@ impl SteerPipe {
             .extend(segment.into_iter().map(|e| self.in_run(e)));
         let text = entry.request.steer.text.clone();
         let journal = entry.request.journal;
+        let steer_id = entry.request.steer.id.clone();
         match entry.outcome.unwrap_or(Delivery::Refused) {
             Delivery::Delivered => {
                 if journal {
-                    settled.entries.push(self.row(HistoryRole::User, text));
+                    settled.entries.push(self.steer_row(text, steer_id));
                 }
                 entry.request.tell(SteerOutcome::Steered);
             }
             Delivery::Unconfirmed => {
                 if journal {
-                    settled
-                        .entries
-                        .push(self.row(HistoryRole::User, text.clone()));
+                    settled.entries.push(self.steer_row(text.clone(), steer_id));
                 }
                 entry.request.tell(SteerOutcome::Steered);
                 if self.stopped {
                     // The engine shows a stopped turn's unread steers as
                     // the notice: one notice, never requeued.
                     settled.unread.push(entry.request.steer);
+                } else if journal {
+                    // It may have been read: never queued again. The engine
+                    // shows the notice (its ledger knows this steer).
+                    settled.unconfirmed.push(entry.request.steer);
                 } else {
-                    // It may have been read: never queued again, but shown
-                    // (a rejection's feedback too: they are the person's).
+                    // A rejection's feedback the engine never saw: shown
+                    // here, since they are the person's words too.
                     settled
                         .entries
                         .push(self.row(HistoryRole::System, not_confirmed(&text)));
@@ -607,6 +618,14 @@ impl SteerPipe {
 
     fn row(&self, role: HistoryRole, text: String) -> HistoryMessage {
         self.in_run(journal::message(role, text, Vec::new()))
+    }
+
+    /// A steer's own row, marked with its id so the timeline marks it.
+    fn steer_row(&self, text: String, steer_id: String) -> HistoryMessage {
+        HistoryMessage {
+            steer_id: Some(steer_id),
+            ..self.row(HistoryRole::User, text)
+        }
     }
 }
 
@@ -637,6 +656,32 @@ fn not_confirmed(text: &str) -> String {
         "Steer delivery not confirmed: the turn ended before the agent acknowledged this \
          message, so it may not have been delivered. Resend it if needed: \"{text}\""
     )
+}
+
+/// Report how a turn's steers settled, before the turn is reported
+/// finished (so no queue drain runs between the two): unconfirmed ones as
+/// [`SteerReadState::Unconfirmed`] (a notice, never resent), unread ones
+/// through [`report_unread`].
+pub(crate) async fn report_settlement(
+    sink: &Weak<dyn TurnEventSink>,
+    thread: &ThreadId,
+    run: &str,
+    unread: Vec<UnreadSteer>,
+    unconfirmed: Vec<UnreadSteer>,
+    outcome: TurnOutcome,
+) -> TurnOutcome {
+    if let Some(sink) = sink.upgrade() {
+        for steer in &unconfirmed {
+            match SteerId::new(steer.id.clone()) {
+                Ok(id) => {
+                    sink.steer_updated(thread, run, &id, SteerReadState::Unconfirmed, now_ms())
+                        .await;
+                }
+                Err(error) => tracing::debug!(%error, "steer id not reportable"),
+            }
+        }
+    }
+    report_unread(sink, thread, run, unread, outcome).await
 }
 
 /// Hand steers the turn never delivered to the engine, before the turn is
@@ -704,7 +749,7 @@ mod tests {
         assert_eq!(door.submit(|l| *l), Some(7));
         assert_eq!(door.interrupt(|l| *l), Some(7));
         assert_eq!(door.submit(|l| *l), None, "no steer after the interrupt");
-        assert!(matches!(door.knock("late"), Knock::Closed));
+        assert!(matches!(door.knock("l", "late"), Knock::Closed));
     }
 
     /// Sol 3: a late answer never makes a pending write count as success:
@@ -785,7 +830,10 @@ mod tests {
             .collect();
         assert_eq!(rows[0], (HistoryRole::Assistant, "before"));
         assert_eq!(rows[1], (HistoryRole::User, "maybe"));
-        assert!(rows[2].0 == HistoryRole::System && rows[2].1.contains("not confirmed"));
+        assert_eq!(rows.len(), 2, "the notice is the engine's");
+        assert_eq!(settled.entries[1].steer_id.as_deref(), Some("maybe"));
+        let unconfirmed: Vec<&str> = settled.unconfirmed.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(unconfirmed, ["maybe"]);
     }
 
     /// Sol 3: Muse answers with a turn id; another turn's is a refusal.
@@ -830,12 +878,7 @@ mod tests {
             settled.unread.is_empty(),
             "replayed though it may have been read"
         );
-        assert!(
-            settled
-                .entries
-                .iter()
-                .any(|e| e.text.contains("not confirmed"))
-        );
+        assert_eq!(settled.unconfirmed.len(), 1, "the engine's notice");
     }
 
     /// Rule 2: after Stop nothing outstanding is requeued as such; a waiting
@@ -845,7 +888,7 @@ mod tests {
     async fn stop_consumes_every_outstanding_steer() {
         let (door, mut rx) = SteerDoor::<u8>::new();
         door.open(1);
-        let Knock::Sent(verdict) = door.knock("unsent") else {
+        let Knock::Sent(verdict) = door.knock("u", "unsent") else {
             panic!("open");
         };
         let mut pipe = SteerPipe::new("run", Duration::from_secs(60), accept_all());

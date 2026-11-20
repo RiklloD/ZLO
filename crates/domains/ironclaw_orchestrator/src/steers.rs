@@ -97,8 +97,8 @@ impl SteerRecord {
     /// The notice body of an unconfirmed steer (t3code's wording).
     pub fn unconfirmed_notice(&self) -> String {
         format!(
-            "The agent did not confirm reading your steer before Stop. It may not have been \
-             delivered. Resend it if needed: \"{}\"",
+            "The agent did not confirm reading your steer before its turn ended. It may not \
+             have been delivered. Resend it if needed: \"{}\"",
             self.text
         )
     }
@@ -933,6 +933,17 @@ impl Engine {
             SteerReadState::Dropped => (
                 &[SteerState::Sending, SteerState::Pending],
                 SteerState::Dropped,
+            ),
+            // From any open state, and from Read for a runtime that does not
+            // report reads (its delivered steers start Read).
+            SteerReadState::Unconfirmed => (
+                &[
+                    SteerState::Sending,
+                    SteerState::Pending,
+                    SteerState::Read,
+                    SteerState::Dropped,
+                ],
+                SteerState::Unconfirmed,
             ),
         };
         if !self.store.set_steer_state(thread, id, from, to).await? {

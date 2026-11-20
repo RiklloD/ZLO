@@ -343,12 +343,20 @@ impl AntigravityRuntime {
             if let Some(bridge) = &bridge {
                 bridge.turn_started(&thread_id, &run);
             }
-            let (outcome, telemetry, unread) = turn.run(client, inbound, steer_rx).await;
+            let (outcome, telemetry, steers) = turn.run(client, inbound, steer_rx).await;
             store::close_host(&mut child, pgid).await;
-            // Steers accepted before the session opened that the turn never
-            // sent go back to the engine before the turn is reported.
-            let outcome =
-                crate::steer_door::report_unread(&sink, &thread_id, &run, unread, outcome).await;
+            // How the turn's steers settled goes to the engine before the
+            // turn is reported: unread ones back to its queue (after Stop:
+            // notices), unconfirmed ones as notices, never resent.
+            let outcome = crate::steer_door::report_settlement(
+                &sink,
+                &thread_id,
+                &run,
+                steers.unread,
+                steers.unconfirmed,
+                outcome,
+            )
+            .await;
             group.disarm();
             report.disarm();
             if let Some(bridge) = &bridge {
@@ -379,7 +387,7 @@ impl AntigravityRuntime {
     /// - Session open: a pending approval is declined first, then the steer
     ///   goes out as another `session/prompt`; this waits until it is on the
     ///   wire (bounded, race-free: see [`Ticket`]).
-    async fn steer_running(&self, thread: &ThreadId, text: &str) -> bool {
+    async fn steer_running(&self, thread: &ThreadId, id: &str, text: &str) -> SteerOutcome {
         let Some((steer, admission, run_id, session)) = self.active.with_turn(thread, |t| {
             (
                 t.steer.clone(),
@@ -388,7 +396,7 @@ impl AntigravityRuntime {
                 Arc::clone(&t.session),
             )
         }) else {
-            return false;
+            return SteerOutcome::TurnEnded;
         };
         // One steer at a time from its declines to its prompt: a second one
         // cannot see the gate list this one emptied and overtake it.
@@ -396,13 +404,17 @@ impl AntigravityRuntime {
         let open = session.lock().is_ok_and(|s| s.is_some());
         if !open {
             let held = SteerRequest {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: id.to_string(),
                 text: text.to_string(),
                 journal: true,
                 waiter: None,
             };
             // Fails only once the turn stopped taking steers.
-            return steer.send(held).is_ok();
+            return if steer.send(held).is_ok() {
+                SteerOutcome::Steered
+            } else {
+                SteerOutcome::TurnEnded
+            };
         }
         // Pending permissions are rejected first, and the steer waits until
         // those replies are on the agent's stdin (ACP's reject carries no
@@ -411,10 +423,17 @@ impl AntigravityRuntime {
         if let Some(bridge) = &self.bridge {
             let gates = bridge.steer_at_gates(thread, &run_id, text, false);
             if !gates.is_empty() && gates.settle().await {
-                return true;
+                return SteerOutcome::Steered;
             }
         }
-        offer_steer(&steer, text.to_string(), true).await
+        if steer.is_closed() {
+            return SteerOutcome::TurnEnded;
+        }
+        if offer_steer(&steer, id, text.to_string(), true).await {
+            SteerOutcome::Steered
+        } else {
+            SteerOutcome::Rejected
+        }
     }
 
     /// Ask the agent to cancel, then kill its process group if it does not
@@ -556,7 +575,7 @@ impl Turn {
         client: RpcClient,
         inbound: mpsc::UnboundedReceiver<Inbound>,
         mut steer_rx: mpsc::UnboundedReceiver<SteerRequest>,
-    ) -> (TurnOutcome, Telemetry, Vec<UnreadSteer>) {
+    ) -> (TurnOutcome, Telemetry, steer::Settlement) {
         let mut ledger = steer::SteerLedger::default();
         let (outcome, telemetry) = self
             .drive(client, inbound, &mut steer_rx, &mut ledger)
@@ -576,9 +595,9 @@ impl Turn {
         }
         // Settled once every write's report is in (bounded).
         let settlement = ledger.settle(stopped).await;
-        if !settlement.unconfirmed.is_empty() {
+        if !settlement.unconfirmed_feedback.is_empty() {
             let notices: Vec<HistoryMessage> = settlement
-                .unconfirmed
+                .unconfirmed_feedback
                 .iter()
                 .map(|steer| {
                     journal::message(HistoryRole::System, not_confirmed(&steer.text), Vec::new())
@@ -586,11 +605,10 @@ impl Turn {
                 .collect();
             journal::append(&self.config.transcript(&self.key), &notices).await;
         }
-        let unread = settlement.unread;
         if let Ok(mut slot) = self.session.lock() {
             *slot = None;
         }
-        (outcome, telemetry, unread)
+        (outcome, telemetry, settlement)
     }
 
     async fn drive(
@@ -744,7 +762,9 @@ impl Turn {
                         },
                         Err(_) => None, // silent-ok: a poisoned lock only follows a panic elsewhere; the steer is refused
                     };
-                    let journaled = request.journal.then(|| request.text.clone());
+                    let journaled = request
+                        .journal
+                        .then(|| (request.text.clone(), request.id.clone()));
                     match queued {
                         Some((pending, written)) => {
                             live.steered();
@@ -758,7 +778,10 @@ impl Turn {
                                 superseded.push(earlier);
                             }
                             held = false;
-                            entries.extend(journaled.map(|text| journal::message(HistoryRole::User, text, Vec::new())));
+                            entries.extend(journaled.map(|(text, id)| HistoryMessage {
+                                steer_id: Some(id),
+                                ..journal::message(HistoryRole::User, text, Vec::new())
+                            }));
                         }
                         None => {
                             // Stop won: consumed, never queued again.
@@ -1235,7 +1258,13 @@ async fn deliver_feedback(
     feedback: &DenialFeedback,
 ) {
     if let Some(steer) = steer
-        && offer_steer(steer, crate::bridge::rejection_message(feedback), false).await
+        && offer_steer(
+            steer,
+            &uuid::Uuid::new_v4().to_string(),
+            crate::bridge::rejection_message(feedback),
+            false,
+        )
+        .await
     {
         return;
     }
@@ -1394,6 +1423,28 @@ impl TurnRuntime for AntigravityRuntime {
         })
     }
 
+    /// The engine's steer, under its id (its transcript row and every
+    /// report about it carry it).
+    async fn steer_message(
+        &self,
+        thread: &ThreadRecord,
+        request: &ironclaw_orchestrator::runtime::SteerRequest,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        if request.how == SteerHow::Steer {
+            return Ok(self
+                .steer_running(&thread.thread_id, request.id.as_str(), &request.text)
+                .await);
+        }
+        self.steer(thread, &request.text, request.how).await
+    }
+
+    /// A steer is another `session/prompt`: the running prompt ends and the
+    /// agent carries on, tools and subagents left alone (t3code: prompt
+    /// steering does not interrupt tools).
+    fn steer_interrupts_tools(&self) -> bool {
+        false
+    }
+
     async fn steer(
         &self,
         thread: &ThreadRecord,
@@ -1403,11 +1454,8 @@ impl TurnRuntime for AntigravityRuntime {
         if how == SteerHow::Steer {
             // `agy acp` takes it as another prompt into the running turn;
             // anything else is refused and the engine queues the text.
-            return Ok(if self.steer_running(&thread.thread_id, text).await {
-                SteerOutcome::Steered
-            } else {
-                SteerOutcome::Rejected
-            });
+            let id = uuid::Uuid::new_v4().to_string();
+            return Ok(self.steer_running(&thread.thread_id, &id, text).await);
         }
         self.stop(&thread.thread_id).await;
         // Something else took the thread meanwhile: the engine queues it.

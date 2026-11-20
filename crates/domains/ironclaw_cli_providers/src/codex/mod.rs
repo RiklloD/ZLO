@@ -53,7 +53,7 @@ use crate::bridge::CliBridge;
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
-use crate::steer_door::{Knock, Settled, SteerDoor, SteerPipe, SteerRequest, report_unread};
+use crate::steer_door::{Knock, Settled, SteerDoor, SteerPipe, SteerRequest, report_settlement};
 use fold::TurnFold;
 use ironclaw_product_contracts::orchestration::{ThreadAction, ThreadActionOutcome};
 
@@ -315,11 +315,19 @@ impl CodexRuntime {
             if let Some(bridge) = &bridge {
                 bridge.turn_started(&thread_id, &run);
             }
-            let (outcome, telemetry, unread) = turn.run(client, inbound).await;
+            let (outcome, telemetry, steers) = turn.run(client, inbound).await;
             close_server(&mut child, pgid).await;
             // Steers held for a start that never came go back to the engine
             // before the turn is reported (and before the session frees).
-            let outcome = report_unread(&sink, &thread_id, &run, unread, outcome).await;
+            let outcome = report_settlement(
+                &sink,
+                &thread_id,
+                &run,
+                steers.unread,
+                steers.unconfirmed,
+                outcome,
+            )
+            .await;
             end.settle(outcome.status.as_str());
             let context_used = telemetry.as_ref().and_then(|t| t.context_used);
             let status = outcome.status;
@@ -545,30 +553,32 @@ impl Turn {
         mut self,
         client: RpcClient,
         inbound: mpsc::UnboundedReceiver<Inbound>,
-    ) -> (TurnOutcome, Telemetry, Vec<UnreadSteer>) {
+    ) -> (TurnOutcome, Telemetry, Settled) {
         let mut steers = self
             .steer_rx
             .take()
             .unwrap_or_else(|| mpsc::unbounded_channel().1);
-        let mut unread = Vec::new();
+        let mut unread = Settled::default();
         let (outcome, telemetry) = self.drive(client, inbound, &mut steers, &mut unread).await;
         // A turn that never reached its loop: what it held goes back.
         let mut pipe = SteerPipe::new(&self.run_id, self.steer_timeout, Box::new(|_| true));
         if self.cancelled.load(Ordering::SeqCst) || self.door.stopping() {
             pipe.stop();
         }
-        let settled = pipe.finish(&self.door, &mut steers, true).await;
-        unread.extend(settled.unread);
+        let mut settled = pipe.finish(&self.door, &mut steers, true).await;
+        settled.entries.clear();
+        unread.extend(settled);
         (outcome, telemetry, unread)
     }
 
     /// Settled steers: their entries into the transcript, in order; the held
     /// ones that never reached Codex back to the engine.
-    async fn record(&self, transcript: &Path, settled: Settled, unread: &mut Vec<UnreadSteer>) {
+    async fn record(&self, transcript: &Path, mut settled: Settled, steers: &mut Settled) {
         if !settled.entries.is_empty() {
             journal::append(transcript, &settled.entries).await;
         }
-        unread.extend(settled.unread);
+        settled.entries.clear();
+        steers.extend(settled);
     }
 
     fn policy(&self) -> (&'static str, &'static str) {
@@ -625,7 +635,7 @@ impl Turn {
         client: RpcClient,
         mut inbound: mpsc::UnboundedReceiver<Inbound>,
         steers: &mut mpsc::UnboundedReceiver<SteerRequest>,
-        unread: &mut Vec<UnreadSteer>,
+        unread: &mut Settled,
     ) -> (TurnOutcome, Telemetry) {
         let mut fold = TurnFold::default();
         let codex_thread = match self.open(&client, &mut fold).await {
@@ -1147,6 +1157,12 @@ impl TurnRuntime for CodexRuntime {
         }
     }
 
+    /// `turn/steer` joins the running turn without cancelling its tool
+    /// calls (t3code: no `activeSteeringInterruptsTools`).
+    fn steer_interrupts_tools(&self) -> bool {
+        false
+    }
+
     async fn create_thread(&self, request: CreateThread) -> Result<CreatedThread, RuntimeError> {
         let thread_id = ThreadId::new(uuid::Uuid::new_v4().to_string())
             .map_err(|e| RuntimeError::Rejected(e.to_string()))?;
@@ -1205,9 +1221,26 @@ impl TurnRuntime for CodexRuntime {
         text: &str,
         how: SteerHow,
     ) -> Result<SteerOutcome, RuntimeError> {
+        let request = ironclaw_orchestrator::runtime::SteerRequest {
+            id: ironclaw_orchestrator::runtime::SteerId::generate(),
+            text: text.to_string(),
+            how,
+        };
+        self.steer_message(thread, &request).await
+    }
+
+    /// The engine's steer, under its id (the transcript row and every report
+    /// about it carry it). `TurnEnded` once the turn is gone or past its
+    /// end: the engine then starts the next turn with the text at once.
+    async fn steer_message(
+        &self,
+        thread: &ThreadRecord,
+        request: &ironclaw_orchestrator::runtime::SteerRequest,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        let (text, how, id) = (request.text.as_str(), request.how, request.id.as_str());
         if how == SteerHow::Steer {
             let Some(door) = self.door(&thread.thread_id) else {
-                return Ok(SteerOutcome::Rejected);
+                return Ok(SteerOutcome::TurnEnded);
             };
             // One steer at a time from its declines to its knock: a second
             // one cannot overtake this one's declines.
@@ -1218,11 +1251,11 @@ impl TurnRuntime for CodexRuntime {
                     return Ok(SteerOutcome::Steered);
                 }
             }
-            let knock = door.knock(text);
+            let knock = door.knock(id, text);
             drop(admitted);
             return Ok(match knock {
                 Knock::Held => SteerOutcome::Steered,
-                Knock::Closed => SteerOutcome::Rejected,
+                Knock::Closed => SteerOutcome::TurnEnded,
                 // Dropped unanswered only with the turn's task.
                 Knock::Sent(verdict) => verdict.await.unwrap_or(SteerOutcome::Rejected), // silent-ok: a lost verdict means the turn ended before sending it
             });

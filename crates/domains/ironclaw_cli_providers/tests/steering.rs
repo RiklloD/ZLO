@@ -27,6 +27,8 @@ struct Recorder {
     started: Mutex<Vec<String>>,
     finished: Mutex<Vec<TurnOutcome>>,
     unread: Mutex<Vec<String>>,
+    /// `steer_updated` reports: (steer id, state).
+    updates: Mutex<Vec<(String, SteerReadState)>>,
 }
 
 #[async_trait]
@@ -59,9 +61,47 @@ impl TurnEventSink for Recorder {
             .extend(steers.into_iter().map(|s| s.text));
         SteerRecovery::default()
     }
+    async fn steer_updated(
+        &self,
+        _: &ThreadId,
+        _: &str,
+        steer_id: &SteerId,
+        state: SteerReadState,
+        _: Millis,
+    ) {
+        self.updates
+            .lock()
+            .unwrap()
+            .push((steer_id.as_str().to_string(), state));
+    }
+}
+
+/// Steer under a known engine id (what the engine's admission does).
+async fn steer_as(
+    rt: &dyn TurnRuntime,
+    thread: &ThreadRecord,
+    id: &str,
+    text: &str,
+) -> SteerOutcome {
+    let request = SteerRequest {
+        id: SteerId::new(id).unwrap(),
+        text: text.to_string(),
+        how: SteerHow::Steer,
+    };
+    rt.steer_message(thread, &request).await.unwrap()
 }
 
 impl Recorder {
+    /// Ids the runtime reported unconfirmed (the engine's notice).
+    fn unconfirmed(&self) -> Vec<String> {
+        self.updates
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, state)| *state == SteerReadState::Unconfirmed)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
     fn finished(&self) -> Vec<TurnOutcome> {
         self.finished.lock().unwrap().clone()
     }
@@ -340,10 +380,10 @@ async fn codex_steer_held_for_a_turn_that_never_starts_comes_back_unread() {
     assert_eq!(recorder.finished()[0].status, TurnEndStatus::Failed);
     assert_eq!(recorder.unread(), ["early"]);
     assert!(!read(&dir.path().join("codex.log")).contains("turn/steer"));
-    // After the turn: refused, the engine queues it.
+    // After the turn: gone, the engine starts the next turn with it.
     assert_eq!(
         rt.steer(&thread, "late", SteerHow::Steer).await.unwrap(),
-        SteerOutcome::Rejected
+        SteerOutcome::TurnEnded
     );
 }
 
@@ -402,26 +442,23 @@ async fn codex_an_unanswered_steer_is_delivered_once_or_queued_once() {
     // Past the start: the turn is live, so the steer is not held.
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
-        rt.steer(&thread, "slow answer", SteerHow::Steer)
-            .await
-            .unwrap(),
+        steer_as(&rt, &thread, "s-slow", "slow answer").await,
         SteerOutcome::Steered
     );
     std::fs::write(dir.path().join("end"), "").unwrap();
     wait_for(|| recorder.finished().len() == 1).await;
     // Written, never answered, turn over: no evidence it was read (Sol 3),
-    // so it is unconfirmed (notice), not counted delivered, never requeued.
+    // so it is unconfirmed: the engine shows the notice, never requeued.
     assert!(recorder.unread().is_empty());
+    assert_eq!(recorder.unconfirmed(), ["s-slow"]);
     let (rows, _) = rows(&rt, &thread, &recorder.run()).await;
+    assert_eq!(rows, ["User:hi", "User:slow answer", "Assistant:Done"]);
+    let history = rt.history(&thread, 50).await.unwrap();
     assert_eq!(
-        rows[..2],
-        ["User:hi".to_string(), "User:slow answer".to_string()]
+        history[1].steer_id.as_deref(),
+        Some("s-slow"),
+        "the row is marked"
     );
-    assert!(
-        rows[2].starts_with("System:Steer delivery not confirmed"),
-        "{rows:?}"
-    );
-    assert_eq!(rows[3], "Assistant:Done");
 }
 
 /// Review (Sol, 2): the same unanswered `turn/steer`, but its turn ends
@@ -440,23 +477,15 @@ async fn codex_an_unanswered_steer_whose_turn_ended_is_unconfirmed() {
     // Past the start: the turn is live, so the steer is not held.
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
-        rt.steer(&thread, "too late", SteerHow::Steer)
-            .await
-            .unwrap(),
+        steer_as(&rt, &thread, "s-late", "too late").await,
         SteerOutcome::Steered,
         "not refused: it may have been read"
     );
     wait_for(|| recorder.finished().len() == 1).await;
     assert!(recorder.unread().is_empty(), "never requeued");
+    assert_eq!(recorder.unconfirmed(), ["s-late"], "the engine's notice");
     let (rows, in_run) = rows(&rt, &thread, &recorder.run()).await;
-    assert_eq!(
-        rows[..2],
-        ["User:hi".to_string(), "User:too late".to_string()]
-    );
-    assert!(
-        rows[2].starts_with("System:Steer delivery not confirmed"),
-        "{rows:?}"
-    );
+    assert_eq!(rows, ["User:hi", "User:too late"]);
     assert!(in_run);
 }
 
@@ -475,7 +504,7 @@ async fn codex_a_completion_during_the_startup_steers_ends_the_turn_promptly() {
     wait_for(|| dir.path().join("starting").exists()).await;
     for text in ["held-one", "held-two"] {
         assert_eq!(
-            rt.steer(&thread, text, SteerHow::Steer).await.unwrap(),
+            steer_as(&rt, &thread, text, text).await,
             SteerOutcome::Steered
         );
     }
@@ -487,21 +516,16 @@ async fn codex_a_completion_during_the_startup_steers_ends_the_turn_promptly() {
         "the turn's end waited on its steers: {:?}",
         started.elapsed()
     );
-    let (rows, _) = rows(&rt, &thread, &recorder.run()).await;
     let unread = recorder.unread();
+    let unconfirmed = recorder.unconfirmed();
     for text in ["held-one", "held-two"] {
-        let noticed = rows
-            .iter()
-            .any(|r| r.starts_with("System:") && r.contains(text));
+        let noticed = unconfirmed.iter().any(|id| id == text);
         assert!(
             noticed ^ unread.iter().any(|u| u == text),
-            "{text}: {rows:?} {unread:?}"
+            "{text}: {unconfirmed:?} {unread:?}"
         );
     }
-    assert!(
-        rows.iter()
-            .any(|r| r.starts_with("System:") && r.contains("held-one"))
-    );
+    assert!(unconfirmed.iter().any(|id| id == "held-one"));
 }
 
 /// Review (Sol, 2): while a startup steer waits for its answer, the turn
@@ -1302,18 +1326,17 @@ async fn antigravity_a_steer_written_with_no_answer_is_unconfirmed() {
     wait_for(|| dir.path().join("said").exists()).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
-        rt.steer(&thread, "maybe read", SteerHow::Steer)
-            .await
-            .unwrap(),
+        steer_as(&rt, &thread, "s-maybe", "maybe read").await,
         SteerOutcome::Steered
     );
     wait_for(|| recorder.finished().len() == 1).await;
     assert!(recorder.unread().is_empty(), "replayed");
+    assert_eq!(recorder.unconfirmed(), ["s-maybe"], "the engine's notice");
     let history = rt.history(&thread, 50).await.unwrap();
     assert!(
         history
             .iter()
-            .any(|m| m.text.contains("not confirmed") && m.text.contains("maybe read")),
+            .any(|m| m.text == "maybe read" && m.steer_id.as_deref() == Some("s-maybe")),
         "{history:?}"
     );
 }

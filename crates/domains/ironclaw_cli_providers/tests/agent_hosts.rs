@@ -630,10 +630,10 @@ async fn antigravity_cli_steers_the_running_turn_with_a_second_prompt() {
             (HistoryRole::Assistant, "Steered".to_string()),
         ]
     );
-    // No turn: a steer is refused and the engine queues it.
+    // No turn: the turn is gone; the engine starts the next one with it.
     assert_eq!(
         rt.steer(&thread, "late", SteerHow::Steer).await.unwrap(),
-        SteerOutcome::Rejected
+        SteerOutcome::TurnEnded
     );
     let catalog = rt.catalog(&scope()).await.unwrap();
     assert_eq!(catalog[0].efforts, ["low", "high"]);

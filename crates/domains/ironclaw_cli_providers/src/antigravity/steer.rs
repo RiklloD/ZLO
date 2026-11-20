@@ -103,6 +103,7 @@ impl SteerRequest {
             },
             waited,
             taken,
+            self.journal,
         )
     }
 }
@@ -128,8 +129,11 @@ pub(super) struct Settlement {
     /// "Steer delivery not confirmed" instead).
     pub(super) unread: Vec<UnreadSteer>,
     /// Written with no evidence either way: shown with the notice, never
-    /// requeued.
+    /// requeued (the engine's notice for steers it knows).
     pub(super) unconfirmed: Vec<UnreadSteer>,
+    /// The same for a rejection's feedback, which the engine never saw: the
+    /// turn shows its notice itself.
+    pub(super) unconfirmed_feedback: Vec<UnreadSteer>,
 }
 
 /// Every steer of one turn the loop took (and those still in its channel at
@@ -155,16 +159,25 @@ struct LedgerEntry {
     waited: bool,
     taken: Taken,
     reply: Arc<Mutex<Reply>>,
+    /// A person's steer (the engine knows it), not a rejection's feedback.
+    journal: bool,
 }
 
 impl SteerLedger {
     /// Enter a steer; returns its index (for [`Self::reply`]).
-    pub(super) fn enter(&mut self, steer: UnreadSteer, waited: bool, taken: Taken) -> usize {
+    pub(super) fn enter(
+        &mut self,
+        steer: UnreadSteer,
+        waited: bool,
+        taken: Taken,
+        journal: bool,
+    ) -> usize {
         self.entries.push(LedgerEntry {
             steer,
             waited,
             taken,
             reply: Arc::default(),
+            journal,
         });
         self.entries.len() - 1
     }
@@ -222,8 +235,10 @@ impl SteerLedger {
                 Some(true) | None => {
                     if stopped {
                         settlement.unread.push(entry.steer);
-                    } else {
+                    } else if entry.journal {
                         settlement.unconfirmed.push(entry.steer);
+                    } else {
+                        settlement.unconfirmed_feedback.push(entry.steer);
                     }
                 }
             }
@@ -241,12 +256,15 @@ pub(super) type SteerTx = mpsc::UnboundedSender<SteerRequest>;
 /// in wire order), and this waits for the frame's actual write: a closed or
 /// stalled stdin (the writer's own bound) refuses the steer. Never success
 /// on a write that is still pending.
-pub(super) async fn offer_steer(steer: &SteerTx, text: String, journal: bool) -> bool {
-    offer_steer_within(steer, text, journal, STEER_ACK_TIMEOUT).await
+/// `id` is the engine's id for the steer (its transcript row and every
+/// report carry it).
+pub(super) async fn offer_steer(steer: &SteerTx, id: &str, text: String, journal: bool) -> bool {
+    offer_steer_within(steer, id, text, journal, STEER_ACK_TIMEOUT).await
 }
 
 pub(super) async fn offer_steer_within(
     steer: &SteerTx,
+    id: &str,
     text: String,
     journal: bool,
     wait: Duration,
@@ -254,7 +272,7 @@ pub(super) async fn offer_steer_within(
     let ticket = Arc::new(Mutex::new(Ticket::Waiting));
     let (answer, mut sent) = oneshot::channel::<Taken>();
     let request = SteerRequest {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: id.to_string(),
         text,
         journal,
         waiter: Some(SteerWaiter {
@@ -304,7 +322,8 @@ mod tests {
     #[tokio::test]
     async fn a_steer_withdrawn_after_the_wait_is_never_sent() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let sent = offer_steer_within(&tx, "late".into(), true, Duration::from_millis(50)).await;
+        let sent =
+            offer_steer_within(&tx, "s1", "late".into(), true, Duration::from_millis(50)).await;
         assert!(!sent, "reported refused");
         let request = rx.try_recv().expect("still in the channel");
         assert!(!request.take(), "withdrawn: the loop skips it");
@@ -316,7 +335,7 @@ mod tests {
     async fn a_steer_taken_before_the_wait_ran_out_is_answered() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let offer = tokio::spawn(async move {
-            offer_steer_within(&tx, "on time".into(), true, Duration::from_millis(50)).await
+            offer_steer_within(&tx, "s2", "on time".into(), true, Duration::from_millis(50)).await
         });
         let request = taken(&mut rx).await;
         assert!(request.take());
@@ -336,7 +355,7 @@ mod tests {
     async fn a_pending_write_is_waited_for_and_a_failed_one_refuses() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let offer = tokio::spawn(async move {
-            offer_steer_within(&tx, "lost".into(), true, Duration::from_millis(500)).await
+            offer_steer_within(&tx, "s3", "lost".into(), true, Duration::from_millis(500)).await
         });
         let request = taken(&mut rx).await;
         assert!(request.take());

@@ -103,7 +103,13 @@ fn steer(v: &Value) -> Option<HistoryMessage> {
     if attachment.get("commandMode").is_none() && is_task_notification_xml(&text) {
         return None;
     }
-    (!text.trim().is_empty()).then(|| entry(HistoryRole::User, text, Vec::new()))
+    // `source_uuid` is the uuid the driver wrote the steer with: the
+    // engine's steer id, so the timeline marks exactly this row.
+    let steer_id = attachment["source_uuid"].as_str().map(str::to_string);
+    (!text.trim().is_empty()).then(|| HistoryMessage {
+        steer_id,
+        ..entry(HistoryRole::User, text, Vec::new())
+    })
 }
 
 pub(super) fn message(v: &Value) -> Option<HistoryMessage> {
@@ -276,7 +282,7 @@ mod tests {
             r#"{"type":"user","uuid":"run-1","message":{"role":"user","content":"hi"}}"#,
             r#"{"type":"assistant","uuid":"a1","message":{"content":[{"type":"text","text":"Let me look."},{"type":"tool_use","name":"Bash"}]}}"#,
             r#"{"type":"user","uuid":"x","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
-            r#"{"type":"attachment","uuid":"q","attachment":{"type":"queued_command","prompt":"steer"}}"#,
+            r#"{"type":"attachment","uuid":"q","attachment":{"type":"queued_command","prompt":"steer","source_uuid":"steer-1"}}"#,
             r#"{"type":"assistant","uuid":"a2","message":{"content":[{"type":"text","text":"Done."}]}}"#,
             r#"{"type":"user","uuid":"run-2","message":{"role":"user","content":"again"}}"#,
         ];
