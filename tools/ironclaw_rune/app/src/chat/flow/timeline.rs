@@ -31,11 +31,17 @@ pub(super) struct Line {
 /// The steps under an open group's header, in `tree` (the keyed column).
 pub(super) fn tree(s: &State, thread: &str, tree: El, lines: Vec<Line>) -> El {
     if lines.len() <= NEST_AFTER {
-        return tree.children(
-            lines
-                .into_iter()
-                .map(|l| tree_row(s, thread, &l.key, l.leaf, l.last, l.expanded, l.open_key)),
-        );
+        // Each step sits in the same `{key}-step` column the virtual list
+        // gives its rows, so a live group crossing the threshold keeps every
+        // step's keyed path: a text selection inside a step still resolves.
+        return tree.children(lines.into_iter().map(|l| {
+            col()
+                .w_full()
+                .key(format!("{}-step", l.key))
+                .child(tree_row(
+                    s, thread, &l.key, l.leaf, l.last, l.expanded, l.open_key,
+                ))
+        }));
     }
     let count = lines.len();
     let lines = Rc::new(lines);
@@ -169,6 +175,27 @@ mod tests {
         let rt = runtime(NEST_AFTER);
         assert_eq!(leaves(&rt), NEST_AFTER);
         assert!(rt.presented("t0-head").is_some());
+    }
+
+    #[test]
+    fn a_step_keeps_its_keyed_wrapper_on_both_sides_of_the_threshold() {
+        // A live group crossing NEST_AFTER must not re-parent its steps under
+        // a new keyed node, or a selection inside a step stops resolving.
+        let steps = |rt: &Runtime<State>| {
+            rt.elements()
+                .iter()
+                .filter(|e| e.key.as_deref().is_some_and(|k| k.ends_with("-step")))
+                .count()
+        };
+        let flat = runtime(NEST_AFTER);
+        assert_eq!(
+            steps(&flat),
+            NEST_AFTER,
+            "every flat step has its -step key"
+        );
+        let nested = runtime(NEST_AFTER + 1);
+        assert!(nested.presented("t64-step").is_some());
+        assert!(nested.presented("t64-leaf").is_some());
     }
 
     #[test]
