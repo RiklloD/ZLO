@@ -809,12 +809,25 @@ impl ClaudeCliRuntime {
             if let Some(reason) = refused {
                 outcome = TurnOutcome::ended(TurnEndStatus::Failed, Some(reason.to_string()));
             }
-            // Steers the CLI never started go back to the engine's queue,
-            // before the turn ends so no drain runs between the two. Input is
-            // closed first: no steer can be written after the ledger is read.
-            // One the engine could not keep fails the turn, naming it.
+            // Settled from evidence once input is closed (every write it
+            // took has finished: no steer can be written after the ledger is
+            // read). Unread steers go back to the engine before the turn
+            // ends, so no drain runs between the two; after Stop the engine
+            // shows them as notices instead. One the engine could not keep
+            // fails the turn, naming it.
             input.close_now().await;
-            let unread = control::with_ledger(&steers, |l| l.unread());
+            let stopped = cancelled.load(std::sync::atomic::Ordering::SeqCst);
+            let settlement = control::with_ledger(&steers, |l| l.settle(stopped));
+            if !settlement.unconfirmed.is_empty() {
+                // Written, no word either way: never requeued. The CLI's
+                // own journal is not ours to annotate; the notice needs the
+                // engine (see the crate README, "Settlement").
+                tracing::debug!(
+                    count = settlement.unconfirmed.len(),
+                    "claude cli: steers written with no word whether they were read"
+                );
+            }
+            let unread = settlement.unread;
             if !unread.is_empty() {
                 let lost = match sink.upgrade() {
                     Some(sink) => {
@@ -905,7 +918,7 @@ impl ClaudeCliRuntime {
             line,
         };
         match input.steer(steer).await {
-            SteerAdmit::Written | SteerAdmit::Held => SteerOutcome::Steered,
+            SteerAdmit::Written | SteerAdmit::Held | SteerAdmit::Consumed => SteerOutcome::Steered,
             SteerAdmit::Refused => SteerOutcome::Rejected,
         }
     }
@@ -913,13 +926,23 @@ impl ClaudeCliRuntime {
     /// Kill the turn's process group and wait until it is reported finished.
     async fn stop(&self, thread: &ThreadId) {
         let entry = self.active.lock().ok().and_then(|a| {
-            a.get(thread)
-                .map(|t| (t.pgid, Arc::clone(&t.cancelled), t.done.clone()))
+            a.get(thread).map(|t| {
+                (
+                    t.pgid,
+                    Arc::clone(&t.cancelled),
+                    t.done.clone(),
+                    t.input.clone(),
+                )
+            })
         });
-        let Some((pgid, cancelled, mut done)) = entry else {
+        let Some((pgid, cancelled, mut done, input)) = entry else {
             return;
         };
         cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        // The Stop boundary, in the input's own order: from here on nothing
+        // new is written (no prompt, no steer, no gate answer); what came
+        // before it is. Bounded: a write in progress has its own bound.
+        input.stop(KILL_GRACE).await;
         let group = Pid::from_raw(pgid);
         if let Err(error) = killpg(group, Signal::SIGTERM) {
             tracing::debug!(%error, "claude cli: SIGTERM failed");

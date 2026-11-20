@@ -169,15 +169,17 @@ impl RpcClient {
                 ack(written, ok);
                 if !ok {
                     tracing::debug!("{name}: write to the child failed; its input is closed");
-                    failed_tx.send_replace(true);
                     break;
                 }
             }
-            // Frames left behind never reach the child.
+            // Frames left behind never reach the child: each is reported
+            // unwritten before anyone hears that input failed, so a turn
+            // tearing down on the failure finds every frame settled.
             out_rx.close();
             while let Ok((_, written)) = out_rx.try_recv() {
                 ack(written, false);
             }
+            failed_tx.send_replace(true);
             #[expect(
                 clippy::let_underscore_must_use,
                 reason = "the child may already be gone"
@@ -292,10 +294,15 @@ impl RpcClient {
             PendingReply {
                 client: self.clone(),
                 id,
-                rx,
+                rx: Some(rx),
             },
             written,
         ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registered(&self) -> usize {
+        self.pending.lock().map(|m| m.len()).unwrap_or(0) // silent-ok: a poisoned map only follows a panic elsewhere
     }
 
     fn forget(&self, id: i64) {
@@ -335,19 +342,27 @@ impl RpcClient {
 pub(crate) struct PendingReply {
     client: RpcClient,
     id: i64,
-    rx: oneshot::Receiver<Result<Value, RpcError>>,
+    rx: Option<oneshot::Receiver<Result<Value, RpcError>>>,
 }
 
 impl PendingReply {
-    pub(crate) async fn wait(self, timeout: Duration) -> Result<Value, RpcError> {
-        match tokio::time::timeout(timeout, self.rx).await {
+    pub(crate) async fn wait(mut self, timeout: Duration) -> Result<Value, RpcError> {
+        let Some(rx) = self.rx.take() else {
+            return Err(RpcError::Closed);
+        };
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_dropped)) => Err(RpcError::Closed),
-            Err(_elapsed) => {
-                self.client.forget(self.id);
-                Err(RpcError::Timeout)
-            }
+            Err(_elapsed) => Err(RpcError::Timeout),
         }
+    }
+}
+
+/// A wait given up (timed out, or dropped unawaited) leaves no registration
+/// behind: a late answer then has nobody to reach and is dropped.
+impl Drop for PendingReply {
+    fn drop(&mut self) {
+        self.client.forget(self.id);
     }
 }
 
@@ -537,4 +552,33 @@ pub(crate) fn find_on_path(home: &std::path::Path, name: &str) -> Option<std::pa
         ])
         .map(|dir| dir.join(name))
         .find(|p| p.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sol 8: a wait dropped unawaited (or given up) leaves no
+    /// registration: the pending map does not grow with abandoned requests.
+    #[tokio::test]
+    async fn an_abandoned_request_leaves_no_registration() {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let (client, _inbound) = RpcClient::start(
+            child.stdin.take().unwrap(),
+            child.stdout.take().unwrap(),
+            "t",
+        );
+        let reply = client.start_request("x", json!({})).unwrap();
+        assert_eq!(client.registered(), 1);
+        drop(reply);
+        assert_eq!(client.registered(), 0);
+        let reply = client.start_request("y", json!({})).unwrap();
+        assert!(reply.wait(Duration::from_millis(50)).await.is_err());
+        assert_eq!(client.registered(), 0);
+    }
 }

@@ -58,6 +58,9 @@ pub(crate) struct SteerRequest {
     waiter: Option<oneshot::Sender<SteerOutcome>>,
     /// What the requester was told, once told.
     told: Option<SteerOutcome>,
+    /// A person's message, journaled as a row; `false` for scaffolding (a
+    /// rejection's feedback), which only reaches the agent.
+    journal: bool,
 }
 
 impl SteerRequest {
@@ -73,7 +76,19 @@ impl SteerRequest {
     /// Not delivered: a waiting requester hears `Rejected` and queues it
     /// itself; one already told `Rejected` has; a held steer, or one whose
     /// requester was told `Steered`, comes back unread for the engine.
-    fn refused(mut self) -> Option<UnreadSteer> {
+    ///
+    /// After Stop it is consumed instead: never queued again. A waiting
+    /// requester hears `Steered`, and the steer goes to the engine, which
+    /// shows a stopped turn's unread steers as "Steer delivery not
+    /// confirmed" notices (one already told `Rejected` was queued before
+    /// the Stop and stays so).
+    fn refused(mut self, stopped: bool) -> Option<UnreadSteer> {
+        if stopped {
+            if self.waiter.is_some() {
+                self.tell(SteerOutcome::Steered);
+            }
+            return (self.told != Some(SteerOutcome::Rejected)).then_some(self.steer);
+        }
         if self.waiter.is_some() {
             self.tell(SteerOutcome::Rejected);
             return None;
@@ -152,6 +167,16 @@ impl<L: Clone> SteerDoor<L> {
     /// Accept `text` for the turn, decided under the door's lock: a close
     /// either sees it in the channel (and reports it) or came first.
     pub(crate) fn knock(&self, text: &str) -> Knock {
+        self.knock_as(text, true)
+    }
+
+    /// [`Self::knock`] for a rejection's feedback: delivered the same way,
+    /// in the same order, but never journaled as the person's message.
+    pub(crate) fn knock_feedback(&self, text: &str) -> Knock {
+        self.knock_as(text, false)
+    }
+
+    fn knock_as(&self, text: &str, journal: bool) -> Knock {
         let mut inner = self.lock();
         if inner.stopping {
             return Knock::Closed;
@@ -176,6 +201,7 @@ impl<L: Clone> SteerDoor<L> {
                 steer,
                 waiter,
                 told: None,
+                journal,
             })
             .is_err()
         {
@@ -185,12 +211,28 @@ impl<L: Clone> SteerDoor<L> {
         knock
     }
 
+    /// Queue the turn's first frame (`turn/start`), unless Stop already
+    /// reached the turn: under the lock Stop takes, so the prompt is either
+    /// queued before Stop or never.
+    pub(crate) fn start<R>(&self, send: impl FnOnce() -> R) -> Option<R> {
+        let inner = self.lock();
+        (!inner.stopping).then(send)
+    }
+
     /// The turn has an id: Stop can interrupt it, steers wait for verdicts.
-    pub(crate) fn open(&self, live: L) {
+    /// `false` when Stop came while the start was in flight: it found no
+    /// turn to interrupt, so the caller interrupts it now.
+    pub(crate) fn open(&self, live: L) -> bool {
         let mut inner = self.lock();
         if matches!(inner.state, State::Opening) {
             inner.state = State::Open(live);
         }
+        !inner.stopping
+    }
+
+    /// Stop reached the turn.
+    pub(crate) fn stopping(&self) -> bool {
+        self.lock().stopping
     }
 
     /// The live turn, once the door is open.
@@ -271,6 +313,8 @@ struct Entry {
     verdict_due: Instant,
     /// Settled (answer in, or never written).
     outcome: Option<Delivery>,
+    /// The agent went away without answering; the write's report decides.
+    gone: bool,
 }
 
 /// What settling steers produced, for the loop to act on in order.
@@ -301,6 +345,8 @@ pub(crate) enum PipeEvent {
 /// The turn loop's side: the ledger of sent steers, settled in order.
 pub(crate) struct SteerPipe {
     entries: VecDeque<Entry>,
+    /// Stop reached the turn: what is not delivered is consumed.
+    stopped: bool,
     run_id: String,
     accept: Accept,
     /// How long a requester waits before a late answer is reported.
@@ -311,10 +357,16 @@ impl SteerPipe {
     pub(crate) fn new(run_id: &str, verdict_after: Duration, accept: Accept) -> Self {
         Self {
             entries: VecDeque::new(),
+            stopped: false,
             run_id: run_id.to_string(),
             accept,
             verdict_after,
         }
+    }
+
+    /// Stop reached the turn (see [`SteerRequest::refused`]).
+    pub(crate) fn stop(&mut self) {
+        self.stopped = true;
     }
 
     /// Steers sent and not settled yet.
@@ -325,11 +377,18 @@ impl SteerPipe {
     /// The next thing to act on (cancel-safe: futures stay with their
     /// entries). Only call while [`Self::busy`].
     pub(crate) async fn event(&mut self) -> PipeEvent {
+        let now = Instant::now();
         let due = self
             .entries
             .iter()
-            .filter(|e| e.request.waiter.is_some())
-            .map(|e| e.verdict_due)
+            .filter_map(|e| {
+                if e.gone && e.outcome.is_none() {
+                    // Waiting on the write's report.
+                    Some(now + WRITE_POLL)
+                } else {
+                    e.request.waiter.is_some().then_some(e.verdict_due)
+                }
+            })
             .min();
         let head = self.entries.front_mut().and_then(|e| e.reply.as_mut());
         tokio::select! {
@@ -354,12 +413,24 @@ impl SteerPipe {
             PipeEvent::Answer(answer) => {
                 if let Some(head) = self.entries.front_mut() {
                     head.reply = None;
-                    head.outcome = Some(classify(&self.accept, answer, &head.written));
+                    match classify(&self.accept, answer, &head.written) {
+                        Some(delivery) => head.outcome = Some(delivery),
+                        // Gone without an answer, the write still reporting:
+                        // decided once it has (see below).
+                        None => head.gone = true,
+                    }
                 }
             }
             PipeEvent::VerdictDue => {
                 let now = Instant::now();
                 for entry in self.entries.iter_mut() {
+                    if entry.gone && entry.outcome.is_none() {
+                        entry.outcome = match entry.written.now() {
+                            Some(true) => Some(Delivery::Unconfirmed),
+                            Some(false) => Some(Delivery::Refused),
+                            None => None,
+                        };
+                    }
                     if entry.request.waiter.is_none() || entry.verdict_due > now {
                         continue;
                     }
@@ -407,6 +478,7 @@ impl SteerPipe {
             written,
             verdict_due: Instant::now() + self.verdict_after,
             outcome,
+            gone: false,
         });
         self.settle_ready()
     }
@@ -438,15 +510,24 @@ impl SteerPipe {
                     None => Err(RpcError::Timeout),
                 };
                 head.reply = None;
-                // Without an answer, the write's own end decides (bounded
-                // by the writer's timeout): never written is refused.
-                let written = head.written.outcome().await;
+                // Without an answer, the write's own report decides; it is
+                // waited for (the writer bounds every write), so nothing is
+                // settled while its frame may still land. A report that
+                // still has not come is no evidence either way.
+                let written = tokio::time::timeout(
+                    crate::rpc::WRITE_TIMEOUT + Duration::from_secs(1),
+                    head.written.outcome(),
+                )
+                .await;
                 head.outcome = Some(match answer {
                     Ok(_) | Err(RpcError::Remote { .. }) => {
                         classify(&self.accept, answer, &head.written)
+                            .unwrap_or(Delivery::Unconfirmed)
                     }
-                    Err(RpcError::Timeout | RpcError::Closed) if written => Delivery::Unconfirmed,
-                    Err(_) => Delivery::Refused,
+                    Err(_) => match written {
+                        Ok(false) => Delivery::Refused,
+                        Ok(true) | Err(_) => Delivery::Unconfirmed,
+                    },
                 });
             }
             settled.extend(self.settle_ready());
@@ -462,7 +543,7 @@ impl SteerPipe {
     pub(crate) fn refuse(&self, request: SteerRequest) -> Settled {
         Settled {
             entries: Vec::new(),
-            unread: request.refused().into_iter().collect(),
+            unread: request.refused(self.stopped).into_iter().collect(),
         }
     }
 
@@ -485,22 +566,34 @@ impl SteerPipe {
             .entries
             .extend(segment.into_iter().map(|e| self.in_run(e)));
         let text = entry.request.steer.text.clone();
+        let journal = entry.request.journal;
         match entry.outcome.unwrap_or(Delivery::Refused) {
             Delivery::Delivered => {
-                settled.entries.push(self.row(HistoryRole::User, text));
+                if journal {
+                    settled.entries.push(self.row(HistoryRole::User, text));
+                }
                 entry.request.tell(SteerOutcome::Steered);
             }
             Delivery::Unconfirmed => {
-                settled
-                    .entries
-                    .push(self.row(HistoryRole::User, text.clone()));
-                settled
-                    .entries
-                    .push(self.row(HistoryRole::System, not_confirmed(&text)));
-                // It may have been read: never queued again.
+                if journal {
+                    settled
+                        .entries
+                        .push(self.row(HistoryRole::User, text.clone()));
+                }
                 entry.request.tell(SteerOutcome::Steered);
+                if self.stopped {
+                    // The engine shows a stopped turn's unread steers as
+                    // the notice: one notice, never requeued.
+                    settled.unread.push(entry.request.steer);
+                } else {
+                    // It may have been read: never queued again, but shown
+                    // (a rejection's feedback too: they are the person's).
+                    settled
+                        .entries
+                        .push(self.row(HistoryRole::System, not_confirmed(&text)));
+                }
             }
-            Delivery::Refused => settled.unread.extend(entry.request.refused()),
+            Delivery::Refused => settled.unread.extend(entry.request.refused(self.stopped)),
         }
         settled
     }
@@ -517,17 +610,23 @@ impl SteerPipe {
     }
 }
 
-/// An answered steer, judged on evidence: an answer means it was written.
-fn classify(accept: &Accept, answer: Result<Value, RpcError>, written: &Written) -> Delivery {
+/// A steer's answer, judged on evidence: an answer means it was written.
+/// `None`: the agent went away without answering while the write is still
+/// reporting; only its report can decide (written: maybe read, so
+/// unconfirmed; not written: refused).
+fn classify(
+    accept: &Accept,
+    answer: Result<Value, RpcError>,
+    written: &Written,
+) -> Option<Delivery> {
     match answer {
-        Ok(value) if accept(&value) => Delivery::Delivered,
+        Ok(value) if accept(&value) => Some(Delivery::Delivered),
         // An answer for another turn, or an error: not folded into this one.
-        Ok(_) | Err(RpcError::Remote { .. }) => Delivery::Refused,
-        // The agent went away without answering: written means it may have
-        // read it; anything else means it never could.
+        Ok(_) | Err(RpcError::Remote { .. }) => Some(Delivery::Refused),
         Err(RpcError::Timeout | RpcError::Closed) => match written.now() {
-            Some(true) => Delivery::Unconfirmed,
-            _ => Delivery::Refused,
+            Some(true) => Some(Delivery::Unconfirmed),
+            Some(false) => Some(Delivery::Refused),
+            None => None,
         },
     }
 }
@@ -587,12 +686,14 @@ mod tests {
                 },
                 waiter,
                 told: None,
+                journal: true,
             },
             segment: Vec::new(),
             reply: Some(reply),
             written: w,
             verdict_due: Instant::now() + Duration::from_millis(20),
             outcome: None,
+            gone: false,
         }
     }
 
@@ -700,5 +801,77 @@ mod tests {
         let mut settled = pipe.on_event(event);
         settled.extend(pipe.finish(&door, &mut rx, true).await);
         assert_eq!(settled.unread.len(), 1);
+    }
+
+    /// Sol 3: the agent got the frame and exited before the writer
+    /// reported it. The reader's `Closed` comes first, while the write is
+    /// still reporting: the entry waits for the report instead of settling
+    /// as refused (a replay), and a write that did land is unconfirmed.
+    #[tokio::test]
+    async fn closed_before_the_write_reports_waits_for_the_report() {
+        let mut pipe = SteerPipe::new("run", Duration::from_secs(60), accept_all());
+        let (write, w) = written(None);
+        pipe.entries.push_back(entry(
+            "landed",
+            None,
+            Box::pin(std::future::ready(Err(RpcError::Closed))),
+            w,
+        ));
+        let event = pipe.event().await;
+        let settled = pipe.on_event(event);
+        assert!(
+            settled.unread.is_empty() && settled.entries.is_empty(),
+            "settled early"
+        );
+        write.send_replace(Some(true));
+        let event = pipe.event().await;
+        let settled = pipe.on_event(event);
+        assert!(
+            settled.unread.is_empty(),
+            "replayed though it may have been read"
+        );
+        assert!(
+            settled
+                .entries
+                .iter()
+                .any(|e| e.text.contains("not confirmed"))
+        );
+    }
+
+    /// Rule 2: after Stop nothing outstanding is requeued as such; a waiting
+    /// requester hears `Steered` and the steer goes to the engine (which
+    /// shows it as "Steer delivery not confirmed"), written or not.
+    #[tokio::test]
+    async fn stop_consumes_every_outstanding_steer() {
+        let (door, mut rx) = SteerDoor::<u8>::new();
+        door.open(1);
+        let Knock::Sent(verdict) = door.knock("unsent") else {
+            panic!("open");
+        };
+        let mut pipe = SteerPipe::new("run", Duration::from_secs(60), accept_all());
+        let (_w, w) = written(Some(true));
+        pipe.entries
+            .push_back(entry("written", None, Box::pin(std::future::pending()), w));
+        pipe.stop();
+        let settled = pipe.finish(&door, &mut rx, true).await;
+        let unread: Vec<&str> = settled.unread.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(unread, ["written", "unsent"]);
+        assert!(
+            !settled
+                .entries
+                .iter()
+                .any(|e| e.text.contains("not confirmed")),
+            "one notice, the engine's"
+        );
+        assert_eq!(verdict.await.unwrap(), SteerOutcome::Steered);
+    }
+
+    /// Rule 2 / Sol 4: Stop before the start: the first frame is never queued.
+    #[test]
+    fn stop_before_the_start_sends_no_prompt() {
+        let (door, _rx) = SteerDoor::<u8>::new();
+        assert_eq!(door.interrupt(|l| *l), None, "no turn yet");
+        assert_eq!(door.start(|| 1), None);
+        assert!(!door.open(5), "the caller interrupts the late turn");
     }
 }

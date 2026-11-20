@@ -48,6 +48,9 @@ pub(super) enum SteerAdmit {
     /// Never written: input is closed, the turn is settling, or the write
     /// failed. The caller queues it.
     Refused,
+    /// After Stop: never written, never queued again (the turn reports it
+    /// to the engine, which shows the notice).
+    Consumed,
 }
 
 enum Command {
@@ -65,6 +68,8 @@ enum Command {
     },
     /// EOF once the ledger says nothing is open any more (or `force`).
     Close { force: bool },
+    /// The Stop boundary: nothing after it is written.
+    Stop { done: oneshot::Sender<()> },
 }
 
 /// The turn's handle on its input owner. Cloneable; sending never waits.
@@ -82,6 +87,7 @@ impl Input {
         let owner = Owner {
             pipe: Some(pipe),
             ready: false,
+            stopped: false,
             steers,
             state: state_tx,
             write_timeout,
@@ -132,6 +138,19 @@ impl Input {
         verdict.await.unwrap_or(SteerAdmit::Refused) // silent-ok: the owner is gone, so never written
     }
 
+    /// Mark the Stop boundary and wait (at most `bound`) until the owner
+    /// passed it: every later frame, prompt and steer is not written.
+    pub(super) async fn stop(&self, bound: Duration) {
+        let (done, passed) = oneshot::channel();
+        if self.send(Command::Stop { done }) {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "an owner stuck in a bounded write passes the boundary right after it"
+            )]
+            let _ = tokio::time::timeout(bound, passed).await;
+        }
+    }
+
     /// Close once nothing is open (`force`: now).
     pub(super) fn close(&self, force: bool) {
         if !self.send(Command::Close { force }) {
@@ -164,6 +183,8 @@ struct Owner {
     pipe: Option<ChildStdin>,
     /// The prompt is out: steers go straight to the wire.
     ready: bool,
+    /// Stop passed: nothing more is written.
+    stopped: bool,
     steers: SharedSteers,
     state: watch::Sender<InputState>,
     write_timeout: Duration,
@@ -174,19 +195,33 @@ impl Owner {
         while let Some(command) = rx.recv().await {
             match command {
                 Command::Frame { line, done } => {
-                    let written = self.write(&line).await;
+                    // After Stop no answer goes out: one carrying a steer's
+                    // words reports so, and the steer is consumed.
+                    let written = !self.stopped && self.write(&line).await;
                     if let Some(done) = done
                         && done.send(written).is_err()
                     {
                         tracing::debug!("claude cli: nobody waits on this frame");
                     }
                 }
-                Command::Prompt { run_id, line } => self.prompt(&run_id, &line).await,
+                Command::Prompt { run_id, line } => {
+                    if !self.stopped {
+                        self.prompt(&run_id, &line).await;
+                    }
+                }
                 Command::Steer { steer, admit } => {
                     let verdict = self.steer(steer).await;
                     if admit.send(verdict).is_err() {
                         tracing::debug!("claude cli: the steerer stopped waiting");
                     }
+                }
+                Command::Stop { done } => {
+                    self.stopped = true;
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "Stop may have stopped waiting"
+                    )]
+                    let _ = done.send(());
                 }
                 Command::Close { force } => {
                     if force || with_ledger(&self.steers, |l| l.may_close()) {
@@ -237,6 +272,11 @@ impl Owner {
     }
 
     async fn steer(&mut self, steer: HeldSteer) -> SteerAdmit {
+        if self.stopped {
+            // Never written; settled with the turn (the engine shows it).
+            with_ledger(&self.steers, |l| l.hold(steer));
+            return SteerAdmit::Consumed;
+        }
         if self.pipe.is_none() {
             return SteerAdmit::Refused;
         }

@@ -1048,17 +1048,11 @@ async fn an_unacknowledged_steer_closes_input_at_an_absolute_deadline_and_is_nev
         "input closed only after {:?}",
         sent.elapsed()
     );
-    assert_eq!(
-        *sink.unread.lock().unwrap(),
-        vec!["also check the logs".to_string()]
-    );
+    // Written, never a word from the CLI: unconfirmed (Rule 1), so it is
+    // neither replayed nor reported lost.
+    assert!(sink.unread.lock().unwrap().is_empty());
     let outcome = sink.finished.lock().unwrap()[0].clone();
-    assert_eq!(outcome.status, TurnEndStatus::Failed);
-    let error = outcome.error.unwrap_or_default();
-    assert!(
-        error.contains("Not delivered") && error.contains("also check the logs"),
-        "{error}"
-    );
+    assert_eq!(outcome.status, TurnEndStatus::Completed);
 }
 
 /// The CLI answers, then outlives its input: a Bash call that hit its
@@ -1186,10 +1180,8 @@ async fn an_acknowledged_steer_the_cli_never_works_on_ends_the_turn_after_silenc
         dir.path().join("quiet").exists(),
         "closed while the CLI still streamed"
     );
-    assert_eq!(
-        *sink.unread.lock().unwrap(),
-        vec!["also check the logs".to_string()]
-    );
+    // Queued, never started, no word after: unconfirmed, not replayed.
+    assert!(sink.unread.lock().unwrap().is_empty());
     let outcome = sink.finished.lock().unwrap()[0].clone();
     assert_eq!(outcome.status, TurnEndStatus::Completed);
     assert_eq!(outcome.final_text.as_deref(), Some("done"));
@@ -1428,7 +1420,8 @@ read -r _eof
     let gate = bridge.snapshot(&thread.thread_id).unwrap().gates[0].clone();
     assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, GateAnswer::Approve));
     wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
-    assert_eq!(*sink.unread.lock().unwrap(), vec!["also lint".to_string()]);
+    // Queued, never started: unconfirmed (never replayed).
+    assert!(sink.unread.lock().unwrap().is_empty());
 }
 
 /// Sol 1: a tool call whose result never comes no longer counts as work
@@ -1814,4 +1807,64 @@ while IFS= read -r line; do printf '%s\n' "$line" | cut -c1-2000 >> @DIR@/input.
         log.lines().next().unwrap().contains("permissionDecision"),
         "{log}"
     );
+}
+
+// ── Round 4 (Sol): settlement from evidence, one Stop boundary ────────────
+
+/// Sol 2 / Rule 1: the CLI took a steer and exited before saying whether it
+/// started it. Missing evidence is not "unread": it is never replayed.
+#[tokio::test]
+async fn a_steer_the_cli_took_before_exiting_silently_is_not_replayed() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = fixture(dir.path(), "read -r steer\nexit 0\n");
+    let rt = bridged_runtime(dir.path(), binary, &sink, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    steer_when_ready(&rt, &thread, dir.path(), "maybe read").await;
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    assert!(
+        sink.unread.lock().unwrap().is_empty(),
+        "replayed without evidence"
+    );
+}
+
+/// Sol 4 / Rule 2: Stop is one boundary. While the CLI ignores SIGTERM for
+/// the grace, a steer sent after Stop is not written to it; it is consumed
+/// and handed to the engine (which shows the "not confirmed" notice).
+#[tokio::test]
+async fn a_steer_after_stop_is_never_written_during_the_signal_grace() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(Duration::from_secs(10));
+    let binary = fixture(
+        dir.path(),
+        "trap '' TERM\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" | cut -c1-300 >> @DIR@/input.log; done\n",
+    );
+    let rt = Arc::new(bridged_runtime(
+        dir.path(),
+        binary,
+        &sink,
+        Some(Arc::clone(&bridge)),
+    ));
+    let thread = thread(rt.as_ref()).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| dir.path().join("ready").exists()).await;
+    let stop = {
+        let (rt, thread) = (Arc::clone(&rt), thread.clone());
+        tokio::spawn(async move { rt.cancel(&thread, "stop").await.unwrap() })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        rt.steer(&thread, "after stop", SteerHow::Steer)
+            .await
+            .unwrap(),
+        SteerOutcome::Steered
+    );
+    stop.await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let log = std::fs::read_to_string(dir.path().join("input.log")).unwrap_or_default();
+    assert!(!log.contains("after stop"), "written after Stop: {log}");
+    assert_eq!(*sink.unread.lock().unwrap(), vec!["after stop".to_string()]);
 }

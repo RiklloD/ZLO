@@ -44,9 +44,21 @@ enum Ticket {
 
 pub(super) struct SteerWaiter {
     ticket: Arc<Mutex<Ticket>>,
-    /// The frame's write acknowledgement once it is queued; `None` when
-    /// the turn refused the steer.
-    answer: oneshot::Sender<Option<Written>>,
+    /// What the turn did with it.
+    answer: oneshot::Sender<Taken>,
+}
+
+/// What the drive loop did with a steer it took.
+#[derive(Clone)]
+pub(super) enum Taken {
+    /// Queued for the wire; the write's report says whether it went out.
+    Queued(Written),
+    /// Never written (no steering, the frame could not be queued, or the
+    /// turn ended first): the requester queues it.
+    Refused,
+    /// Stop won before it was written: consumed, never queued again (the
+    /// engine shows it as "Steer delivery not confirmed").
+    Consumed,
 }
 
 /// Flip `ticket` from `Waiting` to `to`; the state it had otherwise.
@@ -73,17 +85,16 @@ impl SteerRequest {
             .is_none_or(|w| settle_ticket(&w.ticket, Ticket::Taken).is_ok())
     }
 
-    /// Tell the requester whether the steer was queued for the wire,
-    /// handing it the write's report (`None`: refused, never written), and
-    /// enter the steer in the turn's ledger.
-    pub(super) fn answer(self, written: Option<Written>, ledger: &mut SteerLedger) -> usize {
+    /// Tell the requester what became of the steer and enter it in the
+    /// turn's ledger. Returns its index (for [`SteerLedger::reply`]).
+    pub(super) fn answer(self, taken: Taken, ledger: &mut SteerLedger) -> usize {
         let waited = self.waiter.is_some();
         if let Some(waiter) = self.waiter {
             #[expect(
                 clippy::let_underscore_must_use,
                 reason = "the requester waits until answered once the loop took it; gone only with its task"
             )]
-            let _ = waiter.answer.send(written.clone());
+            let _ = waiter.answer.send(taken.clone());
         }
         ledger.enter(
             UnreadSteer {
@@ -91,23 +102,48 @@ impl SteerRequest {
                 text: self.text,
             },
             waited,
-            written,
+            taken,
         )
     }
 }
 
+/// What the agent answered to one steer's `session/prompt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum Reply {
+    /// No answer yet (or none ever: the agent went away).
+    #[default]
+    Pending,
+    /// Answered: the agent took the prompt.
+    Answered,
+    /// An error answer: the agent refused it.
+    Refused,
+    /// The connection ended without an answer.
+    Gone,
+}
+
+/// How a turn's steers settled, in the order they came.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct Settlement {
+    /// Not delivered; the engine requeues them (after Stop: shows them as
+    /// "Steer delivery not confirmed" instead).
+    pub(super) unread: Vec<UnreadSteer>,
+    /// Written with no evidence either way: shown with the notice, never
+    /// requeued.
+    pub(super) unconfirmed: Vec<UnreadSteer>,
+}
+
 /// Every steer of one turn the loop took (and those still in its channel at
-/// the end), in the order they came, from queued to settled:
-/// - never written (refused, Stop won, no steering, the write failed): not
-///   delivered;
-/// - written: delivered (ACP has no separate acknowledgement for a prompt),
-///   unless the agent then refused that prompt with an error answer.
+/// the end), in the order they came, each settled from evidence only:
+/// - never written: unread (its waiting requester heard `Rejected` and
+///   queued it itself);
+/// - written and answered, or a later prompt answered (the agent takes
+///   prompts in order): read;
+/// - written and refused by an error answer: unread;
+/// - written with no answer either way (the agent went away, the turn
+///   ended first, the write's report never came): unconfirmed.
 ///
-/// Who hears about one that was not delivered depends on what its
-/// requester was told: a waiting requester hears `Rejected` when its write
-/// fails (and queues the text itself); everything else not delivered (held
-/// steers, and refusals after the requester heard `Steered`) is reported
-/// unread at the end, in admission order.
+/// After Stop, nothing not read is requeued: everything outstanding goes to
+/// the engine as unread, which shows a stopped turn's steers as notices.
 #[derive(Default)]
 pub(super) struct SteerLedger {
     entries: Vec<LedgerEntry>,
@@ -115,57 +151,84 @@ pub(super) struct SteerLedger {
 
 struct LedgerEntry {
     steer: UnreadSteer,
-    /// A requester waited and hears the write's outcome itself.
+    /// A requester waited and heard the outcome of a refusal itself.
     waited: bool,
-    /// `None`: never written.
-    written: Option<Written>,
-    /// The agent answered this steer's prompt with an error.
-    refused: Arc<Mutex<bool>>,
+    taken: Taken,
+    reply: Arc<Mutex<Reply>>,
 }
 
 impl SteerLedger {
-    /// Enter a steer; returns its index (for [`Self::refusal`]).
-    pub(super) fn enter(
-        &mut self,
-        steer: UnreadSteer,
-        waited: bool,
-        written: Option<Written>,
-    ) -> usize {
+    /// Enter a steer; returns its index (for [`Self::reply`]).
+    pub(super) fn enter(&mut self, steer: UnreadSteer, waited: bool, taken: Taken) -> usize {
         self.entries.push(LedgerEntry {
             steer,
             waited,
-            written,
-            refused: Arc::default(),
+            taken,
+            reply: Arc::default(),
         });
         self.entries.len() - 1
     }
 
-    /// Where entry `at`'s prompt answer reports a refusal.
-    pub(super) fn refusal(&self, at: usize) -> Option<Arc<Mutex<bool>>> {
-        self.entries.get(at).map(|e| Arc::clone(&e.refused))
+    /// Where entry `at`'s prompt answer is noted.
+    pub(super) fn reply(&self, at: usize) -> Option<Arc<Mutex<Reply>>> {
+        self.entries.get(at).map(|e| Arc::clone(&e.reply))
     }
 
-    /// The steers that never reached the agent and that nobody else will
-    /// queue, in the order they came. A write still pending at the end is
-    /// queued ahead of every later frame and counts as written.
-    pub(super) fn unread(self) -> Vec<UnreadSteer> {
-        self.entries
-            .into_iter()
-            .filter(|e| {
-                let written = e.written.as_ref().map(|w| w.now().unwrap_or(true));
-                let refused = *e
-                    .refused
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                match written {
-                    // Never written: a waiting requester already heard so.
-                    None | Some(false) => !e.waited,
-                    // Written, then refused by the agent: nobody heard.
-                    Some(true) => refused,
+    /// Settle every steer, once each write's report is in (the writer
+    /// bounds every write; a report that still has not come is no evidence).
+    pub(super) async fn settle(self, stopped: bool) -> Settlement {
+        let mut written = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            written.push(match &entry.taken {
+                Taken::Queued(report) => {
+                    let mut report = report.clone();
+                    tokio::time::timeout(
+                        crate::rpc::WRITE_TIMEOUT + Duration::from_secs(1),
+                        report.outcome(),
+                    )
+                    .await
+                    .ok() // silent-ok: no report in time is no evidence either way
                 }
+                Taken::Refused | Taken::Consumed => Some(false),
+            });
+        }
+        let replies: Vec<Reply> = self
+            .entries
+            .iter()
+            .map(|e| {
+                *e.reply
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
             })
-            .map(|e| e.steer)
-            .collect()
+            .collect();
+        let mut settlement = Settlement::default();
+        for (at, entry) in self.entries.into_iter().enumerate() {
+            let later_answered = replies[at + 1..].contains(&Reply::Answered);
+            let read = replies[at] == Reply::Answered || later_answered;
+            match written[at] {
+                // Never written: nothing could read it.
+                Some(false) => {
+                    // A waiting requester heard the refusal (and queued it)
+                    // unless Stop consumed it.
+                    if !entry.waited || matches!(entry.taken, Taken::Consumed) {
+                        settlement.unread.push(entry.steer);
+                    }
+                }
+                // Refused by the agent: not delivered (after Stop the engine
+                // shows it instead of requeueing).
+                _ if replies[at] == Reply::Refused => settlement.unread.push(entry.steer),
+                _ if read => {}
+                // Written, or its report never came: no evidence either way.
+                Some(true) | None => {
+                    if stopped {
+                        settlement.unread.push(entry.steer);
+                    } else {
+                        settlement.unconfirmed.push(entry.steer);
+                    }
+                }
+            }
+        }
+        settlement
     }
 }
 
@@ -189,7 +252,7 @@ pub(super) async fn offer_steer_within(
     wait: Duration,
 ) -> bool {
     let ticket = Arc::new(Mutex::new(Ticket::Waiting));
-    let (answer, mut sent) = oneshot::channel::<Option<Written>>();
+    let (answer, mut sent) = oneshot::channel::<Taken>();
     let request = SteerRequest {
         id: uuid::Uuid::new_v4().to_string(),
         text,
@@ -202,18 +265,20 @@ pub(super) async fn offer_steer_within(
     if steer.send(request).is_err() {
         return false;
     }
-    let queued = match tokio::time::timeout(wait, &mut sent).await {
-        Ok(answer) => answer.ok().flatten(), // silent-ok: a dropped answer means the turn ended without sending it
+    let taken = match tokio::time::timeout(wait, &mut sent).await {
+        Ok(answer) => answer.unwrap_or(Taken::Refused), // silent-ok: a dropped answer means the turn ended without sending it
         Err(_) => match settle_ticket(&ticket, Ticket::Withdrawn) {
-            Ok(()) => None,
+            Ok(()) => Taken::Refused,
             // The loop took it just now: its answer is on the way.
-            Err(_) => sent.await.ok().flatten(), // silent-ok: as above
+            Err(_) => sent.await.unwrap_or(Taken::Refused), // silent-ok: as above
         },
     };
-    let Some(mut written) = queued else {
-        return false;
-    };
-    written.outcome().await
+    match taken {
+        Taken::Queued(mut written) => written.outcome().await,
+        Taken::Refused => false,
+        // Stop won: consumed, so not queued again (see `Taken`).
+        Taken::Consumed => true,
+    }
 }
 
 #[cfg(test)]
@@ -258,10 +323,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
         let (write, report) = written(None);
         let mut ledger = SteerLedger::default();
-        request.answer(Some(report), &mut ledger);
+        request.answer(Taken::Queued(report), &mut ledger);
         write.send_replace(Some(true));
         assert!(offer.await.unwrap(), "sent, so not queued as well");
-        assert!(ledger.unread().is_empty());
+        let settlement = ledger.settle(false).await;
+        assert!(settlement.unread.is_empty(), "written: never requeued");
     }
 
     /// Sol 4: a write still pending is never success: the requester waits
@@ -276,38 +342,79 @@ mod tests {
         assert!(request.take());
         let (write, report) = written(None);
         let mut ledger = SteerLedger::default();
-        request.answer(Some(report), &mut ledger);
+        request.answer(Taken::Queued(report), &mut ledger);
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(!offer.is_finished(), "answered while the write was pending");
         write.send_replace(Some(false));
         assert!(!offer.await.unwrap());
         assert!(
-            ledger.unread().is_empty(),
+            ledger.settle(false).await.unread.is_empty(),
             "its requester queues it, not the ledger"
         );
     }
 
-    /// Sol 4: held steers come back in the order they came, whether their
-    /// write failed or the agent refused their prompt later.
-    #[test]
-    fn held_steers_come_back_in_admission_order() {
-        let mut ledger = SteerLedger::default();
-        let held = |id: &str| SteerRequest {
+    fn held(id: &str) -> SteerRequest {
+        SteerRequest {
             id: id.into(),
             text: id.into(),
             journal: true,
             waiter: None,
-        };
+        }
+    }
+
+    fn texts(steers: &[UnreadSteer]) -> Vec<&str> {
+        steers.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    /// Held steers settle in the order they came, each from evidence: a
+    /// failed write and a refusal come back unread, an answered prompt (or
+    /// one a later answered prompt follows) is read, and a written prompt
+    /// with no answer either way is unconfirmed (never requeued).
+    #[tokio::test]
+    async fn held_steers_settle_from_evidence_in_admission_order() {
+        let mut ledger = SteerLedger::default();
         let (_a, failed) = written(Some(false));
-        held("first").answer(Some(failed), &mut ledger);
+        held("failed").answer(Taken::Queued(failed), &mut ledger);
         let (_b, ok) = written(Some(true));
-        let at = held("second").answer(Some(ok), &mut ledger);
+        let refused = held("refused").answer(Taken::Queued(ok), &mut ledger);
         let (_c, ok) = written(Some(true));
-        held("third").answer(Some(ok), &mut ledger);
-        held("fourth").answer(None, &mut ledger);
-        // The agent refuses the second one's prompt after it was written.
-        *ledger.refusal(at).unwrap().lock().unwrap() = true;
-        let texts: Vec<String> = ledger.unread().into_iter().map(|s| s.text).collect();
-        assert_eq!(texts, ["first", "second", "fourth"]);
+        let read = held("read").answer(Taken::Queued(ok), &mut ledger);
+        let (_d, ok) = written(Some(true));
+        held("silent").answer(Taken::Queued(ok), &mut ledger);
+        held("never").answer(Taken::Refused, &mut ledger);
+        *ledger.reply(refused).unwrap().lock().unwrap() = Reply::Refused;
+        *ledger.reply(read).unwrap().lock().unwrap() = Reply::Answered;
+        let settlement = ledger.settle(false).await;
+        assert_eq!(texts(&settlement.unread), ["failed", "refused", "never"]);
+        assert_eq!(texts(&settlement.unconfirmed), ["silent"]);
+    }
+
+    /// Sol 1: a held steer whose write is still pending when the turn ends
+    /// is not settled as written: the write's report is waited for (the
+    /// writer bounds it), and a write that then fails is unread.
+    #[tokio::test]
+    async fn a_pending_write_at_the_end_is_waited_for() {
+        let mut ledger = SteerLedger::default();
+        let (write, report) = written(None);
+        held("late").answer(Taken::Queued(report), &mut ledger);
+        let settle = tokio::spawn(ledger.settle(false));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!settle.is_finished(), "settled while its write was pending");
+        write.send_replace(Some(false));
+        assert_eq!(texts(&settle.await.unwrap().unread), ["late"]);
+    }
+
+    /// Rule 2: after Stop nothing outstanding is requeued as such: written
+    /// or not, it goes to the engine, which shows it as a notice; a steer
+    /// consumed by Stop counts too.
+    #[tokio::test]
+    async fn stop_sends_every_outstanding_steer_to_the_engine() {
+        let mut ledger = SteerLedger::default();
+        let (_a, ok) = written(Some(true));
+        held("written").answer(Taken::Queued(ok), &mut ledger);
+        held("consumed").answer(Taken::Consumed, &mut ledger);
+        let settlement = ledger.settle(true).await;
+        assert_eq!(texts(&settlement.unread), ["written", "consumed"]);
+        assert!(settlement.unconfirmed.is_empty());
     }
 }

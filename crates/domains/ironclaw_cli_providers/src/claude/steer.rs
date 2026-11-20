@@ -63,6 +63,9 @@ enum Stage {
     Written,
     /// The CLI started it (`started` lifecycle or a uuid echo).
     Read,
+    /// The CLI said it dropped it unread (`cancelled`, `discarded`,
+    /// `refused`, or `completed` without ever starting it).
+    Dropped,
 }
 
 #[derive(Debug, Clone)]
@@ -157,12 +160,16 @@ impl SteerLedger {
                     Some("started") => self.read(uuid),
                     // Not proof it was read: Claude also completes commands
                     // it never started (T3 Code checks the same).
+                    // Completed without ever being started: Claude finished
+                    // it without reading it (T3 Code checks the same).
                     Some("completed") => {
                         self.open.remove(uuid);
+                        self.dropped(uuid);
                     }
-                    // Removed before it was read: it stays unread.
+                    // Removed before it was read.
                     Some("cancelled" | "discarded" | "refused") => {
                         self.open.remove(uuid);
+                        self.dropped(uuid);
                     }
                     _ => {}
                 }
@@ -180,12 +187,22 @@ impl SteerLedger {
         }
     }
 
+    fn dropped(&mut self, uuid: &str) {
+        if let Some(known) = self
+            .steers
+            .iter_mut()
+            .find(|s| s.held.uuid == uuid && s.stage == Stage::Written)
+        {
+            known.stage = Stage::Dropped;
+        }
+    }
+
     fn read(&mut self, uuid: &str) {
         self.acked.insert(uuid.to_string());
         if let Some(known) = self
             .steers
             .iter_mut()
-            .find(|s| s.held.uuid == uuid && s.stage == Stage::Written)
+            .find(|s| s.held.uuid == uuid && matches!(s.stage, Stage::Written | Stage::Dropped))
         {
             known.stage = Stage::Read;
         }
@@ -218,31 +235,61 @@ impl SteerLedger {
         self.abandoned = true;
     }
 
-    /// Steers the CLI never started, in the order they were accepted: the
-    /// ones never written (held for a prompt that did not go out) and the
-    /// written ones the CLI did not start. Written ones are left out for a
-    /// CLI that does not report lifecycle: there is no telling, and
-    /// resending a steer it did read would deliver it twice.
-    pub(super) fn unread(&self) -> Vec<UnreadSteer> {
-        self.steers
-            .iter()
-            .filter(|s| match s.stage {
-                Stage::Held => true,
-                Stage::Written => self.tracked,
-                Stage::Read => false,
-            })
-            .map(|s| UnreadSteer {
-                id: s.held.uuid.clone(),
-                text: s.held.text.clone(),
-            })
-            .collect()
+    /// Settle the turn's steers from evidence, in the order they were
+    /// accepted:
+    /// - never written (held for a prompt that did not go out, or after
+    ///   Stop): unread;
+    /// - started or echoed: read;
+    /// - dropped by the CLI's own word: unread;
+    /// - written with no word either way (it exited, or reports no
+    ///   lifecycle): unconfirmed, never requeued (it may have read it).
+    ///
+    /// After Stop, nothing not read is requeued: every such steer goes to
+    /// the engine as unread, which shows a stopped turn's steers as "Steer
+    /// delivery not confirmed" notices.
+    pub(super) fn settle(&self, stopped: bool) -> SteerSettlement {
+        let mut settlement = SteerSettlement::default();
+        for steer in &self.steers {
+            let unread = UnreadSteer {
+                id: steer.held.uuid.clone(),
+                text: steer.held.text.clone(),
+            };
+            match steer.stage {
+                Stage::Read => {}
+                Stage::Held | Stage::Dropped => settlement.unread.push(unread),
+                Stage::Written if stopped => settlement.unread.push(unread),
+                Stage::Written => settlement.unconfirmed.push(unread),
+            }
+        }
+        settlement
     }
+
+    /// Unread steers when the turn was not stopped (see [`Self::settle`]).
+    #[cfg(test)]
+    pub(super) fn unread(&self) -> Vec<UnreadSteer> {
+        self.settle(false).unread
+    }
+}
+
+/// How a turn's steers settled (see [`SteerLedger::settle`]).
+#[derive(Debug, Default)]
+pub(super) struct SteerSettlement {
+    pub(super) unread: Vec<UnreadSteer>,
+    pub(super) unconfirmed: Vec<UnreadSteer>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn unconfirmed(l: &SteerLedger) -> Vec<String> {
+        l.settle(false)
+            .unconfirmed
+            .into_iter()
+            .map(|s| s.text)
+            .collect()
+    }
 
     fn texts(l: &SteerLedger) -> Vec<String> {
         l.unread().into_iter().map(|s| s.text).collect()
@@ -298,17 +345,23 @@ mod tests {
         assert_eq!(texts(&l), vec!["also fix the docs".to_string()]);
     }
 
-    /// Stop or a crash before the CLI reached the steer.
+    /// A crash before the CLI said anything about the steers: written, no
+    /// evidence either way, so unconfirmed (Rule 1), never replayed; one
+    /// whose write failed is gone from the ledger (its caller queued it).
     #[test]
-    fn a_steer_never_started_is_unread_at_the_end() {
+    fn a_steer_never_started_is_unconfirmed_at_the_end() {
         let mut l = SteerLedger::default();
         l.prompt("a");
         l.observe(&life("a", "started"));
         l.sent(&steer("b", "first"));
         l.sent(&steer("c", "second"));
-        assert_eq!(texts(&l), vec!["first".to_string(), "second".to_string()]);
+        assert!(texts(&l).is_empty());
+        assert_eq!(
+            unconfirmed(&l),
+            vec!["first".to_string(), "second".to_string()]
+        );
         l.unsent("c", false);
-        assert_eq!(texts(&l), vec!["first".to_string()]);
+        assert_eq!(unconfirmed(&l), vec!["first".to_string()]);
     }
 
     #[test]
@@ -323,11 +376,14 @@ mod tests {
         assert!(l.waiting_for_ack());
         l.abandon();
         assert!(!l.waiting_for_ack(), "given up once");
-        assert_eq!(texts(&l), vec!["late".to_string()]);
+        // Written, never a word: unconfirmed, not replayed.
+        assert!(texts(&l).is_empty());
+        assert_eq!(unconfirmed(&l), vec!["late".to_string()]);
     }
 
     /// The CLI acknowledged a steer and went quiet after the result: the
-    /// read loop's idle bound applies, and the steer stays unread.
+    /// read loop's idle bound applies, and the steer is unconfirmed (queued
+    /// is no proof it was dropped, nor that it was read).
     #[test]
     fn an_acknowledged_steer_held_open_after_the_result_is_idle_bounded() {
         let mut l = SteerLedger::default();
@@ -342,7 +398,11 @@ mod tests {
         assert!(l.held_open());
         l.abandon();
         assert!(!l.held_open(), "given up once");
-        assert_eq!(texts(&l), vec!["queued but never started".to_string()]);
+        assert!(texts(&l).is_empty());
+        assert_eq!(
+            unconfirmed(&l),
+            vec!["queued but never started".to_string()]
+        );
     }
 
     /// A steer held for a prompt that never went out is unread, even from
@@ -374,7 +434,11 @@ mod tests {
         l.sent(&held[1]);
         l.unsent("b", true);
         assert_eq!(l.held().len(), 1, "b is held again");
-        assert_eq!(texts(&l), vec!["first".to_string(), "second".to_string()]);
+        // After Stop both go to the engine, in the order they came.
+        let stopped: Vec<String> = l.settle(true).unread.into_iter().map(|s| s.text).collect();
+        assert_eq!(stopped, vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(texts(&l), vec!["second".to_string()]);
+        assert_eq!(unconfirmed(&l), vec!["first".to_string()]);
     }
 
     /// Review (Sol, 3): Claude completes commands it never started; only
@@ -391,6 +455,27 @@ mod tests {
         l.observe(&life("b", "completed"));
         assert!(l.may_close());
         assert_eq!(texts(&l), vec!["never started".to_string()]);
+    }
+
+    /// Rule 1 (Sol 2): a written steer with no word from the CLI (it
+    /// exited without starting or dropping it) is unconfirmed, not unread:
+    /// replaying it could deliver it twice. After Stop it goes to the
+    /// engine, which shows the notice.
+    #[test]
+    fn a_written_steer_without_evidence_is_unconfirmed() {
+        let mut l = SteerLedger::default();
+        l.prompt("a");
+        l.observe(&life("a", "started"));
+        l.sent(&steer("b", "silent"));
+        l.sent(&steer("c", "dropped"));
+        l.observe(&life("c", "discarded"));
+        let settled = l.settle(false);
+        let texts = |s: &[UnreadSteer]| s.iter().map(|s| s.text.clone()).collect::<Vec<_>>();
+        assert_eq!(texts(&settled.unread), ["dropped"]);
+        assert_eq!(texts(&settled.unconfirmed), ["silent"]);
+        let stopped = l.settle(true);
+        assert_eq!(texts(&stopped.unread), ["silent", "dropped"]);
+        assert!(stopped.unconfirmed.is_empty());
     }
 
     /// An older CLI without lifecycle or echoes: close at the result, as

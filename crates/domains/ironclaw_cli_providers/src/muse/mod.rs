@@ -73,6 +73,9 @@ const FALLBACK_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The session MCP server carrying the orchestrator tools.
 const MCP_SERVER: &str = "ironclaw";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+/// How many already-received messages a steer folds before its cut, at
+/// most, before Stop is looked at again.
+const DRAIN_BATCH: usize = 64;
 /// How long a `turn/steer` may take before it is judged without its
 /// answer (see `steer_door`): short, since the person's send waits on it.
 const STEER_TIMEOUT: Duration = Duration::from_secs(15);
@@ -584,9 +587,11 @@ impl Turn {
         let mut unread = Vec::new();
         let (outcome, telemetry) = self.drive(client, inbound, &mut steers, &mut unread).await;
         // A turn that never reached its loop: what it held goes back.
-        let settled = SteerPipe::new(&self.run_id, self.steer_timeout, Box::new(|_| true))
-            .finish(&self.door, &mut steers, true)
-            .await;
+        let mut pipe = SteerPipe::new(&self.run_id, self.steer_timeout, Box::new(|_| true));
+        if self.cancelled.load(Ordering::SeqCst) || self.door.stopping() {
+            pipe.stop();
+        }
+        let settled = pipe.finish(&self.door, &mut steers, true).await;
         unread.extend(settled.unread);
         (outcome, telemetry, unread)
     }
@@ -648,7 +653,17 @@ impl Turn {
         if let Some(effort) = effort {
             params["reasoningEffort"] = json!(effort);
         }
-        let admitted = client.request("turn/start", params, COMMAND_TIMEOUT).await;
+        // Queued under the door's lock Stop takes: before Stop, or never.
+        let Some(queued) = self
+            .door
+            .start(|| client.start_request("turn/start", params))
+        else {
+            return (TurnOutcome::ended(TurnEndStatus::Cancelled, None), None);
+        };
+        let admitted = match queued {
+            Ok(reply) => reply.wait(COMMAND_TIMEOUT).await,
+            Err(error) => Err(error),
+        };
         let turn_id = match admitted
             .as_ref()
             .ok()
@@ -672,13 +687,25 @@ impl Turn {
         fold.turn_id = Some(turn_id.clone());
         // Stop can interrupt the turn from here on, and steers (held ones
         // first, in order) go to it from the loop below.
-        self.door.open(LiveTurn {
+        let live_turn = LiveTurn {
             client: client.clone(),
             session_id: self.session_id.clone(),
             turn_id: turn_id.clone(),
             joined: Vec::new(),
             run_id: self.run_id.clone(),
-        });
+        };
+        if !self.door.open(live_turn) {
+            // Stop came while `turn/start` was in flight and found no turn
+            // to interrupt: interrupt it now that it has an id.
+            let params =
+                json!({"sessionId": self.session_id, "commandId": command_id(), "turnId": turn_id});
+            if let Err(error) = client
+                .request("turn/interrupt", params, rpc::KILL_GRACE)
+                .await
+            {
+                tracing::debug!(error = %error.label(), "muse: late interrupt not admitted");
+            }
+        }
         // Muse answers `turn/steer` with the turn it joined: only this one
         // counts (T3 Code checks the same).
         let expected = turn_id.clone();
@@ -707,8 +734,12 @@ impl Turn {
                 // frame is queued (under the door's lock).
                 Some(request) = steers.recv(), if !self.cancelled.load(Ordering::SeqCst) => {
                     // Fold what Muse already sent, so the cut is where its
-                    // reply really stands.
-                    while !done {
+                    // reply really stands (a bounded batch: Stop is looked
+                    // at again right after).
+                    for _ in 0..DRAIN_BATCH {
+                        if done {
+                            break;
+                        }
                         match inbound.try_recv() {
                             Ok(message) => {
                                 done = self.on_inbound(&client, &root, &mut fold, &mut shown, &mut asked, message);
@@ -716,7 +747,10 @@ impl Turn {
                             Err(_) => break,
                         }
                     }
-                    if done {
+                    if self.door.stopping() {
+                        pipe.stop();
+                    }
+                    if done || self.door.stopping() {
                         let settled = pipe.refuse(request);
                         self.record(&transcript, settled, unread).await;
                         continue;
@@ -735,6 +769,10 @@ impl Turn {
                     self.record(&transcript, settled, unread).await;
                 }
                 event = pipe.event(), if pipe.busy() => {
+                    // Past Stop, nothing not delivered is queued again.
+                    if self.door.stopping() {
+                        pipe.stop();
+                    }
                     let settled = pipe.on_event(event);
                     self.record(&transcript, settled, unread).await;
                 }
@@ -748,7 +786,10 @@ impl Turn {
 
         // The turn is over: the door closes, steers still in flight settle
         // (their rows before the final reply), unsent ones are refused.
-        let stopped = self.cancelled.load(Ordering::SeqCst);
+        let stopped = self.cancelled.load(Ordering::SeqCst) || self.door.stopping();
+        if stopped {
+            pipe.stop();
+        }
         let settled = pipe.finish(&self.door, steers, stopped).await;
         self.record(&transcript, settled, unread).await;
         let mut outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst), now_ms());
@@ -758,12 +799,16 @@ impl Turn {
                 Some("muse: the host stopped taking input".into()),
             );
         }
-        if let Some(entry) = fold.assistant_message() {
-            let entry = HistoryMessage {
+        let entries: Vec<HistoryMessage> = fold
+            .final_entries()
+            .into_iter()
+            .map(|entry| HistoryMessage {
                 run_id: Some(self.run_id.clone()),
                 ..entry
-            };
-            journal::append(&transcript, &[entry]).await;
+            })
+            .collect();
+        if !entries.is_empty() {
+            journal::append(&transcript, &entries).await;
         }
         if let (Some(path), Some(reading)) = (&self.config.usage_file, &fold.limit_reading) {
             journal::write_limit_reading(path, "usage", reading).await;
@@ -1042,33 +1087,18 @@ impl Turn {
 }
 
 /// Muse's approval choice carries no message, so a rejection's feedback
-/// ("no, do X instead") follows the denial as a `turn/steer` into the same
-/// turn. `true` once the turn acknowledged it; otherwise the caller queues
-/// the feedback for the next turn.
+/// ("no, do X instead") follows the denial as a steer into the same turn,
+/// through the turn's door like any steer (in order, never after Stop,
+/// judged on evidence). `true` once it is in the turn or written with no
+/// word either way; `false` when it definitely is not (the caller queues it).
 async fn steer_rejection_feedback(
     door: &SteerDoor<LiveTurn>,
     feedback: &ironclaw_host_api::turn::DenialFeedback,
 ) -> bool {
-    let Some(live) = door.live() else {
-        tracing::debug!("muse: rejection feedback not steered (no live turn)");
-        return false;
-    };
-    let params = json!({
-        "sessionId": live.session_id,
-        "commandId": command_id(),
-        "expectedTurnId": live.turn_id,
-        "input": [{"type": "text", "text": crate::bridge::rejection_message(feedback)}],
-    });
-    match live
-        .client
-        .request("turn/steer", params, COMMAND_TIMEOUT)
-        .await
-    {
-        Ok(_) => true,
-        Err(error) => {
-            tracing::debug!(error = %error.label(), "muse: rejection feedback not steered");
-            false
-        }
+    match door.knock_feedback(&crate::bridge::rejection_message(feedback)) {
+        Knock::Sent(verdict) => verdict.await == Ok(SteerOutcome::Steered),
+        Knock::Held => true,
+        Knock::Closed => false,
     }
 }
 

@@ -61,7 +61,7 @@ use crate::slot::{Claim, GroupGuard, Slots};
 use fold::PromptFold;
 use launch::AgentLaunch;
 use live::LiveFold;
-use steer::{SteerRequest, SteerTx, offer_steer};
+use steer::{SteerRequest, SteerTx, Taken, offer_steer};
 use store::{INIT_TIMEOUT, SESSION_TIMEOUT};
 use superseded::{Superseded, is_usage_limit};
 
@@ -162,6 +162,8 @@ struct ActiveTurn {
     /// The live connection and ACP session, once the session is open.
     session: Arc<Mutex<Option<(RpcClient, String)>>>,
     steer: SteerTx,
+    /// One steer at a time, from its gate declines to its prompt.
+    admission: Arc<tokio::sync::Mutex<()>>,
     run_id: String,
     done: watch::Receiver<bool>,
 }
@@ -289,6 +291,7 @@ impl AntigravityRuntime {
             pgid,
             session: Arc::clone(&session),
             steer: steer_tx.clone(),
+            admission: Arc::default(),
             run_id: run_id.clone(),
             done: done_rx,
         });
@@ -377,15 +380,20 @@ impl AntigravityRuntime {
     ///   goes out as another `session/prompt`; this waits until it is on the
     ///   wire (bounded, race-free: see [`Ticket`]).
     async fn steer_running(&self, thread: &ThreadId, text: &str) -> bool {
-        let Some((steer, open, run_id)) = self.active.with_turn(thread, |t| {
+        let Some((steer, admission, run_id, session)) = self.active.with_turn(thread, |t| {
             (
                 t.steer.clone(),
-                t.session.lock().is_ok_and(|s| s.is_some()),
+                Arc::clone(&t.admission),
                 t.run_id.clone(),
+                Arc::clone(&t.session),
             )
         }) else {
             return false;
         };
+        // One steer at a time from its declines to its prompt: a second one
+        // cannot see the gate list this one emptied and overtake it.
+        let _admitted = admission.lock().await;
+        let open = session.lock().is_ok_and(|s| s.is_some());
         if !open {
             let held = SteerRequest {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -473,24 +481,35 @@ struct AgentTraits {
 
 pub(super) type PromptFuture = Pin<Box<dyn Future<Output = Result<Value, RpcError>> + Send>>;
 
-/// Put a `session/prompt` frame on the wire now (frames go out in the
-/// order sent) and return the wait for its answer. A steer is acknowledged
-/// only after this returns, so no later steer can replace an unsent one.
-/// A steer's prompt that notes an error answer as the agent refusing it.
-fn refusal_noted(pending: PromptFuture, refused: Option<Arc<Mutex<bool>>>) -> PromptFuture {
+/// A steer's prompt that notes its answer in the ledger: answered, refused
+/// (an error answer), or gone (the connection ended first).
+fn reply_noted(pending: PromptFuture, reply: Option<Arc<Mutex<steer::Reply>>>) -> PromptFuture {
     Box::pin(async move {
         let answer = pending.await;
-        if matches!(answer, Err(RpcError::Remote { .. }))
-            && let Some(refused) = refused
-        {
-            *refused
+        if let Some(reply) = reply {
+            *reply
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = match &answer {
+                Ok(_) => steer::Reply::Answered,
+                Err(RpcError::Remote { .. }) => steer::Reply::Refused,
+                Err(_) => steer::Reply::Gone,
+            };
         }
         answer
     })
 }
 
+/// T3 Code's notice for a steer nobody can say was read.
+fn not_confirmed(text: &str) -> String {
+    format!(
+        "Steer delivery not confirmed: the turn ended before the agent acknowledged this \
+         message, so it may not have been delivered. Resend it if needed: \"{text}\""
+    )
+}
+
+/// Put a `session/prompt` frame on the wire now (frames go out in the
+/// order sent) and return the wait for its answer. A steer is acknowledged
+/// only after this returns, so no later steer can replace an unsent one.
 fn send_prompt(
     client: &RpcClient,
     session_id: &str,
@@ -543,13 +562,31 @@ impl Turn {
             .drive(client, inbound, &mut steer_rx, &mut ledger)
             .await;
         steer_rx.close();
+        let stopped = self.cancelled.load(Ordering::SeqCst);
         while let Ok(request) = steer_rx.try_recv() {
-            // Never sent: a waiting requester hears it was refused.
+            // Never sent: refused, or consumed when Stop ended the turn.
             if request.take() {
-                request.answer(None, &mut ledger);
+                let taken = if stopped {
+                    Taken::Consumed
+                } else {
+                    Taken::Refused
+                };
+                request.answer(taken, &mut ledger);
             }
         }
-        let unread = ledger.unread();
+        // Settled once every write's report is in (bounded).
+        let settlement = ledger.settle(stopped).await;
+        if !settlement.unconfirmed.is_empty() {
+            let notices: Vec<HistoryMessage> = settlement
+                .unconfirmed
+                .iter()
+                .map(|steer| {
+                    journal::message(HistoryRole::System, not_confirmed(&steer.text), Vec::new())
+                })
+                .collect();
+            journal::append(&self.config.transcript(&self.key), &notices).await;
+        }
+        let unread = settlement.unread;
         if let Ok(mut slot) = self.session.lock() {
             *slot = None;
         }
@@ -681,7 +718,7 @@ impl Turn {
                         continue;
                     }
                     if !agent.steers {
-                        request.answer(None, ledger);
+                        request.answer(Taken::Refused, ledger);
                         continue;
                     }
                     // What the agent said so far (including updates already
@@ -711,10 +748,10 @@ impl Turn {
                     match queued {
                         Some((pending, written)) => {
                             live.steered();
-                            let at = request.answer(Some(written), ledger);
-                            // This steer's own prompt: an error answer means
-                            // the agent refused it (back unread at the end).
-                            let pending = refusal_noted(pending, ledger.refusal(at));
+                            let at = request.answer(Taken::Queued(written), ledger);
+                            // This steer's own prompt: its answer is the
+                            // evidence the ledger settles it on.
+                            let pending = reply_noted(pending, ledger.reply(at));
                             // The earlier prompt's answer (`end_turn`, by
                             // design of a steer) is still awaited for an error.
                             if let Some(earlier) = prompt.replace(pending) {
@@ -724,7 +761,13 @@ impl Turn {
                             entries.extend(journaled.map(|text| journal::message(HistoryRole::User, text, Vec::new())));
                         }
                         None => {
-                            request.answer(None, ledger);
+                            // Stop won: consumed, never queued again.
+                            let taken = if self.cancelled.load(Ordering::SeqCst) {
+                                Taken::Consumed
+                            } else {
+                                Taken::Refused
+                            };
+                            request.answer(taken, ledger);
                         }
                     }
                     if !entries.is_empty() {

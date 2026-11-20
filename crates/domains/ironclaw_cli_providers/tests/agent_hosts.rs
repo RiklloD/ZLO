@@ -1670,8 +1670,13 @@ async fn codex_rejection_feedback_is_queued_when_the_decline_ends_the_turn() {
     let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
     let engine = ledger(dir.path()).await;
     bridge.record_to(engine.store().clone());
-    // The stock fake completes the turn as soon as it gets the decline.
-    let rt = codex(dir.path(), &recorder, Some(Arc::clone(&bridge)));
+    // The stock fake completes the turn as soon as it gets the decline, and
+    // (like Codex) refuses a steer into a turn that has ended.
+    let ended = CODEX.replace(
+        "  case \"$line\" in\n",
+        "  case \"$line\" in\n    *'\"method\":\"turn/steer\"'*) printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":-32600,\"message\":\"no active turn\"}}\\n' \"$id\" ;;\n",
+    );
+    let rt = codex_with(dir.path(), &recorder, Some(Arc::clone(&bridge)), &ended);
     let thread = thread(&rt, "gpt-b").await;
     rt.start_turn(&thread, input()).await.unwrap();
     reject_first_gate(&bridge, &recorder, &thread.thread_id).await;

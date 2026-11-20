@@ -253,6 +253,48 @@ impl TurnFold {
         entries
     }
 
+    /// The turn's last transcript entries: everything after the last cut.
+    /// Without any cut, the turn's answer (its last message) with its calls,
+    /// as always; after a steer, every message since the cut, in order (the
+    /// same ordered fold as the cut itself), so none is lost.
+    pub(crate) fn final_entries(&self) -> Vec<HistoryMessage> {
+        if let Some(review) = &self.review {
+            let tools = self.tools[self.tools_journaled..].to_vec();
+            return vec![journal::message(
+                HistoryRole::Assistant,
+                review.clone(),
+                tools,
+            )];
+        }
+        if self.journaled.is_empty() && self.tools_journaled == 0 {
+            return self.assistant_message().into_iter().collect();
+        }
+        let mut rest: Vec<(usize, String)> = self
+            .messages
+            .iter()
+            .filter(|(id, _)| !self.journaled.contains(*id))
+            .map(|(_, (order, text))| (*order, text.trim().to_string()))
+            .filter(|(_, text)| !text.is_empty())
+            .collect();
+        rest.sort_by_key(|(order, _)| *order);
+        let mut entries: Vec<HistoryMessage> = rest
+            .into_iter()
+            .map(|(_, text)| journal::message(HistoryRole::Assistant, text, Vec::new()))
+            .collect();
+        let tools = self.tools[self.tools_journaled..].to_vec();
+        if !tools.is_empty() {
+            match entries.last_mut() {
+                Some(last) => last.tool_calls = tools,
+                None => entries.push(journal::message(
+                    HistoryRole::Assistant,
+                    String::new(),
+                    tools,
+                )),
+            }
+        }
+        entries
+    }
+
     /// The turn's (last) transcript entry: everything after the last cut.
     pub(crate) fn assistant_message(&self) -> Option<HistoryMessage> {
         let text = match &self.review {
@@ -464,6 +506,31 @@ mod tests {
             &json!({"turn": {"id": "t1", "status": "completed"}}),
         );
         assert_eq!(f.outcome(false).final_text.as_deref(), Some("Now shorter"));
+    }
+
+    /// Sol 7: after the last steer's cut, every message keeps its place
+    /// (not only the last one).
+    #[test]
+    fn every_message_after_the_last_steer_is_kept_in_order() {
+        let mut f = fold();
+        let done = |f: &mut TurnFold, id: &str, text: &str| {
+            f.push(
+                "item/completed",
+                &json!({"turnId": "t1", "item": {"id": id, "type": "agentMessage", "text": text}}),
+            );
+        };
+        done(&mut f, "m0", "Before");
+        assert_eq!(f.take_segment().len(), 1);
+        done(&mut f, "m1", "First after");
+        done(&mut f, "m2", "Second after");
+        let rest: Vec<String> = f.final_entries().into_iter().map(|e| e.text).collect();
+        assert_eq!(rest, ["First after", "Second after"]);
+        // Without any steer the answer is still the last message.
+        let mut plain = fold();
+        done(&mut plain, "m1", "Thinking aloud");
+        done(&mut plain, "m2", "Answer");
+        let only: Vec<String> = plain.final_entries().into_iter().map(|e| e.text).collect();
+        assert_eq!(only, ["Answer"]);
     }
 
     /// Sol 6: two messages finished before a steer are both kept, in order.
