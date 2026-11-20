@@ -262,6 +262,9 @@ pub struct SubmitAck {
     pub status: Option<String>,
     #[serde(default)]
     pub notice: Option<String>,
+    /// The run a busy answer refers to (steered into, or queued behind).
+    #[serde(default)]
+    pub active_run_id: Option<String>,
     /// What the message became (`started` / `steered` / `queued` /
     /// `restarted`). Absent from servers older than the field.
     #[serde(default)]
@@ -302,11 +305,14 @@ pub enum Landed {
     Queued,
     /// The running turn refused it; nothing was kept.
     Refused,
+    /// An older gateway's `deferred_busy` without `delivery`: steered or
+    /// queued, unknown until the timeline or queue reads it back.
+    Unconfirmed,
 }
 
 impl SubmitAck {
     /// Where the message went. An older gateway without `delivery` is read
-    /// by outcome alone: `deferred_busy` was a message the running turn kept.
+    /// by outcome alone; its `deferred_busy` stays unresolved until read back.
     pub fn landed(&self) -> Landed {
         if self.outcome.as_deref() == Some("rejected_busy") {
             return Landed::Refused;
@@ -318,9 +324,7 @@ impl SubmitAck {
             Some(SubmitDelivery::Queued) => Landed::Queued,
             Some(SubmitDelivery::Started | SubmitDelivery::Restarted) => Landed::Started,
             Some(SubmitDelivery::Other) | None => match self.outcome.as_deref() {
-                Some("deferred_busy") => Landed::Steered {
-                    waiting: self.waiting_for_turn,
-                },
+                Some("deferred_busy") => Landed::Unconfirmed,
                 _ => Landed::Started,
             },
         }
@@ -559,7 +563,7 @@ mod landed_tests {
     fn an_older_gateway_is_read_by_outcome_alone() {
         let old = ack(serde_json::json!({"outcome": "deferred_busy",
             "notice": "Queued: it runs when the current turn ends"}));
-        assert_eq!(old.landed(), Landed::Steered { waiting: false });
+        assert_eq!(old.landed(), Landed::Unconfirmed, "never guessed");
         let old = ack(serde_json::json!({"outcome": "submitted"}));
         assert_eq!(old.landed(), Landed::Started);
     }

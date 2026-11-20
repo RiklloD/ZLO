@@ -114,11 +114,14 @@ pub(super) fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     // ⌘ alone held: the cards show their ⌘N badges.
     let held = ev.mods.cmd && !(ev.mods.ctrl || ev.mods.alt || ev.mods.shift);
     let modifier_only = matches!(ev.key, Key::Modifier { .. });
+    let was = s.workspace.inbox.cmd_held;
     if modifier_only || !held {
         s.workspace.inbox.cmd_held = held && modifier_only;
     }
     if modifier_only {
-        return false;
+        // Taken only when ⌘-held flipped, so the frame rebuilds: the ⌘N
+        // badges and the composer's live "Steer/Queue message" follow it.
+        return s.workspace.inbox.cmd_held != was;
     }
     if ev.key == Key::Escape {
         return super::dismiss(s);
@@ -156,5 +159,30 @@ mod tests {
             assert!(Chord::parse(chord).is_ok(), "{title}: {chord}");
             assert!(chord.parse::<Shortcut>().is_ok(), "{title}: {chord}");
         }
+    }
+
+    /// GPT review P2: ⌘ pressed or released alone is taken when it flips
+    /// the held state, so the window rebuilds and the composer's send label
+    /// ("Steer message" ↔ "Queue message") follows ⌘ live.
+    #[test]
+    fn a_command_press_alone_rebuilds_when_it_flips() {
+        let mut s = crate::chat::fixtures::test_state();
+        let mut tx = Tx::default();
+        let press = |pressed: bool| KeyEvent {
+            key: Key::Modifier {
+                modifier: rune::Modifier::SuperLeft,
+                pressed,
+            },
+            mods: rune::Mods {
+                cmd: pressed,
+                logo: pressed,
+                ..rune::Mods::default()
+            },
+        };
+        assert!(on_key(&mut s, &press(true), &mut tx), "held: rebuild");
+        assert!(s.workspace.inbox.cmd_held);
+        assert!(!on_key(&mut s, &press(true), &mut tx), "no change: not taken");
+        assert!(on_key(&mut s, &press(false), &mut tx), "released: rebuild");
+        assert!(!s.workspace.inbox.cmd_held);
     }
 }

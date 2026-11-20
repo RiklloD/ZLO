@@ -4,10 +4,11 @@
 //! `attachment_card` are shared with the new-thread and quick composers.
 //!
 //! Keys (t3code's, `dispatch::key_action`): ⌘↵ with a draft while a turn
-//! runs does the other of steer and queue for one message; with nothing
-//! typed it approves the newest open approval (⇧⌘↵ always allows it).
-//! ⇧⌘↵ otherwise sends the first queued message now, and ⌥↑ with the caret
-//! at the start edits the last one. Then the `/` and `@` menu takes ↑ ↓ Tab
+//! runs does the other of steer and queue for one message; ⇧⌘↵ sends the
+//! first queued message now, and ⌥↑ with the caret at the start edits the
+//! last one. The newest open approval has its own chords, ⌥⌘↵ (approve) and
+//! ⌥⇧⌘↵ (always allow), so no send chord can grant a tool. A held chord
+//! acts once. Then the `/` and `@` menu takes ↑ ↓ Tab
 //! Esc ↵ while it is open; ↑ in an empty composer recalls the last message.
 //! Plain ↵ sends (`on_submit`): Settings → Follow-ups while a turn runs.
 
@@ -316,11 +317,19 @@ fn on_key(s: &mut State, id: &str, ev: &KeyEvent, tx: &mut Tx) -> bool {
         running: c.running_run().is_some(),
         draft_empty: c.staged.is_empty() && c.composer.text.trim().is_empty(),
         caret_at_start: c.composer.anchor == 0 && c.composer.focus == 0,
-        queued: c.orchestration.queue.items.len(),
+        queued: c
+            .orchestration
+            .queue
+            .items
+            .iter()
+            .filter(|i| !i.is_sending())
+            .count(),
         editing: c.orchestration.editing.is_some(),
         approval: gate.as_ref().map(|(_, _, always)| *always),
+        repeat: tx.key_repeat(),
     };
     match dispatch::key_action(ev, cx) {
+        Some(KeyAction::Swallow) => return true,
         Some(KeyAction::SendAlternate) => {
             actions::send_as(s, id, true, tx);
             return true;

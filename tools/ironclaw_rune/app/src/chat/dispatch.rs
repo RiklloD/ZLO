@@ -10,7 +10,6 @@
 //!   compacting queues.
 
 use rune::{Icon, Key, KeyEvent};
-use zlo_client::transcript::Row;
 
 use crate::design::prefs::FollowUps;
 use crate::icons;
@@ -40,16 +39,11 @@ pub(crate) fn resolve(running: bool, alternate: bool, default: FollowUps, can_st
     }
 }
 
-/// Whether the running turn can take a steer: not while it compacts (its
-/// prompt is `/compact`). `rows` is the chat's transcript.
-pub(crate) fn can_steer(rows: &[Row]) -> bool {
-    let last_prompt = rows.iter().rev().find_map(|r| match r {
-        Row::User {
-            text, steer: None, ..
-        } => Some(text.trim()),
-        _ => None,
-    });
-    last_prompt != Some("/compact")
+/// Whether the running turn can take a steer: not while it compacts its
+/// context (the backend's `compacting`, read from the queue view, which
+/// knows the active run's prompt; t3code's `compactionBlocksSteering`).
+pub(crate) fn can_steer(chat: &super::ChatState) -> bool {
+    !chat.orchestration.queue.compacting
 }
 
 /// The send button's face.
@@ -130,12 +124,14 @@ pub(crate) struct KeyContext {
     /// Nothing typed and no files.
     pub draft_empty: bool,
     pub caret_at_start: bool,
-    /// Messages in the queue.
+    /// Messages in the queue that can be sent or edited (not `sending`).
     pub queued: usize,
     /// A queued message is being edited in the composer.
     pub editing: bool,
     /// An open approval: `Some(allow_always)`.
     pub approval: Option<bool>,
+    /// The OS auto-repeat of a held key.
+    pub repeat: bool,
 }
 
 /// A composer key the chat handles itself.
@@ -149,38 +145,44 @@ pub(crate) enum KeyAction {
     SendFirstQueued,
     /// ⌥↑ with the caret at the start: edit the last queued message.
     EditLastQueued,
-    /// ⌘↵ / ⇧⌘↵ with an open approval and nothing typed.
+    /// ⌥⌘↵ approves the open approval, ⌥⇧⌘↵ always allows it. Never a send
+    /// or queue chord, so a send can't grant a tool.
     Approve { always: bool },
+    /// A held key's repeat of one of the above: taken, and nothing done.
+    Swallow,
 }
 
 /// The composer's own keys. `None` leaves the key to the field (and the
-/// `/` menu).
+/// `/` menu). Approval has its own chord (⌥ added), apart from every send
+/// and queue chord, and only with an open approval. A key repeat of a
+/// chord does nothing: one press, one action.
 pub(crate) fn key_action(ev: &KeyEvent, cx: KeyContext) -> Option<KeyAction> {
     let m = ev.mods;
-    match ev.key {
+    let action = match ev.key {
+        Key::Enter if m.cmd && m.alt && !m.ctrl_only() => cx
+            .approval
+            .map(|always| KeyAction::Approve { always: m.shift && always }),
         Key::Enter if m.cmd && !m.alt && !m.ctrl_only() => {
-            let has_draft = !cx.draft_empty || cx.editing;
             if m.shift {
-                return match cx.approval {
-                    Some(always) if cx.draft_empty => Some(KeyAction::Approve { always }),
-                    _ if cx.queued > 0 => Some(KeyAction::SendFirstQueued),
-                    Some(always) => Some(KeyAction::Approve { always }),
-                    None => None,
-                };
-            }
-            if has_draft {
-                return Some(if cx.running || cx.editing {
+                (cx.queued > 0).then_some(KeyAction::SendFirstQueued)
+            } else if !cx.draft_empty || cx.editing {
+                Some(if cx.running || cx.editing {
                     KeyAction::SendAlternate
                 } else {
                     KeyAction::Send
-                });
+                })
+            } else {
+                None
             }
-            cx.approval.map(|_| KeyAction::Approve { always: false })
         }
         Key::Up if m.alt && !m.cmd && !m.shift && cx.caret_at_start && cx.queued > 0 => {
             Some(KeyAction::EditLastQueued)
         }
         _ => None,
+    };
+    match action {
+        Some(_) if cx.repeat => Some(KeyAction::Swallow),
+        other => other,
     }
 }
 
@@ -270,16 +272,12 @@ mod tests {
 
     #[test]
     fn a_compacting_turn_cannot_be_steered() {
-        let user = |text: &str| Row::User {
-            key: "u".into(),
-            text: text.into(),
-            pending: false,
-            attachments: Vec::new(),
-            steer: None,
-        };
-        assert!(can_steer(&[user("fix it")]));
-        assert!(!can_steer(&[user("fix it"), user(" /compact ")]));
-        assert!(can_steer(&[user("/compact"), user("go on")]));
+        // The backend's word, not a guess from the transcript: a `/compact`
+        // prompt row alone does not block steering, the queue view does.
+        let mut chat = crate::chat::ChatState::new("t1".into());
+        assert!(can_steer(&chat));
+        chat.orchestration.queue.compacting = true;
+        assert!(!can_steer(&chat));
     }
 
     #[test]
@@ -317,35 +315,6 @@ mod tests {
             ..running
         };
         assert_eq!(key_action(&enter_cmd, idle), Some(KeyAction::Send));
-        // Nothing typed: ⌘↵ answers an open approval, else it is unused.
-        let empty = KeyContext {
-            draft_empty: true,
-            ..running
-        };
-        assert_eq!(key_action(&enter_cmd, empty), None);
-        let gate = KeyContext {
-            approval: Some(true),
-            ..empty
-        };
-        assert_eq!(
-            key_action(&enter_cmd, gate),
-            Some(KeyAction::Approve { always: false })
-        );
-        let shift = key(
-            Key::Enter,
-            Mods {
-                shift: true,
-                ..cmd()
-            },
-        );
-        assert_eq!(
-            key_action(&shift, gate),
-            Some(KeyAction::Approve { always: true })
-        );
-        assert_eq!(
-            key_action(&shift, running),
-            Some(KeyAction::SendFirstQueued)
-        );
         // Plain Enter is the field's submit; ⌥Enter no longer queues.
         assert_eq!(key_action(&key(Key::Enter, Mods::default()), running), None);
         let alt = Mods {
@@ -366,6 +335,89 @@ mod tests {
             ..at_start
         };
         assert_eq!(key_action(&up, none_queued), None);
+    }
+
+    /// GPT review P1: a send or queue chord must never grant a tool. With a
+    /// queued item, an empty composer and an open approval, ⇧⌘↵ sends the
+    /// queued item (what the row advertises), ⌘↵ does nothing, and only
+    /// the ⌥ chords approve.
+    #[test]
+    fn send_and_queue_chords_never_approve() {
+        let shift_cmd = Mods {
+            shift: true,
+            ..cmd()
+        };
+        let alt_cmd = Mods {
+            alt: true,
+            ..cmd()
+        };
+        let alt_shift_cmd = Mods {
+            alt: true,
+            shift: true,
+            ..cmd()
+        };
+        let gate = KeyContext {
+            running: true,
+            draft_empty: true,
+            queued: 1,
+            approval: Some(true),
+            ..KeyContext::default()
+        };
+        assert_eq!(
+            key_action(&key(Key::Enter, shift_cmd), gate),
+            Some(KeyAction::SendFirstQueued)
+        );
+        assert_eq!(key_action(&key(Key::Enter, cmd()), gate), None);
+        assert_eq!(
+            key_action(&key(Key::Enter, alt_cmd), gate),
+            Some(KeyAction::Approve { always: false })
+        );
+        assert_eq!(
+            key_action(&key(Key::Enter, alt_shift_cmd), gate),
+            Some(KeyAction::Approve { always: true })
+        );
+        let no_queue = KeyContext { queued: 0, ..gate };
+        assert_eq!(key_action(&key(Key::Enter, shift_cmd), no_queue), None);
+        let no_gate = KeyContext {
+            approval: None,
+            ..gate
+        };
+        assert_eq!(key_action(&key(Key::Enter, alt_cmd), no_gate), None);
+    }
+
+    /// GPT review P1: holding ⌘↵ or ⇧⌘↵ acts once; the repeats are taken
+    /// and do nothing (no approval after the composer clears, no second
+    /// queued item sent).
+    #[test]
+    fn a_held_chord_acts_once() {
+        let held = KeyContext {
+            running: true,
+            queued: 3,
+            repeat: true,
+            approval: Some(false),
+            ..KeyContext::default()
+        };
+        let shift_cmd = Mods {
+            shift: true,
+            ..cmd()
+        };
+        assert_eq!(
+            key_action(&key(Key::Enter, shift_cmd), held),
+            Some(KeyAction::Swallow)
+        );
+        let cleared = KeyContext {
+            draft_empty: true,
+            ..held
+        };
+        assert_eq!(key_action(&key(Key::Enter, cmd()), cleared), None, "no approval either");
+        let typed = KeyContext {
+            draft_empty: false,
+            ..held
+        };
+        assert_eq!(
+            key_action(&key(Key::Enter, cmd()), typed),
+            Some(KeyAction::Swallow)
+        );
     }
 
     #[test]

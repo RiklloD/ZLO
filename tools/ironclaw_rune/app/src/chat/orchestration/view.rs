@@ -124,6 +124,10 @@ fn queue_panel(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
 /// What a queued row says under its bubble.
 pub(crate) fn queued_caption(item: &QueueItem, ix: usize, n: usize, held: bool) -> String {
     let mut line = format!("Queued message {} of {n}", ix + 1);
+    if item.is_sending() {
+        line.push_str(" · sending");
+        return line;
+    }
     match item.kind {
         QueueItemKind::RecoveredSteer => line.push_str(" · a steer the agent didn't read"),
         QueueItemKind::DeferredSteer => line.push_str(" · steers in once the turn is ready"),
@@ -151,7 +155,10 @@ fn queued_row(
     let editing = o.editing.as_ref().is_some_and(|e| e.item_id == item.id);
     let bubble_max = content_width(s) * 0.8;
     let mut actions = row().gap(1.).center_y();
-    if editing {
+    if item.is_sending() {
+        // A delivery holds it: in progress, nothing to act on.
+        actions = actions.child(spinner(k, ICON_XS, p.text_muted));
+    } else if editing {
         let chat = thread.to_string();
         actions = actions
             .child(txt("Editing in the composer", XS, p.text_muted))
@@ -177,15 +184,18 @@ fn queued_row(
         };
         let (send_id, edit_id, remove_id) = (item.id.clone(), item.id.clone(), item.id.clone());
         let (c1, c2, c3) = (thread.to_string(), thread.to_string(), thread.to_string());
+        // Compaction takes no steer: the item waits for it.
+        if !busy && !o.queue.compacting {
+            hover = hover.child(ghost_icon_tx(
+                k,
+                format!("queued-send-{}", item.id),
+                &icons::ARROW_UP,
+                &send_tip,
+                move |s, tx| crate::chat::steer::send_now(s, &c1, &send_id, tx),
+            ));
+        }
         if !busy {
             hover = hover
-                .child(ghost_icon_tx(
-                    k,
-                    format!("queued-send-{}", item.id),
-                    &icons::ARROW_UP,
-                    &send_tip,
-                    move |s, tx| crate::chat::steer::send_now(s, &c1, &send_id, tx),
-                ))
                 .child(ghost_icon(
                     k,
                     format!("queued-edit-{}", item.id),
@@ -511,5 +521,14 @@ mod tests {
             "Queued message 1 of 1 · steers in once the turn is ready"
         );
         assert_eq!(item("something_new").kind, QueueItemKind::Other);
+        let sending: QueueItem = serde_json::from_value(
+            serde_json::json!({"id": "q", "text": "hi", "status": "sending"}),
+        )
+        .expect("item decodes");
+        assert_eq!(
+            queued_caption(&sending, 0, 2, true),
+            "Queued message 1 of 2 · sending",
+            "in progress, not on hold"
+        );
     }
 }

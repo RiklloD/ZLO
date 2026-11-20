@@ -19,7 +19,6 @@
 //! - `opened(s, id)`: after a chat starts.
 //! - `refresh(s, id)`: when the stream reports a run end or a timeline reload.
 //! - `ensure_poll(s, id)`: after a send starts a run.
-//! - `queue_follow_up(s, id, text) -> bool`: a send that queues (`steer`).
 //! - `fork(s, id, at_run: Option<u32>)`, `cancel_task(s, id, task_id)`.
 //! - `running_run(s, id)`, `thread_runtime(s, id)`, `tail_summary(s, id)`
 //!   (the jump-to-end button).
@@ -55,6 +54,9 @@ pub struct OrchestrationState {
     pub(crate) editing: Option<super::steer::Editing>,
     /// The queue panel shows every queued message, not the first two.
     pub(crate) queue_expanded: bool,
+    /// When Stop was pressed: the button in its place waits out
+    /// `steer::STOP_CLICK_GUARD` before it takes a click.
+    pub(crate) stopped_at: Option<std::time::Instant>,
     /// A mutation is in flight; its buttons wait for it.
     pub(crate) busy: bool,
     /// Merge-back outcome, shown in the strip until the next action.
@@ -93,6 +95,14 @@ fn slot<'a>(s: &'a mut State, thread_id: &str) -> Option<&'a mut OrchestrationSt
     crate::chat::chat_for(s, thread_id).map(|c| &mut c.orchestration)
 }
 
+impl OrchestrationState {
+    /// Within the Stop click guard: a click on the send button is ignored.
+    pub(crate) fn stop_guard(&self) -> bool {
+        self.stopped_at
+            .is_some_and(|at| at.elapsed() < crate::chat::steer::STOP_CLICK_GUARD)
+    }
+}
+
 /// The chat extras instance showing `thread_id` now, for a reply to check
 /// with [`slot_of`] (goals and orchestration share it).
 pub(crate) fn instance_of(s: &mut State, thread_id: &str) -> Option<jobs::Instance> {
@@ -120,6 +130,7 @@ fn slot_of<'a>(
 
 /// The chat opened: read everything once.
 pub fn opened(s: &mut State, id: &str) {
+    crate::chat::steer::recover(s, id);
     refresh(s, id);
 }
 
@@ -173,6 +184,7 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
         return;
     };
     let mut reload_timeline = false;
+    let mut edit_gone = false;
     let (mut load_prefix, mut load_merge_list) = (false, false);
     o.loading = false;
     // silent-ok: a thread the orchestrator has not seen yet (no message
@@ -189,6 +201,10 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
             if queue.external_run().is_some() || o.queue.external_run().is_some() {
                 reload_timeline = true;
             }
+            // The message being edited left the queue (the turn took it).
+            edit_gone = o.editing.as_ref().is_some_and(|e| {
+                !e.saving && !queue.items.iter().any(|i| i.id == e.item_id)
+            });
             o.queue = queue;
         }
         Err(e) if e.is_not_found() => o.queue = QueueDoc::default(),
@@ -235,6 +251,9 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
     }
     if reload_timeline {
         crate::chat::load_timeline(s, asked);
+    }
+    if edit_gone {
+        crate::chat::steer::edit_target_gone(s, asked);
     }
     if stale {
         refresh(s, asked);
@@ -348,53 +367,6 @@ fn tick(s: &mut State, thread_id: String, instance: jobs::Instance) -> bool {
         refresh(s, &thread_id);
     }
     schedule_tick(s, thread_id, instance);
-    true
-}
-
-/// Queue `text` as a follow-up for after the current turn (a send that
-/// queues, `steer::send_running`). `false` while another queue change is in flight. When the
-/// server refuses it, the text goes back into an empty composer so it is
-/// never lost.
-pub fn queue_follow_up(s: &mut State, id: &str, text: String) -> bool {
-    let Some(o) = slot(s, id) else { return false };
-    let thread_id = id.to_string();
-    if o.busy {
-        return false;
-    }
-    o.busy = true;
-    // Only this instance's Busy is this reply's to clear.
-    let instance = o.instance;
-    o.note = None;
-    let asked = thread_id.clone();
-    let action = QueueAction::Add(text.clone());
-    jobs::run(
-        s,
-        "orchestration",
-        move |c| async move { c.mutate_queue(&thread_id, &action).await },
-        move |s, result, _| {
-            // A refused add keeps its words: back in the composer (below
-            // anything typed since), or the saved draft of a closed chat.
-            if let Err(e) = &result {
-                crate::chat::steer::rescue_words(
-                    s,
-                    &asked,
-                    &text,
-                    &[],
-                    Vec::new(),
-                    format!("Could not queue the message: {e}"),
-                );
-            }
-            // A closed (or closed and reopened) chat's reply is dropped.
-            let Some(o) = slot_of(s, &asked, instance) else {
-                return;
-            };
-            o.busy = false;
-            if let Ok(queue) = result {
-                o.queue = queue;
-            }
-            ensure_poll(s, &asked);
-        },
-    );
     true
 }
 
@@ -637,7 +609,7 @@ pub fn scene(s: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{Snapshot, apply_snapshot, countdown, duration, fixture, queue_follow_up};
+    use super::{Snapshot, apply_snapshot, countdown, duration, fixture, queue_action};
     use crate::chat::chat_ref;
     use crate::chat::fixtures::{close_side_chat, test_state, with_side_chat};
 
@@ -675,12 +647,13 @@ mod tests {
     fn a_side_chat_queues_into_its_own_thread() {
         let mut s = test_state();
         with_side_chat(&mut s, "sc2");
-        assert!(queue_follow_up(&mut s, "sc2", "after this".into()));
+        queue_action(&mut s, "sc2", QueueAction::Hold);
         assert!(chat_ref(&s, "sc2").is_some_and(|c| c.orchestration.busy));
         assert!(chat_ref(&s, "t1").is_some_and(|c| !c.orchestration.busy));
         // A closed chat has nothing to queue into.
         close_side_chat(&mut s);
-        assert!(!queue_follow_up(&mut s, "sc2", "after this".into()));
+        queue_action(&mut s, "sc2", QueueAction::Hold);
+        assert!(chat_ref(&s, "t1").is_some_and(|c| !c.orchestration.busy));
     }
 
     #[test]

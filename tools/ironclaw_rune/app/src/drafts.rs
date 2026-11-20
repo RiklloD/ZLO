@@ -76,8 +76,10 @@ impl Draft {
         }
     }
 
+    /// Nothing to keep: no words, no tokens and no files (a pasted picture
+    /// alone is still a draft).
     fn is_empty(&self) -> bool {
-        self.text.trim().is_empty() && self.tokens.is_empty()
+        self.text.trim().is_empty() && self.tokens.is_empty() && self.files.is_empty()
     }
 }
 
@@ -359,6 +361,23 @@ pub fn record(s: &mut State, key: &str, draft: Draft) {
             save(s, false);
         }
     });
+}
+
+/// The keys (as `record` takes them) of this computer's drafts that start
+/// with `prefix`.
+pub fn keys_with_prefix(s: &State, prefix: &str) -> Vec<String> {
+    let scope = scoped(s, "");
+    let wanted = scoped(s, prefix);
+    let mut keys: Vec<String> = s
+        .workspace
+        .drafts
+        .drafts
+        .iter()
+        .filter(|(key, draft)| key.starts_with(&wanted) && !draft.is_empty())
+        .filter_map(|(key, _)| key.get(scope.len()..).map(str::to_string))
+        .collect();
+    keys.sort();
+    keys
 }
 
 pub fn remove(s: &mut State, key: &str) {

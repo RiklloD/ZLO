@@ -383,93 +383,40 @@ pub fn send_as(s: &mut State, id: &str, alternate: bool, tx: &mut Tx) {
     if c.running_run().is_some() {
         return super::steer::send_running(s, id, alternate, voice, tx);
     }
-    let Some(channel) = c.channel.clone() else {
-        refuse(s, "This gateway has no chat channel configured.", voice);
-        set_error(s, id, "This gateway has no chat channel configured.");
+    // Checked before anything leaves the composer.
+    if let Some(why) = super::steer::send_blocked(s, id) {
+        let shown = if why.is_empty() { "Not sent." } else { why };
+        refuse(s, shown, voice);
+        if !why.is_empty() {
+            set_error(s, id, why);
+        }
         return;
+    }
+    let Some(draft) = super::steer::take(s, id) else {
+        return refuse(s, "There was nothing to send.", voice);
     };
     let Some(c) = chat_for(s, id) else { return };
-    let draft_text = c.composer.text.clone();
-    let draft_pills = inline_files::pills(&c.composer);
-    c.composer.clear();
-    c.error = None;
-    c.staged.clear();
-    let names: Vec<String> = files.iter().map(|f| f.filename.clone()).collect();
-    let pending = c.transcript.push_pending_user(&text, &names);
     // Zeron's turn: the message moves to the top and the answer streams
     // into the room kept below it.
     c.turn_heights.clear();
     c.reserve = Some(Reserve { held: true });
     c.pin_next = true;
     c.far_from_bottom = false;
-    let running = c.running_run().is_some();
-    record_draft(s, id);
     // MonoCode's prompt rise: the scroll that carries the sent prompt from
     // the composer to the top of the list (and the composer emptying) runs
     // on its 560 ms curve; the row itself only fades in (`view::prompt_rise`).
     tx.motion(super::view::PROMPT_RISE_SPRING);
-    super::refresh_rows(s, id, tx);
-    // A prompt sent here starts its run's clock now; a steer keeps it.
-    if !running {
-        crate::run_clock::end(s, id);
-        crate::run_clock::start(s, id, None, None);
-        crate::workspace::prompt_sent(s, id);
-    }
+    // A prompt sent here starts its run's clock now.
+    crate::run_clock::end(s, id);
+    crate::run_clock::start(s, id, None, None);
+    crate::workspace::prompt_sent(s, id);
     // The project's working tree as it stands now, for the turn's card.
     if super::is_main(s, id) {
         super::side::on_turn_started(s);
     }
-
-    let thread_id = id.to_string();
-    let req = thread_id.clone();
-    let body = text.clone();
-    let wire = files.iter().map(StagedFile::to_wire).collect();
-    let roots = mention_roots(s, id, &text);
-    jobs::run(
-        s,
-        "chat",
-        move |c| async move {
-            c.send_message_with_roots(&channel, &req, &body, wire, roots)
-                .await
-        },
-        move |s, result, tx| {
-            match result {
-                Ok(ack) => {
-                    if let Some(sub) = voice {
-                        super::steer::report_voice(s, &thread_id, sub, &ack, None);
-                    }
-                    let Some(c) = chat_for(s, &thread_id) else {
-                        return;
-                    };
-                    c.transcript.ack_pending_user(pending);
-                    if let Some(notice) = ack.notice.filter(|n| !n.trim().is_empty()) {
-                        c.error = Some(notice);
-                    }
-                    super::load_timeline(s, &thread_id);
-                    // A CLI-runtime turn has no stream; the poll follows it.
-                    super::refresh_extras(s, &thread_id);
-                }
-                Err(e) => {
-                    if let Some(sub) = voice {
-                        crate::voice::submission_refused(s, sub, &e.to_string());
-                    }
-                    crate::workspace::send_failed(s, &thread_id);
-                    let Some(c) = chat_for(s, &thread_id) else {
-                        return;
-                    };
-                    c.transcript.drop_pending_user(pending);
-                    if let Some(r) = c.reserve.as_mut() {
-                        r.held = false;
-                    }
-                    c.climb_until = None;
-                    let error = restore_failed(c, &draft_text, &draft_pills, files, e.to_string());
-                    record_draft(s, &thread_id);
-                    set_error(s, &thread_id, error);
-                    super::refresh_rows(s, &thread_id, tx);
-                }
-            }
-        },
-    );
+    // One settlement path with steers (`steer::apply_landed`): a gateway
+    // that had a turn running after all answers steered, queued or refused.
+    super::steer::deliver(s, id, draft.idle(), voice, tx);
 }
 
 /// A send failed: put its text and cards back so a retry needs no
@@ -669,10 +616,11 @@ pub(crate) fn recall_last(s: &mut State, id: &str) -> bool {
 /// Note the composer as the thread's draft, so an unsent message comes back
 /// (every edit, and the clear after a send).
 pub(crate) fn record_draft(s: &mut State, id: &str) {
-    let Some(c) = chat_ref(s, id) else { return };
     // Mid-edit of a queued message the composer holds that message; the
-    // draft keeps what was set aside (and any unsaved edit below it).
-    let (text, pills, files) = super::steer::draft_while_editing(c).unwrap_or_else(|| {
+    // thread's draft keeps what was set aside, the edit its own key.
+    let editing = super::steer::draft_while_editing(s, id);
+    let Some(c) = chat_ref(s, id) else { return };
+    let (text, pills, files) = editing.unwrap_or_else(|| {
         (
             c.composer.text.clone(),
             inline_files::pills(&c.composer),
