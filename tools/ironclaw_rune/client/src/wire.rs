@@ -174,6 +174,20 @@ pub struct TimelineMessage {
     /// confirmed").
     #[serde(default)]
     pub steer_notices: Vec<SteerNoticeView>,
+    /// The steer this row is (CLI threads), when the engine knows it.
+    #[serde(default)]
+    pub steer_id: Option<String>,
+}
+
+/// `RebornTimelineSteerMark`: steer annotations of one message, keyed by
+/// its id, beside the page's messages.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TimelineSteerMark {
+    pub message_id: String,
+    #[serde(default)]
+    pub steer: Option<SteerAnnotation>,
+    #[serde(default)]
+    pub notices: Vec<SteerNoticeView>,
 }
 
 /// A steer's read state on its timeline row (`steer`).
@@ -229,6 +243,10 @@ pub struct TimelinePage {
     pub messages: Vec<TimelineMessage>,
     #[serde(default)]
     pub next_cursor: Option<String>,
+    /// Steer marks for this page's messages (the typed form of each row's
+    /// `steer` / `steer_notices`).
+    #[serde(default)]
+    pub steer_marks: Vec<TimelineSteerMark>,
 }
 
 /// `POST /channels/{ext}/messages` (`RebornSubmitTurnResponse`).

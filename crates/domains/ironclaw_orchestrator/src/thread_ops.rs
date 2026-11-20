@@ -106,9 +106,17 @@ impl Engine {
 
     pub async fn queue_remove(&self, thread: &ThreadId, id: &QueueItemId) -> Result<Value> {
         self.pending_item(thread, id).await?;
-        self.store
+        // A drain or Send now may claim it between the check and here.
+        if !self
+            .store
             .set_queue_status(id, QueueStatus::Pending, QueueStatus::Cancelled)
-            .await?;
+            .await?
+        {
+            return Err(OrchestratorError::request(
+                "not_queued",
+                "The message was sent meanwhile.",
+            ));
+        }
         self.queue_list(thread).await.map(json_ok)
     }
 

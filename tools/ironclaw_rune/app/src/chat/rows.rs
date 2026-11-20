@@ -108,6 +108,16 @@ pub(crate) fn with_actions(
         })
 }
 
+/// "Put back in the composer" on an unconfirmed steer: its words go into the
+/// composer, below anything already typed (never replacing it).
+pub(crate) fn put_back_steer(s: &mut State, thread: &str, words: &str) {
+    if let Some(c) = chat_for(s, thread) {
+        actions::put_back(c, words, &[], Vec::new());
+        super::composer::on_change(s, thread);
+    }
+    super::focus_composer_of(s, thread);
+}
+
 /// "Steer" (or "Steer · waiting to be read") above a steer's bubble, with
 /// t3code's tooltip.
 fn steer_marker(s: &State, key: &str, waiting: bool) -> El {
@@ -403,12 +413,7 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
                             .variant(ButtonVariant::Ghost)
                             .control_size(ControlSize::Regular)
                             .help("Your steer's words, to send again if the agent needs them")
-                            .on_press(move |s: &mut State| {
-                                if super::composer_text(s, &thread).trim().is_empty() {
-                                    super::set_composer_text(s, &thread, again.clone());
-                                }
-                                super::focus_composer_of(s, &thread);
-                            })
+                            .on_press(move |s: &mut State| put_back_steer(s, &thread, &again))
                             .build(k)
                             .key(format!("{key}-again")),
                     ),

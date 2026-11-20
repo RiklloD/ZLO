@@ -216,10 +216,12 @@ pub struct OrchestratorQueueBody {
     pub text: Option<String>,
     #[serde(default)]
     pub before_id: Option<String>,
+    #[serde(default)]
+    pub attachments: Vec<ironclaw_product_contracts::inbound_requests::ProductInboundAttachment>,
 }
 
 /// `POST /api/webchat/v2/threads/{thread_id}/queue` — `action` is one of
-/// add, edit, remove, reorder, clear, hold, release.
+/// add, edit, remove, reorder, clear, hold, release, promote, send_now.
 pub async fn orchestrator_queue_mutate(
     State(state): State<WebUiV2State>,
     Extension(caller): Extension<ProductSurfaceCaller>,
@@ -232,6 +234,7 @@ pub async fn orchestrator_queue_mutate(
         item_id: body.item_id,
         text: body.text,
         before_id: body.before_id,
+        attachments: body.attachments,
     };
     Ok(Json(
         invoke_product_command(

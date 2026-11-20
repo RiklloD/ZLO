@@ -473,9 +473,10 @@ pub fn send_as(s: &mut State, id: &str, alternate: bool, tx: &mut Tx) {
 }
 
 /// A send failed: put its text and cards back so a retry needs no
-/// re-picking (GPUI's behaviour), but only into an empty composer with no
-/// files staged. When the person has typed or attached since, that stays,
-/// and the error names the unsent message instead. Returns the error to show.
+/// re-picking (GPUI's behaviour). Into an empty composer they go as they
+/// were; when the person has typed or attached since, the unsent message is
+/// added below that, never dropped, and the error says so. Returns the
+/// error to show.
 pub(super) fn restore_failed(
     c: &mut super::ChatState,
     text: &str,
@@ -483,13 +484,70 @@ pub(super) fn restore_failed(
     files: Vec<StagedFile>,
     error: String,
 ) -> String {
-    if c.composer.text.is_empty() && c.staged.is_empty() {
+    if put_back(c, text, pills, files) {
+        format!("{error} The unsent message is back in the composer, below what you typed.")
+    } else {
+        error
+    }
+}
+
+/// Put words (and their file pills and files) back into `c`'s composer.
+/// An empty composer takes them as they were; an occupied one keeps what it
+/// holds and gets them added below, so no words are ever lost. `true` when
+/// they were added below something.
+pub(crate) fn put_back(
+    c: &mut super::ChatState,
+    text: &str,
+    pills: &[(std::ops::Range<usize>, String)],
+    files: Vec<StagedFile>,
+) -> bool {
+    if text.trim().is_empty() && files.is_empty() {
+        return false;
+    }
+    if c.composer.text.trim().is_empty() && c.staged.is_empty() {
         c.staged = files;
         inline_files::set_content(&mut c.composer, text, pills);
-        error
-    } else {
-        format!("{error} Not sent: \u{201c}{}\u{201d}", text.trim())
+        return false;
     }
+    let (joined, joined_pills) = join_drafts(
+        &c.composer.text,
+        &inline_files::pills(&c.composer),
+        text,
+        pills,
+    );
+    c.staged.extend(files);
+    inline_files::set_content(&mut c.composer, &joined, &joined_pills);
+    true
+}
+
+/// `first` with `second` below it after a blank line; `second`'s pill
+/// ranges (byte offsets) move with it.
+pub(crate) fn join_drafts(
+    first: &str,
+    first_pills: &[(std::ops::Range<usize>, String)],
+    second: &str,
+    second_pills: &[(std::ops::Range<usize>, String)],
+) -> (String, Vec<(std::ops::Range<usize>, String)>) {
+    if first.trim().is_empty() {
+        return (second.to_string(), second_pills.to_vec());
+    }
+    if second.trim().is_empty() {
+        return (first.to_string(), first_pills.to_vec());
+    }
+    let head = first.trim_end_matches('\n');
+    let joined = format!("{head}\n\n{second}");
+    let shift = head.len() + 2;
+    let mut pills: Vec<_> = first_pills
+        .iter()
+        .filter(|(r, _)| r.end <= head.len())
+        .cloned()
+        .collect();
+    pills.extend(
+        second_pills
+            .iter()
+            .map(|(r, id)| (r.start + shift..r.end + shift, id.clone())),
+    );
+    (joined, pills)
 }
 
 /// Stop the running turn. The row flips to "Stopping" on the click itself;
@@ -612,8 +670,16 @@ pub(crate) fn recall_last(s: &mut State, id: &str) -> bool {
 /// (every edit, and the clear after a send).
 pub(crate) fn record_draft(s: &mut State, id: &str) {
     let Some(c) = chat_ref(s, id) else { return };
-    let text = c.composer.text.clone();
-    let tokens = inline_files::pills(&c.composer)
+    // Mid-edit of a queued message the composer holds that message; the
+    // draft keeps what was set aside (and any unsaved edit below it).
+    let (text, pills, files) = super::steer::draft_while_editing(c).unwrap_or_else(|| {
+        (
+            c.composer.text.clone(),
+            inline_files::pills(&c.composer),
+            c.staged.clone(),
+        )
+    });
+    let tokens = pills
         .into_iter()
         .filter_map(|(range, id)| {
             let shown = text.get(range.clone())?.to_string();
@@ -628,7 +694,7 @@ pub(crate) fn record_draft(s: &mut State, id: &str) {
     let draft = crate::drafts::Draft {
         text,
         tokens,
-        files: c.staged.clone(),
+        files,
         profile: None,
     };
     crate::drafts::record(s, id, draft);
@@ -705,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_send_restores_only_into_an_empty_composer() {
+    fn a_failed_send_never_drops_its_words() {
         let mut c = super::super::ChatState::new("t1".into());
         let error = restore_failed(&mut c, "first try", &[], Vec::new(), "boom".into());
         assert_eq!(
@@ -717,10 +783,10 @@ mod tests {
         c.composer.replace_text("typed since");
         let error = restore_failed(&mut c, "first try", &[], Vec::new(), "boom".into());
         assert_eq!(
-            c.composer.text, "typed since",
-            "what was typed since survives"
+            c.composer.text, "typed since\n\nfirst try",
+            "what was typed since survives, and the unsent words come back below it"
         );
-        assert!(error.contains("\u{201c}first try\u{201d}"), "{error}");
+        assert!(error.contains("back in the composer"), "{error}");
     }
 
     #[test]

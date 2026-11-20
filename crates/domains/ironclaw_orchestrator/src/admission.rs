@@ -524,6 +524,87 @@ impl Engine {
     ) -> Result<Value> {
         let thread_id = &thread.thread_id;
         let _admission = self.admit(thread_id).await?;
+        self.promote_locked(thread_id, id, how).await
+    }
+
+    /// Send now (t3code `queued-message.promote-to-steer` /
+    /// `queued-run.start`), atomic under the thread's admission lock: a
+    /// running turn takes the queued item as a steer (or as soon as it can
+    /// take input); an idle thread starts a turn with just this item. A
+    /// held queue stays held for every other item. The item is claimed by
+    /// compare-and-set, so a drain that took it first wins and this answers
+    /// `not_queued`, never a second delivery.
+    pub async fn queue_send_now(&self, thread: &ThreadRecord, id: &QueueItemId) -> Result<Value> {
+        let thread_id = &thread.thread_id;
+        let _admission = self.admit(thread_id).await?;
+        if self
+            .store
+            .thread(thread_id)
+            .await?
+            .is_some_and(|t| t.is_running())
+        {
+            match self.promote_locked(thread_id, id, SteerHow::Steer).await {
+                // Too late to steer: it starts the next turn below.
+                Err(OrchestratorError::Request {
+                    code: "turn_ended" | "no_active_run",
+                    ..
+                }) => {
+                    self.wait_turn_end(thread_id).await?;
+                }
+                other => return other,
+            }
+        }
+        self.recover_first(thread_id).await;
+        let item = self.pending_item(thread_id, id).await?;
+        let claim = new_claim();
+        if !self.store.queue_claim(id, &claim).await? {
+            return Err(OrchestratorError::request(
+                "not_queued",
+                format!("Queued message {id} was sent meanwhile."),
+            ));
+        }
+        let origin = if item.created_by == Author::User {
+            TurnOrigin::UserPrompt
+        } else {
+            TurnOrigin::AgentSend
+        };
+        // `respect_hold: false` starts this one item; the hold itself (and
+        // so every other queued item) is left as it is.
+        let delivered = self.deliver(thread_id, item.text.clone(), origin, false).await;
+        let started = matches!(delivered, Ok(true));
+        let mut settle = Settle::to(if started {
+            QueueStatus::Sent
+        } else {
+            QueueStatus::Pending
+        });
+        if started {
+            self.store.set_last_user(thread_id, now_ms()).await?;
+            settle.claim_run = self.active_run(thread_id).await?;
+        } else {
+            settle.kind = item.kind;
+            settle.steer_run = item.steer_run.clone();
+        }
+        self.store.queue_settle(id, &claim, &settle).await?;
+        delivered?;
+        if !started {
+            return Err(OrchestratorError::request(
+                "thread_busy",
+                "The thread can't start a turn right now; the message stays queued.",
+            ));
+        }
+        let mut view = self.queue_list(thread_id).await?;
+        view["delivery"] = json!("started");
+        view["runId"] = json!(settle.claim_run);
+        Ok(json_ok(view))
+    }
+
+    /// [`Self::queue_promote`] under the admission lock.
+    async fn promote_locked(
+        &self,
+        thread_id: &ThreadId,
+        id: &QueueItemId,
+        how: SteerHow,
+    ) -> Result<Value> {
         self.recover_first(thread_id).await;
         let item = self.pending_item(thread_id, id).await?;
         let Some(current) = self
@@ -589,6 +670,11 @@ impl Engine {
         }
         let mut view = self.queue_list(thread_id).await?;
         view["steerStatus"] = json!(steer_label(outcome));
+        view["delivery"] = json!(match outcome {
+            SteerOutcome::Restarted => "restarted",
+            SteerOutcome::NotReady => "waiting_for_turn",
+            _ => "steered",
+        });
         if outcome == SteerOutcome::Steered
             && let Ok(a) = &attempt
         {

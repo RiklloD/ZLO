@@ -378,6 +378,8 @@ impl CliDetails {
 #[derive(Debug)]
 struct PendingUser {
     id: u64,
+    /// The engine's id for it once the ack named one (a steer).
+    steer_id: Option<String>,
     text: String,
     /// The gateway accepted the send.
     acked: bool,
@@ -552,6 +554,17 @@ fn is_terminal(status: &str) -> bool {
 impl Transcript {
     pub fn set_timeline(&mut self, page: TimelinePage) {
         let mut messages = page.messages;
+        // The typed marks win over the rows' own fields.
+        for mark in page.steer_marks {
+            if let Some(m) = messages.iter_mut().find(|m| m.message_id == mark.message_id) {
+                if mark.steer.is_some() {
+                    m.steer = mark.steer;
+                }
+                if !mark.notices.is_empty() {
+                    m.steer_notices = mark.notices;
+                }
+            }
+        }
         messages.sort_by_key(|m| m.sequence);
         // The backend renumbers a steer when the model reads it; show it
         // when it was sent instead, if every row carries its send time.
@@ -664,10 +677,18 @@ impl Transcript {
             };
             // Prefer the copy with the same text; once accepted, any newer
             // message of the person stands for it (the gateway may reword).
+            // The engine's steer id names its row outright.
+            let same_steer = |m: &&TimelineMessage| {
+                p.steer_id.as_deref().is_some_and(|id| {
+                    m.steer_id.as_deref() == Some(id)
+                        || m.steer.as_ref().is_some_and(|s| s.id == id)
+                })
+            };
             let found = durable
                 .iter()
-                .filter(newer)
-                .find(same_text)
+                .filter(|m| !claimed.contains(m.message_id.as_str()))
+                .find(same_steer)
+                .or_else(|| durable.iter().filter(newer).find(same_text))
                 .or_else(|| p.acked.then(|| durable.iter().find(newer)).flatten());
             match found {
                 Some(m) => {
@@ -700,6 +721,7 @@ impl Transcript {
             .collect();
         self.pending_user.push(PendingUser {
             id,
+            steer_id: None,
             text: text.to_string(),
             acked: false,
             chips,
@@ -707,6 +729,13 @@ impl Transcript {
             steer: None,
         });
         id
+    }
+
+    /// Note the engine's id for pending message `id` (the ack's `steer_id`).
+    pub fn set_pending_steer_id(&mut self, id: u64, steer_id: Option<String>) {
+        if let Some(entry) = self.pending_user.iter_mut().find(|p| p.id == id) {
+            entry.steer_id = steer_id;
+        }
     }
 
     /// Mark pending message `id` as a steer of the running turn
@@ -1443,8 +1472,13 @@ impl Transcript {
                         }
                     }
                     let queued = message.status == MessageStatus::Queued;
+                    let rejected = message.status == MessageStatus::RejectedBusy;
                     let run = message.turn_run_id.as_deref();
-                    let later = run.is_some_and(|r| !started_runs.insert(r));
+                    // A run's later message of the person's is a steer; the
+                    // native loop marks only unread ones (`queued`), so a
+                    // read one is known by its run. Not one that the turn
+                    // never took (`rejected_busy`).
+                    let later = !rejected && run.is_some_and(|r| !started_runs.insert(r));
                     let steer = match (&message.steer, later) {
                         (Some(ann), _) => Some(ann.waiting_to_be_read),
                         (None, true) => Some(queued),
@@ -1460,14 +1494,23 @@ impl Transcript {
                             .map(|(end, at)| end - at)
                             .filter(|ms| *ms > 0),
                     });
+                    let words = text.clone();
                     rows.push(Row::User {
-                        key,
+                        key: key.clone(),
                         text,
                         // Queued until the model reads it.
                         pending: queued,
                         attachments,
                         steer,
                     });
+                    if rejected {
+                        rows.push(Row::SteerNotice {
+                            key: format!("{key}:not-delivered"),
+                            title: "Not delivered".into(),
+                            text: "This message wasn't delivered to the running task. Send it again if you still need it.".into(),
+                            words,
+                        });
+                    }
                     if let Some(run) = message.turn_run_id.as_deref()
                         && quiet_run(run)
                         && emitted.insert(Some(run.to_string()))

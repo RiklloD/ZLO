@@ -516,3 +516,41 @@ async fn a_run_reported_ended_before_admission_returns_stays_ended() {
         "live work left for an ended run"
     );
 }
+
+/// Send now (t3code promote-to-steer / queued-run.start): a running turn
+/// takes the item as a steer; an idle thread with a held queue starts just
+/// that item and keeps the rest held. Each item is delivered once: a second
+/// Send now, or a Remove after it, answers `not_queued`.
+#[tokio::test]
+async fn send_now_steers_or_starts_one_item_once_and_keeps_a_hold() {
+    let h = harness().await;
+    let a = running(&h, "a", "r1").await;
+    let add = |text: &'static str| {
+        let h = &h;
+        let thread = a.thread_id.clone();
+        async move {
+            let added = h.engine.queue_add(&thread, text, Author::User).await.unwrap();
+            QueueItemId::new(added["queuedId"].as_str().unwrap()).unwrap()
+        }
+    };
+    let first = add("steer me").await;
+    let view = h.engine.queue_send_now(&a, &first).await.unwrap();
+    assert_eq!(view["delivery"], json!("steered"));
+    assert_eq!(h.rt.steered_on(&a.thread_id), vec!["steer me"]);
+    let again = h.engine.queue_send_now(&a, &first).await.unwrap_err();
+    assert_eq!(again.code(), "not_queued", "never delivered twice");
+    let removed = h.engine.queue_remove(&a.thread_id, &first).await.unwrap_err();
+    assert_eq!(removed.code(), "not_queued", "a remove after it is refused, not a silent success");
+
+    // Idle and held after a Stop: only the chosen item starts.
+    finish(&h.engine, &a.thread_id, TurnOutcome::completed(None)).await;
+    h.engine.queue_hold(&a.thread_id, true).await.unwrap();
+    let second = add("start me").await;
+    let _third = add("stay queued").await;
+    let idle = h.engine.store().thread(&a.thread_id).await.unwrap().unwrap();
+    let view = h.engine.queue_send_now(&idle, &second).await.unwrap();
+    assert_eq!(view["delivery"], json!("started"));
+    assert_eq!(h.rt.starts_on(&a.thread_id).last().map(String::as_str), Some("start me"));
+    assert_eq!(view["held"], json!(true), "the hold stays for the rest");
+    assert_eq!(queued(&h, &a.thread_id).await, vec!["stay queued"]);
+}

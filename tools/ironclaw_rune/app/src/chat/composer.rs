@@ -307,6 +307,10 @@ fn on_key(s: &mut State, id: &str, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let Some(c) = chat_ref(s, id) else {
         return false;
     };
+    // An IME composition owns its keys (Enter commits it, not a send).
+    if c.composer.preedit().is_some() {
+        return false;
+    }
     let gate = c.open_approval();
     let cx = dispatch::KeyContext {
         running: c.running_run().is_some(),
@@ -325,7 +329,7 @@ fn on_key(s: &mut State, id: &str, ev: &KeyEvent, tx: &mut Tx) -> bool {
             actions::send(s, id, tx);
             return true;
         }
-        Some(KeyAction::SendFirstQueued) => return steer::send_first_queued(s, id),
+        Some(KeyAction::SendFirstQueued) => return steer::send_first_queued(s, id, tx),
         Some(KeyAction::EditLastQueued) => return steer::edit_last_queued(s, id),
         Some(KeyAction::Approve { always }) => {
             if let Some((run, gate, _)) = gate {
@@ -334,11 +338,6 @@ fn on_key(s: &mut State, id: &str, ev: &KeyEvent, tx: &mut Tx) -> bool {
             }
         }
         None => {}
-    }
-    // Esc leaves the edit of a queued message.
-    if ev.key == rune::Key::Escape && cx.editing {
-        steer::cancel_edit(s, id);
-        return true;
     }
     let Some(name) = MenuKeyName::of(ev) else {
         return false;
@@ -355,6 +354,8 @@ fn on_key(s: &mut State, id: &str, ev: &KeyEvent, tx: &mut Tx) -> bool {
             actions::pick_command(s, id, &command, tx);
             true
         }
+        // Esc the menu did not take leaves the edit of a queued message.
+        MenuKey::Unused if name == MenuKeyName::Escape => cx.editing && steer::escape_edit(s, id),
         MenuKey::Unused => name == MenuKeyName::Up && actions::recall_last(s, id),
     }
 }

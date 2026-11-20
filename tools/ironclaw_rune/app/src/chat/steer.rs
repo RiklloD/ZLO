@@ -34,6 +34,9 @@ pub(crate) struct Draft {
     files: Vec<StagedFile>,
     draft_text: String,
     draft_pills: Vec<(std::ops::Range<usize>, String)>,
+    /// The words are a queued item's (Send now): a failed send puts them
+    /// back in the queue rather than the composer.
+    from_queue: bool,
 }
 
 impl Draft {
@@ -44,6 +47,7 @@ impl Draft {
             text,
             files: Vec::new(),
             draft_pills: Vec::new(),
+            from_queue: true,
         }
     }
 }
@@ -87,6 +91,7 @@ fn take(s: &mut State, id: &str) -> Option<Draft> {
         files,
         draft_text: c.composer.text.clone(),
         draft_pills: inline_files::pills(&c.composer),
+        from_queue: false,
     };
     c.composer.clear();
     c.error = None;
@@ -126,7 +131,7 @@ fn deliver(
                 "This gateway has no chat channel configured.",
             );
         }
-        set_error(s, id, "This gateway has no chat channel configured.");
+        rescue(s, id, draft, "This gateway has no chat channel configured.".into());
         return;
     };
     let running = c.running_run();
@@ -155,6 +160,7 @@ fn deliver(
                 (Err(e), Some(sub)) => crate::voice::submission_refused(s, sub, &e.to_string()),
                 (_, None) => {}
             }
+            note_steer_id(s, &thread_id, pending, result.as_ref().ok());
             let landed = result
                 .as_ref()
                 .map(SubmitAck::landed)
@@ -162,6 +168,13 @@ fn deliver(
             apply_landed(s, &thread_id, pending, landed, draft, tx);
         },
     );
+}
+
+/// The ack's steer id keys the pending row to its stored copy.
+fn note_steer_id(s: &mut State, id: &str, pending: u64, ack: Option<&SubmitAck>) {
+    if let (Some(c), Some(steer)) = (chat_for(s, id), ack.and_then(|a| a.steer_id.clone())) {
+        c.transcript.set_pending_steer_id(pending, Some(steer));
+    }
 }
 
 /// The gateway answered a send: settle its row by where it went.
@@ -174,6 +187,13 @@ fn apply_landed(
     tx: &mut Tx,
 ) {
     let Some(c) = chat_for(s, thread_id) else {
+        // The chat closed meanwhile: a send that failed still keeps its
+        // words, in the thread's saved draft.
+        match landed {
+            Ok(Landed::Refused) => rescue(s, thread_id, draft, "The running turn didn't take this message.".into()),
+            Err(e) => rescue(s, thread_id, draft, e),
+            Ok(_) => {}
+        }
         return;
     };
     let failure = match landed {
@@ -207,14 +227,10 @@ fn apply_landed(
     let Some((error, reload)) = failure else {
         return;
     };
-    let Some(c) = chat_for(s, thread_id) else {
-        return;
-    };
-    c.transcript.drop_pending_user(pending);
-    let error =
-        actions::restore_failed(c, &draft.draft_text, &draft.draft_pills, draft.files, error);
-    actions::record_draft(s, thread_id);
-    set_error(s, thread_id, error);
+    if let Some(c) = chat_for(s, thread_id) {
+        c.transcript.drop_pending_user(pending);
+    }
+    rescue(s, thread_id, draft, error);
     super::refresh_rows(s, thread_id, tx);
     if reload {
         super::load_timeline(s, thread_id);
@@ -269,8 +285,9 @@ fn queue(s: &mut State, id: &str, voice: Option<crate::voice::Submission>) {
     if !super::orchestration::queue_follow_up(s, id, draft.text.clone()) {
         // Another queue change is in flight: the words stay in the composer.
         if let Some(c) = chat_for(s, id) {
-            inline_files::set_content(&mut c.composer, &draft.draft_text, &draft.draft_pills);
+            actions::put_back(c, &draft.draft_text, &draft.draft_pills, Vec::new());
         }
+        actions::record_draft(s, id);
         if let Some(sub) = voice {
             crate::voice::submission_refused(s, sub, "The queue is busy; try again.");
         }
@@ -286,7 +303,7 @@ fn queue(s: &mut State, id: &str, voice: Option<crate::voice::Submission>) {
 
 /// A queued message out of the queue and into the conversation: a steer of
 /// the running turn, or a new turn when none runs (t3code's Send now).
-pub(crate) fn send_now(s: &mut State, id: &str, item_id: &str) {
+pub(crate) fn send_now(s: &mut State, id: &str, item_id: &str, tx: &mut Tx) {
     let Some(c) = chat_ref(s, id) else { return };
     let o = &c.orchestration;
     if o.busy {
@@ -296,57 +313,199 @@ pub(crate) fn send_now(s: &mut State, id: &str, item_id: &str) {
         return;
     };
     let text = item.text.clone();
-    take_from_queue(s, id, item_id.to_string(), Draft::words(text));
+    take_from_queue(s, id, item_id.to_string(), Draft::words(text), tx);
 }
 
-/// Remove `item_id` from the queue, then send `draft`. Removing first means
-/// the queue can never run it too; a send that fails after puts the words
-/// back in the composer.
-fn take_from_queue(s: &mut State, id: &str, item_id: String, draft: Draft) {
+/// Remove `item_id` from the queue, then send `draft`, in one job, so the
+/// pair finishes even if the chat closes meanwhile. Removing first means
+/// the queue can never run it too. No words are lost on any failure: a
+/// failed remove leaves a queued item queued (and puts edited words back in
+/// the composer); a send that fails after the remove puts a queued item's
+/// words back in the queue, and anything else back in the composer.
+fn take_from_queue(s: &mut State, id: &str, item_id: String, draft: Draft, tx: &mut Tx) {
     let Some(c) = chat_for(s, id) else { return };
+    let Some(channel) = c.channel.clone() else {
+        rescue(s, id, draft, "This gateway has no chat channel configured.".into());
+        return;
+    };
     let o = &mut c.orchestration;
     o.busy = true;
     let instance = super::orchestration::instance_of_state(o);
+    let running = c.running_run();
+    let names: Vec<String> = draft.files.iter().map(|f| f.filename.clone()).collect();
+    let pending = c.transcript.push_pending_user(&draft.text, &names);
+    if running.is_some() {
+        c.transcript.set_pending_steer(pending, Some(true));
+    }
+    super::refresh_rows(s, id, tx);
     let thread_id = id.to_string();
     let asked = thread_id.clone();
-    let action = QueueAction::Remove(item_id);
+    let body = draft.text.clone();
+    let wire: Vec<_> = draft.files.iter().map(StagedFile::to_wire).collect();
+    let roots = actions::mention_roots(s, id, &draft.text);
+    let requeue = draft.from_queue && draft.files.is_empty();
     jobs::run(
         s,
         "orchestration",
-        move |c| async move { c.mutate_queue(&thread_id, &action).await },
-        move |s, result, tx| {
-            if !super::orchestration::is_current(s, &asked, instance) {
-                return;
-            }
-            let Some(c) = chat_for(s, &asked) else { return };
-            c.orchestration.busy = false;
-            match result {
-                Ok(queue) => {
-                    c.orchestration.queue = queue;
-                    deliver(s, &asked, draft, None, tx);
+        move |c| async move {
+            let queue = match c.mutate_queue(&thread_id, &QueueAction::Remove(item_id)).await {
+                Ok(queue) => queue,
+                Err(e) => return Ok(Taken::NotRemoved(e.to_string())),
+            };
+            match c.send_message_with_roots(&channel, &thread_id, &body, wire, roots).await {
+                Ok(ack) => Ok(Taken::Sent(queue, ack)),
+                Err(e) if requeue => {
+                    let back = c.mutate_queue(&thread_id, &QueueAction::Add(body)).await;
+                    Ok(Taken::Requeued(e.to_string(), back.map_err(|e| e.to_string())))
                 }
-                Err(e) => {
-                    // The words are still queued; nothing to put back.
-                    let _ = draft;
-                    crate::chat::report_error(
-                        s,
-                        &asked,
-                        format!("Could not send the queued message: {e}"),
-                    );
-                }
+                Err(e) => Ok(Taken::SendFailed(e.to_string())),
             }
-            super::orchestration::ensure_poll(s, &asked);
+        },
+        move |s, result: Result<Taken, zlo_client::ClientError>, tx| {
+            let taken = result.unwrap_or_else(|e| Taken::NotRemoved(e.to_string()));
+            settle_taken(s, &asked, instance, pending, taken, draft, tx);
         },
     );
 }
 
+/// A remove-then-send finished: settle the row, and keep the words
+/// wherever the outcome leaves them unsent.
+fn settle_taken(
+    s: &mut State,
+    asked: &str,
+    instance: jobs::Instance,
+    pending: u64,
+    taken: Taken,
+    draft: Draft,
+    tx: &mut Tx,
+) {
+    let asked = asked.to_string();
+    let current = super::orchestration::is_current(s, &asked, instance);
+    if current && let Some(c) = chat_for(s, &asked) {
+        c.orchestration.busy = false;
+    }
+    match taken {
+            Taken::Sent(queue, ack) => {
+                if current && let Some(c) = chat_for(s, &asked) {
+                    c.orchestration.queue = queue;
+                }
+                note_steer_id(s, &asked, pending, Some(&ack));
+                apply_landed(s, &asked, pending, Ok(ack.landed()), draft, tx);
+            }
+            Taken::NotRemoved(e) => {
+                drop_pending(s, &asked, pending, tx);
+                let why = format!("Could not send the queued message: {e}");
+                if draft.from_queue {
+                    // Still queued: nothing left the queue.
+                    crate::chat::report_error(s, &asked, why);
+                } else {
+                    rescue(s, &asked, draft, why);
+                }
+            }
+            Taken::Requeued(e, Ok(queue)) => {
+                drop_pending(s, &asked, pending, tx);
+                if current && let Some(c) = chat_for(s, &asked) {
+                    c.orchestration.queue = queue;
+                }
+                crate::chat::report_error(
+                    s,
+                    &asked,
+                    format!("Could not send the queued message: {e}. It is back at the end of the queue."),
+                );
+            }
+            Taken::Requeued(e, Err(_)) | Taken::SendFailed(e) => {
+                drop_pending(s, &asked, pending, tx);
+                rescue(s, &asked, draft, e);
+            }
+        }
+    super::orchestration::ensure_poll(s, &asked);
+}
+
+/// How a remove-then-send went.
+enum Taken {
+    NotRemoved(String),
+    Sent(zlo_client::orchestration::QueueDoc, SubmitAck),
+    /// The send failed; the words went back in the queue (or failed to).
+    Requeued(String, Result<zlo_client::orchestration::QueueDoc, String>),
+    SendFailed(String),
+}
+
+fn drop_pending(s: &mut State, id: &str, pending: u64, tx: &mut Tx) {
+    if let Some(c) = chat_for(s, id) {
+        c.transcript.drop_pending_user(pending);
+        super::refresh_rows(s, id, tx);
+    }
+}
+
+/// Unsent words go back where the person finds them, never lost: into the
+/// open chat's composer (below anything typed since, see
+/// [`actions::put_back`]), or, with the chat closed, into the thread's
+/// saved draft. `error` is shown with them.
+pub(crate) fn rescue(s: &mut State, id: &str, draft: Draft, error: String) {
+    rescue_words(s, id, &draft.draft_text, &draft.draft_pills, draft.files, error);
+}
+
+/// [`rescue`] for words that are not a [`Draft`].
+pub(crate) fn rescue_words(
+    s: &mut State,
+    id: &str,
+    text: &str,
+    pills: &[(std::ops::Range<usize>, String)],
+    files: Vec<StagedFile>,
+    error: String,
+) {
+    if let Some(c) = chat_for(s, id) {
+        let error = actions::restore_failed(c, text, pills, files, error);
+        actions::record_draft(s, id);
+        set_error(s, id, error);
+        return;
+    }
+    if text.trim().is_empty() && files.is_empty() {
+        return;
+    }
+    let saved = crate::drafts::restore(s, id);
+    let (old_text, old_pills, mut old_files) = match saved {
+        Some(d) => (
+            d.text,
+            d.tokens.into_iter().map(|t| (t.range, t.id)).collect::<Vec<_>>(),
+            d.files,
+        ),
+        None => (String::new(), Vec::new(), Vec::new()),
+    };
+    let (joined, joined_pills) = actions::join_drafts(&old_text, &old_pills, text, pills);
+    old_files.extend(files);
+    let tokens = joined_pills
+        .into_iter()
+        .filter_map(|(range, id)| {
+            let shown = joined.get(range.clone())?.to_string();
+            Some(crate::drafts::DraftToken {
+                range,
+                id,
+                label: shown.clone(),
+                text: shown,
+            })
+        })
+        .collect();
+    crate::drafts::record(
+        s,
+        id,
+        crate::drafts::Draft {
+            text: joined,
+            tokens,
+            files: old_files,
+            profile: None,
+        },
+    );
+    tracing::debug!(%error, "unsent words kept in the closed chat's draft");
+}
+
 /// ⇧⌘↵: send the first queued message now. `false` when there is none.
-pub(crate) fn send_first_queued(s: &mut State, id: &str) -> bool {
+pub(crate) fn send_first_queued(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     let first =
         chat_ref(s, id).and_then(|c| c.orchestration.queue.items.first().map(|i| i.id.clone()));
     match first {
         Some(item) => {
-            send_now(s, id, &item);
+            send_now(s, id, &item, tx);
             true
         }
         None => false,
@@ -355,14 +514,28 @@ pub(crate) fn send_first_queued(s: &mut State, id: &str) -> bool {
 
 /// Load a queued message into the composer to edit it. What the composer
 /// held waits aside and comes back when the edit is saved or cancelled.
+/// Moving to another queued message while this one has unsaved changes is
+/// refused, so the changes are never dropped.
 pub(crate) fn edit_queued(s: &mut State, id: &str, item_id: &str) {
     let Some(c) = chat_for(s, id) else { return };
     let Some(item) = c.orchestration.queue.items.iter().find(|i| i.id == item_id) else {
         return;
     };
     let text = item.text.clone();
+    if let Some(editing) = &c.orchestration.editing {
+        if editing.item_id == item_id {
+            return;
+        }
+        if editing.changed(&c.composer.text) {
+            return set_error(
+                s,
+                id,
+                "Save or cancel the queued message you're editing first.",
+            );
+        }
+    }
     let stash = match c.orchestration.editing.take() {
-        // Moving to another item keeps the first stash, not the edit.
+        // Moving to another item keeps the first stash.
         Some(editing) => editing.stash,
         None => Stash {
             text: c.composer.text.clone(),
@@ -372,6 +545,7 @@ pub(crate) fn edit_queued(s: &mut State, id: &str, item_id: &str) {
     };
     c.orchestration.editing = Some(Editing {
         item_id: item_id.to_string(),
+        original: text.clone(),
         stash,
     });
     c.error = None;
@@ -393,16 +567,38 @@ pub(crate) fn edit_last_queued(s: &mut State, id: &str) -> bool {
     }
 }
 
-/// Leave the edit; the composer gets back what it held before.
+/// Cancel: leave the edit, dropping its unsaved changes (the queued message
+/// keeps its words); the composer gets back what it held before.
 pub(crate) fn cancel_edit(s: &mut State, id: &str) {
     let Some(c) = chat_for(s, id) else { return };
     let Some(editing) = c.orchestration.editing.take() else {
         return;
     };
     let Stash { text, pills, files } = editing.stash;
-    inline_files::set_content(&mut c.composer, &text, &pills);
-    c.staged = files;
+    c.composer.clear();
+    c.staged.clear();
+    actions::put_back(c, &text, &pills, files);
     super::composer::on_change(s, id);
+}
+
+/// Esc while editing: leaves an unchanged edit; with changes it keeps them
+/// and says how to drop them (only Cancel discards words). `true` when
+/// handled.
+pub(crate) fn escape_edit(s: &mut State, id: &str) -> bool {
+    let Some(c) = chat_ref(s, id) else { return false };
+    let Some(editing) = &c.orchestration.editing else {
+        return false;
+    };
+    if editing.changed(&c.composer.text) {
+        set_error(
+            s,
+            id,
+            "Press Enter to save the queued message, or Cancel beside it to drop your changes.",
+        );
+    } else {
+        cancel_edit(s, id);
+    }
+    true
 }
 
 /// Submit while editing a queued message: save it (Enter), or, with the
@@ -423,21 +619,21 @@ pub(crate) fn submit_edit(s: &mut State, id: &str, alternate: bool, tx: &mut Tx)
     }
     let still_queued = c.orchestration.queue.items.iter().any(|i| i.id == item_id);
     if !still_queued {
+        // The edit stays in the composer; what it held before comes back
+        // below it.
+        restore_stash(s, id);
         set_error(
             s,
             id,
-            "That message already left the queue; your text is still here.",
+            "That message already left the queue; your edited text is still here.",
         );
-        if let Some(c) = chat_for(s, id) {
-            c.orchestration.editing = None;
-        }
         return;
     }
     if alternate && mode == Mode::Steer {
         let draft = take(s, id);
         restore_stash(s, id);
         if let Some(draft) = draft {
-            take_from_queue(s, id, item_id, draft);
+            take_from_queue(s, id, item_id, draft, tx);
         }
         super::refresh_rows(s, id, tx);
         return;
@@ -445,29 +641,108 @@ pub(crate) fn submit_edit(s: &mut State, id: &str, alternate: bool, tx: &mut Tx)
     if !files.is_empty() {
         return set_error(s, id, "Files can't be added to a queued message yet.");
     }
-    let Some(c) = chat_for(s, id) else { return };
-    c.composer.clear();
+    let Some(draft) = take(s, id) else { return };
     restore_stash(s, id);
-    super::orchestration::queue_action(s, id, QueueAction::Edit { item_id, text });
+    save_edit(s, id, item_id, draft);
 }
 
-/// Put the stashed composer back after a finished edit.
+/// Store an edited queued message. A failed save puts the edited words
+/// back (the queued message keeps its old ones).
+fn save_edit(s: &mut State, id: &str, item_id: String, draft: Draft) {
+    let Some(c) = chat_for(s, id) else { return };
+    let o = &mut c.orchestration;
+    o.busy = true;
+    o.note = None;
+    let instance = super::orchestration::instance_of_state(o);
+    let thread_id = id.to_string();
+    let asked = thread_id.clone();
+    let action = QueueAction::Edit {
+        item_id,
+        text: draft.text.clone(),
+    };
+    jobs::run(
+        s,
+        "orchestration",
+        move |c| async move { c.mutate_queue(&thread_id, &action).await },
+        move |s, result, _| {
+            settle_edit(s, &asked, instance, result.map_err(|e| e.to_string()), draft)
+        },
+    );
+}
+
+/// An edit's save finished. A failed one puts the edited words back.
+fn settle_edit(
+    s: &mut State,
+    asked: &str,
+    instance: jobs::Instance,
+    result: Result<zlo_client::orchestration::QueueDoc, String>,
+    draft: Draft,
+) {
+    let current = super::orchestration::is_current(s, asked, instance);
+    if current && let Some(c) = chat_for(s, asked) {
+        c.orchestration.busy = false;
+    }
+    match result {
+        Ok(queue) => {
+            if current && let Some(c) = chat_for(s, asked) {
+                c.orchestration.queue = queue;
+            }
+        }
+        Err(e) => rescue(
+            s,
+            asked,
+            draft,
+            format!("Could not save the queued message: {e}"),
+        ),
+    }
+    super::orchestration::ensure_poll(s, asked);
+}
+
+/// Put the stashed composer back after a finished edit, below anything in
+/// the composer now.
 fn restore_stash(s: &mut State, id: &str) {
     let Some(c) = chat_for(s, id) else { return };
     if let Some(editing) = c.orchestration.editing.take() {
         let Stash { text, pills, files } = editing.stash;
-        if c.composer.text.trim().is_empty() && c.staged.is_empty() {
-            inline_files::set_content(&mut c.composer, &text, &pills);
-            c.staged = files;
-        }
+        actions::put_back(c, &text, &pills, files);
     }
     actions::record_draft(s, id);
+}
+
+/// What the thread's saved draft holds while a queued message is edited:
+/// the set-aside composer, with the edit below it when it has unsaved
+/// changes. Leaving the chat mid-edit (a thread switch) then keeps both.
+pub(crate) fn draft_while_editing(
+    c: &ChatState,
+) -> Option<(String, Vec<(std::ops::Range<usize>, String)>, Vec<StagedFile>)> {
+    let editing = c.orchestration.editing.as_ref()?;
+    let stash = &editing.stash;
+    let mut files = stash.files.clone();
+    if !editing.changed(&c.composer.text) {
+        return Some((stash.text.clone(), stash.pills.clone(), files));
+    }
+    let (text, pills) = actions::join_drafts(
+        &stash.text,
+        &stash.pills,
+        &c.composer.text,
+        &inline_files::pills(&c.composer),
+    );
+    files.extend(c.staged.iter().cloned());
+    Some((text, pills, files))
 }
 
 /// A queued message in the composer, and what the composer held before.
 pub(crate) struct Editing {
     pub item_id: String,
+    /// The queued words as loaded, to tell unsaved changes.
+    original: String,
     stash: Stash,
+}
+
+impl Editing {
+    fn changed(&self, now: &str) -> bool {
+        now.trim() != self.original.trim()
+    }
 }
 
 #[derive(Default)]
@@ -688,11 +963,11 @@ mod tests {
     fn send_now_and_the_shortcut_take_the_first_queued_message() {
         let mut s = test_state();
         running(&mut s);
-        assert!(!send_first_queued(&mut s, ID), "nothing queued");
+        assert!(!send_first_queued(&mut s, ID, &mut Tx::default()), "nothing queued");
         if let Some(c) = chat_for(&mut s, ID) {
             c.orchestration.queue = queue_of(&["first", "second"]);
         }
-        assert!(send_first_queued(&mut s, ID));
+        assert!(send_first_queued(&mut s, ID, &mut Tx::default()));
         assert!(chat(&s).orchestration.busy);
         assert_eq!(
             chat(&s).composer.text,

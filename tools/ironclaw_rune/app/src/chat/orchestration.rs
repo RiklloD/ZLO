@@ -372,19 +372,25 @@ pub fn queue_follow_up(s: &mut State, id: &str, text: String) -> bool {
         "orchestration",
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
         move |s, result, _| {
+            // A refused add keeps its words: back in the composer (below
+            // anything typed since), or the saved draft of a closed chat.
+            if let Err(e) = &result {
+                crate::chat::steer::rescue_words(
+                    s,
+                    &asked,
+                    &text,
+                    &[],
+                    Vec::new(),
+                    format!("Could not queue the message: {e}"),
+                );
+            }
             // A closed (or closed and reopened) chat's reply is dropped.
             let Some(o) = slot_of(s, &asked, instance) else {
                 return;
             };
             o.busy = false;
-            match result {
-                Ok(queue) => o.queue = queue,
-                Err(e) => {
-                    if crate::chat::composer_text(s, &asked).trim().is_empty() {
-                        crate::chat::set_composer_text(s, &asked, text);
-                    }
-                    crate::chat::report_error(s, &asked, e.to_string());
-                }
+            if let Ok(queue) = result {
+                o.queue = queue;
             }
             ensure_poll(s, &asked);
         },

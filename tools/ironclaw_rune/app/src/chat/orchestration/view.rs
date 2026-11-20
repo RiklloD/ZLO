@@ -13,7 +13,7 @@ use super::{
 use crate::chat::ChatState;
 use crate::chat::dispatch;
 use crate::design::kit::compact::{
-    ICON_XS, SM, XS, ghost_button, ghost_icon, ico, spinner, txt, txt_medium, variant_button,
+    ICON_XS, SM, XS, ghost_button, ghost_icon, ghost_icon_tx, ico, spinner, txt, txt_medium, variant_button,
 };
 use crate::design::{self, Palette};
 use crate::icons;
@@ -179,12 +179,12 @@ fn queued_row(
         let (c1, c2, c3) = (thread.to_string(), thread.to_string(), thread.to_string());
         if !busy {
             hover = hover
-                .child(ghost_icon(
+                .child(ghost_icon_tx(
                     k,
                     format!("queued-send-{}", item.id),
                     &icons::ARROW_UP,
                     &send_tip,
-                    move |s| crate::chat::steer::send_now(s, &c1, &send_id),
+                    move |s, tx| crate::chat::steer::send_now(s, &c1, &send_id, tx),
                 ))
                 .child(ghost_icon(
                     k,
