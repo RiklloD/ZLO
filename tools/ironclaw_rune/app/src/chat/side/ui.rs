@@ -123,6 +123,7 @@ pub fn virtual_scroll(
                 .key("rows")
                 .w_full()
                 .growth(GrowthSpec::default())
+                .whole_rows()
                 .virtual_rows(
                     count,
                     estimate,
