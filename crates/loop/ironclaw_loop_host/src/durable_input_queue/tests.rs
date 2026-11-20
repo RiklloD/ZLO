@@ -4,7 +4,7 @@ use ironclaw_loop_contracts::LoopInput;
 use ironclaw_threads::ThreadScope;
 use ironclaw_turns::TurnId;
 
-use crate::{InMemoryHostInputQueue, RunQueueEnding};
+use crate::{InMemoryHostInputQueue, RunQueueEnding, SteerWithdrawal};
 use ironclaw_host_api::{
     ids::{AgentId, ProjectId, TenantId, ThreadId},
     mount::{MountGrant, MountPermissions, MountView},
@@ -536,40 +536,34 @@ async fn in_memory_reject_unconsumed_flips_stranded_rows_and_stops_redelivery() 
     conformance_reject_unconsumed(queue, thread_service).await;
 }
 
-/// Redelivery handler double: records each batch it is handed and settles
-/// nothing on its first call (a transient failure), everything afterwards.
+/// Dispatcher double: counts how often each thread was told about a record.
 #[derive(Default)]
-struct RecordingRedelivery {
-    batches: std::sync::Mutex<Vec<(TurnRunId, Vec<crate::StrandedSteer>)>>,
+struct RecordingDispatch {
+    calls: std::sync::Mutex<Vec<ThreadId>>,
 }
 
 #[async_trait::async_trait]
-impl crate::HostStrandedSteerRedelivery for RecordingRedelivery {
-    async fn redeliver(
-        &self,
-        ended_run_id: TurnRunId,
-        steers: Vec<crate::StrandedSteer>,
-    ) -> Vec<ThreadMessageId> {
-        let mut batches = self.batches.lock().expect("redelivery lock");
-        let first = batches.is_empty();
-        batches.push((ended_run_id, steers.clone()));
-        if first {
-            Vec::new()
-        } else {
-            steers.iter().map(|steer| steer.message_id).collect()
-        }
+impl crate::SteerHandoffDispatch for RecordingDispatch {
+    async fn handoff_recorded(&self, _thread_scope: &ThreadScope, thread_id: &ThreadId) {
+        self.calls
+            .lock()
+            .expect("dispatch lock")
+            .push(thread_id.clone());
     }
 }
 
-/// A run that ends by itself hands the user steers it never read to the
-/// redelivery handler, oldest first, instead of asking for a resend. A
-/// failed handoff is retried by the next reconciliation; an input with no
-/// recorded turn scope still settles `RejectedBusy`. A cancelled run never
-/// redelivers: its stranded steers settle as not delivered.
-async fn conformance_ended_run_redelivers_unread_steers<Q: ConformanceQueue>(
+/// Terminal settlement with a handoff store: every user steer the run never
+/// READ — still queued, or drained by the loop but never carried by a model
+/// call — is recorded as one durable handoff in queue order, before the
+/// queue closes; a background-result input still flips `RejectedBusy`; a
+/// steer the model read is left alone. A repeated settlement merges, never
+/// duplicates. A Stop that lands after the end marks the handoff stopped.
+/// (Review P1-5: on 7eb371917 an acked steer was excluded from settlement
+/// even when no model call ever carried it.)
+async fn conformance_settlement_records_unread_steers_as_a_handoff<Q: ConformanceQueue>(
     queue: Q,
-    stopped_queue: Q,
-    redelivery: Arc<RecordingRedelivery>,
+    store: Arc<dyn crate::SteerHandoffStore>,
+    dispatch: Arc<RecordingDispatch>,
     thread_service: Arc<InMemorySessionThreadService>,
 ) {
     let scope = ghost_scope();
@@ -591,7 +585,13 @@ async fn conformance_ended_run_redelivers_unread_steers<Q: ConformanceQueue>(
     );
     let run_id = TurnRunId::new();
     let mut ids = Vec::new();
-    for text in ["read", "unread one", "unread two", "unscoped"] {
+    for text in [
+        "read",
+        "drained not read",
+        "unread",
+        "legacy unscoped",
+        "background",
+    ] {
         let accepted = thread_service
             .accept_inbound_message(AcceptInboundMessageRequest {
                 scope: scope.clone(),
@@ -633,12 +633,31 @@ async fn conformance_ended_run_redelivers_unread_steers<Q: ConformanceQueue>(
     queue
         .enqueue_queued_message(request(ids[3]))
         .await
-        .expect("enqueue unscoped");
-    let batch = queue.next_after(run_id, origin(), 1).await.expect("poll");
+        .expect("legacy enqueue");
     queue
-        .ack_consumed(run_id, vec![batch.inputs[0].ack_token.clone()])
+        .enqueue_queued_message(EnqueueQueuedMessageRequest {
+            ack_effect: Some(background_ack_effect()),
+            ..request(ids[4])
+        })
         .await
-        .expect("ack first");
+        .expect("background enqueue");
+
+    // The loop drains the first two; a model call carries only the first.
+    let batch = queue.next_after(run_id, origin(), 2).await.expect("poll");
+    assert_eq!(batch.inputs.len(), 2);
+    let tokens: Vec<_> = batch
+        .inputs
+        .iter()
+        .map(|input| input.ack_token.clone())
+        .collect();
+    queue
+        .ack_consumed(run_id, tokens.clone())
+        .await
+        .expect("ack");
+    queue
+        .confirm_read(run_id, vec![tokens[0].clone()])
+        .await
+        .expect("confirm read");
 
     let rejected = queue
         .settle_unconsumed(run_id, RunQueueEnding::Ended)
@@ -646,37 +665,36 @@ async fn conformance_ended_run_redelivers_unread_steers<Q: ConformanceQueue>(
         .expect("settle");
     assert_eq!(
         rejected,
-        vec![ids[3]],
-        "only the unscoped input is rejected"
+        vec![ids[4]],
+        "only the background input flips here"
     );
-    let retried = queue
+    let again = queue
         .settle_unconsumed(run_id, RunQueueEnding::Ended)
         .await
-        .expect("retry");
-    assert!(retried.is_empty());
-    let settled_again = queue
-        .settle_unconsumed(run_id, RunQueueEnding::Ended)
-        .await
-        .expect("settled");
-    assert!(settled_again.is_empty());
-    {
-        let batches = redelivery.batches.lock().expect("redelivery lock");
-        assert_eq!(
-            batches.len(),
-            2,
-            "the failed handoff is retried once, then nothing is left"
-        );
-        for (ended, steers) in batches.iter() {
-            assert_eq!(*ended, run_id);
-            let order: Vec<_> = steers.iter().map(|steer| steer.message_id).collect();
-            assert_eq!(order, vec![ids[1], ids[2]], "oldest first");
-            assert!(steers.iter().all(|steer| steer.turn_scope == turn_scope));
-            assert_eq!(
-                steers[0].message_ref.as_str(),
-                format!("msg:{}", ids[1]).as_str()
-            );
-        }
-    }
+        .expect("idempotent settle");
+    assert!(again.is_empty());
+
+    let handoffs = store.for_thread(&thread.thread_id).await.expect("handoffs");
+    assert_eq!(handoffs.len(), 1, "one handoff per run, merged on replay");
+    let handoff = &handoffs[0];
+    assert_eq!(handoff.ended_run_id, run_id);
+    assert!(!handoff.stopped);
+    assert_eq!(handoff.turn_scope.as_ref(), Some(&turn_scope));
+    let steers: Vec<_> = handoff
+        .steers
+        .iter()
+        .map(|steer| (steer.message_id, steer.kind))
+        .collect();
+    assert_eq!(
+        steers,
+        vec![
+            (ids[1], crate::HandoffSteerKind::ReadUnconfirmed),
+            (ids[2], crate::HandoffSteerKind::Unread),
+            (ids[3], crate::HandoffSteerKind::Unread),
+        ],
+        "oldest first; the read steer and the background input are not handed off"
+    );
+    assert!(!dispatch.calls.lock().expect("dispatch lock").is_empty());
     assert!(
         queue
             .next_after(run_id, origin(), 8)
@@ -686,82 +704,215 @@ async fn conformance_ended_run_redelivers_unread_steers<Q: ConformanceQueue>(
             .is_empty()
     );
 
-    // A cancelled run: the same kind of steer is not redelivered.
-    let stopped_run = TurnRunId::new();
-    let accepted = thread_service
-        .accept_inbound_message(AcceptInboundMessageRequest {
-            scope: scope.clone(),
-            thread_id: thread.thread_id.clone(),
-            actor_id: "actor-iq".into(),
-            source_binding_id: None,
-            reply_target_binding_id: None,
-            external_event_id: None,
-            content: MessageContent::text("sent before stop"),
-        })
+    // A Stop that lands after the end holds the unread steers (review P1-4).
+    queue
+        .settle_unconsumed(run_id, RunQueueEnding::Stopped)
         .await
-        .unwrap();
-    thread_service
-        .mark_message_queued(
-            &scope,
-            &thread.thread_id,
-            accepted.message_id,
-            stopped_run.to_string(),
-        )
-        .await
-        .unwrap();
-    stopped_queue
-        .enqueue_user_steer(
-            EnqueueQueuedMessageRequest {
-                run_id: stopped_run,
-                ..request(accepted.message_id)
-            },
-            turn_scope.clone(),
-        )
-        .await
-        .expect("enqueue before stop");
-    let rejected = stopped_queue
-        .settle_unconsumed(stopped_run, RunQueueEnding::Stopped)
-        .await
-        .expect("settle stopped");
-    assert_eq!(rejected, vec![accepted.message_id]);
-    assert_eq!(
-        redelivery.batches.lock().expect("redelivery lock").len(),
-        2,
-        "a stopped run hands nothing to redelivery"
+        .expect("late stop");
+    let handoffs = store.for_thread(&thread.thread_id).await.expect("handoffs");
+    assert!(
+        handoffs[0].stopped,
+        "a Stop after the end stops the handoff"
     );
 }
 
 #[tokio::test]
-async fn durable_ended_run_redelivers_unread_steers() {
+async fn durable_settlement_records_unread_steers_as_a_handoff() {
     let thread_service = Arc::new(InMemorySessionThreadService::default());
-    let redelivery = Arc::new(RecordingRedelivery::default());
-    let queue = durable_queue(Arc::clone(&thread_service));
+    let store: Arc<dyn crate::SteerHandoffStore> =
+        Arc::new(crate::FilesystemSteerHandoffStore::new(
+            make_fs(Arc::new(InMemoryBackend::new())),
+            owner_scope(),
+        ));
+    let dispatch = Arc::new(RecordingDispatch::default());
+    let queue = durable_queue(Arc::clone(&thread_service)).with_steer_handoff(Arc::clone(&store));
     queue
-        .bind_steer_redelivery(Arc::clone(&redelivery) as Arc<_>)
+        .bind_steer_handoff_dispatch(Arc::clone(&dispatch) as Arc<_>)
         .expect("bind");
-    let stopped = durable_queue(Arc::clone(&thread_service));
-    stopped
-        .bind_steer_redelivery(Arc::clone(&redelivery) as Arc<_>)
-        .expect("bind");
-    conformance_ended_run_redelivers_unread_steers(queue, stopped, redelivery, thread_service)
-        .await;
+    conformance_settlement_records_unread_steers_as_a_handoff(
+        queue,
+        store,
+        dispatch,
+        thread_service,
+    )
+    .await;
 }
 
 #[tokio::test]
-async fn in_memory_ended_run_redelivers_unread_steers() {
+async fn in_memory_settlement_records_unread_steers_as_a_handoff() {
     let thread_service = Arc::new(InMemorySessionThreadService::default());
-    let redelivery = Arc::new(RecordingRedelivery::default());
-    let queue = in_memory_queue(Arc::clone(&thread_service));
+    let store: Arc<dyn crate::SteerHandoffStore> =
+        Arc::new(crate::InMemorySteerHandoffStore::new());
+    let dispatch = Arc::new(RecordingDispatch::default());
+    let queue = in_memory_queue(Arc::clone(&thread_service)).with_steer_handoff(Arc::clone(&store));
     queue
-        .bind_steer_redelivery(Arc::clone(&redelivery) as Arc<_>)
+        .bind_steer_handoff_dispatch(Arc::clone(&dispatch) as Arc<_>)
         .expect("bind");
-    let stopped = in_memory_queue(Arc::clone(&thread_service));
-    stopped
-        .bind_steer_redelivery(Arc::clone(&redelivery) as Arc<_>)
-        .expect("bind");
-    conformance_ended_run_redelivers_unread_steers(queue, stopped, redelivery, thread_service)
-        .await;
+    conformance_settlement_records_unread_steers_as_a_handoff(
+        queue,
+        store,
+        dispatch,
+        thread_service,
+    )
+    .await;
 }
+
+/// The handoff store on both backends: records merge, a Stop sticks, a
+/// thread's handoffs come back oldest first, settling the last message
+/// removes the handoff, and an open one is found by the sweep. The durable
+/// handoff lives apart from the run's queue document (review P1-3/P2-10:
+/// a reclaimed queue document — or an older build reclaiming it — cannot
+/// take the handoff with it).
+async fn conformance_handoff_store(store: Arc<dyn crate::SteerHandoffStore>) {
+    use crate::{HandoffSteer, HandoffSteerKind, SteerHandoff};
+    let thread_id = ThreadId::new("thread-handoff").unwrap();
+    let other_thread = ThreadId::new("thread-other").unwrap();
+    let steer = |kind| HandoffSteer {
+        message_id: ThreadMessageId::new(),
+        message_ref: LoopMessageRef::new(format!("msg:{}", ThreadMessageId::new())).unwrap(),
+        kind,
+    };
+    let handoff =
+        |run: TurnRunId, at: i64, thread: &ThreadId, steers: Vec<HandoffSteer>| SteerHandoff {
+            ended_run_id: run,
+            thread_scope: ghost_scope(),
+            thread_id: thread.clone(),
+            turn_scope: None,
+            stopped: false,
+            recorded_at_ms: at,
+            steers,
+        };
+    let (older, newer) = (TurnRunId::new(), TurnRunId::new());
+    let first = steer(HandoffSteerKind::Unread);
+    let second = steer(HandoffSteerKind::AfterEnd);
+    store
+        .record(handoff(
+            newer,
+            20,
+            &thread_id,
+            vec![steer(HandoffSteerKind::Unread)],
+        ))
+        .await
+        .unwrap();
+    store
+        .record(handoff(older, 10, &thread_id, vec![first.clone()]))
+        .await
+        .unwrap();
+    // A later record of the same run merges (append, no duplicate).
+    store
+        .record(handoff(
+            older,
+            99,
+            &thread_id,
+            vec![first.clone(), second.clone()],
+        ))
+        .await
+        .unwrap();
+    store
+        .record(handoff(
+            TurnRunId::new(),
+            5,
+            &other_thread,
+            vec![steer(HandoffSteerKind::Unread)],
+        ))
+        .await
+        .unwrap();
+    store.stop(older).await.unwrap();
+
+    let ours = store.for_thread(&thread_id).await.unwrap();
+    assert_eq!(ours.len(), 2);
+    assert_eq!(ours[0].ended_run_id, older, "oldest first");
+    assert!(ours[0].stopped);
+    assert_eq!(
+        ours[0]
+            .steers
+            .iter()
+            .map(|s| s.message_id)
+            .collect::<Vec<_>>(),
+        vec![first.message_id, second.message_id]
+    );
+    assert_eq!(store.pending().await.unwrap().len(), 3);
+
+    store.settle(older, &[first.message_id]).await.unwrap();
+    assert_eq!(
+        store.for_thread(&thread_id).await.unwrap()[0].steers.len(),
+        1
+    );
+    store.settle(older, &[second.message_id]).await.unwrap();
+    let ours = store.for_thread(&thread_id).await.unwrap();
+    assert_eq!(ours.len(), 1, "a handoff with nothing left is gone");
+    assert_eq!(ours[0].ended_run_id, newer);
+}
+
+#[tokio::test]
+async fn durable_handoff_store_conformance() {
+    conformance_handoff_store(Arc::new(crate::FilesystemSteerHandoffStore::new(
+        make_fs(Arc::new(InMemoryBackend::new())),
+        owner_scope(),
+    )))
+    .await;
+}
+
+#[tokio::test]
+async fn in_memory_handoff_store_conformance() {
+    conformance_handoff_store(Arc::new(crate::InMemorySteerHandoffStore::new())).await;
+}
+
+/// The admission fence's queue half: a steer still unread in an open queue
+/// can be taken back; once the queue closed (or reclaimed) it cannot.
+#[tokio::test]
+async fn withdraw_takes_back_only_an_unread_steer_from_an_open_queue() {
+    for durable in [true, false] {
+        let thread_service = Arc::new(InMemorySessionThreadService::default());
+        let queue: Box<dyn ConformanceQueueDyn> = if durable {
+            Box::new(durable_queue(Arc::clone(&thread_service)))
+        } else {
+            Box::new(in_memory_queue(Arc::clone(&thread_service)))
+        };
+        let run_id = TurnRunId::new();
+        let message_id = ThreadMessageId::new();
+        let thread_id = ThreadId::new("thread-withdraw").unwrap();
+        let request = EnqueueQueuedMessageRequest {
+            run_id,
+            turn_id: TurnId::new(),
+            scope: ghost_scope(),
+            thread_id: thread_id.clone(),
+            message_id,
+            input: steering(&format!("msg:{message_id}")),
+            ack_effect: None,
+        };
+        assert_eq!(
+            queue.withdraw_user_steer(run_id, message_id).await.unwrap(),
+            SteerWithdrawal::Unknown
+        );
+        queue.enqueue_queued_message(request.clone()).await.unwrap();
+        assert_eq!(
+            queue.withdraw_user_steer(run_id, message_id).await.unwrap(),
+            SteerWithdrawal::Withdrawn
+        );
+        assert!(
+            queue
+                .next_after(run_id, origin(), 8)
+                .await
+                .unwrap()
+                .inputs
+                .is_empty()
+        );
+        queue.enqueue_queued_message(request).await.unwrap();
+        queue
+            .settle_unconsumed(run_id, RunQueueEnding::Stopped)
+            .await
+            .unwrap();
+        let after = queue.withdraw_user_steer(run_id, message_id).await.unwrap();
+        assert!(
+            matches!(after, SteerWithdrawal::Settled | SteerWithdrawal::Unknown),
+            "a settled queue never hands a steer back: {after:?}"
+        );
+    }
+}
+
+trait ConformanceQueueDyn: HostInputQueue + HostInputEnqueuePort + HostInputQueueReconcile {}
+impl<Q: HostInputQueue + HostInputEnqueuePort + HostInputQueueReconcile> ConformanceQueueDyn for Q {}
 
 /// The origin cursor is the unique run-start position: the first enqueued
 /// input's cursor is sequence 1, strictly after origin (sequence 0), and a

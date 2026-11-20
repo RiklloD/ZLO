@@ -134,6 +134,9 @@ pub struct RebornChannelWorkflowServices {
     pub llm_config: Option<Arc<dyn LlmConfigService>>,
     pub approval_interaction: Option<Arc<dyn ApprovalInteractionService>>,
     pub auth_interaction: Option<Arc<dyn AuthInteractionService>>,
+    /// The thread's steer dispatcher (unread steers first; staging when a
+    /// run is ending). `None` only in compositions without the native loop.
+    pub steer_dispatch: Option<Arc<crate::NativeSteerDispatch>>,
     /// Durable product-owned Inbox. It is independent from optional channel
     /// egress so web-only runtimes can still publish settled trigger facts.
     pub notification_inbox: Option<Arc<dyn ironclaw_notifications::NotificationInboxStorePort>>,
@@ -417,6 +420,9 @@ impl ChannelWorkflowFactory for RebornChannelWorkflowFactory {
         }
         if let Some(approval) = &self.services.approval_interaction {
             inbound = inbound.with_approval_interactions(Arc::clone(approval));
+        }
+        if let Some(dispatch) = &self.services.steer_dispatch {
+            inbound = inbound.with_steer_dispatch(Arc::clone(dispatch));
         }
         let inbound = Arc::new(inbound);
         let mut workflow = DefaultProductSurface::new(

@@ -48,6 +48,7 @@ mod skill_activation;
 mod skill_bundle_context_source;
 mod skill_bundle_source;
 mod skill_context;
+mod steer_handoff;
 mod structured_output;
 mod structured_result;
 mod subagent_prompt_port;
@@ -115,8 +116,8 @@ pub use input_port::HostQueueLoopInputPort;
 pub use input_queue::{
     EnqueueQueuedMessageRequest, HostInputAckEffectHandler, HostInputBatch, HostInputEnqueuePort,
     HostInputEnvelope, HostInputQueue, HostInputQueueError, HostInputQueueReconcile,
-    HostStrandedSteerRedelivery, InMemoryHostInputQueue, MAX_QUEUED_INPUTS_PER_RUN,
-    RejectingInputEnqueue, RunQueueEnding, StrandedSteer,
+    InMemoryHostInputQueue, MAX_QUEUED_INPUTS_PER_RUN, RejectingInputEnqueue, RunQueueEnding,
+    SteerWithdrawal,
 };
 pub use ironclaw_loop_contracts::PromptContextTokenBudget;
 pub use model_gateway::{
@@ -153,6 +154,10 @@ pub use skill_bundle_source::{
 pub use skill_context::{
     HostSkillContextBuildError, HostSkillContextCandidate, HostSkillContextCandidatePayload,
     HostSkillContextSource, build_skill_run_snapshot,
+};
+pub use steer_handoff::{
+    FilesystemSteerHandoffStore, HandoffSteer, HandoffSteerKind, InMemorySteerHandoffStore,
+    SteerHandoff, SteerHandoffDispatch, SteerHandoffStore,
 };
 pub use structured_output::{
     STRUCTURED_OUTPUT_FINALIZATION_PROMPT, STRUCTURED_OUTPUT_GUIDANCE_PROMPT,

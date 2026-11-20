@@ -605,3 +605,35 @@ test("messagesFromTimeline: hides only the opaque attachment-only sentinel", () 
   ]);
   assert.equal(userVisibleText[0].content, "(files attached)");
 });
+
+test("messagesFromTimeline: steer marks show the steer state and the not-confirmed notice", () => {
+  const messages = messagesFromTimeline(
+    [
+      { message_id: "m-wait", kind: "user", content: "also do x", sequence: 1, status: "submitted" },
+      { message_id: "m-read", kind: "user", content: "and y", sequence: 2, status: "submitted" },
+      { message_id: "m-plain", kind: "user", content: "hello", sequence: 3, status: "submitted" },
+    ],
+    [],
+    null,
+    [
+      { message_id: "m-wait", steer: { id: "s1", state: "pending", waiting_to_be_read: true } },
+      {
+        message_id: "m-read",
+        steer: { id: "s2", state: "read", waiting_to_be_read: false },
+        notices: [
+          {
+            steer_id: "s3",
+            title: "Steer delivery not confirmed",
+            text: "z",
+            content: "The agent did not confirm reading your steer before Stop.",
+          },
+        ],
+      },
+    ],
+  );
+  assert.equal(messages[0].status, "steer_pending");
+  assert.equal(messages[1].status, "steered");
+  assert.equal(messages[2].role, "system");
+  assert.match(messages[2].content, /Steer delivery not confirmed/);
+  assert.equal(messages[3].status, "submitted");
+});

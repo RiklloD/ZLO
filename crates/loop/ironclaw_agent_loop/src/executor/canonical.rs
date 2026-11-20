@@ -137,6 +137,17 @@ impl DefaultExecutorPipeline {
                     )? {
                         ModelStep::Response(next, response) => {
                             state = *next;
+                            // The model call carried everything drained so
+                            // far: the agent has read it.
+                            if !state.unread_input_acks.is_empty() {
+                                let read = std::mem::take(&mut state.unread_input_acks);
+                                host.confirm_inputs_read(read).await.map_err(|error| {
+                                    debug!(%error, "confirming drained inputs read failed");
+                                    AgentLoopExecutorError::HostUnavailable {
+                                        stage: super::HostStage::Input,
+                                    }
+                                })?;
+                            }
                             response
                         }
                         ModelStep::RetryIteration(next) => {
@@ -269,51 +280,16 @@ impl DefaultExecutorPipeline {
                         ),
                     )?;
                     let stop_step = self.stop.apply_fresh_completion_nudge(host, stop_step);
-                    // Any graceful end reads pending steers first, like the
-                    // reply-only follow-up above (which already drained):
-                    // a steer sent before the run ends is answered by this
-                    // run, never stranded for terminal reconciliation.
-                    let stop_step = match stop_step {
-                        StopStep::Stop {
-                            state: stop_state,
-                            kind: crate::strategies::StopKind::GracefulStop,
-                        } if completed_kind != TurnEndKind::ReplyOnly => {
-                            match latency::stage!(
-                                "input_drain_before_stop",
-                                host.run_context(),
-                                stop_state.iteration,
-                                self.input.process(
-                                    ctx,
-                                    DrainInput {
-                                        state: stop_state,
-                                        mode: UserFacingInputDrainMode::FollowUp,
-                                    },
-                                ),
-                            )? {
-                                InputStep::Continue {
-                                    state: next,
-                                    drained: true,
-                                } => {
-                                    debug!(
-                                        iteration = next.iteration,
-                                        "agent loop continuing with steering read before a graceful stop"
-                                    );
-                                    let mut next = *next;
-                                    next.iteration = next.iteration.saturating_add(1);
-                                    state = next;
-                                    continue;
-                                }
-                                InputStep::Continue {
-                                    state: next,
-                                    drained: false,
-                                } => StopStep::Stop {
-                                    state: *next,
-                                    kind: crate::strategies::StopKind::GracefulStop,
-                                },
-                                InputStep::Exit(exit) => return Ok(exit),
-                            }
+                    let stop_step = match self
+                        .drain_before_stop(ctx, stop_step, completed_kind == TurnEndKind::ReplyOnly)
+                        .await?
+                    {
+                        BeforeStop::Stop(step) => step,
+                        BeforeStop::Continue(next) => {
+                            state = next;
+                            continue;
                         }
-                        other => other,
+                        BeforeStop::Exit(exit) => return Ok(exit),
                     };
                     match stop_step {
                         StopStep::Stop {
@@ -392,7 +368,7 @@ impl DefaultExecutorPipeline {
                         StopObservationStep::Exit(exit) => return Ok(exit),
                     };
 
-                    match latency::stage!(
+                    let stop_step = latency::stage!(
                         "stop_decide_resume",
                         host.run_context(),
                         next_state.iteration,
@@ -403,7 +379,16 @@ impl DefaultExecutorPipeline {
                                 summary,
                             },
                         ),
-                    )? {
+                    )?;
+                    let stop_step = match self.drain_before_stop(ctx, stop_step, false).await? {
+                        BeforeStop::Stop(step) => step,
+                        BeforeStop::Continue(next) => {
+                            state = next;
+                            continue;
+                        }
+                        BeforeStop::Exit(exit) => return Ok(exit),
+                    };
+                    match stop_step {
                         StopStep::Stop {
                             state: stopped_state,
                             kind,
@@ -459,10 +444,10 @@ impl DefaultExecutorPipeline {
                         StopObservationStep::Exit(exit) => return Ok(exit),
                     };
 
-                    // Follow-up drain is skipped: CompactionOnly != ReplyOnly,
-                    // so the condition is naturally false here.
+                    // The reply-only follow-up drain does not apply here;
+                    // `drain_before_stop` below reads steers before a stop.
 
-                    match latency::stage!(
+                    let stop_step = latency::stage!(
                         "stop_decide_skip_model",
                         host.run_context(),
                         next_state.iteration,
@@ -473,7 +458,16 @@ impl DefaultExecutorPipeline {
                                 summary,
                             },
                         ),
-                    )? {
+                    )?;
+                    let stop_step = match self.drain_before_stop(ctx, stop_step, false).await? {
+                        BeforeStop::Stop(step) => step,
+                        BeforeStop::Continue(next) => {
+                            state = next;
+                            continue;
+                        }
+                        BeforeStop::Exit(exit) => return Ok(exit),
+                    };
+                    match stop_step {
                         StopStep::Stop {
                             state: stopped_state,
                             kind,
@@ -506,4 +500,68 @@ impl DefaultExecutorPipeline {
             }
         }
     }
+    /// The ONE final-drain decision every graceful stop goes through (the
+    /// main path, a resumed gate, a compaction-only turn): pending steers are
+    /// read first and the run continues with them, so a steer sent before
+    /// the end is answered by this run. `already_drained`: the reply-only
+    /// follow-up drain just ran for this turn.
+    async fn drain_before_stop(
+        &self,
+        ctx: StageContext<'_>,
+        stop_step: StopStep,
+        already_drained: bool,
+    ) -> Result<BeforeStop, AgentLoopExecutorError> {
+        let StopStep::Stop {
+            state,
+            kind: crate::strategies::StopKind::GracefulStop,
+        } = stop_step
+        else {
+            return Ok(BeforeStop::Stop(stop_step));
+        };
+        if already_drained {
+            return Ok(BeforeStop::Stop(StopStep::Stop {
+                state,
+                kind: crate::strategies::StopKind::GracefulStop,
+            }));
+        }
+        match self
+            .input
+            .process(
+                ctx,
+                DrainInput {
+                    state,
+                    mode: UserFacingInputDrainMode::FollowUp,
+                },
+            )
+            .await?
+        {
+            InputStep::Continue {
+                state: next,
+                drained: true,
+            } => {
+                debug!(
+                    iteration = next.iteration,
+                    "agent loop continuing with steering read before a graceful stop"
+                );
+                let mut next = *next;
+                next.iteration = next.iteration.saturating_add(1);
+                Ok(BeforeStop::Continue(next))
+            }
+            InputStep::Continue {
+                state: next,
+                drained: false,
+            } => Ok(BeforeStop::Stop(StopStep::Stop {
+                state: *next,
+                kind: crate::strategies::StopKind::GracefulStop,
+            })),
+            InputStep::Exit(exit) => Ok(BeforeStop::Exit(exit)),
+        }
+    }
+}
+
+/// What [`DefaultExecutorPipeline::drain_before_stop`] decided.
+enum BeforeStop {
+    Stop(StopStep),
+    Continue(LoopExecutionState),
+    Exit(LoopExit),
 }

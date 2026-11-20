@@ -195,6 +195,28 @@ pub trait SessionThreadService: Send + Sync {
         ))
     }
 
+    /// Compare-and-set a user message's delivery: apply `change` only when
+    /// the row is exactly at `expected` (status and owning run), atomically
+    /// with the check. The ONE durable decision of where a steer goes —
+    /// every handoff path (the loop's drain, terminal redelivery, a steer
+    /// into a newer run, a not-delivered settlement) moves the row through
+    /// this guard, so two writers can never both deliver it. A row that had
+    /// already moved answers [`GuardedDelivery::Moved`] with its current
+    /// state and nothing is written.
+    async fn change_message_delivery(
+        &self,
+        scope: &ThreadScope,
+        thread_id: &ThreadId,
+        message_id: ThreadMessageId,
+        expected: &crate::MessageDelivery,
+        change: crate::MessageDeliveryChange,
+    ) -> Result<crate::GuardedDelivery, SessionThreadError> {
+        let _ = (scope, thread_id, message_id, expected, change);
+        Err(SessionThreadError::Backend(
+            "change_message_delivery is not implemented by this thread service".to_string(),
+        ))
+    }
+
     /// Read one message row by id, or `None` when the thread or message does
     /// not exist. A point read for race reconciliation (e.g. the busy-steering
     /// admission checking what a failed status transition actually raced
@@ -723,6 +745,19 @@ where
     ) -> Result<Option<ThreadMessageRecord>, SessionThreadError> {
         self.as_ref()
             .read_thread_message(scope, thread_id, message_id)
+            .await
+    }
+
+    async fn change_message_delivery(
+        &self,
+        scope: &ThreadScope,
+        thread_id: &ThreadId,
+        message_id: ThreadMessageId,
+        expected: &crate::MessageDelivery,
+        change: crate::MessageDeliveryChange,
+    ) -> Result<crate::GuardedDelivery, SessionThreadError> {
+        self.as_ref()
+            .change_message_delivery(scope, thread_id, message_id, expected, change)
             .await
     }
 

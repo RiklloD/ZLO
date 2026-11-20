@@ -98,6 +98,14 @@ pub struct LoopExecutionState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cumulative_model_usage: Option<ironclaw_loop_contracts::LoopModelUsage>,
 
+    /// Ack tokens of inputs this run drained that no model call has carried
+    /// yet. Confirmed read (`LoopInputPort::confirm_inputs_read`) once a
+    /// model response comes back; still here when the run ends means the
+    /// agent never saw them, and the host hands them off as unread.
+    /// Checkpointed with the drain so a resumed run confirms them too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unread_input_acks: Vec<ironclaw_loop_contracts::LoopInputAckToken>,
+
     /// Per-run budget accounting chokepoint: wall-clock start plus the
     /// model-call and capability-invocation counters. Flattened so the
     /// checkpoint wire shape is unchanged (same top-level field names,
@@ -374,6 +382,7 @@ impl LoopExecutionState {
             recent_failure_kinds: BoundedRing::new(),
             recent_output_token_counts: BoundedRing::new(),
             cumulative_model_usage: None,
+            unread_input_acks: Vec::new(),
             budget_ledger: BudgetLedger::fresh_for_run(),
             completion_nudges_used: 0,
             completion_nudge_pending: false,

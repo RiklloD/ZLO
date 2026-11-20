@@ -90,7 +90,8 @@ pub fn run_notification_inbox_id_for_test(
 mod run_outcome_observer;
 mod scoped_fs;
 mod steering;
-pub use steering::SteeringRedelivery;
+mod steering_dispatch;
+pub use steering_dispatch::{NativeSteerDispatch, SuccessorReplyTargets};
 mod suggestions;
 mod suggestions_observer;
 mod suggestions_store;

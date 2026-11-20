@@ -774,6 +774,7 @@ async fn build_harness_with_options(options: HarnessOptions) -> Harness {
             input_enqueue: Arc::new(ironclaw_loop_host::RejectingInputEnqueue),
             llm_config: Some(Arc::clone(&model_preferences) as Arc<dyn LlmConfigService>),
             approval_interaction: Some(approval_interaction),
+            steer_dispatch: None,
             auth_interaction: Some(auths.clone() as Arc<dyn AuthInteractionService>),
             notification_inbox: None,
             identity: ironclaw_assistant::ChannelWorkflowIdentity {

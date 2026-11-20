@@ -7,6 +7,7 @@ import {
   isBusyRejectedStatus,
   isSteerStatus,
   uiStatusFromRecordStatus,
+  uiStatusFromSendResponse,
 } from "./message-status";
 
 test("deferred-busy maps to steered (part of the running turn, never queued or an error)", () => {
@@ -62,4 +63,32 @@ test("live (send outcome) and reload (record status) agree for busy outcomes", (
   for (const [status, ui] of expected) {
     assert.equal(uiStatusFromRecordStatus(status), ui);
   }
+});
+
+test("a send response's typed delivery decides: queued shows Queued, steered shows Steer", () => {
+  assert.equal(
+    uiStatusFromSendResponse({ outcome: "deferred_busy", delivery: "queued" }),
+    UI_MESSAGE_STATUS.QUEUED,
+  );
+  assert.equal(
+    uiStatusFromSendResponse({ outcome: "deferred_busy", delivery: "steered" }),
+    UI_MESSAGE_STATUS.STEERED,
+  );
+  assert.equal(
+    uiStatusFromSendResponse({
+      outcome: "deferred_busy",
+      delivery: "steered",
+      waiting_for_turn: true,
+    }),
+    UI_MESSAGE_STATUS.STEER_PENDING,
+  );
+  // An older server without `delivery` falls back to the outcome.
+  assert.equal(
+    uiStatusFromSendResponse({ outcome: "deferred_busy" }),
+    UI_MESSAGE_STATUS.STEERED,
+  );
+  assert.equal(
+    uiStatusFromSendResponse({ outcome: "rejected_busy" }),
+    UI_MESSAGE_STATUS.ERROR,
+  );
 });

@@ -49,6 +49,7 @@ import {
 import {
   RECORD_STATUS,
   uiStatusFromRecordStatus,
+  uiStatusFromSendResponse,
 } from "./message-status";
 import { buildOptimisticMessage } from "./optimistic-message";
 import {
@@ -148,6 +149,7 @@ function runUseChatSource(context) {
     requestFailureIdForMessage,
     RECORD_STATUS,
     uiStatusFromRecordStatus,
+    uiStatusFromSendResponse,
     buildOptimisticMessage,
   });
   if (!context.subscribeChannelConnected) {

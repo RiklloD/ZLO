@@ -92,6 +92,7 @@ pub(crate) fn build_product_surface_with_channel_connection(
         admin_configuration_view,
     )
     .with_input_enqueue(runtime.webui_input_enqueue())
+    .with_steer_dispatch(runtime.steer_dispatch())
     .with_approval_interactions(runtime.webui_approval_interaction_service())
     .with_auth_interactions(runtime.webui_auth_interaction_service())
     .with_diagnostic_store(Arc::clone(&runtime.diagnostic_store))

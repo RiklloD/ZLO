@@ -1904,6 +1904,10 @@ where
     }
 }
 
+/// Sentinel `attempted` of a guarded delivery change whose guard failed
+/// inside the CAS loop (see `change_message_delivery`).
+const DELIVERY_MOVED: &str = "change_message_delivery:moved";
+
 #[async_trait]
 impl<F> SessionThreadService for FilesystemSessionThreadService<F>
 where
@@ -2925,6 +2929,71 @@ where
             Ok(())
         })
         .await
+    }
+
+    async fn change_message_delivery(
+        &self,
+        scope: &ThreadScope,
+        thread_id: &ThreadId,
+        message_id: ThreadMessageId,
+        expected: &crate::MessageDelivery,
+        change: crate::MessageDeliveryChange,
+    ) -> Result<crate::GuardedDelivery, SessionThreadError> {
+        self.read_thread_versioned(scope, thread_id)
+            .await?
+            .ok_or_else(|| SessionThreadError::UnknownThread {
+                thread_id: thread_id.clone(),
+            })?;
+        let current = self
+            .read_message_versioned(scope, thread_id, message_id)
+            .await?
+            .ok_or(SessionThreadError::UnknownMessage { message_id })?
+            .0;
+        if !expected.matches(&current) {
+            return Ok(crate::GuardedDelivery::Moved(current));
+        }
+        let queued_sequence = match (&change, current.status) {
+            (crate::MessageDeliveryChange::Submit { .. }, MessageStatus::Queued) => {
+                Some(self.reserve_sequence(scope, thread_id).await?)
+            }
+            _ => None,
+        };
+        let applied = self
+            .apply_message_update(scope, thread_id, message_id, |message| {
+                // The guard is re-checked inside the CAS loop: a writer that
+                // moved the row after the read above wins, and this one
+                // reports `Moved` instead of overwriting its decision.
+                if !expected.matches(message) {
+                    return Err(SessionThreadError::InvalidMessageTransition {
+                        message_id,
+                        from: message.status,
+                        attempted: DELIVERY_MOVED,
+                    });
+                }
+                if message.status == MessageStatus::Queued
+                    && let Some(sequence) = queued_sequence
+                {
+                    message.sequence = sequence;
+                }
+                crate::contract::apply_delivery_change(message, &change);
+                Ok(())
+            })
+            .await;
+        match applied {
+            Ok(record) => Ok(crate::GuardedDelivery::Applied(record)),
+            Err(SessionThreadError::InvalidMessageTransition {
+                attempted: DELIVERY_MOVED,
+                ..
+            }) => {
+                let now = self
+                    .read_message_versioned(scope, thread_id, message_id)
+                    .await?
+                    .ok_or(SessionThreadError::UnknownMessage { message_id })?
+                    .0;
+                Ok(crate::GuardedDelivery::Moved(now))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn read_thread_message(

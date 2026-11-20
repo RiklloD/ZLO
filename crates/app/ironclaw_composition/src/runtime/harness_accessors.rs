@@ -212,6 +212,7 @@ impl RebornRuntime {
         let crate::ChannelHostAssemblyTestWiring {
             thread_service,
             turn_coordinator,
+            input_enqueue,
             identity,
             run_delivery_settings,
             reply_projection,
@@ -260,9 +261,10 @@ impl RebornRuntime {
                 crate::extension_host_assembly::ChannelHostAssemblyWiring {
                     thread_service,
                     turn_coordinator,
-                    input_enqueue: self.webui_input_enqueue(),
+                    input_enqueue,
                     llm_config: self.llm_config_service.clone(),
                     approval_interaction: None,
+                    steer_dispatch: None,
                     auth_interaction: None,
                     identity,
                     approval_context: None,

@@ -846,6 +846,8 @@ impl RebornIntegrationHarnessBuilder {
 /// Full-stack Reborn integration harness with a scripted raw provider beneath
 /// the real decorator chain. See module docs.
 pub struct RebornIntegrationHarness {
+    /// The group's steering queue (the one the loop drains).
+    pub(crate) input_enqueue: Arc<dyn ironclaw_loop_host::HostInputEnqueuePort>,
     pub(crate) ingress: RebornTestIngress,
     pub(crate) workflow: std::sync::Arc<DefaultProductSurface>,
     /// The REAL approval interaction service the workflow dispatches to, when
@@ -1233,6 +1235,34 @@ impl RebornIntegrationHarness {
                 context_mode,
             })
             .await?)
+    }
+
+    /// The group queue's terminal settlement (what the runner calls when a
+    /// run ends), for tests that force a handoff at a chosen moment.
+    pub(crate) fn input_queue_reconcile_for_test(
+        &self,
+    ) -> Arc<dyn ironclaw_loop_host::HostInputQueueReconcile> {
+        Arc::clone(&self._shared.input_queue_reconcile)
+    }
+
+    /// The group-shared steer dispatcher and its durable handoff store.
+    pub(crate) fn steer_dispatch_for_test(
+        &self,
+    ) -> (
+        Arc<ironclaw_assistant::NativeSteerDispatch>,
+        Arc<dyn ironclaw_loop_host::SteerHandoffStore>,
+    ) {
+        (
+            Arc::clone(&self._shared.steer_dispatch),
+            Arc::clone(&self._shared.steer_handoff_store),
+        )
+    }
+
+    /// The group-shared steering queue every thread's runs drain.
+    pub(crate) fn input_enqueue_for_test(
+        &self,
+    ) -> Arc<dyn ironclaw_loop_host::HostInputEnqueuePort> {
+        Arc::clone(&self.input_enqueue)
     }
 
     /// The group-shared turn coordinator every thread's runs execute on.

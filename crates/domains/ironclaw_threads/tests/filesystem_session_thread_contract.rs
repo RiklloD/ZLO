@@ -8229,3 +8229,147 @@ async fn filesystem_accept_prepared_context_replays_without_orphans() {
         "cross-scope reads must stay non-enumerating, got {missing:?}"
     );
 }
+
+/// The guarded delivery transition is the one durable decision of where a
+/// steer goes: a change applies only while the row is exactly where the
+/// caller expects, and a second writer with the same expectation is told
+/// the row `Moved` instead of delivering it again. Both backends.
+async fn guarded_delivery_conformance(
+    service: &dyn ironclaw_threads::SessionThreadService,
+    scope: ThreadScope,
+) {
+    use ironclaw_threads::{GuardedDelivery, MessageDelivery, MessageDeliveryChange};
+    let thread = service
+        .ensure_thread(EnsureThreadRequest {
+            scope: scope.clone(),
+            thread_id: None,
+            created_by_actor_id: "actor-a".into(),
+            title: None,
+            metadata_json: None,
+        })
+        .await
+        .unwrap();
+    let accepted = service
+        .accept_inbound_message(AcceptInboundMessageRequest {
+            scope: scope.clone(),
+            thread_id: thread.thread_id.clone(),
+            actor_id: "actor-a".into(),
+            source_binding_id: None,
+            reply_target_binding_id: None,
+            external_event_id: None,
+            content: MessageContent::text("steer me"),
+        })
+        .await
+        .unwrap();
+    service
+        .mark_message_queued(
+            &scope,
+            &thread.thread_id,
+            accepted.message_id,
+            "run-a".into(),
+        )
+        .await
+        .unwrap();
+    let from_a = MessageDelivery::Queued {
+        run_id: "run-a".into(),
+    };
+
+    // The first writer moves it to run B.
+    let first = service
+        .change_message_delivery(
+            &scope,
+            &thread.thread_id,
+            accepted.message_id,
+            &from_a,
+            MessageDeliveryChange::Queue {
+                run_id: "run-b".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(first, GuardedDelivery::Applied(ref row) if row.turn_run_id.as_deref() == Some("run-b"))
+    );
+    // A second writer with the same (now stale) expectation does not.
+    let second = service
+        .change_message_delivery(
+            &scope,
+            &thread.thread_id,
+            accepted.message_id,
+            &from_a,
+            MessageDeliveryChange::Queue {
+                run_id: "run-c".into(),
+            },
+        )
+        .await
+        .unwrap();
+    match second {
+        GuardedDelivery::Moved(row) => {
+            assert_eq!(row.status, MessageStatus::Queued);
+            assert_eq!(row.turn_run_id.as_deref(), Some("run-b"));
+        }
+        other => panic!("expected Moved, got {other:?}"),
+    }
+    // Consumption by B, then a return to B's queue as unread, then not
+    // delivered: each guarded by the state the previous step left.
+    let submitted = service
+        .change_message_delivery(
+            &scope,
+            &thread.thread_id,
+            accepted.message_id,
+            &MessageDelivery::Queued {
+                run_id: "run-b".into(),
+            },
+            MessageDeliveryChange::Submit {
+                turn_id: "turn-b".into(),
+                run_id: "run-b".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(submitted, GuardedDelivery::Applied(ref row) if row.status == MessageStatus::Submitted)
+    );
+    let unread = service
+        .change_message_delivery(
+            &scope,
+            &thread.thread_id,
+            accepted.message_id,
+            &MessageDelivery::Submitted {
+                run_id: "run-b".into(),
+            },
+            MessageDeliveryChange::Queue {
+                run_id: "run-b".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(unread, GuardedDelivery::Applied(ref row) if row.status == MessageStatus::Queued)
+    );
+    let rejected = service
+        .change_message_delivery(
+            &scope,
+            &thread.thread_id,
+            accepted.message_id,
+            &MessageDelivery::Queued {
+                run_id: "run-b".into(),
+            },
+            MessageDeliveryChange::NotDelivered,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(rejected, GuardedDelivery::Applied(ref row) if row.status == MessageStatus::RejectedBusy && row.turn_run_id.is_none())
+    );
+}
+
+#[tokio::test]
+async fn guarded_delivery_changes_apply_once_on_both_backends() {
+    let backend = Arc::new(InMemoryBackend::new());
+    let scoped = scoped_threads_fs_at(Arc::clone(&backend), "tenant-guarded", "alice");
+    let filesystem = FilesystemSessionThreadService::new(scoped);
+    guarded_delivery_conformance(&filesystem, scope("fs-guarded")).await;
+    let memory = ironclaw_threads::InMemorySessionThreadService::default();
+    guarded_delivery_conformance(&memory, scope("mem-guarded")).await;
+}

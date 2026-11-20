@@ -239,6 +239,10 @@ impl PendingInputAck {
         Ok(())
     }
 
+    fn tokens(&self) -> &[LoopInputAckToken] {
+        &self.tokens
+    }
+
     async fn ack(
         &mut self,
         host: &(dyn AgentLoopDriverHost + Send + Sync),

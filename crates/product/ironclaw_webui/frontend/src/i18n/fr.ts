@@ -134,6 +134,7 @@ registerPack("fr", {
   "chat.reloadHistory": "Recharger l’historique",
   "chat.busyRejectedResend": "Ce message n’a pas été envoyé car IronClaw était occupé. Renvoyez-le pour réessayer.",
   "chat.jumpToLatest": "Aller aux dernières",
+  "chat.queued": "En file d'attente",
   "chat.steer": "Réorientation",
   "chat.steerWaiting": "Réorientation · pas encore lue",
   "chat.steerTooltip": "Envoyé dans le tour en cours. L'agent le lit entre deux étapes.",

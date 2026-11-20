@@ -239,6 +239,12 @@ pub(crate) struct GroupSharedStorage {
     /// enqueues busy-thread messages through this SAME instance, mirroring
     /// production composition.
     pub(crate) input_enqueue: Arc<dyn ironclaw_loop_host::HostInputEnqueuePort>,
+    /// The thread steer dispatcher (production parity: bound on the queue,
+    /// wired into every thread's inbound service).
+    pub(crate) steer_dispatch: Arc<ironclaw_assistant::NativeSteerDispatch>,
+    pub(crate) steer_handoff_store: Arc<dyn ironclaw_loop_host::SteerHandoffStore>,
+    /// The queue's terminal settlement, for tests that force a handoff.
+    pub(crate) input_queue_reconcile: Arc<dyn ironclaw_loop_host::HostInputQueueReconcile>,
     /// The exact `HostUserProfileSource` wired into the group's ONE planned
     /// runtime (E-PROFILE seam). Kept so a profile-round-trip test reads from
     /// the SAME instance the running loop uses, not a re-derived equivalent —
@@ -1308,19 +1314,31 @@ impl RebornIntegrationGroupBuilder {
         // The harness mirrors that shape over the group's composite: the SAME
         // queue instance is both the loop's drain reader (`parts.input_queue`)
         // and every thread's inbound enqueue port.
-        let host_input_queue = Arc::new(ironclaw_loop_host::FilesystemHostInputQueue::new(
-            Arc::clone(&processes_scoped_fs),
-            ironclaw_turns::TurnScope::new_with_owner(
-                base.canonical_binding.tenant_id.clone(),
-                base.canonical_binding.agent_id.clone(),
-                base.canonical_binding.project_id.clone(),
-                base.canonical_binding.thread_id.clone(),
-                Some(base.canonical_binding.actor_user_id.clone()),
+        let input_queue_owner_scope = ironclaw_turns::TurnScope::new_with_owner(
+            base.canonical_binding.tenant_id.clone(),
+            base.canonical_binding.agent_id.clone(),
+            base.canonical_binding.project_id.clone(),
+            base.canonical_binding.thread_id.clone(),
+            Some(base.canonical_binding.actor_user_id.clone()),
+        )
+        .to_resource_scope();
+        let steer_handoff_store: Arc<dyn ironclaw_loop_host::SteerHandoffStore> =
+            Arc::new(ironclaw_loop_host::FilesystemSteerHandoffStore::new(
+                Arc::clone(&processes_scoped_fs),
+                input_queue_owner_scope.clone(),
+            ));
+        let host_input_queue = Arc::new(
+            ironclaw_loop_host::FilesystemHostInputQueue::new(
+                Arc::clone(&processes_scoped_fs),
+                input_queue_owner_scope,
+                Arc::clone(&runtime_thread_service),
             )
-            .to_resource_scope(),
-            Arc::clone(&runtime_thread_service),
-        ));
+            .with_steer_handoff(Arc::clone(&steer_handoff_store)),
+        );
         let host_input_queue_for_cancel_reconcile: Arc<
+            dyn ironclaw_loop_host::HostInputQueueReconcile,
+        > = host_input_queue.clone();
+        let host_input_queue_for_handoff_tests: Arc<
             dyn ironclaw_loop_host::HostInputQueueReconcile,
         > = host_input_queue.clone();
 
@@ -1588,13 +1606,17 @@ impl RebornIntegrationGroupBuilder {
                 host_input_queue_for_cancel_reconcile,
             ),
         );
+        let steer_dispatch = ironclaw_assistant::NativeSteerDispatch::new(
+            Arc::clone(&coordinator),
+            Arc::clone(&runtime_thread_service),
+            host_input_queue.clone() as Arc<dyn ironclaw_loop_host::HostInputEnqueuePort>,
+            Arc::clone(&steer_handoff_store),
+            None,
+            None,
+        );
         host_input_queue
-            .bind_steer_redelivery(Arc::new(ironclaw_assistant::SteeringRedelivery::new(
-                Arc::clone(&coordinator),
-                Arc::clone(&runtime_thread_service),
-                host_input_queue.clone() as Arc<dyn ironclaw_loop_host::HostInputEnqueuePort>,
-            )))
-            .map_err(|error| format!("steering redelivery bind failed: {error}"))?;
+            .bind_steer_handoff_dispatch(steer_dispatch.as_queue_dispatch())
+            .map_err(|error| format!("steer handoff dispatcher bind failed: {error}"))?;
 
         Ok(RebornIntegrationGroup {
             shared: Arc::new(GroupSharedStorage {
@@ -1612,6 +1634,9 @@ impl RebornIntegrationGroupBuilder {
                 canonical_binding: base.canonical_binding,
                 capability_recorder,
                 input_enqueue: host_input_queue,
+                steer_dispatch,
+                steer_handoff_store,
+                input_queue_reconcile: host_input_queue_for_handoff_tests,
                 user_profile_source: effective_user_profile_source,
                 turn_event_sink: self.turn_event_sink,
                 durable_event_log,
@@ -2078,6 +2103,7 @@ impl<'g> RebornThreadBuilder<'g> {
         if let Some(approval) = &approval_interactions {
             inbound_service = inbound_service.with_approval_interactions(Arc::clone(approval));
         }
+        inbound_service = inbound_service.with_steer_dispatch(Arc::clone(&shared.steer_dispatch));
         let inbound: Arc<dyn InboundTurnService> = Arc::new(inbound_service);
         let ledger: Arc<dyn IdempotencyLedger> =
             Arc::new(shared.product_harness.idempotency_ledger());
@@ -2107,6 +2133,7 @@ impl<'g> RebornThreadBuilder<'g> {
             turn_runtime: Arc::clone(&shared.turn_runtime),
             thread_harness,
             coordinator: Arc::clone(&shared.coordinator),
+            input_enqueue: Arc::clone(&shared.input_enqueue),
             event_seq: AtomicU64::new(1),
             capability_recorder,
             scripted_llm,

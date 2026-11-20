@@ -445,6 +445,21 @@ pub(crate) struct SubagentDeliveryRuntime {
     // underscore names make that intentional ownership explicit to clippy.
     pub(crate) _resolver: Arc<AwaitEdgeResolver<dyn SessionThreadService>>,
     pub(crate) _store: Arc<AwaitEdgeStore>,
+    /// The thread steer dispatcher bound on `input_queue` and wired into
+    /// every inbound lane.
+    pub(crate) steer_dispatch: Arc<ironclaw_assistant::NativeSteerDispatch>,
+    /// The durable handoff sweep (startup, then periodic); aborted with the
+    /// runtime.
+    pub(crate) _steer_sweeper: AbortOnDropTask,
+}
+
+/// A background task aborted when its owner drops.
+pub(crate) struct AbortOnDropTask(pub(crate) tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDropTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 pub struct RebornRuntime {

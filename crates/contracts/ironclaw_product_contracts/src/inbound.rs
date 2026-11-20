@@ -1126,6 +1126,10 @@ pub struct AcceptedTurnSubmission {
 pub struct BusyRunSnapshot {
     pub status: TurnStatus,
     pub event_cursor: EventCursor,
+    /// The message was staged for the next turn (its run was ending): it is
+    /// delivered once the run releases the thread.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waiting_for_turn: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

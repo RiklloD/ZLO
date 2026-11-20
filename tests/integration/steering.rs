@@ -284,3 +284,113 @@ async fn steer_during_an_approval_declines_it_and_the_run_continues_with_it() {
         "the steer is part of the same run"
     );
 }
+
+/// Production-wired handoff: a steer is queued while the run's final model
+/// call is in flight, and the run's queue is settled before the loop can
+/// drain it (the schedule the runner's pre-terminal settlement creates). The
+/// steer must start the next turn — the real coordinator, loop, and model —
+/// and a replayed settlement must not deliver it again: one successor run,
+/// one answer to the steer.
+#[tokio::test]
+async fn a_steer_the_run_never_read_starts_the_next_turn_exactly_once() {
+    use ironclaw_loop_host::RunQueueEnding;
+
+    let gate = ParkingModelGate::new();
+    let harness = RebornIntegrationHarness::test_default()
+        .park_model(gate.clone())
+        .script([
+            RebornScriptedReply::text("first run reply"),
+            RebornScriptedReply::text("successor answers the steer"),
+        ])
+        .build()
+        .await
+        .expect("harness builds");
+    let run_a = harness
+        .submit_turn_async("start a long task")
+        .await
+        .expect("turn A submitted");
+    tokio::time::timeout(Duration::from_secs(10), gate.wait_until_parked())
+        .await
+        .expect("model call parks");
+
+    let ack = harness
+        .submit_turn_ack("and also check the tests")
+        .await
+        .expect("busy submit");
+    assert!(
+        matches!(ack, ProductInboundAck::DeferredBusy { .. }),
+        "{ack:?}"
+    );
+
+    // Force the handoff: settle A's queue before its loop drains again.
+    let reconcile = harness.input_queue_reconcile_for_test();
+    reconcile
+        .settle_unconsumed(run_a, RunQueueEnding::Ended)
+        .await
+        .expect("settle");
+    let (dispatch, store) = harness.steer_dispatch_for_test();
+    let recorded = store.pending().await.expect("handoffs");
+    assert_eq!(recorded.len(), 1, "the unread steer is handed off durably");
+
+    gate.release();
+    harness
+        .wait_for_status(run_a, TurnStatus::Completed)
+        .await
+        .expect("run A completes");
+
+    // The dispatcher starts the successor once A released the thread.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let successor = loop {
+        let row = harness
+            .user_message_record("and also check the tests")
+            .await
+            .expect("steer row");
+        if row.status == MessageStatus::Submitted
+            && row.turn_run_id.as_deref() != Some(run_a.to_string().as_str())
+        {
+            break row.turn_run_id.expect("successor run id");
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the unread steer must start the next turn; row: {row:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let successor_run = ironclaw_turns::TurnRunId::from_uuid(
+        uuid::Uuid::parse_str(&successor).expect("successor uuid"),
+    );
+    harness
+        .wait_for_status(successor_run, TurnStatus::Completed)
+        .await
+        .expect("the successor completes");
+    harness
+        .assert_model_saw_user_message("and also check the tests")
+        .await
+        .expect("the steer reached the model");
+    harness
+        .assert_reply_contains("successor answers the steer")
+        .await
+        .expect("the successor answered");
+
+    // Replay the settlement: nothing is delivered again.
+    for handoff in recorded {
+        store.record(handoff).await.expect("replay record");
+    }
+    dispatch.sweep().await;
+    reconcile
+        .settle_unconsumed(run_a, RunQueueEnding::Ended)
+        .await
+        .expect("replayed settle");
+    dispatch.sweep().await;
+    let row = harness
+        .user_message_record("and also check the tests")
+        .await
+        .expect("steer row");
+    assert_eq!(row.status, MessageStatus::Submitted);
+    assert_eq!(
+        row.turn_run_id.as_deref(),
+        Some(successor.as_str()),
+        "still delivered to the one successor"
+    );
+    assert!(store.pending().await.expect("handoffs").is_empty());
+}

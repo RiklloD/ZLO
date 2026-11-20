@@ -137,6 +137,7 @@ registerPack("en", {
   "chat.busyRejectedResend":
     "This message wasn't delivered to the running task. Send it again if you still need it.",
   "chat.jumpToLatest": "Jump to latest",
+  "chat.queued": "Queued",
   "chat.steer": "Steer",
   "chat.steerWaiting": "Steer · waiting to be read",
   "chat.steerTooltip": "Sent into the running turn. The agent reads steers between steps.",

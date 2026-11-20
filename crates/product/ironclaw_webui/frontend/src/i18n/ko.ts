@@ -134,6 +134,7 @@ registerPack("ko", {
   "chat.reloadHistory": "기록 다시 불러오기",
   "chat.busyRejectedResend": "IronClaw가 처리 중이어서 이 메시지가 전송되지 않았습니다. 다시 전송해 주세요.",
   "chat.jumpToLatest": "최신 항목으로 이동",
+  "chat.queued": "대기 중",
   "chat.steer": "방향 전환",
   "chat.steerWaiting": "방향 전환 · 읽기 대기 중",
   "chat.steerTooltip": "진행 중인 턴으로 보냈습니다. 에이전트는 단계 사이에 읽습니다.",

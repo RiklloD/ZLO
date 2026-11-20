@@ -93,6 +93,19 @@ pub trait LoopInputPort: Send + Sync {
     ) -> Result<LoopInputBatch, AgentLoopHostError>;
 
     async fn ack_inputs(&self, tokens: Vec<LoopInputAckToken>) -> Result<(), AgentLoopHostError>;
+
+    /// A model call carried the inputs behind `tokens` (already acked): the
+    /// agent has read them. An acked user input not confirmed when the run
+    /// ends was never seen by the model and is handed off as unread. Hosts
+    /// without read tracking accept it as a no-op; a decorator must forward
+    /// it.
+    async fn confirm_inputs_read(
+        &self,
+        tokens: Vec<LoopInputAckToken>,
+    ) -> Result<(), AgentLoopHostError> {
+        let _ = tokens;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

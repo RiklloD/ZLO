@@ -18,6 +18,10 @@ use ironclaw_trust::{AuthorityCeiling, EffectiveTrustClass, TrustDecision, Trust
 pub struct ChannelHostAssemblyTestWiring {
     pub thread_service: Arc<dyn SessionThreadService>,
     pub turn_coordinator: Arc<dyn ironclaw_turns::TurnCoordinator>,
+    /// The steering queue the harness's runs drain. A busy channel message
+    /// steers into exactly this queue (production wires the runtime's one
+    /// queue the same way); a separate queue would strand every steer.
+    pub input_enqueue: Arc<dyn ironclaw_loop_host::HostInputEnqueuePort>,
     pub identity: ironclaw_extension_host::channel_host::ChannelHostIdentity,
     pub run_delivery_settings: ironclaw_assistant::RunDeliverySettings,
     /// The reply projection the group's runs feed. Publication is started on
@@ -361,9 +365,10 @@ impl RebornRuntimeStores {
             crate::extension_host_assembly::ChannelHostAssemblyWiring {
                 thread_service: wiring.thread_service,
                 turn_coordinator: wiring.turn_coordinator,
-                input_enqueue: Arc::new(ironclaw_loop_host::RejectingInputEnqueue),
+                input_enqueue: wiring.input_enqueue,
                 llm_config: None,
                 approval_interaction: None,
+                steer_dispatch: None,
                 auth_interaction: None,
                 identity: wiring.identity,
                 approval_context: None,

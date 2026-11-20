@@ -396,6 +396,14 @@ function MessageBubbleImpl({
             </div>
           )}
 
+          {isUser && status === UI_MESSAGE_STATUS.QUEUED && (
+            <div className="mt-2 flex justify-end">
+              <span className="rounded border border-iron-700 bg-iron-900/70 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-normal text-iron-300">
+                {t("chat.queued")}
+              </span>
+            </div>
+          )}
+
           {steerLabelKey && (
             <div className="mt-2 flex justify-end">
               <span
