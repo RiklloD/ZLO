@@ -40,7 +40,7 @@ wasmtime-wasi = { version = "47.0.4", default-features = false, features = ["p2"
 # The remaining legacy transport (hyper 0.14 / http 0.2 / h2 0.3 /
 # hyper-rustls 0.25 → rustls 0.22) is still pinned by `remote` + `tls` in
 # every published libsql release up to and including 0.10.0 — see deny.toml.
-libsql = { version = "0.9", default-features = false, features = ["core"] }
+libsql = { version = "0.10", default-features = false, features = ["core"] }
 base64 = "0.23"
 # HTTP client. Members opt into TLS (`rustls`, which verifies against the OS
 # trust store via rustls-platform-verifier) and body features explicitly.
