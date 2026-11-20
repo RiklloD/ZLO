@@ -90,7 +90,9 @@ impl CompositionClientCredentials {
                 .credential_handle_value(handle)
                 .await
                 .map_err(|error| {
-                    tracing::warn!(
+                    // `debug!`: readiness resolves this on every GSuite
+                    // dispatch, and warn-level output corrupts the TUI.
+                    tracing::debug!(
                         %error,
                         handle,
                         "administrator client-credential lookup failed"
@@ -215,7 +217,9 @@ impl ProviderInstanceReadinessPort for ClientCredentialProviderReadiness {
             // that a client exists, and activation must not publish tools
             // whose credentials we could not confirm.
             Err(error) => {
-                tracing::warn!(
+                // `debug!`: this runs on every dispatch; the model-visible
+                // remediation already tells the user what to fix.
+                tracing::debug!(
                     %error,
                     vendor = provider.as_str(),
                     "vendor client-credential readiness lookup failed; treating as unconfigured"

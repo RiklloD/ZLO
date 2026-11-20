@@ -60,22 +60,35 @@ impl DefaultCompactionStrategy {
             .unwrap_or(self.prompt_context_budget)
     }
 
+    /// The retained tail for this run: the configured tail, unless it does
+    /// not fit under the visible-transcript threshold (a 32k model under the
+    /// 20k default), where half the threshold is kept instead so compaction
+    /// still has a prefix to replace rather than turning off.
+    pub(super) fn preserve_tail_tokens_for(&self, ctx: &LoopRunContext) -> u64 {
+        let threshold = self.prompt_context_budget(ctx).visible_transcript_tokens();
+        if self.preserve_tail_tokens < threshold {
+            self.preserve_tail_tokens
+        } else {
+            threshold / 2
+        }
+    }
+
     pub(super) fn can_evaluate(&self, state: &LoopExecutionState, ctx: &LoopRunContext) -> bool {
         if state.compaction_prompt.message_index.is_empty() {
             return false;
         }
-        let threshold = self.prompt_context_budget(ctx).visible_transcript_tokens();
-        if threshold <= self.preserve_tail_tokens {
-            return false;
-        }
         // Forced/recovery compactions (context-overflow retry, byte-cap
-        // overflow) bypass the circuit breaker: they are the loop's only
-        // mechanism for shrinking an oversized prompt before a retry, so
-        // suppressing them would silently rebuild the same prompt until the
-        // retry budget aborts. The breaker only gates automatic
+        // overflow) bypass the circuit breaker and the threshold: they are the
+        // loop's only mechanism for shrinking an oversized prompt before a
+        // retry, so suppressing them would silently rebuild the same prompt
+        // until the retry budget aborts. The breaker only gates automatic
         // threshold-triggered compaction.
         if state.compaction_state.force_compact_on_next_iteration {
             return true;
+        }
+        let threshold = self.prompt_context_budget(ctx).visible_transcript_tokens();
+        if threshold == 0 || threshold <= self.preserve_tail_tokens_for(ctx) {
+            return false;
         }
         !state.compaction_state.compaction_circuit_open
             && state.compaction_prompt.observed_prompt_tokens >= threshold
@@ -98,7 +111,7 @@ impl DefaultCompactionStrategy {
         };
         CompactionDecision::Trigger {
             drop_through_seq,
-            preserve_tail_tokens: self.preserve_tail_tokens,
+            preserve_tail_tokens: self.preserve_tail_tokens_for(ctx),
             deadline_ms: self.deadline_ms,
             effectiveness_baseline,
         }
@@ -150,7 +163,7 @@ impl CompactionStrategy for DefaultCompactionStrategy {
         tail_preserving_user_boundary(
             state,
             prompt_fingerprint,
-            self.preserve_tail_tokens,
+            self.preserve_tail_tokens_for(ctx),
             0,
             |_| true,
         )
@@ -486,6 +499,48 @@ mod tests {
             CompactionDecision::Trigger {
                 drop_through_seq: 2,
                 preserve_tail_tokens: 60,
+                deadline_ms: 7,
+                effectiveness_baseline: CompactionEffectivenessBaseline::TriggerThresholdTokens {
+                    tokens: 90,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn a_window_smaller_than_twice_the_tail_still_compacts_with_a_scaled_tail() {
+        // A 32k-class window under the 20k default tail: the configured tail
+        // exceeds the threshold, so the tail is scaled to half the threshold
+        // instead of disabling compaction.
+        let context = crate::test_support::test_run_context("compaction-strategy-small-window");
+        let mut state = LoopExecutionState::initial_for_run(&context);
+        state.compaction_state = CompactionStrategyState::default();
+        state.compaction_prompt = CompactionPromptSnapshot::from_message_index(
+            [
+                (1, IndexedMessageKind::User),
+                (2, IndexedMessageKind::Assistant),
+                (3, IndexedMessageKind::User),
+                (4, IndexedMessageKind::Assistant),
+            ]
+            .into_iter()
+            .map(|(sequence, kind)| MessageIndexEntry {
+                sequence,
+                kind,
+                estimated_tokens: 30,
+            })
+            .collect(),
+        );
+        let strategy = DefaultCompactionStrategy {
+            prompt_context_budget: PromptContextTokenBudget::new(100, 10, 0),
+            preserve_tail_tokens: 1_000,
+            deadline_ms: 7,
+        };
+
+        assert_eq!(
+            strategy.should_compact(&state, &context),
+            CompactionDecision::Trigger {
+                drop_through_seq: 2,
+                preserve_tail_tokens: 45,
                 deadline_ms: 7,
                 effectiveness_baseline: CompactionEffectivenessBaseline::TriggerThresholdTokens {
                     tokens: 90,

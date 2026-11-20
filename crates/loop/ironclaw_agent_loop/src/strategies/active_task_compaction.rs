@@ -66,7 +66,7 @@ impl CompactionStrategy for ActiveTaskPreservingCompactionStrategy {
         active_task_preserving_user_boundary(
             state,
             prompt_fingerprint,
-            self.base.preserve_tail_tokens,
+            self.base.preserve_tail_tokens_for(ctx),
             self.minimum_tail_messages,
             self.minimum_compacted_messages,
         )
