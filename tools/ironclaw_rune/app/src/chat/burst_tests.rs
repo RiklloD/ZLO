@@ -184,3 +184,48 @@ fn stream_burst_bench() {
         );
     }
 }
+
+/// Input queued for the frame goes first: the stream's fold waits for the
+/// next frame (bounded), so a key or click never waits behind a rebuild of
+/// the whole thread.
+#[test]
+fn a_queued_input_puts_the_stream_fold_off_by_a_frame() {
+    let mut rt = Runtime::new(long_thread(40), counted_view, (1000., 760.), Env::new(true, 1.));
+    rt.update(|s, tx| {
+        super::refresh_rows(s, "t1", tx);
+    });
+    rt.frame(0.);
+    let generation = rt.state.chat.as_ref().map(|c| c.stream_gen).expect("chat");
+    let rows = |rt: &Runtime<State>| rt.state.chat.as_ref().map(|c| c.rows_gen).expect("chat");
+    let before = rows(&rt);
+    rt.update_if(move |s, tx| super::on_stream(s, "t1", generation, vec![delta("Hello")], tx));
+    assert_eq!(rows(&rt), before, "the burst alone rebuilds nothing");
+
+    rt.update_if(|s, tx| super::poll_chat(s, "t1", true, tx));
+    assert_eq!(rows(&rt), before, "input waiting: the fold waits");
+    assert!(
+        rt.state.chat.as_ref().is_some_and(|c| c.rows_stale.is_some()),
+        "still owed to the next frame"
+    );
+
+    rt.update_if(|s, tx| super::poll_chat(s, "t1", false, tx));
+    assert_eq!(rows(&rt), before + 1, "the next frame folds it");
+
+    // Input every frame (a long scroll) delays the fold by a bounded time.
+    rt.update_if(move |s, tx| super::on_stream(s, "t1", generation, vec![delta("Hello there")], tx));
+    rt.update(|s, _| {
+        if let Some(c) = s.chat.as_mut() {
+            c.rows_stale = Some(Instant::now() - super::INPUT_YIELD_MAX);
+        }
+    });
+    rt.update_if(|s, tx| super::poll_chat(s, "t1", true, tx));
+    assert_eq!(rows(&rt), before + 2, "waited long enough: folded under input");
+}
+
+#[test]
+fn work_yields_to_input_only_while_it_is_fresh() {
+    let now = Instant::now();
+    assert!(super::yields_to_input(true, now, now));
+    assert!(!super::yields_to_input(false, now, now));
+    assert!(!super::yields_to_input(true, now - super::INPUT_YIELD_MAX, now));
+}

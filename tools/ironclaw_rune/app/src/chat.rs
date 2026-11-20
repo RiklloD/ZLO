@@ -109,9 +109,10 @@ pub struct ChatState {
     /// Bumped with `rows`; with the other fold inputs it tells `sync_items`
     /// when there is nothing to redo.
     pub(crate) rows_gen: u64,
-    /// The transcript moved since `rows` was built: the next poll rebuilds
-    /// them, once per frame however many stream bursts landed before it.
-    rows_stale: bool,
+    /// The transcript moved since `rows` was built (since then): the next
+    /// poll rebuilds them, once per frame however many stream bursts landed
+    /// before it.
+    rows_stale: Option<Instant>,
     folded: Option<(u64, bool, bool, bool, bool)>,
     /// What the list shows: `rows` folded, plus the pending and reserve rows.
     pub items: Rc<Vec<Item>>,
@@ -214,7 +215,7 @@ impl ChatState {
             transcript: Transcript::default(),
             rows: Rc::new(Vec::new()),
             rows_gen: 0,
-            rows_stale: false,
+            rows_stale: None,
             folded: None,
             items: Rc::new(Vec::new()),
             toggles: HashMap::new(),
@@ -587,7 +588,7 @@ fn on_stream(
             // Rows are rebuilt from the whole transcript: leave that to the
             // next frame's poll, so a burst of deltas costs one rebuild per
             // frame, not one per burst that landed before it.
-            c.rows_stale = true;
+            c.rows_stale.get_or_insert_with(Instant::now);
             tx.wake_after(Duration::ZERO);
         }
     }
@@ -631,7 +632,7 @@ pub(crate) fn refresh_rows(s: &mut State, id: &str, tx: &mut Tx) -> bool {
         return false;
     };
     crate::energy::hit(crate::energy::C::RowsRebuilt);
-    c.rows_stale = false;
+    c.rows_stale = None;
     c.rows = Rc::new(c.transcript.rows());
     c.rows_gen += 1;
     question_form::sync_drafts(c);
@@ -800,26 +801,52 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
 }
 
 fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
+    poll_chat(s, id, tx.input_waiting(), tx)
+}
+
+/// How long the stream's fold and the pacer's step may wait behind the
+/// user's input: about one pacer step, so a reply keeps growing (if a
+/// little coarser) under a continuous scroll or drag.
+const INPUT_YIELD_MAX: Duration = Duration::from_millis(34);
+
+/// Whether work owed since `since` waits a frame for the input queued for
+/// this one (`Tx::input_waiting`): the input's frame comes first, the work
+/// in the frame after, unless it already waited [`INPUT_YIELD_MAX`].
+fn yields_to_input(input_waiting: bool, since: Instant, now: Instant) -> bool {
+    input_waiting && now.saturating_duration_since(since) < INPUT_YIELD_MAX
+}
+
+/// [`poll_one`] with the frame's `input_waiting` passed in (tests set it;
+/// a headless runtime's input carries no timestamp, so it never reads true).
+fn poll_chat(s: &mut State, id: &str, input_waiting: bool, tx: &mut Tx) -> bool {
     let front = crate::workspace::window_active(s);
     let Some(c) = chat_for(s, id) else {
         return false;
     };
     let mut changed = false;
-    if c.rows_stale {
-        // Stream bursts since the last frame, folded in once.
-        let deferred = refresh_rows(s, id, tx);
-        changed = crate::energy::polled(crate::energy::C::PollChatStream, !deferred);
+    let now = Instant::now();
+    // Both of these rebuild from the whole thread: keys, clicks and the
+    // wheel go first (they run after this poll, in this frame), and the
+    // fold comes on the next frame.
+    if let Some(since) = c.rows_stale {
+        if yields_to_input(input_waiting, since, now) {
+            tx.wake_after(Duration::ZERO);
+        } else {
+            // Stream bursts since the last frame, folded in once.
+            let deferred = refresh_rows(s, id, tx);
+            changed = crate::energy::polled(crate::energy::C::PollChatStream, !deferred);
+        }
     }
     let Some(c) = chat_for(s, id) else {
         return changed;
     };
     if c.pacing {
         // The pacer reveals more on each step, once a step is due.
-        match c
-            .pace_due
-            .map(|due| due.saturating_duration_since(Instant::now()))
-        {
-            Some(left) if !left.is_zero() => tx.wake_after(left),
+        match c.pace_due {
+            Some(due) if due > now => tx.wake_after(due - now),
+            Some(due) if yields_to_input(input_waiting, due, now) => {
+                tx.wake_after(Duration::ZERO);
+            }
             _ => {
                 sync_items(s, id, tx);
                 changed = crate::energy::polled(crate::energy::C::PollChatPace, true);
