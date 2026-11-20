@@ -98,6 +98,9 @@ pub(crate) const RUN_FAILED_MESSAGE: &str =
 /// cancel, so this is informational only — it closes the loop on a fire that
 /// would otherwise vanish (#6896).
 pub(crate) const TRIGGERED_RUN_CANCELED_MESSAGE: &str = "This scheduled run was canceled before it could finish. Open the Ironclaw web app for details.";
+/// Posted to the conversation a steer came from when a Stop ended the task
+/// before the agent read it: it was not delivered, the person decides.
+pub(crate) const STEER_NOT_DELIVERED_MESSAGE: &str = "You stopped the task before Ironclaw read your last message, so it wasn't delivered — send it again if you still need it.";
 /// Posted when a message could not be delivered (never for a steered one)
 /// while the blocking run is `BlockedApproval` and no gate_ref is available.
 pub(crate) const BUSY_APPROVAL_MESSAGE: &str = "Ironclaw couldn't add this message to the task waiting on an approval — reply `approve` or `deny` (or `approve gate:<ref>`) to resume it, then send your message again.";

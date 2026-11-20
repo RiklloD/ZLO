@@ -221,3 +221,82 @@ impl DeliveryCoordinator {
         Ok(self.store.list_open_reply_publications(scope).await?)
     }
 }
+
+/// A successor run answers where its ended run answered: each channel
+/// target the ended run's publications were opened on (from their durable
+/// descriptors) is registered for the successor. The session channel is
+/// registered for every run on its own; registration is idempotent per
+/// exact target either way.
+#[async_trait::async_trait]
+impl crate::SuccessorReplyTargets for DeliveryCoordinator {
+    async fn inherit(
+        &self,
+        scope: &TurnScope,
+        ended_run_id: TurnRunId,
+        successor_run_id: TurnRunId,
+    ) -> Result<(), String> {
+        let records = self
+            .list_reply_publications(scope.clone(), ended_run_id)
+            .await
+            .map_err(|error| format!("ended run's publications unreadable: {error}"))?;
+        for record in records {
+            let Some(descriptor) = record.publication.descriptor else {
+                continue;
+            };
+            self.register_reply_target(crate::ReplyTargetRegistration {
+                scope: scope.clone(),
+                actor: descriptor.actor,
+                run_id: successor_run_id,
+                extension_id: descriptor.extension_id,
+                reply_target: descriptor.reply_target,
+                conversation: descriptor.conversation,
+                thread_anchor: descriptor.thread_anchor,
+                audience: descriptor.audience,
+            })
+            .await
+            .map_err(|error| format!("successor reply target not registered: {error}"))?;
+        }
+        Ok(())
+    }
+
+    async fn notify_not_delivered(
+        &self,
+        scope: &TurnScope,
+        ended_run_id: TurnRunId,
+        message_id: ironclaw_threads::ThreadMessageId,
+    ) -> Result<(), String> {
+        let records = self
+            .list_reply_publications(scope.clone(), ended_run_id)
+            .await
+            .map_err(|error| format!("ended run's publications unreadable: {error}"))?;
+        for record in records {
+            let Some(descriptor) = record.publication.descriptor else {
+                continue;
+            };
+            // Only a vendor conversation hears a notice; the session
+            // channel renders the row itself.
+            let Some(conversation) = descriptor.conversation else {
+                continue;
+            };
+            self.deliver_notice(crate::delivery_coordinator::NoticeDeliveryRequest {
+                intent: crate::delivery_coordinator::DeliveryIntent::FailureNotice,
+                scope: scope.clone(),
+                turn_run_id: Some(ended_run_id),
+                conversation,
+                thread_anchor: None,
+                parts: vec![
+                    ironclaw_extension_contracts::channel_adapter::OutboundPart::Text(
+                        crate::run_delivery::prompts::STEER_NOT_DELIVERED_MESSAGE.to_string(),
+                    ),
+                ],
+                extension_id: descriptor.extension_id.as_str(),
+                notice_ref: format!("steer-not-delivered:{message_id}"),
+                visibility:
+                    ironclaw_extension_contracts::channel_adapter::OutboundVisibility::Public,
+            })
+            .await
+            .map_err(|error| format!("not-delivered notice failed: {error}"))?;
+        }
+        Ok(())
+    }
+}

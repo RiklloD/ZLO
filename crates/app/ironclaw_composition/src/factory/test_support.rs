@@ -368,6 +368,7 @@ impl RebornRuntimeStores {
                 input_enqueue: wiring.input_enqueue,
                 llm_config: None,
                 approval_interaction: None,
+                steer_dispatch: None,
                 auth_interaction: None,
                 identity: wiring.identity,
                 approval_context: None,

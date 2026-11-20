@@ -60,6 +60,7 @@ pub(super) struct MockHost {
     compaction: MockCompactionSupport,
     input_batches: Arc<Mutex<VecDeque<LoopInputBatch>>>,
     acked_input_tokens: Arc<Mutex<Vec<LoopInputAckToken>>>,
+    read_input_tokens: Arc<Mutex<Vec<LoopInputAckToken>>>,
     batch_outcomes: Arc<Mutex<VecDeque<ironclaw_host_api::resolution::ResolutionBatch>>>,
     single_outcomes: Arc<
         Mutex<
@@ -124,6 +125,7 @@ impl MockHost {
             compaction: MockCompactionSupport::new(),
             input_batches: Arc::new(Mutex::new(VecDeque::new())),
             acked_input_tokens: Arc::new(Mutex::new(Vec::new())),
+            read_input_tokens: Arc::new(Mutex::new(Vec::new())),
             batch_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             single_outcomes: Arc::new(Mutex::new(VecDeque::new())),
             single_invoke_delays: Arc::from([]),
@@ -389,6 +391,10 @@ impl MockHost {
 
     pub(super) fn prompt_requests(&self) -> Vec<LoopPromptBundleRequest> {
         self.prompt_requests.lock().expect("lock").clone()
+    }
+
+    pub(super) fn read_input_tokens(&self) -> Vec<LoopInputAckToken> {
+        self.read_input_tokens.lock().expect("lock").clone()
     }
 
     pub(super) fn acked_input_tokens(&self) -> Vec<LoopInputAckToken> {
@@ -852,6 +858,18 @@ impl ironclaw_loop_contracts::LoopInputPort for MockHost {
             .expect("lock")
             .push("ack_inputs".to_string());
         self.acked_input_tokens.lock().expect("lock").extend(tokens);
+        Ok(())
+    }
+
+    async fn confirm_inputs_read(
+        &self,
+        tokens: Vec<LoopInputAckToken>,
+    ) -> Result<(), AgentLoopHostError> {
+        self.events
+            .lock()
+            .expect("lock")
+            .push("confirm_inputs_read".to_string());
+        self.read_input_tokens.lock().expect("lock").extend(tokens);
         Ok(())
     }
 }

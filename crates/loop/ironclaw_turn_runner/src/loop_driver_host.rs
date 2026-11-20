@@ -1849,6 +1849,13 @@ impl LoopInputPort for RebornLoopDriverHost {
     async fn ack_inputs(&self, tokens: Vec<LoopInputAckToken>) -> Result<(), AgentLoopHostError> {
         self.input.ack_inputs(tokens).await
     }
+
+    async fn confirm_inputs_read(
+        &self,
+        tokens: Vec<LoopInputAckToken>,
+    ) -> Result<(), AgentLoopHostError> {
+        self.input.confirm_inputs_read(tokens).await
+    }
 }
 
 #[async_trait]

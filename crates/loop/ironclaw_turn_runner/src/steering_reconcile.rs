@@ -322,7 +322,14 @@ where
         &self,
         request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
+        // Settled BEFORE the terminal transition releases the thread: the
+        // loop has exited (no drain can follow), and the unread steers'
+        // handoff must exist before a newer message can claim the thread, so
+        // they keep their place ahead of it. Repeated after, idempotently,
+        // for anything enqueued in between.
         let process_id = request.lease.process_id;
+        self.reconcile(&process_id, "complete_process", RunQueueEnding::Ended)
+            .await;
         let snapshot = self.inner.complete_process(request).await?;
         self.reconcile(&process_id, "complete_process", RunQueueEnding::Ended)
             .await;
@@ -344,7 +351,11 @@ where
         &self,
         request: FailProcessRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
+        // As `complete_process`: the handoff exists before the thread is
+        // released.
         let process_id = request.process_id;
+        self.reconcile(&process_id, "fail_process", RunQueueEnding::Ended)
+            .await;
         let snapshot = self.inner.fail_process(request).await?;
         self.reconcile(&process_id, "fail_process", RunQueueEnding::Ended)
             .await;
@@ -803,6 +814,7 @@ mod transition_decorator_tests {
     #[derive(Default)]
     struct RecordingQueue {
         reconciled_runs: StdMutex<Vec<TurnRunId>>,
+        endings: StdMutex<Vec<(TurnRunId, RunQueueEnding)>>,
     }
 
     #[async_trait]
@@ -810,9 +822,13 @@ mod transition_decorator_tests {
         async fn settle_unconsumed(
             &self,
             run_id: TurnRunId,
-            _ending: RunQueueEnding,
+            ending: RunQueueEnding,
         ) -> Result<Vec<ThreadMessageId>, HostInputQueueError> {
-            self.reconciled_runs.lock().expect("lock").push(run_id);
+            let mut runs = self.reconciled_runs.lock().expect("lock");
+            if runs.last() != Some(&run_id) {
+                runs.push(run_id);
+            }
+            self.endings.lock().expect("lock").push((run_id, ending));
             Ok(Vec::new())
         }
     }
@@ -861,6 +877,19 @@ mod transition_decorator_tests {
             *queue.reconciled_runs.lock().expect("lock"),
             vec![complete_run, failed_run, cancelled_run],
             "every terminal transition must reconcile the run's queue, keyed by the run id"
+        );
+        // A run that ends by itself is settled before its terminal transition
+        // (the handoff must exist before the thread is released) and again
+        // after; a cancel is a Stop.
+        assert_eq!(
+            *queue.endings.lock().expect("lock"),
+            vec![
+                (complete_run, RunQueueEnding::Ended),
+                (complete_run, RunQueueEnding::Ended),
+                (failed_run, RunQueueEnding::Ended),
+                (failed_run, RunQueueEnding::Ended),
+                (cancelled_run, RunQueueEnding::Stopped),
+            ]
         );
     }
 
@@ -924,7 +953,11 @@ mod transition_decorator_tests {
             .expect("the committed terminal transition survives the failed reconciliation");
 
         assert_eq!(snapshot.status, ProcessLifecycleStatus::Completed);
-        assert_eq!(queue.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            queue.calls.load(Ordering::SeqCst),
+            2,
+            "settled before and after the transition, both failures tolerated"
+        );
     }
 
     fn suspension() -> ironclaw_processes::ProcessSuspension {

@@ -209,6 +209,76 @@ pub enum MessageStatus {
     Deleted,
 }
 
+/// Where a user message's delivery stands, as the guard of
+/// [`crate::SessionThreadService::change_message_delivery`]: the row must be
+/// exactly here for the change to apply. `run_id` is the owning run's id as
+/// stored in `turn_run_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageDelivery {
+    /// Queued as steering input for (or claimed by) `run_id`.
+    Queued { run_id: String },
+    /// Consumed by `run_id`.
+    Submitted { run_id: String },
+}
+
+impl MessageDelivery {
+    /// Whether `record` is exactly at this delivery state.
+    pub fn matches(&self, record: &ThreadMessageRecord) -> bool {
+        let (status, run_id) = match self {
+            Self::Queued { run_id } => (MessageStatus::Queued, run_id),
+            Self::Submitted { run_id } => (MessageStatus::Submitted, run_id),
+        };
+        record.kind == MessageKind::User
+            && record.status == status
+            && record.turn_run_id.as_deref() == Some(run_id.as_str())
+    }
+}
+
+/// The change a guarded delivery transition makes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageDeliveryChange {
+    /// Queued for (or claimed by) `run_id`; invisible to the model.
+    Queue { run_id: String },
+    /// Consumed by `run_id`; a queued row moves to the consumption point,
+    /// exactly as [`crate::SessionThreadService::mark_message_submitted`].
+    Submit { turn_id: String, run_id: String },
+    /// Not delivered (`RejectedBusy`): the person decides.
+    NotDelivered,
+}
+
+/// Outcome of a guarded delivery transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuardedDelivery {
+    /// The row was where the caller expected; this is it after the change.
+    Applied(ThreadMessageRecord),
+    /// The row had moved on (another writer decided first); this is where
+    /// it is now. Nothing was written.
+    Moved(ThreadMessageRecord),
+}
+
+pub(crate) fn apply_delivery_change(
+    message: &mut ThreadMessageRecord,
+    change: &MessageDeliveryChange,
+) {
+    match change {
+        MessageDeliveryChange::Queue { run_id } => {
+            message.status = MessageStatus::Queued;
+            message.turn_id = None;
+            message.turn_run_id = Some(run_id.clone());
+        }
+        MessageDeliveryChange::Submit { turn_id, run_id } => {
+            message.status = MessageStatus::Submitted;
+            message.turn_id = Some(turn_id.clone());
+            message.turn_run_id = Some(run_id.clone());
+        }
+        MessageDeliveryChange::NotDelivered => {
+            message.status = MessageStatus::RejectedBusy;
+            message.turn_id = None;
+            message.turn_run_id = None;
+        }
+    }
+}
+
 /// Canonical thread metadata returned by the service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionThreadRecord {

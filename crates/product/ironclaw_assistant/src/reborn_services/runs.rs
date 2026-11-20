@@ -398,6 +398,9 @@ where
             Arc::clone(&self.input_enqueue),
         )
         .with_approval_interactions(Arc::clone(&self.approval_interactions));
+        if let Some(dispatch) = &self.steer_dispatch {
+            inbound = inbound.with_steer_dispatch(Arc::clone(dispatch));
+        }
         if let Some(lander) = &self.inbound_attachments {
             inbound = inbound.with_inbound_attachments(Arc::clone(lander));
         }
@@ -541,7 +544,7 @@ where
                     delivery: Some(RebornSubmitDelivery::Steered),
                     steer_id: None,
                     queued_id: None,
-                    waiting_for_turn: false,
+                    waiting_for_turn: busy.waiting_for_turn,
                 })
             }
             ProductInboundAck::Rejected(rejection) => Err(session_rejection_error(&rejection)),

@@ -278,6 +278,7 @@ async fn replay_submit_carries_direct_surface_type_and_adapter_id() {
             SteeringPorts {
                 input_enqueue: &RejectingInputEnqueue,
                 approvals: None,
+                dispatch: None,
             },
             None,
         )
@@ -558,6 +559,7 @@ async fn shared_user_message_records_channel_surface_type() {
             SteeringPorts {
                 input_enqueue: &RejectingInputEnqueue,
                 approvals: None,
+                dispatch: None,
             },
             None,
         )

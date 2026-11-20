@@ -93,6 +93,17 @@ impl LoopInputPort for HostQueueLoopInputPort {
             .await
             .map_err(host_queue_error_into_host_error)
     }
+
+    async fn confirm_inputs_read(
+        &self,
+        tokens: Vec<LoopInputAckToken>,
+    ) -> Result<(), AgentLoopHostError> {
+        self.validate_issued_ack_tokens(&tokens)?;
+        self.queue
+            .confirm_read(self.run_context.run_id, tokens)
+            .await
+            .map_err(host_queue_error_into_host_error)
+    }
 }
 
 impl HostQueueLoopInputPort {

@@ -811,6 +811,42 @@ impl SessionThreadService for InMemorySessionThreadService {
         Ok(message.clone())
     }
 
+    async fn change_message_delivery(
+        &self,
+        scope: &ThreadScope,
+        thread_id: &ThreadId,
+        message_id: ThreadMessageId,
+        expected: &crate::MessageDelivery,
+        change: crate::MessageDeliveryChange,
+    ) -> Result<crate::GuardedDelivery, SessionThreadError> {
+        let mut state = self.state.lock().await;
+        let thread = get_thread_mut(&mut state, scope, thread_id)?;
+        let index = thread
+            .messages
+            .iter()
+            .position(|message| message.message_id == message_id)
+            .ok_or(SessionThreadError::UnknownMessage { message_id })?;
+        if !expected.matches(&thread.messages[index]) {
+            return Ok(crate::GuardedDelivery::Moved(
+                thread.messages[index].clone(),
+            ));
+        }
+        let moves_to_consumption = matches!(change, crate::MessageDeliveryChange::Submit { .. })
+            && thread.messages[index].status == MessageStatus::Queued;
+        if moves_to_consumption {
+            let sequence = thread.next_sequence;
+            thread.next_sequence += 1;
+            thread.record.updated_at = Some(Utc::now());
+            thread.messages[index].sequence = sequence;
+        }
+        crate::contract::apply_delivery_change(&mut thread.messages[index], &change);
+        let updated = thread.messages[index].clone();
+        if moves_to_consumption {
+            thread.messages.sort_by_key(|message| message.sequence);
+        }
+        Ok(crate::GuardedDelivery::Applied(updated))
+    }
+
     async fn read_thread_message(
         &self,
         scope: &ThreadScope,

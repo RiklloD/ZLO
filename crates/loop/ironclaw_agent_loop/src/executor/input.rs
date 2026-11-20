@@ -78,6 +78,12 @@ impl ExecutorStage<DrainInput> for InputStage {
                 )?));
             }
             if drained.drained {
+                // Drained is not read: the tokens stay unread (in the
+                // checkpoint, so a resume keeps them) until a model call
+                // carries the inputs.
+                state
+                    .unread_input_acks
+                    .extend(pending_input_ack.tokens().iter().cloned());
                 state = CheckpointStage
                     .write(ctx, state, CheckpointKind::BeforeModel)
                     .await?

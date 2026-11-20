@@ -1062,22 +1062,31 @@ pub(super) async fn assemble_runtime(
     // scheduler re-claims the run from its checkpoint and drains the persisted
     // input. The same instance serves as the loop's drain reader
     // (`parts.input_queue`) and every inbound surface's enqueue port.
-    let host_input_queue = {
-        let owner_scope = ResourceScope {
-            tenant_id: thread_scope.tenant_id.clone(),
-            user_id: actor_user_id.clone(),
-            agent_id: Some(thread_scope.agent_id.clone()),
-            project_id: thread_scope.project_id.clone(),
-            mission_id: None,
-            thread_id: None,
-            invocation_id: InvocationId::new(),
-        };
-        Arc::new(ironclaw_loop_host::FilesystemHostInputQueue::new(
-            Arc::clone(&services.scoped_filesystem),
-            owner_scope,
-            Arc::clone(&thread_service),
-        ))
+    // Steers a run never read are recorded as durable handoffs (their own
+    // documents, beside the queue's) before the run's queue closes; the
+    // thread dispatcher bound below delivers them.
+    let input_queue_owner_scope = ResourceScope {
+        tenant_id: thread_scope.tenant_id.clone(),
+        user_id: actor_user_id.clone(),
+        agent_id: Some(thread_scope.agent_id.clone()),
+        project_id: thread_scope.project_id.clone(),
+        mission_id: None,
+        thread_id: None,
+        invocation_id: InvocationId::new(),
     };
+    let steer_handoff_store: Arc<dyn ironclaw_loop_host::SteerHandoffStore> =
+        Arc::new(ironclaw_loop_host::FilesystemSteerHandoffStore::new(
+            Arc::clone(&services.scoped_filesystem),
+            input_queue_owner_scope.clone(),
+        ));
+    let host_input_queue = Arc::new(
+        ironclaw_loop_host::FilesystemHostInputQueue::new(
+            Arc::clone(&services.scoped_filesystem),
+            input_queue_owner_scope,
+            Arc::clone(&thread_service),
+        )
+        .with_steer_handoff(Arc::clone(&steer_handoff_store)),
+    );
     host_input_queue
         .bind_ack_effect_handler(Arc::clone(&subagent_await_edge_resolver) as Arc<_>)
         .map_err(|error| RebornRuntimeError::MalformedConfig {
@@ -1407,19 +1416,6 @@ pub(super) async fn assemble_runtime(
             host_input_queue_for_cancel_reconcile,
         ),
     );
-    // Deferred bind: a steer a run never read when it ended by itself starts
-    // the next turn instead of settling `RejectedBusy` (resend copy). The
-    // handler submits through the decorated coordinator, which only exists
-    // now; the queue was built before it.
-    host_input_queue
-        .bind_steer_redelivery(Arc::new(ironclaw_assistant::SteeringRedelivery::new(
-            Arc::clone(&planned_turn_coordinator),
-            Arc::clone(&thread_service),
-            Arc::clone(&host_input_enqueue),
-        )))
-        .map_err(|error| RebornRuntimeError::MalformedConfig {
-            reason: format!("steering redelivery bind failed: {error}"),
-        })?;
     let approval_interaction_service: Arc<dyn ApprovalInteractionService> =
         if let (Some(local_runtime), Some(builtin_capability_policy)) =
             (local_runtime, builtin_capability_policy.as_ref())
@@ -1433,6 +1429,29 @@ pub(super) async fn assemble_runtime(
         } else {
             Arc::new(UnavailableApprovalInteractionService)
         };
+    // The thread's ONE steer dispatch decision. Bound on the queue after the
+    // coordinator exists (a handoff recorded before then waits durably), and
+    // swept at startup and periodically, so a replayed terminal commit or a
+    // handoff whose retries ran out is still delivered.
+    let steer_dispatch = ironclaw_assistant::NativeSteerDispatch::new(
+        Arc::clone(&planned_turn_coordinator),
+        Arc::clone(&thread_service),
+        Arc::clone(&host_input_enqueue),
+        Arc::clone(&steer_handoff_store),
+        services
+            .delivery_coordinator
+            .clone()
+            .map(|coordinator| coordinator as Arc<dyn ironclaw_assistant::SuccessorReplyTargets>),
+        Some(Arc::clone(&approval_interaction_service)),
+    );
+    host_input_queue
+        .bind_steer_handoff_dispatch(steer_dispatch.as_queue_dispatch())
+        .map_err(|error| RebornRuntimeError::MalformedConfig {
+            reason: format!("steer handoff dispatcher bind failed: {error}"),
+        })?;
+    let steer_sweeper = crate::runtime::AbortOnDropTask(
+        steer_dispatch.spawn_sweeper(std::time::Duration::from_secs(30)),
+    );
     let auth_interaction_service = if let Some(local_runtime) = local_runtime {
         build_webui_auth_interaction_service(
             services.product_auth.as_ref(),
@@ -1537,6 +1556,7 @@ pub(super) async fn assemble_runtime(
             llm_config: llm_config_service.clone(),
             approval_interaction: Arc::clone(&approval_interaction_service),
             auth_interaction: Arc::clone(&auth_interaction_service),
+            steer_dispatch: Arc::clone(&steer_dispatch),
             thread_scope: &thread_scope,
             actor_user_id: actor_user_id.clone(),
             auth_challenges,
@@ -1996,6 +2016,8 @@ pub(super) async fn assemble_runtime(
             input_queue: host_input_queue,
             _resolver: subagent_await_edge_resolver,
             _store: subagent_await_edge_store,
+            steer_dispatch,
+            _steer_sweeper: steer_sweeper,
         },
         thread_scope,
         turn_scheduler: RuntimeTurnScheduler::new(composition.scheduler_handle, scheduler_notifier),

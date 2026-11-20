@@ -27,24 +27,21 @@
 //! - A run parked on an approval: the message is queued as a steer, then the
 //!   pending approval is declined so the run continues with it (the text
 //!   goes once, as the person's message — never also as decline feedback).
-//! - A steer the run never read when it ended by itself is redelivered as the
-//!   next turn by [`SteeringRedelivery`] (bound on the input queue).
+//! - A steer the run never read is handed off at its terminal settlement and
+//!   delivered (or, after a Stop, settled not delivered) by
+//!   [`crate::NativeSteerDispatch`], the thread's one dispatch decision.
 
-use std::sync::Arc;
-
-use async_trait::async_trait;
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_loop_contracts::LoopInput;
 use ironclaw_loop_host::{
-    EnqueueQueuedMessageRequest, HostInputEnqueuePort, HostInputQueueError,
-    HostStrandedSteerRedelivery, StrandedSteer,
+    EnqueueQueuedMessageRequest, HostInputEnqueuePort, HostInputQueueError, SteerWithdrawal,
 };
 use ironclaw_threads::{
     MessageStatus, SessionThreadError, SessionThreadService, ThreadMessageId, ThreadScope,
 };
 use ironclaw_turns::{
-    AcceptedMessageRef, GetRunStateRequest, IdempotencyKey, LoopMessageRef, SubmitTurnRequest,
-    SubmitTurnResponse, TurnCoordinator, TurnError, TurnRunId, TurnRunState, TurnScope, TurnStatus,
+    AcceptedMessageRef, GetRunStateRequest, IdempotencyKey, LoopMessageRef, TurnCoordinator,
+    TurnError, TurnRunId, TurnRunState, TurnScope, TurnStatus,
 };
 
 use crate::approval_interaction::{
@@ -82,14 +79,16 @@ pub(crate) enum SteeringAdmission {
     /// second `get_run_state` to build their response.
     Deferred { run: Box<TurnRunState> },
     /// Steering cannot serve this message — the queue is disabled or at
-    /// capacity, the run's profile disallows steering, or the run is not in
-    /// the sender's scope — and the row has been settled `RejectedBusy`.
+    /// capacity, the run's profile disallows steering, the run is not in
+    /// the sender's scope, or it is ending with no dispatcher to hand the
+    /// message to — and the row has been settled `RejectedBusy`.
     Rejected,
     /// The run is ending (terminal, cancel requested, or its queue already
-    /// closed) and will not read another steer. Nothing is settled: the
-    /// caller submits the message again once the run has released the
-    /// thread, so it starts the next turn instead of being lost.
-    RunEnding { run: Box<TurnRunState> },
+    /// closed — found before the enqueue or by the fence after it): the
+    /// message is durably staged for the next turn, behind the run's own
+    /// unread steers, and the thread's dispatcher delivers it once the run
+    /// releases the thread. The sender is answered now (no waiting).
+    Staged { run: Box<TurnRunState> },
 }
 
 /// Genuinely fatal admission failures. Settle-cases are never errors: they
@@ -126,9 +125,8 @@ pub(crate) fn parse_stored_run_id(raw: Option<&str>) -> Result<TurnRunId, String
 /// `RejectedBusy` so it never sticks in `Queued` with no backing input.
 pub(crate) async fn admit_busy_steering<C>(
     turn_coordinator: &C,
-    input_enqueue: &dyn HostInputEnqueuePort,
+    ports: SteeringAdmissionPorts<'_>,
     thread_service: &dyn SessionThreadService,
-    approvals: Option<&dyn ApprovalInteractionService>,
     request: SteeringAdmissionRequest,
 ) -> Result<SteeringAdmission, SteeringAdmissionError>
 where
@@ -136,7 +134,12 @@ where
 {
     let run = match serviceable_run(turn_coordinator, &request).await? {
         Serviceable::Run(run) => *run,
-        Serviceable::Ending(run) => return Ok(SteeringAdmission::RunEnding { run }),
+        Serviceable::Ending(run) => {
+            return match mark_queued_reconciling(thread_service, &request).await? {
+                QueuedMark::Queued => stage(ports, thread_service, &request, run).await,
+                QueuedMark::SettledRejected => Ok(SteeringAdmission::Rejected),
+            };
+        }
         Serviceable::No => {
             settle_rejected(thread_service, &request).await?;
             return Ok(SteeringAdmission::Rejected);
@@ -149,12 +152,11 @@ where
         // input on top of it.
         QueuedMark::SettledRejected => return Ok(SteeringAdmission::Rejected),
     }
-    match try_enqueue(input_enqueue, &request, &run).await {
-        Ok(()) => {
-            let run = decline_pending_approval(turn_coordinator, approvals, &request, run).await;
-            Ok(SteeringAdmission::Deferred { run: Box::new(run) })
+    match try_enqueue(ports.input_enqueue, &request, &run).await {
+        Ok(()) => fence_after_enqueue(turn_coordinator, ports, thread_service, &request, run).await,
+        Err(EnqueueFailure::RunClosed) => {
+            stage(ports, thread_service, &request, Box::new(run)).await
         }
-        Err(EnqueueFailure::RunClosed) => Ok(SteeringAdmission::RunEnding { run: Box::new(run) }),
         Err(EnqueueFailure::Unserviceable) => {
             settle_rejected(thread_service, &request).await?;
             Ok(SteeringAdmission::Rejected)
@@ -182,6 +184,90 @@ where
     }
 }
 
+/// The ports a busy submit steers through.
+#[derive(Clone, Copy)]
+pub(crate) struct SteeringAdmissionPorts<'a> {
+    pub(crate) input_enqueue: &'a dyn HostInputEnqueuePort,
+    /// Declines the approval a steer lands on.
+    pub(crate) approvals: Option<&'a dyn ApprovalInteractionService>,
+    /// The thread's dispatcher: a message whose run is ending is staged
+    /// with it. Without one the message is settled not delivered.
+    pub(crate) dispatch: Option<&'a crate::NativeSteerDispatch>,
+}
+
+/// The fence after a successful enqueue: re-read the run. A run that turned
+/// out to be ending may already have been settled — and its queue document
+/// reclaimed, so the enqueue made a fresh queue it will never poll — so the
+/// steer is taken back and staged for the next turn. A run that parked on an
+/// approval meanwhile has it declined with this fresh state (the snapshot
+/// taken before the enqueue would have missed it).
+async fn fence_after_enqueue<C>(
+    turn_coordinator: &C,
+    ports: SteeringAdmissionPorts<'_>,
+    thread_service: &dyn SessionThreadService,
+    request: &SteeringAdmissionRequest,
+    before: TurnRunState,
+) -> Result<SteeringAdmission, SteeringAdmissionError>
+where
+    C: TurnCoordinator + ?Sized,
+{
+    let after = turn_coordinator
+        .get_run_state(GetRunStateRequest {
+            scope: request.turn_scope.clone(),
+            run_id: request.active_run_id,
+        })
+        .await
+        .map_err(SteeringAdmissionError::RunState)?;
+    if crate::steering_dispatch::run_is_ending(&after) {
+        let withdrawn = ports
+            .input_enqueue
+            .withdraw_user_steer(request.active_run_id, request.message_id)
+            .await
+            .map_err(SteeringAdmissionError::Enqueue)?;
+        return match withdrawn {
+            SteerWithdrawal::Withdrawn => {
+                stage(ports, thread_service, request, Box::new(after)).await
+            }
+            // The run read it, or its settlement already took it (and hands
+            // it off): steered either way.
+            SteerWithdrawal::Consumed | SteerWithdrawal::Settled | SteerWithdrawal::Unknown => {
+                Ok(SteeringAdmission::Deferred {
+                    run: Box::new(before),
+                })
+            }
+        };
+    }
+    let run = decline_pending_approval(turn_coordinator, ports.approvals, request, after).await;
+    Ok(SteeringAdmission::Deferred { run: Box::new(run) })
+}
+
+/// Stage a `Queued` message for the next turn of an ending run.
+async fn stage(
+    ports: SteeringAdmissionPorts<'_>,
+    thread_service: &dyn SessionThreadService,
+    request: &SteeringAdmissionRequest,
+    run: Box<TurnRunState>,
+) -> Result<SteeringAdmission, SteeringAdmissionError> {
+    let Some(dispatch) = ports.dispatch else {
+        settle_rejected(thread_service, request).await?;
+        return Ok(SteeringAdmission::Rejected);
+    };
+    let message_ref = LoopMessageRef::new(request.accepted_message_ref.as_str().to_string())
+        .map_err(|error| SteeringAdmissionError::InvalidMessageRef(error.to_string()))?;
+    dispatch
+        .stage_after_end(
+            &request.thread_scope,
+            request.thread_id(),
+            &request.turn_scope,
+            request.active_run_id,
+            request.message_id,
+            message_ref,
+        )
+        .await
+        .map_err(SteeringAdmissionError::Enqueue)?;
+    Ok(SteeringAdmission::Staged { run })
+}
+
 /// A message sent while the run waits on an approval answers it: the steer
 /// is already queued, so decline the approval and the run continues with the
 /// message at its next step (t3code: "a message sent while approvals are
@@ -189,7 +275,7 @@ where
 /// gate was answered meanwhile, or no approval service is wired) the steer
 /// stays queued and is read once the run moves on. Returns the run's state
 /// after the decline, so the caller reports the running run.
-async fn decline_pending_approval<C>(
+pub(crate) async fn decline_pending_approval<C>(
     turn_coordinator: &C,
     approvals: Option<&dyn ApprovalInteractionService>,
     request: &SteeringAdmissionRequest,
@@ -259,30 +345,32 @@ where
 /// stays `Queued` so the NEXT replay retries the re-enqueue.
 pub(crate) async fn readmit_queued_steering<C>(
     turn_coordinator: &C,
-    input_enqueue: &dyn HostInputEnqueuePort,
+    ports: SteeringAdmissionPorts<'_>,
     thread_service: &dyn SessionThreadService,
     request: SteeringAdmissionRequest,
 ) -> Result<SteeringAdmission, SteeringAdmissionError>
 where
     C: TurnCoordinator + ?Sized,
 {
-    // A replayed row is one whose enqueue may never have happened (a crash
-    // between the `Queued` mark and the enqueue), so terminal reconciliation
-    // may not know it: when its run is ending, settle it here rather than
-    // leave it `Queued` with nothing left to settle it. (Crash-orphan corner
-    // case; a fresh submit resubmits as the next turn instead.)
+    // A replayed row's enqueue may never have happened (a crash between the
+    // `Queued` mark and the enqueue), so terminal settlement may not know
+    // it: when its run is ending it is staged for the next turn here.
     let run = match serviceable_run(turn_coordinator, &request).await? {
         Serviceable::Run(run) => *run,
-        Serviceable::Ending(_) | Serviceable::No => {
+        Serviceable::Ending(run) => return stage(ports, thread_service, &request, run).await,
+        Serviceable::No => {
             settle_rejected(thread_service, &request).await?;
             return Ok(SteeringAdmission::Rejected);
         }
     };
-    match try_enqueue(input_enqueue, &request, &run).await {
-        Ok(()) => Ok(SteeringAdmission::Deferred { run: Box::new(run) }),
+    match try_enqueue(ports.input_enqueue, &request, &run).await {
+        // The same fence and approval redirect as a fresh admission, so a
+        // crash after the enqueue — or after a durable denial but before the
+        // resume — completes the redirect on replay (the decline is keyed by
+        // the message, so a repeat resumes idempotently).
+        Ok(()) => fence_after_enqueue(turn_coordinator, ports, thread_service, &request, run).await,
         Err(EnqueueFailure::RunClosed) => {
-            settle_rejected(thread_service, &request).await?;
-            Ok(SteeringAdmission::Rejected)
+            stage(ports, thread_service, &request, Box::new(run)).await
         }
         Err(EnqueueFailure::Unserviceable) => {
             settle_rejected(thread_service, &request).await?;
@@ -491,175 +579,6 @@ async fn try_enqueue(
     }
 }
 
-/// Starts the next turn with steers an ended run never read
-/// ([`HostStrandedSteerRedelivery`], bound on the input queue by
-/// composition). The first steer submits a turn carrying the same accepted
-/// message (its row moves `Queued` → `Submitted` on the new run, no
-/// duplicate row); each later one steers that new run through
-/// [`admit_busy_steering`], so several keep their order. The submit is keyed
-/// by (ended run, message), so a repeated reconciliation never starts it
-/// twice.
-pub struct SteeringRedelivery {
-    turn_coordinator: Arc<dyn TurnCoordinator>,
-    thread_service: Arc<dyn SessionThreadService>,
-    input_enqueue: Arc<dyn HostInputEnqueuePort>,
-}
-
-impl SteeringRedelivery {
-    pub fn new(
-        turn_coordinator: Arc<dyn TurnCoordinator>,
-        thread_service: Arc<dyn SessionThreadService>,
-        input_enqueue: Arc<dyn HostInputEnqueuePort>,
-    ) -> Self {
-        Self {
-            turn_coordinator,
-            thread_service,
-            input_enqueue,
-        }
-    }
-
-    async fn redeliver_one(
-        &self,
-        ended_run_id: TurnRunId,
-        steer: &StrandedSteer,
-    ) -> Result<(), String> {
-        let ended = self
-            .turn_coordinator
-            .get_run_state(GetRunStateRequest {
-                scope: steer.turn_scope.clone(),
-                run_id: ended_run_id,
-            })
-            .await
-            .map_err(|error| format!("ended run state read failed: {error}"))?;
-        let Some(actor) = ended.actor.clone() else {
-            // No person to run the turn as (a system-activated run): the row
-            // can only be settled as not delivered.
-            return self.settle_not_delivered(steer).await;
-        };
-        let accepted_message_ref = AcceptedMessageRef::new(steer.message_ref.as_str())
-            .map_err(|error| format!("stranded steer ref invalid: {error}"))?;
-        let idempotency_key = IdempotencyKey::new(format!(
-            "steer-redelivery:{ended_run_id}:{}",
-            steer.message_id
-        ))
-        .map_err(|error| format!("redelivery idempotency key invalid: {error}"))?;
-        // The ended run's model carries over; an unresolvable pick falls
-        // back to the active model, as any submit's would.
-        let requested_model = ended.resolved_model_route.as_ref().and_then(|route| {
-            if route.is_advisory() {
-                Some(route.model_id().to_string())
-            } else {
-                ironclaw_product_contracts::operator_llm::NativeModelRoute::turn_model(
-                    Some(route.provider_id()),
-                    Some(route.model_id()),
-                    None,
-                )
-            }
-        });
-        let submitted = self
-            .turn_coordinator
-            .submit_turn(SubmitTurnRequest {
-                scope: steer.turn_scope.clone(),
-                actor,
-                accepted_message_ref: accepted_message_ref.clone(),
-                requested_run_profile: None,
-                output_contract: None,
-                requested_model,
-                idempotency_key,
-                received_at: chrono::Utc::now(),
-                requested_run_id: None,
-                parent_run_id: None,
-                subagent_depth: 0,
-                spawn_tree_root_run_id: None,
-                product_context: ended.product_context.clone(),
-                subagent_activation_provenance: None,
-            })
-            .await;
-        match submitted {
-            Ok(SubmitTurnResponse::Accepted {
-                turn_id, run_id, ..
-            }) => self
-                .thread_service
-                .mark_message_submitted(
-                    &steer.thread_scope,
-                    &steer.thread_id,
-                    steer.message_id,
-                    turn_id.to_string(),
-                    run_id.to_string(),
-                )
-                .await
-                .map(|_| ())
-                .map_err(|error| format!("redelivered row submit flip failed: {error}")),
-            Err(TurnError::ThreadBusy(busy)) if busy.active_run_id == ended_run_id => {
-                // The ended run has not released the thread yet; a later
-                // reconciliation of it retries.
-                Err("the ended run still holds the thread".to_string())
-            }
-            Err(TurnError::ThreadBusy(busy)) => {
-                // Another run started first (an earlier redelivered steer, or
-                // a new message): steer it.
-                match admit_busy_steering(
-                    self.turn_coordinator.as_ref(),
-                    self.input_enqueue.as_ref(),
-                    self.thread_service.as_ref(),
-                    None,
-                    SteeringAdmissionRequest {
-                        turn_scope: steer.turn_scope.clone(),
-                        thread_scope: steer.thread_scope.clone(),
-                        message_id: steer.message_id,
-                        accepted_message_ref,
-                        active_run_id: busy.active_run_id,
-                    },
-                )
-                .await
-                {
-                    Ok(SteeringAdmission::Deferred { .. } | SteeringAdmission::Rejected) => Ok(()),
-                    Ok(SteeringAdmission::RunEnding { .. }) => {
-                        Err("the run it would steer is ending".to_string())
-                    }
-                    Err(error) => Err(format!("steering the started run failed: {error}")),
-                }
-            }
-            Err(error) => Err(format!("redelivery submit failed: {error}")),
-        }
-    }
-
-    async fn settle_not_delivered(&self, steer: &StrandedSteer) -> Result<(), String> {
-        self.thread_service
-            .mark_message_rejected_busy(&steer.thread_scope, &steer.thread_id, steer.message_id)
-            .await
-            .map(|_| ())
-            .map_err(|error| format!("not-delivered settle failed: {error}"))
-    }
-}
-
-#[async_trait]
-impl HostStrandedSteerRedelivery for SteeringRedelivery {
-    async fn redeliver(
-        &self,
-        ended_run_id: TurnRunId,
-        steers: Vec<StrandedSteer>,
-    ) -> Vec<ThreadMessageId> {
-        let mut settled = Vec::new();
-        for steer in &steers {
-            match self.redeliver_one(ended_run_id, steer).await {
-                Ok(()) => settled.push(steer.message_id),
-                Err(reason) => {
-                    tracing::debug!(
-                        %ended_run_id,
-                        message_id = %steer.message_id,
-                        %reason,
-                        "unread steer not redelivered yet; retried by the next reconciliation"
-                    );
-                    // Later steers must not overtake this one.
-                    break;
-                }
-            }
-        }
-        settled
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -745,12 +664,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_requested_run_is_ending_and_leaves_the_message_for_the_next_turn() {
+    async fn cancel_requested_run_without_a_dispatcher_settles_not_delivered() {
         // `CancelRequested` is nonterminal but the cancel reconciler will
         // close its queue: admitting steering behind it would strand the
-        // message (or race the reconciler). Admission reports the run as
-        // ending WITHOUT settling the row, so the caller resubmits it as the
-        // next turn once the thread is released (never "please resend").
+        // message (or race the reconciler). With a dispatcher it is staged
+        // for the next turn (see `steering_dispatch_tests`); without one
+        // there is nowhere to stage it, so it settles not delivered — and
+        // never waits.
         let thread_service = InMemorySessionThreadService::default();
         let thread_scope = ThreadScope {
             tenant_id: TenantId::new("tenant-steer").expect("tenant"),
@@ -798,9 +718,12 @@ mod tests {
 
         let admission = admit_busy_steering(
             &coordinator,
-            &enqueue,
+            SteeringAdmissionPorts {
+                input_enqueue: &enqueue,
+                approvals: None,
+                dispatch: None,
+            },
             &thread_service,
-            None,
             SteeringAdmissionRequest {
                 turn_scope,
                 thread_scope: thread_scope.clone(),
@@ -812,7 +735,7 @@ mod tests {
         .await
         .expect("admission settles");
 
-        assert!(matches!(admission, SteeringAdmission::RunEnding { .. }));
+        assert!(matches!(admission, SteeringAdmission::Rejected));
         assert_eq!(
             enqueue.calls.load(Ordering::SeqCst),
             0,
@@ -825,260 +748,7 @@ mod tests {
             })
             .await
             .expect("history");
-        assert_eq!(
-            history.messages[0].status,
-            MessageStatus::Accepted,
-            "the row is left for the resubmit, not settled as not delivered"
-        );
-    }
-
-    /// Coordinator double for redelivery: the ended run's state answers
-    /// `get_run_state` for it; the first submit starts `next_run`, later ones
-    /// find the thread busy with it. Every submit request is recorded.
-    struct RedeliveryCoordinator {
-        ended: TurnRunState,
-        next: TurnRunState,
-        submits: std::sync::Mutex<Vec<SubmitTurnRequest>>,
-    }
-
-    #[async_trait]
-    impl TurnCoordinator for RedeliveryCoordinator {
-        async fn prepare_turn(&self, _scope: TurnScope) -> Result<TurnRunId, TurnError> {
-            panic!("prepare_turn is not used by redelivery")
-        }
-
-        async fn submit_turn(
-            &self,
-            request: SubmitTurnRequest,
-        ) -> Result<SubmitTurnResponse, TurnError> {
-            let mut submits = self.submits.lock().expect("submits");
-            submits.push(request.clone());
-            if submits.len() == 1 {
-                Ok(SubmitTurnResponse::Accepted {
-                    turn_id: self.next.turn_id,
-                    run_id: self.next.run_id,
-                    status: TurnStatus::Queued,
-                    resolved_run_profile_id: self.next.resolved_run_profile_id.clone(),
-                    resolved_run_profile_version: self.next.resolved_run_profile_version,
-                    event_cursor: self.next.event_cursor,
-                    accepted_message_ref: request.accepted_message_ref,
-                })
-            } else {
-                Err(TurnError::ThreadBusy(ironclaw_turns::ThreadBusy {
-                    active_run_id: self.next.run_id,
-                    status: TurnStatus::Running,
-                    event_cursor: self.next.event_cursor,
-                }))
-            }
-        }
-
-        async fn resume_turn(
-            &self,
-            _request: ResumeTurnRequest,
-        ) -> Result<ResumeTurnResponse, TurnError> {
-            panic!("resume_turn is not used by redelivery")
-        }
-
-        async fn retry_turn(
-            &self,
-            _request: RetryTurnRequest,
-        ) -> Result<RetryTurnResponse, TurnError> {
-            panic!("retry_turn is not used by redelivery")
-        }
-
-        async fn cancel_run(
-            &self,
-            _request: CancelRunRequest,
-        ) -> Result<CancelRunResponse, TurnError> {
-            panic!("cancel_run is not used by redelivery")
-        }
-
-        async fn get_run_state(
-            &self,
-            request: GetRunStateRequest,
-        ) -> Result<TurnRunState, TurnError> {
-            if request.run_id == self.ended.run_id {
-                Ok(self.ended.clone())
-            } else if request.run_id == self.next.run_id {
-                Ok(self.next.clone())
-            } else {
-                Err(TurnError::ScopeNotFound)
-            }
-        }
-    }
-
-    /// Steers a run never read when it ended by itself start the next turn:
-    /// the first submits a turn carrying the SAME accepted message (as the
-    /// ended run's actor, with its product context, keyed so a repeated
-    /// reconciliation cannot start it twice) and its row moves to the new
-    /// run; the second steers that new run, keeping their order. Nothing is
-    /// settled `RejectedBusy` and nobody is asked to resend.
-    #[tokio::test]
-    async fn unread_steers_of_an_ended_run_start_the_next_turn_in_order() {
-        use ironclaw_loop_contracts::LoopInputCursorToken;
-        use ironclaw_loop_host::{
-            HostInputQueue, HostInputQueueReconcile, InMemoryHostInputQueue, RunQueueEnding,
-        };
-
-        let thread_service = Arc::new(InMemorySessionThreadService::default());
-        let thread_scope = ThreadScope {
-            tenant_id: TenantId::new("tenant-redeliver").expect("tenant"),
-            agent_id: AgentId::new("agent-redeliver").expect("agent"),
-            project_id: None,
-            owner_user_id: None,
-            mission_id: None,
-        };
-        let thread = thread_service
-            .ensure_thread(EnsureThreadRequest {
-                scope: thread_scope.clone(),
-                thread_id: None,
-                created_by_actor_id: "actor-redeliver".into(),
-                title: None,
-                metadata_json: None,
-            })
-            .await
-            .expect("thread");
-        let turn_scope = TurnScope::new(
-            thread_scope.tenant_id.clone(),
-            Some(thread_scope.agent_id.clone()),
-            None,
-            thread.thread_id.clone(),
-        );
-        let ended_run = TurnRunId::new();
-        let next_run = TurnRunId::new();
-        let first_ref = AcceptedMessageRef::new("msg:placeholder").expect("ref");
-        let mut ended = sample_run_state(turn_scope.clone(), ended_run, &first_ref);
-        ended.status = TurnStatus::Completed;
-        ended.product_context = Some(ironclaw_turns::product_context::resolve_web_ui(
-            turn_scope.product_owner(ended.actor.as_ref().expect("actor")),
-        ));
-        let next = sample_run_state(turn_scope.clone(), next_run, &first_ref);
-        let coordinator = Arc::new(RedeliveryCoordinator {
-            ended: ended.clone(),
-            next,
-            submits: std::sync::Mutex::new(Vec::new()),
-        });
-        let queue = Arc::new(InMemoryHostInputQueue::new(
-            Arc::clone(&thread_service) as Arc<dyn SessionThreadService>
-        ));
-        queue
-            .bind_steer_redelivery(Arc::new(SteeringRedelivery::new(
-                Arc::clone(&coordinator) as Arc<dyn TurnCoordinator>,
-                Arc::clone(&thread_service) as Arc<dyn SessionThreadService>,
-                Arc::clone(&queue) as Arc<dyn HostInputEnqueuePort>,
-            )))
-            .expect("bind");
-
-        let mut ids = Vec::new();
-        for text in ["first unread steer", "second unread steer"] {
-            let accepted = thread_service
-                .accept_inbound_message(AcceptInboundMessageRequest {
-                    scope: thread_scope.clone(),
-                    thread_id: thread.thread_id.clone(),
-                    actor_id: "actor-redeliver".into(),
-                    source_binding_id: None,
-                    reply_target_binding_id: None,
-                    external_event_id: None,
-                    content: MessageContent::text(text),
-                })
-                .await
-                .expect("accept");
-            thread_service
-                .mark_message_queued(
-                    &thread_scope,
-                    &thread.thread_id,
-                    accepted.message_id,
-                    ended_run.to_string(),
-                )
-                .await
-                .expect("queued");
-            queue
-                .enqueue_user_steer(
-                    EnqueueQueuedMessageRequest {
-                        run_id: ended_run,
-                        turn_id: ended.turn_id,
-                        scope: thread_scope.clone(),
-                        thread_id: thread.thread_id.clone(),
-                        message_id: accepted.message_id,
-                        input: LoopInput::Steering {
-                            message_ref: LoopMessageRef::new(format!(
-                                "msg:{}",
-                                accepted.message_id
-                            ))
-                            .expect("ref"),
-                        },
-                        ack_effect: None,
-                    },
-                    turn_scope.clone(),
-                )
-                .await
-                .expect("enqueue");
-            ids.push(accepted.message_id);
-        }
-
-        let rejected = queue
-            .settle_unconsumed(ended_run, RunQueueEnding::Ended)
-            .await
-            .expect("settle");
-        assert!(rejected.is_empty(), "nothing is settled as not delivered");
-
-        let submits = coordinator.submits.lock().expect("submits").clone();
-        assert_eq!(submits.len(), 2, "one start, one steer attempt");
-        let start = &submits[0];
-        assert_eq!(
-            start.accepted_message_ref.as_str(),
-            format!("msg:{}", ids[0]).as_str(),
-            "the next turn carries the oldest unread steer's own message"
-        );
-        assert_eq!(Some(&start.actor), ended.actor.as_ref());
-        assert_eq!(start.scope, turn_scope);
-        assert_eq!(start.product_context, ended.product_context);
-        assert_eq!(
-            start.idempotency_key.as_str(),
-            format!("steer-redelivery:{ended_run}:{}", ids[0]).as_str()
-        );
-
-        let row = |message_id| {
-            let thread_service = Arc::clone(&thread_service);
-            let thread_scope = thread_scope.clone();
-            let thread_id = thread.thread_id.clone();
-            async move {
-                thread_service
-                    .read_thread_message(&thread_scope, &thread_id, message_id)
-                    .await
-                    .expect("read")
-                    .expect("row")
-            }
-        };
-        let first = row(ids[0]).await;
-        assert_eq!(first.status, MessageStatus::Submitted);
-        assert_eq!(
-            first.turn_run_id.as_deref(),
-            Some(next_run.to_string().as_str())
-        );
-        let second = row(ids[1]).await;
-        assert_eq!(second.status, MessageStatus::Queued);
-        assert_eq!(
-            second.turn_run_id.as_deref(),
-            Some(next_run.to_string().as_str()),
-            "the later steer steers the started run"
-        );
-        let drained = queue
-            .next_after(next_run, LoopInputCursorToken::origin(), 8)
-            .await
-            .expect("poll next run");
-        assert_eq!(
-            drained.inputs.len(),
-            1,
-            "the started run reads the second steer"
-        );
-
-        // A repeated reconciliation of the ended run does nothing more.
-        queue
-            .settle_unconsumed(ended_run, RunQueueEnding::Ended)
-            .await
-            .expect("idempotent");
-        assert_eq!(coordinator.submits.lock().expect("submits").len(), 2);
+        assert_eq!(history.messages[0].status, MessageStatus::RejectedBusy);
     }
 
     fn sample_run_state(

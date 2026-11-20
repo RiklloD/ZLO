@@ -238,6 +238,13 @@ where
         self
     }
 
+    /// The thread's steer dispatcher for the session lane (see
+    /// `DefaultInboundTurnService::with_steer_dispatch`).
+    pub fn with_steer_dispatch(mut self, dispatch: Arc<crate::NativeSteerDispatch>) -> Self {
+        self.steer_dispatch = Some(dispatch);
+        self
+    }
+
     pub fn with_auth_interactions(
         mut self,
         auth_interactions: Arc<dyn AuthInteractionService>,

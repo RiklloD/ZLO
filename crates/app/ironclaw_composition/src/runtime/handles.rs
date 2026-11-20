@@ -373,6 +373,11 @@ impl RebornRuntime {
         self.turn_coordinator.clone()
     }
 
+    /// The thread steer dispatcher every inbound lane admits through.
+    pub(crate) fn steer_dispatch(&self) -> Arc<ironclaw_assistant::NativeSteerDispatch> {
+        Arc::clone(&self.subagent_delivery.steer_dispatch)
+    }
+
     pub(crate) fn webui_input_enqueue(&self) -> Arc<dyn ironclaw_loop_host::HostInputEnqueuePort> {
         Arc::clone(&self.subagent_delivery.input_queue)
             as Arc<dyn ironclaw_loop_host::HostInputEnqueuePort>

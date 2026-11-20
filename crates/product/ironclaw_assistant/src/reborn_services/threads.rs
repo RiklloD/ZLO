@@ -499,15 +499,33 @@ where
             .resolve_thread_history_for_caller(caller, &scope)
             .await?;
 
+        let steered = native_steers(&history.messages);
         let (messages, next_cursor) = paginate_timeline_messages(history.messages, limit, cursor);
         let summary_artifacts = cap_summary_artifacts(history.summary_artifacts);
+        let steer_marks = messages
+            .iter()
+            .filter_map(|message| {
+                let waiting = steered.get(&message.message_id)?;
+                Some(
+                    ironclaw_product_contracts::product_wire::RebornTimelineSteerMark {
+                        message_id: message.message_id.to_string(),
+                        steer: Some(ironclaw_product_contracts::product_wire::RebornSteerMark {
+                            id: message.message_id.to_string(),
+                            state: if *waiting { "pending" } else { "read" }.to_string(),
+                            waiting_to_be_read: *waiting,
+                        }),
+                        notices: Vec::new(),
+                    },
+                )
+            })
+            .collect();
 
         Ok(RebornTimelineResponse {
             thread: history.thread,
             messages,
             summary_artifacts,
             next_cursor,
-            steer_marks: Vec::new(),
+            steer_marks,
         })
     }
 
@@ -866,5 +884,121 @@ where
             }
         }
         Ok(())
+    }
+}
+
+/// The native thread's steers, derived from durable delivery state (so the
+/// marker survives the steer being read, a reload, and a restart): a user
+/// message joined a run another message started — it is not the first
+/// consumed user message of its run — or it is still queued for a run
+/// (`true`: waiting to be read). A message that started its own turn (a
+/// handed-off steer included) is not a steer.
+pub(super) fn native_steers(
+    messages: &[ironclaw_threads::ThreadMessageRecord],
+) -> std::collections::HashMap<ironclaw_threads::ThreadMessageId, bool> {
+    use ironclaw_threads::{MessageKind, MessageStatus};
+    let mut starters: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    for message in messages {
+        if message.kind == MessageKind::User
+            && message.status == MessageStatus::Submitted
+            && let Some(run) = message.turn_run_id.as_deref()
+        {
+            let first = starters.entry(run).or_insert(message.sequence);
+            *first = (*first).min(message.sequence);
+        }
+    }
+    let mut steers = std::collections::HashMap::new();
+    for message in messages.iter().filter(|m| m.kind == MessageKind::User) {
+        let Some(run) = message.turn_run_id.as_deref() else {
+            continue;
+        };
+        match message.status {
+            MessageStatus::Queued => {
+                steers.insert(message.message_id, true);
+            }
+            MessageStatus::Submitted if starters.get(run) != Some(&message.sequence) => {
+                steers.insert(message.message_id, false);
+            }
+            _ => {}
+        }
+    }
+    steers
+}
+
+#[cfg(test)]
+mod native_steer_tests {
+    use ironclaw_threads::{
+        AcceptInboundMessageRequest, EnsureThreadRequest, InMemorySessionThreadService,
+        MessageContent, SessionThreadService, ThreadHistoryRequest, ThreadScope,
+    };
+
+    /// Review P2-9: the steer marker comes from durable delivery state, so
+    /// it survives the steer being read (and a reload): the run's starter is
+    /// not a steer, a message that joined the run is (read), a queued one is
+    /// (waiting), and a message that started its own turn is not.
+    #[tokio::test]
+    async fn steers_are_derived_from_delivery_state_and_survive_being_read() {
+        let service = InMemorySessionThreadService::default();
+        let scope = ThreadScope {
+            tenant_id: ironclaw_host_api::ids::TenantId::new("tenant-marks").unwrap(),
+            agent_id: ironclaw_host_api::ids::AgentId::new("agent-marks").unwrap(),
+            project_id: None,
+            owner_user_id: None,
+            mission_id: None,
+        };
+        let thread = service
+            .ensure_thread(EnsureThreadRequest {
+                scope: scope.clone(),
+                thread_id: None,
+                created_by_actor_id: "actor".into(),
+                title: None,
+                metadata_json: None,
+            })
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        for text in ["starter", "read steer", "waiting steer", "own turn"] {
+            ids.push(
+                service
+                    .accept_inbound_message(AcceptInboundMessageRequest {
+                        scope: scope.clone(),
+                        thread_id: thread.thread_id.clone(),
+                        actor_id: "actor".into(),
+                        source_binding_id: None,
+                        reply_target_binding_id: None,
+                        external_event_id: None,
+                        content: MessageContent::text(text),
+                    })
+                    .await
+                    .unwrap()
+                    .message_id,
+            );
+        }
+        let submit = |id, run: &str| {
+            service.mark_message_submitted(&scope, &thread.thread_id, id, "turn".into(), run.into())
+        };
+        submit(ids[0], "run-a").await.unwrap();
+        service
+            .mark_message_queued(&scope, &thread.thread_id, ids[1], "run-a".into())
+            .await
+            .unwrap();
+        submit(ids[1], "run-a").await.unwrap();
+        service
+            .mark_message_queued(&scope, &thread.thread_id, ids[2], "run-a".into())
+            .await
+            .unwrap();
+        submit(ids[3], "run-b").await.unwrap();
+        let history = service
+            .list_thread_history(ThreadHistoryRequest {
+                scope: scope.clone(),
+                thread_id: thread.thread_id.clone(),
+            })
+            .await
+            .unwrap();
+        let steers = super::native_steers(&history.messages);
+        assert_eq!(steers.get(&ids[0]), None, "the starter is not a steer");
+        assert_eq!(steers.get(&ids[1]), Some(&false), "read, still a steer");
+        assert_eq!(steers.get(&ids[2]), Some(&true), "waiting to be read");
+        assert_eq!(steers.get(&ids[3]), None, "started its own turn");
     }
 }

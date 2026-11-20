@@ -622,6 +622,8 @@ pub struct RebornServices<
     operator_logs: Arc<dyn OperatorLogsService>,
     operator_service_lifecycle: Arc<dyn OperatorServiceLifecycleService>,
     approval_interactions: Arc<dyn ApprovalInteractionService>,
+    // arch-exempt: optional_arc, product-surface tests build RebornServices without the native loop's steer dispatcher; production wires it, plan docs/internal/design/2026-08-10-unified-channel-model.md
+    steer_dispatch: Option<Arc<crate::NativeSteerDispatch>>,
     auth_interactions: Arc<dyn AuthInteractionService>,
     admin_users: Arc<dyn AdminUserService>,
     extension_credentials: Option<Arc<dyn ExtensionCredentialSetupService>>,
@@ -707,6 +709,7 @@ where
             operator_logs: Arc::new(UnsupportedOperatorLogsService),
             operator_service_lifecycle: Arc::new(UnsupportedOperatorServiceLifecycleService),
             approval_interactions: Arc::new(RejectingApprovalInteractionService),
+            steer_dispatch: None,
             auth_interactions: Arc::new(RejectingAuthInteractionService),
             admin_users: Arc::new(RejectingAdminUserService),
             extension_credentials: None,

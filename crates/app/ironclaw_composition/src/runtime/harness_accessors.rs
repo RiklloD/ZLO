@@ -264,6 +264,7 @@ impl RebornRuntime {
                     input_enqueue,
                     llm_config: self.llm_config_service.clone(),
                     approval_interaction: None,
+                    steer_dispatch: None,
                     auth_interaction: None,
                     identity,
                     approval_context: None,

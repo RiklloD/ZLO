@@ -292,7 +292,8 @@ async fn steering_drain_acks_only_after_cursor_checkpoint_is_durable() {
     // what flips the queued transcript row model-visible, so an ack deferred
     // past the prompt build would feed the model a prompt without the drained
     // message. The two pinned invariants are: no ack before a durable cursor
-    // checkpoint, and no prompt build before the ack.
+    // checkpoint, and no prompt build before the ack. The drained input
+    // counts as read only once the model call returned.
     assert_eq!(
         host.events(),
         vec![
@@ -300,6 +301,7 @@ async fn steering_drain_acks_only_after_cursor_checkpoint_is_durable() {
             "ack_inputs".to_string(),
             "build_prompt_bundle".to_string(),
             "checkpoint:before_model".to_string(),
+            "confirm_inputs_read".to_string(),
             "checkpoint:final".to_string(),
         ]
     );

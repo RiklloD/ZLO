@@ -218,8 +218,14 @@ async fn reply_only_drains_steering_arriving_at_exit_boundary() {
             "ack_inputs".to_string(),
             "build_prompt_bundle".to_string(),
             "checkpoint:before_model".to_string(),
+            "confirm_inputs_read".to_string(),
             "checkpoint:final".to_string(),
         ]
+    );
+    // Read only once the next model call carried it.
+    assert_eq!(
+        host.read_input_tokens(),
+        vec![LoopInputAckToken::new("input-ack:after-late-steering").expect("valid")]
     );
     assert_eq!(final_staged_state(&host).stop_state.turns_completed, 2);
 }
@@ -967,5 +973,45 @@ async fn graceful_stop_after_capability_batch_drains_pending_steering() {
     assert_eq!(
         host.acked_input_tokens(),
         vec![LoopInputAckToken::new("input-ack:after-steer-before-stop").expect("valid")]
+    );
+}
+
+#[tokio::test]
+async fn a_drained_steer_no_model_call_carried_is_never_confirmed_read() {
+    // Regression (review P1-5): the loop acks a drained steer before the
+    // prompt is built. A run that exits before its next model call (here a
+    // cancel queued right behind the steer) must leave it unconfirmed, so
+    // terminal settlement hands it off as unread instead of trusting the
+    // `Submitted` row.
+    let host = MockHost::new(vec![reply_response()]);
+    let run_context = host.run_context().clone();
+    let host = host.with_input_batches(vec![LoopInputBatch {
+        inputs: vec![
+            LoopInput::Steering {
+                message_ref: message_ref("msg:steer-then-cancel"),
+            },
+            LoopInput::Cancel {
+                reason_kind: ironclaw_loop_contracts::LoopCancelReasonKind::UserRequested,
+            },
+        ],
+        input_acks: vec![
+            input_ack(&run_context, "input-cursor:steer", "input-ack:steer"),
+            input_ack(&run_context, "input-cursor:cancel", "input-ack:cancel"),
+        ],
+        next_cursor: input_cursor(&run_context, "input-cursor:cancel"),
+    }]);
+    let executor = CanonicalAgentLoopExecutor;
+    let state = LoopExecutionState::initial_for_run(host.run_context());
+
+    let exit = executor
+        .execute_family(&crate::families::default(), &host, state)
+        .await
+        .expect("execute");
+
+    assert!(matches!(exit, LoopExit::Cancelled(_)), "{exit:?}");
+    assert!(host.model_requests().is_empty());
+    assert!(
+        host.read_input_tokens().is_empty(),
+        "no model call carried the steer: it must not be confirmed read"
     );
 }
