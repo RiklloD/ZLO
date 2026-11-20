@@ -28,6 +28,9 @@ pub const SPACE_LG: f32 = 16.;
 
 const HEADER_HEIGHT: f32 = 26.;
 const TREE_ROW_HEIGHT: f32 = 32.;
+
+#[path = "flow/timeline.rs"]
+mod timeline;
 const GUTTER_WIDTH: f32 = 48.;
 const TRUNK_X: f32 = 12.;
 const BEND_RADIUS: f32 = 6.;
@@ -291,6 +294,7 @@ pub fn is_open(key: &str, live: bool, toggles: &HashMap<String, bool>) -> bool {
 }
 
 /// A tree row: the label (verb), its detail, an icon and whether it failed.
+#[derive(Clone)]
 struct Leaf {
     icon: &'static Icon,
     label: String,
@@ -607,7 +611,7 @@ pub fn render_activity(
             tx.keep_on_screen(head_key.clone());
         });
 
-    let mut group = col().key(format!("{key}-group")).w_full().child(header);
+    let group = col().key(format!("{key}-group")).w_full().child(header);
     if !open {
         return group;
     }
@@ -616,10 +620,11 @@ pub fn render_activity(
         .filter_map(|r| leaf(r).map(|l| (r, l)))
         .collect();
     let count = parts.len();
-    let mut tree = col()
+    let tree = col()
         .key(format!("{key}-tree"))
         .w_full()
         .transition(rise(4.));
+    let mut lines = Vec::with_capacity(count);
     for (ix, (row, mut leaf)) in parts.into_iter().enumerate() {
         let row_key = row.key();
         let open_key = format!("leaf:{row_key}");
@@ -642,11 +647,15 @@ pub fn render_activity(
             (Some(_), None) => leaf.running,
             (None, on) => leaf.body.is_some() && on.unwrap_or(false),
         };
-        let last = ix + 1 == count;
-        tree = tree.child(tree_row(s, thread, row_key, leaf, last, expanded, open_key));
+        lines.push(timeline::Line {
+            key: row_key.to_string(),
+            leaf,
+            last: ix + 1 == count,
+            expanded,
+            open_key,
+        });
     }
-    group = group.child(tree);
-    group
+    group.child(timeline::tree(s, thread, tree, lines))
 }
 
 fn tree_row(
