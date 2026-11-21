@@ -18,7 +18,6 @@ use zlo_client::transcript::{CliBody, PREFIX_KEY, Row};
 
 use super::super::{ChatState, Item, chat_for, chat_ref, flow, outline, question_form, rows};
 use super::{row_key, transcript_key};
-use crate::design::smooth_scroll::WheelGlide;
 use crate::state::State;
 
 /// Room each side of a transcript row's reading column.
@@ -370,7 +369,7 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
         .min_h(0.)
         .items_center()
         .scroll(ScrollSpec { stick_bottom: true })
-        .wheel_glide(transcript_key(&id))
+        .key(transcript_key(&id))
         .scroll_edge_fade(24.)
         .on_layout_tx(move |s: &mut State, r, tx| {
             let Some(c) = chat_for(s, &layout_id) else {

@@ -8,7 +8,6 @@ use rune_kit::Kit;
 use super::super::ui::{self, xs};
 use super::{ChangesState, change as git_change, confirmed, jump};
 use crate::chat::side::git;
-use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::state::State;
 use zlo_client::repo_calls::ThreadGitAction;
@@ -268,7 +267,7 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
             .scroll(ScrollSpec {
                 stick_bottom: false,
             })
-            .wheel_glide("changes-list")
+            .key("changes-list")
             .child(
                 col()
                     .key("changes-rows")

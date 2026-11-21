@@ -12,7 +12,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.35,
@@ -20,7 +21,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.4,
@@ -28,7 +30,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.45,
@@ -36,7 +39,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.5,
@@ -44,7 +48,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.55,
@@ -52,7 +57,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.6,
@@ -60,7 +66,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.65,
@@ -68,7 +75,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.7,
@@ -76,7 +84,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.75,
@@ -84,7 +93,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.8,
@@ -92,7 +102,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.85,
@@ -100,7 +111,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.9,
@@ -108,7 +120,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 0.95,
@@ -116,7 +129,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 1.0,
@@ -124,7 +138,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 1.05,
@@ -132,7 +147,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 1.1,
@@ -140,7 +156,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 1.15,
@@ -148,7 +165,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 1.2,
@@ -156,7 +174,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 1.25,
@@ -164,7 +183,8 @@
    "x": 1000,
    "y": 420,
    "dy": 40,
-   "precise": false
+   "precise": false,
+   "notch": true
   },
   {
    "t": 2.0,

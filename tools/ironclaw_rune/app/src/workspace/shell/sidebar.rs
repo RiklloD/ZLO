@@ -4,8 +4,8 @@
 //! edge.
 //!
 //! The inbox keeps its own list rather than rune-kit's `Sidebar`: that
-//! container owns its scroll viewport, so the wheel glide
-//! (`design::smooth_scroll`) can't sit on it, and its arrow keys press the
+//! container owns its scroll viewport (the inbox virtualises its own), and
+//! its arrow keys press the
 //! item they focus, which in a card would be a hover button (pin, snooze,
 //! settle). The settings nav is a plain source list and uses `Sidebar`,
 //! `SidebarSection` and `SidebarRow`.
