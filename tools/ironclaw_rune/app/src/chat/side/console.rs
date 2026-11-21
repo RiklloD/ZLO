@@ -48,6 +48,9 @@ struct Running {
 pub(super) struct ConsoleState {
     input: TextEdit,
     pub(super) lines: Vec<(Kind, String)>,
+    /// Lines ever dropped from the front (past [`LINES_MAX`], or cleared):
+    /// `gone + ix` is a line's lasting number, its key.
+    gone: u64,
     running: Option<Running>,
     history: Vec<String>,
     /// Position while stepping through `history` with the arrows.
@@ -161,11 +164,20 @@ fn spawn(command: &str, dir: &Path) -> Result<(u32, mpsc::Receiver<Msg>), String
     Ok((pid, rx))
 }
 
+impl ConsoleState {
+    /// Empty the log; later lines keep numbering on.
+    fn clear_lines(&mut self) {
+        self.gone += self.lines.len() as u64;
+        self.lines.clear();
+    }
+}
+
 fn push(state: &mut ConsoleState, kind: Kind, text: String) {
     state.lines.push((kind, text));
     if state.lines.len() > LINES_MAX {
         let drop = state.lines.len() - LINES_MAX;
         state.lines.drain(..drop);
+        state.gone += drop as u64;
     }
 }
 
@@ -182,7 +194,7 @@ fn run(s: &mut State, tx: &mut Tx) {
         return;
     }
     if command == "clear" {
-        x.console.lines.clear();
+        x.console.clear_lines();
         x.console.input.clear();
         return;
     }
@@ -365,7 +377,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .wrap_anywhere()
                 .min_h(16.)
                 .mt(top)
-                .key(format!("console-line-{ix}")),
+                .key(format!("console-line-{}", state.gone + ix as u64)),
         );
     }
     let out = col()
@@ -374,7 +386,6 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .grow(1.)
         .min_h(0.)
         .scroll(ScrollSpec { stick_bottom: true })
-        .key(OUT_KEY)
         .child(lines);
     let action = if running {
         ui::btn("Stop")
@@ -419,7 +430,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .label("Clear output")
                 .on_press(|s: &mut State| {
                     if let Some(x) = side_mut(s) {
-                        x.console.lines.clear();
+                        x.console.clear_lines();
                     }
                 })
                 .build(k)
@@ -451,7 +462,7 @@ fn remote_run(s: &mut State, tx: &mut Tx) {
     }
     x.console.input.clear();
     if command == "clear" {
-        x.console.lines.clear();
+        x.console.clear_lines();
         return;
     }
     let state = &mut x.console;
@@ -584,6 +595,25 @@ fn landed(
 mod tests {
     use super::*;
     use zlo_client::repo_calls::ConsoleLine;
+
+    /// A line's key is its lasting number (`gone + ix`): dropping old lines
+    /// from the front or clearing the log never hands a line another's key.
+    #[test]
+    fn console_line_numbers_survive_the_front_dropping() {
+        let mut st = ConsoleState::default();
+        for i in 0..LINES_MAX + 3 {
+            push(&mut st, Kind::Out, i.to_string());
+        }
+        assert_eq!(st.gone, 3);
+        assert_eq!(
+            st.lines[0].1,
+            (st.gone).to_string(),
+            "line 3 keeps number 3"
+        );
+        st.clear_lines();
+        push(&mut st, Kind::Out, "next".into());
+        assert_eq!(st.gone, LINES_MAX as u64 + 3, "numbering carries on");
+    }
 
     fn remote_state() -> State {
         let mut s = crate::chat::fixtures::test_state();

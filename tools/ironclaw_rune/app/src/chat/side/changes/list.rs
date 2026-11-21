@@ -267,7 +267,6 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
             .scroll(ScrollSpec {
                 stick_bottom: false,
             })
-            .key("changes-list")
             .child(
                 col()
                     .key("changes-rows")

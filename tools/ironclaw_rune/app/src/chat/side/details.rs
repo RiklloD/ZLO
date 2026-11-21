@@ -1180,12 +1180,11 @@ fn side_chats(c: &Ctx) -> Section {
     let open_id = x.chat.as_ref().map(|c| c.thread_id.clone());
     let rows: Vec<El> = chats
         .into_iter()
-        .enumerate()
-        .map(|(ix, id)| {
+        .map(|id| {
             let shown = open_id.as_deref() == Some(id.as_str());
             let live = side_chat_running(s, &id);
             let name = bridge::title(s, &id).unwrap_or_else(|| "Side chat".into());
-            let mut item = base(format!("session-side-chat-{ix}"))
+            let mut item = base(format!("session-side-chat-{id}"))
                 .child(glyph(s, &icons::MESSAGES_SQUARE))
                 .child(label(s, name.clone(), true));
             if live {
@@ -1657,7 +1656,7 @@ mod tests {
             "thread-details-forked-from",
             "thread-details-agent-a1",
             "thread-details-previous-agents",
-            "session-side-chat-0",
+            "session-side-chat-sc1",
             "session-new-side-chat",
             "session-fork",
             "thread-details-usage-5h",

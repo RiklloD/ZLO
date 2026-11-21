@@ -206,7 +206,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         ),
         (Some(entries), None) => {
             let mut list = col().w_full().px(8.);
-            for (ix, entry) in entries.iter().enumerate() {
+            for entry in entries.iter() {
                 let dir = matches!(entry.kind, ProjectFsEntryKind::Directory);
                 let path = entry.path.clone();
                 let ext = std::path::Path::new(&entry.name)
@@ -221,7 +221,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 } else {
                     &icons::FILE
                 };
-                let mut line = ui::hover_row(s, format!("output-{ix}"))
+                let mut line = ui::hover_row(s, format!("output-{}", entry.path))
                     .label(entry.name.clone())
                     .child(icon(glyph, 12.).color(p.text_muted))
                     .child(
