@@ -376,7 +376,16 @@ impl Store {
             Some(id) => id,
             None => default_profile_id()?,
         };
-        self.profile(&owner, &id, true).await
+        let mut profile = self.profile(&owner, &id, true).await?;
+        // Work a peer link started below full access never runs unasked.
+        if let Some(origin) = self.link_origin(thread).await?
+            && origin.access < ironclaw_product_contracts::environment_access::PeerLinkAccess::Full
+            && let Some(p) = profile.as_mut()
+        {
+            p.settings.approval_mode =
+                Some(ironclaw_product_contracts::profiles::ApprovalMode::AskFirst);
+        }
+        Ok(profile)
     }
 
     async fn require_profile(&self, owner: &ProfileOwner, id: &ProfileId) -> Result<ProfileRecord> {

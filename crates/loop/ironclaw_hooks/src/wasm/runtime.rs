@@ -130,11 +130,23 @@ pub(crate) struct PreparedWasmHook {
     module_digest: blake3::Hash,
     export: String,
     limits: WasmHookLimits,
+    /// The owning extension's effective user settings for this run, exposed
+    /// to the guest as the `settings` member of the context blob. Bound at
+    /// install time (once per run), never read back from the guest.
+    settings: Option<Arc<serde_json::Map<String, serde_json::Value>>>,
 }
 
 impl PreparedWasmHook {
     pub(crate) fn module_digest_hex(&self) -> String {
         self.module_digest.to_hex().to_string()
+    }
+
+    pub(crate) fn with_settings(
+        mut self,
+        settings: Option<Arc<serde_json::Map<String, serde_json::Value>>>,
+    ) -> Self {
+        self.settings = settings;
+        self
     }
 }
 
@@ -211,12 +223,19 @@ impl WasmHookRuntime {
         })
     }
 
+    /// Compile (or reuse) and ABI-validate one hook module. The bytes come
+    /// from `resolver` when given (a registrar-scoped source) and from the
+    /// runtime's own resolver otherwise.
     pub(crate) fn prepare(
         &self,
         request: &WasmHookModuleRequest<'_>,
         budget: WasmBudget,
+        resolver: Option<&dyn WasmHookModuleResolver>,
     ) -> Result<PreparedWasmHook, WasmHookRuntimeError> {
-        let bytes = self.resolver.resolve_module(request)?;
+        let bytes = match resolver {
+            Some(resolver) => resolver.resolve_module(request)?,
+            None => self.resolver.resolve_module(request)?,
+        };
         let digest = blake3::hash(&bytes);
         // Fast path: lookup under the cache lock; the LRU `get` updates
         // recency so cache-hot modules stay resident.
@@ -264,6 +283,7 @@ impl WasmHookRuntime {
             module_digest: digest,
             export: request.export.to_string(),
             limits,
+            settings: None,
         })
     }
 
@@ -272,7 +292,7 @@ impl WasmHookRuntime {
         prepared: &PreparedWasmHook,
         ctx: &BeforeCapabilityHookContext,
     ) -> Result<GateHookOutcome, WasmHookFailure> {
-        let ctx_blob = serialize_gate_ctx(ctx);
+        let ctx_blob = serialize_gate_ctx(ctx, prepared.settings.as_deref());
         let mut output = self.execute(prepared, WasmHookPoint::BeforeCapability, ctx_blob)?;
         match output.gate.take() {
             Some(GateWasmDecision::Pass) => Ok(GateHookOutcome::Pass),
@@ -305,7 +325,7 @@ impl WasmHookRuntime {
         prepared: &PreparedWasmHook,
         ctx: &BeforePromptHookContext,
     ) -> Result<Vec<HookPatch>, WasmHookFailure> {
-        let ctx_blob = serialize_prompt_ctx(ctx);
+        let ctx_blob = serialize_prompt_ctx(ctx, prepared.settings.as_deref());
         let output = self.execute(prepared, WasmHookPoint::BeforePrompt, ctx_blob)?;
         Ok(output.patches)
     }
@@ -316,7 +336,7 @@ impl WasmHookRuntime {
         point: HookPointSpec,
         ctx: &ObserverHookContext,
     ) -> Result<Vec<ObserverFact>, WasmHookFailure> {
-        let ctx_blob = serialize_observer_ctx(ctx);
+        let ctx_blob = serialize_observer_ctx(ctx, prepared.settings.as_deref());
         let output = self.execute(prepared, WasmHookPoint::Observer(point), ctx_blob)?;
         Ok(output.facts)
     }
@@ -662,39 +682,58 @@ fn read_context_into_guest(caller: &mut Caller<'_, HookStoreData>, ptr: i32, len
     i32::try_from(copy_len).unwrap_or(-1)
 }
 
-fn serialize_gate_ctx(ctx: &BeforeCapabilityHookContext) -> Vec<u8> {
-    let payload = serde_json::json!({
+type HookSettings = serde_json::Map<String, serde_json::Value>;
+
+fn serialize_gate_ctx(
+    ctx: &BeforeCapabilityHookContext,
+    settings: Option<&HookSettings>,
+) -> Vec<u8> {
+    let mut payload = serde_json::json!({
         "point": "before_capability",
         "tenant_id": ctx.tenant_id.as_str(),
         "capability_name": ctx.capability_name,
         "provider": ctx.provider.as_ref().map(|p| p.as_str()),
         "arguments_resolved": ctx.arguments.is_resolved(),
     });
+    attach_settings(&mut payload, settings);
     serialize_payload(&payload)
 }
 
-fn serialize_prompt_ctx(ctx: &BeforePromptHookContext) -> Vec<u8> {
-    let payload = serde_json::json!({
+fn serialize_prompt_ctx(ctx: &BeforePromptHookContext, settings: Option<&HookSettings>) -> Vec<u8> {
+    let mut payload = serde_json::json!({
         "point": "before_prompt",
         "tenant_id": ctx.tenant_id.as_str(),
         "remaining_snippet_byte_budget": ctx.remaining_snippet_byte_budget,
     });
+    attach_settings(&mut payload, settings);
     serialize_payload(&payload)
 }
 
-fn serialize_observer_ctx(ctx: &ObserverHookContext) -> Vec<u8> {
+fn serialize_observer_ctx(ctx: &ObserverHookContext, settings: Option<&HookSettings>) -> Vec<u8> {
     let observed_kind = match ctx.observed_kind {
         crate::points::ObservedKind::AfterModel => "after_model",
         crate::points::ObservedKind::AfterCapability => "after_capability",
         crate::points::ObservedKind::AfterCheckpoint => "after_checkpoint",
     };
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "point": "observer",
         "tenant_id": ctx.tenant_id.as_str(),
         "observed_kind": observed_kind,
         "provider": ctx.provider.as_ref().map(|p| p.as_str()),
     });
+    attach_settings(&mut payload, settings);
     serialize_payload(&payload)
+}
+
+/// Add the owning extension's settings snapshot (when the loader bound one)
+/// as the `settings` object of the context blob.
+fn attach_settings(payload: &mut serde_json::Value, settings: Option<&HookSettings>) {
+    if let (Some(object), Some(settings)) = (payload.as_object_mut(), settings) {
+        object.insert(
+            "settings".to_string(),
+            serde_json::Value::Object(settings.clone()),
+        );
+    }
 }
 
 fn serialize_payload(value: &serde_json::Value) -> Vec<u8> {

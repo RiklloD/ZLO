@@ -152,7 +152,6 @@ fn fake_bin_path(bin_dir: &Path) -> String {
     format!("{}:/usr/bin:/bin", bin_dir.display())
 }
 
-#[cfg(unix)]
 fn write_reborn_config(reborn_home: &Path, profile: &str) {
     std::fs::create_dir_all(reborn_home).expect("reborn home");
     let production_sections = match profile {
@@ -1345,6 +1344,92 @@ fn extension_search_does_not_seed_reborn_config() {
         !reborn_home.join("config.toml").exists(),
         "extension search must not seed runtime config"
     );
+}
+
+/// `zlo extension new` scaffolds a plugin where local packages are
+/// discovered: `search` lists it, and `install` records it but leaves it
+/// waiting for consent, returning the consent summary on the JSON wire. A
+/// grant for any digest but the current one is refused. Never activates, so
+/// the scaffold's placeholder MCP server is never contacted.
+#[test]
+fn extension_new_scaffolds_a_plugin_that_install_holds_for_consent() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("reborn-home");
+    let run = |args: &[&str]| {
+        reborn_command()
+            .args(args)
+            .env("ZLO_HOME", &reborn_home)
+            .env("HOME", temp.path().join("home"))
+            .output()
+            .expect("zlo extension should run")
+    };
+
+    let created = run(&["extension", "new", "acme-notes", "--json"]);
+    assert!(
+        created.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.stdout).expect("new --json output");
+    let root = std::path::PathBuf::from(created["path"].as_str().expect("path"));
+    assert!(
+        root.starts_with(&reborn_home),
+        "scaffold stays in ZLO_HOME: {root:?}"
+    );
+    assert!(root.join("manifest.toml").is_file());
+    assert!(root.join("README.md").is_file());
+    assert!(
+        !run(&["extension", "new", "acme-notes"]).status.success(),
+        "an existing plugin folder is never overwritten"
+    );
+    assert!(
+        !run(&["extension", "new", "github"]).status.success(),
+        "a bundled extension id cannot be scaffolded over"
+    );
+
+    let search = run(&["extension", "search", "acme-notes", "--json"]);
+    assert!(
+        search.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&search.stderr)
+    );
+    let search: serde_json::Value = serde_json::from_slice(&search.stdout).expect("search json");
+    assert!(
+        search.to_string().contains("acme-notes"),
+        "the scaffold is discoverable: {search}"
+    );
+
+    let install = run(&["extension", "install", "acme-notes", "--json"]);
+    assert!(
+        install.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let install: serde_json::Value = serde_json::from_slice(&install.stdout).expect("install json");
+    assert_eq!(install["phase"], "consent_required", "{install}");
+    let digest = install["consent"]["digest"]
+        .as_str()
+        .expect("consent digest");
+    assert_eq!(digest.len(), 64);
+    assert!(
+        install["consent"]["requests"]
+            .as_array()
+            .is_some_and(|requests| requests
+                .iter()
+                .any(|request| request["kind"] == "tool" && request["title"] == "acme-notes.echo")),
+        "{install}"
+    );
+
+    let stale = run(&[
+        "extension",
+        "grant",
+        "acme-notes",
+        "--digest",
+        &"0".repeat(64),
+        "--json",
+    ]);
+    assert!(!stale.status.success(), "a stale digest is refused");
 }
 
 /// `zlo memory reembed --dry-run` counts the backlog through the composed
@@ -4742,6 +4827,112 @@ fn doctor_reports_explicit_profile() {
             .lines()
             .any(|line| line.contains("profile") && line.contains("production")),
         "expected a line containing both 'profile' and 'production', stdout: {stdout}"
+    );
+}
+
+#[test]
+fn config_path_reports_config_file_profile_when_env_is_unset() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("reborn-home");
+    write_reborn_config(&reborn_home, "hosted-single-tenant-volume-sandboxed");
+
+    let output = Command::new(reborn_bin())
+        .args(["config", "path"])
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("IRONCLAW_REBORN_PROFILE")
+        .output()
+        .expect("ironclaw config path should run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("profile: hosted-single-tenant-volume-sandboxed"),
+        "config path must report the effective profile from config.toml: {stdout}"
+    );
+}
+
+#[test]
+fn doctor_reports_config_file_profile_when_env_is_unset() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("reborn-home");
+    write_reborn_config(&reborn_home, "hosted-single-tenant-volume-sandboxed");
+
+    let output = Command::new(reborn_bin())
+        .arg("doctor")
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("IRONCLAW_REBORN_PROFILE")
+        .output()
+        .expect("ironclaw doctor should run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.lines().any(|line| line.contains("profile")
+            && line.contains("hosted-single-tenant-volume-sandboxed")),
+        "doctor must report the effective profile from config.toml: {stdout}"
+    );
+}
+
+#[test]
+fn status_reports_config_file_profile_when_env_is_unset() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("reborn-home");
+    write_reborn_config(&reborn_home, "hosted-single-tenant-volume-sandboxed");
+
+    let output = Command::new(reborn_bin())
+        .arg("status")
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("IRONCLAW_REBORN_PROFILE")
+        .output()
+        .expect("ironclaw status should run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.lines().any(|line| line.contains("profile")
+            && line.contains("hosted-single-tenant-volume-sandboxed")),
+        "status must report the effective profile from config.toml: {stdout}"
+    );
+}
+
+#[test]
+fn doctor_flags_invalid_config_file_profile() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("reborn-home");
+    write_reborn_config(&reborn_home, "not-a-profile");
+
+    let output = Command::new(reborn_bin())
+        .arg("doctor")
+        .env("ZLO_HOME", &reborn_home)
+        .env_remove("IRONCLAW_REBORN_PROFILE")
+        .output()
+        .expect("ironclaw doctor should run");
+
+    assert!(
+        output.status.success(),
+        "doctor reports diagnostic failures in output, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("config file [boot].profile `not-a-profile` is invalid"),
+        "doctor must flag invalid effective profile from config.toml: {stdout}"
+    );
+    assert!(
+        stdout.contains("hosted-single-tenant-volume-sandboxed-railway"),
+        "invalid-profile diagnostic should list every supported profile: {stdout}"
     );
 }
 

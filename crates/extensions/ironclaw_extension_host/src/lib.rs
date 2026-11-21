@@ -43,6 +43,7 @@ pub mod channel_pairing;
 pub mod channel_shared_admission;
 pub mod channel_triggered_delivery;
 mod channel_vendor_calls;
+mod consent_bound_adapter;
 pub mod deployment_channels;
 pub mod device_link_channel_identity;
 pub mod device_link_driver;
@@ -50,9 +51,11 @@ pub mod egress;
 pub mod entrypoint;
 pub mod extension_activation_credentials;
 pub mod extension_bundle;
+pub mod extension_consent;
 pub mod extension_credential_requirements;
 pub mod extension_ingress;
 pub mod extension_lifecycle;
+pub mod extension_scaffold;
 pub mod first_party_package;
 pub mod generic_host;
 pub mod host_api_contracts;
@@ -178,7 +181,7 @@ pub use entrypoint::{
 };
 pub use extension_bundle::{
     ExtensionBundleError, MAX_EXTENSION_BUNDLE_FILES, MAX_EXTENSION_BUNDLE_UNCOMPRESSED_BYTES,
-    unzip_extension_bundle,
+    read_extension_folder, unzip_extension_bundle,
 };
 pub use extension_credential_requirements::{
     can_merge_lifecycle_credential_setup, lifecycle_credential_setup,
@@ -251,7 +254,8 @@ pub use product_lifecycle::{
     ExtensionCredentialCleanup, ExtensionLifecycleManager, ExtensionLifecycleManagerDependencies,
 };
 pub use provider_instance_readiness::{
-    ProviderInstanceReadinessInput, provider_instance_readiness_map,
+    ProviderInstanceReadinessInput, ProviderInstanceReadinessPort, StaticProviderInstanceReadiness,
+    provider_instance_readiness_map,
 };
 pub use recipes::{
     InstalledManifestAuthRecipeResolver, VendorRecipeConflict, unified_vendor_recipes,

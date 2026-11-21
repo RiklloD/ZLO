@@ -3,9 +3,10 @@
 //! hover rows of gpui-kit the tabs used). Area G's `design/kit.rs` may
 //! replace these at integration.
 
+use crate::design::kit::Spinner;
 use rune::tok::TextStyle;
 use rune::{Color, El, GrowthSpec, Icon, ScrollSpec, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Spinner};
+use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 
 use crate::design::smooth_scroll::WheelGlide;
 use crate::state::State;
@@ -122,6 +123,7 @@ pub fn virtual_scroll(
                 .key("rows")
                 .w_full()
                 .growth(GrowthSpec::default())
+                .whole_rows()
                 .virtual_rows(
                     count,
                     estimate,

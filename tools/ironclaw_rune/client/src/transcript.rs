@@ -324,9 +324,20 @@ struct CliDetails {
     order: std::collections::VecDeque<String>,
     diff: Option<CliBody>,
     review: Option<CliBody>,
+    /// Bumped whenever `diff` or `review` changes, so a caller can tell
+    /// "moved" without keeping a copy of either body.
+    rev: u64,
 }
 
 impl CliDetails {
+    fn set_report(&mut self, slot: fn(&mut Self) -> &mut Option<CliBody>, body: CliBody) {
+        let slot = slot(self);
+        if slot.as_ref() != Some(&body) {
+            *slot = Some(body);
+            self.rev += 1;
+        }
+    }
+
     fn put_output(&mut self, key: String, mut body: CliBody) {
         if body.body.len() > CLI_OUTPUT_MAX_BYTES {
             let mut cut = body.body.len() - CLI_OUTPUT_MAX_BYTES;
@@ -791,6 +802,11 @@ impl Transcript {
         self.cli.diff.as_ref()
     }
 
+    /// Changes whenever [`Self::cli_turn_diff`] or [`Self::cli_review`] does.
+    pub fn cli_report_rev(&self) -> u64 {
+        self.cli.rev
+    }
+
     /// The latest finished review's findings text (Codex `review/start`).
     pub fn cli_review(&self) -> Option<&CliBody> {
         self.cli.review.as_ref()
@@ -944,8 +960,8 @@ impl Transcript {
                             self.cli.put_output(format!("tool:{invocation}"), detail);
                         }
                     }
-                    CliDetailKind::TurnDiff => self.cli.diff = Some(detail),
-                    CliDetailKind::Review => self.cli.review = Some(detail),
+                    CliDetailKind::TurnDiff => self.cli.set_report(|c| &mut c.diff, detail),
+                    CliDetailKind::Review => self.cli.set_report(|c| &mut c.review, detail),
                 }
             }
             ProductProjectionItem::SkillActivation {
@@ -1840,6 +1856,26 @@ mod tests {
             ]}
         })));
         assert_eq!(t.cli_review().unwrap().body, "No issues found.");
+        // The revision moves with the diff or review only, not with a
+        // repeat of the same body.
+        let rev = t.cli_report_rev();
+        let again = frame(serde_json::json!({
+            "cursor": "c11", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "cli_detail": { "id": format!("review:{RUN}"), "run_id": RUN,
+                    "kind": "review", "body": "No issues found." } }
+            ]}
+        }));
+        t.apply(&again);
+        assert_eq!(t.cli_report_rev(), rev);
+        t.apply(&frame(serde_json::json!({
+            "cursor": "c12", "type": "projection_update",
+            "state": { "thread_id": "t1", "items": [
+                { "cli_detail": { "id": format!("diff:{RUN}"), "run_id": RUN,
+                    "kind": "turn_diff", "body": "diff --git a/y b/y\n" } }
+            ]}
+        })));
+        assert!(t.cli_report_rev() > rev);
     }
 
     fn status(s: &str) -> StreamEvent {

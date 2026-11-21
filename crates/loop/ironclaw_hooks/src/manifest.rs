@@ -123,6 +123,20 @@ pub enum HookManifestKind {
     EventTriggered,
 }
 
+impl HookManifestKind {
+    /// After-fact kinds: observers that cannot change the run's outcome
+    /// (unlike `before_capability` gates and `before_prompt` mutators).
+    pub fn is_after_fact(self) -> bool {
+        match self {
+            Self::AfterModel
+            | Self::AfterCapability
+            | Self::AfterCheckpoint
+            | Self::EventTriggered => true,
+            Self::BeforeCapability | Self::BeforePrompt => false,
+        }
+    }
+}
+
 /// Hook scope. Determines whether the hook can observe / restrict only its
 /// own extension's capability calls or also those of other extensions in the
 /// same tenant.

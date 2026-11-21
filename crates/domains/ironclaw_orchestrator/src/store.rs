@@ -506,6 +506,9 @@ impl Store {
                 .await?;
             conn.execute_batch(crate::history_sources::RUN_ORIGINS_SCHEMA)
                 .await?;
+            conn.execute_batch(crate::peer::PEER_SCHEMA).await?;
+            conn.execute_batch(crate::agent_requests::AGENT_REQUESTS_SCHEMA)
+                .await?;
         }
         crate::schedules::upgrade_schema(self).await?;
         self.upgrade_inbox_schema().await?;
@@ -599,6 +602,19 @@ impl Store {
         Ok(())
     }
 
+    /// Threads with a turn running now (load balancing).
+    pub async fn running_threads(&self) -> Result<u32> {
+        let n = self
+            .row(
+                "SELECT COUNT(*) FROM orch_threads WHERE turn_state = 'running'",
+                vec![],
+                |r| Cols::new(r).int(),
+            )
+            .await?
+            .unwrap_or(0);
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    }
+
     pub async fn thread(&self, id: &ThreadId) -> Result<Option<ThreadRecord>> {
         self.row(
             &format!("SELECT {THREAD_COLS} FROM orch_threads WHERE thread_id = ?1"),
@@ -662,19 +678,25 @@ impl Store {
         Ok(())
     }
 
+    /// Mark the turn running, unless `run_id` already ended: a runtime may
+    /// report a run's end before its admission returns (Stop during
+    /// preparation), and that terminal log must win. `false` when refused.
     pub async fn set_turn_running(
         &self,
         id: &ThreadId,
         run_id: Option<&str>,
         at: Millis,
-    ) -> Result<()> {
-        self.exec(
-            "UPDATE orch_threads SET turn_state = 'running', active_run_id = COALESCE(?2, active_run_id), \
-             turn_started_at = ?3, updated_at = ?3 WHERE thread_id = ?1",
-            vec![s(id.as_str()), opt(run_id), at.into()],
-        )
-        .await?;
-        Ok(())
+    ) -> Result<bool> {
+        let n = self
+            .exec(
+                "UPDATE orch_threads SET turn_state = 'running', active_run_id = COALESCE(?2, active_run_id), \
+                 turn_started_at = ?3, updated_at = ?3 WHERE thread_id = ?1 \
+                 AND (?2 IS NULL OR NOT EXISTS \
+                      (SELECT 1 FROM orch_turns WHERE thread_id = ?1 AND run_id = ?2))",
+                vec![s(id.as_str()), opt(run_id), at.into()],
+            )
+            .await?;
+        Ok(n > 0)
     }
 
     /// Mark the turn ended unless a newer turn already started (a late
@@ -1060,21 +1082,36 @@ impl Store {
         author: Author,
     ) -> Result<QueueItemId> {
         let id = QueueItemId::generate();
-        let now = now_ms();
-        self.exec(
-            "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, updated_at) \
-             VALUES (?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM orch_queue WHERE thread_id = ?2), \
-             ?3, 'pending', ?4, ?5, ?5)",
-            vec![
-                s(id.as_str()),
-                s(thread.as_str()),
-                s(text),
-                s(author.as_str()),
-                now.into(),
-            ],
-        )
-        .await?;
+        self.queue_add_once(&id, thread, text, author).await?;
         Ok(id)
+    }
+
+    /// [`Self::queue_add`] under a caller-chosen id: a second add with the
+    /// same id (a repeated recovery) is a no-op. `true` when this call
+    /// inserted the row.
+    pub async fn queue_add_once(
+        &self,
+        id: &QueueItemId,
+        thread: &ThreadId,
+        text: &str,
+        author: Author,
+    ) -> Result<bool> {
+        let now = now_ms();
+        let n = self
+            .exec(
+                "INSERT INTO orch_queue (id, thread_id, position, text, status, created_by, created_at, updated_at) \
+                 VALUES (?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM orch_queue WHERE thread_id = ?2), \
+                 ?3, 'pending', ?4, ?5, ?5) ON CONFLICT(id) DO NOTHING",
+                vec![
+                    s(id.as_str()),
+                    s(thread.as_str()),
+                    s(text),
+                    s(author.as_str()),
+                    now.into(),
+                ],
+            )
+            .await?;
+        Ok(n > 0)
     }
 
     /// Edit a pending item's text; false when it is no longer pending.

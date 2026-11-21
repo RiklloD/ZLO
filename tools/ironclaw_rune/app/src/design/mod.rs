@@ -39,12 +39,15 @@ pub const SIDEBAR_SEARCH_HEIGHT: f32 = 44.;
 pub const SIDEBAR_TITLE_SIZE: f32 = 15.;
 pub const SIDEBAR_META_SIZE: f32 = 13.;
 pub const SIDEBAR_CONTROL: f32 = 32.;
-// Radius scale, after T3 Code's design pass: 4/6/8/12/16. Controls 6, rows
-// 8, cards and popovers 12, composer and bubbles 16. Nothing off the scale.
+// Radius scale, after T3 Code's design pass: 4/6/8/12/14/16. Controls 6,
+// rows 8, cards and popovers 12, the composer and user messages 14, other
+// bubbles 16. Nothing off the scale.
 pub const PANEL_RADIUS: f32 = 12.;
 pub const CONTROL_RADIUS: f32 = 6.;
 pub const ROW_RADIUS: f32 = 8.;
 pub const BUBBLE_RADIUS: f32 = 16.;
+/// The composer card, a step tighter than a bubble.
+pub const COMPOSER_RADIUS: f32 = 14.;
 pub const ROW_HEIGHT: f32 = 34.;
 
 pub const FONT_SANS: &str = "Geist";
@@ -176,16 +179,16 @@ pub fn kit(p: &Palette) -> Kit {
     c.text_faint = p.text_faint;
     c.text_accent = p.accent;
     c.bg_accent = p.accent;
-    // GPUI's kit primary is an accent fill: rune-kit's Submit and Contrast
-    // buttons (and contrast icon buttons, accent badges) read these tokens,
-    // which `from_palette` sets to the inverse ink (a white plate on dark).
-    let on_accent = p.on_accent();
-    c.bg_contrast = p.accent;
-    c.bg_icon_button_contrast = p.accent;
-    c.text_contrast = on_accent;
-    c.icon_contrast = on_accent;
-    c.submit_fg = on_accent;
-    c.submit_icon = on_accent;
+    // The primary action is monochrome: rune-kit's Submit and Contrast
+    // buttons (and contrast icon buttons) are the text colour as a plate
+    // with the panel's ink, as the composer's Send. The accent is kept for
+    // state (focus, selection, a running turn), not for buttons.
+    c.bg_contrast = p.text;
+    c.bg_icon_button_contrast = p.text;
+    c.text_contrast = p.bg;
+    c.icon_contrast = p.bg;
+    c.submit_fg = p.bg;
+    c.submit_icon = p.bg;
     k.radius.sm = CONTROL_RADIUS;
     // rune-kit's components (buttons, inputs, menus, selects) follow
     // Appearance → UI font size with the app's own text; code stays put.

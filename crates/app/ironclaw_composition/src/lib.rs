@@ -46,11 +46,13 @@ mod memory_binding;
 mod memory_page_parts;
 mod memory_provider_factory;
 mod model_gateway_assembly;
+mod multi_machine;
 mod notification_store_assembly;
 mod observability;
 mod operator_secret_store;
 mod operator_tool_catalog;
 mod outbound_store_assembly;
+mod plugin_ui_host;
 mod product_capability;
 mod product_surface;
 mod production_runtime_policy;
@@ -174,8 +176,8 @@ pub use observability::budget_events::BudgetEventObserver;
 // consumer: `ironclaw_cli` runtime input (`HooksActivationConfig::from_env`), composition hook-projection tests · pinned by: `composition/tests/third_party_hook_projection.rs` (the factory type is the builder fn's return type; `observability` is private)
 pub use observability::hooks::{
     HookDispatcherBuilderFactory, HookProjectionRegistry, HooksActivationConfig,
-    MAX_INSTALLED_EXTENSIONS_CONSIDERED, ThirdPartyDiscoveryInput,
-    build_hook_dispatcher_builder_factory, build_hook_projection_registry,
+    MAX_INSTALLED_EXTENSIONS_CONSIDERED, build_hook_dispatcher_builder_factory,
+    build_hook_projection_registry,
 };
 // consumer: root integration harness hook suites · pinned by: `tests/integration/hooks.rs`
 pub use observability::trajectory_observer::RebornTrajectoryObserver;
@@ -508,6 +510,9 @@ const PER_USER_ALIASES: &[&str] = &[
     "/conversations",
     "/suggestions",
     "/turns",
+    // Package-declared user settings values, one record per extension
+    // (`ironclaw_extension_registry::settings::ExtensionSettingsStore`).
+    "/extension-settings",
     "/resources",
     "/engine",
     "/skills",

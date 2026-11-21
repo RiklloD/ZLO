@@ -1,5 +1,5 @@
 {
-  "source": "OpenComputerUse mcp tools/list + initialize.instructions, fork iFurySt/open-computer-use@main 5136415 + hermes/precision-and-speed (2026-10-18)",
+  "source": "OpenComputerUse mcp tools/list + initialize.instructions, fork iFurySt/open-computer-use@main 6a49b44 (v1.1.5) + hermes/precision-and-speed-2 0e75c94 (2026-11-19)",
   "instructions": "Computer Use tools let you interact with macOS apps by performing UI actions.\n\nSome apps might have a separate dedicated plugin or skill. You may want to use that plugin or skill instead of Computer Use when it seems like a good fit for the task. While the separate plugin or skill may not expose every feature in the app, if the plugin can perform the task with its available features, prefer it. If the needed capability is not exposed there, use Computer Use may be appropriate for the missing interaction.\n\nBegin by calling `get_app_state` every turn you want to use Computer Use to get the latest state before acting. Codex will automatically stop the session after each assistant turn, so this step is required before interacting with apps in a new assistant turn.\n\nThe available tools are list_apps, get_app_state, click, perform_secondary_action, scroll, drag, type_text, press_key, set_value, select_text, and query. If any of these are not available in your environment, use tool_search to surface one before calling any Computer Use action tools.\n\nComputer Use tools allow you to use the user's apps in the background, so while you're using an app, the user can continue to use other apps on their computer. Avoid doing anything that would disrupt the user's active session, such as overwriting the contents of their clipboard, unless they asked you to!\n\nAfter each action, use the action result or fetch the latest state to verify the UI changed as expected.\nPrefer element-targeted interactions over coordinate clicks when an index for the targeted element is available. Note that element indices are the sequential integers from the app state's accessibility tree.\nAvoid falling back to AppleScript during a computer use session. Prefer Computer Use tools as much as possible to complete tasks.\nAsk the user before taking destructive or externally visible actions such as sending, deleting, or purchasing. If helpful, you can ask follow-up questions before taking action to make sure you’re understanding the user’s request correctly.",
   "tools": [
     {
@@ -53,6 +53,10 @@
         "required": [
           "app"
         ]
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false
       }
     },
     {
@@ -90,6 +94,10 @@
           "to_x",
           "to_y"
         ]
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false
       }
     },
     {
@@ -134,6 +142,12 @@
         },
         "type": "object",
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -145,15 +159,6 @@
             "minimum": 1,
             "description": "Pin this window (an id from the `Windows:` header line). Later actions and their results stay on it until get_app_state is called without window_id/window_title or the window closes. Use in multi-window apps (mail compose windows, browser windows).",
             "type": "integer"
-          },
-          "window_placement": {
-            "description": "keep (default) leaves the window where it is. agent_display (macOS) parks the app's window on an invisible display owned by the agent so a covered or other-Space window renders, exposes its full tree and accepts input without touching the user's Space, focus or pointer; the window disappears from the user's desktop until restore or process exit. restore puts it back.",
-            "enum": [
-              "keep",
-              "agent_display",
-              "restore"
-            ],
-            "type": "string"
           },
           "include_screenshot": {
             "type": "boolean",
@@ -204,6 +209,10 @@
         ],
         "additionalProperties": false,
         "type": "object"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false
       }
     },
     {
@@ -213,6 +222,12 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {}
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -240,6 +255,10 @@
         },
         "type": "object",
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false
       }
     },
     {
@@ -270,6 +289,10 @@
           "app",
           "key"
         ]
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false
       }
     },
     {
@@ -301,11 +324,15 @@
           "element_index",
           "direction"
         ]
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false
       }
     },
     {
       "name": "set_value",
-      "description": "Set the value of a settable accessibility element. The value is read back: the call fails if the control ignored the write. Text fields in web content are filled with real keystrokes so web apps register the edit. This tool is part of plugin `Computer Use`.",
+      "description": "Set the value of a settable accessibility element and verify the actual value. Text is compared exactly, including whitespace; an empty string clears it. Unverified writes return an error, even when full action read-back is disabled. Text fields in web content are filled with real keystrokes so web apps register the edit. This tool is part of plugin `Computer Use`.",
       "inputSchema": {
         "required": [
           "app",
@@ -328,6 +355,10 @@
             "description": "Value to assign"
           }
         }
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false
       }
     },
     {
@@ -372,11 +403,15 @@
           "text"
         ],
         "type": "object"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false
       }
     },
     {
       "name": "type_text",
-      "description": "Type literal text into the focused text field (or the field last clicked, when the app is in the background). The field is read back afterwards and a WARNING is returned if its value did not change. This tool is part of plugin `Computer Use`.",
+      "description": "Type literal text into the focused text field (or the field last clicked, when the app is in the background). The field is read back afterwards and a WARNING is returned if its value did not change. Typing replaces the current selection. This tool is part of plugin `Computer Use`.",
       "inputSchema": {
         "properties": {
           "app": {
@@ -411,6 +446,10 @@
           "app",
           "text"
         ]
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false
       }
     }
   ]

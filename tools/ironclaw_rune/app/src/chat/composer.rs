@@ -20,25 +20,16 @@ use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::State;
 
-/// The composer's fill and rim, `focused` its focus. The model picker's
-/// panel wears the same surface so it reads as part of the composer;
-/// `solid` lifts the fill's alpha for text drawn over the transcript.
-pub fn composer_surface(p: &Palette, focused: bool, solid: bool) -> (Color, Color) {
-    let ink = |a: f32| {
-        if p.light {
-            Color::BLACK.alpha(a)
-        } else {
-            Color::WHITE.alpha(a)
-        }
-    };
-    let fill = if p.light {
-        Color::WHITE.alpha(if solid { 0.94 } else { 0.8 })
-    } else {
-        p.surface_card
-            .mix(p.bg, 0.25)
-            .alpha(if solid { 0.96 } else { 0.86 })
-    };
-    (fill, if focused { ink(0.14) } else { ink(0.07) })
+/// The composer's fill and rim, `focused` its focus: the theme's card, one
+/// opaque step off the panel, so it never reads darker than what is behind
+/// it (a see-through fill over a translucent window did). The model
+/// picker's panel wears the same surface so it reads as part of the
+/// composer.
+pub fn composer_surface(p: &Palette, focused: bool) -> (Color, Color) {
+    (
+        p.surface_card,
+        if focused { p.border_strong } else { p.border },
+    )
 }
 
 /// Zeron's composer pill: the text on top; below it the model, its thinking
@@ -57,13 +48,15 @@ pub fn composer_card(
     actions: El,
 ) -> El {
     let p = &s.palette;
-    // One plate, one short shadow (T3's design pass): it sits on the
-    // transcript instead of floating over it.
-    let (fill, rim) = composer_surface(p, focused, false);
-    let shadow = if p.light {
+    // One flat plate. Docked over the transcript it takes one short shadow
+    // so text scrolling under it stays behind; the hero card has none.
+    let (fill, rim) = composer_surface(p, focused);
+    let shadow = if !compact {
+        Color::TRANSPARENT
+    } else if p.light {
         Color::BLACK.alpha(0.06)
     } else {
-        Color::BLACK.alpha(0.3)
+        Color::BLACK.alpha(0.28)
     };
     let mut pills = row()
         .key("composer-pills")
@@ -79,12 +72,12 @@ pub fn composer_card(
         .key(key.to_string())
         .w_full()
         .max_w(super::content_width(s))
-        .radius(design::BUBBLE_RADIUS)
+        .radius(design::COMPOSER_RADIUS)
         .fill(fill)
         .border(1., rim)
         .shadow(4., 16., shadow)
-        .px(if compact { 14. } else { 18. })
-        .pt(if compact { 12. } else { 16. })
+        .px(14.)
+        .pt(if compact { 12. } else { 14. })
         .pb(8.)
         .gap(6.)
         .child(
@@ -106,9 +99,10 @@ pub fn composer_card(
         )
 }
 
-/// Zeron's round controls: a 28 px circle; Send and Stop are a flat accent
-/// tile with soft corners that sinks into a neutral wash when idle, so an
-/// empty composer has no bright spot.
+/// The composer's controls, one geometry: 28 px tiles with soft corners.
+/// Send and Stop are monochrome, the text colour as a plate when ready and a
+/// neutral wash when idle, so the composer holds no accent at all; the
+/// others are bare glyphs washed under the pointer.
 pub fn round_button(
     s: &State,
     id: &str,
@@ -131,22 +125,24 @@ pub fn round_button(
         .cursor(rune::Cursor::Pointer);
     if id.ends_with("send") || id == "stop" {
         let (fill, ink) = if filled {
-            (p.accent, p.on_accent())
+            (p.text, p.bg)
         } else {
             (wash, p.text_faint)
         };
         return base
-            .size(30., 30.)
-            .radius(8.)
+            .size(28., 28.)
+            .radius(7.)
             .fill(fill)
-            .hover(Color::WHITE.alpha(0.06))
-            .child(icon(glyph, 15.).color(ink));
+            .hover(if filled {
+                p.bg.alpha(0.15)
+            } else {
+                Color::TRANSPARENT
+            })
+            .child(icon(glyph, 14.).color(ink));
     }
-    let mut b = base.size(28., 28.).radius(14.);
+    let mut b = base.size(28., 28.).radius(7.);
     b = if filled {
         b.fill(p.text).hover(p.bg.alpha(0.15))
-    } else if id == "send" {
-        b.fill(wash)
     } else {
         b.hover(wash)
     };
@@ -236,7 +232,7 @@ pub(crate) fn view(
             if chat.embedded {
                 "Ask anything about this chat…"
             } else {
-                "Do anything…"
+                "Ask anything…"
             },
             p.text_faint,
         )

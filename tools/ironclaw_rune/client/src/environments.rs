@@ -39,6 +39,10 @@ pub enum RouteKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Route {
     pub kind: RouteKind,
+    /// Learned from the computer's descriptor (`addresses`) while connected,
+    /// not saved by the person: it follows what the computer reports.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub learned: bool,
     /// Origin without a trailing slash; `ssh://user@host:port` for
     /// [`RouteKind::Ssh`].
     pub url: String,
@@ -60,6 +64,7 @@ impl Route {
             kind,
             url: origin.to_string(),
             remote_port: None,
+            learned: false,
         }
     }
 
@@ -69,6 +74,7 @@ impl Route {
             kind: RouteKind::Ssh,
             url: target.to_url(),
             remote_port: (remote_port != crate::ssh::DEFAULT_BACKEND_PORT).then_some(remote_port),
+            learned: false,
         }
     }
 
@@ -179,6 +185,52 @@ impl Registry {
             Some(slot) => *slot = env,
             None => self.environments.push(env),
         }
+    }
+
+    /// Replace `environment_id`'s learned routes with `addresses` (what its
+    /// descriptor reports now). Saved routes are never touched; a learned
+    /// route that duplicates one is skipped; each must pass the transport
+    /// rule. Learned routes sit after the person's tailnet and direct ones
+    /// and before SSH. Returns whether anything changed.
+    pub fn learn_routes(&mut self, environment_id: &str, addresses: &[String]) -> bool {
+        let Some(env) = self
+            .environments
+            .iter_mut()
+            .find(|e| e.environment_id == environment_id)
+        else {
+            return false;
+        };
+        let mut learned: Vec<Route> = Vec::new();
+        for raw in addresses {
+            // Plain-http tailnet addresses are kept; each connect checks them
+            // with `check_learned_transport` against the live peer list.
+            let origin = match check_transport(raw) {
+                Ok(origin) => origin,
+                Err(TransportError::PlainHttp) if is_tailnet(host_of(raw)) => {
+                    raw.trim().trim_end_matches('/').to_string()
+                }
+                Err(_) => continue,
+            };
+            let known = env.routes.iter().any(|r| !r.learned && r.url == origin)
+                || learned.iter().any(|r| r.url == origin);
+            if !known {
+                let mut route = Route::for_origin(&origin);
+                route.learned = true;
+                learned.push(route);
+            }
+        }
+        let before: Vec<Route> = env.routes.iter().filter(|r| r.learned).cloned().collect();
+        if before == learned {
+            return false;
+        }
+        let (ssh, saved): (Vec<Route>, Vec<Route>) = env
+            .routes
+            .iter()
+            .filter(|r| !r.learned)
+            .cloned()
+            .partition(|r| r.kind == RouteKind::Ssh);
+        env.routes = saved.into_iter().chain(learned).chain(ssh).collect();
+        true
     }
 
     /// Drop a computer; an active one hands over to this Mac.
@@ -298,6 +350,7 @@ pub fn routes_for(old_origin: &str, descriptor: &EnvironmentDescriptor) -> Vec<R
             kind: RouteKind::Tailnet,
             url: origin,
             remote_port: None,
+            learned: false,
         });
     }
     if let Ok(origin) = check_transport(old_origin)
@@ -323,7 +376,8 @@ pub enum TransportError {
 }
 
 /// The one transport rule: `https://` anywhere (normal certificate checks),
-/// `http://` only to loopback. Returns the normalized origin
+/// `http://` only to loopback. (A learned plain-http tailnet route passes
+/// [`check_learned_transport`] instead, only for a confirmed tailnet peer.) Returns the normalized origin
 /// (`scheme://authority`, lowercase scheme, no path or trailing slash).
 pub fn check_transport(url: &str) -> Result<String, TransportError> {
     let url = url.trim();
@@ -344,6 +398,47 @@ pub fn check_transport(url: &str) -> Result<String, TransportError> {
         return Err(TransportError::PlainHttp);
     }
     Ok(format!("{scheme}://{authority}"))
+}
+
+/// A learned route's transport: [`check_transport`], or plain http to an
+/// address in Tailscale's range that this Mac's tailnet lists as a peer
+/// right now. The range alone proves nothing (other CGNAT VPNs share it);
+/// the peer list does, and WireGuard encrypts that hop.
+pub fn check_learned_transport(
+    url: &str,
+    tailnet_peers: &[std::net::IpAddr],
+) -> Result<String, TransportError> {
+    match check_transport(url) {
+        Ok(origin) => Ok(origin),
+        Err(TransportError::PlainHttp) => {
+            let host = host_of(url);
+            let peer = host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| is_tailnet(host) && tailnet_peers.contains(&ip));
+            if !peer {
+                return Err(TransportError::PlainHttp);
+            }
+            let rest = url.trim().split_once("://").map_or("", |(_, r)| r);
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            Ok(format!("http://{authority}"))
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// A Tailscale address: 100.64.0.0/10, or fd7a:115c:a1e0::/48.
+pub fn is_tailnet(host: &str) -> bool {
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            let [a, b, ..] = v4.octets();
+            a == 100 && (64..128).contains(&b)
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let seg = v6.segments();
+            seg[0] == 0xfd7a && seg[1] == 0x115c && seg[2] == 0xa1e0
+        }
+        Err(_) => false,
+    }
 }
 
 fn is_loopback(host: &str) -> bool {
@@ -511,6 +606,8 @@ mod tests {
             tailnet_url: tailnet.map(str::to_string),
             build_commit: None,
             self_update: false,
+            addresses: Vec::new(),
+            peer_links: false,
         }
     }
 
@@ -711,6 +808,7 @@ mod tests {
                 kind: RouteKind::Tailnet,
                 url: "https://studio.tail9915dd.ts.net".into(),
                 remote_port: None,
+                learned: false,
             }]
         );
         let none = descriptor("e", 1, None);
@@ -721,6 +819,7 @@ mod tests {
                 kind: RouteKind::Direct,
                 url: "https://box.example".into(),
                 remote_port: None,
+                learned: false,
             }]
         );
     }
@@ -786,6 +885,7 @@ mod tests {
             kind: RouteKind::Ssh,
             url: "ssh://me@studio:22".into(),
             remote_port: None,
+            learned: false,
         };
         let tailnet = Route::for_origin("https://studio.tail9915dd.ts.net");
         let direct = Route::for_origin("https://studio.example");

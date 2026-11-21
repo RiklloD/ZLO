@@ -132,6 +132,9 @@ pub struct WebuiAuthentication {
     /// for audit and for `GET /api/auth/devices`' `current` flag. `None` for
     /// every other bearer kind.
     pub device_id: Option<DeviceId>,
+    /// What that device may do (scopes, peer-link access). `None` for every
+    /// other bearer kind, which keeps full access.
+    pub device_grant: Option<ironclaw_product_contracts::environment_access::DeviceGrant>,
 }
 
 impl WebuiAuthentication {
@@ -140,12 +143,23 @@ impl WebuiAuthentication {
             user_id,
             capabilities,
             device_id: None,
+            device_grant: None,
         }
     }
 
     /// Record which paired device presented the bearer.
     pub fn with_device(mut self, device_id: DeviceId) -> Self {
         self.device_id = Some(device_id);
+        self
+    }
+
+    /// Record the paired device and what it may do.
+    pub fn with_device_grant(
+        mut self,
+        grant: ironclaw_product_contracts::environment_access::DeviceGrant,
+    ) -> Self {
+        self.device_id = Some(grant.device_id.clone());
+        self.device_grant = Some(grant);
         self
     }
 
@@ -839,6 +853,15 @@ async fn authenticate_request(
     {
         return forbidden();
     }
+    // A paired device acts only within its scopes. Peer routes check the
+    // link's access themselves (`crate::peer_routes`).
+    if let Some(grant) = auth.device_grant.as_ref()
+        && let Some(scope) =
+            crate::device_scopes::required_scope(request.method(), request.uri().path())
+        && !grant.allows(scope)
+    {
+        return crate::device_scopes::scope_forbidden(scope);
+    }
 
     // Stamp the trusted agent/project from host installation config
     // onto every authenticated caller. The downstream facade builds
@@ -862,6 +885,9 @@ async fn authenticate_request(
             .extensions_mut()
             .insert(crate::environment_access::AuthenticatedDevice(device_id));
     }
+    request
+        .extensions_mut()
+        .insert(crate::device_scopes::CallerGrant(auth.device_grant.clone()));
     {
         let scope = ironclaw_openai_compat::OpenAiCompatActorScope::new(
             state.tenant_id.clone(),

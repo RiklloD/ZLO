@@ -24,7 +24,7 @@ use ironclaw_memory::{
     MemoryInvocation, MemoryServiceError, MemoryServiceErrorKind, MemoryServiceSearchRequest,
 };
 use ironclaw_memory_native::{NativeMemoryService, OwnerWriteOutcome};
-use ironclaw_product_contracts::hooks_catalog::{HookCatalog, HookCatalogSource};
+use ironclaw_product_contracts::hooks_catalog::HookCatalogSource;
 use ironclaw_product_contracts::memory_page::{
     MemoryArchiveOutcome, MemoryArchiveRequest, MemoryArchiveResponse, MemoryDocument,
     MemoryDocumentEntry, MemoryDocumentsSource, MemoryPageWriteOutcome, MemoryProvenance,
@@ -98,8 +98,9 @@ impl NativeMemoryDocuments {
             .await
         {
             Ok(read) => read,
-            // The native read reports a missing document as an input error.
-            Err(error) if error.kind() == MemoryServiceErrorKind::Input => return Ok(None),
+            // Absence is the native read's typed `not_found` (upstream #7985);
+            // a malformed path stays an input error and maps to validation.
+            Err(error) if error.is_not_found() => return Ok(None),
             Err(error) => return Err(map_memory_error(error)),
         };
         let history = self
@@ -265,12 +266,19 @@ impl MemoryDocumentsSource for NativeMemoryDocuments {
     }
 }
 
-/// A catalog computed once at build: hooks are fixed for a runtime's life.
-pub(crate) struct StaticHookCatalog(pub(crate) HookCatalog);
+/// A catalog computed once at build, the same for every caller (tests).
+#[cfg(test)]
+pub(crate) struct StaticHookCatalog(
+    pub(crate) ironclaw_product_contracts::hooks_catalog::HookCatalog,
+);
 
+#[cfg(test)]
 #[async_trait]
 impl HookCatalogSource for StaticHookCatalog {
-    async fn catalog(&self) -> HookCatalog {
+    async fn catalog(
+        &self,
+        _caller: &ironclaw_host_api::ids::UserId,
+    ) -> ironclaw_product_contracts::hooks_catalog::HookCatalog {
         self.0.clone()
     }
 }

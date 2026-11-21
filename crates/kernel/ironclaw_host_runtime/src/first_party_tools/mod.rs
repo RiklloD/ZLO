@@ -242,6 +242,8 @@ pub fn builtin_first_party_package() -> Result<ExtensionPackage, ExtensionError>
             },
             host_apis: Vec::new(),
             host_api_surfaces: Vec::new(),
+            settings: Vec::new(),
+            ui_slots: Vec::new(),
             capabilities: {
                 let mut capabilities = vec![
                     echo::manifest()?,

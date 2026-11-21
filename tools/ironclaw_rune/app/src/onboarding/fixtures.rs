@@ -27,6 +27,7 @@ pub fn connect(s: &mut State) {
             kind: zlo_client::environments::RouteKind::Tailnet,
             url: "https://studio.tail9915dd.ts.net".into(),
             remote_port: None,
+            learned: false,
         }],
         legacy_token: false,
     }];

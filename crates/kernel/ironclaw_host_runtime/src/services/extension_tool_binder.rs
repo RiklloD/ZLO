@@ -242,6 +242,7 @@ fn tool_runtime_error_kind(kind: DispatchFailureKind) -> RuntimeDispatchErrorKin
 
 #[cfg(test)]
 mod tests {
+    use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -303,7 +304,9 @@ prompt_doc_ref = "prompts/test-lane-binder/run.md"
             &capability_provider_contracts(),
         )
         .expect("test manifest parses");
-        ExtensionPackage::from_manifest(manifest, root).expect("test package builds")
+        ExtensionPackage::from_manifest(manifest, root)
+            .expect("test package builds")
+            .with_unverified_contents_for_test()
     }
 
     fn test_policy() -> EffectiveRuntimePolicy {

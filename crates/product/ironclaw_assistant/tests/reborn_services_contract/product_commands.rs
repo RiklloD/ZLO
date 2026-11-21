@@ -228,7 +228,7 @@ async fn admin_command_list_includes_lifecycle_family() {
         .await
         .expect("admin may list commands");
 
-    assert_eq!(response.commands.len(), 15, "{:?}", response.commands);
+    assert_eq!(response.commands.len(), 16, "{:?}", response.commands);
 }
 
 #[tokio::test]
@@ -242,7 +242,7 @@ async fn operator_config_caller_lists_admin_commands() {
         .await
         .expect("operator-config caller may list commands");
 
-    assert_eq!(response.commands.len(), 15, "{:?}", response.commands);
+    assert_eq!(response.commands.len(), 16, "{:?}", response.commands);
 }
 
 #[tokio::test]

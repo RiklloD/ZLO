@@ -2192,6 +2192,7 @@ fn extension_info(id: &str, active: bool) -> RebornExtensionInfo {
         auth_accounts: Vec::new(),
         surfaces: Vec::new(),
         install_scope: None,
+        consent: None,
     }
 }
 

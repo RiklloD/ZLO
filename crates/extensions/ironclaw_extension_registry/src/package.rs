@@ -3,9 +3,10 @@ use ironclaw_host_api::{
     capability::CapabilityDescriptor,
     ids::{ExtensionId, PackageId},
     path::VirtualPath,
+    runtime::RuntimeKind,
     trust::{PackageIdentity, PackageSource, TrustPolicyInput},
 };
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::{
     CapabilityDeclV2, CapabilityManifest, ExtensionError, ExtensionManifest, ExtensionRuntime,
@@ -21,6 +22,173 @@ pub struct ExtensionPackage {
     pub capabilities: Vec<CapabilityDescriptor>,
     pub manifest_digest: Option<String>,
     pub descriptor_schema_mode: CapabilityDescriptorSchemaMode,
+    hosted_mcp_tool_names: BTreeMap<ironclaw_host_api::ids::CapabilityId, String>,
+    /// Hashes of the exact package files a consent grant covers. `None` for
+    /// packages that need no consent (host-bundled, user-registered); `Some`
+    /// binds every runtime read of a package file to the consented bytes
+    /// (see [`Self::verify_asset`]).
+    pub content_pins: Option<PackageContentPins>,
+}
+
+/// Consented per-file hashes of one package, keyed by package-relative path,
+/// as `sha256:<hex>` tokens ([`sha256_digest_token`]). Carried down to the
+/// runtime lanes on the package itself so a lane can refuse bytes that are
+/// not the ones the user consented to, without depending on the consent
+/// store that produced them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackageContentPins {
+    assets: BTreeMap<String, String>,
+    /// The consent digest of the grant these pins came from (the
+    /// `PackageConsentDigest` the per-principal decisions name), carried
+    /// opaquely so every binding knows which consented generation it runs:
+    /// dispatch admits a principal only when their own decision names
+    /// exactly this digest. `None` for pins built without a grant (fixtures),
+    /// which no principal's decision matches.
+    consent_digest: Option<String>,
+    binding: PinBinding,
+}
+
+/// What a pins value binds. A non-test build has exactly one variant, so no
+/// production code can construct pins that skip verification.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PinBinding {
+    /// Every runtime read must match `assets`.
+    #[default]
+    Hashes,
+    /// The explicit unverified test construction
+    /// ([`crate::test_support::UnverifiedContentsForTest`]): binds nothing.
+    #[cfg(any(test, feature = "test-support"))]
+    UnverifiedForTest,
+}
+
+impl PackageContentPins {
+    pub fn new(assets: BTreeMap<String, String>) -> Self {
+        Self {
+            assets,
+            consent_digest: None,
+            binding: PinBinding::Hashes,
+        }
+    }
+
+    /// Stamp these pins with the consent digest of the grant they came from.
+    pub fn with_consent_digest(mut self, digest: impl Into<String>) -> Self {
+        self.consent_digest = Some(digest.into());
+        self
+    }
+
+    /// The consent digest these pins were granted under, if any.
+    pub fn consent_digest(&self) -> Option<&str> {
+        self.consent_digest.as_deref()
+    }
+
+    /// True only for the explicit unverified test construction; always false
+    /// in a build without the `test-support` feature.
+    fn is_unverified_for_test(&self) -> bool {
+        match self.binding {
+            PinBinding::Hashes => false,
+            #[cfg(any(test, feature = "test-support"))]
+            PinBinding::UnverifiedForTest => true,
+        }
+    }
+
+    /// Pins for an explicit file set (package-relative path -> bytes), hashed
+    /// the way the consent grant hashes them. For callers that hold the exact
+    /// files they bind a package to — the consent store and test fixtures.
+    pub fn from_files<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> Self {
+        Self::new(
+            files
+                .into_iter()
+                .map(|(path, bytes)| (path.to_string(), sha256_digest_token(bytes)))
+                .collect(),
+        )
+    }
+
+    pub fn assets(&self) -> &BTreeMap<String, String> {
+        &self.assets
+    }
+}
+
+/// Pins that bind nothing: the unverified test construction only
+/// ([`crate::test_support::UnverifiedContentsForTest`]).
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn unverified_test_pins() -> PackageContentPins {
+    PackageContentPins {
+        binding: PinBinding::UnverifiedForTest,
+        ..PackageContentPins::default()
+    }
+}
+
+/// Verify `bytes` read from `path` against `pins` for a package rooted at
+/// `root` from `source` — the one rule every runtime read of a package file
+/// follows (see [`ExtensionPackage::verify_asset`]). For callers that hold a
+/// package's identity and pins without the whole package (the hook-only
+/// projection).
+pub fn verify_package_file(
+    extension_id: &ExtensionId,
+    source: ManifestSource,
+    pins: Option<&PackageContentPins>,
+    root: &VirtualPath,
+    path: &VirtualPath,
+    bytes: &[u8],
+) -> Result<(), PackageContentPinError> {
+    let Some(expected) = required_pin(extension_id, source, pins, root, path)? else {
+        return Ok(());
+    };
+    if expected != sha256_digest_token(bytes) {
+        return Err(PackageContentPinError::Mismatch {
+            path: relative_to_root(root, path)
+                .unwrap_or(path.as_str())
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn required_pin<'a>(
+    extension_id: &ExtensionId,
+    source: ManifestSource,
+    pins: Option<&'a PackageContentPins>,
+    root: &VirtualPath,
+    path: &VirtualPath,
+) -> Result<Option<&'a str>, PackageContentPinError> {
+    let Some(pins) = pins else {
+        if source.requires_consent() {
+            return Err(PackageContentPinError::NoGrant {
+                extension_id: extension_id.as_str().to_string(),
+            });
+        }
+        return Ok(None);
+    };
+    if pins.is_unverified_for_test() {
+        return Ok(None);
+    }
+    let relative =
+        relative_to_root(root, path).ok_or_else(|| PackageContentPinError::Unpinned {
+            path: path.as_str().to_string(),
+        })?;
+    pins.assets
+        .get(relative)
+        .map(|hash| Some(hash.as_str()))
+        .ok_or_else(|| PackageContentPinError::Unpinned {
+            path: relative.to_string(),
+        })
+}
+
+fn relative_to_root<'a>(root: &VirtualPath, path: &'a VirtualPath) -> Option<&'a str> {
+    path.as_str()
+        .strip_prefix(root.as_str().trim_end_matches('/'))?
+        .strip_prefix('/')
+}
+
+/// A package file read at runtime is not the consented one.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PackageContentPinError {
+    #[error("extension {extension_id} has no consent grant binding the files it runs")]
+    NoGrant { extension_id: String },
+    #[error("package file {path} is not covered by the extension's consent grant")]
+    Unpinned { path: String },
+    #[error("package file {path} changed after consent was granted")]
+    Mismatch { path: String },
 }
 
 /// How package capability descriptor schemas are derived from the manifest.
@@ -88,6 +256,8 @@ impl ExtensionPackage {
             capabilities,
             manifest_digest,
             descriptor_schema_mode: CapabilityDescriptorSchemaMode::InlineDynamic,
+            content_pins: None,
+            hosted_mcp_tool_names: BTreeMap::new(),
         })
     }
 
@@ -105,6 +275,8 @@ impl ExtensionPackage {
             capabilities,
             manifest_digest,
             descriptor_schema_mode: CapabilityDescriptorSchemaMode::ManifestRefs,
+            content_pins: None,
+            hosted_mcp_tool_names: BTreeMap::new(),
         })
     }
 
@@ -136,7 +308,145 @@ impl ExtensionPackage {
             capabilities,
             manifest_digest,
             descriptor_schema_mode: CapabilityDescriptorSchemaMode::InlineDynamic,
+            content_pins: None,
+            hosted_mcp_tool_names: BTreeMap::new(),
         })
+    }
+
+    /// Bind the package to consented file hashes.
+    pub fn with_content_pins(mut self, pins: PackageContentPins) -> Self {
+        self.content_pins = Some(pins);
+        self
+    }
+
+    /// Check bytes just read from `path` (an absolute path under the
+    /// package root) against the consented hash for that file. Fails closed:
+    /// a package that needs consent ([`ManifestSource::requires_consent`])
+    /// and carries no pins is refused, as is a file the grant does not cover
+    /// and bytes that hash differently. Only a package from a source that
+    /// needs no consent (host-bundled, user-registered) runs unpinned.
+    /// Callers verify the exact buffer they go on to use — never re-read
+    /// after checking.
+    pub fn verify_asset(
+        &self,
+        path: &VirtualPath,
+        bytes: &[u8],
+    ) -> Result<(), PackageContentPinError> {
+        let Some(expected) = self.required_asset_pin(path)? else {
+            return Ok(());
+        };
+        if expected != sha256_digest_token(bytes) {
+            return Err(PackageContentPinError::Mismatch {
+                path: self
+                    .relative_asset_path(path)
+                    .unwrap_or(path.as_str())
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn with_hosted_mcp_tool_names(
+        mut self,
+        tool_names: BTreeMap<ironclaw_host_api::ids::CapabilityId, String>,
+    ) -> Result<Self, ExtensionError> {
+        self.hosted_mcp_tool_names = tool_names;
+        self.validate_consistency()?;
+        Ok(self)
+    }
+
+    fn validate_hosted_mcp_tool_names(&self) -> Result<(), ExtensionError> {
+        if self.hosted_mcp_tool_names.is_empty() {
+            return Ok(());
+        }
+        let prefix = format!("{}.", self.id.as_str());
+        if self.hosted_mcp_tool_names.len() != self.capabilities.len()
+            || self.capabilities.iter().any(|descriptor| {
+                !self.hosted_mcp_tool_names.contains_key(&descriptor.id)
+                    || descriptor.runtime != RuntimeKind::Mcp
+            })
+            || self
+                .hosted_mcp_tool_names
+                .iter()
+                .any(|(capability_id, wire_name)| {
+                    let Some(suffix) = capability_id.as_str().strip_prefix(&prefix) else {
+                        return true;
+                    };
+                    !ironclaw_extension_contracts::hosted_mcp::is_valid_mcp_tool_name(wire_name)
+                        || wire_name.to_ascii_lowercase() != suffix
+                })
+        {
+            return Err(ExtensionError::InvalidManifest {
+                reason: "hosted MCP tool-name bindings do not match discovered capabilities"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// The consented hash a read of `path` must match: `Ok(None)` only for a
+    /// package that needs no consent and carries no pins; `Ok(Some(hash))`
+    /// when the grant covers the file; `Err` when the package needs consent
+    /// but carries no pins, or is pinned and the grant does not cover the
+    /// file. Lanes call this before any cache lookup keyed by the file, so a
+    /// module compiled from other bytes is never reused for a pinned package.
+    pub fn required_asset_pin(
+        &self,
+        path: &VirtualPath,
+    ) -> Result<Option<&str>, PackageContentPinError> {
+        let Ok(root) = self.root_binding.materialized_root() else {
+            // A virtual (remote-only) package has no files to pin.
+            return if self.requires_verified_contents() {
+                Err(PackageContentPinError::NoGrant {
+                    extension_id: self.id.as_str().to_string(),
+                })
+            } else {
+                Ok(None)
+            };
+        };
+        required_pin(
+            &self.id,
+            self.manifest.source,
+            self.content_pins.as_ref(),
+            root,
+            path,
+        )
+    }
+
+    /// True when this package's files must be verified against a consent
+    /// grant before anything runs them: its source needs consent and it is
+    /// not an explicit unverified test construction. A lane that cannot bind
+    /// execution to verified bytes (the script runtime) refuses such a
+    /// package outright.
+    pub fn requires_verified_contents(&self) -> bool {
+        self.manifest.source.requires_consent()
+            && !self
+                .content_pins
+                .as_ref()
+                .is_some_and(PackageContentPins::is_unverified_for_test)
+    }
+
+    /// The consented hash for the file at `path`, if this package is pinned
+    /// and the grant covers that file.
+    pub fn pinned_asset_hash(&self, path: &VirtualPath) -> Option<&str> {
+        let pins = self
+            .content_pins
+            .as_ref()
+            .filter(|pins| !pins.is_unverified_for_test())?;
+        pins.assets
+            .get(self.relative_asset_path(path)?)
+            .map(String::as_str)
+    }
+
+    fn relative_asset_path<'a>(&self, path: &'a VirtualPath) -> Option<&'a str> {
+        let root = self.root_binding.materialized_root().ok()?;
+        path.as_str()
+            .strip_prefix(root.as_str().trim_end_matches('/'))?
+            .strip_prefix('/')
+    }
+
+    pub fn hosted_mcp_tool_names(&self) -> &BTreeMap<ironclaw_host_api::ids::CapabilityId, String> {
+        &self.hosted_mcp_tool_names
     }
 
     pub fn manifest_digest(&self) -> Option<String> {
@@ -219,6 +529,7 @@ impl ExtensionPackage {
                     .to_string(),
             });
         }
+        self.validate_hosted_mcp_tool_names()?;
         Ok(())
     }
 
@@ -482,6 +793,81 @@ visibility = "model"
 input_schema_ref = "schemas/remote-tools/invoke.input.v1.json"
 "#;
 
+    fn wasm_package(source: ManifestSource) -> ExtensionPackage {
+        let manifest = ExtensionManifest::parse(
+            &DIRECT_REMOTE_VIRTUAL_MANIFEST.replace(
+                "kind = \"mcp\"\ntransport = \"http\"\nurl = \"https://mcp.example.test/mcp\"",
+                "kind = \"wasm\"\nmodule = \"wasm/tool.wasm\"",
+            ),
+            source,
+            &HostPortCatalog::empty(),
+            &contracts(),
+        )
+        .expect("manifest parses");
+        ExtensionPackage::from_manifest(
+            manifest,
+            VirtualPath::new("/system/extensions/remote-tools").expect("root"),
+        )
+        .expect("package")
+    }
+
+    /// Absent pins are acceptable only for a package that needs no consent;
+    /// a consent-requiring package without pins is refused, as is a pinned
+    /// package's file the grant does not cover — before any bytes are read.
+    #[test]
+    fn content_pins_fail_closed_for_packages_that_need_consent() {
+        let module = VirtualPath::new("/system/extensions/remote-tools/wasm/tool.wasm").unwrap();
+        let bytes = b"module bytes".as_slice();
+
+        let bundled = wasm_package(ManifestSource::HostBundled);
+        assert_eq!(bundled.required_asset_pin(&module), Ok(None));
+        assert_eq!(bundled.verify_asset(&module, bytes), Ok(()));
+
+        for source in [
+            ManifestSource::InstalledLocal,
+            ManifestSource::RegistryInstalled,
+        ] {
+            let unpinned = wasm_package(source);
+            assert!(unpinned.requires_verified_contents());
+            assert!(matches!(
+                unpinned.required_asset_pin(&module),
+                Err(PackageContentPinError::NoGrant { .. })
+            ));
+            assert!(matches!(
+                unpinned.verify_asset(&module, bytes),
+                Err(PackageContentPinError::NoGrant { .. })
+            ));
+
+            let uncovered = wasm_package(source).with_content_pins(PackageContentPins::from_files(
+                [("manifest.toml", b"m".as_slice())],
+            ));
+            assert!(matches!(
+                uncovered.required_asset_pin(&module),
+                Err(PackageContentPinError::Unpinned { .. })
+            ));
+
+            let pinned = wasm_package(source)
+                .with_content_pins(PackageContentPins::from_files([("wasm/tool.wasm", bytes)]));
+            assert_eq!(
+                pinned.required_asset_pin(&module),
+                Ok(Some(sha256_digest_token(bytes).as_str()))
+            );
+            assert_eq!(pinned.verify_asset(&module, bytes), Ok(()));
+            assert!(matches!(
+                pinned.verify_asset(&module, b"other bytes"),
+                Err(PackageContentPinError::Mismatch { .. })
+            ));
+
+            let test_only =
+                crate::test_support::UnverifiedContentsForTest::with_unverified_contents_for_test(
+                    wasm_package(source),
+                );
+            assert!(!test_only.requires_verified_contents());
+            assert_eq!(test_only.verify_asset(&module, b"anything"), Ok(()));
+            assert_eq!(test_only.pinned_asset_hash(&module), None);
+        }
+    }
+
     fn contracts() -> HostApiContractRegistry {
         let mut contracts = HostApiContractRegistry::new();
         contracts
@@ -547,6 +933,42 @@ input_schema_ref = "schemas/remote-tools/invoke.input.v1.json"
             .validate_consistency()
             .expect_err("fabrication cannot survive packaging");
         assert!(matches!(error, ExtensionError::InvalidManifest { .. }));
+    }
+
+    #[test]
+    fn package_consistency_rejects_stale_hosted_mcp_tool_name_bindings() {
+        let manifest = ExtensionManifest::parse(
+            DIRECT_REMOTE_VIRTUAL_MANIFEST,
+            ManifestSource::UserRegistered,
+            &HostPortCatalog::empty(),
+            &contracts(),
+        )
+        .expect("manifest");
+        let mut capabilities =
+            capability_descriptors_from_manifest(&manifest).expect("capability descriptors");
+        capabilities[0].parameters_schema = serde_json::json!({"type": "object"});
+        let capability_id = capabilities[0].id.clone();
+        let mut package = ExtensionPackage::from_virtual_manifest(manifest, None, capabilities)
+            .expect("virtual package")
+            .with_hosted_mcp_tool_names(BTreeMap::from([(capability_id, "invoke".to_string())]))
+            .expect("complete binding is consistent");
+
+        let mut added_manifest = package.manifest.capabilities[0].clone();
+        added_manifest.id = ironclaw_host_api::ids::CapabilityId::new("remote-tools.second")
+            .expect("second capability id");
+        let mut added_descriptor = package.capabilities[0].clone();
+        added_descriptor.id = added_manifest.id.clone();
+        package.manifest.capabilities.push(added_manifest);
+        package.capabilities.push(added_descriptor);
+
+        let error = package
+            .validate_consistency()
+            .expect_err("stale non-empty bindings must fail package admission");
+        assert!(matches!(
+            error,
+            ExtensionError::InvalidManifest { reason }
+                if reason.contains("tool-name bindings do not match")
+        ));
     }
 
     #[test]

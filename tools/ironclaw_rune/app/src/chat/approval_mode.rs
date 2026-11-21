@@ -184,10 +184,10 @@ fn mode_icon(mode: Option<ApprovalMode>) -> &'static rune::Icon {
 /// Full access reads warm (nothing stops a call), ask first calm.
 fn tint(mode: Option<ApprovalMode>, global: Option<bool>, p: &Palette) -> Color {
     let full = ApprovalMode::resolve_auto_approve(mode, global.unwrap_or(false));
+    // Only full access, the state worth noticing, keeps a colour.
     match mode {
-        None => p.text_muted,
-        _ if full => p.warning,
-        _ => p.success,
+        _ if full && mode.is_some() => p.warning,
+        _ => p.text_muted,
     }
 }
 
@@ -248,7 +248,7 @@ pub fn pill(s: &State, chat: &ChatState, _k: &Kit) -> El {
         );
     }
     if a.busy {
-        pill = pill.child(rune_kit::Spinner::new().size(12.).build(_k));
+        pill = pill.child(crate::design::kit::Spinner::new().size(12.).build(_k));
     } else if !a.compact {
         pill = pill.child(icon(&icons::CHEVRON_DOWN, 12.).color(p.text_muted));
     }

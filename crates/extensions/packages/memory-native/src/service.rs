@@ -517,7 +517,7 @@ impl NativeMemoryService {
             .await
             .map_err(MemoryServiceError::operation_from)?
         else {
-            return Err(MemoryServiceError::input());
+            return Err(MemoryServiceError::not_found());
         };
         let content = String::from_utf8(bytes).map_err(MemoryServiceError::operation_from)?;
         Ok(MemoryServiceReadResponse {
@@ -918,11 +918,14 @@ impl NativeMemoryService {
     /// The standing [`MEMORY_PATH`] document, split into snippet-sized chunks
     /// for the head of the long-term lane. Empty when there is nothing saved.
     ///
-    /// Absence is the NORMAL state — a user who has never saved anything — and
-    /// [`NativeMemoryService::read`] reports it as an `Input` error, so this
-    /// degrades to no curated prefix rather than failing the lane. A backend
-    /// fault degrades the same way, with a `debug!`: memory is best-effort
-    /// context and must never take a turn down with it.
+    /// Absence is the NORMAL state — a user who has never saved anything — so
+    /// this reads the backend directly and treats `Ok(None)` as an empty
+    /// prefix. It deliberately does not go through
+    /// [`NativeMemoryService::read`], which raises absence as a domain failure
+    /// (`Operation`, "no memory document at that path") for a caller that asked
+    /// for one specific document. A backend fault degrades the same way, with a
+    /// `debug!`: memory is best-effort context and must never take a turn down
+    /// with it.
     async fn curated_standing_snippets(
         &self,
         invocation: &MemoryInvocation,
@@ -1022,7 +1025,7 @@ impl NativeMemoryService {
                 .await
                 .map_err(MemoryServiceError::operation_from)?
             else {
-                return Err(MemoryServiceError::operation());
+                return Err(MemoryServiceError::not_found());
             };
             let existing = String::from_utf8(bytes).map_err(MemoryServiceError::operation_from)?;
             let current_hash = content_bytes_sha256(existing.as_bytes());

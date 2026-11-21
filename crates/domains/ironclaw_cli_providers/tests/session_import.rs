@@ -289,6 +289,7 @@ async fn engine(home: &Home) -> Arc<Engine> {
             login_file: home.root.join(".claude.json"),
             projects_dir: home.root.join(".claude").join("projects"),
             usage_file: None,
+            autocompact: None,
         },
         sink.clone(),
         None,

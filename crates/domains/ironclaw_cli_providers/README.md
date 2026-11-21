@@ -3,7 +3,7 @@
 Coding-agent CLIs as `ironclaw_orchestrator` turn runtimes: the Claude CLI,
 registered twice: `claude-cli` (default account) and `claude-cli-2`
 (`CLAUDE_CONFIG_DIR=~/.claude-account2`), only when a `claude` binary is
-found; `antigravity` (Google's ACP agent), `muse-code` (Meta's Muse Code)
+found; `antigravity` (Google's Antigravity agent over ACP), `muse-code` (Meta's Muse Code)
 and `codex` (OpenAI's Codex CLI over `codex app-server`, on the user's own
 `codex login`), each registered when installed
 (`register_antigravity_runtime`, `register_muse_runtime`,
@@ -44,14 +44,74 @@ One `claude -p --output-format stream-json --input-format stream-json
 for the control protocol until the result arrives. The thread's
 `native_session_id` is minted at creation; the first turn passes
 `--session-id`, later turns `--resume`. Stop sends SIGTERM to the process
-group, SIGKILL after 2 s. A rejected `rate_limit_event` (or a limit-shaped
-error result) becomes `usage_limit_resets_at`. History reads the CLI's own
-session journal. The CLI child dies with the backend, so
+group, SIGKILL after 2 s. A rejected `rate_limit_event`, the same reading
+repeated on a blocked assistant frame (`api_error_params.rate_limit_info`,
+whose reset counts only while still ahead), or a limit-shaped error result
+becomes `usage_limit_resets_at`, and the error names the limit
+(`usage_limit: the Claude 5-hour limit is reached`; weekly, weekly Opus,
+weekly Sonnet, extra-usage). History reads the CLI's own session journal. The CLI child dies with the backend, so
 `reports_restart_cuts` stays off and the engine's live-work rows cover cuts.
 
 Wire types come from `claude-codes`, pinned to the checked CLI release
-(`claude::EXPECTED_CLI_VERSION`, `2.1.302`); a different installed version
+(`claude::EXPECTED_CLI_VERSION`, `2.1.328`); a different installed version
 is logged at `debug`.
+
+`ZLO_CLAUDE_AUTOCOMPACT` (tokens, 100000 to 1000000) is passed as
+`--autocompact`: the CLI compacts at about that much context instead of its
+default. It does not change the model's window; out-of-range values are
+ignored. Idle compaction (below) is separate.
+
+### Steering
+
+With the bridge, a message sent while a turn runs is written into its open
+stdin as a user message with `priority: "next"`: Claude reads it once the
+tool calls in flight finish, in the same turn (an approval still waiting is
+declined with the person's words). `claude/steer.rs` follows each command
+written (the prompt and every steer, by uuid) through the CLI's
+`command_lifecycle` frames (`queued`, `started`, `completed`, or dropped as
+`cancelled` / `discarded` / `refused`) and the `user_message_uuids` echoes:
+
+- stdin closes only once every command is done, not at the first `result`,
+  so the approval hook can still answer a steer's tool calls. A steer the
+  CLI never acknowledges stops holding stdin 15 s after it began waiting
+  for it: an absolute deadline, so unrelated output does not extend it.
+  The 60 s hook-registration wait is absolute too.
+- a steer the CLI never started (dropped, Stop, a crash, the turn ending
+  first) is handed back through `TurnEventSink::steers_unread` (with the
+  run id and each steer's own uuid) before the turn ends; the engine queues
+  it under an id derived from thread, run and steer, so a repeated report
+  never queues it twice, and it is sent as a later turn (after a Stop, once
+  the thread is released) instead of being lost. A queue write that still
+  fails after two retries comes back as undelivered: the turn then ends
+  failed (a Stop stays cancelled) with an error that quotes each message
+  and says it was not delivered.
+
+A CLI without lifecycle frames or echoes keeps the old behaviour: stdin
+closes at the first result and every steer counts as read.
+
+### Task lists
+
+Claude CLI 2.1.3xx has no `TodoWrite` in headless runs; with
+`CLAUDE_CODE_ENABLE_TODO_TOOLS=1` (always set) it offers `TaskCreate`,
+`TaskUpdate`, `TaskList` and `TaskGet`, deferred behind `ToolSearch`. The
+hook allows those, and a `ToolSearch` that only loads them
+(`select:TaskCreate,...`), without a gate: they touch nothing but the
+session's task store, `<config>/tasks/<session>/<id>.json`. That is made
+true, not assumed: the CLI's resolver prefers `CLAUDE_CODE_TASK_LIST_ID`
+and a team's list over the session id, so every child gets
+`CLAUDE_CODE_TASK_LIST_ID=<session>` and loses inherited team/list routing
+(`CLAUDE_INTERNAL_SESSION_TASK_LIST_ID`, `CLAUDE_INTERNAL_ASSISTANT_TEAM_NAME`,
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `CLAUDE_CODE_TEAMMATE_COMMAND`,
+`CLAUDE_CODE_TEAM_TEARDOWN_PARK_TIMEOUT_MS`). After each successful call
+the driver re-reads that store into the thread's plan (task order,
+`pending` / `in_progress` / `completed`), so the list carries across turns.
+The read (`claude/tasks.rs`) never follows a link (the store folder must be
+a real directory; entries open `O_NOFOLLOW | O_NONBLOCK` and must be the
+regular file listed, so a FIFO cannot hang it), skips entries over 64 KiB,
+looks at 512 entries and 1 MiB at most, and logs any failure other than a
+missing store at `debug`. Overlapping refreshes carry a generation; only
+the newest publishes. `TodoWrite` is still handled for older CLIs. Any
+other `ToolSearch` asks as before.
 
 ## Tools and approvals
 
@@ -68,6 +128,11 @@ CLI has its tools and every call waits for a person:
   `allow` or `deny`, never an error frame: on an error the CLI falls back to
   its own rules, which auto-approve reads. Timeout (10 min), Stop, turn end
   and any failure deny.
+- The CLI's own agents and teams are off: `--disallowedTools
+  Agent,Task,Workflow,SendMessage,ListAgents,TaskStop`
+  (`BUILTIN_SUBAGENT_TOOLS`), and the hook denies those tools outright as a
+  backstop, even on a "Full access" profile. Subagents are orchestrator
+  threads; ZLO's own Stop covers background shells.
 - No allow rules are passed, "always allow" is not offered, prompts are
   answered "no" (`--permission-prompts none`), and
   `--dangerously-skip-permissions` is never used.
@@ -115,71 +180,187 @@ through `TurnEventSink::turn_telemetry` and served by
 
 ## Antigravity (`antigravity`)
 
-Runs Google's Antigravity ACP agent (`agy_acp_server.par` with
-`localharness_external` beside it), not the `agy` CLI: `agy` 1.4.0 has no
-ACP mode. The runtime is found where Hermes or T3 Code installed it
+Runs Google's Antigravity agent over ACP: the native `agy` CLI's
+`agy acp` stdio server when the installed `agy` is 1.5 or later (found on
+`PATH`, then `~/.local/bin`; checked against `launch::EXPECTED_CLI_VERSION`,
+`1.5.11`), else the legacy one-file runtime (`agy_acp_server.par` beside
+`localharness_external`, 1.3.0) where Hermes or T3 Code installed it
 (`~/.hermes/plugin-data/t3code/antigravity-acp`, then
-`~/.t3/tools/antigravity-acp`, `<platform>/active.json` naming the version).
-The protocol is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
-`agent-client-protocol` crate is not used because it turns on `serde_json`'s
-`preserve_order` for the whole workspace build.
+`~/.t3/tools/antigravity-acp`). The native launch is
+`agy acp --gemini-dir <profile> --app-data-dir antigravity-acp
+--disable-telemetry`, never `--dangerously-skip-permissions`. The protocol
+is spoken directly over newline JSON-RPC (`src/rpc.rs`); the
+`agent-client-protocol` crate is not used because it turns on
+`serde_json`'s `preserve_order` for the whole workspace build.
 
-- **Sign-in:** `GEMINI_HOME` is the profile Hermes already signed in
+- **Sign-in:** the profile is the one Hermes already signed in
   (`~/.hermes/plugin-data/t3code/antigravity/profile`) when it exists, else
-  `~/.ironclaw/antigravity/profile`. `authenticated` is the presence of
-  `antigravity-acp/acp_token.json` there. The agent inherits only an environment
-  allowlist (`HOME`, `PATH`, locale, proxy and CA settings), so ambient
-  cloud credentials and API keys never reach it, and `BROWSER` is `/usr/bin/true`: a
-  missing sign-in fails the turn after `auth_timeout` instead of opening a
-  browser.
-- **Turns:** one agent process per turn (it starts in about a second):
-  `initialize`, `authenticate`, `session/new` on the first turn (the agent's
-  session id is kept in `~/.ironclaw/antigravity/sessions/<key>`), then
-  `session/resume`. The thread's model is applied with
-  `session/set_config_option` (`default` keeps the agent's choice).
-- **Stop:** `session/cancel`, then SIGTERM/SIGKILL of the process group
-  after 2 s each. No in-turn steering: a steer restarts the turn.
+  `~/.ironclaw/antigravity/profile`. Both launches keep the sign-in at
+  `<profile>/antigravity-acp/acp_token.json`, so one sign-in serves either;
+  `authenticated` is that file's presence. The agent inherits only an
+  environment allowlist (`HOME`, `PATH`, locale, proxy and CA settings), so
+  ambient cloud credentials and API keys never reach it, and `BROWSER` is
+  `/usr/bin/true`: a missing sign-in fails the turn after `auth_timeout`
+  instead of opening a browser. The user's global skills
+  (`~/.gemini/config/skills`, `~/.gemini/antigravity-cli/skills`) are
+  linked into the private profile; only a missing entry, an empty
+  placeholder folder or a link to exactly that target is replaced (a link
+  pointing elsewhere is the user's and stays), and nothing is changed when
+  a folder on the way inside the profile is a symlink. Every folder ZLO
+  creates in the profile is 0700, and ZLO's own profile and its `config`
+  folder are tightened to 0700 (a shared Hermes profile keeps its mode);
+  placeholders go with `remove_dir`, never a recursive removal. The links
+  are made by path: another process of the same user racing them inside
+  the private profile is outside the threat model.
+- **Finding the agent:** `agy --version` runs asynchronously
+  (`register_antigravity_runtime` and `register_cli_runtimes` are `async`)
+  in its own process group, under one 5 s deadline for its first output
+  line (4 KiB cap) and its exit; the group is killed afterwards, so a
+  descendant holding stdout open neither blocks startup nor outlives it.
+- **Admission:** one turn per thread, claimed atomically before any await
+  (`slot.rs`, shared with Muse): a racing start is `Busy`, and the claim
+  and a guard on the agent's process group live in the turn task, so a
+  dropped, panicking or aborted turn still frees the thread and ends the
+  agent; a report guard then tells the engine (`turn_finished`) and the
+  bridge (`turn_ended`) the turn failed. The slot's cancellation flag
+  exists from the claim on: a Stop while the turn still prepares sets it,
+  the driver checks it before spawning and `fill` refuses a cancelled
+  slot, so the agent is never launched (or is ended at once) and the turn
+  is reported `Cancelled`; that Stop returns once the report is out.
+- **Turns:** one agent process per turn: `initialize`, `authenticate`,
+  `session/new` on the first turn (the agent's session id is kept in
+  `~/.ironclaw/antigravity/sessions/<key>`), then `session/resume`. The
+  thread's model and thinking level (`thought_level`, the catalog's
+  `efforts`) are applied with `session/set_config_option`; a pre-1.5 model
+  id such as `gemini-3.8-flash-high` is still passed through. The profile
+  preamble, skills index and goal go in
+  `_meta.antigravity.systemPrompt.append` on every `session/new` and
+  `session/resume` when the agent offers it, so the prompt is the user's
+  text verbatim and native commands (`/goal`, `/plan`, `/clear`) reach the
+  agent; without it they go ahead of the prompt, except before a `/`
+  command. A `/goal` run's `<!-- GOAL_COMPLETE -->` marker is dropped from
+  the answer.
+- **Steer:** on `agy acp` a message sent mid-turn is another
+  `session/prompt` into the same session (`steer_in_turn`): the running
+  prompt answers `end_turn`, the turn carries on under the new one, and the
+  agent's tools and subagents are left alone. A steer is acknowledged only
+  after its `session/prompt` frame is queued on the wire (frames go out in
+  order), so steers sent at once all reach the agent. The superseded
+  prompt's reply is still awaited: its `end_turn`/`cancelled` is ignored,
+  but an error (a quota, a lost thinking signature, anything else) is kept
+  and classified like the turn's own answer, so a later success does not
+  mask it and a lost signature still retires the session pointer. The
+  legacy runtime refuses (the engine queues); `SteerHow::Restart` stops
+  and restarts.
+- **Background commands:** `agy` ends a prompt while a command it
+  backgrounded still runs and replies on its own when it finishes. The turn
+  stays open until the command is done and that reply closes with a
+  `usage_update` (or 60 s of silence with nothing running); a daemon
+  (`IsDaemon`) never holds a turn, and an agent exit while held fails it.
+  A hold is bounded: a command whose end the agent never reports, with no
+  word from it for `background_hold` (30 minutes by default), ends the
+  turn `Interrupted` with an "ended unverified" error, keeping what the
+  agent said in the answer and the journal.
+- **Stop:** `session/cancel` (which also ends `agy`'s background commands),
+  then SIGTERM/SIGKILL of the process group after 2 s each.
+- **Live turn:** reply text, thinking, tool rows with their output and
+  Antigravity's own subagent calls (`invoke_subagent`, shown read-only as
+  `subagent` rows) stream to the bridge; plan updates as before.
 - **History:** IronClaw's own journal,
-  `~/.ironclaw/antigravity/transcripts/<key>.jsonl` (user prompt, final
-  answer, tool call names).
+  `~/.ironclaw/antigravity/transcripts/<key>.jsonl` (user prompts and
+  steers, answers, tool call names). When the agent has lost a thread's
+  session, the fresh one gets a recap of that journal, fenced in
+  `<prior_conversation>` tags and labeled untrusted data, not
+  instructions; the tag inside the recapped text is defused
+  (`prior-conversation`) so it cannot close the fence.
 - **Models:** the list the last session reported
-  (`~/.ironclaw/antigravity/models.json`), else Hermes's cache in the shared
-  profile, else `default`. A signed-in catalog read refreshes a list older
-  than an hour in the background (`session/new` + `session/close`, no
-  prompt), so newly shipped models appear without a turn or an app release.
+  (`~/.ironclaw/antigravity/models.json`, with the thinking levels), else
+  Hermes's cache in the shared profile, else `default`. A signed-in catalog
+  read refreshes a list older than an hour in the background
+  (`session/new` + `session/close`, no prompt).
 - **Limits:** a quota-shaped error (`RESOURCE_EXHAUSTED`, "quota", "rate
-  limit") becomes a `usage_limit:` failure; ACP reports no reset time.
+  limit") or a `refusal` stop becomes a `usage_limit:` failure;
+  `quotaResetTimeStamp`, `quotaResetDelay` or `retryDelay` in the error
+  sets `usage_limit_resets_at`. A model rejecting a saved thinking block
+  (lost signature) retires the session pointer (renamed, never deleted), so
+  the next turn starts a fresh session with the recap.
 - **Telemetry:** context used and window from ACP `usage_update`; cache hit
-  rate and TPS only when `session/prompt` returns `usage` (the 1.3.0 agent
-  does not, so TPS stays empty).
+  rate and TPS from `session/prompt`'s `usage` (`agy` 1.5 reports it; the
+  1.3.0 runtime does not).
 - **Tools:** the client offers no file system and no terminal, the session
   stays in the agent's ask-first `default` mode, and every
   `session/request_permission` goes through `permissions::decide`: with
   the bridge it waits as an approval in the thread and answers `allow_once`
-  or `reject_once` (never `allow_always`); without, `reject_once`. Native
-  questions are cancelled.
+  or `reject_once` (never `allow_always`); without, `reject_once`. A
+  rejection's feedback steers the running turn on `agy acp`, else waits in
+  the queue as the next turn's input. Native questions are cancelled
+  without a bridge.
+- **Not ported from T3 Code:** subscription usage windows (they need an
+  HTTP call with the account's refresh token: `ironclaw_usage`'s job),
+  reading `agy`'s SQLite session log for upstream errors reported as
+  `end_turn`, detached subagent transcripts, managed downloads, and remote
+  sign-in.
 
 ## Muse Code (`muse-code`)
 
 Runs `muse serve` and speaks the Muse Session Protocol directly over the same
-JSON-RPC module, mirroring the Hermes t3code driver. `muse-code-sdk` is not a
+JSON-RPC module, mirroring the Hermes t3code driver and checked against Muse
+Code `1.4.24` (`muse::EXPECTED_HOST_VERSION`). `muse-code-sdk` is not a
 dependency: its facade has no `turn/interrupt`, `model/list` or
 `usage/read`, and its spawn does not start a process group.
 
 - **Turns:** one host per turn. The thread's `native_session_id` is a UUIDv7
   minted at creation; the first turn calls `session/start` with it, later
   turns `session/resume` (`excludeItems`). Commands carry UUIDv7 ids.
+- **Live view (with a bridge, `muse/live.rs`):** reply and reasoning text
+  (whole `item/*` snapshots and `item/delta` appends, only the unshown part
+  sent), one tool row per tool item (`toolCall`, `userShell`, `subagent`,
+  `workflow`; subject from the command, path, query or objective) with its
+  streamed `visibleOutput`, and `session/todoListChanged` as the thread's
+  plan. Muse's own housekeeping calls (`write_todos`, `request_user_input`,
+  `workflow`) draw no row. The journal still keeps only prompt and answer.
 - **Steer:** `turn/steer` with `expectedTurnId` into the running turn
   (`steer_in_turn`); a refused steer or `SteerHow::Restart` restarts.
-- **Stop:** `turn/interrupt`, then SIGTERM/SIGKILL of the process group.
+- **Stop:** `turn/interrupt` for every turn Muse started on its own inside
+  this one (a finished workflow) and then the admitted one; then
+  SIGTERM/SIGKILL of the process group.
+- **Fork:** no native fork; the engine's portable handoff starts a new
+  session with the context (as t3code does).
+- **Admission:** the same shared claim as Antigravity (`slot.rs`): one turn,
+  compaction or probe per thread, taken before any await. A Stop before
+  the host runs cancels the slot (the turn is reported `Cancelled`, a
+  compaction answers `Busy`, and `muse serve` never launches), and a
+  panicking or aborted turn task is reported failed.
+- **Compaction:** Muse compacts near the window by itself
+  (`RuntimeCompaction::automatic`); `ThreadAction::Compact` resumes the
+  session on a host of its own, sends `session/compact` and waits up to
+  5 minutes for the compaction item to settle (`noop` and a session with no
+  turn yet answer "Nothing to compact yet."). The host holds the thread's
+  turn slot meanwhile, so a turn is `Busy` and Stop ends it.
 - **History:** IronClaw's journal,
   `~/.ironclaw/muse-code/transcripts/<session>.jsonl`, which also marks the
   session as started.
 - **Models and sign-in:** `model/list` from a read-only host
   (`--no-session-log`), cached 10 minutes; MSP has no sign-in signal, so a
-  non-empty catalog counts as authenticated, as in Hermes.
-- **Limits:** `turn/completed.error.quota.resetsAtMs` becomes
-  `usage_limit_resets_at`. The `usage/read` / `usage/changed` subscription
+  non-empty catalog counts as authenticated, as in Hermes. Each model's
+  reported `variants` become its `model_efforts` (known tiers only); a model
+  that reports none, or an unlisted custom model id, takes
+  `low`…`max`. A picked tier the model lacks is replaced by the model's
+  `defaultReasoningEffort` before `turn/start`.
+- **Sign-in only:** every inherited `META_API_KEY` (any spelling) is removed
+  from the host's environment, so the `muse login` credential is used and no
+  stray key bills another account. (t3code honors a key set on one provider
+  instance; ZLO has no per-runtime environment, so it never passes one.)
+- **Failures:** classes only, never the raw text (it carries request ids,
+  paths and billing URLs): sign-in required; "does not exist or you lack
+  access" (Muse lists models an account cannot use) names the model and
+  asks for another; HTTP 402 / billing; otherwise `muse turn <terminal>
+  (<kind>)`.
+- **Limits:** a usage limit is `error.quota`, or a 429 whose text says
+  quota or usage limit (credential proxies drop `quota`). It becomes a
+  `usage_limit:` failure resuming at the latest future reset among
+  `quota.resetsAtMs`, a "resets at <RFC 3339>" in the text, and the
+  subscription windows at or over 100%. The `usage/read` / `usage/changed`
   windows are saved to `~/.ironclaw/usage/muse-code.json`
   (`{"observedAt", "usage"}`).
 - **Telemetry:** context used and window from `session/contextUsage`
@@ -187,11 +368,28 @@ dependency: its facade has no `turn/interrupt`, `model/list` or
   the last `session/tokenUsage`, TPS as output tokens over the summed
   `durationMs` of the turn's model calls.
 - **Tools:** `--disable-request-user-input`, no `--trust-workspace`
-  (workspace rules cannot allow anything), approval mode `denyUnmatched`,
-  and every approval Muse raises goes through `permissions::decide`: with
-  the bridge it waits for the owner and picks the once-scoped `approved`
-  choice, else `denied` (or `abort`). Without a bridge, shell and writes
-  are off too (`--disable-shell --disable-write`).
+  (workspace rules cannot allow anything), approval mode `promptUnmatched`
+  with a bridge (`denyUnmatched` without), and permission profile `:ask-me`
+  on start, resume and compaction, because Muse's default profile may let
+  its own AI reviewer decide a call. Every approval Muse raises goes through
+  `permissions::decide`: with the bridge it waits for the owner and picks
+  the once-scoped `approved` choice, else `denied` (or `abort`). Without a
+  bridge, shell and writes are off too (`--disable-shell --disable-write`).
+  t3code's "Full access" (`allowAll`, `:unrestricted`,
+  `--disable-sandbox`) is deliberately not offered.
+- **Orchestrator tools:** off by default (`MuseConfig::orchestrator_tools`).
+  The MCP route does not gate calls itself, and that Muse asks before each
+  MCP call under `:ask-me` is unverified live, so they stay off until a live
+  canary shows it. When on, with a bridge whose MCP route is known, the turn
+  asks for the `sessionMcp` capability and, when granted, names the route as
+  an `optional` streamable-HTTP session MCP server (`ironclaw`, bearer token
+  bound to the turn, revoked when it ends). Optional, because Muse fails a
+  run whose required server is unreachable. Its calls are subject to the
+  session's approval mode like any other.
+- **Not ported:** update detection (t3code reads Meta's release channel
+  over HTTP and drives the launcher's `MUSE_SYNC_UPDATE`; hosts here run
+  with `MUSE_NO_AUTO_UPDATE=1`), retry rows (`turn/retryScheduled`),
+  subagent child threads, and `view/gap` recovery (one host per turn).
 
 ## The approval seam
 

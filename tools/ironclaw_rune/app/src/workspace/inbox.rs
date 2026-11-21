@@ -39,6 +39,12 @@ pub(super) use shelves::{jump_target, shelves};
 
 /// Poll period while a row is working.
 const POLL: Duration = Duration::from_secs(5);
+/// Poll period while a prompt sent here waits for the backend to list its
+/// run as working.
+const SENT_POLL: Duration = Duration::from_secs(1);
+/// How long a sent prompt shows its card as working without the backend
+/// confirming it (a send that never started a run stops claiming it).
+const SENT_GRACE: Duration = Duration::from_secs(30);
 /// How long the inbox keeps polling after a run ends.
 const TITLE_SETTLE_MS: i64 = 20_000;
 /// Settled rows shown before "Show more".
@@ -58,7 +64,7 @@ pub struct Inbox {
     pub state: Option<InboxState>,
     /// Only threads imported from terminal sessions.
     pub imported_only: bool,
-    /// Folded state of the Working shelf; open by default, as in t3code.
+    /// Folded state of the Working shelf; folded by default, as in t3code.
     pub show_working: bool,
     pub show_snoozed: bool,
     pub show_settled: bool,
@@ -80,11 +86,36 @@ pub struct Inbox {
     pub cmd_held: bool,
     /// The spacer that seats the shelves at the sidebar's bottom.
     pub(super) shelf_gap: view::list::ShelfGap,
-    /// Working threads that keep their card in the main list: they were in
-    /// it (or open) when their run started. Sending a message must not fly
-    /// the card down to the Working shelf and back up when the run ends;
-    /// its badge says it works. Cleared once the row stops working.
-    pub(super) working_in_place: BTreeMap<String, InboxState>,
+    /// Prompts sent from this window whose run the inbox has not listed as
+    /// working yet, with when they were sent. The read after a send can
+    /// land before the backend marks the run; without this the card read
+    /// "now" and nothing polled until the run ended.
+    pub(super) sent: BTreeMap<String, Sent>,
+}
+
+/// A prompt sent from this window, waiting for the backend to list its run.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Sent {
+    pub(super) at: Instant,
+    /// The row's status when the prompt went out: a read still carrying it
+    /// (an answered "Needs you") is stale, not the new run's.
+    pub(super) before: Option<InboxStatus>,
+}
+
+impl Sent {
+    fn live(&self) -> bool {
+        self.at.elapsed() < SENT_GRACE
+    }
+
+    /// The backend lists the new run: `status` is live and not the one the
+    /// row had before the send.
+    fn confirmed_by(&self, status: Option<InboxStatus>) -> bool {
+        match status {
+            Some(InboxStatus::Working | InboxStatus::Background) => true,
+            Some(InboxStatus::NeedsInput) => self.before != status,
+            _ => false,
+        }
+    }
 }
 
 impl Inbox {
@@ -99,7 +130,7 @@ impl Inbox {
             model: None,
             state: None,
             imported_only: false,
-            show_working: true,
+            show_working: false,
             show_snoozed: false,
             show_settled: false,
             settled_limit: SETTLED_PAGE,
@@ -112,36 +143,45 @@ impl Inbox {
             revealed: None,
             cmd_held: false,
             shelf_gap: view::list::ShelfGap::default(),
-            working_in_place: BTreeMap::new(),
+            sent: BTreeMap::new(),
         }
     }
 
-    /// Where `row` is drawn: a working row kept in place shows in the
-    /// section it was in (Pinned or the main list), not on the shelf.
+    /// Where `row` is drawn. Like t3code, a working thread leaves the list
+    /// for the Working shelf, from the moment a prompt is sent here (before
+    /// the backend lists the run), and comes back when the run ends. Pinned
+    /// rows stay pinned.
     pub fn shown_state(&self, row: &InboxRow) -> InboxState {
         match row.state {
-            InboxState::Working => self
-                .working_in_place
-                .get(&row.thread_id)
-                .copied()
-                .unwrap_or(InboxState::Working),
+            InboxState::Inbox
+                if self
+                    .sent
+                    .get(&row.thread_id)
+                    .is_some_and(|sent| sent.live() && !sent.confirmed_by(row.status)) =>
+            {
+                InboxState::Working
+            }
             state => state,
         }
     }
 
-    pub fn row(&self, thread_id: &str) -> Option<&InboxRow> {
-        self.list.rows.iter().find(|r| r.thread_id == thread_id)
+    /// The status `row` shows: the backend's, or Working while a prompt
+    /// sent here waits for the backend to list its run.
+    pub fn shown_status(&self, row: &InboxRow) -> Option<InboxStatus> {
+        match self.sent.get(&row.thread_id) {
+            Some(sent) if sent.live() && !sent.confirmed_by(row.status) => {
+                Some(InboxStatus::Working)
+            }
+            _ => row.status,
+        }
     }
 
-    /// The thread to open first: the top open row. Never a parked one; with
-    /// none open the caller shows the new-thread screen.
-    pub fn first_open(&self) -> Option<String> {
-        self.list
-            .rows
-            .iter()
-            .filter(|r| !has_listed_parent(&self.list.rows, r))
-            .find(|r| !matches!(r.state, InboxState::Snoozed | InboxState::Settled))
-            .map(|r| r.thread_id.clone())
+    fn any_sent_live(&self) -> bool {
+        self.sent.values().any(Sent::live)
+    }
+
+    pub fn row(&self, thread_id: &str) -> Option<&InboxRow> {
+        self.list.rows.iter().find(|r| r.thread_id == thread_id)
     }
 
     pub fn profile(&self, id: &str) -> Option<&InboxProfile> {
@@ -152,11 +192,12 @@ impl Inbox {
         self.list
             .rows
             .iter()
-            .any(|r| r.status == Some(InboxStatus::Working))
+            .any(|r| self.shown_status(r) == Some(InboxStatus::Working))
     }
 
     fn needs_poll(&self) -> bool {
-        Utc::now().timestamp_millis() < self.settle_poll_until
+        self.any_sent_live()
+            || Utc::now().timestamp_millis() < self.settle_poll_until
             || self.list.rows.iter().any(|r| {
                 r.title_pending
                     || matches!(
@@ -227,17 +268,14 @@ impl Inbox {
     }
 }
 
-/// A subagent drawn under its parent rather than as a row of its own.
-fn has_listed_parent(rows: &[InboxRow], row: &InboxRow) -> bool {
-    row.parent_thread_id
-        .as_deref()
-        .is_some_and(|p| p != row.thread_id && rows.iter().any(|r| r.thread_id == p))
-}
-
-/// Choose only a confirmed open row; an empty result always means a fresh
-/// draft. A settled subagent hands the screen back to its parent while the
-/// parent is open; otherwise the next top-level row takes it.
-fn next_after_settle(rows: &[InboxRow], settled: &str) -> Option<String> {
+/// Choose only a confirmed open row the sidebar shows; an empty result
+/// always means a fresh draft (as ⇧⌘O). A settled subagent hands the screen
+/// back to its parent while the parent is open; otherwise the next card on
+/// the sidebar takes it. Side chats and nested subagents are never picked:
+/// the sidebar hides them, so landing there reads as an old thread.
+/// Call after `apply`, so the shelves already read the confirmed list.
+fn next_after_settle(s: &State, settled: &str) -> Option<String> {
+    let rows = &s.workspace.inbox.list.rows;
     let open = |r: &InboxRow| {
         matches!(
             r.state,
@@ -253,14 +291,23 @@ fn next_after_settle(rows: &[InboxRow], settled: &str) -> Option<String> {
     if let Some(parent) = parent {
         return Some(parent.thread_id.clone());
     }
-    rows.iter()
-        .filter(|r| r.state == InboxState::Pinned)
-        .chain(
-            rows.iter()
-                .filter(|r| matches!(r.state, InboxState::Inbox | InboxState::Working)),
-        )
-        .filter(|r| !has_listed_parent(rows, r))
-        .find(|r| r.thread_id != settled)
+    first_shown(s, Some(settled))
+}
+
+/// The thread to open by itself: the top card the sidebar shows, Pinned,
+/// then the list, then the folded Working shelf. Never a parked row, a side
+/// chat or a nested subagent; with none, the caller shows a fresh draft.
+pub(super) fn first_open(s: &State) -> Option<String> {
+    first_shown(s, None)
+}
+
+fn first_shown(s: &State, except: Option<&str>) -> Option<String> {
+    let sh = shelves(s);
+    sh.pinned
+        .iter()
+        .chain(sh.main.iter())
+        .chain(sh.working.iter())
+        .find(|r| Some(r.thread_id.as_str()) != except)
         .map(|r| r.thread_id.clone())
 }
 
@@ -313,8 +360,15 @@ pub(super) fn apply(s: &mut State, list: InboxListResponse) {
             )
         }) && row.status != Some(InboxStatus::Working)
     });
-    let in_place = working_in_place(&s.workspace.inbox, &list.rows, active_id(s));
-    s.workspace.inbox.working_in_place = in_place;
+    // A sent prompt stops claiming its card once the backend lists the run
+    // or the grace runs out. A new thread may not be listed yet: it waits.
+    s.workspace.inbox.sent.retain(|id, sent| {
+        sent.live()
+            && !list
+                .rows
+                .iter()
+                .any(|r| r.thread_id == *id && sent.confirmed_by(r.status))
+    });
     s.workspace.inbox.list = list;
     super::draft::bind_catalog(s);
     if finished {
@@ -324,29 +378,6 @@ pub(super) fn apply(s: &mut State, list: InboxListResponse) {
     ensure_poll(s);
     schedule_wake(s);
     ensure_tick(s);
-}
-
-/// The working rows of `rows` that stay where they were, with the section
-/// they stay in: the one they were drawn in before, else the main list for
-/// the open thread. Runs that start in a parked row (or a thread this view
-/// never listed) go to the Working shelf.
-fn working_in_place(
-    inbox: &Inbox,
-    rows: &[InboxRow],
-    open: Option<&str>,
-) -> BTreeMap<String, InboxState> {
-    rows.iter()
-        .filter(|r| r.state == InboxState::Working)
-        .filter_map(|r| {
-            let before = inbox.row(&r.thread_id).map(|old| inbox.shown_state(old));
-            let home = match before {
-                Some(st @ (InboxState::Inbox | InboxState::Pinned)) => Some(st),
-                _ if open == Some(r.thread_id.as_str()) => Some(InboxState::Inbox),
-                _ => None,
-            }?;
-            Some((r.thread_id.clone(), home))
-        })
-        .collect()
 }
 
 fn ensure_tick(s: &mut State) {
@@ -368,6 +399,28 @@ pub(super) fn tick_due(s: &mut State) -> bool {
     }
     s.workspace.timers.tick = Some(Instant::now() + Duration::from_secs(1));
     true
+}
+
+/// A prompt went out from this window: its card shows Working now, and the
+/// inbox polls quickly until the backend lists the run.
+pub fn note_sent(s: &mut State, thread_id: &str) {
+    let before = s.workspace.inbox.row(thread_id).and_then(|r| r.status);
+    s.workspace.inbox.sent.insert(
+        thread_id.to_string(),
+        Sent {
+            at: Instant::now(),
+            before,
+        },
+    );
+    let soon = Instant::now() + SENT_POLL;
+    let timer = &mut s.workspace.timers.inbox;
+    *timer = Some(timer.map_or(soon, |at| at.min(soon)));
+    ensure_tick(s);
+}
+
+/// The run of `thread_id` ended (or its send failed): stop claiming it.
+pub(super) fn forget_sent(s: &mut State, thread_id: &str) {
+    s.workspace.inbox.sent.remove(thread_id);
 }
 
 /// A run ended: poll a little longer to pick up its generated title.
@@ -435,20 +488,28 @@ pub fn settle(s: &mut State, thread_id: String) {
                     return;
                 }
             };
-            let next = next_after_settle(&list.rows, &thread_id);
-            let open = s.page == Page::Chat && active_id(s) == Some(thread_id.as_str());
-            apply(s, list);
-            match next {
-                None => {
-                    s.chat = None;
-                    s.workspace.draft = None;
-                    draft::start_in_profile(s, DEFAULT_PROFILE_ID.into());
-                }
-                Some(next) if open => super::open_thread(s, next),
-                Some(_) => {}
-            }
+            settled(s, &thread_id, list);
         },
     );
+}
+
+/// The gateway confirmed the settle. Only the thread on screen moves the
+/// screen: settling a background card (found by search, say) leaves the
+/// open chat where it is.
+fn settled(s: &mut State, thread_id: &str, list: InboxListResponse) {
+    let open = s.page == Page::Chat && active_id(s) == Some(thread_id);
+    apply(s, list);
+    if !open {
+        return;
+    }
+    match next_after_settle(s, thread_id) {
+        Some(next) => super::open_thread(s, next),
+        None => {
+            s.chat = None;
+            s.workspace.draft = None;
+            draft::start_in_profile(s, DEFAULT_PROFILE_ID.into());
+        }
+    }
 }
 
 /// Opening a row with an unseen result clears its Done / Woke badge.
@@ -473,6 +534,8 @@ fn ensure_poll(s: &mut State) {
 
 /// The working poll came due.
 pub(super) fn poll_due(s: &mut State) {
+    // Expire sent prompts here too: a read that keeps failing never applies.
+    s.workspace.inbox.sent.retain(|_, sent| sent.live());
     if !s.workspace.inbox.needs_poll() {
         return;
     }
@@ -483,7 +546,12 @@ pub(super) fn poll_due(s: &mut State) {
         return;
     }
     refresh(s);
-    s.workspace.timers.inbox = Some(Instant::now() + POLL);
+    let every = if s.workspace.inbox.sent.is_empty() {
+        POLL
+    } else {
+        SENT_POLL
+    };
+    s.workspace.timers.inbox = Some(Instant::now() + every);
 }
 
 fn schedule_wake(s: &mut State) {
@@ -515,7 +583,18 @@ pub(super) fn reveal_active_subagent(s: &mut State) {
     if let Some(id) = active {
         let tree = subagents::Tree::new(&s.workspace.inbox.list.rows);
         let above = tree.ancestors(&id);
+        // A thread opened on the folded Working shelf unfolds it, so the
+        // selection is never hidden.
+        let inbox = &s.workspace.inbox;
+        let on_shelf = above.iter().chain(std::iter::once(&id)).any(|t| {
+            inbox
+                .row(t)
+                .is_some_and(|r| !tree.is_nested(t) && inbox.shown_state(r) == InboxState::Working)
+        });
         s.workspace.inbox.expanded.extend(above);
+        if on_shelf {
+            s.workspace.inbox.show_working = true;
+        }
     }
 }
 
@@ -536,6 +615,19 @@ pub(super) fn search_changed(s: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shelf_of(s: &State, id: &str) -> &'static str {
+        let sh = shelves(s);
+        if sh.pinned.iter().any(|r| r.thread_id == id) {
+            "pinned"
+        } else if sh.main.iter().any(|r| r.thread_id == id) {
+            "main"
+        } else if sh.working.iter().any(|r| r.thread_id == id) {
+            "working"
+        } else {
+            "elsewhere"
+        }
+    }
 
     pub(super) fn row(id: &str, state: InboxState, model: Option<&str>) -> InboxRow {
         InboxRow {
@@ -562,20 +654,89 @@ mod tests {
         }
     }
 
+    fn settled_with(rows: Vec<InboxRow>, side_chats: &[(&str, &str)]) -> State {
+        let mut s = crate::chat::fixtures::test_state();
+        for (parent, child) in side_chats {
+            s.prefs
+                .side_chats
+                .entry((*parent).to_string())
+                .or_default()
+                .push((*child).to_string());
+        }
+        apply(
+            &mut s,
+            InboxListResponse {
+                rows,
+                ..Default::default()
+            },
+        );
+        s
+    }
+
     #[test]
     fn settling_the_last_open_row_never_selects_a_parked_thread() {
-        let rows = vec![
-            row("recent", InboxState::Settled, None),
-            row("last", InboxState::Settled, None),
-            row("later", InboxState::Snoozed, None),
-        ];
-        assert_eq!(next_after_settle(&rows, "last"), None);
-        let rows = vec![
-            row("old", InboxState::Settled, None),
-            row("next", InboxState::Inbox, None),
-            row("last", InboxState::Settled, None),
-        ];
-        assert_eq!(next_after_settle(&rows, "last"), Some("next".into()));
+        let s = settled_with(
+            vec![
+                row("recent", InboxState::Settled, None),
+                row("last", InboxState::Settled, None),
+                row("later", InboxState::Snoozed, None),
+            ],
+            &[],
+        );
+        assert_eq!(next_after_settle(&s, "last"), None);
+        let s = settled_with(
+            vec![
+                row("old", InboxState::Settled, None),
+                row("next", InboxState::Inbox, None),
+                row("last", InboxState::Settled, None),
+            ],
+            &[],
+        );
+        assert_eq!(next_after_settle(&s, "last"), Some("next".into()));
+    }
+
+    /// Settling a background card that a filter found leaves the open
+    /// chat alone, even with no card left to show; settling the open one
+    /// with nothing left shows a fresh draft.
+    #[test]
+    fn only_settling_the_open_thread_moves_the_screen() {
+        let rows = || {
+            vec![
+                row("a", InboxState::Inbox, None),
+                row("b", InboxState::Settled, None),
+            ]
+        };
+        let mut s = crate::chat::fixtures::test_state();
+        s.page = Page::Chat;
+        s.chat = Some(crate::chat::ChatState::new("a".into()));
+        s.workspace.inbox.profile = Some("elsewhere".into());
+        let list = |rows| InboxListResponse {
+            rows,
+            ..Default::default()
+        };
+        settled(&mut s, "b", list(rows()));
+        assert_eq!(active_id(&s), Some("a"));
+
+        let mut last = rows();
+        last[0].state = InboxState::Settled;
+        settled(&mut s, "a", list(last));
+        assert_eq!(active_id(&s), None);
+    }
+
+    /// A side chat (a fork handoff) is an open row the sidebar hides under
+    /// its parent: settling the last card shows a fresh draft, never it.
+    #[test]
+    fn settling_the_last_card_never_opens_a_hidden_side_chat() {
+        let s = settled_with(
+            vec![
+                row("side", InboxState::Inbox, None),
+                row("parent", InboxState::Settled, None),
+                row("last", InboxState::Settled, None),
+            ],
+            &[("parent", "side")],
+        );
+        assert_eq!(next_after_settle(&s, "last"), None);
+        assert_eq!(first_open(&s), None);
     }
 
     #[test]
@@ -684,25 +845,14 @@ mod tests {
         assert_eq!(picker.current, picked, "binding keeps the pick");
     }
 
-    /// The thread's card stays put while its run works: no trip down to the
-    /// Working shelf and back up when the run ends.
+    /// Like t3code: a working thread leaves the list for the Working shelf,
+    /// which is folded by default, and comes back when its run ends. A
+    /// pinned thread stays pinned.
     #[test]
-    fn a_listed_thread_keeps_its_place_while_it_works() {
+    fn working_threads_go_to_the_folded_working_shelf() {
         let list = |rows| InboxListResponse {
             rows,
             ..Default::default()
-        };
-        let shelf_of = |s: &State, id: &str| {
-            let sh = shelves(s);
-            if sh.pinned.iter().any(|r| r.thread_id == id) {
-                "pinned"
-            } else if sh.main.iter().any(|r| r.thread_id == id) {
-                "main"
-            } else if sh.working.iter().any(|r| r.thread_id == id) {
-                "working"
-            } else {
-                "elsewhere"
-            }
         };
         let mut s = crate::chat::fixtures::test_state();
         apply(
@@ -710,39 +860,123 @@ mod tests {
             list(vec![
                 row("a", InboxState::Inbox, None),
                 row("p", InboxState::Pinned, None),
-                row("z", InboxState::Settled, None),
             ]),
         );
         apply(
             &mut s,
             list(vec![
                 row("a", InboxState::Working, None),
-                row("p", InboxState::Working, None),
-                row("z", InboxState::Working, None),
+                row("p", InboxState::Pinned, None),
                 row("new", InboxState::Working, None),
             ]),
         );
-        assert_eq!(shelf_of(&s, "a"), "main", "an inbox card stays in the list");
-        assert_eq!(shelf_of(&s, "p"), "pinned", "a pinned card stays pinned");
-        assert_eq!(
-            shelf_of(&s, "z"),
-            "working",
-            "a parked thread's run shows on the shelf"
-        );
+        assert_eq!(shelf_of(&s, "a"), "working", "an inbox card moves down");
         assert_eq!(shelf_of(&s, "new"), "working");
-        // Still working on the next poll: still in place.
+        assert_eq!(shelf_of(&s, "p"), "pinned", "a pinned card stays pinned");
+        let sh = shelves(&s);
+        assert!(!sh.working_open, "the shelf starts folded");
+        assert!(sh.jump.iter().all(|id| id != "a"), "folded rows take no ⌘N");
+        // The run ends: back in the list.
+        apply(&mut s, list(vec![row("a", InboxState::Inbox, None)]));
+        assert_eq!(shelf_of(&s, "a"), "main");
+    }
+
+    /// Answering a "Needs you" thread: a read still carrying the old status
+    /// is stale, so the card stays on the shelf until the new run shows.
+    #[test]
+    fn a_stale_needs_you_does_not_bounce_the_card() {
+        let list = |rows| InboxListResponse {
+            rows,
+            ..Default::default()
+        };
+        let needs = || {
+            let mut r = row("a", InboxState::Inbox, None);
+            r.status = Some(InboxStatus::NeedsInput);
+            r
+        };
+        let mut s = crate::chat::fixtures::test_state();
+        apply(&mut s, list(vec![needs()]));
+        note_sent(&mut s, "a");
+        apply(&mut s, list(vec![needs()]));
+        assert_eq!(shelf_of(&s, "a"), "working");
+        let inbox = &s.workspace.inbox;
+        assert_eq!(
+            inbox.shown_status(inbox.row("a").expect("row")),
+            Some(InboxStatus::Working)
+        );
+        assert!(!s.workspace.inbox.sent.is_empty(), "not confirmed yet");
+    }
+
+    /// Opening by itself never lands on a folded, hidden card: a card on
+    /// screen comes first, and a thread opened on the shelf unfolds it.
+    #[test]
+    fn automatic_opening_prefers_cards_on_screen() {
+        let mut working = row("w", InboxState::Working, None);
+        working.status = Some(InboxStatus::Working);
+        let rows = vec![working, row("b", InboxState::Inbox, None)];
+        let mut s = crate::chat::fixtures::test_state();
         apply(
             &mut s,
-            list(vec![
-                row("a", InboxState::Working, None),
-                row("p", InboxState::Working, None),
-            ]),
+            InboxListResponse {
+                rows: rows.clone(),
+                ..Default::default()
+            },
         );
-        assert_eq!(shelf_of(&s, "a"), "main");
-        assert_eq!(shelf_of(&s, "p"), "pinned");
-        // The run ends; a later run from the shelf is the shelf's again.
-        apply(&mut s, list(vec![row("a", InboxState::Settled, None)]));
-        apply(&mut s, list(vec![row("a", InboxState::Working, None)]));
-        assert_eq!(shelf_of(&s, "a"), "working");
+        assert_eq!(first_open(&s).as_deref(), Some("b"));
+        assert_eq!(next_after_settle(&s, "x").as_deref(), Some("b"));
+    }
+
+    /// A prompt sent here shows its card as working at once, even when the
+    /// inbox read after the send came back before the backend marked the
+    /// run (the 2026-11-19 report: "now", no Working, until the run ended).
+    /// The inbox polls until it catches up; the run's end clears it.
+    #[test]
+    fn a_sent_prompt_shows_working_before_the_inbox_catches_up() {
+        let list = |rows| InboxListResponse {
+            rows,
+            ..Default::default()
+        };
+        let mut s = crate::chat::fixtures::test_state();
+        apply(&mut s, list(vec![row("a", InboxState::Inbox, None)]));
+        assert!(s.workspace.timers.inbox.is_none(), "nothing to follow yet");
+
+        note_sent(&mut s, "a");
+        // The read right after the send: the backend has not seen the run.
+        apply(&mut s, list(vec![row("a", InboxState::Inbox, None)]));
+        let inbox = &s.workspace.inbox;
+        let shown = inbox.shown_status(inbox.row("a").expect("row"));
+        assert_eq!(shown, Some(InboxStatus::Working));
+        assert_eq!(
+            shelf_of(&s, "a"),
+            "working",
+            "it moves to the shelf at once"
+        );
+        assert!(
+            s.workspace.timers.inbox.is_some(),
+            "the inbox keeps polling"
+        );
+        assert!(s.workspace.timers.tick.is_some(), "the Working timer ticks");
+
+        // The backend catches up: its status rules from then on.
+        let mut done = row("a", InboxState::Inbox, None);
+        done.status = Some(InboxStatus::Working);
+        apply(&mut s, list(vec![done]));
+        assert!(s.workspace.inbox.sent.is_empty());
+        apply(&mut s, list(vec![row("a", InboxState::Inbox, None)]));
+
+        // The grace runs out on its own clock, even with no inbox read.
+        note_sent(&mut s, "b");
+        if let Some(sent) = s.workspace.inbox.sent.get_mut("b") {
+            sent.at = Instant::now() - SENT_GRACE;
+        }
+        assert!(!s.workspace.inbox.any_sent_live());
+        poll_due(&mut s);
+        assert!(s.workspace.inbox.sent.is_empty(), "the poll drops it");
+
+        // A run that ends before the backend ever showed it clears too.
+        note_sent(&mut s, "a");
+        crate::workspace::run_ended(&mut s, "a".into(), false);
+        let inbox = &s.workspace.inbox;
+        assert_eq!(inbox.shown_status(inbox.row("a").expect("row")), None);
     }
 }

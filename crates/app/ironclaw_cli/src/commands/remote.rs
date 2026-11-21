@@ -41,6 +41,11 @@ enum RemoteAction {
         /// accounts on this machine.
         #[arg(long)]
         trust_local_users: bool,
+        /// Also answer tailnet and LAN peers directly on this port (every
+        /// IPv4 interface; public addresses stay closed). For headless
+        /// machines and linked environments.
+        #[arg(long)]
+        private_port: Option<u16>,
         /// Output `{"tailnet_url", "one_click", "restart_required"}` as JSON.
         #[arg(long)]
         json: bool,
@@ -62,6 +67,7 @@ impl RemoteCommand {
             RemoteAction::Enable {
                 https_port,
                 trust_local_users,
+                private_port,
                 json,
             } => {
                 let cli = locate()?;
@@ -72,6 +78,7 @@ impl RemoteCommand {
                     EnableOptions {
                         https_port,
                         trust_local_users,
+                        private_port,
                     },
                     &other_accounts,
                     identity_port_is_listening,
@@ -144,6 +151,7 @@ fn identity_port_is_listening(port: u16) -> bool {
 struct EnableOptions {
     https_port: u16,
     trust_local_users: bool,
+    private_port: Option<u16>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -214,6 +222,7 @@ fn enable(
         trust_local_users: Some(options.trust_local_users),
         tailnet_url: Some(tailnet_url.clone()),
         https_port: Some(options.https_port),
+        private_port: options.private_port,
     };
     if !already_ours {
         tailscale::serve_on(cli, options.https_port, &target)?;
@@ -371,6 +380,7 @@ mod tests {
         EnableOptions {
             https_port: 443,
             trust_local_users: false,
+            private_port: None,
         }
     }
 
@@ -425,6 +435,7 @@ mod tests {
             EnableOptions {
                 https_port: 443,
                 trust_local_users: true,
+                private_port: None,
             },
             &others,
             |_| true,

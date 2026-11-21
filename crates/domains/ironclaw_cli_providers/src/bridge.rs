@@ -38,8 +38,8 @@ use tokio::sync::{broadcast, oneshot};
 mod detail;
 
 /// What the agent reads when it reaches for its own subagent tool.
-const BUILTIN_SUBAGENT_DENIAL: &str = "Built-in subagents are switched off here. Start a subagent with the \
-     T3 orchestrator instead: t3_delegate (mcp__ironclaw__t3_delegate on Claude Code), which opens a thread \
+const BUILTIN_SUBAGENT_DENIAL: &str = "Built-in subagents, agent teams and their tools are switched off \
+     here. Start a subagent with the T3 orchestrator instead: t3_delegate (mcp__ironclaw__t3_delegate on Claude Code), which opens a thread \
      the user can see and steer.";
 
 /// How long a tool call waits for a person before it is denied.
@@ -702,6 +702,9 @@ impl CliBridge {
         let registered = self.live.lock().ok().is_some_and(|mut live| {
             live.get_mut(thread)
                 .filter(|t| t.run_id == run_id)
+                // A CLI that reports a call before asking about it (ACP's
+                // `tool_call`) already drew its row: never draw it twice.
+                .filter(|t| call_id.is_none() || !t.tools.iter().any(|(id, _)| *id == call_id))
                 .map(|t| t.tools.push((call_id, tool.clone())))
                 .is_some()
         });
@@ -1313,6 +1316,9 @@ mod tests {
         let bridge = CliBridge::new(Duration::from_millis(200));
         let thread = tid();
         bridge.turn_started(&thread, "r1");
+        for tool in ["SendMessage", "ListAgents", "TaskStop"] {
+            assert!(crate::is_builtin_subagent_tool(tool), "{tool}");
+        }
         for tool in crate::BUILTIN_SUBAGENT_TOOLS {
             let claim = bridge.claim_call(&thread, "r1");
             let decision = bridge

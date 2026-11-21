@@ -1,4 +1,5 @@
 // arch-exempt: large_file, loop host integration awaits dependency decomposition, plan #4088
+use ironclaw_host_api::resource::ResourceScope;
 use std::{
     collections::HashMap,
     fmt,
@@ -466,17 +467,43 @@ impl HookCapabilityInputResolver for HookCapabilityInputResolverAdapter {
 
 pub type HookDispatcherFactory = Arc<dyn Fn() -> Arc<HookDispatcher> + Send + Sync + 'static>;
 
+/// The per-run inputs a [`HookDispatcherBuilderFactory`] may read.
+///
+/// `scope` is the run's resource scope (tenant + acting user), so a factory
+/// can bind run-scoped, user-owned inputs — such as an installed extension's
+/// current settings — to the hooks it installs. It carries identity only,
+/// never authority.
+#[derive(Debug, Clone)]
+pub struct HookDispatcherBuildRequest {
+    pub scope: ResourceScope,
+}
+
+/// Future returned by a [`HookDispatcherBuilderFactory`].
+pub type HookDispatcherBuilderFuture =
+    Pin<Box<dyn Future<Output = Result<HookDispatcherBuilder, RebornLoopDriverHostError>> + Send>>;
+
 /// Per-run hook dispatcher builder factory.
 ///
 /// Returns a freshly-minted [`HookDispatcherBuilder`] per host build, or an
-/// error if the per-run install replay fails. The composition path validates
-/// every install set once at composition time and replays the identical
-/// scratch-validated set per run, so in practice this never errors; the
-/// `Result` exists so a future regression surfaces as a build error rather than
-/// a panic (CLAUDE.md forbids `.expect()` in production code).
-pub type HookDispatcherBuilderFactory = Arc<
-    dyn Fn() -> Result<HookDispatcherBuilder, RebornLoopDriverHostError> + Send + Sync + 'static,
->;
+/// error if the per-run install fails. Async so a factory can read the live
+/// extension set and run-scoped inputs (module bytes, settings) for the run
+/// it is building; [`sync_hook_dispatcher_builder_factory`] adapts a plain
+/// closure. The `Result` exists so a regression surfaces as a build error
+/// rather than a panic (CLAUDE.md forbids `.expect()` in production code).
+pub type HookDispatcherBuilderFactory =
+    Arc<dyn Fn(HookDispatcherBuildRequest) -> HookDispatcherBuilderFuture + Send + Sync + 'static>;
+
+/// Adapt a synchronous, request-independent builder closure into a
+/// [`HookDispatcherBuilderFactory`].
+pub fn sync_hook_dispatcher_builder_factory<F>(factory: F) -> HookDispatcherBuilderFactory
+where
+    F: Fn() -> Result<HookDispatcherBuilder, RebornLoopDriverHostError> + Send + Sync + 'static,
+{
+    Arc::new(move |_request: HookDispatcherBuildRequest| {
+        let built = factory();
+        Box::pin(async move { built })
+    })
+}
 
 pub struct RebornLoopDriverHostFactory<S, G>
 where
@@ -778,11 +805,23 @@ where
     /// should construct a clean builder (no pre-attached milestone sink —
     /// the host wires one). Manifest-driven hook installations happen
     /// inside the closure exactly as with the legacy factory.
-    pub fn with_hook_dispatcher_builder_factory<F>(mut self, factory: F) -> Self
+    pub fn with_hook_dispatcher_builder_factory<F>(self, factory: F) -> Self
     where
         F: Fn() -> Result<HookDispatcherBuilder, RebornLoopDriverHostError> + Send + Sync + 'static,
     {
-        self.hook_dispatcher_builder_factory = Some(Arc::new(factory));
+        self.with_run_scoped_hook_dispatcher_builder_factory(sync_hook_dispatcher_builder_factory(
+            factory,
+        ))
+    }
+
+    /// Install an async, run-scoped [`HookDispatcherBuilderFactory`]. Same
+    /// per-build contract as [`Self::with_hook_dispatcher_builder_factory`];
+    /// the factory additionally receives the run's [`HookDispatcherBuildRequest`].
+    pub fn with_run_scoped_hook_dispatcher_builder_factory(
+        mut self,
+        factory: HookDispatcherBuilderFactory,
+    ) -> Self {
+        self.hook_dispatcher_builder_factory = Some(factory);
         self
     }
 
@@ -1008,8 +1047,33 @@ where
         validate_thread_scope(&effective_scope, &request.loop_run_context)?;
 
         let max_messages = self.config.max_messages.max(1);
-        let prompt_context_budget = self.config.prompt_context_budget;
-        let run_context = self.attach_model_route_snapshot(request.loop_run_context)?;
+        let mut run_context = self.attach_model_route_snapshot(request.loop_run_context)?;
+        let scoped_model_gateway = self.model_gateway.resolve_for_scope(&run_context.scope);
+        let model_context_window_tokens = if let Some(gateway) = scoped_model_gateway.as_ref() {
+            gateway
+                .model_context_window_tokens(
+                    &run_context.resolved_run_profile.model_profile_id,
+                    0,
+                    run_context.resolved_model_route.as_ref(),
+                )
+                .await
+        } else {
+            self.model_gateway
+                .model_context_window_tokens(
+                    &run_context.resolved_run_profile.model_profile_id,
+                    0,
+                    run_context.resolved_model_route.as_ref(),
+                )
+                .await
+        };
+        let prompt_context_budget = model_context_window_tokens
+            .map(|tokens| {
+                self.config
+                    .prompt_context_budget
+                    .with_context_limit_tokens(tokens)
+            })
+            .unwrap_or(self.config.prompt_context_budget);
+        run_context.model_context_window_tokens = model_context_window_tokens;
 
         // Kick off advisory communication-context fetches only for origins that
         // can use delivery/channel context. WebUI chat renders its origin without
@@ -1057,6 +1121,7 @@ where
             run_context.clone(),
             max_messages,
         )
+        .with_prompt_context_token_budget(prompt_context_budget)
         .with_context_window_cache(Arc::clone(&context_window_cache));
         // An unbound run's prepared context is its COMPLETE input by
         // contract: no skill, identity, or memory lane is folded in, so the
@@ -1105,7 +1170,10 @@ where
             self.hook_dispatcher_factory.as_ref(),
         ) {
             (Some(builder_factory), _) => {
-                let mut builder = builder_factory()?;
+                let mut builder = builder_factory(HookDispatcherBuildRequest {
+                    scope: hook_build_scope(&run_context),
+                })
+                .await?;
                 if let Some(sink) = self.hook_security_audit_sink.as_ref() {
                     builder = builder.with_security_audit_sink(Arc::clone(sink));
                 }
@@ -1318,64 +1386,60 @@ where
             )),
             None => Arc::new(NoExtraLoopInputPort::new(run_context.clone())),
         };
-        // Resolve a scope-specific gateway when available (test harnesses override
-        // resolve_for_scope to route per-thread scripted gateways). Production
-        // gateways inherit the default-None impl → falls to Arc::clone, byte-identical.
-        // Two arms (rather than one literal over a shared gateway binding) because
-        // `host_gateway` is the resolved `Arc<dyn _>` in the Some arm but the host's
-        // own `Arc<G>` (G: ?Sized, not coercible to `Arc<dyn _>`) in the fallback —
-        // see `build_compaction_ports` above. Each arm moves its owned fields.
+        // Reuse the scope-specific gateway resolved above for model metadata.
+        // Production gateways return None and use the shared gateway unchanged.
         let model_gateway_ports_started_at = ironclaw_observability::live_latency_started_at();
-        let model_gateway: Arc<dyn LoopModelGateway> =
-            if let Some(gw) = self.model_gateway.resolve_for_scope(&run_context.scope) {
-                Arc::new(ThreadResolvingLoopModelGateway::new(
-                    ThreadResolvingLoopModelGatewayParts {
-                        thread_service: Arc::clone(&self.thread_service),
-                        thread_scope: effective_scope.clone(),
-                        host_gateway: gw,
-                        max_messages,
-                        skill_context_source: (!unbound_run)
-                            .then(|| self.skill_context_source.clone())
-                            .flatten(),
-                        identity_context_source: (!unbound_run)
-                            .then(|| self.identity_context_source.clone())
-                            .flatten(),
-                        instruction_materialization_store: Some(Arc::clone(
-                            &instruction_materialization_store,
-                        )),
-                        capabilities: Some(Arc::clone(&capabilities)),
-                        prompt_authority,
-                        context_window_cache: Some(context_window_cache),
-                        attachment_read_port: self.attachment_read_port.clone(),
-                        tool_image_port: self.tool_image_port.clone(),
-                        prompt_diagnostic_sink: self.prompt_diagnostic_sink.clone(),
-                    },
-                ))
-            } else {
-                Arc::new(ThreadResolvingLoopModelGateway::new(
-                    ThreadResolvingLoopModelGatewayParts {
-                        thread_service: Arc::clone(&self.thread_service),
-                        thread_scope: effective_scope.clone(),
-                        host_gateway: Arc::clone(&self.model_gateway),
-                        max_messages,
-                        skill_context_source: (!unbound_run)
-                            .then(|| self.skill_context_source.clone())
-                            .flatten(),
-                        identity_context_source: (!unbound_run)
-                            .then(|| self.identity_context_source.clone())
-                            .flatten(),
-                        instruction_materialization_store: Some(Arc::clone(
-                            &instruction_materialization_store,
-                        )),
-                        capabilities: Some(Arc::clone(&capabilities)),
-                        prompt_authority,
-                        context_window_cache: Some(context_window_cache),
-                        attachment_read_port: self.attachment_read_port.clone(),
-                        tool_image_port: self.tool_image_port.clone(),
-                        prompt_diagnostic_sink: self.prompt_diagnostic_sink.clone(),
-                    },
-                ))
-            };
+        let model_gateway: Arc<dyn LoopModelGateway> = if let Some(gw) = scoped_model_gateway {
+            Arc::new(ThreadResolvingLoopModelGateway::new(
+                ThreadResolvingLoopModelGatewayParts {
+                    thread_service: Arc::clone(&self.thread_service),
+                    thread_scope: effective_scope.clone(),
+                    host_gateway: gw,
+                    max_messages,
+                    prompt_context_budget,
+                    skill_context_source: (!unbound_run)
+                        .then(|| self.skill_context_source.clone())
+                        .flatten(),
+                    identity_context_source: (!unbound_run)
+                        .then(|| self.identity_context_source.clone())
+                        .flatten(),
+                    instruction_materialization_store: Some(Arc::clone(
+                        &instruction_materialization_store,
+                    )),
+                    capabilities: Some(Arc::clone(&capabilities)),
+                    prompt_authority,
+                    context_window_cache: Some(context_window_cache),
+                    attachment_read_port: self.attachment_read_port.clone(),
+                    tool_image_port: self.tool_image_port.clone(),
+                    prompt_diagnostic_sink: self.prompt_diagnostic_sink.clone(),
+                },
+            ))
+        } else {
+            Arc::new(ThreadResolvingLoopModelGateway::new(
+                ThreadResolvingLoopModelGatewayParts {
+                    thread_service: Arc::clone(&self.thread_service),
+                    thread_scope: effective_scope.clone(),
+                    host_gateway: Arc::clone(&self.model_gateway),
+                    max_messages,
+                    prompt_context_budget,
+                    skill_context_source: (!unbound_run)
+                        .then(|| self.skill_context_source.clone())
+                        .flatten(),
+                    identity_context_source: (!unbound_run)
+                        .then(|| self.identity_context_source.clone())
+                        .flatten(),
+                    instruction_materialization_store: Some(Arc::clone(
+                        &instruction_materialization_store,
+                    )),
+                    capabilities: Some(Arc::clone(&capabilities)),
+                    prompt_authority,
+                    context_window_cache: Some(context_window_cache),
+                    attachment_read_port: self.attachment_read_port.clone(),
+                    tool_image_port: self.tool_image_port.clone(),
+                    prompt_diagnostic_sink: self.prompt_diagnostic_sink.clone(),
+                },
+            ))
+        };
         let structured_finalization: Option<Arc<dyn StructuredFinalizationPort>> =
             if run_context.output_contract.is_structured_output() {
                 Some(Arc::new(StructuredFinalizationCoordinator::new(
@@ -2867,5 +2931,28 @@ mod tests {
             .expect_err("missing metadata must reject");
 
         assert_eq!(error.kind, AgentLoopHostErrorKind::Unavailable);
+    }
+}
+
+/// The resource scope a run's hook dispatcher is built for: the run's tenant
+/// and acting user (the system sentinel when the run has no actor).
+fn hook_build_scope(run_context: &LoopRunContext) -> ResourceScope {
+    let user_id = run_context
+        .actor
+        .as_ref()
+        .map(|actor| actor.user_id.clone())
+        .unwrap_or_else(|| {
+            ironclaw_host_api::ids::UserId::from_trusted(
+                ironclaw_host_api::resource::SYSTEM_RESERVED_ID.to_string(),
+            )
+        });
+    ResourceScope {
+        tenant_id: run_context.scope.tenant_id.clone(),
+        user_id,
+        agent_id: run_context.scope.agent_id.clone(),
+        project_id: run_context.scope.project_id.clone(),
+        mission_id: None,
+        thread_id: Some(run_context.scope.thread_id.clone()),
+        invocation_id: ironclaw_host_api::ids::InvocationId::new(),
     }
 }

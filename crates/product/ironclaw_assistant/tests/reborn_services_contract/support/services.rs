@@ -112,6 +112,7 @@ impl LifecycleProductService for RecordingLifecycleService {
                         visible_capability_ids: Vec::new(),
                         connection_required: None,
                     }),
+                    consent: None,
                 })
             }
             LifecycleProductAction::ExtensionSelectHostedMcpAuth { package_ref, .. } => {
@@ -125,6 +126,7 @@ impl LifecycleProductService for RecordingLifecycleService {
                         visible_capability_ids: Vec::new(),
                         connection_required: None,
                     }),
+                    consent: None,
                 })
             }
             LifecycleProductAction::ExtensionRegisterHostedMcp { .. } => {
@@ -141,6 +143,7 @@ impl LifecycleProductService for RecordingLifecycleService {
                     }],
                     message: Some("internal lifecycle diagnostic".to_string()),
                     payload: None,
+                    consent: None,
                 })
             }
             other => panic!("unexpected lifecycle action in setup test service: {other:?}"),
@@ -187,6 +190,7 @@ impl LifecycleProductService for RecordingLifecycleService {
             blockers: Vec::new(),
             message: Some("imported".to_string()),
             payload: None,
+            consent: None,
         })
     }
 }
@@ -212,6 +216,7 @@ impl LifecycleProductService for ListingLifecycleService {
                 extensions: vec![self.extension.clone()],
                 count: 1,
             }),
+            consent: None,
         })
     }
 

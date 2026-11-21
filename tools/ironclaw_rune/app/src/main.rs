@@ -13,6 +13,7 @@
 
 mod alerts;
 mod backdrop;
+mod bench;
 mod chat;
 mod design;
 mod drafts;
@@ -70,6 +71,8 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= polled(C::PollSnapshot, snapshot::poll(s, tx));
     // Show, place and hide the native previews (QuickLook, WebKit).
     changed |= polled(C::PollNativeView, native_view::poll(s, tx));
+    // Bench scenes' feeds (`bench.rs`); nothing outside them.
+    changed |= bench::poll(s, clock, tx);
     changed
 }
 

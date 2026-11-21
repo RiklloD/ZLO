@@ -100,7 +100,7 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 | Providers (Google/Slack/GitHub contracts) | — | — | ✓ | ✓ |
 | Coverage/meta gates | — | 2 | ✓ | ✓ |
 
-Totals: **65** group scenarios · **68** flat integration bins (61 in
+Totals: **65** group scenarios · **69** flat integration bins (62 in
 `tests/integration/`, 7 in `tests/integration/auth/`) · **39** top-level Rust bins ·
 **103** Python scenario files (**889** test functions) registered in the active
 Reborn coverage map below. Section 6 separately inventories retained and legacy
@@ -225,7 +225,7 @@ ones speak MTProto over a raw socket with no injectable seam.
 
 ---
 
-## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (68)
+## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (69)
 
 One thread, whole real turn. Grouped by what the user experiences.
 
@@ -237,7 +237,9 @@ One thread, whole real turn. Grouped by what the user experiences.
 | Typing again while the assistant is working queues the message and it gets picked up mid-run | `steering.rs` |
 | A flaky model provider is retried and recovered from, with typed errors | `model_recovery.rs` |
 | A cumulative compaction barrier supersedes earlier summaries and raw covered history in the model prompt while every original row remains durable | `model_recovery.rs::cumulative_compaction_barrier_replaces_earlier_summaries_and_raw_history` |
-| Context overflow checkpoints one compact-and-resume attempt; a second overflow fails without another compaction or model observation | `model_recovery.rs::context_overflow_compacts_once_and_resumes`, `model_recovery.rs::second_context_overflow_fails_after_one_compaction` |
+| The selected model's context window naturally triggers one checkpoint compaction, and the next model request contains only the cumulative barrier, retained tail, and live suffix | `model_recovery.rs::model_window_threshold_compacts_once_and_projects_barrier_tail_and_suffix` |
+| Ordered model fallback reapplies the fallback model's smaller cached context window to its provider request without dropping the recent suffix | `model_recovery.rs::fallback_request_uses_its_own_smaller_cached_context_window` |
+| Context overflow checkpoints one compact-and-resume attempt; oversized summarizer input emits typed durable drop evidence while preserving the complete original transcript, and a second overflow fails without another compaction or model observation | `model_recovery.rs::context_overflow_compacts_once_and_resumes`, `model_recovery.rs::second_context_overflow_fails_after_one_compaction` |
 | A turn receives the expected tool results after each model iteration | `golden_payload.rs` |
 | A turn that reads two file ranges in parallel receives both results in the requested order | `golden_payload.rs` |
 | Approaching the run limit surfaces a recoverable warning, while repeated capability calls receive one advisory warning and may continue | `terminal_warning.rs::{iteration_limit_warning_reaches_model_with_tools_and_recovers,repeated_call_warning_reaches_model_and_recovers,repeated_calls_after_warning_remain_advisory}` |
@@ -285,7 +287,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 | Shell commands dispatch through the real path without spawning an OS process | `process_port.rs` |
 | A sandbox-profile shell turn executes as an unprivileged user in one reusable per-user Docker container, preserving workspace and container-local state across shell calls and sharing that container across the user's threads | `reborn_sandbox_shell_turn.rs` |
 | MCP tools work over a real loopback HTTP server, and mixed text/structured/resource results are normalized before durable storage without retaining inline media/blob base64 | `mcp.rs` |
-| User-registered and bundled hosted MCP servers register, authenticate, project active, restore, and invoke | `hosted_mcp_registration.rs` |
+| User-registered and bundled hosted MCP servers register, authenticate, project active, restore, and invoke; exact case-sensitive wire names survive restart, and case-folded alias collisions reject the catalog atomically | `hosted_mcp_registration.rs` |
 | Web search/fetch runs the real Exa MCP handshake | `web_access.rs` |
 | Outbound HTTP crosses the real security pipeline (network policy + leak scan) | `real_egress_pipeline.rs` |
 | Tools marked host-internal are never advertised to the model, and calls to them are rejected | `extension_visibility.rs`, `surface_disclosure.rs` |
@@ -319,10 +321,12 @@ One thread, whole real turn. Grouped by what the user experiences.
 | Behavior | Evidence |
 |---|---|
 | An extension installs and activates through the real generic runtime | `extension_runtime.rs` |
+| Install a plugin and see its UI slots listed, rendered by the plugin's own render tool through the product-origin capability path, re-rendered after clicking a button (event round-trip), with a contract-breaking or oversize tree shown as a plain error instead of a tree — while another user who never installed it sees no slots and cannot render one (a new bin because no other scenario wires a fixture first-party render handler) | `plugin_ui.rs` |
 | An inbound channel message is verified and routed by the real generic ingress mount | `extension_ingress.rs` |
 | An outbound reply is published through the real inbound→outbound pipeline — Slack's lands on the native Agent stream (`chat.startStream`→`stopStream` with recipient/thread from the stored reply context), Telegram's as a terminal `sendMessage`; the answer never rides a coordinator send | `extension_delivery.rs` |
 | Pair a Telegram bot actor, run as that verified user, deliver anchored replies and busy notices, disconnect to revoke admission, then pair again to restore delivery (#6643/#6644) | `extension_delivery.rs::paired_telegram_bot_actor_turns_attribute_to_the_user_and_disconnect_revokes_admission` (production generated-code pairing, disconnect/repair, and anchored delivery evidence) |
 | Tenant-admin configuration and per-user install/remove stay separate state machines | `extension_user_lifecycle_isolation.rs` |
+| Activate a plugin and have its WASM hook fire on the next run at the `Installed` tier, deciding from the user's plugin settings; change a setting through the product surface (a misfit refused with a plain reason) and see the next run's hook decision flip; deactivate and have the plugin's hooks gone from the next run — crate tier because no harness path installs a locally-authored third-party package yet (that is the local-folder install lifecycle); the WASM tool's receipt of the same settings in its invocation context is pinned through the real host-runtime dispatch | `crates/app/ironclaw_composition/tests/plugin_package_surfaces.rs`, `crates/app/ironclaw_composition/src/observability/hooks/tests.rs::live_hook_sets_follow_activation_and_deactivation`, `crates/kernel/ironclaw_host_runtime/tests/host_runtime_services_contract.rs::host_runtime_services_wasm_tool_context_carries_the_users_effective_settings` |
 | A notification inbox belongs to one recipient: knowing another user's notification id grants no read and no mutation | `notification_inbox_user_isolation.rs` |
 | Connect Telegram through a generated workspace-bot code while personal linked-account tools remain separately protected | `channel_connection_projection.rs` |
 | An ordinary Telegram user sees personal device-link setup without deployment secrets and can independently mint a workspace-bot pairing code | `webui_v2_product_api.rs::telegram_setup_separates_bot_pairing_from_personal_device_link` |
@@ -359,7 +363,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 | A canonical 10-tool-call agent turn's database write volume is measured and reported (for tracking, not gated) on both libSQL and Postgres, and custom-actor group threads are rejected from canonical durable milestones | `db_write_canonical.rs` |
 | A downloaded run artifact carries per-iteration model-call timing evidence for a completed run, and still carries durable per-message timestamps (with an explicit `run_not_resident` reason) when the process-local timing buffer was evicted or the process restarted | `run_artifact_timings.rs` |
 
-One of the 68 registered bins, `delivery_user_journeys.rs`, holds the explicit
+One of the 69 registered bins, `delivery_user_journeys.rs`, holds the explicit
 channel-delivery journeys (two-lane model):
 
 | A user can… | Scenario |

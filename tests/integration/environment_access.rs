@@ -110,6 +110,8 @@ async fn listeners(
             remote,
             build_commit: Some("0123abcd".to_string()),
             self_update: Arc::new(|| SELF_UPDATE_ON.load(std::sync::atomic::Ordering::SeqCst)),
+            addresses: Arc::new(|| vec!["http://100.101.102.103:3774".to_string()]),
+            peer_links: true,
         },
     ));
     let router = webui_v2_app(Arc::new(NoProductSurface), config).expect("app composes");
@@ -252,10 +254,12 @@ async fn descriptor_is_public_and_carries_no_secrets() {
         .keys()
         .map(String::as_str)
         .collect();
+    assert_eq!(body["addresses"], json!(["http://100.101.102.103:3774"]));
+    assert_eq!(body["peer_links"], json!(true));
     assert_eq!(
         keys.len(),
-        8,
-        "only the eight contract fields are public: {keys:?}"
+        10,
+        "only the ten contract fields are public: {keys:?}"
     );
     assert!(!body.to_string().contains(MASTER));
 
@@ -550,4 +554,101 @@ async fn tailnet_pairing_only_for_owners_on_the_identity_listener() {
         (status, body["error"].clone()),
         (StatusCode::FORBIDDEN, json!("tailnet_pairing_disabled"))
     );
+}
+
+async fn mint_with(router: &Router, bearer: &str, body: Value) -> (StatusCode, Value) {
+    send(
+        router,
+        request(
+            Method::POST,
+            "/api/auth/pairing-codes",
+            Some(bearer),
+            Some(body),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await
+}
+
+async fn paired_token(router: &Router, code: &str) -> String {
+    let (status, body) = redeem(router, code, [10, 0, 0, 9]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    serde_json::from_value::<PairedDevice>(body)
+        .expect("paired body")
+        .token
+}
+
+#[tokio::test]
+async fn scoped_devices_and_peer_links_act_only_within_their_grant() {
+    let root = Arc::new(InMemoryBackend::default());
+    let (app, _) = listeners(&root, None).await;
+
+    // A read-only device: it reads, it cannot manage access or mint a code
+    // for more than it may do itself.
+    let (status, issued) = mint_with(
+        &app.main,
+        MASTER,
+        json!({ "scopes": ["orchestration_read"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    assert_eq!(issued["scopes"], json!(["orchestration_read"]));
+    let reader = paired_token(&app.main, issued["code"].as_str().expect("code")).await;
+    let (status, body) = send(
+        &app.main,
+        request(
+            Method::GET,
+            "/api/auth/devices",
+            Some(&reader),
+            None,
+            [10, 0, 0, 9],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], json!("scope_required"));
+    assert_eq!(body["scope"], json!("access:manage"));
+    let (status, body) = mint_with(&app.main, &reader, json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // A peer link below full access reaches no ordinary route at all.
+    let (status, link_code) = mint_with(&app.main, MASTER, json!({ "peer_link": "operate" })).await;
+    assert_eq!(status, StatusCode::OK, "{link_code}");
+    assert_eq!(link_code["peer_link"], json!("operate"));
+    assert_eq!(link_code["scopes"], json!([]));
+    let link = paired_token(&app.main, link_code["code"].as_str().expect("code")).await;
+    for (method, uri) in [
+        (Method::GET, "/api/auth/devices"),
+        (Method::GET, "/api/webchat/v2/threads"),
+        (Method::POST, "/api/auth/pairing-codes"),
+    ] {
+        let (status, body) = send(
+            &app.main,
+            request(method.clone(), uri, Some(&link), None, [10, 0, 0, 9]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {body}");
+    }
+
+    // The device list shows what each grant may do.
+    let (status, list) = send(
+        &app.main,
+        request(
+            Method::GET,
+            "/api/auth/devices",
+            Some(MASTER),
+            None,
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let list: DeviceList = serde_json::from_value(list).expect("device list");
+    let link_row = list
+        .devices
+        .iter()
+        .find(|d| d.peer_link.is_some())
+        .expect("link row");
+    assert!(link_row.expires_at.is_some(), "peer links expire");
+    assert!(link_row.scopes.is_empty());
 }

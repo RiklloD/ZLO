@@ -23,7 +23,7 @@ use crate::icons;
 use crate::state::{Page, State};
 
 /// The sidebar/panel hairline's width.
-const HAIRLINE: f32 = 1.5;
+const HAIRLINE: f32 = 1.;
 
 pub(super) fn sidebar(
     s: &State,
@@ -98,7 +98,7 @@ pub(super) fn sidebar(
             .fill(if s.workspace.sidebar.is_resizing() {
                 p.accent.alpha(0.6)
             } else {
-                p.border_strong
+                p.border
             }),
     )
 }

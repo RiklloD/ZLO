@@ -376,18 +376,21 @@ pub(super) async fn build_backend_production(
     );
     let uses_local_host_runtime = local_process_port.is_some() || deployment_is_local_single_user;
     let first_party_reserved_ids = first_party_reserved_extension_ids(&first_party_bundles);
-    let google_oauth_configured = google_oauth_configured(&oauth_provider_configs);
     let google_provider = VendorId::new(ironclaw_auth::GOOGLE_PROVIDER_ID).map_err(|error| {
         RebornBuildError::InvalidConfig {
-            reason: format!("provider instance readiness map could not be built: {error}"),
+            reason: format!("provider instance readiness could not be built: {error}"),
         }
     })?;
-    let provider_instance_readiness =
-        provider_instance_readiness_map([ProviderInstanceReadinessInput {
-            provider: google_provider,
-            configured: google_oauth_configured,
-            remediation: "configure Google OAuth credentials".to_string(),
-        }]);
+    // Vendors whose activation is gated on host-level client credentials, and
+    // what to tell the operator when they are absent. Whether each one is
+    // actually configured is resolved per activation by the composed
+    // credential chain (administrator configuration first, then deployment
+    // config), never decided here — an operator can configure a vendor in the
+    // Web UI minutes after this line runs.
+    let provider_instance_remediation = BTreeMap::from([(
+        google_provider,
+        "configure Google OAuth credentials".to_string(),
+    )]);
     let owner_user_id = UserId::new(owner_id).map_err(|error| RebornBuildError::InvalidConfig {
         reason: error.to_string(),
     })?;
@@ -737,15 +740,16 @@ pub(super) async fn build_backend_production(
         })?,
     );
     let admin_configuration_credential_slot = AdminConfigurationCredentialSlot::default();
-    let provider_composition = compose_provider_client(
-        oauth_provider_configs,
-        oauth_dcr_callback,
-        Arc::clone(&secret_store),
-        provider_runtime_ports,
-        admin_configuration_credential_slot.clone(),
-        &first_party_bundles,
-        Arc::clone(&extension_installation_store),
-    )?;
+    let provider_composition = compose_provider_client(ProviderClientCompositionInput {
+        configs: oauth_provider_configs,
+        dcr_callback: oauth_dcr_callback,
+        secret_store: Arc::clone(&secret_store),
+        runtime_ports: provider_runtime_ports,
+        admin_configuration_credentials: admin_configuration_credential_slot.clone(),
+        first_party_bundles: &first_party_bundles,
+        installation_store: Arc::clone(&extension_installation_store),
+        provider_instance_remediation,
+    })?;
     let local_process_port = local_process_port.map(Arc::new);
     let services = if let Some(process_port) = &local_process_port {
         services.with_runtime_process_port(Arc::clone(process_port))
@@ -816,6 +820,10 @@ pub(super) async fn build_backend_production(
             )
         }
     };
+    // Cloned before `provider_composition` moves into product-auth
+    // composition: both the first-party dispatch backstop and the extension
+    // activation gate resolve readiness through this one handle.
+    let provider_instance_readiness = Arc::clone(&provider_composition.provider_instance_readiness);
     let keepalive_recipes = provider_composition
         .engine
         .as_ref()
@@ -844,6 +852,15 @@ pub(super) async fn build_backend_production(
             product_auth_dependencies.runtime_credential_account_refresh_service(),
         ),
     ));
+    // One settings store, shared by the WASM lane (reads), the hook factory
+    // (reads), and the settings product face (writes).
+    let extension_settings = Arc::new(
+        ironclaw_extension_registry::settings::ExtensionSettingsStore::new(Arc::clone(
+            &stores.scoped_filesystem,
+        )),
+    );
+    services = services.with_extension_settings(Arc::clone(&extension_settings)
+        as Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsReader>);
     services = attach_wasm_runtime(services)?;
     // Re-project the ports after attaching product-auth. Hosted MCP
     // preparation and first-party registrars must receive the account-aware
@@ -854,7 +871,7 @@ pub(super) async fn build_backend_production(
         credential_account_record_source: product_auth_dependencies
             .credential_account_record_source(),
         product_auth_runtime_ports: product_auth_runtime_ports.clone(),
-        oauth_backend_configured: google_oauth_configured,
+        provider_instance_readiness: Arc::clone(&provider_instance_readiness),
     };
     for registrar in &first_party_registrars {
         registrar
@@ -1063,7 +1080,8 @@ pub(super) async fn build_backend_production(
         )
         .with_account_setup_registry(Arc::new(account_setups.clone()))
         .with_removal_cleanup_registry(removal_cleanup)
-        .with_provider_instance_readiness(provider_instance_readiness)
+        .with_settings_cleanup(Arc::clone(&extension_settings))
+        .with_provider_instance_readiness_port(Arc::clone(&provider_instance_readiness))
         .with_channel_disconnect_slot(Arc::clone(&channel_disconnect_slot)),
     );
     let nearai_mcp_bootstrap_outcome = crate::llm_admin::nearai_mcp::bootstrap_nearai_mcp(
@@ -1089,7 +1107,7 @@ pub(super) async fn build_backend_production(
         .with_available_manifests(available_manifests.clone()),
     );
     extension_management.attach_channel_config(&admin_configuration_resolver);
-    admin_configuration_credential_slot.fill(Arc::clone(&admin_configuration_resolver));
+    admin_configuration_credential_slot.fill(&admin_configuration_resolver);
     let initialized_channel_bootstraps =
         crate::channel_initialization::initialize_first_party_channels(
             &channel_extension_bindings,
@@ -1299,8 +1317,16 @@ pub(super) async fn build_backend_production(
                 Arc::clone(&linked_sessions),
             ),
         );
+        let consent_blocked_extension_ids = extension_management
+            .consent_blocked_extension_ids()
+            .await
+            .map_err(|error| RebornBuildError::InvalidConfig {
+                reason: format!("extension consent state could not be read: {error}"),
+            })?;
         let backend_extension_host =
             build_backend_extension_host(BackendExtensionHostAssemblyInput {
+                consent_blocked_extension_ids,
+                package_consent: extension_management.consent_store(),
                 binder: services.extension_lane_tool_binder(),
                 native_factories: native_extension_factories,
                 channel_bindings: channel_extension_bindings.clone(),
@@ -1483,6 +1509,7 @@ pub(super) async fn build_backend_production(
         skill_filesystem,
         workspace_filesystem,
         extension_filesystem: Arc::clone(&stores.filesystem),
+        extension_settings,
         memory_service_resolver: resolved_memory.resolver.clone(),
         memory_prompt_safety_sink,
         memory_lifecycle: resolved_memory.lifecycle.clone(),

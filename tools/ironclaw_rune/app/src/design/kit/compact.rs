@@ -83,25 +83,16 @@ pub fn variant_button(
 
 /// A small spinner in `color`.
 pub fn spinner(k: &Kit, size: f32, color: Color) -> El {
-    rune_kit::Spinner::new().size(size).color(color).build(k)
+    crate::design::kit::Spinner::new()
+        .size(size)
+        .color(color)
+        .build(k)
 }
 
-/// `a` mixed toward `b` by `t`, in OKLab.
-pub fn mix(a: Color, b: Color, t: f32) -> Color {
-    let (x, y) = (a.to_oklab(), b.to_oklab());
-    let l = |i: usize| x[i] + (y[i] - x[i]) * t;
-    Color::from_oklab([l(0), l(1), l(2), l(3)])
-}
-
-/// The composer's fill and resting rim (GPUI `chat::composer_surface(p, 0., true)`).
+/// The composer's fill and resting rim (`chat::composer::composer_surface`),
+/// so a popover over the composer reads as part of it.
 pub fn composer_surface(p: &Palette) -> (Color, Color) {
-    let ink = if p.light { Color::BLACK } else { Color::WHITE };
-    let fill = if p.light {
-        Color::WHITE.alpha(0.94)
-    } else {
-        mix(p.surface_card, p.bg, 0.25).alpha(0.96)
-    };
-    (fill, ink.alpha(0.07))
+    crate::chat::composer::composer_surface(p, false)
 }
 
 /// The popovers' surface: the composer's fill and rim, a soft drop.

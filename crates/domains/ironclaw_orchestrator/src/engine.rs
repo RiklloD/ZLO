@@ -84,6 +84,12 @@ pub struct Engine {
     pub(crate) git_checkpoints: crate::repo::Checkpoints,
     /// Operator consoles of threads (`crate::console`).
     pub(crate) consoles: crate::console::Consoles,
+    /// Linked environments (`crate::peer`), plugged in by the host.
+    pub(crate) peer_links: OnceLock<Arc<dyn ironclaw_product_contracts::peer::PeerLinkService>>,
+    /// Where answered secrets go (`crate::agent_requests`), plugged in by the host.
+    pub(crate) secret_vault: OnceLock<Arc<dyn crate::agent_requests::SecretVault>>,
+    /// Tool calls waiting on an agent request, woken when it is answered.
+    pub(crate) request_waiters: StdMutex<HashMap<String, Arc<Notify>>>,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -137,6 +143,9 @@ impl Engine {
             extra_turn_listeners: StdMutex::new(Vec::new()),
             git_checkpoints: StdMutex::new(HashMap::new()),
             consoles: Default::default(),
+            peer_links: OnceLock::new(),
+            secret_vault: OnceLock::new(),
+            request_waiters: StdMutex::new(HashMap::new()),
         }))
     }
 
@@ -292,6 +301,8 @@ impl Engine {
         log_step("transfers", self.deliver_transfers_now().await);
         log_step("usage limits", self.fire_usage_limits().await);
         log_step("goal checks", self.run_goal_checks().await);
+        log_step("remote tasks", self.follow_remote_tasks().await);
+        log_step("agent requests", self.expire_agent_requests().await);
     }
 
     /// Clean quit: hold every thread this instance is running as
@@ -522,9 +533,14 @@ impl Engine {
         run_id: Option<&str>,
         at: Millis,
     ) -> Result<()> {
-        self.store
+        if !self
+            .store
             .set_turn_running(&thread.thread_id, run_id, at)
-            .await?;
+            .await?
+        {
+            tracing::debug!("run already ended before its admission returned");
+            return Ok(());
+        }
         self.store
             .put_live_work(
                 &thread.thread_id,
@@ -1078,6 +1094,27 @@ impl TurnEventSink for Engine {
         log_step("turn started", result);
     }
 
+    /// They wait in the queue (held by a Stop), even when shutdown cuts the
+    /// turn: they are the person's words. Each is queued under an id derived
+    /// from the run and the steer, so a repeated or late report of the same
+    /// steer never queues it twice; a failed write is retried, and what
+    /// still fails goes back to the runtime, which tells the person.
+    async fn steers_unread(
+        &self,
+        thread_id: &ThreadId,
+        run_id: &str,
+        steers: Vec<UnreadSteer>,
+    ) -> SteerRecovery {
+        let mut undelivered = Vec::new();
+        for steer in steers {
+            if let Err(error) = self.queue_unread_steer(thread_id, run_id, &steer).await {
+                tracing::debug!(%error, "unread steer could not be queued; reported back");
+                undelivered.push(steer);
+            }
+        }
+        SteerRecovery { undelivered }
+    }
+
     async fn turn_finished(
         &self,
         thread_id: &ThreadId,
@@ -1167,6 +1204,50 @@ impl TurnEventSink for Engine {
             other => log_step("turn finished", other.map(|_| ())),
         }
     }
+}
+
+/// Write attempts for one unread steer, and the pause before each retry.
+const STEER_QUEUE_RETRIES: [Duration; 2] = [Duration::from_millis(50), Duration::from_millis(250)];
+
+impl Engine {
+    async fn queue_unread_steer(
+        &self,
+        thread_id: &ThreadId,
+        run_id: &str,
+        steer: &UnreadSteer,
+    ) -> Result<()> {
+        let id = unread_steer_queue_id(thread_id, run_id, &steer.id)?;
+        let mut pauses = STEER_QUEUE_RETRIES.iter();
+        loop {
+            match self
+                .store
+                .queue_add_once(&id, thread_id, &steer.text, Author::User)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(error) => match pauses.next() {
+                    Some(pause) => {
+                        tracing::debug!(%error, "unread steer not queued yet; retrying");
+                        tokio::time::sleep(*pause).await;
+                    }
+                    None => return Err(error),
+                },
+            }
+        }
+    }
+}
+
+/// The queue id of a recovered steer: one per (thread, run, steer).
+fn unread_steer_queue_id(thread: &ThreadId, run_id: &str, steer_id: &str) -> Result<QueueItemId> {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    for part in [thread.as_str(), run_id, steer_id] {
+        hash.update(part.as_bytes());
+        hash.update([0u8]);
+    }
+    let digest = hash.finalize();
+    let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+    QueueItemId::new(format!("q_steer_{hex}"))
 }
 
 fn non_empty(text: String) -> Option<String> {

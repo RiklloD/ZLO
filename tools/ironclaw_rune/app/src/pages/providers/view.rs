@@ -385,7 +385,7 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                                 .color(p.text)
                                 .selectable(true),
                         )
-                        .child(rune_kit::Spinner::new().size(12.).build(k))
+                        .child(crate::design::kit::Spinner::new().size(12.).build(k))
                         .child(
                             button_sized("Open page", Look::Ghost, Size::Small)
                                 .on_press_tx(move |_: &mut State, tx| open_url(tx, &uri))

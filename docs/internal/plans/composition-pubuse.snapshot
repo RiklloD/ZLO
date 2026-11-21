@@ -52,8 +52,8 @@ pub use observability::budget::build_default_budget_accountant;
 pub use observability::budget_events::BudgetEventObserver;
 pub use observability::hooks::{
     HookDispatcherBuilderFactory, HookProjectionRegistry, HooksActivationConfig,
-    MAX_INSTALLED_EXTENSIONS_CONSIDERED, ThirdPartyDiscoveryInput,
-    build_hook_dispatcher_builder_factory, build_hook_projection_registry,
+    MAX_INSTALLED_EXTENSIONS_CONSIDERED, build_hook_dispatcher_builder_factory,
+    build_hook_projection_registry,
 };
 pub use observability::trajectory_observer::RebornTrajectoryObserver;
 pub use production_runtime_policy::RebornProductionRuntimePolicy;

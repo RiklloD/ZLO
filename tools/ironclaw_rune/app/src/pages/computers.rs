@@ -83,6 +83,14 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
                     "Let another Mac use {label}: make a one-time code there, or open the link."
                 )),
             ))
+            .child(group_header(
+                p,
+                "Linked environments",
+                Some(&format!(
+                    "Let agents on {label} work on your other computers: delegate tasks there, run tools there, or balance new work by headroom."
+                )),
+            ))
+            .child(super::agent_requests::linked_section(s, k))
             .child(pair_device(s, k))
             .child(group_header(
                 p,
@@ -532,6 +540,15 @@ fn pair_device(s: &State, k: &Kit) -> El {
                     .child(muted(p, "Codes work once and expire after five minutes.").grow(1.))
                     .child(press_button(
                         k,
+                        "issue-read-only-code",
+                        "Read-only device",
+                        Btn::Ghost,
+                        None,
+                        page.issuing,
+                        pairing::issue_read_only_code,
+                    ))
+                    .child(press_button(
+                        k,
                         "issue-code",
                         "Pair a device",
                         Btn::Secondary,
@@ -643,6 +660,15 @@ fn devices(s: &State, k: &Kit) -> El {
                             "paired by tailnet login",
                     }
                 );
+                if let Some(access) = d.peer_link {
+                    caption.push_str(&format!(
+                        " · linked computer ({})",
+                        crate::remote::linked::access_label(access)
+                    ));
+                } else if d.scopes != zlo_client::environment_access::DeviceScope::all() {
+                    let names: Vec<&str> = d.scopes.iter().map(|s| s.as_str()).collect();
+                    caption.push_str(&format!(" · only {}", names.join(", ")));
+                }
                 if let Some(seen) = d.last_seen_at {
                     caption.push_str(&format!(" · seen {}", crate::jobs::ago(seen)));
                 }

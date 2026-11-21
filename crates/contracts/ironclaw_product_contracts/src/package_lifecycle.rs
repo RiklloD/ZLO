@@ -112,6 +112,14 @@ pub enum LifecycleProductAction {
     ExtensionRemove {
         package_ref: LifecyclePackageRef,
     },
+    /// Grant consent to a third-party package, pinned to the digest the
+    /// caller was shown. Fails when `digest` is not the package's current
+    /// digest. A user action only: never exposed as a model-callable
+    /// capability, because a package must not be able to approve itself.
+    ExtensionGrantConsent {
+        package_ref: LifecyclePackageRef,
+        digest: crate::package_consent::PackageConsentDigest,
+    },
     SkillSearch {
         query: String,
     },
@@ -140,13 +148,16 @@ pub enum LifecycleCommandKind {
     ExtensionActivate,
     ExtensionConfigure,
     ExtensionRemove,
+    /// User-issued consent grant for a third-party package. Admin audience
+    /// like every lifecycle command; never a model-callable capability.
+    ExtensionGrantConsent,
     SkillSearch,
     SkillInstall,
     SkillRemove,
 }
 
 impl LifecycleCommandKind {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::ExtensionSearch,
         Self::ExtensionList,
         Self::ExtensionInstall,
@@ -154,6 +165,7 @@ impl LifecycleCommandKind {
         Self::ExtensionActivate,
         Self::ExtensionConfigure,
         Self::ExtensionRemove,
+        Self::ExtensionGrantConsent,
         Self::SkillSearch,
         Self::SkillInstall,
         Self::SkillRemove,
@@ -169,6 +181,7 @@ impl LifecycleCommandKind {
             Self::ExtensionActivate => "extension_activate",
             Self::ExtensionConfigure => "extension_configure",
             Self::ExtensionRemove => "extension_remove",
+            Self::ExtensionGrantConsent => "extension_grant_consent",
             Self::SkillSearch => "skill_search",
             Self::SkillInstall => "skill_install",
             Self::SkillRemove => "skill_remove",
@@ -197,6 +210,7 @@ impl LifecycleProductAction {
             Self::ExtensionSelectHostedMcpAuth { .. } => LifecycleCommandKind::ExtensionConfigure,
             Self::ExtensionConfigure { .. } => LifecycleCommandKind::ExtensionConfigure,
             Self::ExtensionRemove { .. } => LifecycleCommandKind::ExtensionRemove,
+            Self::ExtensionGrantConsent { .. } => LifecycleCommandKind::ExtensionGrantConsent,
             Self::SkillSearch { .. } => LifecycleCommandKind::SkillSearch,
             Self::SkillInstall { .. } => LifecycleCommandKind::SkillInstall,
             Self::SkillRemove { .. } => LifecycleCommandKind::SkillRemove,
@@ -217,6 +231,7 @@ impl LifecycleProductAction {
             | Self::ExtensionSelectHostedMcpAuth { package_ref, .. }
             | Self::ExtensionConfigure { package_ref, .. }
             | Self::ExtensionRemove { package_ref }
+            | Self::ExtensionGrantConsent { package_ref, .. }
             | Self::SkillRemove { package_ref } => Some(package_ref),
             Self::ExtensionRegisterHostedMcp { .. }
             | Self::ExtensionSearch { .. }
@@ -307,6 +322,9 @@ pub enum LifecycleProductPayload {
     },
     ExtensionRemove {
         removed: bool,
+    },
+    ExtensionGrantConsent {
+        granted: bool,
     },
     SkillSearch {
         skills: Vec<LifecycleSkillSummary>,
@@ -479,6 +497,10 @@ pub struct LifecycleProductResponse {
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<LifecycleProductPayload>,
+    /// What a third-party package asks for, present while it waits for (or
+    /// after it was granted) consent. Absent for host-bundled packages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<crate::package_consent::LifecycleConsentSummary>,
 }
 
 /// Project internal lifecycle checkpoints to the public extension lifecycle
@@ -541,6 +563,7 @@ impl LifecycleProductResponse {
             blockers,
             message: None,
             payload: None,
+            consent: None,
         }
     }
 }

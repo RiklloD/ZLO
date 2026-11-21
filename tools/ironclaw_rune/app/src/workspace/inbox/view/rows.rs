@@ -43,7 +43,7 @@ pub(super) fn card(
     let pinned = row_data.state == InboxState::Pinned;
     let menu_open = inbox.snooze_menu.as_deref() == Some(id.as_str());
     let unread = inbox.unread.contains(&id);
-    let recede = !active && row_data.status.is_none() && !unread;
+    let recede = !active && inbox.shown_status(row_data).is_none() && !unread;
     // An unsent draft waits here: t3code's pen mark and warm tint.
     let drafted = !active && crate::drafts::has(s, &id);
     let rest = if active {
@@ -413,7 +413,7 @@ pub(in crate::workspace) fn draft_mark(p: &Palette) -> El {
     ui::glyph(&icons::SQUARE_PEN, 14., p.accent)
 }
 
-/// The profile badge: a colored tile with the first letter. `lit` 0 draws
+/// The profile badge: a tile in the profile's colour with the first letter. `lit` 0 draws
 /// the mark at rest, 1 at full strength on hover or open.
 pub(in crate::workspace) fn profile_mark(
     p: &Palette,
@@ -434,9 +434,9 @@ pub(in crate::workspace) fn profile_mark(
         .child(tw(letter.to_string(), 10., SEMIBOLD, color))
 }
 
-/// A profile's own color, from its id. Identity keeps its color at rest (T3
-/// reversed its grayscale pass); `lit` 1 (hover, selection) only brings it
-/// to full strength.
+/// A profile's own color, from its id. Identity keeps its color at rest
+/// (the user wants profiles told apart at a glance); `lit` 1 (hover,
+/// selection) only brings it to full strength.
 pub(in crate::workspace) fn profile_color(p: &Palette, profile_id: &str, lit: f32) -> Color {
     let colors = [p.accent, p.success, p.warning, p.danger, p.text_muted];
     let hash = profile_id
@@ -479,8 +479,10 @@ pub(in crate::workspace) fn status_label(
     now: i64,
 ) -> El {
     let p = &s.palette;
-    let status = row_data
-        .status
+    let status = s
+        .workspace
+        .inbox
+        .shown_status(row_data)
         .filter(|st| !(active && matches!(st, InboxStatus::Done | InboxStatus::Woke)));
     let key = format!("status-{}-{:?}", row_data.thread_id, status);
     let plain = |text: String, color: Color| t(text, XS, color);

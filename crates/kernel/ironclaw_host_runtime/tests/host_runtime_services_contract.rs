@@ -2,6 +2,7 @@
 #![deny(clippy::let_underscore_must_use)]
 mod support;
 
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use support::host_runtime_harness::*;
 
 use std::{
@@ -7021,5 +7022,215 @@ async fn invoke_capability_secret_store_error_skips_preflight() {
                  for a required runtime_credentials handle."
             );
         }
+    }
+}
+
+/// A WIT tool whose `execute` returns its own invocation `context` string as
+/// the success output, so a test can read exactly what the host handed it.
+const ECHO_CONTEXT_TOOL_WAT: &str = r#"
+(module
+  (type (;0;) (func (param i32 i32 i32)))
+  (type (;1;) (func (result i64)))
+  (type (;2;) (func (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)))
+  (type (;3;) (func (param i32 i32 i32 i32 i32)))
+  (type (;4;) (func (param i32 i32) (result i32)))
+  (import "near:agent/host@0.4.1" "log" (func $log (type 0)))
+  (import "near:agent/host@0.4.1" "now-millis" (func $now (type 1)))
+  (import "near:agent/host@0.4.1" "workspace-read" (func $workspace_read (type 0)))
+  (import "near:agent/host@0.4.1" "http-request" (func $http_request (type 2)))
+  (import "near:agent/host@0.4.1" "tool-invoke" (func $tool_invoke (type 3)))
+  (import "near:agent/host@0.4.1" "secret-exists" (func $secret_exists (type 4)))
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 4096))
+  (data (i32.const 1024) "{\22type\22:\22object\22}")
+  (data (i32.const 2048) "echo context")
+  (func $schema (result i32)
+    i32.const 16
+    i32.const 1024
+    i32.store
+    i32.const 20
+    i32.const 17
+    i32.store
+    i32.const 16)
+  (func $description (result i32)
+    i32.const 32
+    i32.const 2048
+    i32.store
+    i32.const 36
+    i32.const 12
+    i32.store
+    i32.const 32)
+  ;; params: (params.ptr, params.len, context.is_some, context.ptr, context.len)
+  (func $execute (param i32 i32 i32 i32 i32) (result i32)
+    i32.const 48
+    i32.const 0
+    i32.store
+    i32.const 52
+    local.get 3
+    i32.store
+    i32.const 56
+    local.get 4
+    i32.store
+    i32.const 48)
+  (func $post (param i32))
+  (func $realloc (param $old i32) (param $old_align i32) (param $new_size i32) (param $new_align i32) (result i32)
+    (local $ret i32)
+    global.get $heap
+    local.set $ret
+    global.get $heap
+    local.get $new_size
+    i32.add
+    global.set $heap
+    local.get $ret)
+  (func $_initialize)
+  (export "near:agent/tool@0.4.1#execute" (func $execute))
+  (export "cabi_post_near:agent/tool@0.4.1#execute" (func $post))
+  (export "near:agent/tool@0.4.1#schema" (func $schema))
+  (export "cabi_post_near:agent/tool@0.4.1#schema" (func $post))
+  (export "near:agent/tool@0.4.1#description" (func $description))
+  (export "cabi_post_near:agent/tool@0.4.1#description" (func $post))
+  (export "cabi_realloc" (func $realloc))
+  (export "_initialize" (func $_initialize))
+)
+"#;
+
+const SETTINGS_PLUGIN_MANIFEST: &str = r#"
+schema_version = "reborn.extension_manifest.v3"
+id = "settings-plugin"
+name = "Settings Plugin"
+version = "0.1.0"
+description = "A WASM plugin that reads its settings from the invocation context."
+trust = "third_party"
+
+[runtime]
+kind = "wasm"
+module = "wasm/echo-context.wasm"
+
+[[tools]]
+id = "settings-plugin.echo_context"
+description = "Return the invocation context."
+effects = []
+default_permission = "allow"
+visibility = "model"
+input_schema_ref = "schemas/echo.input.v1.json"
+
+[[settings]]
+id = "units"
+kind = "choice"
+label = "Units"
+default = "metric"
+options = [{ value = "metric", label = "Metric" }, { value = "imperial", label = "Imperial" }]
+
+[[settings]]
+id = "days"
+kind = "number"
+label = "Days"
+default = 3
+"#;
+
+/// A plugin's WASM tool receives the acting user's current settings through
+/// the mediated invocation context: the stored value for a setting the user
+/// changed, the declared default for the rest — and another user's change is
+/// invisible to it.
+#[tokio::test]
+async fn host_runtime_services_wasm_tool_context_carries_the_users_effective_settings() {
+    use ironclaw_extension_registry::settings::{ExtensionSettingsReader, ExtensionSettingsStore};
+    use ironclaw_extension_registry::{ExtensionManifest, ExtensionPackage, ManifestSource};
+    use ironclaw_host_api::ids::ExtensionId;
+    use ironclaw_host_api::mount::MountGrant;
+    use ironclaw_host_api::path::MountAlias;
+
+    let record = ironclaw_extension_registry::ExtensionManifestRecord::from_toml(
+        SETTINGS_PLUGIN_MANIFEST,
+        ManifestSource::InstalledLocal,
+        &ironclaw_host_api::host_port::HostPortCatalog::empty(),
+        None,
+        &ironclaw_extension_registry::HostApiContractRegistry::new(),
+        None,
+    )
+    .unwrap();
+    let manifest = ExtensionManifest::try_from(record.manifest().clone()).unwrap();
+    let root = VirtualPath::new("/system/extensions/settings-plugin").unwrap();
+    let package = ExtensionPackage::from_manifest(manifest, root)
+        .unwrap()
+        .with_unverified_contents_for_test();
+    let mut registry = ExtensionRegistry::new();
+    registry.insert(package).unwrap();
+
+    let component = tool_component(ECHO_CONTEXT_TOOL_WAT);
+    let filesystem = Arc::new(
+        filesystem_with_wasm_component("settings-plugin", "wasm/echo-context.wasm", &component)
+            .await,
+    );
+    let settings_store = Arc::new(ExtensionSettingsStore::new(Arc::new(
+        ironclaw_filesystem::ScopedFilesystem::new(
+            Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+            |scope| {
+                MountView::new(vec![MountGrant::new(
+                    MountAlias::new("/extension-settings")?,
+                    VirtualPath::new(format!(
+                        "/tenants/{}/users/{}/extension-settings",
+                        scope.tenant_id.as_str(),
+                        scope.user_id.as_str()
+                    ))?,
+                    MountPermissions::read_write_list_delete(),
+                )])
+            },
+        ),
+    )));
+    let scope = sample_scope(InvocationId::new());
+    let extension = ExtensionId::new("settings-plugin").unwrap();
+    let declared = registry
+        .get_extension(&extension)
+        .unwrap()
+        .manifest
+        .settings
+        .clone();
+    settings_store
+        .set(&scope, &extension, &declared, "units", json!("imperial"))
+        .await
+        .unwrap();
+    let mut other_user = scope.clone();
+    other_user.user_id = UserId::new("someone-else").unwrap();
+    settings_store
+        .set(&other_user, &extension, &declared, "days", json!(30))
+        .await
+        .unwrap();
+
+    let services = HostRuntimeServices::new(
+        Arc::new(registry),
+        filesystem,
+        Arc::new(governor_with_default_limit(sample_account())),
+        Arc::new(ObligatingAuthorizer::new(Vec::new()))
+            as Arc<dyn TrustAwareCapabilityDispatchAuthorizer>,
+        ironclaw_processes::in_memory_backed_process_services(),
+        CapabilitySurfaceVersion::new("surface-v1").unwrap(),
+    )
+    .with_extension_settings(settings_store as Arc<dyn ExtensionSettingsReader>)
+    .try_with_wasm_runtime(WitToolRuntimeConfig::for_testing(), WitToolHost::deny_all())
+    .unwrap();
+    let capability_id = CapabilityId::new("settings-plugin.echo_context").unwrap();
+
+    let outcome = services
+        .host_runtime_for_local_testing()
+        .invoke_capability(wasm_runtime_request_for_scope(
+            capability_id.clone(),
+            scope,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+
+    match outcome {
+        RuntimeCapabilityOutcome::Completed(completed) => {
+            assert_eq!(
+                completed.output,
+                json!({
+                    "capability_id": "settings-plugin.echo_context",
+                    "settings": { "units": "imperial", "days": 3 },
+                })
+            );
+        }
+        other => panic!("expected completed outcome, got {other:?}"),
     }
 }

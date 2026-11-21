@@ -495,6 +495,13 @@ pub struct RebornRuntime {
     pub(crate) auto_approve_settings: Arc<ComposedAutoApproveSettingStore>,
     pub(crate) extension_registry: Arc<ExtensionRegistry>,
     pub(crate) shared_extension_registry: Arc<SharedExtensionRegistry>,
+    /// Per-user package settings values; the settings product face writes
+    /// them, the WASM lane and the hook factory read them.
+    pub(crate) extension_settings: Arc<
+        ironclaw_extension_registry::settings::ExtensionSettingsStore<
+            ironclaw_filesystem::CompositeRootFilesystem,
+        >,
+    >,
     pub(crate) skill_auto_activate_learned: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) extension_management: Arc<RebornLocalExtensionManagementPort>,
     pub(crate) runtime_http_egress: Option<Arc<dyn RuntimeHttpEgress>>,
@@ -585,7 +592,7 @@ pub struct RebornRuntime {
     child_runs: Arc<dyn ironclaw_turns::TurnSpawnTreePort>,
     thread_service: Arc<dyn SessionThreadService>,
     pub(crate) subagent_delivery: SubagentDeliveryRuntime,
-    thread_scope: ThreadScope,
+    pub(crate) thread_scope: ThreadScope,
     turn_scheduler: RuntimeTurnScheduler,
     trigger_poller_handle: Option<TriggerPollerRuntimeHandle>,
     credential_refresh_worker_handle: Option<ironclaw_auth::KeepaliveSweepHandle>,
@@ -604,7 +611,7 @@ pub struct RebornRuntime {
     /// admin create path reporting the token minter unavailable.
     admin_api_token_minter:
         Option<Arc<dyn ironclaw_product_contracts::admin_users::AdminApiTokenMinter>>,
-    actor_user_id: UserId,
+    pub(crate) actor_user_id: UserId,
     source_binding_ref: SourceBindingRef,
     reply_target_binding_ref: ReplyTargetBindingRef,
     projection_services: RebornProjectionServices,

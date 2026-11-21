@@ -30,7 +30,6 @@ use super::ui::{self, SEMIBOLD, SM, XS, t, tw};
 use crate::chat::menu::{self, ComposerMenu, MenuKey, MenuKeyName};
 use crate::chat::model_picker::ModelPickerState;
 use crate::chat::{composer, inline_files};
-use crate::design::prefs::Wallpaper;
 use crate::drafts;
 use crate::icons;
 use crate::jobs::{self, Generation};
@@ -514,7 +513,8 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         .h(28.)
         .gap(4.)
         .center_y()
-        .radius(14.)
+        .radius(crate::design::CONTROL_RADIUS)
+        .hover(p.hover)
         .cursor(rune::Cursor::Pointer)
         .hover_group()
         .help(if in_worktree {
@@ -540,7 +540,8 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
                 d.worktree = !d.worktree;
             }
         });
-    // No resting underline (T3's pass): a chevron says it opens.
+    // Under the heading, no resting underline (T3's pass): a chevron says
+    // it opens. A long name truncates instead of widening the column.
     let profile_switch = row()
         .key("draft-profile")
         .role("button")
@@ -549,6 +550,8 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         .center_y()
         .cursor(rune::Cursor::Pointer)
         .hover_group()
+        .max_w(HERO_WIDTH)
+        .min_w(0.)
         .child(
             t(
                 name,
@@ -559,7 +562,9 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
                     p.text_muted
                 },
             )
-            .group_color(p.text),
+            .group_color(p.text)
+            .min_w(0.)
+            .truncate(),
         )
         .child(ui::glyph(&icons::CHEVRON_DOWN, 12., p.text_faint))
         .on_press(picker::toggle_draft_menu);
@@ -588,7 +593,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         .key("composer-input")
         .w_full()
         .color(p.text)
-        .placeholder("Do anything…", p.text_faint)
+        .placeholder("Ask anything…", p.text_faint)
         .caret(p.text, k.selection())
         .label("Message")
         .pill_colors(p.hover, Some(p.text))
@@ -671,6 +676,8 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             on_pick,
         );
     }
+    // The centred hero: the big question, the project switcher under it,
+    // then the card.
     let mut body = col()
         .key("draft-body")
         .w_full()
@@ -688,25 +695,17 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         )
         .child(card);
     if let Some(error) = draft.error.clone() {
-        body = body.child(el().max_w(720.).child(t(error, SM, p.danger).wrap()));
+        body = body.child(el().max_w(HERO_WIDTH).child(t(error, SM, p.danger).wrap()));
     }
     // Room under the card so it sits just above the middle, like t3code.
-    body = body.child(el().h(80.));
-    // Without a wallpaper, a soft accent glow from the top stands in.
-    let bare = s.prefs.wallpaper == Wallpaper::None;
-    let mut root = el()
-        .key("draft")
+    let body = body.child(el().h(80.));
+    // A flat panel: no glow, no band; a wallpaper, when one is picked, is
+    // laid over the panel by the frame.
+    el().key("draft")
         .w_full()
         .h_full()
-        .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()));
-    if bare {
-        root = root.child(
-            el().pin(Some(0.), Some(0.), Some(0.), None)
-                .h(320.)
-                .gradient(p.accent_wash, p.accent_wash.alpha(0.)),
-        );
-    }
-    root.child(body)
+        .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()))
+        .child(body)
 }
 
 pub(super) fn empty_draft(profile: &str) -> DraftState {

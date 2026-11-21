@@ -169,6 +169,7 @@ pub fn page_body_virtual(
                 .key("page-rows")
                 .w_full()
                 .growth(rune::GrowthSpec::default())
+                .whole_rows()
                 .virtual_rows(
                     count,
                     estimate,

@@ -9,6 +9,7 @@
 //! trust_local_users = false
 //! tailnet_url = "https://studio.tail9915dd.ts.net"
 //! https_port = 443
+//! private_port = 3774          # optional: also listen on tailnet/LAN peers
 //! ```
 //!
 //! `zlo remote enable` writes this section and `remote disable` sets
@@ -51,6 +52,11 @@ pub struct RemoteSection {
     /// HTTPS port `tailscale serve` publishes. Default
     /// [`DEFAULT_REMOTE_HTTPS_PORT`].
     pub https_port: Option<u16>,
+    /// Also serve on every IPv4 interface at this port, answering only
+    /// loopback, private and tailnet peers: a headless machine's tailnet
+    /// address then works as a direct route (and a linked environment's
+    /// fallback), while its public address stays closed. Off by default.
+    pub private_port: Option<u16>,
 }
 
 /// `[remote]` with defaults applied, for an enabled section.
@@ -61,6 +67,7 @@ pub struct RemoteSettings {
     pub tailnet_url: String,
     pub https_port: u16,
     pub trust_local_users: bool,
+    pub private_port: Option<u16>,
 }
 
 impl RemoteSettings {
@@ -85,6 +92,7 @@ impl RemoteSection {
             tailnet_url: self.tailnet_url.clone().unwrap_or_default(),
             https_port: self.https_port.unwrap_or(DEFAULT_REMOTE_HTTPS_PORT),
             trust_local_users: self.trust_local_users == Some(true),
+            private_port: self.private_port,
         })
     }
 
@@ -99,6 +107,12 @@ impl RemoteSection {
         }
         if self.https_port == Some(0) {
             return Err(invalid("https_port", "must be greater than 0"));
+        }
+        if self.private_port == Some(0) {
+            return Err(invalid("private_port", "must be a fixed port, not 0"));
+        }
+        if self.private_port.is_some() && self.private_port == self.identity_port {
+            return Err(invalid("private_port", "must differ from identity_port"));
         }
         for login in self.owner_logins.iter().flatten() {
             if login.trim().is_empty()
@@ -157,6 +171,9 @@ pub fn write_remote_section(
     }
     if let Some(port) = section.https_port {
         table.insert("https_port", toml_edit::value(i64::from(port)));
+    }
+    if let Some(port) = section.private_port {
+        table.insert("private_port", toml_edit::value(i64::from(port)));
     }
     doc.as_table_mut()
         .insert("remote", toml_edit::Item::Table(table));
@@ -266,6 +283,7 @@ tailnet_url = "https://studio.tail9915dd.ts.net"
             trust_local_users: Some(false),
             tailnet_url: Some("https://studio.tail9915dd.ts.net".into()),
             https_port: Some(443),
+            private_port: Some(3774),
         };
         write_remote_section(&path, &section).expect("write");
         let text = std::fs::read_to_string(&path).expect("read");

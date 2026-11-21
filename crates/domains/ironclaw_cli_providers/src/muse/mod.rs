@@ -10,13 +10,22 @@
 //!
 //! Tools fail closed: the host runs without `--trust-workspace` (no
 //! workspace rules can allow anything), with `--disable-request-user-input`,
-//! in `promptUnmatched` approval mode (`denyUnmatched` without a bridge),
-//! and every approval Muse asks for goes
+//! in `promptUnmatched` approval mode (`denyUnmatched` without a bridge) and
+//! the `:ask-me` permission profile (Muse's default may let its own reviewer
+//! decide), and every approval Muse asks for goes
 //! through [`crate::permissions::decide`]: an IronClaw approval in the
 //! thread when the host has a bridge. Without one, shell and writes are off
 //! too (`--disable-shell --disable-write`) and approvals are denied.
+//!
+//! With a bridge the turn also streams live (`live.rs`: reply, reasoning,
+//! tool rows, the todo list as the plan) and, when the gateway's MCP route is
+//! known and the host grants `sessionMcp`, the orchestrator tools ride along
+//! as an optional session MCP server. Compaction is a `thread_action`
+//! (`session/compact`, `compact.rs`).
 
+mod compact;
 mod fold;
+mod live;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -40,10 +49,12 @@ use crate::bridge::CliBridge;
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
-use fold::TurnFold;
+use crate::slot::GroupGuard;
+use fold::{ModelRow, TurnFold};
+use ironclaw_product_contracts::orchestration::{ThreadAction, ThreadActionOutcome};
 
 /// The Muse release the wire handling was checked against.
-pub const EXPECTED_HOST_VERSION: &str = "1.4.12";
+pub const EXPECTED_HOST_VERSION: &str = "1.4.24";
 
 const DEFAULT_MODEL: &str = "default";
 const PROVIDER: &str = "meta";
@@ -53,6 +64,13 @@ const DENY_UNMATCHED: &str = "denyUnmatched";
 /// answers ("Full access") or holds as a gate ("Ask first"). In
 /// `denyUnmatched` Muse denies them itself and the bridge never sees them.
 const PROMPT_UNMATCHED: &str = "promptUnmatched";
+/// Ask the client about every call Muse's rules leave open, never Muse's own
+/// AI reviewer (its default profile may let one decide).
+const PERMISSION_PROFILE: &str = ":ask-me";
+/// Tiers offered for a model the catalog reports none for (custom models).
+const FALLBACK_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+/// The session MCP server carrying the orchestrator tools.
+const MCP_SERVER: &str = "ironclaw";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a host may drain after stdin closes before its group is killed.
 const DRAIN: Duration = Duration::from_secs(10);
@@ -74,6 +92,11 @@ pub struct MuseConfig {
     pub usage_file: Option<PathBuf>,
     /// Reasoning tier sent with every turn; `None` keeps the model default.
     pub reasoning_effort: Option<String>,
+    /// Offer IronClaw's orchestrator tools as a session MCP server. Off by
+    /// default: the MCP route does not gate calls itself, and that Muse asks
+    /// the client before each MCP call under `:ask-me` is not yet verified
+    /// against a live host, so the tools stay away until it is.
+    pub orchestrator_tools: bool,
 }
 
 impl MuseConfig {
@@ -90,21 +113,23 @@ struct LiveTurn {
     client: RpcClient,
     session_id: String,
     turn_id: String,
+    /// Turns Muse started on its own inside this one; Stop ends them too.
+    joined: Vec<String>,
 }
 
 struct ActiveTurn {
     pgid: i32,
-    cancelled: Arc<AtomicBool>,
     live: Arc<Mutex<Option<LiveTurn>>>,
     done: watch::Receiver<bool>,
 }
 
+type Slots = crate::slot::Slots<ActiveTurn>;
+type Claim = crate::slot::Claim<ActiveTurn>;
+
 #[derive(Clone, Default)]
 struct Catalog {
     at: Option<Instant>,
-    models: Vec<String>,
-    windows: HashMap<String, u64>,
-    default: Option<String>,
+    rows: Vec<ModelRow>,
 }
 
 pub struct MuseRuntime {
@@ -113,9 +138,11 @@ pub struct MuseRuntime {
     sink: Weak<dyn TurnEventSink>,
     // arch-exempt: optional_arc, a host without the gateway keeps shell and writes off, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
-    active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
+    active: Slots,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
     primed: crate::Primed,
+    #[cfg(test)]
+    prep_gate: Option<Arc<crate::slot::PrepGate>>,
 }
 
 impl MuseRuntime {
@@ -129,17 +156,16 @@ impl MuseRuntime {
             config: Arc::new(config),
             sink,
             bridge,
-            active: Arc::new(Mutex::new(HashMap::new())),
+            active: Slots::default(),
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
             primed: crate::Primed::default(),
+            #[cfg(test)]
+            prep_gate: None,
         })
     }
 
-    fn is_active(&self, thread: &ThreadId) -> bool {
-        self.active
-            .lock()
-            .map(|a| a.contains_key(thread))
-            .unwrap_or(false) // silent-ok: a poisoned map only happens after a panic elsewhere
+    fn claim(&self, thread: &ThreadId) -> Option<Claim> {
+        self.active.claim(thread)
     }
 
     fn spawn_host(&self, read_only: bool) -> Result<(Child, i32), RuntimeError> {
@@ -156,9 +182,14 @@ impl MuseRuntime {
         if read_only {
             cmd.arg("--no-session-log");
         }
-        // Keep the CLI login; never an API-key override.
-        cmd.env_remove("META_API_KEY")
-            .env("MUSE_NO_AUTO_UPDATE", "1")
+        // Keep the CLI login: an inherited API key (any spelling) would
+        // take priority over it and bill another account.
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().eq_ignore_ascii_case("META_API_KEY") {
+                cmd.env_remove(&key);
+            }
+        }
+        cmd.env("MUSE_NO_AUTO_UPDATE", "1")
             .current_dir(&self.config.work_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -175,6 +206,7 @@ impl MuseRuntime {
 
     async fn spawn_turn(
         &self,
+        claim: Claim,
         thread: &ThreadRecord,
         text: &str,
         context: Option<&str>,
@@ -187,31 +219,52 @@ impl MuseRuntime {
         tokio::fs::create_dir_all(&self.config.work_dir)
             .await
             .map_err(|e| RuntimeError::Unavailable(format!("work dir: {}", e.kind())))?;
+        #[cfg(test)]
+        crate::slot::PrepGate::pass(self.prep_gate.as_ref()).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        // A Stop while the turn prepared: the host is never launched.
+        if claim.is_cancelled() {
+            crate::slot::report_cancelled(
+                claim,
+                self.sink.clone(),
+                thread.thread_id.clone(),
+                run_id.clone(),
+            );
+            return Ok(run_id);
+        }
         let (mut child, pgid) = self.spawn_host(false)?;
+        let mut group = GroupGuard::new(pgid, "muse: dropped host group");
         let (client, inbound) = connect(&mut child, pgid)?;
 
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = claim.cancel_flag();
         let live = Arc::new(Mutex::new(None));
         let (done_tx, done_rx) = watch::channel(false);
-        if let Ok(mut active) = self.active.lock() {
-            active.insert(
+        let published = claim.fill(ActiveTurn {
+            pgid,
+            live: Arc::clone(&live),
+            done: done_rx,
+        });
+        if !published {
+            // Stopped while the host spawned: end it before it does anything.
+            drop((client, inbound));
+            close_host(&mut child, pgid).await;
+            group.disarm();
+            crate::slot::report_cancelled(
+                claim,
+                self.sink.clone(),
                 thread.thread_id.clone(),
-                ActiveTurn {
-                    pgid,
-                    cancelled: Arc::clone(&cancelled),
-                    live: Arc::clone(&live),
-                    done: done_rx,
-                },
+                run_id.clone(),
             );
+            return Ok(run_id);
         }
 
-        // Never wait on a catalog probe in flight; the window is a fallback.
-        let window = self
+        // Never wait on a catalog probe in flight; the rows are fallbacks.
+        let models = self
             .catalog
             .try_lock()
-            .map(|c| c.windows.clone())
-            .unwrap_or_default(); // silent-ok: a busy catalog only drops the context-max fallback
+            .map(|c| c.rows.iter().map(|r| (r.id.clone(), r.clone())).collect())
+            .unwrap_or_default(); // silent-ok: a busy catalog only drops the context-max and effort fallbacks
+        let mcp = self.mcp_grant(&thread.thread_id, &run_id);
         let turn = Turn {
             config: Arc::clone(&self.config),
             session_id,
@@ -221,16 +274,24 @@ impl MuseRuntime {
             effort: effort.map(str::to_string),
             cancelled,
             live,
-            windows: window,
+            models,
+            mcp: mcp.clone(),
             bridge: self.bridge.clone(),
             thread_id: thread.thread_id.clone(),
             run_id: run_id.clone(),
         };
         let bridge = self.bridge.clone();
         let sink = self.sink.clone();
-        let active = Arc::clone(&self.active);
         let thread_id = thread.thread_id.clone();
         let run = run_id.clone();
+        let mut report = crate::slot::ReportGuard::new(
+            sink.clone(),
+            bridge.clone(),
+            thread_id.clone(),
+            run.clone(),
+            "muse",
+        )
+        .with_token(mcp.as_ref().map(|m| m.token.clone()));
         tokio::spawn(async move {
             if let Some(sink) = sink.upgrade() {
                 sink.turn_started(&thread_id, Some(run.clone()), now_ms())
@@ -241,12 +302,15 @@ impl MuseRuntime {
             }
             let (outcome, telemetry) = turn.run(client, inbound).await;
             close_host(&mut child, pgid).await;
+            group.disarm();
+            report.disarm();
             if let Some(bridge) = &bridge {
+                if let Some(mcp) = &mcp {
+                    bridge.revoke_token(&mcp.token);
+                }
                 bridge.turn_ended(&thread_id, &run, outcome.status.as_str());
             }
-            if let Ok(mut map) = active.lock() {
-                map.remove(&thread_id);
-            }
+            drop(claim);
             if let Some(sink) = sink.upgrade() {
                 if let Some(telemetry) = telemetry {
                     sink.turn_telemetry(&thread_id, telemetry, now_ms()).await;
@@ -263,35 +327,55 @@ impl MuseRuntime {
         Ok(run_id)
     }
 
+    /// A bearer token for the loopback MCP route, bound to this turn; `None`
+    /// without a bridge or before the gateway reported its URL.
+    fn mcp_grant(&self, thread: &ThreadId, run_id: &str) -> Option<McpGrant> {
+        if !self.config.orchestrator_tools {
+            return None;
+        }
+        let bridge = self.bridge.as_ref()?;
+        let url = bridge.mcp_url()?.to_string();
+        let token = bridge.mint_token(
+            crate::bridge::SessionGrant {
+                thread_id: thread.clone(),
+                run_id: run_id.to_string(),
+            },
+            crate::bridge::SESSION_TOKEN_TTL,
+        );
+        Some(McpGrant { url, token })
+    }
+
     fn live(&self, thread: &ThreadId) -> Option<LiveTurn> {
         self.active
-            .lock()
-            .ok()
-            .and_then(|a| a.get(thread).and_then(|t| t.live.lock().ok()?.clone()))
+            .with_turn(thread, |turn| turn.live.lock().ok()?.clone())
+            .flatten()
     }
 
     /// `turn/interrupt`, then the process group if the turn does not settle
     /// within the grace period. Waits until the turn is reported.
     async fn stop(&self, thread: &ThreadId) {
-        let entry = self.active.lock().ok().and_then(|a| {
-            a.get(thread)
-                .map(|t| (t.pgid, Arc::clone(&t.cancelled), t.done.clone()))
-        });
-        let Some((pgid, cancelled, mut done)) = entry else {
+        // Sets the turn's cancelled flag; a turn still preparing never runs.
+        if !self.active.stop_admitted(thread).await {
+            return;
+        }
+        let entry = self.active.with_turn(thread, |t| (t.pgid, t.done.clone()));
+        let Some((pgid, mut done)) = entry else {
             return;
         };
-        cancelled.store(true, Ordering::SeqCst);
         if let Some(live) = self.live(thread) {
-            let params = json!({
-                "sessionId": live.session_id,
-                "commandId": command_id(),
-                "turnId": live.turn_id,
-            });
-            let interrupt = live
-                .client
-                .request("turn/interrupt", params, rpc::KILL_GRACE);
-            if let Err(error) = interrupt.await {
-                tracing::debug!(error = %error.label(), "muse: interrupt not admitted");
+            // Joined turns first: the admitted one ending ends the wait.
+            for turn_id in live.joined.iter().chain([&live.turn_id]) {
+                let params = json!({
+                    "sessionId": live.session_id,
+                    "commandId": command_id(),
+                    "turnId": turn_id,
+                });
+                let interrupt = live
+                    .client
+                    .request("turn/interrupt", params, rpc::KILL_GRACE);
+                if let Err(error) = interrupt.await {
+                    tracing::debug!(error = %error.label(), "muse: interrupt not admitted");
+                }
             }
         }
         if tokio::time::timeout(rpc::KILL_GRACE, done.wait_for(|d| *d))
@@ -328,26 +412,21 @@ impl MuseRuntime {
         match self.probe().await {
             Ok(rows) => {
                 cached.at = Some(Instant::now());
-                cached.models = rows.iter().map(|r| r.0.clone()).collect();
-                cached.windows = rows
-                    .iter()
-                    .filter_map(|(id, window, _)| Some((id.clone(), (*window)?)))
-                    .collect();
-                cached.default = rows.iter().find(|r| r.2).map(|r| r.0.clone());
+                cached.rows = rows;
             }
             Err(error) => tracing::debug!(%error, "muse: model list unavailable"),
         }
         cached.clone()
     }
 
-    async fn probe(&self) -> Result<Vec<(String, Option<u64>, bool)>, String> {
+    async fn probe(&self) -> Result<Vec<ModelRow>, String> {
         tokio::fs::create_dir_all(&self.config.work_dir)
             .await
             .map_err(|e| format!("work dir: {}", e.kind()))?;
         let (mut child, pgid) = self.spawn_host(true).map_err(|e| e.to_string())?;
         let rows = async {
             let (client, _inbound) = connect(&mut child, pgid).map_err(|e| e.to_string())?;
-            handshake(&client).await.map_err(|e| e.label())?;
+            handshake(&client, false).await.map_err(|e| e.label())?;
             let catalog = client
                 .request("model/list", json!({}), Duration::from_secs(15))
                 .await
@@ -379,14 +458,16 @@ fn connect(
     Ok(RpcClient::start(stdin, stdout, "muse"))
 }
 
-/// `initialize` + `initialized`, refusing an envelope version we do not speak.
-async fn handshake(client: &RpcClient) -> Result<Value, RpcError> {
+/// `initialize` + `initialized`, refusing an envelope version we do not
+/// speak. `session_mcp` asks for session MCP servers (a turn with tools).
+async fn handshake(client: &RpcClient, session_mcp: bool) -> Result<Value, RpcError> {
+    let requested: &[&str] = if session_mcp { &["sessionMcp"] } else { &[] };
     let init = client
         .request(
             "initialize",
             json!({
                 "clientInfo": {"name": "ironclaw", "title": "IronClaw", "version": env!("CARGO_PKG_VERSION")},
-                "capabilities": {"requestedCapabilities": []},
+                "capabilities": {"requestedCapabilities": requested},
             }),
             Duration::from_secs(20),
         )
@@ -400,6 +481,27 @@ async fn handshake(client: &RpcClient) -> Result<Value, RpcError> {
     }
     client.notify("initialized", None)?;
     Ok(init)
+}
+
+/// The loopback MCP route and this turn's token for it.
+#[derive(Clone)]
+struct McpGrant {
+    url: String,
+    token: String,
+}
+
+impl McpGrant {
+    /// Session config naming the route as an optional server: Muse fails a
+    /// run whose required server is unreachable, so the turn goes on without
+    /// the tools instead.
+    fn session_config(&self) -> Value {
+        json!({"mcpServers": {MCP_SERVER: {
+            "transport": "streamableHttp",
+            "mode": "optional",
+            "url": self.url,
+            "headers": {"Authorization": format!("Bearer {}", self.token)},
+        }}})
+    }
 }
 
 /// MSP command ids are UUIDv7.
@@ -418,8 +520,10 @@ struct Turn {
     effort: Option<String>,
     cancelled: Arc<AtomicBool>,
     live: Arc<Mutex<Option<LiveTurn>>>,
-    /// Context limits by model, from the catalog.
-    windows: HashMap<String, u64>,
+    /// The catalog's rows by model id: context limits and reasoning tiers.
+    models: HashMap<String, ModelRow>,
+    /// The orchestrator tools' route, when the bridge serves one.
+    mcp: Option<McpGrant>,
     // arch-exempt: optional_arc, a host without the gateway denies every approval, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
@@ -473,11 +577,15 @@ impl Turn {
             "workspaceRoots": [workspace_root(&self.config.work_dir)],
             "ifBusy": "queue",
         });
-        if let Some(effort) = self
+        let picked = self
             .effort
-            .as_ref()
-            .or(self.config.reasoning_effort.as_ref())
-        {
+            .as_deref()
+            .or(self.config.reasoning_effort.as_deref());
+        let effort = match fold.model.as_ref().and_then(|m| self.models.get(m)) {
+            Some(row) => row.effort_for(picked),
+            None => picked.map(str::to_string),
+        };
+        if let Some(effort) = effort {
             params["reasoningEffort"] = json!(effort);
         }
         let admitted = client.request("turn/start", params, COMMAND_TIMEOUT).await;
@@ -507,10 +615,13 @@ impl Turn {
                 client: client.clone(),
                 session_id: self.session_id.clone(),
                 turn_id,
+                joined: Vec::new(),
             });
         }
 
         let mut asked = HashSet::new();
+        let mut shown = live::MuseLive::default();
+        let root = workspace_root(&self.config.work_dir);
         while let Some(message) = inbound.recv().await {
             match message {
                 Inbound::Notification { method, params } => {
@@ -524,7 +635,15 @@ impl Turn {
                     if method == "approval/requested" || method == "approval/updated" {
                         self.approval(&client, &params, &mut asked);
                     }
-                    if fold.push(&method, &params) {
+                    let done = fold.push(&method, &params);
+                    if method == "turn/started"
+                        && let Ok(mut slot) = self.live.lock()
+                        && let Some(live) = slot.as_mut()
+                    {
+                        live.joined = fold.joined();
+                    }
+                    self.show(&mut shown, &fold, &root, &method, &params);
+                    if done {
                         break;
                     }
                 }
@@ -542,7 +661,7 @@ impl Turn {
             }
         }
 
-        let outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst));
+        let outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst), now_ms());
         if let Some(entry) = fold.assistant_message() {
             journal::append(&transcript, &[entry]).await;
         }
@@ -552,14 +671,25 @@ impl Turn {
         let window = fold
             .model
             .as_ref()
-            .and_then(|m| self.windows.get(m).copied());
+            .and_then(|m| self.models.get(m)?.context_limit);
         (outcome, fold.telemetry(&self.config.runtime_id, window))
     }
 
     /// `initialize`, the subscription reading, then start or resume the
     /// session in the default-deny approval mode and on the thread's model.
     async fn open(&self, client: &RpcClient, fold: &mut TurnFold) -> Result<(), RpcError> {
-        handshake(client).await?;
+        let init = handshake(client, self.mcp.is_some()).await?;
+        let granted = init["grantedCapabilities"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|c| c.as_str() == Some("sessionMcp")));
+        let config = match &self.mcp {
+            Some(mcp) if granted => Some(mcp.session_config()),
+            Some(_) => {
+                tracing::debug!("muse: host lacks sessionMcp; orchestrator tools off");
+                None
+            }
+            None => None,
+        };
         if let Ok(read) = client
             .request("usage/read", json!({}), Duration::from_secs(10))
             .await
@@ -577,12 +707,17 @@ impl Turn {
             DENY_UNMATCHED
         };
         let result = if started {
+            let mut params = json!({
+                "sessionId": self.session_id,
+                "commandId": command_id(),
+                "excludeItems": true,
+                "permissionProfile": PERMISSION_PROFILE,
+            });
+            if let Some(config) = &config {
+                params["config"] = config.clone();
+            }
             let resumed = client
-                .request(
-                    "session/resume",
-                    json!({"sessionId": self.session_id, "commandId": command_id(), "excludeItems": true}),
-                    COMMAND_TIMEOUT,
-                )
+                .request("session/resume", params, COMMAND_TIMEOUT)
                 .await?;
             client
                 .request(
@@ -599,9 +734,13 @@ impl Turn {
                 "workspaceRoot": workspace_root(&self.config.work_dir),
                 "providerId": PROVIDER,
                 "approvalMode": approval_mode,
+                "permissionProfile": PERMISSION_PROFILE,
             });
             if let Some(model) = model {
                 params["modelId"] = json!(model);
+            }
+            if let Some(config) = config {
+                params["config"] = config;
             }
             client
                 .request("session/start", params, COMMAND_TIMEOUT)
@@ -633,6 +772,29 @@ impl Turn {
             fold.model = Some(model.to_string());
         }
         Ok(())
+    }
+
+    /// The live view of one notification, for whoever watches the thread.
+    fn show(
+        &self,
+        shown: &mut live::MuseLive,
+        fold: &TurnFold,
+        root: &str,
+        method: &str,
+        params: &Value,
+    ) {
+        let Some(bridge) = self.bridge.as_deref() else {
+            return;
+        };
+        if method == "session/todoListChanged" {
+            if let Some(plan) = live::todo_plan(params) {
+                bridge.plan_updated(&self.thread_id, &self.run_id, plan);
+            }
+            return;
+        }
+        let owned = fold.owns(params["item"].get("turnId").and_then(Value::as_str));
+        let steps = shown.push(method, params, owned);
+        crate::codex::live::apply(Some(bridge), &self.thread_id, &self.run_id, root, steps);
     }
 
     /// Answer one approval stage through the shared seam. Muse advances
@@ -873,9 +1035,9 @@ impl TurnRuntime for MuseRuntime {
         thread: &ThreadRecord,
         input: TurnInput,
     ) -> Result<TurnAdmission, RuntimeError> {
-        if self.is_active(&thread.thread_id) {
+        let Some(claim) = self.claim(&thread.thread_id) else {
             return Ok(TurnAdmission::Busy);
-        }
+        };
         let mut thread = thread.clone();
         if input.model.is_some() {
             thread.model = input.model;
@@ -886,6 +1048,7 @@ impl TurnRuntime for MuseRuntime {
         );
         let run_id = self
             .spawn_turn(
+                claim,
                 &thread,
                 &input.text,
                 context.as_deref(),
@@ -941,7 +1104,11 @@ impl TurnRuntime for MuseRuntime {
             return Ok(SteerOutcome::Rejected);
         }
         self.stop(&thread.thread_id).await;
-        self.spawn_turn(thread, text, None, None).await?;
+        // Something else took the slot meanwhile: the engine queues the text.
+        let Some(claim) = self.claim(&thread.thread_id) else {
+            return Ok(SteerOutcome::Rejected);
+        };
+        self.spawn_turn(claim, thread, text, None, None).await?;
         Ok(SteerOutcome::Restarted)
     }
 
@@ -965,23 +1132,46 @@ impl TurnRuntime for MuseRuntime {
     /// counts as signed in (a logged-out account fails on its first turn).
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
         let catalog = self.models().await;
-        let mut models = catalog.models.clone();
-        if let Some(default) = &catalog.default {
-            models.retain(|m| m != default);
-            models.insert(0, default.clone());
+        let mut models: Vec<String> = catalog.rows.iter().map(|r| r.id.clone()).collect();
+        if let Some(default) = catalog.rows.iter().find(|r| r.is_default) {
+            models.retain(|m| *m != default.id);
+            models.insert(0, default.id.clone());
         }
+        // Each model's own tiers; an unreported one takes the fallback.
+        let model_efforts = catalog
+            .rows
+            .iter()
+            .filter_map(|r| Some((r.id.clone(), r.efforts.clone()?)))
+            .collect();
         Ok(vec![CatalogProvider {
             provider: self.config.runtime_id.clone(),
             name: self.config.display_name.clone(),
             authenticated: !models.is_empty(),
             current: false,
             models,
-            efforts: ["minimal", "low", "medium", "high", "xhigh", "max"]
-                .map(str::to_string)
-                .to_vec(),
-            model_efforts: Default::default(),
+            efforts: FALLBACK_EFFORTS.map(str::to_string).to_vec(),
+            model_efforts,
             brand: None,
         }])
+    }
+
+    /// Muse compacts near the window by itself; `Compact` asks it now.
+    fn compaction(&self) -> RuntimeCompaction {
+        RuntimeCompaction {
+            manual_prompt: None,
+            automatic: true,
+        }
+    }
+
+    async fn thread_action(
+        &self,
+        thread: &ThreadRecord,
+        action: ThreadAction,
+    ) -> Result<ThreadActionOutcome, RuntimeError> {
+        match action {
+            ThreadAction::Compact => self.compact(thread).await,
+            ThreadAction::Review { .. } => Err(RuntimeError::Unsupported("muse review")),
+        }
     }
 }
 
@@ -1000,12 +1190,41 @@ pub fn default_config(home: &Path, binary: &Path) -> MuseConfig {
         state_dir: state,
         usage_file: Some(home.join(".ironclaw").join("usage").join("muse-code.json")),
         reasoning_effort: None,
+        orchestrator_tools: false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Review (2nd round, B): a Stop that lands while the turn prepares (no
+    // host yet) ends it `Cancelled`, and `muse serve` is never launched.
+    #[tokio::test]
+    async fn stop_while_the_turn_prepares_never_launches_the_host() {
+        use crate::slot::test_support::{Recorder, marker_host, stop_before_launch};
+        let dir = tempfile::tempdir().unwrap();
+        let (host, marker) = marker_host(dir.path());
+        let recorder = Arc::new(Recorder::default());
+        let mut rt = MuseRuntime::new(
+            MuseConfig {
+                runtime_id: "muse-code".into(),
+                display_name: "Muse Code".into(),
+                binary: host,
+                work_dir: dir.path().join("work"),
+                state_dir: dir.path().join("state"),
+                usage_file: None,
+                reasoning_effort: None,
+                orchestrator_tools: false,
+            },
+            recorder.sink(),
+            None,
+        )
+        .unwrap();
+        let gate = Arc::new(crate::slot::PrepGate::default());
+        rt.prep_gate = Some(Arc::clone(&gate));
+        stop_before_launch(Arc::new(rt), gate, recorder, &marker).await;
+    }
 
     #[test]
     fn denial_takes_the_once_denied_choice_else_abort() {

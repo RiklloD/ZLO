@@ -1,0 +1,2462 @@
+{
+ "interactions": {
+  "dock": {
+   "commit_why": {
+    "dirty": 1,
+    "input": 3,
+    "instant": 11,
+    "layout": 10,
+    "poll": 1
+   },
+   "pixels": {
+    "frames_drawn": 245,
+    "frames_visible": 206,
+    "frames_wasted": 39,
+    "visible_undrawn": 0,
+    "wasted_why": {
+     "tracks": 37,
+     "update": 4
+    }
+   },
+   "runs": [
+    {
+     "commit_why": {
+      "dirty": 1,
+      "input": 3,
+      "instant": 11,
+      "layout": 10,
+      "poll": 1
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 1.004333000000031,
+      "cpu_max": 2.540249999999986,
+      "cpu_mean": 0.3549726000000017,
+      "cpu_p50": 0.2948749999999336,
+      "cpu_p99": 1.6431250000000546,
+      "encode_ms_p50": 0.03991599999999995,
+      "encode_ms_p99": 0.18325000000000014,
+      "frames_drawn": 245,
+      "frames_total": 396,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.1783739999999625,
+      "mount_ms": 58.461833999999996,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.17212499999993724,
+      "paint_cpu_p99": 0.663125000000008,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.03962400000023081,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.3240000000000123
+     },
+     "why": {
+      "growth": 45,
+      "input": 3,
+      "tracks": 239,
+      "update": 11
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "input": 3,
+      "instant": 11,
+      "layout": 10,
+      "poll": 1
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 1.04200000000003,
+      "cpu_max": 2.397541999999987,
+      "cpu_mean": 0.34127068979591796,
+      "cpu_p50": 0.28520800000001145,
+      "cpu_p99": 1.6356250000000045,
+      "encode_ms_p50": 0.038500000000000006,
+      "encode_ms_p99": 0.20487499999999992,
+      "frames_drawn": 245,
+      "frames_total": 396,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.18620799999996507,
+      "mount_ms": 57.30712499999999,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.17220899999995254,
+      "paint_cpu_p99": 0.5041249999999877,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.03962400000023081,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.33862400000003845
+     },
+     "why": {
+      "growth": 45,
+      "input": 3,
+      "tracks": 239,
+      "update": 11
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "input": 3,
+      "instant": 11,
+      "layout": 10,
+      "poll": 1
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 1.0629159999999729,
+      "cpu_max": 2.7414170000000126,
+      "cpu_mean": 0.346691857142861,
+      "cpu_p50": 0.2831659999999374,
+      "cpu_p99": 1.650666000000001,
+      "encode_ms_p50": 0.038583000000000034,
+      "encode_ms_p99": 0.22604099999999994,
+      "frames_drawn": 245,
+      "frames_total": 396,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.19087400000000798,
+      "mount_ms": 57.351625,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.17108400000000756,
+      "paint_cpu_p99": 0.5537919999999872,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.039792000000261396,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.330332999999996
+     },
+     "why": {
+      "growth": 45,
+      "input": 3,
+      "tracks": 239,
+      "update": 11
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "input": 3,
+      "instant": 11,
+      "layout": 10,
+      "poll": 1
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 1.5819159999999783,
+      "cpu_max": 3.4432499999999777,
+      "cpu_mean": 0.411144889795918,
+      "cpu_p50": 0.3372499999999832,
+      "cpu_p99": 2.3150420000000054,
+      "encode_ms_p50": 0.04799999999999996,
+      "encode_ms_p99": 0.21745899999999985,
+      "frames_drawn": 245,
+      "frames_total": 396,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.2027499999999236,
+      "mount_ms": 60.420209,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.18391700000006495,
+      "paint_cpu_p99": 0.6968749999999773,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.04195599999991373,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.4021250000000123
+     },
+     "why": {
+      "growth": 45,
+      "input": 3,
+      "tracks": 239,
+      "update": 11
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "input": 3,
+      "instant": 11,
+      "layout": 10,
+      "poll": 1
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 1.4402919999999995,
+      "cpu_max": 3.1813330000000235,
+      "cpu_mean": 0.45112023265306195,
+      "cpu_p50": 0.3955829999999878,
+      "cpu_p99": 2.1010409999998956,
+      "encode_ms_p50": 0.04458400000000001,
+      "encode_ms_p99": 0.18362500000000004,
+      "frames_drawn": 245,
+      "frames_total": 396,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.2524589999999307,
+      "mount_ms": 51.088459,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.2250829999999837,
+      "paint_cpu_p99": 0.748958000000016,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.055625999999278974,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.45775000000003274
+     },
+     "why": {
+      "growth": 45,
+      "input": 3,
+      "tracks": 239,
+      "update": 11
+     }
+    }
+   ],
+   "summary": {
+    "commit_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "commit_cpu_p99": {
+     "max": 1.5819159999999783,
+     "median": 1.0629159999999729,
+     "min": 1.004333000000031
+    },
+    "cpu_max": {
+     "max": 3.4432499999999777,
+     "median": 2.7414170000000126,
+     "min": 2.397541999999987
+    },
+    "cpu_mean": {
+     "max": 0.45112023265306195,
+     "median": 0.3549726000000017,
+     "min": 0.34127068979591796
+    },
+    "cpu_p50": {
+     "max": 0.3955829999999878,
+     "median": 0.2948749999999336,
+     "min": 0.2831659999999374
+    },
+    "cpu_p99": {
+     "max": 2.3150420000000054,
+     "median": 1.650666000000001,
+     "min": 1.6356250000000045
+    },
+    "encode_ms_p50": {
+     "max": 0.04799999999999996,
+     "median": 0.03991599999999995,
+     "min": 0.038500000000000006
+    },
+    "encode_ms_p99": {
+     "max": 0.22604099999999994,
+     "median": 0.20487499999999992,
+     "min": 0.18325000000000014
+    },
+    "frames_drawn": {
+     "max": 245,
+     "median": 245,
+     "min": 245
+    },
+    "frames_total": {
+     "max": 396,
+     "median": 396,
+     "min": 396
+    },
+    "layout_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "layout_cpu_p99": {
+     "max": 0.2524589999999307,
+     "median": 0.19087400000000798,
+     "min": 0.1783739999999625
+    },
+    "mount_ms": {
+     "max": 60.420209,
+     "median": 57.351625,
+     "min": 51.088459
+    },
+    "over_budget": {
+     "max": 0,
+     "median": 0,
+     "min": 0
+    },
+    "paint_cpu_p50": {
+     "max": 0.2250829999999837,
+     "median": 0.17220899999995254,
+     "min": 0.17108400000000756
+    },
+    "paint_cpu_p99": {
+     "max": 0.748958000000016,
+     "median": 0.663125000000008,
+     "min": 0.5041249999999877
+    },
+    "text_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "text_cpu_p99": {
+     "max": 0.055625999999278974,
+     "median": 0.039792000000261396,
+     "min": 0.03962400000023081
+    },
+    "view_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "view_cpu_p99": {
+     "max": 0.45775000000003274,
+     "median": 0.33862400000003845,
+     "min": 0.3240000000000123
+    }
+   },
+   "why": {
+    "growth": 45,
+    "input": 3,
+    "tracks": 239,
+    "update": 11
+   }
+  },
+  "scroll": {
+   "commit_why": {
+    "dirty": 2,
+    "input": 152,
+    "instant": 20,
+    "layout": 34,
+    "virtual": 6
+   },
+   "pixels": {
+    "frames_drawn": 570,
+    "frames_visible": 559,
+    "frames_wasted": 11,
+    "visible_undrawn": 0,
+    "wasted_why": {
+     "input": 2,
+     "scroll": 9
+    }
+   },
+   "runs": [
+    {
+     "commit_why": {
+      "dirty": 2,
+      "input": 152,
+      "instant": 20,
+      "layout": 34,
+      "virtual": 6
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.8829160000000229,
+      "cpu_max": 1.5471250000000083,
+      "cpu_mean": 0.5629759456140321,
+      "cpu_p50": 0.3771670000000995,
+      "cpu_p99": 1.3843329999999696,
+      "encode_ms_p50": 0.05729099999999998,
+      "encode_ms_p99": 0.1835420000000001,
+      "frames_drawn": 570,
+      "frames_total": 660,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.22529199999985394,
+      "mount_ms": 63.2285,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.18687499999987267,
+      "paint_cpu_p99": 0.3371669999999085,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.13341800000011972,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.28570799999999963
+     },
+     "why": {
+      "?": 1,
+      "input": 159,
+      "scroll": 564,
+      "tracks": 317,
+      "update": 20,
+      "virtual-fill": 6
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 2,
+      "input": 152,
+      "instant": 20,
+      "layout": 34,
+      "virtual": 6
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.7587080000000697,
+      "cpu_max": 1.5970409999999902,
+      "cpu_mean": 0.4957199701754363,
+      "cpu_p50": 0.32770799999991596,
+      "cpu_p99": 1.2290419999999358,
+      "encode_ms_p50": 0.04670799999999997,
+      "encode_ms_p99": 0.15799999999999992,
+      "frames_drawn": 570,
+      "frames_total": 660,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.18629199999998036,
+      "mount_ms": 60.14420799999999,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.16354200000000674,
+      "paint_cpu_p99": 0.30379199999993034,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.11708199999998214,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.26345900000001166
+     },
+     "why": {
+      "?": 1,
+      "input": 159,
+      "scroll": 564,
+      "tracks": 317,
+      "update": 20,
+      "virtual-fill": 6
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 2,
+      "input": 152,
+      "instant": 20,
+      "layout": 34,
+      "virtual": 6
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.7651670000000195,
+      "cpu_max": 1.4725420000000042,
+      "cpu_mean": 0.4847052403508835,
+      "cpu_p50": 0.3122920000000704,
+      "cpu_p99": 1.2590839999999162,
+      "encode_ms_p50": 0.044917000000000096,
+      "encode_ms_p99": 0.15437500000000004,
+      "frames_drawn": 570,
+      "frames_total": 660,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.19241699999997763,
+      "mount_ms": 58.443584,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.15862499999991542,
+      "paint_cpu_p99": 0.2964590000001408,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.11912700000027598,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.25508300000001327
+     },
+     "why": {
+      "?": 1,
+      "input": 159,
+      "scroll": 564,
+      "tracks": 317,
+      "update": 20,
+      "virtual-fill": 6
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 2,
+      "input": 152,
+      "instant": 20,
+      "layout": 34,
+      "virtual": 6
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.730666000000042,
+      "cpu_max": 1.4366250000000065,
+      "cpu_mean": 0.45534214210526786,
+      "cpu_p50": 0.29016599999999926,
+      "cpu_p99": 1.1634159999999838,
+      "encode_ms_p50": 0.039750000000000035,
+      "encode_ms_p99": 0.16545900000000002,
+      "frames_drawn": 570,
+      "frames_total": 660,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.20945800000004056,
+      "mount_ms": 57.481750000000005,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.15137499999991633,
+      "paint_cpu_p99": 0.28387500000008004,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.11970799999960491,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.24875000000002956
+     },
+     "why": {
+      "?": 1,
+      "input": 159,
+      "scroll": 564,
+      "tracks": 317,
+      "update": 20,
+      "virtual-fill": 6
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 2,
+      "input": 152,
+      "instant": 20,
+      "layout": 34,
+      "virtual": 6
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.6999999999999318,
+      "cpu_max": 1.3486669999999776,
+      "cpu_mean": 0.4499526087719274,
+      "cpu_p50": 0.2923749999999927,
+      "cpu_p99": 1.1257499999999254,
+      "encode_ms_p50": 0.03879099999999999,
+      "encode_ms_p99": 0.14479099999999967,
+      "frames_drawn": 570,
+      "frames_total": 660,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.19166599999994105,
+      "mount_ms": 56.8715,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.1538749999999709,
+      "paint_cpu_p99": 0.28737499999999727,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.11408300000016425,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.2547079999999369
+     },
+     "why": {
+      "?": 1,
+      "input": 159,
+      "scroll": 564,
+      "tracks": 317,
+      "update": 20,
+      "virtual-fill": 6
+     }
+    }
+   ],
+   "summary": {
+    "commit_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "commit_cpu_p99": {
+     "max": 0.8829160000000229,
+     "median": 0.7587080000000697,
+     "min": 0.6999999999999318
+    },
+    "cpu_max": {
+     "max": 1.5970409999999902,
+     "median": 1.4725420000000042,
+     "min": 1.3486669999999776
+    },
+    "cpu_mean": {
+     "max": 0.5629759456140321,
+     "median": 0.4847052403508835,
+     "min": 0.4499526087719274
+    },
+    "cpu_p50": {
+     "max": 0.3771670000000995,
+     "median": 0.3122920000000704,
+     "min": 0.29016599999999926
+    },
+    "cpu_p99": {
+     "max": 1.3843329999999696,
+     "median": 1.2290419999999358,
+     "min": 1.1257499999999254
+    },
+    "encode_ms_p50": {
+     "max": 0.05729099999999998,
+     "median": 0.044917000000000096,
+     "min": 0.03879099999999999
+    },
+    "encode_ms_p99": {
+     "max": 0.1835420000000001,
+     "median": 0.15799999999999992,
+     "min": 0.14479099999999967
+    },
+    "frames_drawn": {
+     "max": 570,
+     "median": 570,
+     "min": 570
+    },
+    "frames_total": {
+     "max": 660,
+     "median": 660,
+     "min": 660
+    },
+    "layout_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "layout_cpu_p99": {
+     "max": 0.22529199999985394,
+     "median": 0.19241699999997763,
+     "min": 0.18629199999998036
+    },
+    "mount_ms": {
+     "max": 63.2285,
+     "median": 58.443584,
+     "min": 56.8715
+    },
+    "over_budget": {
+     "max": 0,
+     "median": 0,
+     "min": 0
+    },
+    "paint_cpu_p50": {
+     "max": 0.18687499999987267,
+     "median": 0.15862499999991542,
+     "min": 0.15137499999991633
+    },
+    "paint_cpu_p99": {
+     "max": 0.3371669999999085,
+     "median": 0.2964590000001408,
+     "min": 0.28387500000008004
+    },
+    "text_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "text_cpu_p99": {
+     "max": 0.13341800000011972,
+     "median": 0.11912700000027598,
+     "min": 0.11408300000016425
+    },
+    "view_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "view_cpu_p99": {
+     "max": 0.28570799999999963,
+     "median": 0.25508300000001327,
+     "min": 0.24875000000002956
+    }
+   },
+   "why": {
+    "?": 1,
+    "input": 159,
+    "scroll": 564,
+    "tracks": 317,
+    "update": 20,
+    "virtual-fill": 6
+   }
+  },
+  "shelf": {
+   "commit_why": {
+    "dirty": 1,
+    "instant": 9,
+    "layout": 3,
+    "poll": 6
+   },
+   "pixels": {
+    "frames_drawn": 9,
+    "frames_visible": 8,
+    "frames_wasted": 1,
+    "visible_undrawn": 0,
+    "wasted_why": {
+     "update": 1
+    }
+   },
+   "runs": [
+    {
+     "commit_why": {
+      "dirty": 1,
+      "instant": 9,
+      "layout": 3,
+      "poll": 6
+     },
+     "timing": {
+      "commit_cpu_p50": 0.6183339999999902,
+      "commit_cpu_p99": 0.670708999999988,
+      "cpu_max": 1.1274999999999977,
+      "cpu_mean": 0.9667914444444408,
+      "cpu_p50": 1.022625000000005,
+      "cpu_p99": 1.1274999999999977,
+      "encode_ms_p50": 0.05220800000000003,
+      "encode_ms_p99": 0.13733399999999985,
+      "frames_drawn": 9,
+      "frames_total": 480,
+      "layout_cpu_p50": 0.06345899999996618,
+      "layout_cpu_p99": 0.10262499999998909,
+      "mount_ms": 60.298542000000005,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.25037500000001955,
+      "paint_cpu_p99": 0.2841669999999681,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.04158400000000029,
+      "view_cpu_p50": 0.20862499999998363,
+      "view_cpu_p99": 0.21879200000000765
+     },
+     "why": {
+      "update": 9
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "instant": 9,
+      "layout": 3,
+      "poll": 6
+     },
+     "timing": {
+      "commit_cpu_p50": 0.6131249999999682,
+      "commit_cpu_p99": 0.7010410000000036,
+      "cpu_max": 1.1810840000000127,
+      "cpu_mean": 0.9684584444444589,
+      "cpu_p50": 1.0112920000000258,
+      "cpu_p99": 1.1810840000000127,
+      "encode_ms_p50": 0.053749999999999964,
+      "encode_ms_p99": 0.13650000000000007,
+      "frames_drawn": 9,
+      "frames_total": 480,
+      "layout_cpu_p50": 0.06412499999999,
+      "layout_cpu_p99": 0.10204199999998309,
+      "mount_ms": 59.839166,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.2410419999999931,
+      "paint_cpu_p99": 0.28662499999995816,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0438750000000141,
+      "view_cpu_p50": 0.2066660000000411,
+      "view_cpu_p99": 0.2268749999999784
+     },
+     "why": {
+      "update": 9
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "instant": 9,
+      "layout": 3,
+      "poll": 6
+     },
+     "timing": {
+      "commit_cpu_p50": 0.5999580000000151,
+      "commit_cpu_p99": 0.6622079999999926,
+      "cpu_max": 1.1006670000000014,
+      "cpu_mean": 0.9334863333333376,
+      "cpu_p50": 0.9870000000000232,
+      "cpu_p99": 1.1006670000000014,
+      "encode_ms_p50": 0.05558299999999983,
+      "encode_ms_p99": 0.1329579999999998,
+      "frames_drawn": 9,
+      "frames_total": 480,
+      "layout_cpu_p50": 0.06204200000001947,
+      "layout_cpu_p99": 0.09391700000003311,
+      "mount_ms": 59.21508300000001,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.2395829999999819,
+      "paint_cpu_p99": 0.2839159999999765,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.04375000000001705,
+      "view_cpu_p50": 0.2016659999999888,
+      "view_cpu_p99": 0.21212500000001455
+     },
+     "why": {
+      "update": 9
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "instant": 9,
+      "layout": 3,
+      "poll": 6
+     },
+     "timing": {
+      "commit_cpu_p50": 0.605125000000001,
+      "commit_cpu_p99": 0.6503330000000176,
+      "cpu_max": 1.1158750000000026,
+      "cpu_mean": 0.9391944444444564,
+      "cpu_p50": 0.9784170000000358,
+      "cpu_p99": 1.1158750000000026,
+      "encode_ms_p50": 0.049875,
+      "encode_ms_p99": 0.13870900000000008,
+      "frames_drawn": 9,
+      "frames_total": 480,
+      "layout_cpu_p50": 0.06512500000002319,
+      "layout_cpu_p99": 0.09466699999995853,
+      "mount_ms": 57.558915999999996,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.24258399999996527,
+      "paint_cpu_p99": 0.2817919999999958,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.041249999999990905,
+      "view_cpu_p50": 0.20483300000000781,
+      "view_cpu_p99": 0.21687499999995907
+     },
+     "why": {
+      "update": 9
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "instant": 9,
+      "layout": 3,
+      "poll": 6
+     },
+     "timing": {
+      "commit_cpu_p50": 0.6157499999999914,
+      "commit_cpu_p99": 0.6376250000000141,
+      "cpu_max": 1.1005419999999617,
+      "cpu_mean": 0.9638565555555343,
+      "cpu_p50": 1.0087919999999713,
+      "cpu_p99": 1.1005419999999617,
+      "encode_ms_p50": 0.053875000000000006,
+      "encode_ms_p99": 0.13829199999999997,
+      "frames_drawn": 9,
+      "frames_total": 480,
+      "layout_cpu_p50": 0.06391600000000608,
+      "layout_cpu_p99": 0.09608399999990525,
+      "mount_ms": 56.507208,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.24158400000001734,
+      "paint_cpu_p99": 0.2999999999999545,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.039042000000023336,
+      "view_cpu_p50": 0.20216599999997698,
+      "view_cpu_p99": 0.2097919999999931
+     },
+     "why": {
+      "update": 9
+     }
+    }
+   ],
+   "summary": {
+    "commit_cpu_p50": {
+     "max": 0.6183339999999902,
+     "median": 0.6131249999999682,
+     "min": 0.5999580000000151
+    },
+    "commit_cpu_p99": {
+     "max": 0.7010410000000036,
+     "median": 0.6622079999999926,
+     "min": 0.6376250000000141
+    },
+    "cpu_max": {
+     "max": 1.1810840000000127,
+     "median": 1.1158750000000026,
+     "min": 1.1005419999999617
+    },
+    "cpu_mean": {
+     "max": 0.9684584444444589,
+     "median": 0.9638565555555343,
+     "min": 0.9334863333333376
+    },
+    "cpu_p50": {
+     "max": 1.022625000000005,
+     "median": 1.0087919999999713,
+     "min": 0.9784170000000358
+    },
+    "cpu_p99": {
+     "max": 1.1810840000000127,
+     "median": 1.1158750000000026,
+     "min": 1.1005419999999617
+    },
+    "encode_ms_p50": {
+     "max": 0.05558299999999983,
+     "median": 0.053749999999999964,
+     "min": 0.049875
+    },
+    "encode_ms_p99": {
+     "max": 0.13870900000000008,
+     "median": 0.13733399999999985,
+     "min": 0.1329579999999998
+    },
+    "frames_drawn": {
+     "max": 9,
+     "median": 9,
+     "min": 9
+    },
+    "frames_total": {
+     "max": 480,
+     "median": 480,
+     "min": 480
+    },
+    "layout_cpu_p50": {
+     "max": 0.06512500000002319,
+     "median": 0.06391600000000608,
+     "min": 0.06204200000001947
+    },
+    "layout_cpu_p99": {
+     "max": 0.10262499999998909,
+     "median": 0.09608399999990525,
+     "min": 0.09391700000003311
+    },
+    "mount_ms": {
+     "max": 60.298542000000005,
+     "median": 59.21508300000001,
+     "min": 56.507208
+    },
+    "over_budget": {
+     "max": 0,
+     "median": 0,
+     "min": 0
+    },
+    "paint_cpu_p50": {
+     "max": 0.25037500000001955,
+     "median": 0.24158400000001734,
+     "min": 0.2395829999999819
+    },
+    "paint_cpu_p99": {
+     "max": 0.2999999999999545,
+     "median": 0.2841669999999681,
+     "min": 0.2817919999999958
+    },
+    "text_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "text_cpu_p99": {
+     "max": 0.0438750000000141,
+     "median": 0.04158400000000029,
+     "min": 0.039042000000023336
+    },
+    "view_cpu_p50": {
+     "max": 0.20862499999998363,
+     "median": 0.20483300000000781,
+     "min": 0.2016659999999888
+    },
+    "view_cpu_p99": {
+     "max": 0.2268749999999784,
+     "median": 0.21687499999995907,
+     "min": 0.2097919999999931
+    }
+   },
+   "why": {
+    "update": 9
+   }
+  },
+  "sidebar": {
+   "commit_why": {
+    "dirty": 9,
+    "input": 4,
+    "instant": 13,
+    "layout": 9
+   },
+   "pixels": {
+    "frames_drawn": 277,
+    "frames_visible": 225,
+    "frames_wasted": 52,
+    "visible_undrawn": 0,
+    "wasted_why": {
+     "tracks": 48,
+     "update": 4
+    }
+   },
+   "runs": [
+    {
+     "commit_why": {
+      "dirty": 9,
+      "input": 4,
+      "instant": 13,
+      "layout": 9
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.9002080000000205,
+      "cpu_max": 2.0681249999999807,
+      "cpu_mean": 0.46882611552347236,
+      "cpu_p50": 0.4245000000000232,
+      "cpu_p99": 1.481540999999993,
+      "encode_ms_p50": 0.05025000000000002,
+      "encode_ms_p99": 0.13087499999999996,
+      "frames_drawn": 277,
+      "frames_total": 420,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.03775099999995746,
+      "mount_ms": 56.20275,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.24862499999994725,
+      "paint_cpu_p99": 0.47512499999999136,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.3207909999999856
+     },
+     "why": {
+      "input": 4,
+      "tracks": 268,
+      "update": 13
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 9,
+      "input": 4,
+      "instant": 13,
+      "layout": 9
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.9795420000000377,
+      "cpu_max": 2.5577500000000555,
+      "cpu_mean": 0.5808971263537902,
+      "cpu_p50": 0.37458300000002964,
+      "cpu_p99": 1.5215000000000032,
+      "encode_ms_p50": 0.04183300000000001,
+      "encode_ms_p99": 0.14729199999999998,
+      "frames_drawn": 277,
+      "frames_total": 420,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.037249999999971806,
+      "mount_ms": 55.75300000000001,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.23716699999999946,
+      "paint_cpu_p99": 0.9087909999998374,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.35820799999999053
+     },
+     "why": {
+      "input": 4,
+      "tracks": 268,
+      "update": 13
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 9,
+      "input": 4,
+      "instant": 13,
+      "layout": 9
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 2.0443749999999454,
+      "cpu_max": 3.9774590000000103,
+      "cpu_mean": 1.2543083790613843,
+      "cpu_p50": 1.1834579999999733,
+      "cpu_p99": 3.259040999999968,
+      "encode_ms_p50": 0.12624999999999997,
+      "encode_ms_p99": 0.21333400000000013,
+      "frames_drawn": 277,
+      "frames_total": 420,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.06995900000015354,
+      "mount_ms": 82.917792,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.6874160000002121,
+      "paint_cpu_p99": 0.9663749999999709,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.6745409999998628
+     },
+     "why": {
+      "input": 4,
+      "tracks": 268,
+      "update": 13
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 9,
+      "input": 4,
+      "instant": 13,
+      "layout": 9
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 2.132708999999977,
+      "cpu_max": 4.05499999999995,
+      "cpu_mean": 1.1921421444043407,
+      "cpu_p50": 1.1352909999999952,
+      "cpu_p99": 3.3005000000000564,
+      "encode_ms_p50": 0.11883299999999997,
+      "encode_ms_p99": 0.17762499999999992,
+      "frames_drawn": 277,
+      "frames_total": 420,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.06804100000010749,
+      "mount_ms": 72.435167,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.6553330000001552,
+      "paint_cpu_p99": 1.0499580000000037,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.69012500000008
+     },
+     "why": {
+      "input": 4,
+      "tracks": 268,
+      "update": 13
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 9,
+      "input": 4,
+      "instant": 13,
+      "layout": 9
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 2.194291999999905,
+      "cpu_max": 4.599874999999997,
+      "cpu_mean": 1.1821418664259993,
+      "cpu_p50": 1.1293749999999818,
+      "cpu_p99": 3.5949170000000095,
+      "encode_ms_p50": 0.11720799999999998,
+      "encode_ms_p99": 0.2723749999999999,
+      "frames_drawn": 277,
+      "frames_total": 420,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.07729100000005928,
+      "mount_ms": 75.199708,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.6713330000000042,
+      "paint_cpu_p99": 0.9869169999999485,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.7409170000000813
+     },
+     "why": {
+      "input": 4,
+      "tracks": 268,
+      "update": 13
+     }
+    }
+   ],
+   "summary": {
+    "commit_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "commit_cpu_p99": {
+     "max": 2.194291999999905,
+     "median": 2.0443749999999454,
+     "min": 0.9002080000000205
+    },
+    "cpu_max": {
+     "max": 4.599874999999997,
+     "median": 3.9774590000000103,
+     "min": 2.0681249999999807
+    },
+    "cpu_mean": {
+     "max": 1.2543083790613843,
+     "median": 1.1821418664259993,
+     "min": 0.46882611552347236
+    },
+    "cpu_p50": {
+     "max": 1.1834579999999733,
+     "median": 1.1293749999999818,
+     "min": 0.37458300000002964
+    },
+    "cpu_p99": {
+     "max": 3.5949170000000095,
+     "median": 3.259040999999968,
+     "min": 1.481540999999993
+    },
+    "encode_ms_p50": {
+     "max": 0.12624999999999997,
+     "median": 0.11720799999999998,
+     "min": 0.04183300000000001
+    },
+    "encode_ms_p99": {
+     "max": 0.2723749999999999,
+     "median": 0.17762499999999992,
+     "min": 0.13087499999999996
+    },
+    "frames_drawn": {
+     "max": 277,
+     "median": 277,
+     "min": 277
+    },
+    "frames_total": {
+     "max": 420,
+     "median": 420,
+     "min": 420
+    },
+    "layout_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "layout_cpu_p99": {
+     "max": 0.07729100000005928,
+     "median": 0.06804100000010749,
+     "min": 0.037249999999971806
+    },
+    "mount_ms": {
+     "max": 82.917792,
+     "median": 72.435167,
+     "min": 55.75300000000001
+    },
+    "over_budget": {
+     "max": 0,
+     "median": 0,
+     "min": 0
+    },
+    "paint_cpu_p50": {
+     "max": 0.6874160000002121,
+     "median": 0.6553330000001552,
+     "min": 0.23716699999999946
+    },
+    "paint_cpu_p99": {
+     "max": 1.0499580000000037,
+     "median": 0.9663749999999709,
+     "min": 0.47512499999999136
+    },
+    "text_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "text_cpu_p99": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "view_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "view_cpu_p99": {
+     "max": 0.7409170000000813,
+     "median": 0.6745409999998628,
+     "min": 0.3207909999999856
+    }
+   },
+   "why": {
+    "input": 4,
+    "tracks": 268,
+    "update": 13
+   }
+  },
+  "stream": {
+   "commit_why": {
+    "dirty": 1,
+    "instant": 168,
+    "layout": 3,
+    "poll": 165
+   },
+   "pixels": {
+    "frames_drawn": 170,
+    "frames_visible": 170,
+    "frames_wasted": 0,
+    "visible_undrawn": 464,
+    "wasted_why": {}
+   },
+   "runs": [
+    {
+     "commit_why": {
+      "dirty": 1,
+      "instant": 171,
+      "layout": 3,
+      "poll": 168
+     },
+     "timing": {
+      "commit_cpu_p50": 0.6934999999999718,
+      "commit_cpu_p99": 0.9327499999999418,
+      "cpu_max": 1.7941670000000158,
+      "cpu_mean": 1.1227636491228177,
+      "cpu_p50": 1.145167000000015,
+      "cpu_p99": 1.5889589999999885,
+      "encode_ms_p50": 0.052333000000000074,
+      "encode_ms_p99": 0.19625000000000004,
+      "frames_drawn": 171,
+      "frames_total": 900,
+      "layout_cpu_p50": 0.12462500000003729,
+      "layout_cpu_p99": 0.23983399999997346,
+      "mount_ms": 52.426583,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.26662499999997635,
+      "paint_cpu_p99": 0.406833000000006,
+      "text_cpu_p50": 0.026250000000118234,
+      "text_cpu_p99": 0.18366900000012265,
+      "view_cpu_p50": 0.24108299999988958,
+      "view_cpu_p99": 0.34674999999992906
+     },
+     "why": {
+      "update": 171
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "instant": 172,
+      "layout": 3,
+      "poll": 170
+     },
+     "timing": {
+      "commit_cpu_p50": 0.6512500000001182,
+      "commit_cpu_p99": 1.1005420000001322,
+      "cpu_max": 2.0880409999999756,
+      "cpu_mean": 1.0925363313953456,
+      "cpu_p50": 1.0739999999998417,
+      "cpu_p99": 1.6047080000000733,
+      "encode_ms_p50": 0.052167000000000074,
+      "encode_ms_p99": 0.16900000000000026,
+      "frames_drawn": 172,
+      "frames_total": 900,
+      "layout_cpu_p50": 0.10433399999999438,
+      "layout_cpu_p99": 0.3145830000000842,
+      "mount_ms": 53.19712499999999,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.25716700000009496,
+      "paint_cpu_p99": 0.3858749999999418,
+      "text_cpu_p50": 0.024749999999812644,
+      "text_cpu_p99": 0.16766599999994014,
+      "view_cpu_p50": 0.23208299999998871,
+      "view_cpu_p99": 0.31816700000013043
+     },
+     "why": {
+      "update": 172
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "instant": 168,
+      "layout": 3,
+      "poll": 165
+     },
+     "timing": {
+      "commit_cpu_p50": 0.6696249999999964,
+      "commit_cpu_p99": 0.9149170000000595,
+      "cpu_max": 1.5765409999999065,
+      "cpu_mean": 1.0824336011904723,
+      "cpu_p50": 1.086667000000034,
+      "cpu_p99": 1.50387499999988,
+      "encode_ms_p50": 0.05166700000000002,
+      "encode_ms_p99": 0.16175000000000006,
+      "frames_drawn": 168,
+      "frames_total": 900,
+      "layout_cpu_p50": 0.11866699999995944,
+      "layout_cpu_p99": 0.25195800000005875,
+      "mount_ms": 52.636958,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.24766600000009475,
+      "paint_cpu_p99": 0.3841669999999908,
+      "text_cpu_p50": 0.02508299999999508,
+      "text_cpu_p99": 0.1682920000000081,
+      "view_cpu_p50": 0.23537499999997635,
+      "view_cpu_p99": 0.3330829999999878
+     },
+     "why": {
+      "update": 168
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "instant": 167,
+      "layout": 3,
+      "poll": 165
+     },
+     "timing": {
+      "commit_cpu_p50": 0.6547500000000355,
+      "commit_cpu_p99": 0.9388749999998254,
+      "cpu_max": 1.5820830000000115,
+      "cpu_mean": 1.0801746826347232,
+      "cpu_p50": 1.087541999999985,
+      "cpu_p99": 1.572582999999895,
+      "encode_ms_p50": 0.05062500000000003,
+      "encode_ms_p99": 0.22158300000000009,
+      "frames_drawn": 167,
+      "frames_total": 900,
+      "layout_cpu_p50": 0.12233299999996916,
+      "layout_cpu_p99": 0.24029200000001083,
+      "mount_ms": 52.369208,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.25225000000000364,
+      "paint_cpu_p99": 0.3896670000000313,
+      "text_cpu_p50": 0.028250000000014097,
+      "text_cpu_p99": 0.18145900000001802,
+      "view_cpu_p50": 0.23358299999995324,
+      "view_cpu_p99": 0.3160410000000411
+     },
+     "why": {
+      "update": 167
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 1,
+      "instant": 167,
+      "layout": 3,
+      "poll": 164
+     },
+     "timing": {
+      "commit_cpu_p50": 0.6652080000000069,
+      "commit_cpu_p99": 0.9145829999999933,
+      "cpu_max": 1.612333000000035,
+      "cpu_mean": 1.0730097365269518,
+      "cpu_p50": 1.098459000000048,
+      "cpu_p99": 1.5162499999999,
+      "encode_ms_p50": 0.050834000000000046,
+      "encode_ms_p99": 0.17579199999999995,
+      "frames_drawn": 167,
+      "frames_total": 900,
+      "layout_cpu_p50": 0.11808299999995597,
+      "layout_cpu_p99": 0.24362500000006548,
+      "mount_ms": 53.30916599999999,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.25158299999998235,
+      "paint_cpu_p99": 0.37591600000018843,
+      "text_cpu_p50": 0.027250000000094587,
+      "text_cpu_p99": 0.17187599999999748,
+      "view_cpu_p50": 0.23708299999998417,
+      "view_cpu_p99": 0.3024169999998776
+     },
+     "why": {
+      "update": 167
+     }
+    }
+   ],
+   "summary": {
+    "commit_cpu_p50": {
+     "max": 0.6934999999999718,
+     "median": 0.6652080000000069,
+     "min": 0.6512500000001182
+    },
+    "commit_cpu_p99": {
+     "max": 1.1005420000001322,
+     "median": 0.9327499999999418,
+     "min": 0.9145829999999933
+    },
+    "cpu_max": {
+     "max": 2.0880409999999756,
+     "median": 1.612333000000035,
+     "min": 1.5765409999999065
+    },
+    "cpu_mean": {
+     "max": 1.1227636491228177,
+     "median": 1.0824336011904723,
+     "min": 1.0730097365269518
+    },
+    "cpu_p50": {
+     "max": 1.145167000000015,
+     "median": 1.087541999999985,
+     "min": 1.0739999999998417
+    },
+    "cpu_p99": {
+     "max": 1.6047080000000733,
+     "median": 1.572582999999895,
+     "min": 1.50387499999988
+    },
+    "encode_ms_p50": {
+     "max": 0.052333000000000074,
+     "median": 0.05166700000000002,
+     "min": 0.05062500000000003
+    },
+    "encode_ms_p99": {
+     "max": 0.22158300000000009,
+     "median": 0.17579199999999995,
+     "min": 0.16175000000000006
+    },
+    "frames_drawn": {
+     "max": 172,
+     "median": 168,
+     "min": 167
+    },
+    "frames_total": {
+     "max": 900,
+     "median": 900,
+     "min": 900
+    },
+    "layout_cpu_p50": {
+     "max": 0.12462500000003729,
+     "median": 0.11866699999995944,
+     "min": 0.10433399999999438
+    },
+    "layout_cpu_p99": {
+     "max": 0.3145830000000842,
+     "median": 0.24362500000006548,
+     "min": 0.23983399999997346
+    },
+    "mount_ms": {
+     "max": 53.30916599999999,
+     "median": 52.636958,
+     "min": 52.369208
+    },
+    "over_budget": {
+     "max": 0,
+     "median": 0,
+     "min": 0
+    },
+    "paint_cpu_p50": {
+     "max": 0.26662499999997635,
+     "median": 0.25225000000000364,
+     "min": 0.24766600000009475
+    },
+    "paint_cpu_p99": {
+     "max": 0.406833000000006,
+     "median": 0.3858749999999418,
+     "min": 0.37591600000018843
+    },
+    "text_cpu_p50": {
+     "max": 0.028250000000014097,
+     "median": 0.026250000000118234,
+     "min": 0.024749999999812644
+    },
+    "text_cpu_p99": {
+     "max": 0.18366900000012265,
+     "median": 0.17187599999999748,
+     "min": 0.16766599999994014
+    },
+    "view_cpu_p50": {
+     "max": 0.24108299999988958,
+     "median": 0.23537499999997635,
+     "min": 0.23208299999998871
+    },
+    "view_cpu_p99": {
+     "max": 0.34674999999992906,
+     "median": 0.31816700000013043,
+     "min": 0.3024169999998776
+    }
+   },
+   "why": {
+    "update": 168
+   }
+  },
+  "switch": {
+   "commit_why": {
+    "dirty": 9,
+    "input": 8,
+    "instant": 10,
+    "layout": 10,
+    "poll": 4
+   },
+   "pixels": {
+    "frames_drawn": 481,
+    "frames_visible": 389,
+    "frames_wasted": 92,
+    "visible_undrawn": 0,
+    "wasted_why": {
+     "tracks": 92,
+     "update": 1
+    }
+   },
+   "runs": [
+    {
+     "commit_why": {
+      "dirty": 9,
+      "input": 8,
+      "instant": 10,
+      "layout": 10,
+      "poll": 4
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.7853749999999309,
+      "cpu_max": 2.9490830000000017,
+      "cpu_mean": 0.38532147817047885,
+      "cpu_p50": 0.34900000000016007,
+      "cpu_p99": 1.2985419999999976,
+      "encode_ms_p50": 0.03816699999999995,
+      "encode_ms_p99": 0.11233300000000002,
+      "frames_drawn": 481,
+      "frames_total": 516,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.11399999999991905,
+      "mount_ms": 54.353875,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.2234170000000404,
+      "paint_cpu_p99": 0.28899999999998727,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.25033299999995506
+     },
+     "why": {
+      "input": 8,
+      "tracks": 479,
+      "update": 10
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 9,
+      "input": 8,
+      "instant": 10,
+      "layout": 10,
+      "poll": 4
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.7988330000000587,
+      "cpu_max": 2.7766249999999957,
+      "cpu_mean": 0.38258220790021,
+      "cpu_p50": 0.3446250000000646,
+      "cpu_p99": 1.2852920000000267,
+      "encode_ms_p50": 0.037167000000000006,
+      "encode_ms_p99": 0.11387500000000006,
+      "frames_drawn": 481,
+      "frames_total": 516,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.11554200000000492,
+      "mount_ms": 53.144792,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.2207499999999527,
+      "paint_cpu_p99": 0.30033400000002075,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.24774999999999636
+     },
+     "why": {
+      "input": 8,
+      "tracks": 479,
+      "update": 10
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 9,
+      "input": 8,
+      "instant": 10,
+      "layout": 10,
+      "poll": 4
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.7965000000000089,
+      "cpu_max": 2.817542000000003,
+      "cpu_mean": 0.391586871101872,
+      "cpu_p50": 0.3541659999999638,
+      "cpu_p99": 1.3297919999999976,
+      "encode_ms_p50": 0.03958399999999995,
+      "encode_ms_p99": 0.1174170000000001,
+      "frames_drawn": 481,
+      "frames_total": 516,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.11479099999996834,
+      "mount_ms": 57.133125,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.22633300000006784,
+      "paint_cpu_p99": 0.2810000000000059,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.25824999999997544
+     },
+     "why": {
+      "input": 8,
+      "tracks": 479,
+      "update": 10
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 9,
+      "input": 8,
+      "instant": 10,
+      "layout": 10,
+      "poll": 4
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.7885420000000067,
+      "cpu_max": 2.857875000000007,
+      "cpu_mean": 0.39383222453222344,
+      "cpu_p50": 0.35762499999998454,
+      "cpu_p99": 1.256334000000038,
+      "encode_ms_p50": 0.03966700000000001,
+      "encode_ms_p99": 0.12133300000000002,
+      "frames_drawn": 481,
+      "frames_total": 516,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.11445799999989958,
+      "mount_ms": 56.210083,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.22687499999994998,
+      "paint_cpu_p99": 0.29508400000008805,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.25862499999993815
+     },
+     "why": {
+      "input": 8,
+      "tracks": 479,
+      "update": 10
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 9,
+      "input": 8,
+      "instant": 10,
+      "layout": 10,
+      "poll": 4
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 0.8114579999999876,
+      "cpu_max": 2.857083999999986,
+      "cpu_mean": 0.4011901226611214,
+      "cpu_p50": 0.3569159999999556,
+      "cpu_p99": 1.3927079999998568,
+      "encode_ms_p50": 0.040667000000000064,
+      "encode_ms_p99": 0.1344590000000001,
+      "frames_drawn": 481,
+      "frames_total": 516,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.12970799999993687,
+      "mount_ms": 54.126875,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.2259999999999991,
+      "paint_cpu_p99": 0.32654199999998923,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 0.24979199999995672
+     },
+     "why": {
+      "input": 8,
+      "tracks": 479,
+      "update": 10
+     }
+    }
+   ],
+   "summary": {
+    "commit_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "commit_cpu_p99": {
+     "max": 0.8114579999999876,
+     "median": 0.7965000000000089,
+     "min": 0.7853749999999309
+    },
+    "cpu_max": {
+     "max": 2.9490830000000017,
+     "median": 2.857083999999986,
+     "min": 2.7766249999999957
+    },
+    "cpu_mean": {
+     "max": 0.4011901226611214,
+     "median": 0.391586871101872,
+     "min": 0.38258220790021
+    },
+    "cpu_p50": {
+     "max": 0.35762499999998454,
+     "median": 0.3541659999999638,
+     "min": 0.3446250000000646
+    },
+    "cpu_p99": {
+     "max": 1.3927079999998568,
+     "median": 1.2985419999999976,
+     "min": 1.256334000000038
+    },
+    "encode_ms_p50": {
+     "max": 0.040667000000000064,
+     "median": 0.03958399999999995,
+     "min": 0.037167000000000006
+    },
+    "encode_ms_p99": {
+     "max": 0.1344590000000001,
+     "median": 0.1174170000000001,
+     "min": 0.11233300000000002
+    },
+    "frames_drawn": {
+     "max": 481,
+     "median": 481,
+     "min": 481
+    },
+    "frames_total": {
+     "max": 516,
+     "median": 516,
+     "min": 516
+    },
+    "layout_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "layout_cpu_p99": {
+     "max": 0.12970799999993687,
+     "median": 0.11479099999996834,
+     "min": 0.11399999999991905
+    },
+    "mount_ms": {
+     "max": 57.133125,
+     "median": 54.353875,
+     "min": 53.144792
+    },
+    "over_budget": {
+     "max": 0,
+     "median": 0,
+     "min": 0
+    },
+    "paint_cpu_p50": {
+     "max": 0.22687499999994998,
+     "median": 0.2259999999999991,
+     "min": 0.2207499999999527
+    },
+    "paint_cpu_p99": {
+     "max": 0.32654199999998923,
+     "median": 0.29508400000008805,
+     "min": 0.2810000000000059
+    },
+    "text_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "text_cpu_p99": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "view_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "view_cpu_p99": {
+     "max": 0.25862499999993815,
+     "median": 0.25033299999995506,
+     "min": 0.24774999999999636
+    }
+   },
+   "why": {
+    "input": 8,
+    "tracks": 479,
+    "update": 10
+   }
+  },
+  "tools": {
+   "commit_why": {
+    "dirty": 3,
+    "input": 170,
+    "instant": 1,
+    "layout": 11
+   },
+   "pixels": {
+    "frames_drawn": 410,
+    "frames_visible": 319,
+    "frames_wasted": 91,
+    "visible_undrawn": 0,
+    "wasted_why": {
+     "growth": 6,
+     "input": 57,
+     "scroll": 2,
+     "tracks": 33
+    }
+   },
+   "runs": [
+    {
+     "commit_why": {
+      "dirty": 3,
+      "input": 170,
+      "instant": 1,
+      "layout": 11
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 5.810707999999977,
+      "cpu_max": 23.218458,
+      "cpu_mean": 2.373261204878038,
+      "cpu_p50": 1.59637500000008,
+      "cpu_p99": 8.581500000000233,
+      "encode_ms_p50": 0.07191700000000023,
+      "encode_ms_p99": 0.21875,
+      "frames_drawn": 410,
+      "frames_total": 540,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.057709000000158994,
+      "mount_ms": 56.92225,
+      "over_budget": 8,
+      "paint_cpu_p50": 1.2264579999996386,
+      "paint_cpu_p99": 1.845082999999704,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 1.8009170000000267
+     },
+     "why": {
+      "growth": 75,
+      "input": 176,
+      "scroll": 231,
+      "tracks": 227,
+      "update": 1
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 3,
+      "input": 170,
+      "instant": 1,
+      "layout": 11
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 6.064833999999792,
+      "cpu_max": 22.117874999999998,
+      "cpu_mean": 2.518717387804872,
+      "cpu_p50": 1.775709000000461,
+      "cpu_p99": 8.773584000000028,
+      "encode_ms_p50": 0.06416599999999995,
+      "encode_ms_p99": 0.20216699999999999,
+      "frames_drawn": 410,
+      "frames_total": 540,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.05545899999970061,
+      "mount_ms": 59.55620799999999,
+      "over_budget": 13,
+      "paint_cpu_p50": 1.2934160000002066,
+      "paint_cpu_p99": 1.8405000000002474,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 1.8802080000000387
+     },
+     "why": {
+      "growth": 75,
+      "input": 176,
+      "scroll": 231,
+      "tracks": 227,
+      "update": 1
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 3,
+      "input": 170,
+      "instant": 1,
+      "layout": 11
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 14.177584000000024,
+      "cpu_max": 30.05487499999981,
+      "cpu_mean": 4.9641414780487905,
+      "cpu_p50": 2.559541999999965,
+      "cpu_p99": 20.936916999999994,
+      "encode_ms_p50": 0.1313329999999997,
+      "encode_ms_p99": 0.5325000000000024,
+      "frames_drawn": 410,
+      "frames_total": 540,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.130333999999948,
+      "mount_ms": 55.913292,
+      "over_budget": 78,
+      "paint_cpu_p50": 1.768540999999459,
+      "paint_cpu_p99": 5.244000000000597,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 4.062750000000051
+     },
+     "why": {
+      "growth": 75,
+      "input": 176,
+      "scroll": 231,
+      "tracks": 227,
+      "update": 1
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 3,
+      "input": 170,
+      "instant": 1,
+      "layout": 11
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 12.653708999999708,
+      "cpu_max": 42.311334000000016,
+      "cpu_mean": 3.4025078170731713,
+      "cpu_p50": 1.8757920000007289,
+      "cpu_p99": 19.860417000000325,
+      "encode_ms_p50": 0.0867500000000001,
+      "encode_ms_p99": 0.4400000000000004,
+      "frames_drawn": 410,
+      "frames_total": 540,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.09662500000013097,
+      "mount_ms": 73.502708,
+      "over_budget": 28,
+      "paint_cpu_p50": 1.4472909999994954,
+      "paint_cpu_p99": 4.927208000000064,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 3.5310420000000704
+     },
+     "why": {
+      "growth": 75,
+      "input": 176,
+      "scroll": 231,
+      "tracks": 227,
+      "update": 1
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 3,
+      "input": 170,
+      "instant": 1,
+      "layout": 11
+     },
+     "timing": {
+      "commit_cpu_p50": 0.0,
+      "commit_cpu_p99": 6.235749999999825,
+      "cpu_max": 24.603999999999985,
+      "cpu_mean": 2.590269417073179,
+      "cpu_p50": 1.6286250000002838,
+      "cpu_p99": 9.183665999999903,
+      "encode_ms_p50": 0.07424999999999993,
+      "encode_ms_p99": 0.22866699999999973,
+      "frames_drawn": 410,
+      "frames_total": 540,
+      "layout_cpu_p50": 0.0,
+      "layout_cpu_p99": 0.06475000000000364,
+      "mount_ms": 61.138458,
+      "over_budget": 12,
+      "paint_cpu_p50": 1.266208000000006,
+      "paint_cpu_p99": 1.8123749999999745,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0,
+      "view_cpu_p50": 0.0,
+      "view_cpu_p99": 1.9676669999998921
+     },
+     "why": {
+      "growth": 75,
+      "input": 176,
+      "scroll": 231,
+      "tracks": 227,
+      "update": 1
+     }
+    }
+   ],
+   "summary": {
+    "commit_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "commit_cpu_p99": {
+     "max": 14.177584000000024,
+     "median": 6.235749999999825,
+     "min": 5.810707999999977
+    },
+    "cpu_max": {
+     "max": 42.311334000000016,
+     "median": 24.603999999999985,
+     "min": 22.117874999999998
+    },
+    "cpu_mean": {
+     "max": 4.9641414780487905,
+     "median": 2.590269417073179,
+     "min": 2.373261204878038
+    },
+    "cpu_p50": {
+     "max": 2.559541999999965,
+     "median": 1.775709000000461,
+     "min": 1.59637500000008
+    },
+    "cpu_p99": {
+     "max": 20.936916999999994,
+     "median": 9.183665999999903,
+     "min": 8.581500000000233
+    },
+    "encode_ms_p50": {
+     "max": 0.1313329999999997,
+     "median": 0.07424999999999993,
+     "min": 0.06416599999999995
+    },
+    "encode_ms_p99": {
+     "max": 0.5325000000000024,
+     "median": 0.22866699999999973,
+     "min": 0.20216699999999999
+    },
+    "frames_drawn": {
+     "max": 410,
+     "median": 410,
+     "min": 410
+    },
+    "frames_total": {
+     "max": 540,
+     "median": 540,
+     "min": 540
+    },
+    "layout_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "layout_cpu_p99": {
+     "max": 0.130333999999948,
+     "median": 0.06475000000000364,
+     "min": 0.05545899999970061
+    },
+    "mount_ms": {
+     "max": 73.502708,
+     "median": 59.55620799999999,
+     "min": 55.913292
+    },
+    "over_budget": {
+     "max": 78,
+     "median": 13,
+     "min": 8
+    },
+    "paint_cpu_p50": {
+     "max": 1.768540999999459,
+     "median": 1.2934160000002066,
+     "min": 1.2264579999996386
+    },
+    "paint_cpu_p99": {
+     "max": 5.244000000000597,
+     "median": 1.845082999999704,
+     "min": 1.8123749999999745
+    },
+    "text_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "text_cpu_p99": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "view_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "view_cpu_p99": {
+     "max": 4.062750000000051,
+     "median": 1.9676669999998921,
+     "min": 1.8009170000000267
+    }
+   },
+   "why": {
+    "growth": 75,
+    "input": 176,
+    "scroll": 231,
+    "tracks": 227,
+    "update": 1
+   }
+  },
+  "typing": {
+   "commit_why": {
+    "dirty": 201,
+    "input": 200,
+    "instant": 200,
+    "layout": 2,
+    "route": 1
+   },
+   "pixels": {
+    "frames_drawn": 416,
+    "frames_visible": 262,
+    "frames_wasted": 154,
+    "visible_undrawn": 0,
+    "wasted_why": {
+     "tracks": 13,
+     "update": 145
+    }
+   },
+   "runs": [
+    {
+     "commit_why": {
+      "dirty": 201,
+      "input": 200,
+      "instant": 200,
+      "layout": 2,
+      "route": 2
+     },
+     "timing": {
+      "commit_cpu_p50": 0.46725000000003547,
+      "commit_cpu_p99": 0.9677500000000236,
+      "cpu_max": 2.137207999999987,
+      "cpu_mean": 0.8612667450549462,
+      "cpu_p50": 0.8122920000000704,
+      "cpu_p99": 1.414625000000001,
+      "encode_ms_p50": 0.0292079999999999,
+      "encode_ms_p99": 0.073542,
+      "frames_drawn": 455,
+      "frames_total": 840,
+      "layout_cpu_p50": 0.0018330000000332802,
+      "layout_cpu_p99": 0.09862600000042221,
+      "mount_ms": 53.556375,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.21116699999993216,
+      "paint_cpu_p99": 0.3197080000000483,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.06108400000016445,
+      "view_cpu_p50": 0.16766600000005383,
+      "view_cpu_p99": 0.38645900000005895
+     },
+     "why": {
+      "input": 200,
+      "tracks": 101,
+      "update": 200
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 201,
+      "input": 200,
+      "instant": 201,
+      "layout": 2
+     },
+     "timing": {
+      "commit_cpu_p50": 0.474125000000015,
+      "commit_cpu_p99": 0.901332999999795,
+      "cpu_max": 1.5606250000000728,
+      "cpu_mean": 0.811452708333331,
+      "cpu_p50": 0.8014170000001286,
+      "cpu_p99": 1.3347920000001068,
+      "encode_ms_p50": 0.03020899999999993,
+      "encode_ms_p99": 0.07616600000000018,
+      "frames_drawn": 456,
+      "frames_total": 840,
+      "layout_cpu_p50": 0.0019169999998212006,
+      "layout_cpu_p99": 0.09245800000007875,
+      "mount_ms": 60.743292,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.20066699999995308,
+      "paint_cpu_p99": 0.2666669999999982,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.0574579999999969,
+      "view_cpu_p50": 0.17333400000006804,
+      "view_cpu_p99": 0.3377909999999247
+     },
+     "why": {
+      "input": 200,
+      "tracks": 101,
+      "update": 201
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 201,
+      "input": 200,
+      "instant": 200,
+      "layout": 2,
+      "route": 1
+     },
+     "timing": {
+      "commit_cpu_p50": 0.44700000000000273,
+      "commit_cpu_p99": 0.8815829999999778,
+      "cpu_max": 1.5937079999999924,
+      "cpu_mean": 0.7926622857142852,
+      "cpu_p50": 0.7535839999999894,
+      "cpu_p99": 1.3198749999999677,
+      "encode_ms_p50": 0.026624999999999982,
+      "encode_ms_p99": 0.06562500000000004,
+      "frames_drawn": 455,
+      "frames_total": 840,
+      "layout_cpu_p50": 0.0017500000001291482,
+      "layout_cpu_p99": 0.0962920000001759,
+      "mount_ms": 55.197083000000006,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.19854099999997743,
+      "paint_cpu_p99": 0.2680830000000469,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.060832999999774984,
+      "view_cpu_p50": 0.1657910000000129,
+      "view_cpu_p99": 0.3362929999998414
+     },
+     "why": {
+      "input": 200,
+      "tracks": 101,
+      "update": 200
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 201,
+      "input": 200,
+      "instant": 201,
+      "layout": 2
+     },
+     "timing": {
+      "commit_cpu_p50": 0.4257909999998901,
+      "commit_cpu_p99": 0.8598340000000917,
+      "cpu_max": 2.474124999999958,
+      "cpu_mean": 0.7861627456140332,
+      "cpu_p50": 0.7409169999998539,
+      "cpu_p99": 1.265916999999945,
+      "encode_ms_p50": 0.026999999999999913,
+      "encode_ms_p99": 0.07708399999999993,
+      "frames_drawn": 456,
+      "frames_total": 840,
+      "layout_cpu_p50": 0.0017909999999119464,
+      "layout_cpu_p99": 0.09654100000011567,
+      "mount_ms": 58.412040999999995,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.1969169999999849,
+      "paint_cpu_p99": 0.2670410000000629,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.06062500000007276,
+      "view_cpu_p50": 0.16200000000003456,
+      "view_cpu_p99": 0.3236669999998867
+     },
+     "why": {
+      "input": 200,
+      "tracks": 101,
+      "update": 201
+     }
+    },
+    {
+     "commit_why": {
+      "dirty": 201,
+      "input": 200,
+      "instant": 200,
+      "layout": 2,
+      "route": 1
+     },
+     "timing": {
+      "commit_cpu_p50": 0.42837499999996,
+      "commit_cpu_p99": 0.8591660000001866,
+      "cpu_max": 1.462500000000091,
+      "cpu_mean": 0.7841435934065967,
+      "cpu_p50": 0.728458000000046,
+      "cpu_p99": 1.2898750000000518,
+      "encode_ms_p50": 0.02633400000000008,
+      "encode_ms_p99": 0.06033299999999997,
+      "frames_drawn": 455,
+      "frames_total": 840,
+      "layout_cpu_p50": 0.0016669999999976426,
+      "layout_cpu_p99": 0.09558300000026065,
+      "mount_ms": 61.039292,
+      "over_budget": 0,
+      "paint_cpu_p50": 0.19595799999990504,
+      "paint_cpu_p99": 0.26258400000006077,
+      "text_cpu_p50": 0.0,
+      "text_cpu_p99": 0.059833000000026004,
+      "view_cpu_p50": 0.16054200000007768,
+      "view_cpu_p99": 0.3292919999998958
+     },
+     "why": {
+      "input": 200,
+      "tracks": 101,
+      "update": 200
+     }
+    }
+   ],
+   "summary": {
+    "commit_cpu_p50": {
+     "max": 0.474125000000015,
+     "median": 0.44700000000000273,
+     "min": 0.4257909999998901
+    },
+    "commit_cpu_p99": {
+     "max": 0.9677500000000236,
+     "median": 0.8815829999999778,
+     "min": 0.8591660000001866
+    },
+    "cpu_max": {
+     "max": 2.474124999999958,
+     "median": 1.5937079999999924,
+     "min": 1.462500000000091
+    },
+    "cpu_mean": {
+     "max": 0.8612667450549462,
+     "median": 0.7926622857142852,
+     "min": 0.7841435934065967
+    },
+    "cpu_p50": {
+     "max": 0.8122920000000704,
+     "median": 0.7535839999999894,
+     "min": 0.728458000000046
+    },
+    "cpu_p99": {
+     "max": 1.414625000000001,
+     "median": 1.3198749999999677,
+     "min": 1.265916999999945
+    },
+    "encode_ms_p50": {
+     "max": 0.03020899999999993,
+     "median": 0.026999999999999913,
+     "min": 0.02633400000000008
+    },
+    "encode_ms_p99": {
+     "max": 0.07708399999999993,
+     "median": 0.073542,
+     "min": 0.06033299999999997
+    },
+    "frames_drawn": {
+     "max": 456,
+     "median": 455,
+     "min": 455
+    },
+    "frames_total": {
+     "max": 840,
+     "median": 840,
+     "min": 840
+    },
+    "layout_cpu_p50": {
+     "max": 0.0019169999998212006,
+     "median": 0.0017909999999119464,
+     "min": 0.0016669999999976426
+    },
+    "layout_cpu_p99": {
+     "max": 0.09862600000042221,
+     "median": 0.0962920000001759,
+     "min": 0.09245800000007875
+    },
+    "mount_ms": {
+     "max": 61.039292,
+     "median": 58.412040999999995,
+     "min": 53.556375
+    },
+    "over_budget": {
+     "max": 0,
+     "median": 0,
+     "min": 0
+    },
+    "paint_cpu_p50": {
+     "max": 0.21116699999993216,
+     "median": 0.19854099999997743,
+     "min": 0.19595799999990504
+    },
+    "paint_cpu_p99": {
+     "max": 0.3197080000000483,
+     "median": 0.2670410000000629,
+     "min": 0.26258400000006077
+    },
+    "text_cpu_p50": {
+     "max": 0.0,
+     "median": 0.0,
+     "min": 0.0
+    },
+    "text_cpu_p99": {
+     "max": 0.06108400000016445,
+     "median": 0.06062500000007276,
+     "min": 0.0574579999999969
+    },
+    "view_cpu_p50": {
+     "max": 0.17333400000006804,
+     "median": 0.1657910000000129,
+     "min": 0.16054200000007768
+    },
+    "view_cpu_p99": {
+     "max": 0.38645900000005895,
+     "median": 0.3362929999998414,
+     "min": 0.3236669999998867
+    }
+   },
+   "why": {
+    "input": 200,
+    "tracks": 101,
+    "update": 200
+   }
+  }
+ },
+ "meta": {
+  "commit": "69eefdb73",
+  "cpu": "Apple M5",
+  "fps": 120,
+  "machine": "arm64",
+  "os": "macOS-27.0.1-arm64-arm-64bit",
+  "runs": 5,
+  "scale": 2,
+  "size": "1280x820"
+ }
+}

@@ -14,7 +14,10 @@ use std::time::Duration;
 use anyhow::Context as _;
 use ironclaw_product_contracts::environment_access::{
     DEVICES_PATH, DeviceList, ENVIRONMENT_DESCRIPTOR_PATH, EnvironmentDescriptor,
-    PAIRING_CODES_PATH, PairingCodeIssued,
+    PAIRING_CODES_PATH, PairingCodeIssued, PairingCodeRequest,
+};
+use ironclaw_product_contracts::peer::{
+    LinkEnvironmentRequest, PEER_LINKS_PATH, PeerLinkList, PeerLinkSummary,
 };
 use secrecy::{ExposeSecret, SecretString};
 
@@ -71,11 +74,15 @@ impl RunningBackend {
         decode(response).await
     }
 
-    pub(crate) async fn issue_pairing_code(&self) -> anyhow::Result<PairingCodeIssued> {
+    pub(crate) async fn issue_pairing_code(
+        &self,
+        request: &PairingCodeRequest,
+    ) -> anyhow::Result<PairingCodeIssued> {
         let response = self
             .http
             .post(self.url(PAIRING_CODES_PATH))
             .bearer_auth(self.token.expose_secret())
+            .json(request)
             .send()
             .await
             .map_err(|error| self.unreachable(error))?;
@@ -97,6 +104,47 @@ impl RunningBackend {
         let response = self
             .http
             .delete(self.url(&format!("{DEVICES_PATH}/{device_id}")))
+            .bearer_auth(self.token.expose_secret())
+            .send()
+            .await
+            .map_err(|error| self.unreachable(error))?;
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
+            return Ok(());
+        }
+        Err(http_error(response).await)
+    }
+
+    pub(crate) async fn peer_links(&self) -> anyhow::Result<PeerLinkList> {
+        let response = self
+            .http
+            .get(self.url(PEER_LINKS_PATH))
+            .bearer_auth(self.token.expose_secret())
+            .send()
+            .await
+            .map_err(|error| self.unreachable(error))?;
+        decode(response).await
+    }
+
+    pub(crate) async fn link_environment(
+        &self,
+        request: &LinkEnvironmentRequest,
+    ) -> anyhow::Result<PeerLinkSummary> {
+        let response = self
+            .http
+            .post(self.url(PEER_LINKS_PATH))
+            .bearer_auth(self.token.expose_secret())
+            .timeout(Duration::from_secs(45))
+            .json(request)
+            .send()
+            .await
+            .map_err(|error| self.unreachable(error))?;
+        decode(response).await
+    }
+
+    pub(crate) async fn forget_environment(&self, environment_id: &str) -> anyhow::Result<()> {
+        let response = self
+            .http
+            .delete(self.url(&format!("{PEER_LINKS_PATH}/{environment_id}")))
             .bearer_auth(self.token.expose_secret())
             .send()
             .await

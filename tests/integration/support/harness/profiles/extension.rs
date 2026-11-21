@@ -396,38 +396,47 @@ fn prompt_description_files(
     Ok(files)
 }
 
+/// These third-party fixtures reach the active registry through the test
+/// publish shortcut, which skips the consent lifecycle; bind them to exactly
+/// the files they were built from, as a consent grant would.
+fn consented_pins(files: &[(String, Vec<u8>)]) -> ironclaw_extension_registry::PackageContentPins {
+    ironclaw_extension_registry::PackageContentPins::from_files(
+        files
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
+    )
+}
+
 fn verified_prompt_description_package() -> HarnessResult<(
     ironclaw_extension_registry::ExtensionPackage,
     ironclaw_extension_registry::ResolvedExtensionManifest,
 )> {
-    let available = ironclaw_extension_host::registry_extension_package(
-        prompt_description_files(
-            VERIFIED_PROMPT_DESCRIPTION_MANIFEST,
-            "verifiedprompt",
-            "verifiedprompt.wasm",
-            &["invoke.input.json", "invoke.output.json"],
-        )?,
-        &[],
+    let files = prompt_description_files(
+        VERIFIED_PROMPT_DESCRIPTION_MANIFEST,
+        "verifiedprompt",
+        "verifiedprompt.wasm",
+        &["invoke.input.json", "invoke.output.json"],
     )?;
+    let pins = consented_pins(&files);
+    let available = ironclaw_extension_host::registry_extension_package(files, &[])?;
     let resolved = available.resolved_manifest.as_ref().clone();
-    Ok((available.package, resolved))
+    Ok((available.package.with_content_pins(pins), resolved))
 }
 
 fn local_prompt_description_package() -> HarnessResult<(
     ironclaw_extension_registry::ExtensionPackage,
     ironclaw_extension_registry::ResolvedExtensionManifest,
 )> {
-    let available = ironclaw_extension_host::imported_extension_package(
-        prompt_description_files(
-            LOCAL_PROMPT_DESCRIPTION_MANIFEST,
-            "localprompt",
-            "localprompt.wasm",
-            &["probe.input.json", "probe.output.json"],
-        )?,
-        &[],
+    let files = prompt_description_files(
+        LOCAL_PROMPT_DESCRIPTION_MANIFEST,
+        "localprompt",
+        "localprompt.wasm",
+        &["probe.input.json", "probe.output.json"],
     )?;
+    let pins = consented_pins(&files);
+    let available = ironclaw_extension_host::imported_extension_package(files, &[])?;
     let resolved = available.resolved_manifest.as_ref().clone();
-    Ok((available.package, resolved))
+    Ok((available.package.with_content_pins(pins), resolved))
 }
 
 /// Real-turn prompt-description trust probe. Both fixture manifests go

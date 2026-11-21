@@ -12,6 +12,7 @@ fn studio() -> SavedEnvironment {
             kind: RouteKind::Tailnet,
             url: "https://studio.tail1.ts.net".into(),
             remote_port: None,
+            learned: false,
         }],
         legacy_token: false,
     }
@@ -178,6 +179,7 @@ fn an_offline_peer_shows_its_computer_asleep_without_a_probe() {
             dns_name: "studio.tail1.ts.net".into(),
             host_name: "studio".into(),
             online: false,
+            addresses: Vec::new(),
         }],
         found: vec![],
     });

@@ -1795,6 +1795,7 @@ mod tests {
 
     use super::*;
     use ironclaw_capabilities::CapabilityInvocationError;
+    use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
     use ironclaw_extension_registry::{
         ExtensionManifest, ExtensionPackage, ExtensionRegistry, ManifestSource,
     };
@@ -2695,7 +2696,9 @@ mod tests {
         let cap_id = manifest.capabilities[0].id.clone();
         let root =
             VirtualPath::new(format!("/system/extensions/{}", manifest.id.as_str())).unwrap();
-        let package = ExtensionPackage::from_manifest(manifest, root).expect("package must build");
+        let package = ExtensionPackage::from_manifest(manifest, root)
+            .expect("package must build")
+            .with_unverified_contents_for_test();
         let mut registry = ExtensionRegistry::new();
         registry.insert(package).unwrap();
         registry.get_capability(&cap_id).unwrap().clone()
@@ -3074,7 +3077,9 @@ output_schema_ref = "schemas/w1fixture/bespoke.output.v1.json"
             .expect("v3-parsed record must convert to ExtensionManifest");
         let root =
             VirtualPath::new(format!("/system/extensions/{}", manifest.id.as_str())).unwrap();
-        let package = ExtensionPackage::from_manifest(manifest, root).expect("package must build");
+        let package = ExtensionPackage::from_manifest(manifest, root)
+            .expect("package must build")
+            .with_unverified_contents_for_test();
         let mut registry = ExtensionRegistry::new();
         registry.insert(package).unwrap();
         registry

@@ -1,6 +1,7 @@
 #![deny(clippy::let_underscore_must_use)]
 mod support;
 
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use support::legacy_capability_fixture_to_v2;
 
 use std::{
@@ -987,7 +988,8 @@ fn registry_with_manifest(manifest: &str) -> ExtensionRegistry {
         manifest,
         VirtualPath::new("/system/extensions/script").unwrap(),
     )
-    .unwrap();
+    .unwrap()
+    .with_unverified_contents_for_test();
     registry.insert(package).unwrap();
     registry
 }

@@ -403,6 +403,7 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
     if !running {
         crate::run_clock::end(s, id);
         crate::run_clock::start(s, id, None, None);
+        crate::workspace::prompt_sent(s, id);
     }
     // The project's working tree as it stands now, for the turn's card.
     if super::is_main(s, id) {
@@ -442,6 +443,7 @@ pub fn send(s: &mut State, id: &str, tx: &mut Tx) {
                     if let Some(sub) = voice {
                         crate::voice::submission_refused(s, sub, &e.to_string());
                     }
+                    crate::workspace::send_failed(s, &thread_id);
                     let Some(c) = chat_for(s, &thread_id) else {
                         return;
                     };

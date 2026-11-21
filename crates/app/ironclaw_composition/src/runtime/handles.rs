@@ -296,15 +296,24 @@ impl RebornRuntime {
         Arc<dyn ironclaw_product_contracts::environment_access::EnvironmentAccessService>,
         ironclaw_product_contracts::environment_access::EnvironmentAccessError,
     > {
-        let access = ironclaw_identity::environment_access::FilesystemEnvironmentAccess::new(
+        let access = self.environment_access_store();
+        access.ensure_environment(default_label).await?;
+        Ok(Arc::new(access))
+    }
+
+    /// The remote-access records store (environment, devices, peer links).
+    pub(crate) fn environment_access_store(
+        &self,
+    ) -> ironclaw_identity::environment_access::FilesystemEnvironmentAccess<
+        ironclaw_filesystem::CompositeRootFilesystem,
+    > {
+        ironclaw_identity::environment_access::FilesystemEnvironmentAccess::new(
             Arc::clone(&self.scoped_filesystem),
             self.thread_scope.tenant_id.clone(),
             self.actor_user_id.clone(),
             self.thread_scope.agent_id.clone(),
             self.thread_scope.project_id.clone(),
-        );
-        access.ensure_environment(default_label).await?;
-        Ok(Arc::new(access))
+        )
     }
 
     /// Open the admin user-directory surface over the host-owned identity

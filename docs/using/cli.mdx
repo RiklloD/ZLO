@@ -91,6 +91,7 @@ Add `--no-logs` to leave the log tails out, or `--force` to overwrite an existin
 | `zlo pair` | Issue a one-time pairing code (five minutes, single use) and a pairing link for another device |
 | `zlo devices` | List paired devices; `zlo devices revoke <id or label>` or `--all` revokes them |
 | `zlo remote enable` | Publish this backend on your own tailnet with `tailscale serve` (never Funnel); `remote status` and `remote disable` manage it |
+| `zlo environment link <url> --pairing-code <code>` | Link another machine with a peer-link code from it (`zlo pair --link`); `--access read_only\|operate\|full` must match the code. `zlo environment list` shows linked machines and `zlo environment forget <id or label>` forgets one |
 
 `pair` and `devices` talk to the running `zlo serve` on this machine. A revoked
 device stops working at once, including after a restart. `remote enable` needs Tailscale

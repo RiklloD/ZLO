@@ -23,6 +23,7 @@ pub(super) enum ProductCommandHandler {
     FsRead,
     AttachmentRead,
     IronhubDeliverInstall,
+    ExtensionGrantConsent,
     TraceAccountLoginLink,
     TraceHoldAuthorize,
     OperatorConfigSetKey,
@@ -73,6 +74,9 @@ impl ProductCommandHandler {
             FS_READ_COMMAND_ID => Some(Self::FsRead),
             ATTACHMENT_READ_COMMAND_ID => Some(Self::AttachmentRead),
             IRONHUB_DELIVER_INSTALL_COMMAND_ID => Some(Self::IronhubDeliverInstall),
+            ironclaw_product_contracts::package_consent::EXTENSION_GRANT_CONSENT_COMMAND_ID => {
+                Some(Self::ExtensionGrantConsent)
+            }
             TRACE_ACCOUNT_LOGIN_LINK_COMMAND_ID => Some(Self::TraceAccountLoginLink),
             TRACE_HOLD_AUTHORIZE_COMMAND_ID => Some(Self::TraceHoldAuthorize),
             OPERATOR_CONFIG_SET_KEY_COMMAND_ID => Some(Self::OperatorConfigSetKey),
@@ -230,6 +234,11 @@ impl ProductCommandHandler {
                     .ironhub_deliver_install(caller, product_command_input(input)?)
                     .await?,
             ),
+            Self::ExtensionGrantConsent => {
+                let request: ironclaw_product_contracts::package_consent::ExtensionGrantConsentRequest =
+                    product_command_input(input)?;
+                command_output(grant_extension_consent(services, caller, request).await?)
+            }
             Self::TraceAccountLoginLink => {
                 let _: EmptyProductCommandInput = product_command_input(input)?;
                 command_output(services.trace_account_login_link(caller).await?)
@@ -724,6 +733,66 @@ impl ProductCapabilityHandler {
         }?;
         Ok(automation_run_result)
     }
+}
+
+/// The caller's own consent grant, then an activation attempt for them —
+/// the same two lifecycle actions the `zlo extension consent` command runs.
+/// The lifecycle authority decides whose decision this is (the caller's, or
+/// the tenant admin's on a shared install) and refuses a stale digest.
+async fn grant_extension_consent<I, V>(
+    services: &RebornServices<I, V>,
+    caller: ProductSurfaceCaller,
+    request: ironclaw_product_contracts::package_consent::ExtensionGrantConsentRequest,
+) -> Result<
+    ironclaw_product_contracts::package_consent::ExtensionGrantConsentOutcome,
+    ProductSurfaceError,
+>
+where
+    I: ProductCapabilityInvoker + Clone + 'static,
+    V: RebornViewProvider + Clone + 'static,
+{
+    let package_ref = crate::LifecyclePackageRef::new(
+        crate::LifecyclePackageKind::Extension,
+        request.extension_id.as_str(),
+    )
+    .map_err(|_| {
+        ProductSurfaceError::validation(
+            "extension_id",
+            ironclaw_product_contracts::surface::ProductSurfaceValidationCode::InvalidValue,
+        )
+    })?;
+    let context = LifecycleProductContext::Surface(LifecycleProductSurfaceContext {
+        tenant_id: caller.tenant_id,
+        user_id: caller.user_id,
+        agent_id: caller.agent_id,
+        project_id: caller.project_id,
+    });
+    services
+        .lifecycle_service
+        .execute(
+            context.clone(),
+            LifecycleProductAction::ExtensionGrantConsent {
+                package_ref: package_ref.clone(),
+                digest: request.digest,
+            },
+        )
+        .await?;
+    let activation = services
+        .lifecycle_service
+        .execute(
+            context,
+            LifecycleProductAction::ExtensionActivate { package_ref },
+        )
+        .await?;
+    Ok(
+        ironclaw_product_contracts::package_consent::ExtensionGrantConsentOutcome {
+            granted: true,
+            installation_state:
+                ironclaw_extension_contracts::state::LifecyclePublicState::from_host_checkpoint(
+                    activation.phase,
+                ),
+        },
+    )
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ const SUBAGENT_FAMILY_FINGERPRINT: &[u8] = concat!(
     "planner=DefaultPlanner;",
     "strategies=",
     "context:DefaultContextStrategy(max_messages=128),",
-    "compaction:ActiveTaskPreservingCompactionStrategy(context_limit=128000,reserve=20000,preserve_tail=8000,min_compacted=3,min_tail=3,deadline_ms=30000,ineffective_trip_limit=3),",
+    "compaction:ActiveTaskPreservingCompactionStrategy(context_limit=128000,reserve=20000,preserve_tail=8000,min_compacted=3,min_tail=3,deadline_ms=60000,ineffective_trip_limit=3),",
     "capability:DefaultCapabilityStrategy(all),",
     "model:DefaultModelStrategy(primary_or_fallback_index),",
     "batch:model_emitted_calls(bounded_fanout=4),",
@@ -31,8 +31,8 @@ const SUBAGENT_FAMILY_FINGERPRINT: &[u8] = concat!(
 .as_bytes();
 
 pub const SUBAGENT_FAMILY_DIGEST: ComponentDigest = ComponentDigest([
-    0x9a, 0x67, 0xdd, 0xb9, 0x72, 0x7a, 0x5b, 0xf0, 0xda, 0x9f, 0xb8, 0x12, 0xd1, 0x0f, 0x95, 0xd1,
-    0x6c, 0xe9, 0x6e, 0x53, 0x0f, 0x4e, 0xa5, 0x8e, 0xec, 0xc7, 0xe5, 0x28, 0xf8, 0x0b, 0x8d, 0x2f,
+    0xce, 0x64, 0x40, 0x83, 0xe0, 0xa2, 0xd8, 0xfa, 0x84, 0x25, 0xe0, 0x67, 0x99, 0xcd, 0x57, 0xef,
+    0x57, 0xa8, 0x5a, 0x19, 0x00, 0xc7, 0x59, 0xa4, 0xcf, 0xa6, 0xda, 0x68, 0x3a, 0x86, 0x2b, 0xa3,
 ]);
 
 pub fn subagent() -> LoopFamily {

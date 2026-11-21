@@ -6,6 +6,8 @@
 //! error response: the CLI treats a failed hook as "no opinion" and goes on
 //! with its own permission rules, which auto-approve reads.
 
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ironclaw_host_api::ids::ThreadId;
@@ -14,6 +16,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
 
+use super::steer::SteerLedger;
+use super::tasks::TaskRefresher;
 use crate::bridge::{CliBridge, ToolDecision};
 use crate::interaction;
 
@@ -21,6 +25,7 @@ const INIT_REQUEST_ID: &str = "ironclaw-init";
 const HOOK_CALLBACK_ID: &str = "ironclaw-approval";
 
 pub(super) type SharedStdin = Arc<Mutex<Option<ChildStdin>>>;
+pub(super) type SharedSteers = Arc<std::sync::Mutex<SteerLedger>>;
 
 /// The `initialize` request that routes every tool call through our hook.
 pub(super) fn initialize_request() -> String {
@@ -70,6 +75,72 @@ fn user_line(run_id: &str, content: serde_json::Value) -> String {
         "message": {"role": "user", "content": content},
     })
     .to_string()
+}
+
+/// A steer as a user message. `priority: "next"`: the CLI reads it once the
+/// tool calls in flight finish (`"now"` cancels them and reports a refusal).
+pub(super) async fn steer_message(uuid: &str, text: &str) -> String {
+    let line = prompt_with_images(uuid, text).await;
+    match serde_json::from_str::<Value>(&line) {
+        Ok(mut frame) => {
+            frame["priority"] = json!("next");
+            frame.to_string()
+        }
+        Err(error) => {
+            tracing::debug!(%error, "claude cli: steer frame left without a priority");
+            line
+        }
+    }
+}
+
+/// Write a steer into the running turn, recorded in the ledger under the
+/// stdin lock: a concurrent close either sees it open or happened first
+/// (and the write fails, so the engine queues the text instead).
+pub(super) async fn write_steer(
+    stdin: &SharedStdin,
+    steers: &SharedSteers,
+    uuid: &str,
+    text: &str,
+    line: &str,
+) -> std::io::Result<()> {
+    let mut guard = stdin.lock().await;
+    let Some(pipe) = guard.as_mut() else {
+        return Err(std::io::ErrorKind::BrokenPipe.into());
+    };
+    with_ledger(steers, |l| l.sent(uuid, text));
+    let written = async {
+        pipe.write_all(format!("{line}\n").as_bytes()).await?;
+        pipe.flush().await
+    }
+    .await;
+    if written.is_err() {
+        with_ledger(steers, |l| l.unsent(uuid));
+    }
+    written
+}
+
+pub(super) fn with_ledger<T>(steers: &SharedSteers, f: impl FnOnce(&mut SteerLedger) -> T) -> T {
+    match steers.lock() {
+        Ok(mut ledger) => f(&mut ledger),
+        // A poisoned ledger only follows a panic elsewhere; its data is intact.
+        Err(poisoned) => f(&mut poisoned.into_inner()),
+    }
+}
+
+/// EOF on stdin once the ledger says nothing is open any more (or `force`).
+/// Decided under the stdin lock, so a steer is never written after it.
+async fn close_when_settled(stdin: &SharedStdin, steers: &SharedSteers, force: bool) {
+    let mut guard = stdin.lock().await;
+    if !force && !with_ledger(steers, |l| l.may_close()) {
+        return;
+    }
+    if let Some(mut pipe) = guard.take() {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the CLI may already be gone"
+        )]
+        let _ = pipe.shutdown().await;
+    }
 }
 
 pub(super) async fn write_line(stdin: &SharedStdin, line: &str) -> std::io::Result<()> {
@@ -139,6 +210,16 @@ pub(super) enum Step {
     InitRefused,
 }
 
+/// The live handles one bridged turn shares with the runtime.
+pub(super) struct TurnIo {
+    pub bridge: Arc<CliBridge>,
+    pub stdin: SharedStdin,
+    pub thread: ThreadId,
+    pub run_id: String,
+    pub ready: Arc<std::sync::atomic::AtomicBool>,
+    pub steers: SharedSteers,
+}
+
 pub(super) struct BridgedTurn {
     pub bridge: Arc<CliBridge>,
     pub stdin: SharedStdin,
@@ -148,40 +229,62 @@ pub(super) struct BridgedTurn {
     pub prompt: Option<String>,
     /// Set once that prompt is written: a steer before it would land first.
     ready: Arc<std::sync::atomic::AtomicBool>,
+    /// What the CLI has read of the prompt and the steers.
+    steers: SharedSteers,
+    /// The session's task store; a finished task tool call re-reads it into
+    /// the thread's plan. `None` leaves the plan alone.
+    tasks: Option<TaskRefresher>,
+    /// Tool use ids of task-tool calls let through in this turn.
+    task_calls: HashSet<String>,
     /// The next text delta opens a new text block.
     new_block: bool,
     new_thinking_block: bool,
 }
 
 impl BridgedTurn {
-    pub(super) fn new(
-        bridge: Arc<CliBridge>,
-        stdin: SharedStdin,
-        thread: ThreadId,
-        run_id: String,
-        prompt: String,
-        ready: Arc<std::sync::atomic::AtomicBool>,
-    ) -> Self {
+    pub(super) fn new(turn: TurnIo, prompt: String, task_store: Option<PathBuf>) -> Self {
         Self {
-            bridge,
-            stdin,
-            thread,
-            run_id,
+            bridge: turn.bridge,
+            stdin: turn.stdin,
+            thread: turn.thread,
+            run_id: turn.run_id,
             prompt: Some(prompt),
-            ready,
+            ready: turn.ready,
+            steers: turn.steers,
+            tasks: task_store.map(TaskRefresher::new),
+            task_calls: HashSet::new(),
             new_block: false,
             new_thinking_block: false,
         }
+    }
+
+    #[cfg(test)]
+    fn with_task_refresher(mut self, tasks: TaskRefresher) -> Self {
+        self.tasks = Some(tasks);
+        self
     }
 
     pub(super) fn awaiting_ack(&self) -> bool {
         self.prompt.is_some()
     }
 
+    /// The result is in and only unacknowledged steers hold stdin open.
+    pub(super) fn waiting_for_steer_ack(&self) -> bool {
+        with_ledger(&self.steers, |l| l.waiting_for_ack())
+    }
+
+    /// The CLI ignored a steer for [`super::steer::ACK_TIMEOUT`]: end its
+    /// input so it can finish; the steer is reported unread.
+    pub(super) async fn give_up_on_steers(&self) {
+        with_ledger(&self.steers, SteerLedger::abandon);
+        close_when_settled(&self.stdin, &self.steers, true).await;
+    }
+
     pub(super) async fn on_line(&mut self, line: &str) -> Step {
         let Ok(frame) = serde_json::from_str::<Value>(line.trim()) else {
             return Step::Continue;
         };
+        with_ledger(&self.steers, |l| l.observe(&frame));
         match frame.get("type").and_then(Value::as_str) {
             Some("control_response") => return self.on_ack(&frame["response"]).await,
             Some("control_request") => self.on_request(&frame).await,
@@ -190,7 +293,10 @@ impl BridgedTurn {
             }
             // Tool results come back as the user's turn: they finish the rows.
             Some("user") if frame["parent_tool_use_id"].is_null() => self.on_tool_results(&frame),
-            Some("result") => close(&self.stdin).await,
+            // Input ends once every command written is done (see `steer.rs`).
+            Some("result" | "command_lifecycle") => {
+                close_when_settled(&self.stdin, &self.steers, false).await
+            }
             _ => {}
         }
         Step::Continue
@@ -205,6 +311,7 @@ impl BridgedTurn {
             return Step::InitRefused;
         }
         if let Some(prompt) = self.prompt.take() {
+            with_ledger(&self.steers, |l| l.prompt(&self.run_id));
             match write_line(&self.stdin, &prompt).await {
                 Ok(()) => self.ready.store(true, std::sync::atomic::Ordering::SeqCst),
                 Err(error) => tracing::debug!(%error, "claude cli: prompt write failed"),
@@ -213,7 +320,7 @@ impl BridgedTurn {
         Step::Continue
     }
 
-    async fn on_request(&self, frame: &Value) {
+    async fn on_request(&mut self, frame: &Value) {
         let Some(request_id) = frame["request_id"].as_str().map(str::to_string) else {
             return;
         };
@@ -227,9 +334,10 @@ impl BridgedTurn {
                 // inputs carry the model's own one-line `description`.
                 let reason = crate::approval_reason::explicit(&tool_input, &["description"]);
                 let known = request["callback_id"].as_str() == Some(HOOK_CALLBACK_ID);
+                let use_id = input["tool_use_id"].as_str().map(str::to_string);
                 if known
                     && self
-                        .on_interaction_tool(&request_id, &tool, &tool_input)
+                        .on_interaction_tool(&request_id, &tool, &tool_input, use_id.as_deref())
                         .await
                 {
                     return;
@@ -276,8 +384,28 @@ impl BridgedTurn {
     /// `TodoWrite` and `AskUserQuestion` are not approvals: the first
     /// updates the thread's plan and runs, the second becomes a form whose
     /// answer goes back as the hook's reason. `true` when handled here.
-    async fn on_interaction_tool(&self, request_id: &str, tool: &str, input: &Value) -> bool {
+    async fn on_interaction_tool(
+        &mut self,
+        request_id: &str,
+        tool: &str,
+        input: &Value,
+        call_id: Option<&str>,
+    ) -> bool {
         match tool {
+            // Bookkeeping in the session's own task store, or loading those
+            // tools' schemas: no approval. The plan follows once a call ran.
+            t if interaction::CLAUDE_TASK_TOOLS.contains(&t)
+                || interaction::claude_task_tool_load(t, input) =>
+            {
+                if let Some(id) = call_id {
+                    self.task_calls.insert(id.to_string());
+                }
+                let answer = hook_answer(request_id, &ToolDecision::Allow);
+                if let Err(error) = write_line(&self.stdin, &answer).await {
+                    tracing::debug!(%error, "claude cli: hook answer not delivered");
+                }
+                true
+            }
             interaction::CLAUDE_TODO_TOOL => {
                 if let Some(plan) = interaction::claude_todo_plan(input) {
                     self.bridge.plan_updated(&self.thread, &self.run_id, plan);
@@ -344,16 +472,29 @@ impl BridgedTurn {
         });
     }
 
-    fn on_tool_results(&self, frame: &Value) {
+    fn on_tool_results(&mut self, frame: &Value) {
         let Some(blocks) = frame["message"]["content"].as_array() else {
             return;
         };
+        let mut tasks_changed = false;
         for block in blocks.iter().filter(|b| b["type"] == "tool_result") {
             if let Some(id) = block["tool_use_id"].as_str() {
                 let failed = block["is_error"].as_bool().unwrap_or(false);
+                if self.task_calls.remove(id) {
+                    tasks_changed |= !failed;
+                    continue;
+                }
                 self.bridge
                     .tool_finished(&self.thread, &self.run_id, id, failed);
             }
+        }
+        if let (true, Some(tasks)) = (tasks_changed, &self.tasks) {
+            let (bridge, thread, run) = (
+                Arc::clone(&self.bridge),
+                self.thread.clone(),
+                self.run_id.clone(),
+            );
+            tasks.refresh(move |plan| bridge.plan_updated(&thread, &run, plan));
         }
     }
 
@@ -403,6 +544,17 @@ mod tests {
         tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
         tokio::process::Child,
     ) {
+        turn_with_store(bridge, None)
+    }
+
+    fn turn_with_store(
+        bridge: &Arc<CliBridge>,
+        task_store: Option<PathBuf>,
+    ) -> (
+        BridgedTurn,
+        tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+        tokio::process::Child,
+    ) {
         let mut child = tokio::process::Command::new("cat")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -413,12 +565,16 @@ mod tests {
         let thread = ThreadId::new("claude-forms").unwrap();
         bridge.turn_started(&thread, "run-c");
         let turn = BridgedTurn::new(
-            Arc::clone(bridge),
-            stdin,
-            thread,
-            "run-c".into(),
+            TurnIo {
+                bridge: Arc::clone(bridge),
+                stdin,
+                thread,
+                run_id: "run-c".into(),
+                ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                steers: SharedSteers::default(),
+            },
             String::new(),
-            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            task_store,
         );
         (turn, out, child)
     }
@@ -546,6 +702,165 @@ mod tests {
         let frame = next_frame(&mut out).await;
         assert_eq!(frame["response"]["request_id"], "e1");
         assert_eq!(frame["response"]["response"], json!({"action": "decline"}));
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
+        let _ = child.kill().await;
+    }
+
+    /// A task-tool call let through by the hook, then its result: the turn
+    /// re-reads the task store into the plan.
+    async fn run_task_call(
+        turn: &mut BridgedTurn,
+        out: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+        request: &str,
+        use_id: &str,
+    ) {
+        let hook = json!({
+            "type": "control_request",
+            "request_id": request,
+            "request": {
+                "subtype": "hook_callback",
+                "callback_id": HOOK_CALLBACK_ID,
+                "input": {"tool_name": "TaskUpdate", "tool_input": {"taskId": "1"}, "tool_use_id": use_id},
+            },
+        });
+        turn.on_line(&hook.to_string()).await;
+        let frame = next_frame(out).await;
+        assert_eq!(
+            frame["response"]["response"]["hookSpecificOutput"]["permissionDecision"],
+            "allow"
+        );
+        let result = json!({
+            "type": "user",
+            "parent_tool_use_id": null,
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": use_id, "content": "Updated task #1"}
+            ]},
+        });
+        turn.on_line(&result.to_string()).await;
+    }
+
+    async fn wait_for_plan(bridge: &CliBridge, thread: &ThreadId) -> Vec<String> {
+        for _ in 0..250 {
+            if let Some((_, _, plan)) = bridge.plan_of(thread) {
+                return plan.entries.iter().map(|e| e.content.clone()).collect();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("no plan published");
+    }
+
+    /// The task store is the CLI's: a linked entry (pointing outside the
+    /// store), an oversize entry and a FIFO are all skipped, and the FIFO
+    /// does not hang the refresh; a linked store folder is not read at all.
+    #[tokio::test]
+    async fn task_refresh_reads_only_bounded_regular_files_of_a_real_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("tasks").join("session-1");
+        std::fs::create_dir_all(&store).unwrap();
+        let task = |id: &str, subject: &str| {
+            format!(r#"{{"id":"{id}","subject":"{subject}","status":"pending"}}"#)
+        };
+        std::fs::write(store.join("1.json"), task("1", "Plan")).unwrap();
+        let outside = dir.path().join("secret.json");
+        std::fs::write(&outside, task("2", "Linked")).unwrap();
+        std::os::unix::fs::symlink(&outside, store.join("2.json")).unwrap();
+        let padding = "x".repeat(usize::try_from(super::super::tasks::MAX_FILE_BYTES).unwrap());
+        std::fs::write(
+            store.join("3.json"),
+            format!(r#"{{"id":"3","subject":"Huge","status":"pending","pad":"{padding}"}}"#),
+        )
+        .unwrap();
+        nix::unistd::mkfifo(&store.join("4.json"), nix::sys::stat::Mode::S_IRWXU).unwrap();
+
+        let bridge = CliBridge::new(std::time::Duration::from_secs(5));
+        let (mut turn, mut out, mut child) = turn_with_store(&bridge, Some(store.clone()));
+        run_task_call(&mut turn, &mut out, "h1", "toolu_t1").await;
+        let plan = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_for_plan(&bridge, &turn.thread),
+        )
+        .await
+        .expect("the FIFO must not hang the refresh");
+        assert_eq!(plan, ["Plan"]);
+
+        // Deleting the last task clears the shown plan.
+        let (seq, _, _) = bridge.plan_of(&turn.thread).unwrap();
+        std::fs::remove_file(store.join("1.json")).unwrap();
+        run_task_call(&mut turn, &mut out, "h2", "toolu_t2").await;
+        let mut cleared = false;
+        for _ in 0..250 {
+            if let Some((next, _, plan)) = bridge.plan_of(&turn.thread)
+                && next > seq
+            {
+                assert!(plan.entries.is_empty(), "{:?}", plan.entries);
+                cleared = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(cleared, "the emptied store was never published");
+
+        // A store folder that is itself a link is never followed.
+        let linked = dir.path().join("tasks").join("session-2");
+        std::os::unix::fs::symlink(&store, &linked).unwrap();
+        assert!(super::super::tasks::read_plan(&linked).await.is_none());
+        assert!(
+            super::super::tasks::read_plan(&dir.path().join("missing"))
+                .await
+                .is_none()
+        );
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
+        let _ = child.kill().await;
+    }
+
+    /// Two task calls finish close together and the first re-read is the
+    /// slower one: the plan ends on the second (newer) read, not the first.
+    #[tokio::test]
+    async fn a_slower_older_task_refresh_never_replaces_a_newer_plan() {
+        use ironclaw_host_api::agent_plan::{AgentPlan, PlanEntry, PlanEntryStatus};
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader: super::super::tasks::PlanReader = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |_store| {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move {
+                    let (delay, subject) = if call == 0 { (300, "old") } else { (0, "new") };
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    Some(AgentPlan::new(
+                        [PlanEntry::new(
+                            subject.to_string(),
+                            PlanEntryStatus::Pending,
+                        )],
+                        None,
+                        chrono::Utc::now(),
+                    ))
+                })
+            })
+        };
+        let bridge = CliBridge::new(std::time::Duration::from_secs(5));
+        let (turn, mut out, mut child) = turn_over_cat(&bridge);
+        let mut turn = turn.with_task_refresher(super::super::tasks::TaskRefresher::with_reader(
+            PathBuf::from("unused"),
+            reader,
+        ));
+        run_task_call(&mut turn, &mut out, "h1", "toolu_a").await;
+        // The first read has started (and sleeps) before the second call.
+        for _ in 0..100 {
+            if calls.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        run_task_call(&mut turn, &mut out, "h2", "toolu_b").await;
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(wait_for_plan(&bridge, &turn.thread).await, ["new"]);
         #[expect(
             clippy::let_underscore_must_use,
             reason = "test teardown; the child may already have exited"

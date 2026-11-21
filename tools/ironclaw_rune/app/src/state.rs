@@ -91,6 +91,8 @@ pub struct State {
     pub remote: crate::remote::RemoteState,
     /// Plugin UI slots and the trees plugins sent (`plugins`).
     pub plugins: crate::plugins::PluginsState,
+    /// A `bench-*` scene's feed (`crate::bench`); `None` otherwise.
+    pub bench: Option<Box<crate::bench::Bench>>,
 }
 
 impl State {
@@ -119,6 +121,7 @@ impl State {
             onboarding: Default::default(),
             remote: Default::default(),
             plugins: Default::default(),
+            bench: None,
         }
     }
 

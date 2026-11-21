@@ -261,8 +261,10 @@ pub fn preload(s: &State, ids: &[&str], size: f32) {
     }
 }
 
+/// A lettered tile for a provider without a logo, in the accent.
 fn letter_tile(s: &State, id: &str, size: f32) -> El {
     let p = &s.palette;
+    let tone = p.accent;
     let letter = id
         .chars()
         .find(|c| c.is_alphanumeric())
@@ -270,13 +272,13 @@ fn letter_tile(s: &State, id: &str, size: f32) -> El {
         .unwrap_or_else(|| "?".into());
     el().size(size, size)
         .radius(size / 2.)
-        .border(1., p.accent.alpha(0.5))
-        .fill(p.accent.alpha(0.12))
+        .border(1., tone.alpha(0.5))
+        .fill(tone.alpha(0.12))
         .center()
         .child(
             text(letter)
                 .font(rune::tok::TextStyle::new((size * 0.55).round(), 500.))
-                .color(p.accent),
+                .color(tone),
         )
 }
 

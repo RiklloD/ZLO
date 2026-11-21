@@ -362,6 +362,64 @@ builtin schema refs already resolve. See
 `docs/internal/reborn/extension-runtime/standard-operations.md` for the full
 vocabulary, binding rules, and contract principles.
 
+### 3.5 Plugin UI slots (`[[ui.slots]]`)
+
+A package may contribute UI to the client without shipping client code: it
+declares slots, and the host renders each one by calling one of the
+package's own tools, which returns a **node tree as data**
+(`reborn.plugin_ui.v1`, `ironclaw_extension_contracts::plugin_ui`). The
+backend may run on another machine than the client, so the tree is the whole
+contract between them.
+
+```toml
+[[tools]]
+id = "acme-notes.render"
+origin_gate_matrix = { loop_run = "forbidden", product = "consent_sufficient", automation = "forbidden" }
+effects = []                       # render tools are side-effect-free
+default_permission = "allow"
+visibility = "model"               # see the activation note below
+input_schema_ref = "schemas/render.input.v1.json"
+
+[[ui.slots]]
+id = "notes"                       # [a-z0-9][a-z0-9_-]*, unique per package
+slot = "panel.tab"                 # panel.tab | sidebar.session_row.badge | settings.page
+title = "Notes"
+icon = "icons/notes.svg"           # optional package asset path
+render = "acme-notes.render"       # one of this package's own [[tools]]
+```
+
+Parse-time rules (`ironclaw_extension_registry::ui_slots`): at most 16 slots;
+`render` names a tool of the same manifest; that tool allows `product` origin
+(`consent_sufficient` or `ungated`) and declares no effect beyond
+`read_filesystem`, no credentials, and no network targets. A plugin that needs
+remote data renders what an ordinary, gated tool already fetched — a panel
+never becomes an ungated egress path.
+
+Activation note: lifecycle readiness
+(`ResolvedExtensionManifest::has_model_visible_capabilities`) treats a package
+with no model-visible tool as not ready and never activates it, so a
+slot-only package must keep its render tool `visibility = "model"`;
+`loop_run = "forbidden"` is what keeps the model from invoking it. Counting
+declared slots as a published surface is open follow-up work.
+
+The render tool receives `{ "slot_id", "context": { "thread_id": null|"…" },
+"event": null | { "action", "payload" } }` and must return one node:
+`col`/`row` (`gap?`, `children`), `text` (`text`, `style?` title|body|caption|mono,
+`tone?`), `badge` (`text`, `tone?`), `button` (`label`, `action`, `payload?`,
+`style?` primary|secondary|ghost), `list` (`items: [{title, subtitle?,
+trailing?, action?, payload?}]`), `markdown` (`source`), `divider`;
+`tone` is neutral|success|warning|danger|accent. Unknown types or fields are
+rejected; depth ≤ 8, ≤ 500 nodes, ≤ 64 KiB encoded; a
+`sidebar.session_row.badge` slot must return a single `badge` or `text`.
+
+The host invokes the tool through the ordinary product-origin capability path
+(authorization, the runtime lane), bounds the call to 5 s, persists nothing,
+and turns every failure — a refused or failed call, a timeout, an invalid
+tree — into a plain `{ "error" }` the user sees and the model never does.
+Only active extensions visible to the caller list slots. Routes:
+`ironclaw_webui/CONTRACT.md` (`webui.v2.plugin_ui.*`). Worked fixture:
+`tests/fixtures/extensions/plugin-ui-demo/`.
+
 ## 4. The adapters
 
 Tool surfaces use one adapter. A channel surface exposes a capability set with
@@ -885,8 +943,95 @@ not a member                         -> uninstalled
 member + missing tenant setup,
          personal auth, or pairing  -> setup_needed
 member + every requirement ready    -> active
+third-party package, no consent
+         for its current digest     -> consent_required
+third-party package, files changed
+         after consent              -> tampered
 ```
 
+- `consent_required` / `tampered` (amended 2026-11-18, plugin consent;
+  per-principal and execution-bound 2026-11-18 after review): a package the
+  binary did not compile in (`InstalledLocal`, `RegistryInstalled`) does not
+  activate — on install/join, explicit activation, or boot hydration — and
+  contributes nothing to a user's runs until **that user** grants consent.
+  The lifecycle response carries `consent: { digest, requests: [{ kind,
+  title, detail }] }` derived from the resolved manifest; `kind` is `tool |
+  network | credential | hook | ui_slot | setting | service` (hooks, UI slots
+  and settings are listed too). The grant (`extension_grant_consent`, a user
+  action, never a model-callable capability) names the digest, a SHA-256 over
+  every package file, and is refused for any other digest.
+  - **Whose decision.** One physical package definition and one set of
+    execution pins exist per extension id, but the decision is per principal:
+    a tenant-owned (shared) install runs on the tenant admin's grant (only the
+    tenant admin may make it); a member-held install runs, for each member,
+    only on that member's own grant. Another user joining the membership is
+    `consent_required` until they grant; leaving drops only their decision;
+    final removal drops all of them. Durable records (schema 3, under
+    `/system/extensions/.consent/`): `<id>.json` holds the pins (`digest` +
+    per-file `sha256:` hashes), `grants/<id>/<principal>.json` one decision
+    (`principal`, `digest`, `granted_by`, `granted_at`). A record of any other
+    schema (the earlier id-keyed grant) reads as no grant.
+  - **Per-user surfaces.** `ExtensionLifecycleManager::installation_owners`
+    narrows every owner row by consent (members without a matching decision
+    are dropped; a row nobody consented to is invisible). The tool catalog,
+    the model-visible capability surface, live package hooks, plugin UI
+    slots, package settings and the hook inventory all join that projection.
+  - **Execution binding.** Publication (activation and boot restore) attaches
+    the pins to the published `ExtensionPackage::content_pins`; the generic
+    host's loader attaches them to its rebuilt copy. Every runtime read of a
+    package file is verified against them before use: the WASM lane (before
+    its compiled-module cache lookup), the model-facing schema/prompt reads
+    (`capability_catalog::read_json_ref` — a mismatch omits that capability),
+    and hook modules (`live::read_hook_module` — a mismatch quarantines the
+    package's hooks). Pins are fail-closed: a consent-requiring package
+    without pins is refused (`ExtensionPackage::verify_asset` /
+    `required_asset_pin`); only host-bundled and user-registered packages run
+    unpinned (plus the explicit `with_unverified_contents_for_test`, which
+    exists only under `cfg(test)` / the registry's `test-support` feature —
+    a production build cannot construct an unverified third-party package).
+  - **Dispatch binding (generation).** A capability grant names no package
+    generation, and a run keeps the port and grants it built, so consent is
+    re-checked at dispatch for the binding that executes. The pins carry the
+    consent digest of the grant they came from
+    (`PackageContentPins::consent_digest`); the generic host's loader wraps
+    every tool adapter of a consent-requiring package in
+    `ConsentBoundToolAdapter`, which on each invocation (loop run,
+    credential-gate or approval resume, product-origin calls such as plugin UI
+    render — all reach it through the snapshot resolver) requires the
+    invoking user's governing principal (tenant admin for a tenant-owned
+    install; the caller, who must be a member, otherwise) to hold a decision
+    naming exactly that digest (`ExtensionConsentStore::execution_consented`).
+    Otherwise the call is a model-visible `policy_denied` with a plain reason
+    and never reaches the lane. The live hook installer applies the same
+    check per run (through `InstallationOwnerSource::execution_consented`)
+    for the pins whose module bytes it would compile. So an authorization
+    minted for package A never dispatches a replacement B the user did not
+    consent to, even though B's bytes match B's pins.
+  - **Status from disk.** Changing any file after the grant yields `tampered`
+    until consent is granted again; status is computed from the files on disk
+    (once per package per operation), so a running process notices on the
+    next list, project, or activation.
+  - **Script runtimes.** A consent-requiring package that declares a
+    `script` runtime (reachable through legacy v2 manifests) is refused at
+    admission (import/install), activation, grant and boot, and the script
+    lane itself refuses such a package: the script executor runs commands
+    against files as they are at call time, with no verified snapshot.
+  - **Hooks.** The boot hook projection carries trusted (builtin /
+    host-bundled) packages only; third-party hooks come solely from the live
+    installer, per run, for consented users, from verified bytes.
+  - **Wire.** WebUI v2: `GET /api/webchat/v2/extensions` lists
+    `installation_state: "consent_required" | "tampered"` with
+    `consent: { digest, requests }` for the caller;
+    `POST /api/webchat/v2/extensions/{package_id}/consent` with
+    `{ "digest", "client_action_id" }` grants for the caller and activates
+    (product command `extensions.consent.grant`), answering
+    `{ "granted": true, "installation_state": "active" | ... }`. CLI:
+    `zlo extension grant <id> --digest <digest>` (or `install --yes`).
+
+  Host-bundled and user-registered hosted-MCP packages are exempt. Owner:
+  `ironclaw_extension_host::extension_consent`. These are public states, not
+  `setup_needed`, because the user action differs (review and consent, not a
+  setup form).
 - Install means "join membership." The result is immediately `active` when the
   manifest declares no unmet setup, or `setup_needed` otherwise.
 - There is no public `installed`, `configured`, `disabled`, `failed`,

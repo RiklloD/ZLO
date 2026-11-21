@@ -7,6 +7,9 @@ use ironclaw_product_contracts::error::ProductOperationFailure;
 use ironclaw_product_contracts::lifecycle_service::{
     LifecycleProductContext, LifecycleProductService, LifecycleProductSurfaceContext,
 };
+use ironclaw_product_contracts::package_consent::{
+    LifecycleConsentRequestKind, LifecycleConsentSummary, PackageConsentDigest,
+};
 use ironclaw_product_contracts::package_lifecycle::{
     LifecycleExtensionSource, LifecyclePackageKind, LifecyclePackageRef, LifecycleProductAction,
     LifecycleProductPayload, LifecycleProductResponse, LifecycleSearchExtensionSummary,
@@ -21,11 +24,32 @@ use ironclaw_skills::ScopedSkillManagementPort;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RebornExtensionLifecycleCommand {
-    RegisterHostedMcp { request: RegisterHostedMcpRequest },
-    Search { query: String },
-    Install { id: String },
-    Activate { id: String },
-    Remove { id: String },
+    RegisterHostedMcp {
+        request: RegisterHostedMcpRequest,
+    },
+    Search {
+        query: String,
+    },
+    Install {
+        id: String,
+    },
+    /// Install a package folder read from disk
+    /// (`ironclaw_extension_host::read_extension_folder`): imported through
+    /// the upload validation, then installed and activated like `Install`.
+    InstallFiles {
+        files: Vec<(String, Vec<u8>)>,
+    },
+    Activate {
+        id: String,
+    },
+    /// Grant consent pinned to `digest`, then activate.
+    GrantConsent {
+        id: String,
+        digest: String,
+    },
+    Remove {
+        id: String,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -65,6 +89,43 @@ pub async fn execute_reborn_extension_lifecycle_service_command(
         RebornExtensionLifecycleCommand::Install { id } => {
             execute_install_with_activation(service, context, extension_package_ref(id)?).await?
         }
+        RebornExtensionLifecycleCommand::InstallFiles { files } => {
+            let imported = service.import_extension_files(files).await?;
+            let package_ref =
+                imported
+                    .package_ref
+                    .ok_or_else(|| ProductOperationFailure::Transient {
+                        reason: "extension import returned no package".to_string(),
+                    })?;
+            execute_install_with_activation(service, context, package_ref).await?
+        }
+        RebornExtensionLifecycleCommand::GrantConsent { id, digest } => {
+            let package_ref = extension_package_ref(id)?;
+            let digest =
+                PackageConsentDigest::new(digest).map_err(ProductOperationFailure::from)?;
+            let mut granted = service
+                .execute(
+                    context.clone(),
+                    LifecycleProductAction::ExtensionGrantConsent {
+                        package_ref: package_ref.clone(),
+                        digest,
+                    },
+                )
+                .await?;
+            let activation = service
+                .execute(
+                    context,
+                    LifecycleProductAction::ExtensionActivate { package_ref },
+                )
+                .await?;
+            granted.phase = activation.phase;
+            granted.blockers = activation.blockers;
+            granted.message = activation.message;
+            if activation.consent.is_some() {
+                granted.consent = activation.consent;
+            }
+            granted
+        }
         command => service.execute(context, command.into_action()?).await?,
     })
 }
@@ -94,6 +155,9 @@ async fn execute_install_with_activation(
     install_response.phase = activation_response.phase;
     install_response.blockers = activation_response.blockers;
     install_response.message = activation_response.message;
+    if activation_response.consent.is_some() {
+        install_response.consent = activation_response.consent;
+    }
     let activation_visible_capability_ids = match activation_response.payload {
         Some(LifecycleProductPayload::ExtensionActivate {
             visible_capability_ids,
@@ -116,7 +180,8 @@ async fn execute_install_with_activation(
         // `install_guidance` exists to own — the drift shape #7853 came from.
         // Overwriting it dropped the per-user link direction for every CLI
         // user, leaving it only in `message`, which this renderer never prints.
-        if install_response.phase != InstallationState::Active {
+        if install_response.phase != InstallationState::Active && install_response.consent.is_none()
+        {
             *next_step = "Activation did not complete; inspect the lifecycle phase and blockers."
                 .to_string();
         }
@@ -168,9 +233,50 @@ pub fn render_reborn_extension_lifecycle_response(
         Some(LifecycleProductPayload::ExtensionRemove { removed }) => {
             push_line(&mut output, format_args!("removed: {removed}"));
         }
+        Some(LifecycleProductPayload::ExtensionGrantConsent { granted }) => {
+            push_line(&mut output, format_args!("consent_granted: {granted}"));
+        }
         _ => {}
     }
+    if let Some(consent) = &response.consent {
+        render_consent_summary(&mut output, consent);
+    }
+    if matches!(
+        response.phase,
+        InstallationState::ConsentRequired | InstallationState::Tampered
+    ) && let Some(message) = &response.message
+    {
+        push_line(&mut output, format_args!("{}", terminal_safe(message)));
+    }
     output
+}
+
+/// The consent block the CLI shows before asking: one line per request,
+/// then the digest a grant must name.
+pub fn render_consent_summary(output: &mut String, consent: &LifecycleConsentSummary) {
+    push_line(output, format_args!("this plugin asks for:"));
+    if consent.requests.is_empty() {
+        push_line(output, format_args!("  (nothing declared)"));
+    }
+    for request in &consent.requests {
+        push_line(
+            output,
+            format_args!(
+                "  [{}] {}: {}",
+                consent_kind_label(request.kind),
+                terminal_safe(&request.title),
+                terminal_safe(&request.detail)
+            ),
+        );
+    }
+    push_line(
+        output,
+        format_args!("consent_digest: {}", consent.digest.as_str()),
+    );
+}
+
+fn consent_kind_label(kind: LifecycleConsentRequestKind) -> &'static str {
+    kind.as_str()
 }
 
 impl RebornExtensionLifecycleCommand {
@@ -182,6 +288,15 @@ impl RebornExtensionLifecycleCommand {
             Self::Search { query } => LifecycleProductAction::ExtensionSearch { query },
             Self::Install { id } => LifecycleProductAction::ExtensionInstall {
                 package_ref: extension_package_ref(id)?,
+            },
+            Self::InstallFiles { .. } => {
+                return Err(ProductOperationFailure::InvalidBindingRequest {
+                    reason: "folder install is handled before action dispatch".to_string(),
+                });
+            }
+            Self::GrantConsent { id, digest } => LifecycleProductAction::ExtensionGrantConsent {
+                package_ref: extension_package_ref(id)?,
+                digest: PackageConsentDigest::new(digest)?,
             },
             Self::Activate { id } => LifecycleProductAction::ExtensionActivate {
                 package_ref: extension_package_ref(id)?,
@@ -423,6 +538,7 @@ mod tests {
                     installation_phase: None,
                 }],
             }),
+            consent: None,
         };
 
         let output = render_reborn_extension_lifecycle_response("search", &response);
