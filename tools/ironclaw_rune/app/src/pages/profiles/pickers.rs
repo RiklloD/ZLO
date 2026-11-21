@@ -546,7 +546,7 @@ fn checklist_popover(s: &State, k: &Kit, menu: Menu, empty_label: &'static str) 
                 .checked(on)
                 .items_start()
                 .py(4.0)
-                .child(check_box(p, on))
+                .child(check_box(p, &format!("check-{}-{}", menu as u8, c.id), on))
                 .child(text)
                 .on_press(move |s: &mut State| {
                     let set = picked_set(pr(s), menu);
@@ -595,9 +595,9 @@ fn pick_row(p: &Palette, key: String, text: String, on: bool) -> El {
 
 /// A checklist row's box: its fill and rim morph on the slide spring as it
 /// is ticked, and the tick pops in (`motion::glyph_pop`).
-fn check_box(p: &Palette, on: bool) -> El {
+fn check_box(p: &Palette, key: &str, on: bool) -> El {
     let b = row()
-        .key("box")
+        .key(format!("{key}-box"))
         .motion(motion::SLIDE)
         .mt(2.0)
         .w(14.0)
@@ -609,7 +609,7 @@ fn check_box(p: &Palette, on: bool) -> El {
     if on {
         b.fill(p.accent).child(
             glyph(&icons::CHECK, 10.0, p.on_solid)
-                .key("tick")
+                .key(format!("{key}-tick"))
                 .transition(motion::glyph_pop()),
         )
     } else {

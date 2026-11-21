@@ -9,6 +9,8 @@
 //! Other areas call [`new_profile`] (the inbox's New profile button).
 
 mod fixtures;
+#[cfg(test)]
+mod motion_tests;
 mod pickers;
 mod view;
 
