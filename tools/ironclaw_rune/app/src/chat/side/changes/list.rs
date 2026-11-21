@@ -2,12 +2,13 @@
 //! staged and unstaged files, each with its actions. A row scrolls the diff
 //! to its file.
 
-use rune::{El, GrowthSpec, ScrollSpec, col, el, icon, row};
+use rune::{El, GrowthSpec, ScrollSpec, col, el, row};
 use rune_kit::Kit;
 
 use super::super::ui::{self, xs};
 use super::{ChangesState, change as git_change, confirmed, jump};
 use crate::chat::side::git;
+use crate::design::kit::{self, Turn};
 use crate::icons;
 use crate::state::State;
 use zlo_client::repo_calls::ThreadGitAction;
@@ -212,17 +213,13 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
         .gap(4.)
         .items_center()
         .cursor(rune::Cursor::Pointer)
-        .child(
-            icon(
-                if hidden {
-                    &icons::CHEVRON_RIGHT
-                } else {
-                    &icons::CHEVRON_DOWN
-                },
-                12.,
-            )
-            .color(p.text_muted),
-        )
+        .child(kit::chevron(
+            "changes-list-chevron",
+            !hidden,
+            Turn::Disclose,
+            12.,
+            p.text_muted,
+        ))
         .child(ui::line(
             format!("{count} changed file{}", if count == 1 { "" } else { "s" }),
             xs(),

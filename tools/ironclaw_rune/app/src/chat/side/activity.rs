@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use crate::design::kit::Spinner;
+use crate::design::kit::{self, Spinner};
 use rune::{El, col, el, icon, row};
 use rune_kit::Kit;
 use zlo_client::GateDecision;
@@ -345,8 +345,10 @@ fn step_row(s: &State, row_: &Row) -> El {
             reason,
         } => {
             let mark = match status {
+                // Breathes at 15 fps (Rune's rotation loops draw at the
+                // display's rate, uncapped).
                 ToolStatus::Running => {
-                    mark(&icons::LOADER_CIRCLE, p.text_muted).looping(rune::LoopSpec::rotation(1.0))
+                    kit::busy_glyph("mark", &icons::LOADER_CIRCLE, true, 12., p.text_muted)
                 }
                 ToolStatus::Completed => mark(&icons::CHECK, p.success),
                 ToolStatus::Failed => mark(&icons::CIRCLE_X, p.danger),
@@ -370,7 +372,13 @@ fn step_row(s: &State, row_: &Row) -> El {
                 GateState::Closed(Some(_)) => (&icons::CIRCLE_CHECK, p.success, "Approved"),
                 GateState::Closed(None) => (&icons::CIRCLE_CHECK, p.text_faint, "Answered"),
             };
-            (key, mark(i, color), format!("{verb}: {headline}"), None)
+            let resolving = matches!(state, GateState::Resolving(_));
+            let mark = if resolving {
+                kit::busy_glyph("mark", i, true, 12., color)
+            } else {
+                mark(i, color)
+            };
+            (key, mark, format!("{verb}: {headline}"), None)
         }
         Row::RunNotice {
             key, text, failed, ..

@@ -36,6 +36,7 @@ use super::{
     SideState, Tab, agents, bridge, changes, git, pick_project_folder, remote_repo, routines,
     session, short_path, side, side_mut, side_of, thread_id,
 };
+use crate::design::kit::{self, Turn};
 use crate::icons;
 use crate::jobs;
 use crate::state::{Page, State};
@@ -251,6 +252,7 @@ fn split(key: &str, primary: El, chevron: El) -> El {
 }
 
 fn chevron(s: &State, key: &str, which: Dropdown) -> El {
+    let open = side(s).is_some_and(|x| x.details.dropdown == Some(which));
     pressable(
         s,
         el().key(format!("{key}-chevron"))
@@ -258,7 +260,13 @@ fn chevron(s: &State, key: &str, which: Dropdown) -> El {
             .h(ROW_H)
             .center()
             .radius(8.)
-            .child(glyph(s, &icons::CHEVRON_DOWN)),
+            .child(kit::chevron(
+                "glyph",
+                open,
+                Turn::Flip,
+                16.,
+                s.palette.text_muted,
+            )),
     )
     .label("More options")
     .on_press(move |s: &mut State| toggle_dropdown(s, which))
@@ -1118,17 +1126,13 @@ fn lineage(c: &Ctx) -> Option<Section> {
         if !open {
             head = head.child(meta(s, previous.len().to_string()));
         }
-        head = head.child(
-            icon(
-                if open {
-                    &icons::CHEVRON_DOWN
-                } else {
-                    &icons::CHEVRON_RIGHT
-                },
-                16.,
-            )
-            .color(p.text_muted),
-        );
+        head = head.child(kit::chevron(
+            "previous-agents-chevron",
+            open,
+            Turn::Disclose,
+            16.,
+            p.text_muted,
+        ));
         rows.push(pressable(s, head).expanded(open).on_press(|s: &mut State| {
             if let Some(x) = side_mut(s) {
                 x.details.previous_open = !x.details.previous_open;
