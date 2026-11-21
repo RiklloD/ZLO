@@ -253,7 +253,9 @@ pub use channel_connection::{
     ChannelConnectionTestBundle, ChannelConnectionTestConfig, build_channel_connection_for_test,
 };
 #[cfg(feature = "test-support")]
-pub use durable::open_standalone_extension_installation_store_for_test;
+pub use durable::{
+    extension_management_for_test, open_standalone_extension_installation_store_for_test,
+};
 #[cfg(feature = "test-support")]
 pub use durable::{
     open_standalone_approval_request_store_for_test,

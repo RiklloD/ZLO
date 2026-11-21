@@ -30,6 +30,10 @@ pub const SCENES: &[Scene] = &[
     ("chat-wallpaper-conversation", |s| {
         crate::chat::fixtures::wallpaper_area(s, "conversation")
     }),
+    (
+        "chat-wallpaper-window",
+        crate::chat::fixtures::wallpaper_window,
+    ),
     ("chat-wallpaper-pane", |s| {
         crate::chat::fixtures::wallpaper_area(s, "pane")
     }),
@@ -119,6 +123,30 @@ pub const SCENES: &[Scene] = &[
     ("draft-files", ws::fixture_draft_files),
     ("draft-mention", ws::fixture_draft_mention),
     ("extensions", crate::pages::extensions::fixtures::extensions),
+    // Plugins: consent, a plugin's settings page, its side tab and badges.
+    ("plugin-consent", |s| {
+        crate::pages::extensions::fixtures::plugins_consent(s, false)
+    }),
+    ("plugin-consent-light", |s| {
+        crate::pages::extensions::fixtures::plugins_consent(s, true)
+    }),
+    (
+        "plugin-list",
+        crate::pages::extensions::fixtures::plugins_list,
+    ),
+    ("plugin-settings", |s| {
+        crate::pages::extensions::fixtures::plugin_settings(s, false)
+    }),
+    ("plugin-settings-light", |s| {
+        crate::pages::extensions::fixtures::plugin_settings(s, true)
+    }),
+    ("plugin-panel", |s| {
+        crate::plugins::fixtures::panel(s, false)
+    }),
+    ("plugin-panel-light", |s| {
+        crate::plugins::fixtures::panel(s, true)
+    }),
+    ("plugin-panel-error", crate::plugins::fixtures::panel_error),
     ("files", |s| {
         page_with(s, Page::Files, crate::pages::files::fixture)
     }),
@@ -220,9 +248,11 @@ pub const SCENES: &[Scene] = &[
     ("shell", ws::fixture_shell),
     ("side-activity", crate::chat::side::fixtures::activity),
     ("side-agents", crate::chat::side::fixtures::agents),
+    ("side-browser", crate::chat::side::fixtures::browser),
     ("side-changes", crate::chat::side::fixtures::changes),
     ("side-console", crate::chat::side::fixtures::console),
     ("side-files", crate::chat::side::fixtures::files),
+    ("side-machines", crate::chat::side::fixtures::machines),
     ("side-history", crate::chat::side::fixtures::history),
     ("side-no-folder", crate::chat::side::fixtures::no_folder),
     ("side-outputs", crate::chat::side::fixtures::outputs),

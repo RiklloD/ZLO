@@ -268,6 +268,7 @@ impl UnusedServices {
                     auth_accounts: Vec::new(),
                     surfaces: Vec::new(),
                     install_scope: None,
+                    consent: None,
                 })
                 .collect(),
         }

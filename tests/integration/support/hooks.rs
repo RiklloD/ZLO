@@ -153,7 +153,7 @@ fn hook_install_err(context: &str, error: impl std::fmt::Display) -> RebornLoopD
 /// both writing to `log`; a turn invoking a capability records both points.
 /// Mints a fresh dispatcher per call (per-run isolation).
 pub fn recording_hook_factory(log: RecordingHookLog) -> HookDispatcherBuilderFactory {
-    Arc::new(move || {
+    ironclaw_turn_runner::loop_driver_host::sync_hook_dispatcher_builder_factory(move || {
         let log = log.clone();
         let observer_id = HookId::for_builtin(RECORDING_OBSERVER_PATH, HookVersion::ONE);
         let before_capability_id =
@@ -189,7 +189,7 @@ pub fn poisoning_hook_factory(
     poison_target: impl Into<String>,
 ) -> HookDispatcherBuilderFactory {
     let poison_target = poison_target.into();
-    Arc::new(move || {
+    ironclaw_turn_runner::loop_driver_host::sync_hook_dispatcher_builder_factory(move || {
         let log = log.clone();
         let poison_target = poison_target.clone();
         let before_capability_id =
@@ -211,7 +211,7 @@ pub fn denying_hook_factory(
     deny_target: impl Into<String>,
 ) -> HookDispatcherBuilderFactory {
     let deny_target = deny_target.into();
-    Arc::new(move || {
+    ironclaw_turn_runner::loop_driver_host::sync_hook_dispatcher_builder_factory(move || {
         let log = log.clone();
         let deny_target = deny_target.clone();
         let observer_id = HookId::for_builtin(RECORDING_OBSERVER_PATH, HookVersion::ONE);

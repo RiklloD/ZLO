@@ -116,14 +116,22 @@ where
                     descriptor.id
                 ))
             })?;
-            let input_schema =
-                read_json_ref(fs, root, &declaration.input_schema_ref, "input_schema_ref").await?;
+            let input_schema = read_json_ref(
+                fs,
+                package,
+                root,
+                &declaration.input_schema_ref,
+                "input_schema_ref",
+            )
+            .await?;
             let output_schema = match &declaration.output_schema_ref {
-                Some(reference) => read_json_ref(fs, root, reference, "output_schema_ref").await?,
+                Some(reference) => {
+                    read_json_ref(fs, package, root, reference, "output_schema_ref").await?
+                }
                 None => Value::Object(serde_json::Map::new()),
             };
             let prompt_doc = match &declaration.prompt_doc_ref {
-                Some(prompt_ref) => Some(read_text_ref(fs, root, prompt_ref).await?),
+                Some(prompt_ref) => Some(read_text_ref(fs, package, root, prompt_ref).await?),
                 None => None,
             };
             (input_schema, output_schema, prompt_doc)
@@ -142,6 +150,7 @@ where
 
 pub(crate) async fn read_json_ref<F>(
     fs: &F,
+    package: &ExtensionPackage,
     root: &VirtualPath,
     reference: &CapabilityProfileSchemaRef,
     field: &'static str,
@@ -186,6 +195,7 @@ where
     }
     let path = resolve_under_root(root, reference)?;
     let bytes = read_bounded(fs, &path, MAX_HOT_SCHEMA_BYTES, field).await?;
+    verify_consented(package, &path, &bytes, field)?;
     let schema = serde_json::from_slice(&bytes).map_err(|error| {
         HostRuntimeError::invalid_request(format!(
             "{field} {} must contain valid JSON schema: {error}",
@@ -203,6 +213,7 @@ where
 
 async fn read_text_ref<F>(
     fs: &F,
+    package: &ExtensionPackage,
     root: &VirtualPath,
     reference: &CapabilityProfileSchemaRef,
 ) -> Result<String, HostRuntimeError>
@@ -211,10 +222,37 @@ where
 {
     let path = resolve_under_root(root, reference)?;
     let bytes = read_bounded(fs, &path, MAX_HOT_PROMPT_BYTES, "prompt_doc_ref").await?;
+    verify_consented(package, &path, &bytes, "prompt_doc_ref")?;
     String::from_utf8(bytes).map_err(|error| {
         HostRuntimeError::invalid_request(format!(
             "prompt_doc_ref {} must be valid UTF-8: {error}",
             reference.as_str()
+        ))
+    })
+}
+
+/// Model-facing schema and prompt bytes are part of what a consent grant
+/// covers: verify the exact buffer about to be parsed and published against
+/// the package's consented hash (fail-closed for a package that needs consent
+/// and carries no pins). A mismatch refuses this capability's publication and
+/// names the package as tampered.
+fn verify_consented(
+    package: &ExtensionPackage,
+    path: &VirtualPath,
+    bytes: &[u8],
+    field: &'static str,
+) -> Result<(), HostRuntimeError> {
+    package.verify_asset(path, bytes).map_err(|error| {
+        tracing::debug!(
+            extension_id = package.id.as_str(),
+            %error,
+            field,
+            "refusing to publish a schema or prompt that is not the consented one"
+        );
+        HostRuntimeError::invalid_request(format!(
+            "extension {} is tampered: {field} {}: {error}",
+            package.id.as_str(),
+            path.as_str()
         ))
     })
 }

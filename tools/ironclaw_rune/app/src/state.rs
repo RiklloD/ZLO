@@ -10,6 +10,7 @@
 //! | `voice` | `voice` | `voice/*` |
 //! | `snapshot` | `snapshot` | `snapshot/*` |
 //! | `design` | `design::look` | wallpaper, battery saver, motion prefs |
+//! | `plugins` | `plugins` | (new) plugin UI slots and trees |
 //!
 //! Handlers reach their slot from the root (`s.chat.as_mut()`, `&mut s.pages`)
 //! — Rune has no state lenses, every handler closure is `Fn(&mut State)`.
@@ -88,6 +89,8 @@ pub struct State {
     pub onboarding: crate::onboarding::OnboardingState,
     /// The saved computers and the connection to the active one.
     pub remote: crate::remote::RemoteState,
+    /// Plugin UI slots and the trees plugins sent (`plugins`).
+    pub plugins: crate::plugins::PluginsState,
     /// A `bench-*` scene's feed (`crate::bench`); `None` otherwise.
     pub bench: Option<Box<crate::bench::Bench>>,
     /// Threads made ready under a resting pointer (`chat::prewarm`).
@@ -119,6 +122,7 @@ impl State {
             native: Default::default(),
             onboarding: Default::default(),
             remote: Default::default(),
+            plugins: Default::default(),
             bench: None,
             prewarm: Default::default(),
         }

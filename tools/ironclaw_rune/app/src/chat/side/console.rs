@@ -276,6 +276,18 @@ fn recall(s: &mut State, up: bool) -> bool {
     true
 }
 
+pub(super) fn is_running(s: &State) -> bool {
+    let Some(x) = side(s) else { return false };
+    x.console.running.is_some() || (remote_repo::remote(s) && x.console.remote.running)
+}
+
+fn run_preset(s: &mut State, command: &str, tx: &mut Tx) {
+    if let Some(x) = side_mut(s) {
+        x.console.input.replace_text(command);
+    }
+    run(s, tx);
+}
+
 pub(super) fn view(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let Some(x) = side(s) else {
@@ -295,15 +307,48 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let running = state.running.is_some() || (remote && state.remote.running);
     let mut lines = col().w_full().px(12.).py(8.);
     if state.lines.is_empty() {
-        lines = lines.child(ui::para(
-            if remote {
-                format!("Commands run in {folder}. Try `git log --oneline -5` or `npm test`.")
-            } else {
-                format!("Commands run in {folder} with your login shell. Try `git log --oneline -5` or `npm test`.")
-            },
-            xs(),
-            p.text_faint,
-        ));
+        let subtitle = if remote {
+            format!("Commands run in {folder}.")
+        } else {
+            format!("Commands run in {folder} with your login shell.")
+        };
+        let presets = ["git status", "git log --oneline -5", "ls -la"];
+        let mut chips = row().w_full().wrap().gap(6.);
+        for (ix, cmd) in presets.into_iter().enumerate() {
+            chips = chips.child(
+                row()
+                    .key(format!("console-preset-{ix}"))
+                    .role("button")
+                    .label(format!("Run {cmd}"))
+                    .h(26.)
+                    .px(9.)
+                    .gap(5.)
+                    .items_center()
+                    .radius(crate::design::CONTROL_RADIUS)
+                    .fill(p.surface_raised.alpha(if p.light { 0.85 } else { 0.7 }))
+                    .border(1., p.border)
+                    .hover(p.hover)
+                    .cursor(rune::Cursor::Pointer)
+                    .child(ui::line("$", MONO_XS, p.accent))
+                    .child(ui::line(cmd, MONO_XS, p.text))
+                    .on_press_tx(move |s: &mut State, tx| run_preset(s, cmd, tx)),
+            );
+        }
+        lines = lines.child(
+            col().w_full().gap(10.).child(ui::empty_card(
+                s,
+                &icons::SQUARE_TERMINAL,
+                "Ready to run commands",
+                subtitle,
+                Some(
+                    col()
+                        .w_full()
+                        .gap(6.)
+                        .child(ui::section_label(s, "Quick commands"))
+                        .child(chips),
+                ),
+            )),
+        );
     }
     for (ix, (kind, line)) in state.lines.iter().enumerate() {
         let (content, color, top) = match kind {

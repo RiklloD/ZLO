@@ -42,6 +42,28 @@ pub(super) fn emit_hook_quarantined(
     );
 }
 
+/// Emit a `hook.skipped_for_run` security-audit event: an extension's
+/// after-fact observer hooks were left out of one run's dispatcher (e.g. its
+/// settings could not be read for the run's user). The package is not
+/// quarantined; the next run tries again. `debug!` on the same stable target,
+/// per the REPL/TUI logging rule.
+pub(super) fn emit_hook_skipped_for_run(
+    tenant_id: &ironclaw_host_api::ids::TenantId,
+    extension_id: &str,
+    reason: &str,
+    hooks_skipped: usize,
+) {
+    tracing::debug!(
+        target: SECURITY_AUDIT_TARGET,
+        event = "hook.skipped_for_run",
+        tenant_id = %tenant_id.as_str(),
+        extension_id = %extension_id,
+        reason = %reason,
+        hooks_skipped = hooks_skipped,
+        "extension observer hooks skipped for one run"
+    );
+}
+
 /// Deterministic, thread-local capture of quarantine-audit attribution for
 /// tests. The `tracing` channel is the production observability surface, but
 /// asserting on it from a unit test is racy: a sibling test that installs a

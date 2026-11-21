@@ -174,6 +174,12 @@ rust_decimal = { version = "1", features = ["serde", "serde-with-str"] }
 rust_decimal_macros = "1"
 sha2 = "0.11"
 tempfile = "3"
+# Package hooks/settings E2E builds its WASM tool component and hook module
+# from WAT at test time (same pattern as ironclaw_host_runtime's tests).
+ironclaw_wasm = { path = "../../lanes/ironclaw_wasm" }
+wat = "1.245.1"
+wit-component = "0.254.0"
+wit-parser = "0.254.0"
 testcontainers-modules = { version = "0.12", features = ["postgres"] }
 tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
 tower = { version = "0.5", features = ["util"] }

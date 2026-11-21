@@ -1,7 +1,8 @@
 //! The read-only hook inventory for the Settings page, derived from the same
-//! inputs the per-run dispatcher factory replays: the activation flags, the
-//! (empty) first-party catalog, every projected extension `[[hooks]]` entry,
-//! and the after-turn memory upkeep hook when it is wired.
+//! inputs the per-run dispatcher factory uses: the activation flags, the
+//! (empty) first-party catalog, every trusted projected `[[hooks]]` entry,
+//! the after-turn memory upkeep hook when it is wired, and — per caller —
+//! the hooks of active third-party packages visible to that caller.
 //!
 //! Extension hooks always install at the `Installed` trust tier (the
 //! registrar is the only install path), so that is the class reported for
@@ -124,22 +125,88 @@ pub(crate) fn hook_catalog(
             });
         }
     }
-    // Packages dropped before projection (malformed, oversized, over the
-    // tenant budget, outside the root, duplicate id) have no readable hooks;
-    // each is listed once so the drop is visible.
-    for (extension, reason) in registry.admission_quarantines() {
-        hooks.push(HookCatalogEntry {
-            id: extension.clone(),
-            name: format!("{extension} (all hooks)"),
-            source: HookSource::Extension,
-            trust_class: HookTrustClassView::Installed,
-            owner: Some(extension.clone()),
-            points: Vec::new(),
-            enabled: false,
-            note: Some(format!("Quarantined: {}", short(reason))),
-        });
-    }
     finish(config, hooks)
+}
+
+/// The hook inventory a caller sees: the deployment-wide trusted part
+/// (computed once at build) plus, per call, the hooks of every active
+/// third-party package whose installation is visible to the caller — the
+/// same consent-filtered owner projection a run's live installer applies —
+/// with any live quarantine recorded for it. Another user's private plugin
+/// is absent, exactly like an unknown one.
+pub(crate) struct CallerHookCatalog {
+    pub(crate) base: HookCatalog,
+    pub(crate) config: HooksActivationConfig,
+    pub(crate) live: Option<super::live::LiveHookSources>,
+}
+
+#[async_trait::async_trait]
+impl ironclaw_product_contracts::hooks_catalog::HookCatalogSource for CallerHookCatalog {
+    async fn catalog(&self, caller: &ironclaw_host_api::ids::UserId) -> HookCatalog {
+        let mut catalog = self.base.clone();
+        let Some(live) = self.live.as_ref() else {
+            return catalog;
+        };
+        let owners = match live.owners.installation_owners().await {
+            Ok(owners) => owners,
+            Err(error) => {
+                // Fail closed: without owners nothing third-party is listed.
+                tracing::debug!(%error, "hook catalog: installation owners unreadable");
+                return catalog;
+            }
+        };
+        let snapshot = live.active.snapshot();
+        for package in snapshot.extensions() {
+            if package.manifest.source.allows_first_party() || package.manifest.hooks.is_empty() {
+                continue;
+            }
+            if !ironclaw_extension_manager::installation_visibility::installation_visible_to(
+                &owners,
+                &package.id,
+                caller,
+            ) {
+                continue;
+            }
+            let extension = package.id.as_str();
+            let quarantine = live.quarantines.reason(extension).or_else(|| {
+                (package.manifest.source.requires_consent() && package.content_pins.is_none())
+                    .then(|| "no consent grant binds this package's files".to_string())
+            });
+            let enabled_by_flags = self.config.is_third_party_enabled();
+            for hook in &package.manifest.hooks {
+                let entry = toml::from_str::<HookManifestEntry>(&hook.raw_toml).ok();
+                let point = entry
+                    .as_ref()
+                    .and_then(|entry| serde_json::to_value(entry.kind).ok())
+                    .and_then(|value| value.as_str().map(str::to_string));
+                let note = if let Some(reason) = quarantine.as_ref() {
+                    Some(format!("Quarantined with its extension: {}", short(reason)))
+                } else if !enabled_by_flags {
+                    Some(
+                        "Off: third-party hooks need HOOKS_ENABLED and HOOKS_THIRD_PARTY_ENABLED."
+                            .to_string(),
+                    )
+                } else {
+                    None
+                };
+                catalog.hooks.push(HookCatalogEntry {
+                    name: entry
+                        .as_ref()
+                        .and_then(|entry| entry.description.clone())
+                        .filter(|text| !text.trim().is_empty())
+                        .unwrap_or_else(|| hook.local_id.clone()),
+                    id: format!("{extension}/{}", hook.local_id),
+                    source: HookSource::Extension,
+                    trust_class: HookTrustClassView::Installed,
+                    owner: Some(extension.to_string()),
+                    points: point.into_iter().collect(),
+                    enabled: quarantine.is_none() && enabled_by_flags,
+                    note,
+                });
+            }
+        }
+        catalog
+    }
 }
 
 /// Bounded, single-line reason text for the page.

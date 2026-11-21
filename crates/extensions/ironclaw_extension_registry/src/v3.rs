@@ -97,6 +97,10 @@ pub enum ManifestV3Error {
     McpNamespaceMismatch { namespace: String, id: String },
     #[error("[mcp].max_tools must be at least 1")]
     McpZeroMaxTools,
+    #[error("[[hooks]] is invalid: {reason}")]
+    InvalidHooks { reason: String },
+    #[error("[[settings]] is invalid: {reason}")]
+    InvalidSettings { reason: String },
     #[error(transparent)]
     Contract(#[from] HostApiError),
 }
@@ -128,6 +132,15 @@ struct RawManifestV3 {
     auth: BTreeMap<String, VendorAuthRecipe>,
     #[serde(default)]
     admin_configuration: Option<ExtensionAdminConfigurationDescriptor>,
+    /// Plugin UI slots (`[[ui.slots]]`); validated in [`crate::ui_slots`].
+    #[serde(default)]
+    ui: Option<crate::ui_slots::RawUiV3>,
+    /// Package hooks; parsed by `crate::v3_package_surfaces`.
+    #[serde(default)]
+    hooks: Vec<toml::Value>,
+    /// Package user settings; validated by `crate::v3_package_surfaces`.
+    #[serde(default)]
+    settings: Vec<crate::settings::ExtensionSettingDecl>,
     /// Free-form authoring metadata, ignored (same exemption as v2's
     /// `metadata` root).
     #[serde(default)]
@@ -707,6 +720,12 @@ pub(crate) fn parse_v3(
         }
     }
 
+    let ui_slots = raw.ui.map(|ui| ui.slots).unwrap_or_default();
+    crate::ui_slots::validate_ui_slots(&ui_slots, &capabilities)
+        .map_err(|reason| ManifestV3Error::Invalid { reason })?;
+    let hooks = crate::v3_package_surfaces::parse_v3_hooks(raw.hooks)?;
+    let settings = crate::v3_package_surfaces::parse_v3_settings(raw.settings)?;
+
     let mut host_api_surfaces = Vec::new();
     if let Some(channel) = &raw.channel {
         host_api_surfaces.push(CapabilitySurfaceDeclV2::Channel {
@@ -727,7 +746,9 @@ pub(crate) fn parse_v3(
         host_apis: Vec::new(),
         capabilities,
         host_api_surfaces,
-        hooks: Vec::new(),
+        hooks,
+        settings,
+        ui_slots: ui_slots.clone(),
     };
 
     let auth = recipes
@@ -783,7 +804,9 @@ pub(crate) fn parse_v3(
         auth,
         host_apis: Vec::new(),
         section_surfaces: Vec::new(),
-        hooks: Vec::new(),
+        hooks: manifest.hooks.clone(),
+        ui_slots,
+        settings: manifest.settings.clone(),
     };
 
     Ok((manifest, resolved))

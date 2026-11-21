@@ -276,6 +276,8 @@ pub(crate) fn connected(
     crate::onboarding::decide(s);
     start_polling(s);
     status::start(s);
+    // Plugins' slots: read once per connection, again on lifecycle changes.
+    crate::plugins::refresh_slots(s);
     let reopen = reopen.filter(|id| s.workspace.inbox.row(id).is_some());
     match reopen.or_else(|| inbox::first_open(s)) {
         Some(first) => open_thread(s, first),
@@ -513,7 +515,7 @@ pub fn settings_groups(s: &State) -> Vec<(&'static str, Vec<NavItem>)> {
                 (Page::Profiles, &i::USER, "Profiles"),
                 (Page::Memory, &i::FILE_TEXT, "Memory"),
                 (Page::Skills, &i::BOOK_OPEN, "Skills"),
-                (Page::Extensions, &i::FRAME, "Extensions"),
+                (Page::Extensions, &i::PUZZLE, "Plugins"),
                 (Page::Permissions, &i::CIRCLE_CHECK, "Permissions"),
                 (Page::Hooks, &i::REPLACE, "Hooks"),
             ],

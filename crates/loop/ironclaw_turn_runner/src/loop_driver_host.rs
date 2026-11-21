@@ -1,4 +1,5 @@
 // arch-exempt: large_file, loop host integration awaits dependency decomposition, plan #4088
+use ironclaw_host_api::resource::ResourceScope;
 use std::{
     collections::HashMap,
     fmt,
@@ -466,17 +467,43 @@ impl HookCapabilityInputResolver for HookCapabilityInputResolverAdapter {
 
 pub type HookDispatcherFactory = Arc<dyn Fn() -> Arc<HookDispatcher> + Send + Sync + 'static>;
 
+/// The per-run inputs a [`HookDispatcherBuilderFactory`] may read.
+///
+/// `scope` is the run's resource scope (tenant + acting user), so a factory
+/// can bind run-scoped, user-owned inputs — such as an installed extension's
+/// current settings — to the hooks it installs. It carries identity only,
+/// never authority.
+#[derive(Debug, Clone)]
+pub struct HookDispatcherBuildRequest {
+    pub scope: ResourceScope,
+}
+
+/// Future returned by a [`HookDispatcherBuilderFactory`].
+pub type HookDispatcherBuilderFuture =
+    Pin<Box<dyn Future<Output = Result<HookDispatcherBuilder, RebornLoopDriverHostError>> + Send>>;
+
 /// Per-run hook dispatcher builder factory.
 ///
 /// Returns a freshly-minted [`HookDispatcherBuilder`] per host build, or an
-/// error if the per-run install replay fails. The composition path validates
-/// every install set once at composition time and replays the identical
-/// scratch-validated set per run, so in practice this never errors; the
-/// `Result` exists so a future regression surfaces as a build error rather than
-/// a panic (CLAUDE.md forbids `.expect()` in production code).
-pub type HookDispatcherBuilderFactory = Arc<
-    dyn Fn() -> Result<HookDispatcherBuilder, RebornLoopDriverHostError> + Send + Sync + 'static,
->;
+/// error if the per-run install fails. Async so a factory can read the live
+/// extension set and run-scoped inputs (module bytes, settings) for the run
+/// it is building; [`sync_hook_dispatcher_builder_factory`] adapts a plain
+/// closure. The `Result` exists so a regression surfaces as a build error
+/// rather than a panic (CLAUDE.md forbids `.expect()` in production code).
+pub type HookDispatcherBuilderFactory =
+    Arc<dyn Fn(HookDispatcherBuildRequest) -> HookDispatcherBuilderFuture + Send + Sync + 'static>;
+
+/// Adapt a synchronous, request-independent builder closure into a
+/// [`HookDispatcherBuilderFactory`].
+pub fn sync_hook_dispatcher_builder_factory<F>(factory: F) -> HookDispatcherBuilderFactory
+where
+    F: Fn() -> Result<HookDispatcherBuilder, RebornLoopDriverHostError> + Send + Sync + 'static,
+{
+    Arc::new(move |_request: HookDispatcherBuildRequest| {
+        let built = factory();
+        Box::pin(async move { built })
+    })
+}
 
 pub struct RebornLoopDriverHostFactory<S, G>
 where
@@ -778,11 +805,23 @@ where
     /// should construct a clean builder (no pre-attached milestone sink —
     /// the host wires one). Manifest-driven hook installations happen
     /// inside the closure exactly as with the legacy factory.
-    pub fn with_hook_dispatcher_builder_factory<F>(mut self, factory: F) -> Self
+    pub fn with_hook_dispatcher_builder_factory<F>(self, factory: F) -> Self
     where
         F: Fn() -> Result<HookDispatcherBuilder, RebornLoopDriverHostError> + Send + Sync + 'static,
     {
-        self.hook_dispatcher_builder_factory = Some(Arc::new(factory));
+        self.with_run_scoped_hook_dispatcher_builder_factory(sync_hook_dispatcher_builder_factory(
+            factory,
+        ))
+    }
+
+    /// Install an async, run-scoped [`HookDispatcherBuilderFactory`]. Same
+    /// per-build contract as [`Self::with_hook_dispatcher_builder_factory`];
+    /// the factory additionally receives the run's [`HookDispatcherBuildRequest`].
+    pub fn with_run_scoped_hook_dispatcher_builder_factory(
+        mut self,
+        factory: HookDispatcherBuilderFactory,
+    ) -> Self {
+        self.hook_dispatcher_builder_factory = Some(factory);
         self
     }
 
@@ -1131,7 +1170,10 @@ where
             self.hook_dispatcher_factory.as_ref(),
         ) {
             (Some(builder_factory), _) => {
-                let mut builder = builder_factory()?;
+                let mut builder = builder_factory(HookDispatcherBuildRequest {
+                    scope: hook_build_scope(&run_context),
+                })
+                .await?;
                 if let Some(sink) = self.hook_security_audit_sink.as_ref() {
                     builder = builder.with_security_audit_sink(Arc::clone(sink));
                 }
@@ -2889,5 +2931,28 @@ mod tests {
             .expect_err("missing metadata must reject");
 
         assert_eq!(error.kind, AgentLoopHostErrorKind::Unavailable);
+    }
+}
+
+/// The resource scope a run's hook dispatcher is built for: the run's tenant
+/// and acting user (the system sentinel when the run has no actor).
+fn hook_build_scope(run_context: &LoopRunContext) -> ResourceScope {
+    let user_id = run_context
+        .actor
+        .as_ref()
+        .map(|actor| actor.user_id.clone())
+        .unwrap_or_else(|| {
+            ironclaw_host_api::ids::UserId::from_trusted(
+                ironclaw_host_api::resource::SYSTEM_RESERVED_ID.to_string(),
+            )
+        });
+    ResourceScope {
+        tenant_id: run_context.scope.tenant_id.clone(),
+        user_id,
+        agent_id: run_context.scope.agent_id.clone(),
+        project_id: run_context.scope.project_id.clone(),
+        mission_id: None,
+        thread_id: Some(run_context.scope.thread_id.clone()),
+        invocation_id: ironclaw_host_api::ids::InvocationId::new(),
     }
 }

@@ -409,7 +409,61 @@ observed_date = "2026-11-17"
 # 33432 -> 33450, observed 33582 -> 33600, zero hidden headroom. No change of
 # this branch: main @ 3359f4929 (fix/sandbox-timeout-lease-cleanup) measures
 # 33520, 18 over its own recorded 33502, which this branch's +80 sits on.
-loc_ceiling = 33450
+# ✎ 2026-11-18 (t3/extension-hooks-settings, plugin hooks + settings):
+# 33450 -> 34041, observed 33600 -> 34191, zero hidden headroom, pending the
+# owner's sign-off. +591: `observability/hooks/live.rs` — the per-run,
+# activation-tracking installer for package `[[hooks]]` (active-registry
+# read, module-asset loading under the package root, settings binding,
+# admission caps, cache pruning) plus its factory/assembly wiring and the
+# settings product-surface wiring. It sits beside the existing manifest ->
+# registrar loader because that loader is composition's by design (the
+# registry may not name the hook crate); settings grammar, validation and the
+# store live in `ironclaw_extension_registry`, the product source in
+# `ironclaw_extension_manager`.
+# ✎ 2026-11-18 (same branch, review fixes): 34041 -> 34096, observed 34191
+# -> 34246, zero hidden headroom, pending the owner's sign-off. +55 in
+# `observability/hooks/live.rs` + `audit.rs`: per-user installation
+# visibility for package hooks (owner read, fail-closed visibility check),
+# per-kind settings-failure policy (observers skipped with an audit event,
+# gates/mutators fail closed), and the single consent-ready module read.
+# The generic parts moved to their owners instead of landing here: the
+# pinned-bytes module resolver and after-fact classification to
+# `ironclaw_hooks`, the owner/visibility port to `ironclaw_extension_manager`.
+# ✎ 2026-11-18 (t3/extension-consent-local-install): 33450 -> 33462,
+# observed 33600 -> 33612, zero hidden headroom. +12 wiring lines only: the
+# consent-blocked id set (decided by `ExtensionLifecycleManager`) is read and
+# handed to `build_backend_extension_host`, which drops those ids from the
+# generic host's boot hydration. No policy lives in composition.
+# ✎ 2026-11-18 (plugins-integration merge): the two entries above landed
+# together on top of main @ 868f69b98, which itself measures 33747 (147 over
+# its own effective 33600 after feat/multi-machine). 34108 -> 34456, observed
+# 34606, zero hidden headroom, pending the owner's sign-off: main's 33747 +
+# the plugin hooks/settings installer, the plugin UI host, the consent wiring
+# and the bounded live hook validation cache.
+# ✎ 2026-11-18 (plugins-integration, consent review fixes): 34456 -> 34453,
+# observed 34606 -> 34603, zero hidden headroom. Re-measured with
+# `bash scripts/ci/check-composition-budget.sh --print` on this tree. The
+# merge commit moved the ceiling but left the arch-test record
+# (`COMPOSITION_ABSOLUTE_SRC_LOC`) at 34191, which tripped the nudge check;
+# both now carry the measured figure. Net -3 for the review fixes: the boot
+# hook projection no longer discovers third-party packages (-~110), the
+# per-caller hook inventory (`CallerHookCatalog`) and the live quarantine
+# record are added (+~105); pin verification for hook modules lives in
+# `ironclaw_extension_registry::verify_package_file`, not here.
+# ✎ 2026-11-19 (plugins-integration, consent review round 3): the recorded
+# 34603 was stale — this tree measured 34599 before the fix. 34453 -> 34468,
+# observed 34599 -> 34618, zero hidden headroom, pending the owner's sign-off.
+# +19: the live hook installer now asks, per run, whether the run's user
+# consented to the exact package generation it would compile (the decision is
+# made by `ExtensionConsentStore::execution_consented` behind the existing
+# `InstallationOwnerSource` port — no new seam, no new `Arc<dyn>`). The
+# dispatch-time check for tools lives in `ironclaw_extension_host`.
+# ✎ 2026-11-21 (plugins-integration, re-merged onto main @ 0f609f522): main
+# alone now measures 33910 LOC and 693 Arc<dyn> sites, over its own recorded
+# ceilings (33450 / 667) after the CLI-manager and steering merges. With the
+# plugin work on top: 34468 -> 34631, observed 34781, zero hidden headroom,
+# pending the owner's sign-off.
+loc_ceiling = 34631
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -420,8 +474,8 @@ loc_tolerance = 150
 loc_nudge_slack = 200
 # Informational — observed when this file was last updated. Not consulted for
 # the pass/fail decision.
-loc_observed = 33600
-loc_observed_date = "2026-11-18"
+loc_observed = 34618
+loc_observed_date = "2026-11-19"
 
 # --- Dispatch (Arc<dyn>) ratchet ------------------------------------------
 # A companion metric for the "reduce traits & dispatch" goal (issue #6168 / the
@@ -524,6 +578,18 @@ loc_observed_date = "2026-11-18"
 # 682, zero hidden headroom. -2 sites are the two `#[cfg(test)]`-only files in
 # the loc_ceiling note (684 measured with the old counter); the other -3 are
 # the slack the prior ceiling carried above that measurement.
-arc_dyn_ceiling = 667
+# ✎ 2026-11-18 (t3/extension-hooks-settings): 667 -> 674, observed 682 ->
+# 689, zero hidden headroom, pending the owner's sign-off. +7: the live hook
+# installer's injected seams (active registry filesystem, settings reader,
+# first-party installer, WASM module resolver) and their assembly casts — each
+# has a second implementor (test fakes / defaults-only reader).
+# ✎ 2026-11-18 (plugins-integration merge): 674 -> 684, observed 699, zero
+# hidden headroom, pending the owner's sign-off. The new seams each have a
+# test fake: `PluginUiHost`, `ExtensionSettingsSource`, the installation
+# visibility port and the package-consent port.
+# ✎ 2026-11-21 (same re-merge): 684 -> 686, observed 701 (main alone: 693).
+arc_dyn_ceiling = 686
 arc_dyn_tolerance = 15
-arc_dyn_observed = 682
+# ✎ 2026-11-19: observed corrected 689 -> 699 (the measured count; the merge
+# entry above recorded 699 in its note but left this field at 689).
+arc_dyn_observed = 699

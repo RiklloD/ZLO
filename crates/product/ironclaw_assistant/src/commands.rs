@@ -476,6 +476,9 @@ fn parse_lifecycle_command_payload(
                 LifecycleProductAction::ExtensionRemove { package_ref }
             })?
         }
+        LifecycleCommandKind::ExtensionGrantConsent => {
+            parse_extension_grant_consent_command(payload)?
+        }
         LifecycleCommandKind::SkillSearch => ProductCommand::Lifecycle {
             action: LifecycleProductAction::SkillSearch {
                 query: payload.arguments.trim().to_string(),
@@ -501,6 +504,48 @@ fn parse_register_hosted_mcp_command(payload: &InboundCommandPayload) -> Product
     Ok(ProductCommand::Lifecycle {
         action: LifecycleProductAction::ExtensionRegisterHostedMcp { request },
     })
+}
+
+/// `/extension_grant_consent <id> <digest>` or `{"id": …, "digest": …}`.
+fn parse_extension_grant_consent_command(
+    payload: &InboundCommandPayload,
+) -> ProductCommandParseResult {
+    let args = payload.arguments.trim();
+    let (id, digest) = match serde_json::from_str::<Value>(args) {
+        Ok(json) => (
+            json.get("id")
+                .or_else(|| json.get("extension_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            json.get("digest")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        ),
+        Err(_) => {
+            let mut parts = args.split_whitespace();
+            (
+                parts.next().map(str::to_string),
+                parts.next().map(str::to_string),
+            )
+        }
+    };
+    let (Some(id), Some(digest)) = (id, digest) else {
+        return invalid_lifecycle_command("extension_grant_consent requires an id and a digest");
+    };
+    let digest =
+        match ironclaw_product_contracts::package_consent::PackageConsentDigest::new(digest) {
+            Ok(digest) => digest,
+            Err(error) => return invalid_lifecycle_command(error.to_string()),
+        };
+    match lifecycle_package_ref(LifecyclePackageKind::Extension, id) {
+        Ok(package_ref) => Ok(ProductCommand::Lifecycle {
+            action: LifecycleProductAction::ExtensionGrantConsent {
+                package_ref,
+                digest,
+            },
+        }),
+        Err(error) => invalid_lifecycle_command(error.to_string()),
+    }
 }
 
 fn parse_extension_configure_command(payload: &InboundCommandPayload) -> ProductCommandParseResult {
@@ -686,6 +731,11 @@ fn lifecycle_command_metadata(
             "Remove extension",
             "Remove an installed extension",
             "/extension_remove <id>",
+        ),
+        LifecycleCommandKind::ExtensionGrantConsent => (
+            "Grant plugin consent",
+            "Allow a third-party extension to activate, pinned to the digest you reviewed",
+            "/extension_grant_consent <id> <digest>",
         ),
         LifecycleCommandKind::SkillSearch => (
             "Search skills",

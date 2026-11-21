@@ -852,6 +852,15 @@ pub(super) async fn build_backend_production(
             product_auth_dependencies.runtime_credential_account_refresh_service(),
         ),
     ));
+    // One settings store, shared by the WASM lane (reads), the hook factory
+    // (reads), and the settings product face (writes).
+    let extension_settings = Arc::new(
+        ironclaw_extension_registry::settings::ExtensionSettingsStore::new(Arc::clone(
+            &stores.scoped_filesystem,
+        )),
+    );
+    services = services.with_extension_settings(Arc::clone(&extension_settings)
+        as Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsReader>);
     services = attach_wasm_runtime(services)?;
     // Re-project the ports after attaching product-auth. Hosted MCP
     // preparation and first-party registrars must receive the account-aware
@@ -1071,6 +1080,7 @@ pub(super) async fn build_backend_production(
         )
         .with_account_setup_registry(Arc::new(account_setups.clone()))
         .with_removal_cleanup_registry(removal_cleanup)
+        .with_settings_cleanup(Arc::clone(&extension_settings))
         .with_provider_instance_readiness_port(Arc::clone(&provider_instance_readiness))
         .with_channel_disconnect_slot(Arc::clone(&channel_disconnect_slot)),
     );
@@ -1307,8 +1317,16 @@ pub(super) async fn build_backend_production(
                 Arc::clone(&linked_sessions),
             ),
         );
+        let consent_blocked_extension_ids = extension_management
+            .consent_blocked_extension_ids()
+            .await
+            .map_err(|error| RebornBuildError::InvalidConfig {
+                reason: format!("extension consent state could not be read: {error}"),
+            })?;
         let backend_extension_host =
             build_backend_extension_host(BackendExtensionHostAssemblyInput {
+                consent_blocked_extension_ids,
+                package_consent: extension_management.consent_store(),
                 binder: services.extension_lane_tool_binder(),
                 native_factories: native_extension_factories,
                 channel_bindings: channel_extension_bindings.clone(),
@@ -1491,6 +1509,7 @@ pub(super) async fn build_backend_production(
         skill_filesystem,
         workspace_filesystem,
         extension_filesystem: Arc::clone(&stores.filesystem),
+        extension_settings,
         memory_service_resolver: resolved_memory.resolver.clone(),
         memory_prompt_safety_sink,
         memory_lifecycle: resolved_memory.lifecycle.clone(),

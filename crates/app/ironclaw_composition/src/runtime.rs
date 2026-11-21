@@ -495,6 +495,13 @@ pub struct RebornRuntime {
     pub(crate) auto_approve_settings: Arc<ComposedAutoApproveSettingStore>,
     pub(crate) extension_registry: Arc<ExtensionRegistry>,
     pub(crate) shared_extension_registry: Arc<SharedExtensionRegistry>,
+    /// Per-user package settings values; the settings product face writes
+    /// them, the WASM lane and the hook factory read them.
+    pub(crate) extension_settings: Arc<
+        ironclaw_extension_registry::settings::ExtensionSettingsStore<
+            ironclaw_filesystem::CompositeRootFilesystem,
+        >,
+    >,
     pub(crate) skill_auto_activate_learned: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) extension_management: Arc<RebornLocalExtensionManagementPort>,
     pub(crate) runtime_http_egress: Option<Arc<dyn RuntimeHttpEgress>>,

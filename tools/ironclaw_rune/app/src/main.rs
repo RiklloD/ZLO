@@ -27,6 +27,7 @@ mod onboarding;
 mod pages;
 mod permissions;
 mod persist;
+mod plugins;
 mod remote;
 mod run_clock;
 mod scenes;

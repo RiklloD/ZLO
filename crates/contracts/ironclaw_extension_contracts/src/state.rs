@@ -63,6 +63,14 @@ pub enum InstallationState {
     /// Action-response signal that a removal completed and dropped the record.
     /// Never a resting state.
     Removed,
+    /// A third-party package that has no consent grant for its current
+    /// digest. Derived (never host-persisted); it cannot activate until the
+    /// user grants consent.
+    ConsentRequired,
+    /// A third-party package whose files no longer match the digest its
+    /// consent was granted for. Derived (never host-persisted); it stops
+    /// activating until consent is granted again for the new digest.
+    Tampered,
 }
 
 impl InstallationState {
@@ -75,6 +83,8 @@ impl InstallationState {
             Self::Failed => "failed",
             Self::Unsupported => "unsupported",
             Self::Removed => "removed",
+            Self::ConsentRequired => "consent_required",
+            Self::Tampered => "tampered",
         }
     }
 
@@ -89,6 +99,8 @@ impl InstallationState {
             "failed" => Some(Self::Failed),
             "unsupported" => Some(Self::Unsupported),
             "removed" => Some(Self::Removed),
+            "consent_required" => Some(Self::ConsentRequired),
+            "tampered" => Some(Self::Tampered),
             _ => None,
         }
     }
@@ -102,7 +114,13 @@ impl InstallationState {
 /// member + missing tenant setup, personal auth, or
 ///          pairing                                    -> setup_needed
 /// member + every requirement ready                    -> active
+/// third-party package, no consent for its digest      -> consent_required
+/// third-party package, files changed after consent    -> tampered
 /// ```
+///
+/// `consent_required` and `tampered` are user-actionable (grant consent), so
+/// they are public states rather than collapsing into `setup_needed`: a
+/// client must know to show the consent summary, not a setup form.
 ///
 /// [`InstallationState`] is the *host's* internal checkpoint vocabulary
 /// (`Installed`, `Configured`, `Disabled`, `Failed`, `Unsupported`, `Removed`)
@@ -123,6 +141,12 @@ pub enum LifecyclePublicState {
     Uninstalled,
     SetupNeeded,
     Active,
+    /// Installed, but the user has not granted consent to what this
+    /// third-party package asks for. User-actionable: grant consent.
+    ConsentRequired,
+    /// The package's files changed after consent was granted.
+    /// User-actionable: review and grant consent again.
+    Tampered,
 }
 
 impl LifecyclePublicState {
@@ -131,6 +155,8 @@ impl LifecyclePublicState {
             Self::Uninstalled => "uninstalled",
             Self::SetupNeeded => "setup_needed",
             Self::Active => "active",
+            Self::ConsentRequired => "consent_required",
+            Self::Tampered => "tampered",
         }
     }
 
@@ -140,6 +166,8 @@ impl LifecyclePublicState {
         match state {
             InstallationState::Active => Self::Active,
             InstallationState::Removed => Self::Uninstalled,
+            InstallationState::ConsentRequired => Self::ConsentRequired,
+            InstallationState::Tampered => Self::Tampered,
             InstallationState::Installed
             | InstallationState::Configured
             | InstallationState::Disabled
@@ -163,6 +191,8 @@ mod tests {
             (InstallationState::Failed, "failed"),
             (InstallationState::Unsupported, "unsupported"),
             (InstallationState::Removed, "removed"),
+            (InstallationState::ConsentRequired, "consent_required"),
+            (InstallationState::Tampered, "tampered"),
         ] {
             assert_eq!(state.as_str(), expected);
             assert_eq!(

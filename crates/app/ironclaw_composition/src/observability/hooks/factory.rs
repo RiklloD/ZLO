@@ -257,6 +257,7 @@ pub fn build_hook_dispatcher_builder_factory(
         // in `build_hook_projection_registry`. A synthetic tenant label is used
         // only for any quarantine audit emitted during install-time validation.
         None,
+        None,
         install_first_party_hooks,
     )
 }
@@ -272,10 +273,17 @@ pub fn build_hook_dispatcher_builder_factory(
 /// to that tenant, not the synthetic `"reborn-hook-projection"` fallback. This
 /// closes the observability gap where discovery-time audits carried the real
 /// tenant but install-time audits did not.
+///
+/// `live` makes third-party hooks follow the extension lifecycle: when
+/// supplied, the per-run factory installs the hooks of the packages *active at
+/// run start* (see [`super::live`]) instead of replaying the boot-time
+/// projection, loads WASM hook modules from the package roots, and binds the
+/// acting user's settings.
 pub(crate) fn build_hook_dispatcher_builder_factory_for_tenant(
     config: HooksActivationConfig,
     registry: &HookProjectionRegistry,
     tenant_id: &ironclaw_host_api::ids::TenantId,
+    live: Option<super::live::LiveHookSources>,
 ) -> Result<Option<HookDispatcherBuilderFactory>, RebornBuildError> {
     // The tenant-derived extension root is the same root discovery/admission
     // computed; recomputing it here is deterministic (pure function of the
@@ -285,6 +293,7 @@ pub(crate) fn build_hook_dispatcher_builder_factory_for_tenant(
         config,
         registry,
         Some((tenant_id, &root)),
+        live,
         install_first_party_hooks,
     )
 }
@@ -306,6 +315,7 @@ pub(super) fn build_hook_dispatcher_builder_factory_with<F>(
         &ironclaw_host_api::ids::TenantId,
         &ironclaw_host_api::path::VirtualPath,
     )>,
+    live: Option<super::live::LiveHookSources>,
     install_first_party: F,
 ) -> Result<Option<HookDispatcherBuilderFactory>, RebornBuildError>
 where
@@ -353,8 +363,45 @@ where
         Some((tenant, root)) => (tenant, Some(root)),
         None => (&fallback_tenant, None),
     };
+    // Live path: host-bundled sets are validated here (fail-closed); every
+    // third-party set is derived per run from the active extension registry.
+    if let Some(live) = live {
+        let trusted_sets = project_extension_hook_sets(
+            registry
+                .projections()
+                .filter(|projection| projection.source.allows_first_party()),
+            &registrar,
+            audit_root,
+            &mut |extension_id, reason, hooks| {
+                emit_hook_quarantined(audit_tenant, extension_id, reason, hooks)
+            },
+        )?;
+        let tenant_root = match audit_root {
+            Some(root) => root.clone(),
+            None => tenant_extension_root(audit_tenant)?,
+        };
+        let installer = Arc::new(super::live::LiveHookInstaller::new(
+            config.is_third_party_enabled(),
+            audit_tenant.clone(),
+            tenant_root,
+            live,
+            Arc::clone(&evaluator),
+            Arc::new(install_first_party),
+            trusted_sets,
+        )?);
+        let factory: HookDispatcherBuilderFactory = Arc::new(move |request| {
+            let installer = Arc::clone(&installer);
+            Box::pin(async move { installer.build(request).await })
+        });
+        return Ok(Some(factory));
+    }
+
+    // Without live sources there is no consent-bound path for third-party
+    // packages, so only trusted (builtin / host-bundled) sets replay here.
     let extension_install_sets = project_extension_hook_sets(
-        registry.projections(),
+        registry
+            .projections()
+            .filter(|projection| projection.source.allows_first_party()),
         &registrar,
         audit_root,
         &mut |extension_id, reason, hooks| {
@@ -363,46 +410,47 @@ where
     )?;
 
     let evaluator_for_factory = Arc::clone(&evaluator);
-    let factory: HookDispatcherBuilderFactory = Arc::new(move || {
-        // Fresh registry + builder per run: no cross-run state leak.
-        let mut builder = HookDispatcherBuilder::new(HookRegistry::new());
-        // `install_first_party` is a pure replayable function of the builder;
-        // the identical call was proven to succeed against a scratch builder in
-        // the composition-time validation block above (fail-closed via `?`). A
-        // per-run replay therefore cannot fail in practice — the `?` propagates
-        // any future regression as a build error rather than a panic (root AGENTS.md:
-        // no `.expect()` in production code).
-        builder = install_first_party(builder).map_err(|error| {
-            reborn_replay_error(format!(
-                "per-run first-party hook install replay failed \
+    let factory =
+        ironclaw_turn_runner::loop_driver_host::sync_hook_dispatcher_builder_factory(move || {
+            // Fresh registry + builder per run: no cross-run state leak.
+            let mut builder = HookDispatcherBuilder::new(HookRegistry::new());
+            // `install_first_party` is a pure replayable function of the builder;
+            // the identical call was proven to succeed against a scratch builder in
+            // the composition-time validation block above (fail-closed via `?`). A
+            // per-run replay therefore cannot fail in practice — the `?` propagates
+            // any future regression as a build error rather than a panic (root AGENTS.md:
+            // no `.expect()` in production code).
+            builder = install_first_party(builder).map_err(|error| {
+                reborn_replay_error(format!(
+                    "per-run first-party hook install replay failed \
                  (validated at composition time): {error}"
-            ))
-        })?;
-        let registrar = HookRegistrar::new(Arc::clone(&evaluator_for_factory));
-        for set in &extension_install_sets {
-            // Each surviving set was already projected from TOML (the only
-            // fallible external-input step) AND fully validated against a scratch
-            // builder above (quarantined sets never reach here). The per-run
-            // replay of a scratch-validated set cannot fail in practice; the `?`
-            // surfaces any regression as a build error instead of a panic.
-            let (next, _ids) = registrar
-                .install(
-                    set.extension_id.clone(),
-                    &set.extension_version,
-                    &set.entries,
-                    builder,
-                )
-                .map_err(|error| {
-                    reborn_replay_error(format!(
-                        "per-run hook install replay failed for extension `{}` \
+                ))
+            })?;
+            let registrar = HookRegistrar::new(Arc::clone(&evaluator_for_factory));
+            for set in &extension_install_sets {
+                // Each surviving set was already projected from TOML (the only
+                // fallible external-input step) AND fully validated against a scratch
+                // builder above (quarantined sets never reach here). The per-run
+                // replay of a scratch-validated set cannot fail in practice; the `?`
+                // surfaces any regression as a build error instead of a panic.
+                let (next, _ids) = registrar
+                    .install(
+                        set.extension_id.clone(),
+                        &set.extension_version,
+                        &set.entries,
+                        builder,
+                    )
+                    .map_err(|error| {
+                        reborn_replay_error(format!(
+                            "per-run hook install replay failed for extension `{}` \
                          (validated at composition time): {error}",
-                        set.extension_id.as_str()
-                    ))
-                })?;
-            builder = next;
-        }
-        Ok(builder)
-    });
+                            set.extension_id.as_str()
+                        ))
+                    })?;
+                builder = next;
+            }
+            Ok(builder)
+        });
 
     Ok(Some(factory))
 }

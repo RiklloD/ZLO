@@ -83,6 +83,8 @@ fn extension_install_json_uses_reborn_home_without_v1_state() {
         .arg("extension")
         .arg("install")
         .arg("zztest-mcp")
+        // A local package is a plugin: this user grants consent explicitly.
+        .arg("--yes")
         .arg("--json")
         .env_clear()
         .env("IRONCLAW_DISABLE_OS_KEYCHAIN", "1")
@@ -104,8 +106,10 @@ fn extension_install_json_uses_reborn_home_without_v1_state() {
         "the retired activation projection must not reappear"
     );
     assert_eq!(json["package_ref"]["id"], "zztest-mcp");
-    assert_eq!(json["payload"]["kind"], "extension_install");
-    assert_eq!(json["payload"]["installed"], true);
+    // A local package is a plugin: `--yes` installs, records this user's
+    // consent and activates, answering with the grant.
+    assert_eq!(json["payload"]["kind"], "extension_grant_consent");
+    assert_eq!(json["payload"]["granted"], true);
     assert!(
         standalone_runtime_root(&reborn_home)
             .join("system/extensions/zztest-mcp/manifest.toml")
@@ -157,9 +161,9 @@ fn extension_install_auto_advances_and_remove_uses_persisted_installation_state(
     let reborn_home = temp.path().join("reborn-home");
     write_extension_fixture(&reborn_home, "zztest-mcp");
 
-    let install = run_extension_json(&reborn_home, &["install", "zztest-mcp", "--json"]);
+    let install = run_extension_json(&reborn_home, &["install", "zztest-mcp", "--yes", "--json"]);
     assert_eq!(install["phase"], "active");
-    assert_eq!(install["payload"]["kind"], "extension_install");
+    assert_eq!(install["payload"]["kind"], "extension_grant_consent");
     assert!(
         install["payload"].get("activated").is_none(),
         "install completion is expressed by phase=active, not a second projection"

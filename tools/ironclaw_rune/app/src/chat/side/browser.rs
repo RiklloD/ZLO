@@ -5,13 +5,15 @@
 //! threads keeps it.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::time::Duration;
 
-use rune::{El, TextEdit, col, icon, row};
+use rune::{Cursor, El, TextEdit, col, el, icon, row};
 use rune_kit::{Kit, TextInput};
+use zlo_client::transcript::Row;
 
-use super::ui::{self, sm};
-use super::{Tab, side, side_mut, side_of, side_total, tab_shown, thread_id};
+use super::ui::{self, xs, xs_med};
+use super::{Tab, bridge, side, side_mut, side_of, side_total, tab_shown, thread_id};
 use crate::icons;
 use crate::jobs;
 use crate::native_view::{self, Slot, Source, WebCommand, WebState};
@@ -26,6 +28,27 @@ pub(super) fn page() -> Option<String> {
     PAGE.with(|p| p.borrow().clone())
 }
 
+fn short_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let host = rest.split(['/', '?', '#']).next()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.strip_prefix("www.").unwrap_or(host).to_string())
+    }
+}
+
+fn short_url_parts(url: &str) -> (String, String) {
+    let host = short_host(url).unwrap_or_else(|| url.to_string());
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let path = rest
+        .split_once('/')
+        .map(|(_, p)| format!("/{p}"))
+        .filter(|p| p != "/")
+        .unwrap_or_default();
+    (host, path)
+}
+
 #[derive(Default)]
 pub(super) struct BrowserState {
     input: TextEdit,
@@ -35,18 +58,26 @@ pub(super) struct BrowserState {
     /// The running poll loop; a tick of an older loop (or of another
     /// thread's side state) ends instead of doubling this one.
     poll: jobs::Generation,
+    /// Recently visited URLs in this thread, newest first.
+    recent: Vec<String>,
 }
 
 /// Show `url` in the Browser tab.
 pub(super) fn go(s: &mut State, url: String) {
     let source = Source::Url(url.clone());
-    PAGE.with(|p| *p.borrow_mut() = Some(url));
+    PAGE.with(|p| *p.borrow_mut() = Some(url.clone()));
+    if let Some(x) = side_mut(s) {
+        x.browser.input.replace_text(url.clone());
+        x.browser.recent.retain(|u| u != &url);
+        x.browser.recent.insert(0, url);
+        x.browser.recent.truncate(5);
+    }
     native_view::load(Slot::Browser, &source);
     super::show(s, Tab::Browser);
     start(s);
 }
 
-/// Close the page: its view goes now, the tab shows the empty address.
+/// Close the page: its view goes now, the tab shows the launchpad again.
 fn close(s: &mut State) {
     PAGE.with(|p| p.borrow_mut().take());
     native_view::close(Slot::Browser);
@@ -114,10 +145,216 @@ fn step(s: &mut State, thread: &str, generation: jobs::Generation) -> Option<Dur
     Some(Duration::from_millis(if loading { 250 } else { 1000 }))
 }
 
-pub(super) fn view(s: &State, k: &Kit) -> El {
+/// Extract deduplicated `http://` / `https://` links mentioned in the
+/// conversation, newest first (up to 5), so the user can open them in one click.
+fn extract_urls(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        let rest = &text[i..];
+        let pos = rest
+            .find("https://")
+            .into_iter()
+            .chain(rest.find("http://"))
+            .min();
+        let Some(rel) = pos else { break };
+        let start = i + rel;
+        let tail = &text[start..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
+            .unwrap_or(tail.len());
+        let raw = &tail[..end];
+        let trimmed = raw.trim_end_matches(|c: char| {
+            matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}')
+        });
+        if trimmed.len() > "https://x".len() && short_host(trimmed).is_some() {
+            out.push(trimmed.to_string());
+        }
+        i = start + end.max(1);
+    }
+    out
+}
+
+fn thread_links(s: &State) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for row in bridge::rows(s).iter().rev() {
+        let content = match row {
+            Row::Assistant { text, .. } | Row::User { text, .. } => text.as_str(),
+            _ => continue,
+        };
+        for url in extract_urls(content).into_iter().rev() {
+            if seen.insert(url.clone()) {
+                out.push(url);
+                if out.len() >= 5 {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn link_row(s: &State, key: String, url: String) -> El {
     let p = &s.palette;
+    let (host, path) = short_url_parts(&url);
+    let target = url.clone();
+    row()
+        .key(key)
+        .role("button")
+        .label(format!("Open {url}"))
+        .help(url)
+        .w_full()
+        .min_h(40.)
+        .px(10.)
+        .py(6.)
+        .gap(10.)
+        .items_center()
+        .radius(10.)
+        .fill(p.surface_card.alpha(if p.light { 0.8 } else { 0.55 }))
+        .border(1., p.border)
+        .hover(p.hover)
+        .hover_group()
+        .cursor(Cursor::Pointer)
+        .child(
+            el().size(26., 26.)
+                .radius(7.)
+                .center()
+                .fill(p.accent_wash)
+                .child(icon(&icons::GLOBE, 14.).color(p.accent)),
+        )
+        .child(
+            col()
+                .grow(1.)
+                .min_w(0.)
+                .gap(1.)
+                .child(ui::line(host, xs_med(), p.text))
+                .children((!path.is_empty()).then(|| ui::line(path, ui::tiny(), p.text_faint))),
+        )
+        .child(
+            icon(&icons::ARROW_UP_RIGHT, 14.)
+                .color(p.text_faint)
+                .group_color(p.text),
+        )
+        .on_press(move |s: &mut State| go(s, target.clone()))
+}
+
+fn launchpad(s: &State, recent: &[String]) -> El {
+    let p = &s.palette;
+    let links = thread_links(s);
+    let mut stack = col().w_full().px(12.).pt(12.).gap(12.);
+
+    if !links.is_empty() {
+        let mut group = col()
+            .w_full()
+            .gap(6.)
+            .child(ui::section_label(s, "Links in this thread"));
+        for (ix, url) in links.into_iter().enumerate() {
+            group = group.child(link_row(s, format!("web-thread-link-{ix}"), url));
+        }
+        stack = stack.child(group);
+    }
+
+    // 2x2 quick-launch grid for common local dev servers.
+    const SERVERS: [(&str, &str, &str); 4] = [
+        ("localhost:3000", "Next · React", "http://localhost:3000"),
+        ("localhost:5173", "Vite", "http://localhost:5173"),
+        ("localhost:8080", "Local HTTP", "http://localhost:8080"),
+        ("localhost:4000", "Dev Server", "http://localhost:4000"),
+    ];
+    let tile = |ix: usize, host: &'static str, hint: &'static str, url: &'static str| {
+        row()
+            .key(format!("web-quick-{ix}"))
+            .role("button")
+            .label(format!("Open {host}"))
+            .grow(1.)
+            .min_w(0.)
+            .h(46.)
+            .px(10.)
+            .gap(8.)
+            .items_center()
+            .radius(10.)
+            .fill(p.surface_card.alpha(if p.light { 0.8 } else { 0.55 }))
+            .border(1., p.border)
+            .hover(p.hover)
+            .hover_group()
+            .cursor(Cursor::Pointer)
+            .child(
+                el().size(26., 26.).radius(7.).center().fill(p.hover).child(
+                    icon(&icons::ZAP, 13.)
+                        .color(p.text_muted)
+                        .group_color(p.accent),
+                ),
+            )
+            .child(
+                col()
+                    .grow(1.)
+                    .min_w(0.)
+                    .gap(1.)
+                    .child(ui::line(host, xs_med(), p.text))
+                    .child(ui::line(hint, ui::tiny(), p.text_faint)),
+            )
+            .on_press(move |s: &mut State| go(s, url.to_string()))
+    };
+    stack = stack.child(
+        col()
+            .w_full()
+            .gap(6.)
+            .child(ui::section_label(s, "Local dev servers"))
+            .child(
+                row()
+                    .w_full()
+                    .gap(6.)
+                    .child(tile(0, SERVERS[0].0, SERVERS[0].1, SERVERS[0].2))
+                    .child(tile(1, SERVERS[1].0, SERVERS[1].1, SERVERS[1].2)),
+            )
+            .child(
+                row()
+                    .w_full()
+                    .gap(6.)
+                    .child(tile(2, SERVERS[2].0, SERVERS[2].1, SERVERS[2].2))
+                    .child(tile(3, SERVERS[3].0, SERVERS[3].1, SERVERS[3].2)),
+            ),
+    );
+
+    if !recent.is_empty() {
+        let mut group = col().w_full().gap(6.).child(ui::section_label(s, "Recent"));
+        for (ix, url) in recent.iter().enumerate() {
+            group = group.child(link_row(s, format!("web-recent-{ix}"), url.clone()));
+        }
+        stack = stack.child(group);
+    }
+
+    stack = stack.child(
+        row()
+            .w_full()
+            .px(10.)
+            .py(8.)
+            .gap(8.)
+            .items_center()
+            .radius(9.)
+            .fill(p.surface_card.alpha(if p.light { 0.55 } else { 0.35 }))
+            .child(icon(&icons::INFO, 13.).color(p.text_faint))
+            .child(
+                ui::para(
+                    "Type a URL or search in the bar above. Click links in chat to preview here, or ⌘-click to open externally.",
+                    xs(),
+                    p.text_faint,
+                )
+                .grow(1.)
+                .min_w(0.),
+            ),
+    );
+
+    ui::scroll("web-launchpad", stack)
+}
+
+/// The browser's bar (back, forward, reload, address, open outside, close),
+/// drawn in the dock's header in place of a "Browser" title the tab pill
+/// already shows, so the page gets the row back.
+pub(super) fn bar(s: &State, k: &Kit) -> El {
     let Some(x) = side(s) else {
-        return ui::loading(k);
+        return row().grow(1.);
     };
     let state = x.browser.shown.clone().unwrap_or_default();
     let url = page();
@@ -126,100 +363,106 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .disabled(!on)
             .on_press(move |_: &mut State| native_view::web(cmd))
             .build(k)
+            .no_window_drag()
             .key(key.to_string())
     };
     let open_url = url.clone();
     let mut toolbar = row()
-        .w_full()
-        .px(8.)
-        .py(4.)
-        .gap(4.)
+        .key("web-bar")
+        .grow(1.)
+        .min_w(0.)
+        .gap(2.)
         .items_center()
-        .child(nav(
+        .no_window_drag();
+    // The header is narrow: page controls show only while a page is open,
+    // Forward only when there is somewhere to go, so the address keeps room.
+    if url.is_some() {
+        toolbar = toolbar.child(nav(
             "web-back",
             &icons::ARROW_LEFT,
             "Back",
             state.back,
             WebCommand::Back,
-        ))
-        .child(nav(
-            "web-forward",
-            &icons::ARROW_RIGHT,
-            "Forward",
-            state.forward,
-            WebCommand::Forward,
-        ))
-        .child(if state.loading {
+        ));
+        if state.forward {
+            toolbar = toolbar.child(nav(
+                "web-forward",
+                &icons::ARROW_RIGHT,
+                "Forward",
+                true,
+                WebCommand::Forward,
+            ));
+        }
+        toolbar = toolbar.child(if state.loading {
             nav("web-stop", &icons::CLOSE, "Stop", true, WebCommand::Stop)
         } else {
             nav(
                 "web-reload",
                 &icons::REFRESH_CW,
                 "Reload",
-                open_url.is_some(),
+                true,
                 WebCommand::Reload,
             )
-        })
-        .child(
-            row().grow(1.).min_w(0.).child(
-                TextInput::new(&x.browser.input)
-                    .width(None)
-                    .placeholder("Address, e.g. localhost:3000")
-                    .label("Address")
-                    .on_edit(|s: &mut State| &mut side_total(s).browser.input)
-                    .on_submit(|s: &mut State, _| {
-                        let text = side_total(s).browser.input.text.trim().to_string();
-                        if let Some(url) = address(&text) {
-                            go(s, url);
-                        }
-                    })
-                    .build(k)
-                    .key("web-address"),
-            ),
-        )
-        .child(
-            ui::ibtn(&icons::EXTERNAL_LINK, "Open in your browser")
-                .disabled(open_url.is_none())
-                .on_press_tx(move |_: &mut State, tx| {
-                    let current = native_view::web_state()
-                        .map(|s| s.url)
-                        .filter(|u| !u.is_empty())
-                        .or_else(|| open_url.clone());
-                    if let Some(url) = current
-                        && let Err(e) = tx.open_url(&url)
-                    {
-                        tracing::warn!(error = %e, "page not opened in the browser");
+        });
+    } else {
+        toolbar = toolbar.child(icon(&icons::GLOBE, 13.5).color(s.palette.text_muted));
+    }
+    toolbar = toolbar.child(
+        row().grow(1.).min_w(0.).px(2.).child(
+            TextInput::new(&x.browser.input)
+                .width(None)
+                .placeholder("Search or enter URL")
+                .label("Address")
+                .on_edit(|s: &mut State| &mut side_total(s).browser.input)
+                .on_submit(|s: &mut State, _| {
+                    let text = side_total(s).browser.input.text.trim().to_string();
+                    if let Some(url) = address(&text) {
+                        go(s, url);
                     }
                 })
                 .build(k)
-                .key("web-external"),
-        );
+                .no_window_drag()
+                .key("web-address"),
+        ),
+    );
     if url.is_some() {
-        toolbar = toolbar.child(
-            ui::ibtn(&icons::CIRCLE_X, "Close page")
-                .on_press(close)
-                .build(k)
-                .key("web-close"),
-        );
+        toolbar = toolbar
+            .child(
+                ui::ibtn(&icons::EXTERNAL_LINK, "Open in your browser")
+                    .on_press_tx(move |_: &mut State, tx| {
+                        let current = native_view::web_state()
+                            .map(|s| s.url)
+                            .filter(|u| !u.is_empty())
+                            .or_else(|| open_url.clone());
+                        if let Some(url) = current
+                            && let Err(e) = tx.open_url(&url)
+                        {
+                            tracing::warn!(error = %e, "page not opened in the browser");
+                        }
+                    })
+                    .build(k)
+                    .no_window_drag()
+                    .key("web-external"),
+            )
+            .child(
+                ui::ibtn(&icons::CIRCLE_X, "Close page")
+                    .on_press(close)
+                    .build(k)
+                    .no_window_drag()
+                    .key("web-close"),
+            );
     }
-    let body = match url {
-        Some(_) => native_view::surface(Slot::Browser),
-        None => ui::fill_col()
-            .items_center()
-            .justify_center()
-            .gap(8.)
-            .padding(24.)
-            .child(icon(&icons::GLOBE, 28.).color(p.text_faint))
-            .child(ui::para(
-                "Type an address above. A local dev server works too, like localhost:3000.",
-                sm(),
-                p.text_muted,
-            )),
+    toolbar
+}
+
+pub(super) fn view(s: &State, k: &Kit) -> El {
+    let Some(x) = side(s) else {
+        return ui::loading(k);
     };
-    ui::fill_col()
-        .child(toolbar)
-        .child(col().w_full().h(1.).fill(p.border))
-        .child(body)
+    match page() {
+        Some(_) => ui::fill_col().child(native_view::surface(Slot::Browser)),
+        None => ui::fill_col().child(launchpad(s, &x.browser.recent)),
+    }
 }
 
 /// What the address field means: a URL, a bare host, or a search.
@@ -319,5 +562,19 @@ mod tests {
             Some("https://duckduckgo.com/?q=rust+lifetimes")
         );
         assert_eq!(address(""), None);
+    }
+
+    #[test]
+    fn extract_urls_trims_punctuation_and_finds_multiple() {
+        let urls = extract_urls(
+            "Check https://app.notion.com/p/abc123, or preview (http://localhost:3000/home).",
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "https://app.notion.com/p/abc123",
+                "http://localhost:3000/home",
+            ]
+        );
     }
 }

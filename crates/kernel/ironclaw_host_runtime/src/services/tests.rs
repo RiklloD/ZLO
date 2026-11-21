@@ -1,4 +1,5 @@
 // arch-exempt: large_file, mechanical approval-store migration only — InMemory*Store deleted, guard test repointed to Filesystem*Store<InMemoryBackend> (arch-simplification §4.3), no new test logic, plan #6168
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -1411,6 +1412,7 @@ fn test_package(manifest: &str, extension_id: &str) -> ExtensionPackage {
         VirtualPath::new(format!("/system/extensions/{extension_id}")).unwrap(),
     )
     .expect("test package should build")
+    .with_unverified_contents_for_test()
 }
 
 fn test_descriptor(runtime: RuntimeKind, effects: Vec<EffectKind>) -> CapabilityDescriptor {

@@ -2,6 +2,7 @@
 #![deny(clippy::let_underscore_must_use)]
 mod support;
 
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use support::legacy_capability_fixture_to_v2;
 
 use std::{
@@ -2763,7 +2764,8 @@ fn registry_with_standard_op_capability() -> ExtensionRegistry {
         manifest,
         VirtualPath::new(format!("/system/extensions/{extension}")).unwrap(),
     )
-    .expect("standard-op test package should build");
+    .expect("standard-op test package should build")
+    .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     registry
@@ -2868,7 +2870,8 @@ parameters_schema = {{}}
         manifest,
         VirtualPath::new("/system/extensions/echo").unwrap(),
     )
-    .unwrap();
+    .unwrap()
+    .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     registry

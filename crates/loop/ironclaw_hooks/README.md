@@ -30,7 +30,14 @@ composition and `ironclaw_loop_host`'s kernel-facing base.
   — the predicate store and its durable backends (complete but **unwired**:
   composition currently hard-codes the in-memory backend; ADR 0004).
 - `wasm/` — the sandboxed engine for portable hook code (via
-  `ironclaw_wasm_limiter`).
+  `ironclaw_wasm_limiter`). `HookRegistrar::install_with_settings` binds a
+  package's per-run settings snapshot into the WASM context blob
+  (`settings` object); package hooks reach the registrar through
+  composition's live, activation-tracking installer
+  (`docs/internal/reborn/extension-runtime/package-hooks-and-settings.md`).
+  `HookRegistrar::with_module_resolver` + `wasm::PinnedHookModules` let an
+  installer compile exactly the module bytes it admitted for a run, while the
+  compiled-module cache stays shared on the runtime.
 
 ## Depends on / consumed by
 

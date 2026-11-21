@@ -15,7 +15,6 @@ use std::sync::Arc;
 use ironclaw_hooks::dispatch::HookDispatcherBuilder;
 
 use crate::error::RebornBuildError;
-use ironclaw_extension_host::product_extension_host_api_contract_registry;
 use ironclaw_extension_registry::ExtensionRegistry;
 
 use ironclaw_extension_registry::v2::ManifestSource;
@@ -215,7 +214,7 @@ fn enabled_config_with_empty_production_catalog_yields_valid_zero_binding_factor
             .expect("enabled build with empty registry + empty catalog succeeds")
             .expect("flag ON yields a factory even with an empty catalog");
     // The factory mints a valid dispatcher with no first-party bindings.
-    let dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = mint(&factory).expect("mint hook builder").build_arc();
     let bindings = dispatcher.active_bindings_snapshot(HookPointSpec::AfterCapability);
     assert!(
         bindings.is_empty(),
@@ -234,11 +233,12 @@ fn activation_installs_a_test_first_party_hook_through_the_real_path() {
         HooksActivationConfig::enabled(),
         &registry,
         None,
+        None,
         install_test_first_party_hook,
     )
     .expect("enabled build with a test first-party hook succeeds")
     .expect("flag ON yields a factory");
-    let dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = mint(&factory).expect("mint hook builder").build_arc();
     let test_id = HookId::for_builtin(TEST_NOOP_OBSERVER_CANONICAL_PATH, HookVersion::ONE);
     let bindings = dispatcher.active_bindings_snapshot(HookPointSpec::AfterCapability);
     assert!(
@@ -254,8 +254,8 @@ fn factory_mints_independent_dispatchers_per_call() {
         build_hook_dispatcher_builder_factory(HooksActivationConfig::enabled(), &registry)
             .expect("enabled build succeeds")
             .expect("flag ON yields a factory");
-    let a = factory().expect("mint hook builder").build_arc();
-    let b = factory().expect("mint hook builder").build_arc();
+    let a = mint(&factory).expect("mint hook builder").build_arc();
+    let b = mint(&factory).expect("mint hook builder").build_arc();
     assert!(
         !Arc::ptr_eq(&a, &b),
         "each factory call must mint a fresh dispatcher (per-run isolation)"
@@ -290,9 +290,9 @@ body = {{ mode = "predicate", spec = {{ type = "deny_capability", reason = "bloc
     )
 }
 
-/// Build a [`HookProjectionRegistry`] directly from `(id, source, hooks)`
-/// triples (no discovery), driving the real install-time projection path.
-fn projection_with(packages: &[(&str, ManifestSource, String)]) -> HookProjectionRegistry {
+/// Build an [`ExtensionRegistry`] directly from `(id, source, hooks)`
+/// triples (no discovery).
+fn registry_with(packages: &[(&str, ManifestSource, String)]) -> ExtensionRegistry {
     let mut registry = ExtensionRegistry::new();
     for (id, source, hooks_block) in packages {
         let manifest = ExtensionManifest::parse(
@@ -309,8 +309,83 @@ fn projection_with(packages: &[(&str, ManifestSource, String)]) -> HookProjectio
         .expect("package builds from manifest");
         registry.insert(package).expect("package inserts");
     }
-    projection(registry)
+    registry
 }
+
+/// Bind `registry`'s third-party packages the only way production binds a
+/// third-party package's hooks: published to the active registry with its
+/// consent grant's pins, visible to the run's user, through the per-run live
+/// installer. Returns the dispatcher a run would get.
+fn live_dispatcher(registry: ExtensionRegistry) -> Arc<ironclaw_hooks::dispatch::HookDispatcher> {
+    live_dispatcher_with(registry, install_first_party_hooks)
+}
+
+fn live_dispatcher_with(
+    registry: ExtensionRegistry,
+    first_party: fn(HookDispatcherBuilder) -> Result<HookDispatcherBuilder, RebornBuildError>,
+) -> Arc<ironclaw_hooks::dispatch::HookDispatcher> {
+    let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+        ExtensionRegistry::new(),
+    ));
+    let mut ids = Vec::new();
+    for package in registry.extensions() {
+        ids.push(package.id.as_str().to_string());
+        active.upsert(consented(package.clone())).expect("activate");
+    }
+    let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let tenant = ironclaw_host_api::ids::TenantId::new("tenant-live").expect("tenant");
+    let tenant_root = tenant_extension_root(&tenant).expect("root");
+    let installer = super::live::LiveHookInstaller::new(
+        true,
+        tenant,
+        tenant_root,
+        super::live::LiveHookSources {
+            active,
+            filesystem: Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+            settings: Arc::new(
+                ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings,
+            ),
+            owners: StaticOwners::tenant_shared(&id_refs),
+            quarantines: Default::default(),
+        },
+        Arc::new(ironclaw_hooks::evaluator::PredicateEvaluator::new()),
+        Arc::new(first_party),
+        Vec::new(),
+    )
+    .expect("installer builds");
+    futures::executor::block_on(installer.build(build_for(user_scope("alice"))))
+        .expect("mint hook builder")
+        .build_arc()
+}
+
+/// The hook module fixtures, as the bytes a consent grant pins.
+fn fixture_module_files() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        (
+            "wasm/gate.wasm",
+            wat::parse_str(PASS_GATE_WAT).expect("wat"),
+        ),
+        (
+            "wasm/observe.wasm",
+            wat::parse_str(NOOP_OBSERVER_WAT).expect("wat"),
+        ),
+    ]
+}
+
+/// `package` as the lifecycle publishes a consented third-party package: with
+/// the grant's per-file pins (here: the fixture hook modules).
+fn consented(package: ExtensionPackage) -> ExtensionPackage {
+    let files = fixture_module_files();
+    package.with_content_pins(
+        ironclaw_extension_registry::PackageContentPins::from_files(
+            files.iter().map(|(path, bytes)| (*path, bytes.as_slice())),
+        )
+        .with_consent_digest(FIXTURE_CONSENT_DIGEST),
+    )
+}
+
+/// The consent digest the fixture pins are granted under.
+const FIXTURE_CONSENT_DIGEST: &str = "fixture-generation-a";
 
 // ─── Atomic quarantine + trust-discrimination coverage ───────────────────
 
@@ -321,20 +396,12 @@ fn projection_with(packages: &[(&str, ManifestSource, String)]) -> HookProjectio
 /// first-party).
 #[test]
 fn valid_extension_hook_manifest_installs_at_installed_tier() {
-    let registry = projection(registry_with_manifest(
+    let registry = registry_with_manifest(
         "valid-ext",
         &manifest_toml("valid-ext", &own_deny_hook("deny-run", "valid-ext.run")),
-    ));
+    );
 
-    let factory = build_hook_dispatcher_builder_factory_with(
-        HooksActivationConfig::enabled(),
-        &registry,
-        None,
-        install_test_first_party_hook,
-    )
-    .expect("enabled build with a valid extension hook succeeds")
-    .expect("flag ON yields a factory");
-    let dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = live_dispatcher_with(registry, install_test_first_party_hook);
 
     let expected = installed_hook_id("valid-ext", "0.1.0", "deny-run");
     let bindings = dispatcher.active_bindings_snapshot(HookPointSpec::BeforeCapability);
@@ -364,16 +431,9 @@ id = "broken-hook"
 kind = "before_capability"
 body = { mode = "nonsense" }
 "#;
-    let registry = projection(registry_with_manifest(
-        "broken-ext",
-        &manifest_toml("broken-ext", hooks_block),
-    ));
+    let registry = registry_with_manifest("broken-ext", &manifest_toml("broken-ext", hooks_block));
 
-    let factory =
-        build_hook_dispatcher_builder_factory(HooksActivationConfig::enabled(), &registry)
-            .expect("malformed INSTALLED manifest must NOT fail the build (quarantine)")
-            .expect("flag ON yields a factory");
-    let dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = live_dispatcher(registry);
     assert!(
         dispatcher
             .active_bindings_snapshot(HookPointSpec::BeforeCapability)
@@ -429,7 +489,7 @@ kind = "before_capability"
 body = { mode = "nonsense" }
 "#
     );
-    let registry = projection_with(&[
+    let registry = registry_with(&[
         ("mixed", ManifestSource::InstalledLocal, bad_set),
         (
             "good",
@@ -438,11 +498,7 @@ body = { mode = "nonsense" }
         ),
     ]);
 
-    let factory =
-        build_hook_dispatcher_builder_factory(HooksActivationConfig::enabled(), &registry)
-            .expect("partial-invalid set must quarantine, not fail the build")
-            .expect("flag ON yields a factory");
-    let dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = live_dispatcher(registry);
     let bindings = dispatcher.active_bindings_snapshot(HookPointSpec::BeforeCapability);
 
     // None of `mixed`'s hooks installed.
@@ -474,16 +530,9 @@ scope = "same_tenant"
 requires_grant = "cross-tenant-policy"
 body = { mode = "predicate", spec = { type = "deny_capability", reason = "wider-scope deny", when = { type = "name_equals", name = "other-ext.run" } } }
 "#;
-    let registry = projection(registry_with_manifest(
-        "reachy-ext",
-        &manifest_toml("reachy-ext", hooks_block),
-    ));
+    let registry = registry_with_manifest("reachy-ext", &manifest_toml("reachy-ext", hooks_block));
 
-    let factory =
-        build_hook_dispatcher_builder_factory(HooksActivationConfig::enabled(), &registry)
-            .expect("ungranted wider-scope INSTALLED hook must quarantine, not fail the build")
-            .expect("flag ON yields a factory");
-    let dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = live_dispatcher(registry);
     assert!(
         dispatcher
             .active_bindings_snapshot(HookPointSpec::BeforeCapability)
@@ -505,7 +554,7 @@ kind = "before_capability"
 scope = "own_capabilities"
 body = { mode = "wasm", export = "evaluate" }
 "#;
-    let registry = projection_with(&[
+    let registry = registry_with(&[
         (
             "wasm-ext",
             ManifestSource::InstalledLocal,
@@ -518,11 +567,7 @@ body = { mode = "wasm", export = "evaluate" }
         ),
     ]);
 
-    let factory =
-        build_hook_dispatcher_builder_factory(HooksActivationConfig::enabled(), &registry)
-            .expect("WASM-bodied third-party hook must quarantine, not fail the build")
-            .expect("flag ON yields a factory");
-    let dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = live_dispatcher(registry);
     let bindings = dispatcher.active_bindings_snapshot(HookPointSpec::BeforeCapability);
     assert!(
         !bindings
@@ -596,13 +641,9 @@ fn surplus_extensions_beyond_consider_cap_are_quarantined() {
         .iter()
         .map(|(id, src, hooks)| (id.as_str(), *src, hooks.clone()))
         .collect();
-    let registry = projection_with(&refs);
+    let registry = registry_with(&refs);
 
-    let factory =
-        build_hook_dispatcher_builder_factory(HooksActivationConfig::enabled(), &registry)
-            .expect("surplus extensions must quarantine, not fail the build")
-            .expect("flag ON yields a factory");
-    let dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = live_dispatcher(registry);
     let installed = dispatcher
         .active_bindings_snapshot(HookPointSpec::BeforeCapability)
         .len();
@@ -613,343 +654,6 @@ fn surplus_extensions_beyond_consider_cap_are_quarantined() {
     assert!(
         installed >= 1,
         "the first extensions under the cap must still install"
-    );
-}
-
-/// Flag OFF (master ON + third-party OFF) keeps the projection registry
-/// builtin-only: a registry carrying only an untrusted package still yields
-/// a builtin-only set when assembled through `build_hook_projection_registry`
-/// with the sub-flag off — behavior identical to #3938.
-#[tokio::test]
-async fn third_party_subflag_off_yields_builtin_only_projection() {
-    use ironclaw_filesystem::InMemoryBackend;
-
-    let fs = InMemoryBackend::new();
-    let tenant = ironclaw_host_api::ids::TenantId::new("alpha").expect("tenant");
-    let builtin = ExtensionRegistry::new();
-    // Master ON, third-party OFF.
-    let config = HooksActivationConfig::enabled();
-    let projection_registry = build_hook_projection_registry(
-        builtin,
-        Some(ThirdPartyDiscoveryInput {
-            filesystem: &fs,
-            tenant_id: &tenant,
-        }),
-        config,
-    )
-    .await
-    .expect("projection registry builds");
-    assert_eq!(
-        projection_registry.projections().count(),
-        0,
-        "sub-flag OFF must not merge any third-party packages (builtin-only)"
-    );
-}
-
-// ─── Tolerant + bounded DISCOVERY-stage coverage (Criticals 1 & 2) ───────
-
-/// A DISCOVERY-valid `InstalledLocal` v2 manifest carrying one projectable
-/// hook. Unlike [`manifest_toml`] (which uses the legacy top-level
-/// `[[capabilities]]` accepted only on the direct-parse path), the discovery
-/// contracts require the `ironclaw.capability_provider/v1` host_api form for
-/// installed sources, so the discovery-stage tests below use this shape. The
-/// `[[hooks]]` array-of-tables is a top-level sibling placed last.
-fn manifest_toml_with_hook(id: &str) -> String {
-    format!(
-        r#"schema_version = "reborn.extension_manifest.v2"
-id = "{id}"
-name = "{id}"
-version = "0.1.0"
-description = "{id} extension"
-trust = "third_party"
-
-[runtime]
-kind = "wasm"
-module = "wasm/{id}.wasm"
-
-[[host_api]]
-id = "ironclaw.capability_provider/v1"
-section = "capability_provider.tools"
-
-[capability_provider.tools]
-
-[[capability_provider.tools.capabilities]]
-id = "{id}.run"
-description = "Run {id}"
-effects = ["dispatch_capability"]
-default_permission = "allow"
-visibility = "model"
-input_schema_ref = "schemas/{id}/run.input.v1.json"
-output_schema_ref = "schemas/{id}/run.output.v1.json"
-prompt_doc_ref = "prompts/{id}/run.md"
-
-[[hooks]]
-id = "deny-run"
-kind = "before_capability"
-scope = "own_capabilities"
-body = {{ mode = "predicate", spec = {{ type = "deny_capability", reason = "blocked by manifest hook", when = {{ type = "name_equals", name = "{id}.run" }} }} }}
-"#
-    )
-}
-
-/// A discovery-valid manifest that combines product-adapter and hook surfaces.
-/// Hook discovery must validate the whole manifest through composition's
-/// product-aware contract registry before projecting its hooks.
-fn product_adapter_manifest_toml_with_hook(id: &str) -> String {
-    format!(
-        r#"schema_version = "reborn.extension_manifest.v2"
-id = "{id}"
-name = "{id}"
-version = "0.1.0"
-description = "{id} product adapter"
-trust = "third_party"
-
-[runtime]
-kind = "wasm"
-module = "wasm/{id}.wasm"
-
-[[host_api]]
-id = "ironclaw.capability_provider/v1"
-section = "capability_provider.tools"
-
-[capability_provider.tools]
-
-[[capability_provider.tools.capabilities]]
-id = "{id}.run"
-description = "Run {id}"
-effects = ["dispatch_capability"]
-default_permission = "allow"
-visibility = "model"
-input_schema_ref = "schemas/{id}/run.input.v1.json"
-output_schema_ref = "schemas/{id}/run.output.v1.json"
-prompt_doc_ref = "prompts/{id}/run.md"
-
-[[host_api]]
-id = "ironclaw.product_adapter/v1"
-section = "product_adapter.web"
-
-[product_adapter.web]
-surface_kind = "web"
-
-[product_adapter.web.auth]
-kind = "bearer_token"
-
-[product_adapter.web.capabilities]
-flags = ["inbound_messages"]
-
-[[product_adapter.web.required_credentials]]
-handle = "web_token"
-
-[[hooks]]
-id = "deny-run"
-kind = "before_capability"
-scope = "own_capabilities"
-body = {{ mode = "predicate", spec = {{ type = "deny_capability", reason = "blocked by manifest hook", when = {{ type = "name_equals", name = "{id}.run" }} }} }}
-"#
-    )
-}
-
-/// Write `body` as `/system/extensions/<id>/manifest.toml` on `fs`.
-async fn write_manifest<F: ironclaw_filesystem::RootFilesystem>(fs: &F, id: &str, body: &str) {
-    fs.write_file(
-        &ironclaw_host_api::path::VirtualPath::new(format!(
-            "/system/extensions/{id}/manifest.toml"
-        ))
-        .expect("manifest path"),
-        body.as_bytes(),
-    )
-    .await
-    .expect("write manifest");
-}
-
-/// Critical 2 (discovery-stage): one malformed manifest among valid siblings
-/// must quarantine ONLY the bad package — the valid siblings are still
-/// merged into the projection registry, and the build does NOT fall back to
-/// builtin-only.
-#[tokio::test]
-async fn malformed_sibling_manifest_does_not_drop_the_whole_third_party_set() {
-    use ironclaw_filesystem::InMemoryBackend;
-
-    let fs = InMemoryBackend::new();
-    write_manifest(&fs, "good-a", &manifest_toml_with_hook("good-a")).await;
-    write_manifest(&fs, "bad", "not valid toml {{{").await;
-    write_manifest(&fs, "good-b", &manifest_toml_with_hook("good-b")).await;
-
-    let tenant = ironclaw_host_api::ids::TenantId::new("alpha").expect("tenant");
-    let config = HooksActivationConfig::enabled().with_third_party_enabled(true);
-    let projection_registry = build_hook_projection_registry(
-        ExtensionRegistry::new(),
-        Some(ThirdPartyDiscoveryInput {
-            filesystem: &fs,
-            tenant_id: &tenant,
-        }),
-        config,
-    )
-    .await
-    .expect("a malformed sibling must not fail the build (tolerant discovery)");
-
-    let ids: Vec<String> = projection_registry
-        .projections()
-        .map(|p| p.extension_id.as_str().to_string())
-        .collect();
-    assert!(
-        ids.contains(&"good-a".to_string()) && ids.contains(&"good-b".to_string()),
-        "valid siblings must survive a malformed package; saw {ids:?}"
-    );
-    assert!(
-        !ids.contains(&"bad".to_string()),
-        "the malformed package must be quarantined, not merged"
-    );
-    assert_eq!(
-        ids.len(),
-        2,
-        "exactly the two valid third-party packages must be merged (not builtin-only)"
-    );
-}
-
-#[tokio::test]
-async fn product_adapter_manifest_with_hooks_survives_discovery() {
-    use ironclaw_filesystem::InMemoryBackend;
-
-    let fs = InMemoryBackend::new();
-    let extension_id = "product-hooks";
-    write_manifest(
-        &fs,
-        extension_id,
-        &product_adapter_manifest_toml_with_hook(extension_id),
-    )
-    .await;
-
-    let tenant = ironclaw_host_api::ids::TenantId::new("alpha").expect("tenant");
-    let projection_registry = build_hook_projection_registry(
-        ExtensionRegistry::new(),
-        Some(ThirdPartyDiscoveryInput {
-            filesystem: &fs,
-            tenant_id: &tenant,
-        }),
-        HooksActivationConfig::enabled().with_third_party_enabled(true),
-    )
-    .await
-    .expect("product-adapter contract and hooks must validate together");
-
-    let projected_ids: Vec<&str> = projection_registry
-        .projections()
-        .map(|projection| projection.extension_id.as_str())
-        .collect();
-    assert_eq!(projected_ids, vec![extension_id]);
-}
-
-/// Critical 2 boundary: root unreadable is the ONLY case that falls back to
-/// builtin-only.
-#[tokio::test]
-async fn unreadable_extension_root_falls_back_to_builtin_only() {
-    use async_trait::async_trait;
-    use ironclaw_filesystem::{
-        DirEntry, FileStat, FilesystemError, FilesystemOperation, RootFilesystem,
-    };
-    use ironclaw_host_api::path::VirtualPath;
-
-    struct UnreadableRootFs;
-
-    #[async_trait]
-    impl RootFilesystem for UnreadableRootFs {
-        async fn list_dir(&self, path: &VirtualPath) -> Result<Vec<DirEntry>, FilesystemError> {
-            Err(FilesystemError::Backend {
-                path: path.clone(),
-                operation: FilesystemOperation::ListDir,
-                reason: "extensions root unreadable".to_string(),
-            })
-        }
-
-        async fn stat(&self, path: &VirtualPath) -> Result<FileStat, FilesystemError> {
-            Err(FilesystemError::NotFound {
-                path: path.clone(),
-                operation: FilesystemOperation::Stat,
-            })
-        }
-    }
-
-    let tenant = ironclaw_host_api::ids::TenantId::new("alpha").expect("tenant");
-    let config = HooksActivationConfig::enabled().with_third_party_enabled(true);
-    let projection_registry = build_hook_projection_registry(
-        ExtensionRegistry::new(),
-        Some(ThirdPartyDiscoveryInput {
-            filesystem: &UnreadableRootFs,
-            tenant_id: &tenant,
-        }),
-        config,
-    )
-    .await
-    .expect("unreadable root falls back to builtin-only, not a hard error");
-    assert_eq!(
-        projection_registry.projections().count(),
-        0,
-        "an unreadable extensions root must yield builtin-only"
-    );
-}
-
-/// Refinement 3: a package that fails to merge (duplicate id) must NOT
-/// consume the per-tenant hook budget. We prove the budget accounting moved
-/// AFTER the successful insert by showing a later distinct package still
-/// merges even though a duplicate was processed first (the duplicate did not
-/// burn budget). The duplicate itself is quarantined.
-#[tokio::test]
-async fn failed_merge_does_not_consume_hook_budget() {
-    use ironclaw_filesystem::InMemoryBackend;
-
-    let fs = InMemoryBackend::new();
-    // Two distinct valid hook-bearing packages.
-    write_manifest(&fs, "alpha", &manifest_toml_with_hook("alpha")).await;
-    write_manifest(&fs, "beta", &manifest_toml_with_hook("beta")).await;
-
-    let tenant = ironclaw_host_api::ids::TenantId::new("alpha").expect("tenant");
-    let config = HooksActivationConfig::enabled().with_third_party_enabled(true);
-
-    // Seed the builtin registry with a package whose id collides with
-    // `alpha`, so discovery's `registry.insert(alpha)` FAILS (duplicate).
-    // The failed merge must not consume budget; `beta` must still merge.
-    let mut builtin = ExtensionRegistry::new();
-    let contracts =
-        product_extension_host_api_contract_registry().expect("default host api contracts");
-    let dup = ExtensionPackage::from_manifest(
-        ExtensionManifest::parse(
-            &manifest_toml_with_hook("alpha"),
-            ManifestSource::InstalledLocal,
-            &HostPortCatalog::empty(),
-            &contracts,
-        )
-        .expect("dup manifest parses"),
-        VirtualPath::new("/system/extensions/alpha").expect("dup root"),
-    )
-    .expect("dup package builds");
-    builtin.insert(dup).expect("seed duplicate");
-
-    let projection_registry = build_hook_projection_registry(
-        builtin,
-        Some(ThirdPartyDiscoveryInput {
-            filesystem: &fs,
-            tenant_id: &tenant,
-        }),
-        config,
-    )
-    .await
-    .expect("duplicate merge is quarantined, build succeeds");
-
-    let ids: Vec<String> = projection_registry
-        .projections()
-        .map(|p| p.extension_id.as_str().to_string())
-        .collect();
-    // `alpha` appears once (the seeded builtin); the discovered duplicate was
-    // quarantined. `beta` merged — proving the quarantined duplicate did not
-    // consume budget that would have blocked beta.
-    assert!(
-        ids.contains(&"beta".to_string()),
-        "a package after a quarantined duplicate must still merge; saw {ids:?}"
-    );
-    assert_eq!(
-        ids.iter().filter(|id| id.as_str() == "alpha").count(),
-        1,
-        "the duplicate must be quarantined, not double-merged"
     );
 }
 
@@ -965,34 +669,53 @@ async fn failed_merge_does_not_consume_hook_budget() {
 /// parallel `cargo test`.
 #[test]
 fn for_tenant_entry_point_attributes_install_time_quarantine_to_real_tenant() {
-    // An untrusted extension whose hook payload is malformed → quarantined
-    // at INSTALL time (not discovery), exercising the `project_extension_hook_sets`
-    // audit path that previously lost tenant attribution.
+    // An active, consented third-party package whose hook payload is
+    // malformed → quarantined when a run's live installer validates it,
+    // which must be attributed to the real tenant.
     let hooks_block = r#"
 [[hooks]]
 id = "broken-hook"
 kind = "before_capability"
 body = { mode = "nonsense" }
 "#;
-    let registry = projection(registry_with_manifest(
-        "broken-ext",
-        &manifest_toml("broken-ext", hooks_block),
+    let package = consented(
+        registry_with_manifest("broken-ext", &manifest_toml("broken-ext", hooks_block))
+            .extensions()
+            .next()
+            .expect("fixture package")
+            .clone(),
+    );
+    let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+        ExtensionRegistry::new(),
     ));
-
+    active.upsert(package).expect("activate");
     let real_tenant = ironclaw_host_api::ids::TenantId::new("acme-real-tenant").expect("tenant");
+    let factory = build_hook_dispatcher_builder_factory_for_tenant(
+        HooksActivationConfig::enabled().with_third_party_enabled(true),
+        &HookProjectionRegistry::from_projections(Vec::new()),
+        &real_tenant,
+        Some(super::live::LiveHookSources {
+            active,
+            filesystem: Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+            settings: Arc::new(
+                ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings,
+            ),
+            owners: StaticOwners::tenant_shared(&["broken-ext"]),
+            quarantines: Default::default(),
+        }),
+    )
+    .expect("factory builds")
+    .expect("flag ON yields a factory");
 
-    let (factory, captured) = super::audit::test_capture::with_capture(|| {
-        build_hook_dispatcher_builder_factory_for_tenant(
-            HooksActivationConfig::enabled(),
-            &registry,
-            &real_tenant,
-        )
-        .expect("malformed untrusted hook is quarantined, build succeeds")
-        .expect("flag ON yields a factory")
+    let (minted, captured) = super::audit::test_capture::with_capture(|| {
+        futures::executor::block_on(factory(build_for(user_scope("alice"))))
     });
-    // Building a dispatcher confirms the survivors replay cleanly (the
-    // quarantine already fired during composition, inside `with_capture`).
-    let _dispatcher = factory().expect("mint hook builder").build_arc();
+    let dispatcher = minted.expect("quarantine, not a failed run").build_arc();
+    assert!(
+        dispatcher
+            .active_bindings_snapshot(HookPointSpec::BeforeCapability)
+            .is_empty()
+    );
 
     let tenants: Vec<&str> = captured
         .iter()
@@ -1030,11 +753,11 @@ fn capability_provider_contracts() -> ironclaw_extension_registry::HostApiContra
 /// point and the `Installed` tier, live only when the flags allow it.
 #[test]
 fn hook_catalog_lists_extension_hooks_with_point_trust_and_flag_state() {
-    let registry = projection_with(&[(
+    let registry = projection(registry_with(&[(
         "catalog-ext",
         ManifestSource::InstalledLocal,
         own_deny_hook("deny-run", "catalog-ext.run"),
-    )]);
+    )]));
     let master_only =
         super::catalog::hook_catalog(HooksActivationConfig::enabled(), Some(&registry), false);
     let hook = master_only
@@ -1091,7 +814,7 @@ scope = "own_capabilities"
 body = { mode = "wasm", export = "evaluate" }
 "#
     );
-    let registry = projection_with(&[
+    let registry = projection(registry_with(&[
         (
             "reachy-ext",
             ManifestSource::InstalledLocal,
@@ -1103,7 +826,7 @@ body = { mode = "wasm", export = "evaluate" }
             ManifestSource::InstalledLocal,
             own_deny_hook("deny-run", "good-ext.run"),
         ),
-    ]);
+    ]));
     let catalog = super::catalog::hook_catalog(
         HooksActivationConfig::enabled().with_third_party_enabled(true),
         Some(&registry),
@@ -1125,4 +848,781 @@ body = { mode = "wasm", export = "evaluate" }
     assert!(fine.note.as_deref().unwrap_or("").contains("Quarantined"));
     assert!(!hook("mixed-ext/wasm-one").enabled);
     assert!(hook("good-ext/deny-run").enabled);
+}
+
+fn mint(
+    factory: &ironclaw_turn_runner::loop_driver_host::HookDispatcherBuilderFactory,
+) -> Result<
+    ironclaw_hooks::dispatch::HookDispatcherBuilder,
+    ironclaw_turn_runner::loop_driver_host::RebornLoopDriverHostError,
+> {
+    futures::executor::block_on(factory(
+        ironclaw_turn_runner::loop_driver_host::HookDispatcherBuildRequest {
+            scope: ironclaw_host_api::resource::ResourceScope::system(),
+        },
+    ))
+}
+
+/// Package hooks follow the extension lifecycle. With live sources wired, the
+/// per-run factory installs a third-party package's hooks only while the
+/// package is in the active registry: activation (publish) registers them at
+/// the `Installed` tier on the next run, deactivation/removal (unpublish)
+/// leaves the next run with none — and drops the package's resident module
+/// bytes and validation cache.
+#[test]
+fn live_hook_sets_follow_activation_and_deactivation() {
+    use ironclaw_extension_registry::SharedExtensionRegistry;
+    use ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings;
+
+    let package_registry = registry_with_manifest(
+        "live-ext",
+        &manifest_toml("live-ext", &own_deny_hook("deny-run", "live-ext.run")),
+    );
+    let package = consented(
+        package_registry
+            .extensions()
+            .next()
+            .expect("fixture package")
+            .clone(),
+    );
+    let active = Arc::new(SharedExtensionRegistry::new(ExtensionRegistry::new()));
+    let tenant = ironclaw_host_api::ids::TenantId::new("tenant-live").expect("tenant");
+    let tenant_root = tenant_extension_root(&tenant).expect("root");
+    let filesystem: Arc<dyn ironclaw_filesystem::RootFilesystem> =
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new());
+    let installer = super::live::LiveHookInstaller::new(
+        true,
+        tenant,
+        tenant_root,
+        super::live::LiveHookSources {
+            active: Arc::clone(&active),
+            filesystem,
+            settings: Arc::new(DefaultsOnlyExtensionSettings),
+            owners: StaticOwners::tenant_shared(&["live-ext"]),
+            quarantines: Default::default(),
+        },
+        Arc::new(ironclaw_hooks::evaluator::PredicateEvaluator::new()),
+        Arc::new(install_first_party_hooks),
+        Vec::new(),
+    )
+    .expect("installer builds");
+    let request = || ironclaw_turn_runner::loop_driver_host::HookDispatcherBuildRequest {
+        scope: ironclaw_host_api::resource::ResourceScope::system(),
+    };
+    let expected = installed_hook_id("live-ext", "0.1.0", "deny-run");
+    let bound = |builder: HookDispatcherBuilder| {
+        builder
+            .build_arc()
+            .active_bindings_snapshot(HookPointSpec::BeforeCapability)
+            .iter()
+            .any(|binding| binding.hook_id == expected)
+    };
+
+    // Installed on disk but not active: no hooks.
+    let before = futures::executor::block_on(installer.build(request())).expect("build");
+    assert!(!bound(before), "an inactive package contributes no hooks");
+
+    // Activated: the next run carries the package hook.
+    active.upsert(package.clone()).expect("activate");
+    let during = futures::executor::block_on(installer.build(request())).expect("build");
+    assert!(bound(during), "an active package's hook registers");
+
+    // Deactivated/removed: the next run carries none, and nothing stays
+    // resident for the package.
+    active.remove(&package.id);
+    let after = futures::executor::block_on(installer.build(request())).expect("build");
+    assert!(!bound(after), "a deactivated package's hook unregisters");
+    assert!(installer.resident_module_extensions().is_empty());
+}
+
+// ---- live installer: per-user visibility, module pinning, failure policy ----
+
+/// Installation owners for the live-installer tests (the production source is
+/// the lifecycle manager's owner projection).
+/// Owner rows plus consent decisions keyed by (extension id, user): `None`
+/// admits every generation that carries a grant digest; `Some` admits a user
+/// only for the digest they decided on.
+struct StaticOwners(
+    std::collections::BTreeMap<
+        ironclaw_host_api::ids::ExtensionId,
+        ironclaw_extension_registry::InstallationOwner,
+    >,
+    Option<std::collections::BTreeMap<(String, String), String>>,
+);
+
+impl StaticOwners {
+    fn rows(
+        rows: &[(&str, ironclaw_extension_registry::InstallationOwner)],
+    ) -> Arc<dyn ironclaw_extension_manager::installation_visibility::InstallationOwnerSource> {
+        Self::rows_with_decisions(rows, None)
+    }
+
+    fn rows_with_decisions(
+        rows: &[(&str, ironclaw_extension_registry::InstallationOwner)],
+        decisions: Option<&[(&str, &str, &str)]>,
+    ) -> Arc<dyn ironclaw_extension_manager::installation_visibility::InstallationOwnerSource> {
+        Arc::new(Self(
+            rows.iter()
+                .map(|(id, owner)| {
+                    (
+                        ironclaw_host_api::ids::ExtensionId::new(*id).expect("extension id"),
+                        owner.clone(),
+                    )
+                })
+                .collect(),
+            decisions.map(|rows| {
+                rows.iter()
+                    .map(|(extension, user, digest)| {
+                        (
+                            (extension.to_string(), user.to_string()),
+                            digest.to_string(),
+                        )
+                    })
+                    .collect()
+            }),
+        ))
+    }
+
+    fn tenant_shared(
+        ids: &[&str],
+    ) -> Arc<dyn ironclaw_extension_manager::installation_visibility::InstallationOwnerSource> {
+        let rows: Vec<_> = ids
+            .iter()
+            .map(|id| (*id, ironclaw_extension_registry::InstallationOwner::Tenant))
+            .collect();
+        Self::rows(&rows)
+    }
+}
+
+#[async_trait::async_trait]
+impl ironclaw_extension_manager::installation_visibility::InstallationOwnerSource for StaticOwners {
+    async fn installation_owners(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<
+            ironclaw_host_api::ids::ExtensionId,
+            ironclaw_extension_registry::InstallationOwner,
+        >,
+        ironclaw_product_contracts::error::ProductOperationFailure,
+    > {
+        Ok(self.0.clone())
+    }
+
+    async fn execution_consented(
+        &self,
+        extension_id: &ironclaw_host_api::ids::ExtensionId,
+        pins: Option<&ironclaw_extension_registry::PackageContentPins>,
+        _owner: Option<&ironclaw_extension_registry::InstallationOwner>,
+        caller: &ironclaw_host_api::ids::UserId,
+    ) -> Result<bool, ironclaw_product_contracts::error::ProductOperationFailure> {
+        let Some(granted) = pins.and_then(|pins| pins.consent_digest()) else {
+            return Ok(false);
+        };
+        Ok(match &self.1 {
+            None => true,
+            Some(decisions) => decisions
+                .get(&(
+                    extension_id.as_str().to_string(),
+                    caller.as_str().to_string(),
+                ))
+                .is_some_and(|decided| decided == granted),
+        })
+    }
+}
+
+fn user_scope(user: &str) -> ironclaw_host_api::resource::ResourceScope {
+    ironclaw_host_api::resource::ResourceScope::local_default(
+        ironclaw_host_api::ids::UserId::new(user).expect("user id"),
+        ironclaw_host_api::ids::InvocationId::new(),
+    )
+    .expect("scope")
+}
+
+fn build_for(
+    scope: ironclaw_host_api::resource::ResourceScope,
+) -> ironclaw_turn_runner::loop_driver_host::HookDispatcherBuildRequest {
+    ironclaw_turn_runner::loop_driver_host::HookDispatcherBuildRequest { scope }
+}
+
+fn live_installer(
+    active: &Arc<ironclaw_extension_registry::SharedExtensionRegistry>,
+    filesystem: Arc<dyn ironclaw_filesystem::RootFilesystem>,
+    settings: Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsReader>,
+    owners: Arc<dyn ironclaw_extension_manager::installation_visibility::InstallationOwnerSource>,
+) -> super::live::LiveHookInstaller {
+    let tenant = ironclaw_host_api::ids::TenantId::new("tenant-live").expect("tenant");
+    let tenant_root = tenant_extension_root(&tenant).expect("root");
+    super::live::LiveHookInstaller::new(
+        true,
+        tenant,
+        tenant_root,
+        super::live::LiveHookSources {
+            active: Arc::clone(active),
+            filesystem,
+            settings,
+            owners,
+            quarantines: Default::default(),
+        },
+        Arc::new(ironclaw_hooks::evaluator::PredicateEvaluator::new()),
+        Arc::new(install_first_party_hooks),
+        Vec::new(),
+    )
+    .expect("installer builds")
+}
+
+/// Extension ids with an Installed binding at `point` in a minted builder.
+fn bound_extensions(
+    builder: HookDispatcherBuilder,
+    point: HookPointSpec,
+) -> std::collections::BTreeSet<String> {
+    builder
+        .build_arc()
+        .active_bindings_snapshot(point)
+        .iter()
+        .filter_map(|binding| {
+            binding
+                .owning_extension
+                .as_ref()
+                .map(|extension| extension.as_str().to_string())
+        })
+        .collect()
+}
+
+fn v2_package(id: &str, hooks_block: &str) -> ExtensionPackage {
+    consented(
+        registry_with_manifest(id, &manifest_toml(id, hooks_block))
+            .extensions()
+            .next()
+            .expect("fixture package")
+            .clone(),
+    )
+}
+
+/// Per-user visibility (#5459 P1 applied to package hooks): a run installs
+/// only the hooks of active packages whose installation is visible to the
+/// run's user. A private install contributes to its members' runs only, a
+/// tenant-shared one to everyone's, and a package with no installation row
+/// to nobody's (fail closed).
+#[tokio::test]
+async fn live_hooks_follow_installation_visibility_per_run_user() {
+    use ironclaw_extension_registry::InstallationOwner;
+    use ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings;
+
+    let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+        ExtensionRegistry::new(),
+    ));
+    for id in ["alice-ext", "shared-ext", "orphan-ext"] {
+        active
+            .upsert(v2_package(
+                id,
+                &own_deny_hook("deny-run", &format!("{id}.run")),
+            ))
+            .expect("activate");
+    }
+    let installer = live_installer(
+        &active,
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+        Arc::new(DefaultsOnlyExtensionSettings),
+        StaticOwners::rows(&[
+            (
+                "alice-ext",
+                InstallationOwner::user(ironclaw_host_api::ids::UserId::new("alice").unwrap()),
+            ),
+            ("shared-ext", InstallationOwner::Tenant),
+        ]),
+    );
+
+    let alice = installer
+        .build(build_for(user_scope("alice")))
+        .await
+        .expect("alice's run builds");
+    assert_eq!(
+        bound_extensions(alice, HookPointSpec::BeforeCapability),
+        ["alice-ext", "shared-ext"]
+            .into_iter()
+            .map(String::from)
+            .collect()
+    );
+    let bob = installer
+        .build(build_for(user_scope("bob")))
+        .await
+        .expect("bob's run builds");
+    assert_eq!(
+        bound_extensions(bob, HookPointSpec::BeforeCapability),
+        ["shared-ext"].into_iter().map(String::from).collect(),
+        "another user's private package contributes no hooks to bob's run"
+    );
+}
+
+/// Per-run consent binds the package generation (P1 of the plugin-consent
+/// review): visibility alone is not enough. With the published package's
+/// pins granted under generation B, a member whose only decision names the
+/// earlier generation A gets no hooks; the member who consented to B does;
+/// and with generation A still published, the A decision installs it.
+#[tokio::test]
+async fn live_hooks_install_only_for_users_who_consented_to_the_published_generation() {
+    use ironclaw_extension_registry::InstallationOwner;
+    use ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings;
+
+    let user = |id: &str| ironclaw_host_api::ids::UserId::new(id).unwrap();
+    let members = || {
+        StaticOwners::rows_with_decisions(
+            &[(
+                "swap-ext",
+                InstallationOwner::users([user("alice"), user("bob")].into_iter().collect())
+                    .unwrap(),
+            )],
+            Some(&[
+                ("swap-ext", "alice", FIXTURE_CONSENT_DIGEST),
+                ("swap-ext", "bob", "fixture-generation-b"),
+            ]),
+        )
+    };
+    let published = |digest: &str| {
+        let package = v2_package("swap-ext", &own_deny_hook("deny-run", "swap-ext.run"));
+        let pins = package
+            .content_pins
+            .clone()
+            .expect("fixture pins")
+            .with_consent_digest(digest);
+        let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+            ExtensionRegistry::new(),
+        ));
+        active
+            .upsert(package.with_content_pins(pins))
+            .expect("activate");
+        active
+    };
+    async fn hooked(
+        installer: &super::live::LiveHookInstaller,
+        who: &str,
+    ) -> std::collections::BTreeSet<String> {
+        bound_extensions(
+            installer
+                .build(build_for(user_scope(who)))
+                .await
+                .expect("run builds"),
+            HookPointSpec::BeforeCapability,
+        )
+    }
+
+    let generation_b = live_installer(
+        &published("fixture-generation-b"),
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+        Arc::new(DefaultsOnlyExtensionSettings),
+        members(),
+    );
+    assert!(
+        hooked(&generation_b, "alice").await.is_empty(),
+        "a decision for generation A installs nothing from generation B"
+    );
+    assert_eq!(
+        hooked(&generation_b, "bob").await,
+        ["swap-ext"].into_iter().map(String::from).collect()
+    );
+
+    let generation_a = live_installer(
+        &published(FIXTURE_CONSENT_DIGEST),
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+        Arc::new(DefaultsOnlyExtensionSettings),
+        members(),
+    );
+    assert_eq!(
+        hooked(&generation_a, "alice").await,
+        ["swap-ext"].into_iter().map(String::from).collect(),
+        "the unchanged generation still installs for the user who consented to it"
+    );
+}
+
+/// A v3 plugin manifest with WASM hooks and one setting.
+fn v3_plugin(id: &str, hooks_block: &str) -> ExtensionPackage {
+    let toml = format!(
+        r#"schema_version = "reborn.extension_manifest.v3"
+id = "{id}"
+name = "{id}"
+version = "0.1.0"
+description = "{id} plugin"
+trust = "third_party"
+
+[runtime]
+kind = "wasm"
+module = "wasm/tool.wasm"
+
+[[tools]]
+id = "{id}.run"
+description = "Run {id}"
+effects = []
+default_permission = "allow"
+visibility = "model"
+input_schema_ref = "schemas/run.input.v1.json"
+{hooks_block}
+[[settings]]
+id = "mode"
+kind = "switch"
+label = "Mode"
+default = true
+"#
+    );
+    let root = VirtualPath::new(format!("/system/extensions/{id}")).expect("root");
+    let record = ironclaw_extension_registry::ExtensionManifestRecord::from_toml(
+        toml,
+        ManifestSource::InstalledLocal,
+        &ironclaw_host_api::host_port::default_host_port_catalog().expect("catalog"),
+        None,
+        &ironclaw_extension_registry::HostApiContractRegistry::new(),
+        Some(root.clone()),
+    )
+    .expect("v3 manifest parses");
+    let manifest = ExtensionManifest::try_from(record.manifest().clone()).expect("manifest");
+    consented(ExtensionPackage::from_manifest(manifest, root).expect("package"))
+}
+
+const WASM_GATE_HOOK: &str = r#"
+[[hooks]]
+id = "gate"
+kind = "before_capability"
+module = "wasm/gate.wasm"
+body = { mode = "wasm", export = "evaluate" }
+"#;
+
+const WASM_OBSERVER_HOOK: &str = r#"
+[[hooks]]
+id = "observe"
+kind = "after_capability"
+module = "wasm/observe.wasm"
+body = { mode = "wasm", export = "evaluate" }
+"#;
+
+const PASS_GATE_WAT: &str = r#"(module
+  (import "ic:hooks/before-capability@1" "pass" (func $pass (result i32)))
+  (memory (export "memory") 1)
+  (func (export "evaluate") call $pass drop))"#;
+
+const NOOP_OBSERVER_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (func (export "evaluate")))"#;
+
+async fn plant_module(
+    filesystem: &ironclaw_filesystem::InMemoryBackend,
+    extension: &str,
+    module: &str,
+    wat_src: &str,
+) {
+    use ironclaw_filesystem::RootFilesystem;
+    filesystem
+        .write_file(
+            &VirtualPath::new(format!("/system/extensions/{extension}/wasm/{module}"))
+                .expect("module path"),
+            &wat::parse_str(wat_src).expect("wat"),
+        )
+        .await
+        .expect("write module");
+}
+
+/// A settings reader that parks inside `stored_values` until released, so a
+/// test can interleave another build at that exact await point.
+struct ParkedSettings {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl ironclaw_extension_registry::settings::ExtensionSettingsReader for ParkedSettings {
+    async fn stored_values(
+        &self,
+        _scope: &ironclaw_host_api::resource::ResourceScope,
+        _extension_id: &ironclaw_host_api::ids::ExtensionId,
+    ) -> Result<
+        std::collections::BTreeMap<String, serde_json::Value>,
+        ironclaw_extension_registry::settings::ExtensionSettingsError,
+    > {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(std::collections::BTreeMap::new())
+    }
+}
+
+/// A settings reader whose every read fails.
+struct UnreadableSettings;
+
+#[async_trait::async_trait]
+impl ironclaw_extension_registry::settings::ExtensionSettingsReader for UnreadableSettings {
+    async fn stored_values(
+        &self,
+        _scope: &ironclaw_host_api::resource::ResourceScope,
+        extension_id: &ironclaw_host_api::ids::ExtensionId,
+    ) -> Result<
+        std::collections::BTreeMap<String, serde_json::Value>,
+        ironclaw_extension_registry::settings::ExtensionSettingsError,
+    > {
+        Err(
+            ironclaw_extension_registry::settings::ExtensionSettingsError::Storage {
+                operation: "read",
+                reason: format!(
+                    "settings record for {} is unreadable",
+                    extension_id.as_str()
+                ),
+            },
+        )
+    }
+}
+
+/// Concurrent dispatcher builds: build A admits a package (validated, module
+/// bytes in hand) and parks in its settings read; meanwhile the package is
+/// deactivated and build B prunes the shared module cache. Build A must still
+/// install from the bytes it admitted rather than fail its run.
+#[tokio::test]
+async fn admitted_build_keeps_its_module_bytes_when_a_concurrent_build_prunes() {
+    let filesystem = Arc::new(ironclaw_filesystem::InMemoryBackend::new());
+    plant_module(&filesystem, "pinned-ext", "gate.wasm", PASS_GATE_WAT).await;
+    let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+        ExtensionRegistry::new(),
+    ));
+    let package = v3_plugin("pinned-ext", WASM_GATE_HOOK);
+    active.upsert(package.clone()).expect("activate");
+    let settings = Arc::new(ParkedSettings {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let installer = live_installer(
+        &active,
+        filesystem,
+        Arc::clone(&settings) as _,
+        StaticOwners::tenant_shared(&["pinned-ext"]),
+    );
+
+    let build_a = installer.build(build_for(user_scope("alice")));
+    let interleave = async {
+        settings.entered.notified().await;
+        // Deactivated while A is parked: B sees no package and prunes.
+        active.remove(&package.id);
+        let build_b = installer
+            .build(build_for(user_scope("bob")))
+            .await
+            .expect("build B");
+        assert!(bound_extensions(build_b, HookPointSpec::BeforeCapability).is_empty());
+        assert!(installer.resident_module_extensions().is_empty());
+        settings.release.notify_one();
+    };
+    let (a, ()) = tokio::join!(build_a, interleave);
+    let a = a.expect("build A installs from the module bytes it admitted");
+    assert!(
+        bound_extensions(a, HookPointSpec::BeforeCapability).contains("pinned-ext"),
+        "the admitted run keeps the package's gate"
+    );
+}
+
+/// Failure policy by hook kind when a package's settings cannot be read for
+/// the run's user: after-fact observers are skipped for that run (observer
+/// failure isolation) while the package's other hooks still install; a gate
+/// (or prompt mutator) that would run on unread settings fails the build
+/// closed instead of being skipped.
+#[tokio::test]
+async fn unreadable_settings_skip_observers_but_fail_gates_closed() {
+    let filesystem = Arc::new(ironclaw_filesystem::InMemoryBackend::new());
+    plant_module(
+        &filesystem,
+        "observer-ext",
+        "observe.wasm",
+        NOOP_OBSERVER_WAT,
+    )
+    .await;
+    plant_module(&filesystem, "gate-ext", "gate.wasm", PASS_GATE_WAT).await;
+
+    // Observer-only WASM: the run builds; the observer is absent, the
+    // package's predicate gate (which reads no settings) still installs.
+    let observer_block = format!(
+        "{WASM_OBSERVER_HOOK}{}",
+        own_deny_hook("deny-run", "observer-ext.run")
+    );
+    let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+        ExtensionRegistry::new(),
+    ));
+    active
+        .upsert(v3_plugin("observer-ext", &observer_block))
+        .expect("activate");
+    let installer = live_installer(
+        &active,
+        Arc::clone(&filesystem) as _,
+        Arc::new(UnreadableSettings),
+        StaticOwners::tenant_shared(&["observer-ext", "gate-ext"]),
+    );
+    let built = installer
+        .build(build_for(user_scope("alice")))
+        .await
+        .expect("an observer's unreadable settings must not abort the run");
+    let dispatcher = built.build_arc();
+    assert!(
+        dispatcher
+            .active_bindings_snapshot(HookPointSpec::AfterCapability)
+            .iter()
+            .all(|binding| binding.owning_extension.is_none()),
+        "the observer is skipped for this run"
+    );
+    assert!(
+        dispatcher
+            .active_bindings_snapshot(HookPointSpec::BeforeCapability)
+            .iter()
+            .any(|binding| binding
+                .owning_extension
+                .as_ref()
+                .is_some_and(|extension| extension.as_str() == "observer-ext")),
+        "the package's settings-free gate still installs"
+    );
+
+    // A WASM gate on unread settings: fail closed.
+    active
+        .upsert(v3_plugin("gate-ext", WASM_GATE_HOOK))
+        .expect("activate");
+    let Err(error) = installer.build(build_for(user_scope("alice"))).await else {
+        panic!("a gate on unreadable settings fails the build closed");
+    };
+    assert!(
+        error.to_string().contains("gate-ext"),
+        "the failure names the package: {error}"
+    );
+}
+
+/// A third-party package's hooks are bound to its consent grant: published
+/// without the grant's pins it contributes nothing, and a hook module whose
+/// bytes are not the pinned ones never compiles — both quarantined and
+/// recorded for the hook inventory. The consented bytes install.
+#[tokio::test]
+async fn live_hooks_need_the_consent_pins_and_refuse_swapped_module_bytes() {
+    use ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings;
+
+    let filesystem = Arc::new(ironclaw_filesystem::InMemoryBackend::new());
+    plant_module(&filesystem, "unpinned-ext", "gate.wasm", PASS_GATE_WAT).await;
+    plant_module(&filesystem, "swapped-ext", "gate.wasm", NOOP_OBSERVER_WAT).await;
+    plant_module(&filesystem, "intact-ext", "gate.wasm", PASS_GATE_WAT).await;
+    let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+        ExtensionRegistry::new(),
+    ));
+    let mut unpinned = v3_plugin("unpinned-ext", WASM_GATE_HOOK);
+    unpinned.content_pins = None;
+    active.upsert(unpinned).expect("activate");
+    active
+        .upsert(v3_plugin("swapped-ext", WASM_GATE_HOOK))
+        .expect("activate");
+    active
+        .upsert(v3_plugin("intact-ext", WASM_GATE_HOOK))
+        .expect("activate");
+    let quarantines = super::live::LiveHookQuarantines::default();
+    let tenant = ironclaw_host_api::ids::TenantId::new("tenant-live").expect("tenant");
+    let installer = super::live::LiveHookInstaller::new(
+        true,
+        tenant.clone(),
+        tenant_extension_root(&tenant).expect("root"),
+        super::live::LiveHookSources {
+            active,
+            filesystem,
+            settings: Arc::new(DefaultsOnlyExtensionSettings),
+            owners: StaticOwners::tenant_shared(&["unpinned-ext", "swapped-ext", "intact-ext"]),
+            quarantines: quarantines.clone(),
+        },
+        Arc::new(ironclaw_hooks::evaluator::PredicateEvaluator::new()),
+        Arc::new(install_first_party_hooks),
+        Vec::new(),
+    )
+    .expect("installer builds");
+    let built = installer
+        .build(build_for(user_scope("alice")))
+        .await
+        .expect("quarantine, not a failed run");
+    assert_eq!(
+        bound_extensions(built, HookPointSpec::BeforeCapability),
+        ["intact-ext"].into_iter().map(String::from).collect(),
+        "only the package whose module is the consented one installs"
+    );
+    assert!(
+        quarantines
+            .reason("unpinned-ext")
+            .is_some_and(|reason| reason.contains("no consent grant")),
+        "{:?}",
+        quarantines.reason("unpinned-ext")
+    );
+    assert!(
+        quarantines
+            .reason("swapped-ext")
+            .is_some_and(|reason| reason.contains("tampered")),
+        "{:?}",
+        quarantines.reason("swapped-ext")
+    );
+    assert!(quarantines.reason("intact-ext").is_none());
+    assert!(
+        !installer
+            .resident_module_extensions()
+            .contains("swapped-ext"),
+        "refused bytes are never cached"
+    );
+}
+
+/// The hook inventory a caller sees narrows third-party packages by the same
+/// (consent-filtered) installation visibility a run applies: a private
+/// package is listed to its member only, a tenant-shared one to everyone,
+/// and a recorded live quarantine is shown with its reason.
+#[tokio::test]
+async fn hook_inventory_lists_third_party_hooks_only_to_users_who_can_see_them() {
+    use ironclaw_extension_registry::InstallationOwner;
+    use ironclaw_product_contracts::hooks_catalog::HookCatalogSource;
+
+    let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+        ExtensionRegistry::new(),
+    ));
+    for id in ["alice-ext", "shared-ext"] {
+        active
+            .upsert(v2_package(
+                id,
+                &own_deny_hook("deny-run", &format!("{id}.run")),
+            ))
+            .expect("activate");
+    }
+    let config = HooksActivationConfig::enabled().with_third_party_enabled(true);
+    let catalog = super::catalog::CallerHookCatalog {
+        base: super::catalog::hook_catalog(config, None, false),
+        config,
+        live: Some(super::live::LiveHookSources {
+            active,
+            filesystem: Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+            settings: Arc::new(
+                ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings,
+            ),
+            owners: StaticOwners::rows(&[
+                (
+                    "alice-ext",
+                    InstallationOwner::user(ironclaw_host_api::ids::UserId::new("alice").unwrap()),
+                ),
+                ("shared-ext", InstallationOwner::Tenant),
+            ]),
+            quarantines: Default::default(),
+        }),
+    };
+    let ids = |catalog: ironclaw_product_contracts::hooks_catalog::HookCatalog| {
+        catalog
+            .hooks
+            .into_iter()
+            .filter(|hook| {
+                hook.source == ironclaw_product_contracts::hooks_catalog::HookSource::Extension
+            })
+            .map(|hook| (hook.id, hook.enabled))
+            .collect::<Vec<_>>()
+    };
+    let alice = ids(catalog
+        .catalog(&ironclaw_host_api::ids::UserId::new("alice").unwrap())
+        .await);
+    assert_eq!(
+        alice,
+        [
+            ("alice-ext/deny-run".to_string(), true),
+            ("shared-ext/deny-run".to_string(), true)
+        ]
+    );
+    let bob = ids(catalog
+        .catalog(&ironclaw_host_api::ids::UserId::new("bob").unwrap())
+        .await);
+    assert_eq!(
+        bob,
+        [("shared-ext/deny-run".to_string(), true)],
+        "another user's private plugin is absent from bob's inventory"
+    );
 }

@@ -141,6 +141,10 @@ pub struct ExtensionManifest {
     /// validated by the v2 parser; projected into typed hook entries by the
     /// composition loader. Empty for the common no-hooks case.
     pub hooks: Vec<HookSectionEntryV2>,
+    /// Package-declared user settings (v3 `[[settings]]`); see [`settings`].
+    pub settings: Vec<settings::ExtensionSettingDecl>,
+    /// Declared plugin UI slots (see [`ExtensionManifestV2::ui_slots`]).
+    pub ui_slots: Vec<ironclaw_extension_contracts::plugin_ui::PluginUiSlotDescriptor>,
 }
 
 impl ExtensionManifest {
@@ -183,6 +187,8 @@ impl TryFrom<ExtensionManifestV2> for ExtensionManifest {
             capabilities: manifest.capabilities,
             host_api_surfaces: manifest.host_api_surfaces,
             hooks: manifest.hooks,
+            settings: manifest.settings,
+            ui_slots: manifest.ui_slots,
         })
     }
 }
@@ -196,12 +202,19 @@ mod lifecycle;
 mod package;
 mod registry;
 pub mod resolved;
+mod ui_slots;
+pub use ui_slots::check_render_descriptor;
+pub mod settings;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod v2;
 pub mod v3;
+mod v3_package_surfaces;
 
 pub use definition_admission::{PackageDefinitionAdmissionOutcome, PackageDefinitionRetention};
 pub use package::{
-    CapabilityDescriptorSchemaMode, ExtensionPackage, composed_capability_description,
+    CapabilityDescriptorSchemaMode, ExtensionPackage, PackageContentPinError, PackageContentPins,
+    composed_capability_description, verify_package_file,
 };
 
 pub use admin_configuration::{

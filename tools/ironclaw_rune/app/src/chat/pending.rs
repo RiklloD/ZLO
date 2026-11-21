@@ -130,7 +130,11 @@ pub fn clock_view(secs: u64) -> (u64, bool) {
 /// change: under an hour the widest is "59m 59s", after it "99h 59m". The
 /// UI faces' digits are proportional, so each has a spare digit's room.
 fn clock_placeholder(secs: u64) -> &'static str {
-    if secs < 3_600 { "000m 000s" } else { "0000h 000m" }
+    if secs < 3_600 {
+        "000m 000s"
+    } else {
+        "0000h 000m"
+    }
 }
 
 /// "12s", "3m 4s", "1h 2m": at most two units.

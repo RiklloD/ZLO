@@ -596,7 +596,13 @@ async fn scoped_devices_and_peer_links_act_only_within_their_grant() {
     let reader = paired_token(&app.main, issued["code"].as_str().expect("code")).await;
     let (status, body) = send(
         &app.main,
-        request(Method::GET, "/api/auth/devices", Some(&reader), None, [10, 0, 0, 9]),
+        request(
+            Method::GET,
+            "/api/auth/devices",
+            Some(&reader),
+            None,
+            [10, 0, 0, 9],
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -627,7 +633,13 @@ async fn scoped_devices_and_peer_links_act_only_within_their_grant() {
     // The device list shows what each grant may do.
     let (status, list) = send(
         &app.main,
-        request(Method::GET, "/api/auth/devices", Some(MASTER), None, [127, 0, 0, 1]),
+        request(
+            Method::GET,
+            "/api/auth/devices",
+            Some(MASTER),
+            None,
+            [127, 0, 0, 1],
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{list}");

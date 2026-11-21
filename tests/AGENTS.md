@@ -100,7 +100,7 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 | Providers (Google/Slack/GitHub contracts) | — | — | ✓ | ✓ |
 | Coverage/meta gates | — | 2 | ✓ | ✓ |
 
-Totals: **65** group scenarios · **68** flat integration bins (61 in
+Totals: **65** group scenarios · **69** flat integration bins (62 in
 `tests/integration/`, 7 in `tests/integration/auth/`) · **39** top-level Rust bins ·
 **103** Python scenario files (**889** test functions) registered in the active
 Reborn coverage map below. Section 6 separately inventories retained and legacy
@@ -225,7 +225,7 @@ ones speak MTProto over a raw socket with no injectable seam.
 
 ---
 
-## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (68)
+## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (69)
 
 One thread, whole real turn. Grouped by what the user experiences.
 
@@ -321,10 +321,12 @@ One thread, whole real turn. Grouped by what the user experiences.
 | Behavior | Evidence |
 |---|---|
 | An extension installs and activates through the real generic runtime | `extension_runtime.rs` |
+| Install a plugin and see its UI slots listed, rendered by the plugin's own render tool through the product-origin capability path, re-rendered after clicking a button (event round-trip), with a contract-breaking or oversize tree shown as a plain error instead of a tree — while another user who never installed it sees no slots and cannot render one (a new bin because no other scenario wires a fixture first-party render handler) | `plugin_ui.rs` |
 | An inbound channel message is verified and routed by the real generic ingress mount | `extension_ingress.rs` |
 | An outbound reply is published through the real inbound→outbound pipeline — Slack's lands on the native Agent stream (`chat.startStream`→`stopStream` with recipient/thread from the stored reply context), Telegram's as a terminal `sendMessage`; the answer never rides a coordinator send | `extension_delivery.rs` |
 | Pair a Telegram bot actor, run as that verified user, deliver anchored replies and busy notices, disconnect to revoke admission, then pair again to restore delivery (#6643/#6644) | `extension_delivery.rs::paired_telegram_bot_actor_turns_attribute_to_the_user_and_disconnect_revokes_admission` (production generated-code pairing, disconnect/repair, and anchored delivery evidence) |
 | Tenant-admin configuration and per-user install/remove stay separate state machines | `extension_user_lifecycle_isolation.rs` |
+| Activate a plugin and have its WASM hook fire on the next run at the `Installed` tier, deciding from the user's plugin settings; change a setting through the product surface (a misfit refused with a plain reason) and see the next run's hook decision flip; deactivate and have the plugin's hooks gone from the next run — crate tier because no harness path installs a locally-authored third-party package yet (that is the local-folder install lifecycle); the WASM tool's receipt of the same settings in its invocation context is pinned through the real host-runtime dispatch | `crates/app/ironclaw_composition/tests/plugin_package_surfaces.rs`, `crates/app/ironclaw_composition/src/observability/hooks/tests.rs::live_hook_sets_follow_activation_and_deactivation`, `crates/kernel/ironclaw_host_runtime/tests/host_runtime_services_contract.rs::host_runtime_services_wasm_tool_context_carries_the_users_effective_settings` |
 | A notification inbox belongs to one recipient: knowing another user's notification id grants no read and no mutation | `notification_inbox_user_isolation.rs` |
 | Connect Telegram through a generated workspace-bot code while personal linked-account tools remain separately protected | `channel_connection_projection.rs` |
 | An ordinary Telegram user sees personal device-link setup without deployment secrets and can independently mint a workspace-bot pairing code | `webui_v2_product_api.rs::telegram_setup_separates_bot_pairing_from_personal_device_link` |
@@ -361,7 +363,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 | A canonical 10-tool-call agent turn's database write volume is measured and reported (for tracking, not gated) on both libSQL and Postgres, and custom-actor group threads are rejected from canonical durable milestones | `db_write_canonical.rs` |
 | A downloaded run artifact carries per-iteration model-call timing evidence for a completed run, and still carries durable per-message timestamps (with an explicit `run_not_resident` reason) when the process-local timing buffer was evicted or the process restarted | `run_artifact_timings.rs` |
 
-One of the 68 registered bins, `delivery_user_journeys.rs`, holds the explicit
+One of the 69 registered bins, `delivery_user_journeys.rs`, holds the explicit
 channel-delivery journeys (two-lane model):
 
 | A user can… | Scenario |

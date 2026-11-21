@@ -39,9 +39,10 @@
 //! The activation logic is split into focused submodules, behavior-preserving:
 //!
 //! - [`projection`] — the hook-only [`projection::HookProjection`] /
-//!   [`HookProjectionRegistry`] containment types, plus the discovery/admission
-//!   pipeline ([`projection::build_hook_projection_registry`]) and the
-//!   tenant-root / path-containment helpers.
+//!   [`HookProjectionRegistry`] containment types, the trusted-only boot
+//!   projection ([`projection::build_hook_projection_registry`]) and the
+//!   tenant-root / path-containment helpers. Third-party hooks are never
+//!   discovered at boot: [`live`] installs them per run, consent-bound.
 //! - [`factory`] — first-party install, install-time per-extension quarantine
 //!   validation ([`factory::project_extension_hook_sets`]), and the
 //!   fresh-per-build dispatcher factory builders.
@@ -68,6 +69,7 @@
 pub(crate) mod audit;
 pub(crate) mod catalog;
 pub(crate) mod factory;
+pub(crate) mod live;
 pub(crate) mod projection;
 
 #[cfg(test)]
@@ -88,8 +90,7 @@ pub use ironclaw_turn_runner::loop_driver_host::HookDispatcherBuilderFactory;
 pub use factory::build_hook_dispatcher_builder_factory;
 pub(crate) use factory::build_hook_dispatcher_builder_factory_for_tenant;
 pub use projection::{
-    HookProjectionRegistry, MAX_INSTALLED_EXTENSIONS_CONSIDERED, ThirdPartyDiscoveryInput,
-    build_hook_projection_registry,
+    HookProjectionRegistry, MAX_INSTALLED_EXTENSIONS_CONSIDERED, build_hook_projection_registry,
 };
 
 /// Activation configuration for the hook framework.
