@@ -257,6 +257,21 @@ pub const SCENES: &[Scene] = &[
     ("side-changes", crate::chat::side::fixtures::changes),
     ("side-console", crate::chat::side::fixtures::console),
     ("side-details", crate::chat::side::fixtures::details),
+    ("side-details-light", |s| {
+        crate::chat::side::fixtures::details(s);
+        light_theme(s);
+    }),
+    // The wallpaper lies over the whole window: the card must stay opaque.
+    ("side-details-wallpaper", |s| {
+        crate::chat::side::fixtures::details(s);
+        s.prefs.wallpaper = crate::design::prefs::Wallpaper::Scene {
+            name: "dusk".into(),
+        };
+        s.prefs.wallpaper_effect = "none".into();
+        s.prefs.wallpaper_area = "window".into();
+        s.prefs.wallpaper_opacity = 0.35;
+        crate::design::look::fixture_wallpaper(s, (1280, 820));
+    }),
     ("side-files", crate::chat::side::fixtures::files),
     ("side-machines", crate::chat::side::fixtures::machines),
     ("side-history", crate::chat::side::fixtures::history),
