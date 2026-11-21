@@ -326,6 +326,25 @@ impl LiveHookInstaller {
                 );
                 continue;
             }
+            // ... and only for a user who consented to exactly that generation.
+            let consented = !projection.source.requires_consent()
+                || self
+                    .sources
+                    .owners
+                    .execution_consented(
+                        &projection.extension_id,
+                        projection.content_pins.as_ref(),
+                        owners
+                            .as_ref()
+                            .and_then(|o| o.get(&projection.extension_id)),
+                        &request.scope.user_id,
+                    )
+                    .await
+                    .map_err(|error| replay_error(format!("consent unreadable: {error}")))?;
+            if !consented {
+                tracing::debug!(extension_id = %extension, "package hooks not installed: no consent to this generation");
+                continue;
+            }
             // This run holds the validated module bytes until its install.
             let validated = match self.validated_entries(&projection).await? {
                 Ok(validated) => validated,

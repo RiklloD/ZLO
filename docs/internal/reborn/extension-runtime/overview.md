@@ -986,7 +986,27 @@ third-party package, files changed
     package's hooks). Pins are fail-closed: a consent-requiring package
     without pins is refused (`ExtensionPackage::verify_asset` /
     `required_asset_pin`); only host-bundled and user-registered packages run
-    unpinned (plus the explicit `with_unverified_contents_for_test`).
+    unpinned (plus the explicit `with_unverified_contents_for_test`, which
+    exists only under `cfg(test)` / the registry's `test-support` feature —
+    a production build cannot construct an unverified third-party package).
+  - **Dispatch binding (generation).** A capability grant names no package
+    generation, and a run keeps the port and grants it built, so consent is
+    re-checked at dispatch for the binding that executes. The pins carry the
+    consent digest of the grant they came from
+    (`PackageContentPins::consent_digest`); the generic host's loader wraps
+    every tool adapter of a consent-requiring package in
+    `ConsentBoundToolAdapter`, which on each invocation (loop run,
+    credential-gate or approval resume, product-origin calls such as plugin UI
+    render — all reach it through the snapshot resolver) requires the
+    invoking user's governing principal (tenant admin for a tenant-owned
+    install; the caller, who must be a member, otherwise) to hold a decision
+    naming exactly that digest (`ExtensionConsentStore::execution_consented`).
+    Otherwise the call is a model-visible `policy_denied` with a plain reason
+    and never reaches the lane. The live hook installer applies the same
+    check per run (through `InstallationOwnerSource::execution_consented`)
+    for the pins whose module bytes it would compile. So an authorization
+    minted for package A never dispatches a replacement B the user did not
+    consent to, even though B's bytes match B's pins.
   - **Status from disk.** Changing any file after the grant yields `tampered`
     until consent is granted again; status is computed from the files on disk
     (once per package per operation), so a running process notices on the

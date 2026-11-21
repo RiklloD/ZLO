@@ -1795,6 +1795,7 @@ mod tests {
 
     use super::*;
     use ironclaw_capabilities::CapabilityInvocationError;
+    use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
     use ironclaw_extension_registry::{
         ExtensionManifest, ExtensionPackage, ExtensionRegistry, ManifestSource,
     };

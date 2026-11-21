@@ -628,10 +628,11 @@ impl ExtensionConsentStore {
         &self,
         extension_id: &ExtensionId,
     ) -> Result<Option<(PackageConsentDigest, PackageContentPins)>, ProductOperationFailure> {
-        Ok(self
-            .package_pins_record(extension_id)
-            .await?
-            .map(|record| (record.digest, PackageContentPins::new(record.assets))))
+        Ok(self.package_pins_record(extension_id).await?.map(|record| {
+            let pins =
+                PackageContentPins::new(record.assets).with_consent_digest(record.digest.as_str());
+            (record.digest, pins)
+        }))
     }
 
     /// The package's execution pins, for the loaders and publication.
@@ -865,6 +866,39 @@ impl ExtensionConsentStore {
         }
     }
 
+    /// Whether `caller` may run the package generation bound to `pins` —
+    /// the dispatch-time consent check, made for the exact binding about to
+    /// execute. True only when the principal that governs `caller` under
+    /// `owner` (the tenant admin for a tenant-owned installation, the caller
+    /// for a member-held one, who must be a member) holds a decision naming
+    /// exactly the consent digest those pins were granted under. Fails
+    /// closed: no installation, pins without a grant digest, or a decision
+    /// for any other digest (an earlier or a later generation) is `false`.
+    /// Reads one small record; never hashes files (the lanes bind the bytes
+    /// to `pins`).
+    pub async fn execution_consented(
+        &self,
+        extension_id: &ExtensionId,
+        pins: Option<&PackageContentPins>,
+        owner: Option<&InstallationOwner>,
+        caller: &UserId,
+    ) -> Result<bool, ProductOperationFailure> {
+        let Some(granted) = pins.and_then(PackageContentPins::consent_digest) else {
+            return Ok(false);
+        };
+        let Some(owner) = owner else {
+            return Ok(false);
+        };
+        if !owner.visible_to(caller) {
+            return Ok(false);
+        }
+        let principal = ConsentPrincipal::for_caller(Some(owner), caller);
+        Ok(self
+            .decision(extension_id, &principal)
+            .await?
+            .is_some_and(|decided| decided.as_str() == granted))
+    }
+
     pub(crate) fn filesystem(&self) -> &dyn RootFilesystem {
         self.filesystem.as_ref()
     }
@@ -915,6 +949,99 @@ mod tests {
             tool_detail("", &[], PermissionMode::Allow),
             "This tool has no declared side effects and runs without asking."
         );
+    }
+
+    /// The dispatch-time check admits a principal only for the exact
+    /// generation its decision names: the member's own decision for a
+    /// member-held install, the tenant admin's for a tenant-owned one; never
+    /// a non-member, a decision for another digest, or unstamped pins.
+    #[tokio::test]
+    async fn execution_consent_binds_the_principal_to_the_pins_generation() {
+        let store =
+            ExtensionConsentStore::new(Arc::new(ironclaw_filesystem::InMemoryBackend::new()));
+        let extension = ExtensionId::new("swap").unwrap();
+        let alice = UserId::new("alice").unwrap();
+        let bob = UserId::new("bob").unwrap();
+        let carol = UserId::new("carol").unwrap();
+        let digest_a = PackageConsentDigest::new("a".repeat(64)).unwrap();
+        let digest_b = PackageConsentDigest::new("b".repeat(64)).unwrap();
+        let assets_a = PackageContentPins::from_files([("manifest.toml", b"a".as_slice())]);
+        let assets_b = PackageContentPins::from_files([("manifest.toml", b"b".as_slice())]);
+        store
+            .grant(
+                &extension,
+                &ConsentPrincipal::User(alice.clone()),
+                &digest_a,
+                &assets_a,
+                &alice,
+            )
+            .await
+            .unwrap();
+        store
+            .grant(
+                &extension,
+                &ConsentPrincipal::User(bob.clone()),
+                &digest_b,
+                &assets_b,
+                &bob,
+            )
+            .await
+            .unwrap();
+        let pins_a = assets_a.clone().with_consent_digest(digest_a.as_str());
+        let pins_b = assets_b.clone().with_consent_digest(digest_b.as_str());
+        let members =
+            InstallationOwner::users([alice.clone(), bob.clone()].into_iter().collect()).unwrap();
+        let check = |pins: Option<&PackageContentPins>,
+                     owner: Option<&InstallationOwner>,
+                     caller: &UserId| {
+            let store = store.clone();
+            let extension = extension.clone();
+            let pins = pins.cloned();
+            let owner = owner.cloned();
+            let caller = caller.clone();
+            async move {
+                store
+                    .execution_consented(&extension, pins.as_ref(), owner.as_ref(), &caller)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        assert!(check(Some(&pins_a), Some(&members), &alice).await);
+        assert!(
+            !check(Some(&pins_b), Some(&members), &alice).await,
+            "a decision for A never admits generation B"
+        );
+        assert!(check(Some(&pins_b), Some(&members), &bob).await);
+        assert!(
+            !check(Some(&pins_b), Some(&members), &carol).await,
+            "a non-member is never admitted"
+        );
+        assert!(
+            !check(Some(&assets_b), Some(&members), &bob).await,
+            "pins without a grant digest admit nobody"
+        );
+        assert!(
+            !check(Some(&pins_b), None, &bob).await,
+            "no installation, no run"
+        );
+        assert!(!check(None, Some(&members), &bob).await);
+
+        // Tenant-owned: the tenant admin's decision governs every caller, and
+        // a member's own decision does not stand in for it.
+        assert!(!check(Some(&pins_b), Some(&InstallationOwner::Tenant), &bob).await);
+        store
+            .grant(
+                &extension,
+                &ConsentPrincipal::TenantAdmin,
+                &digest_b,
+                &assets_b,
+                &bob,
+            )
+            .await
+            .unwrap();
+        assert!(check(Some(&pins_b), Some(&InstallationOwner::Tenant), &carol).await);
+        assert!(!check(Some(&pins_a), Some(&InstallationOwner::Tenant), &carol).await);
     }
 
     #[test]

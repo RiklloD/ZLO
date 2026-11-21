@@ -1,4 +1,5 @@
 // arch-exempt: large_file, mechanical approval-store migration only — InMemory*Store deleted, guard test repointed to Filesystem*Store<InMemoryBackend> (arch-simplification §4.3), no new test logic, plan #6168
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,

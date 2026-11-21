@@ -36,16 +36,56 @@ pub struct ExtensionPackage {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PackageContentPins {
     assets: BTreeMap<String, String>,
-    /// Set only by [`ExtensionPackage::with_unverified_contents_for_test`]:
-    /// an explicit test construction that binds nothing.
-    unverified_for_test: bool,
+    /// The consent digest of the grant these pins came from (the
+    /// `PackageConsentDigest` the per-principal decisions name), carried
+    /// opaquely so every binding knows which consented generation it runs:
+    /// dispatch admits a principal only when their own decision names
+    /// exactly this digest. `None` for pins built without a grant (fixtures),
+    /// which no principal's decision matches.
+    consent_digest: Option<String>,
+    binding: PinBinding,
+}
+
+/// What a pins value binds. A non-test build has exactly one variant, so no
+/// production code can construct pins that skip verification.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PinBinding {
+    /// Every runtime read must match `assets`.
+    #[default]
+    Hashes,
+    /// The explicit unverified test construction
+    /// ([`crate::test_support::UnverifiedContentsForTest`]): binds nothing.
+    #[cfg(any(test, feature = "test-support"))]
+    UnverifiedForTest,
 }
 
 impl PackageContentPins {
     pub fn new(assets: BTreeMap<String, String>) -> Self {
         Self {
             assets,
-            unverified_for_test: false,
+            consent_digest: None,
+            binding: PinBinding::Hashes,
+        }
+    }
+
+    /// Stamp these pins with the consent digest of the grant they came from.
+    pub fn with_consent_digest(mut self, digest: impl Into<String>) -> Self {
+        self.consent_digest = Some(digest.into());
+        self
+    }
+
+    /// The consent digest these pins were granted under, if any.
+    pub fn consent_digest(&self) -> Option<&str> {
+        self.consent_digest.as_deref()
+    }
+
+    /// True only for the explicit unverified test construction; always false
+    /// in a build without the `test-support` feature.
+    fn is_unverified_for_test(&self) -> bool {
+        match self.binding {
+            PinBinding::Hashes => false,
+            #[cfg(any(test, feature = "test-support"))]
+            PinBinding::UnverifiedForTest => true,
         }
     }
 
@@ -63,6 +103,16 @@ impl PackageContentPins {
 
     pub fn assets(&self) -> &BTreeMap<String, String> {
         &self.assets
+    }
+}
+
+/// Pins that bind nothing: the unverified test construction only
+/// ([`crate::test_support::UnverifiedContentsForTest`]).
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn unverified_test_pins() -> PackageContentPins {
+    PackageContentPins {
+        binding: PinBinding::UnverifiedForTest,
+        ..PackageContentPins::default()
     }
 }
 
@@ -107,7 +157,7 @@ fn required_pin<'a>(
         }
         return Ok(None);
     };
-    if pins.unverified_for_test {
+    if pins.is_unverified_for_test() {
         return Ok(None);
     }
     let relative =
@@ -264,19 +314,6 @@ impl ExtensionPackage {
         self
     }
 
-    /// Explicit test construction: a package whose source needs consent but
-    /// whose files the test itself wrote, run without any content binding.
-    /// Production never calls this — a third-party package reaches a lane
-    /// only with the pins of its consent grant (the lifecycle's publication
-    /// and the generic host's loader attach them).
-    pub fn with_unverified_contents_for_test(mut self) -> Self {
-        self.content_pins = Some(PackageContentPins {
-            assets: BTreeMap::new(),
-            unverified_for_test: true,
-        });
-        self
-    }
-
     /// Check bytes just read from `path` (an absolute path under the
     /// package root) against the consented hash for that file. Fails closed:
     /// a package that needs consent ([`ManifestSource::requires_consent`])
@@ -343,7 +380,7 @@ impl ExtensionPackage {
             && !self
                 .content_pins
                 .as_ref()
-                .is_some_and(|pins| pins.unverified_for_test)
+                .is_some_and(PackageContentPins::is_unverified_for_test)
     }
 
     /// The consented hash for the file at `path`, if this package is pinned
@@ -352,7 +389,7 @@ impl ExtensionPackage {
         let pins = self
             .content_pins
             .as_ref()
-            .filter(|pins| !pins.unverified_for_test)?;
+            .filter(|pins| !pins.is_unverified_for_test())?;
         pins.assets
             .get(self.relative_asset_path(path)?)
             .map(String::as_str)
@@ -773,7 +810,10 @@ input_schema_ref = "schemas/remote-tools/invoke.input.v1.json"
                 Err(PackageContentPinError::Mismatch { .. })
             ));
 
-            let test_only = wasm_package(source).with_unverified_contents_for_test();
+            let test_only =
+                crate::test_support::UnverifiedContentsForTest::with_unverified_contents_for_test(
+                    wasm_package(source),
+                );
             assert!(!test_only.requires_verified_contents());
             assert_eq!(test_only.verify_asset(&module, b"anything"), Ok(()));
             assert_eq!(test_only.pinned_asset_hash(&module), None);

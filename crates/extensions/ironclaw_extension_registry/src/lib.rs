@@ -205,6 +205,8 @@ pub mod resolved;
 mod ui_slots;
 pub use ui_slots::check_render_descriptor;
 pub mod settings;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod v2;
 pub mod v3;
 mod v3_package_surfaces;

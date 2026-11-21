@@ -43,6 +43,7 @@ pub mod channel_pairing;
 pub mod channel_shared_admission;
 pub mod channel_triggered_delivery;
 mod channel_vendor_calls;
+mod consent_bound_adapter;
 pub mod deployment_channels;
 pub mod device_link_channel_identity;
 pub mod device_link_driver;

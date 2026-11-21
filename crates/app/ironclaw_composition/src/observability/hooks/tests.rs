@@ -376,10 +376,16 @@ fn fixture_module_files() -> Vec<(&'static str, Vec<u8>)> {
 /// the grant's per-file pins (here: the fixture hook modules).
 fn consented(package: ExtensionPackage) -> ExtensionPackage {
     let files = fixture_module_files();
-    package.with_content_pins(ironclaw_extension_registry::PackageContentPins::from_files(
-        files.iter().map(|(path, bytes)| (*path, bytes.as_slice())),
-    ))
+    package.with_content_pins(
+        ironclaw_extension_registry::PackageContentPins::from_files(
+            files.iter().map(|(path, bytes)| (*path, bytes.as_slice())),
+        )
+        .with_consent_digest(FIXTURE_CONSENT_DIGEST),
+    )
 }
+
+/// The consent digest the fixture pins are granted under.
+const FIXTURE_CONSENT_DIGEST: &str = "fixture-generation-a";
 
 // ─── Atomic quarantine + trust-discrimination coverage ───────────────────
 
@@ -933,16 +939,27 @@ fn live_hook_sets_follow_activation_and_deactivation() {
 
 /// Installation owners for the live-installer tests (the production source is
 /// the lifecycle manager's owner projection).
+/// Owner rows plus consent decisions keyed by (extension id, user): `None`
+/// admits every generation that carries a grant digest; `Some` admits a user
+/// only for the digest they decided on.
 struct StaticOwners(
     std::collections::BTreeMap<
         ironclaw_host_api::ids::ExtensionId,
         ironclaw_extension_registry::InstallationOwner,
     >,
+    Option<std::collections::BTreeMap<(String, String), String>>,
 );
 
 impl StaticOwners {
     fn rows(
         rows: &[(&str, ironclaw_extension_registry::InstallationOwner)],
+    ) -> Arc<dyn ironclaw_extension_manager::installation_visibility::InstallationOwnerSource> {
+        Self::rows_with_decisions(rows, None)
+    }
+
+    fn rows_with_decisions(
+        rows: &[(&str, ironclaw_extension_registry::InstallationOwner)],
+        decisions: Option<&[(&str, &str, &str)]>,
     ) -> Arc<dyn ironclaw_extension_manager::installation_visibility::InstallationOwnerSource> {
         Arc::new(Self(
             rows.iter()
@@ -953,6 +970,16 @@ impl StaticOwners {
                     )
                 })
                 .collect(),
+            decisions.map(|rows| {
+                rows.iter()
+                    .map(|(extension, user, digest)| {
+                        (
+                            (extension.to_string(), user.to_string()),
+                            digest.to_string(),
+                        )
+                    })
+                    .collect()
+            }),
         ))
     }
 
@@ -979,6 +1006,27 @@ impl ironclaw_extension_manager::installation_visibility::InstallationOwnerSourc
         ironclaw_product_contracts::error::ProductOperationFailure,
     > {
         Ok(self.0.clone())
+    }
+
+    async fn execution_consented(
+        &self,
+        extension_id: &ironclaw_host_api::ids::ExtensionId,
+        pins: Option<&ironclaw_extension_registry::PackageContentPins>,
+        _owner: Option<&ironclaw_extension_registry::InstallationOwner>,
+        caller: &ironclaw_host_api::ids::UserId,
+    ) -> Result<bool, ironclaw_product_contracts::error::ProductOperationFailure> {
+        let Some(granted) = pins.and_then(|pins| pins.consent_digest()) else {
+            return Ok(false);
+        };
+        Ok(match &self.1 {
+            None => true,
+            Some(decisions) => decisions
+                .get(&(
+                    extension_id.as_str().to_string(),
+                    caller.as_str().to_string(),
+                ))
+                .is_some_and(|decided| decided == granted),
+        })
     }
 }
 
@@ -1103,6 +1151,86 @@ async fn live_hooks_follow_installation_visibility_per_run_user() {
         bound_extensions(bob, HookPointSpec::BeforeCapability),
         ["shared-ext"].into_iter().map(String::from).collect(),
         "another user's private package contributes no hooks to bob's run"
+    );
+}
+
+/// Per-run consent binds the package generation (P1 of the plugin-consent
+/// review): visibility alone is not enough. With the published package's
+/// pins granted under generation B, a member whose only decision names the
+/// earlier generation A gets no hooks; the member who consented to B does;
+/// and with generation A still published, the A decision installs it.
+#[tokio::test]
+async fn live_hooks_install_only_for_users_who_consented_to_the_published_generation() {
+    use ironclaw_extension_registry::InstallationOwner;
+    use ironclaw_extension_registry::settings::DefaultsOnlyExtensionSettings;
+
+    let user = |id: &str| ironclaw_host_api::ids::UserId::new(id).unwrap();
+    let members = || {
+        StaticOwners::rows_with_decisions(
+            &[(
+                "swap-ext",
+                InstallationOwner::users([user("alice"), user("bob")].into_iter().collect())
+                    .unwrap(),
+            )],
+            Some(&[
+                ("swap-ext", "alice", FIXTURE_CONSENT_DIGEST),
+                ("swap-ext", "bob", "fixture-generation-b"),
+            ]),
+        )
+    };
+    let published = |digest: &str| {
+        let package = v2_package("swap-ext", &own_deny_hook("deny-run", "swap-ext.run"));
+        let pins = package
+            .content_pins
+            .clone()
+            .expect("fixture pins")
+            .with_consent_digest(digest);
+        let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
+            ExtensionRegistry::new(),
+        ));
+        active
+            .upsert(package.with_content_pins(pins))
+            .expect("activate");
+        active
+    };
+    async fn hooked(
+        installer: &super::live::LiveHookInstaller,
+        who: &str,
+    ) -> std::collections::BTreeSet<String> {
+        bound_extensions(
+            installer
+                .build(build_for(user_scope(who)))
+                .await
+                .expect("run builds"),
+            HookPointSpec::BeforeCapability,
+        )
+    }
+
+    let generation_b = live_installer(
+        &published("fixture-generation-b"),
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+        Arc::new(DefaultsOnlyExtensionSettings),
+        members(),
+    );
+    assert!(
+        hooked(&generation_b, "alice").await.is_empty(),
+        "a decision for generation A installs nothing from generation B"
+    );
+    assert_eq!(
+        hooked(&generation_b, "bob").await,
+        ["swap-ext"].into_iter().map(String::from).collect()
+    );
+
+    let generation_a = live_installer(
+        &published(FIXTURE_CONSENT_DIGEST),
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+        Arc::new(DefaultsOnlyExtensionSettings),
+        members(),
+    );
+    assert_eq!(
+        hooked(&generation_a, "alice").await,
+        ["swap-ext"].into_iter().map(String::from).collect(),
+        "the unchanged generation still installs for the user who consented to it"
     );
 }
 

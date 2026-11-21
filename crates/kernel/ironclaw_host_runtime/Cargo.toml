@@ -90,6 +90,9 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 ironclaw_approvals = { path = "../ironclaw_approvals", features = ["test-support"] }
 # Enables the in-memory-backed capability-lease store constructor for tests only.
 ironclaw_authorization = { path = "../ironclaw_authorization", features = ["test-support"] }
+# Unverified-contents package fixtures (`with_unverified_contents_for_test`):
+# third-party packages these tests write themselves, run without consent pins.
+ironclaw_extension_registry = { path = "../../extensions/ironclaw_extension_registry", features = ["test-support"] }
 # FaultInjecting decorator: drive store fault paths through the real store.
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features = ["test-support"] }
 # shared TestDispatcher double

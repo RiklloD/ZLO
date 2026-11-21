@@ -1,4 +1,5 @@
 #![deny(clippy::let_underscore_must_use)]
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use std::{
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex},

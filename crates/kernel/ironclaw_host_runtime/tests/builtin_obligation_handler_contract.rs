@@ -2,6 +2,7 @@
 #![deny(clippy::let_underscore_must_use)]
 mod support;
 
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use support::legacy_capability_fixture_to_v2;
 
 use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};

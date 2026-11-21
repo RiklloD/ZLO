@@ -2,6 +2,7 @@
 // arch-exempt: large_file, mechanical lease-store test repoint to CapabilityLeaseStore<InMemoryBackend> helper (arch-simplification §4.3), no new test logic, plan #6168
 
 use super::legacy_capability_fixture_to_v2;
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use std::{
     sync::{
         Arc, Mutex,

@@ -19,6 +19,7 @@
 #![deny(clippy::let_underscore_must_use)]
 mod support;
 
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use std::sync::Arc;
 
 use ironclaw_authorization::{GrantAuthorizer, in_memory_backed_capability_lease_store};

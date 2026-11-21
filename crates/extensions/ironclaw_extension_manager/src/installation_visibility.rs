@@ -18,16 +18,31 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use ironclaw_extension_host::ExtensionLifecycleManager;
-use ironclaw_extension_registry::InstallationOwner;
+use ironclaw_extension_registry::{InstallationOwner, PackageContentPins};
 use ironclaw_host_api::ids::{ExtensionId, UserId};
 use ironclaw_product_contracts::error::ProductOperationFailure;
 
-/// Owner of every installation, keyed by extension id.
+/// Owner of every installation, keyed by extension id, and the per-run
+/// consent check for the exact package generation a caller would run.
 #[async_trait]
 pub trait InstallationOwnerSource: Send + Sync {
     async fn installation_owners(
         &self,
     ) -> Result<BTreeMap<ExtensionId, InstallationOwner>, ProductOperationFailure>;
+
+    /// Whether `caller` may run the third-party package bound to `pins`
+    /// under `owner` (its consent-filtered owner row): true only when the
+    /// caller's governing principal holds a decision naming the consent
+    /// digest those pins were granted under (see
+    /// `ExtensionConsentStore::execution_consented`). Visibility alone is
+    /// not enough — the owner projection may describe another generation.
+    async fn execution_consented(
+        &self,
+        extension_id: &ExtensionId,
+        pins: Option<&PackageContentPins>,
+        owner: Option<&InstallationOwner>,
+        caller: &UserId,
+    ) -> Result<bool, ProductOperationFailure>;
 }
 
 #[async_trait]
@@ -36,6 +51,18 @@ impl InstallationOwnerSource for ExtensionLifecycleManager {
         &self,
     ) -> Result<BTreeMap<ExtensionId, InstallationOwner>, ProductOperationFailure> {
         ExtensionLifecycleManager::installation_owners(self).await
+    }
+
+    async fn execution_consented(
+        &self,
+        extension_id: &ExtensionId,
+        pins: Option<&PackageContentPins>,
+        owner: Option<&InstallationOwner>,
+        caller: &UserId,
+    ) -> Result<bool, ProductOperationFailure> {
+        self.consent_store()
+            .execution_consented(extension_id, pins, owner, caller)
+            .await
     }
 }
 

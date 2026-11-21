@@ -424,20 +424,43 @@ impl ExtensionLoader for CompositionExtensionLoader {
             .map_err(|error| load_error(format!("manifest rebuild failed: {error}")))?;
         let package = rebuild_package_from_resolved(manifest, &ctx.resolved, &ctx.extension_id)
             .map_err(load_error)?;
+        let execution_pins = content_pins.clone();
         let package = match content_pins {
             Some(pins) => package.with_content_pins(pins),
             None => package,
         };
         let adapter = if declares_tools {
-            Some(
+            let adapter =
                 self.binder
                     .bind_package(Arc::new(package))
                     .map_err(|error| match error {
                         ExtensionToolBindError::MissingRuntimeBackend { runtime } => load_error(
                             format!("no runtime backend is configured for {runtime:?} extensions"),
                         ),
-                    })?,
-            )
+                    })?;
+            // A package that needs consent runs, per invocation, only for a
+            // principal who consented to exactly this generation (the digest
+            // its execution pins were granted under): a grant minted for an
+            // earlier package under the same ids never dispatches this one.
+            if crate::extension_consent::source_requires_consent(source) {
+                let installation_id = ironclaw_extension_registry::ExtensionInstallationId::new(
+                    ctx.installation_id.clone(),
+                )
+                .map_err(|error| load_error(format!("invalid installation id: {error}")))?;
+                Some(
+                    Arc::new(crate::consent_bound_adapter::ConsentBoundToolAdapter::new(
+                        adapter,
+                        extension_id.clone(),
+                        installation_id,
+                        execution_pins,
+                        self.package_consent.clone(),
+                        Arc::clone(&self.installation_store),
+                        Arc::clone(&self.governor),
+                    )) as Arc<dyn ToolAdapter>,
+                )
+            } else {
+                Some(adapter)
+            }
         } else {
             None
         };

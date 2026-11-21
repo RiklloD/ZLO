@@ -1,5 +1,6 @@
 // arch-exempt: large_file, mechanical DiskFilesystem->DiskFilesystem Bucket-2 rename (arch-simplification §4.4), no logic change, plan #6168
 #![deny(clippy::let_underscore_must_use)]
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;

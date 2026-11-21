@@ -242,6 +242,7 @@ fn tool_runtime_error_kind(kind: DispatchFailureKind) -> RuntimeDispatchErrorKin
 
 #[cfg(test)]
 mod tests {
+    use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
     use std::collections::HashMap;
     use std::sync::Arc;
 

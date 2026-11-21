@@ -476,7 +476,7 @@ fn swapped_hook_module() -> Vec<u8> {
 /// Install as `user` (joining the membership), returning the consent
 /// digest the install response asks that user to grant.
 async fn install_as(runtime: &ironclaw_composition::RebornRuntime, user: &str) -> String {
-    let install = ironclaw_composition::test_support::extension_management_for_test(&runtime)
+    let install = ironclaw_composition::test_support::extension_management_for_test(runtime)
         .install(package_ref(), &UserId::new(user).unwrap())
         .await
         .unwrap();
@@ -498,7 +498,7 @@ async fn grant_and_activate(
     user: &str,
     digest: &str,
 ) {
-    let management = ironclaw_composition::test_support::extension_management_for_test(&runtime);
+    let management = ironclaw_composition::test_support::extension_management_for_test(runtime);
     let user = UserId::new(user).unwrap();
     management
         .grant_consent(
@@ -526,7 +526,7 @@ async fn phase_for(
     runtime: &ironclaw_composition::RebornRuntime,
     user: &str,
 ) -> ironclaw_extension_contracts::state::InstallationState {
-    ironclaw_composition::test_support::extension_management_for_test(&runtime)
+    ironclaw_composition::test_support::extension_management_for_test(runtime)
         .project(package_ref(), &UserId::new(user).unwrap())
         .await
         .unwrap()
@@ -795,4 +795,312 @@ async fn plugin_hooks_tools_and_settings_follow_each_users_consent() {
          (default `block = true`): {other_denied}"
     );
     other.shutdown().await.unwrap();
+}
+
+// ─── A grant outstanding across a package replacement ───────────────────
+
+const SWAP_ID: &str = "swap";
+const SWAP_TOOL_ID: &str = "swap.echo_context";
+const ALICE: &str = "swap-alice";
+const BOB: &str = "swap-bob";
+
+const SWAP_MANIFEST: &str = r#"
+schema_version = "reborn.extension_manifest.v3"
+id = "swap"
+name = "Swap"
+version = "0.1.0"
+description = "A third-party plugin whose files are replaced under the same ids."
+trust = "third_party"
+
+[runtime]
+kind = "wasm"
+module = "wasm/echo.wasm"
+
+[[tools]]
+origin_gate_matrix = { loop_run = "gated_unless_granted", product = "forbidden", automation = "forbidden" }
+id = "swap.echo_context"
+description = "Return the invocation context."
+effects = []
+default_permission = "allow"
+visibility = "model"
+input_schema_ref = "schemas/echo.input.v1.json"
+"#;
+
+/// The package's files; `generation` changes the tool component's bytes
+/// (not its behavior), so A and B are different packages with the same
+/// extension id, tool id, and permission declarations.
+fn swap_files(generation: &str) -> Vec<(String, Vec<u8>)> {
+    let wat =
+        ECHO_CONTEXT_TOOL_WAT.replace(r#""echo context""#, &format!(r#""echo ctx {generation}""#));
+    vec![
+        (
+            "manifest.toml".to_string(),
+            SWAP_MANIFEST.as_bytes().to_vec(),
+        ),
+        (
+            "schemas/echo.input.v1.json".to_string(),
+            br#"{"type":"object"}"#.to_vec(),
+        ),
+        ("wasm/echo.wasm".to_string(), tool_component(&wat)),
+    ]
+}
+
+fn swap_ref() -> ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef {
+    ironclaw_product_contracts::package_lifecycle::LifecyclePackageRef::new(
+        ironclaw_product_contracts::package_lifecycle::LifecyclePackageKind::Extension,
+        SWAP_ID,
+    )
+    .unwrap()
+}
+
+fn user_scope(user: &str) -> ironclaw_host_api::resource::ResourceScope {
+    ironclaw_host_api::resource::ResourceScope {
+        tenant_id: TenantId::new(TENANT).unwrap(),
+        user_id: UserId::new(user).unwrap(),
+        agent_id: None,
+        project_id: None,
+        mission_id: None,
+        thread_id: None,
+        invocation_id: ironclaw_host_api::ids::InvocationId::new(),
+    }
+}
+
+/// Install `generation` from the registry as `user` (`force`: replacing
+/// whatever package holds the id), grant that user's consent to its digest,
+/// and activate it for them.
+async fn registry_install_and_consent(
+    runtime: &ironclaw_composition::RebornRuntime,
+    generation: &str,
+    user: &str,
+    force: bool,
+) {
+    let management = ironclaw_composition::test_support::extension_management_for_test(runtime);
+    let package = ironclaw_extension_host::available_extension_import::registry_extension_package(
+        swap_files(generation),
+        &management.reserved_bundled_extension_ids().await,
+    )
+    .unwrap();
+    let user_id = UserId::new(user).unwrap();
+    management
+        .install_registry_package(package, force, &user_id, &user_scope(user))
+        .await
+        .unwrap();
+    let digest = management
+        .project(swap_ref(), &user_id)
+        .await
+        .unwrap()
+        .consent
+        .expect("consent summary")
+        .digest;
+    management
+        .grant_consent(swap_ref(), digest, &user_id)
+        .await
+        .unwrap();
+    let activated = management
+        .activate_with_prechecked_credentials_for_user_for_test(swap_ref(), &user_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        activated.phase,
+        ironclaw_extension_contracts::state::InstallationState::Active,
+        "{activated:?}"
+    );
+}
+
+/// Calls the swap tool each turn; on turn `pause_at` it registers the call
+/// against the port the run already holds, then waits for the test before
+/// handing the call to the loop — the window in which the package changes.
+struct SwapGateway {
+    calls: std::sync::Mutex<usize>,
+    pause_at: Option<usize>,
+    paused: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+}
+
+impl SwapGateway {
+    fn new(pause_at: Option<usize>) -> Self {
+        Self {
+            calls: std::sync::Mutex::new(0),
+            pause_at,
+            paused: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl HostManagedModelGateway for SwapGateway {
+    async fn stream_model(
+        &self,
+        _request: HostManagedModelRequest,
+    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        Err(HostManagedModelError::safe(
+            HostManagedModelErrorKind::InvalidRequest,
+            "SwapGateway requires the capability-aware model path",
+        ))
+    }
+
+    async fn stream_model_with_capabilities(
+        &self,
+        request: HostManagedModelRequest,
+        capabilities: Arc<dyn LoopCapabilityPort>,
+    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        let last_user = request
+            .messages
+            .iter()
+            .rposition(|message| message.role == HostManagedModelMessageRole::User)
+            .unwrap_or(0);
+        let tool_results: Vec<&str> = request.messages[last_user..]
+            .iter()
+            .filter(|message| message.role == HostManagedModelMessageRole::ToolResult)
+            .map(|message| message.content.as_str())
+            .collect();
+        if !tool_results.is_empty() {
+            return Ok(HostManagedModelResponse::assistant_reply(format!(
+                "tool said: {}",
+                tool_results.join("\n")
+            )));
+        }
+        let index = {
+            let mut calls = self.calls.lock().unwrap();
+            let index = *calls;
+            *calls += 1;
+            index
+        };
+        let tool_id = CapabilityId::new(SWAP_TOOL_ID).unwrap();
+        let Some(tool) = capabilities
+            .tool_definitions()
+            .unwrap()
+            .into_iter()
+            .find(|definition| definition.capability_id == tool_id)
+        else {
+            return Ok(HostManagedModelResponse::assistant_reply(
+                "no swap tool".to_string(),
+            ));
+        };
+        let call = capabilities
+            .register_provider_tool_call(RegisterProviderToolCallRequest::new(ProviderToolCall {
+                provider_id: "swap-provider".to_string(),
+                provider_model_id: "swap-model".to_string(),
+                turn_id: Some(format!("swap-turn-{index}")),
+                id: format!("swap-call-{index}"),
+                name: tool.name,
+                arguments: json!({}),
+                response_reasoning: None,
+                reasoning: None,
+                signature: None,
+            }))
+            .await
+            .unwrap();
+        if self.pause_at == Some(index) {
+            self.paused.notify_one();
+            self.resume.notified().await;
+        }
+        Ok(HostManagedModelResponse::capability_calls(vec![call], ""))
+    }
+}
+
+fn swap_runtime_input(
+    user: &str,
+    storage_root: std::path::PathBuf,
+    gateway: Arc<SwapGateway>,
+) -> RebornRuntimeInput {
+    RebornRuntimeInput::from_build_input(
+        ironclaw_composition::local_filesystem_build_input(user, storage_root)
+            .with_runtime_policy(ironclaw_composition::standalone_runtime_policy().unwrap()),
+    )
+    .with_tool_disclosure(ToolDisclosureMode::Off)
+    .with_identity(RebornRuntimeIdentity {
+        tenant_id: TENANT.to_string(),
+        agent_id: "swap-agent".to_string(),
+        source_binding_id: "swap-source".to_string(),
+        reply_target_binding_id: "swap-reply".to_string(),
+    })
+    .with_model_gateway_override(gateway)
+    .with_runner_settings(
+        TurnRunnerSettings::default()
+            .set_heartbeat_interval(Duration::from_millis(25))
+            .set_poll_interval(Duration::from_millis(10)),
+    )
+}
+
+/// A capability grant names no package generation, and a run keeps the port
+/// (and grants) it built. Consent is therefore checked at dispatch, for the
+/// binding that executes:
+///
+/// - control: Alice consented to package A, and her run calls A's tool;
+/// - Alice's next run registers the same call on its port (its grant for A
+///   minted), and before it dispatches, A is removed and Bob installs B from
+///   the registry (replacing A) and consents to it, under the same extension
+///   and tool ids with
+///   the same permission declarations — Alice's outstanding call reaches B's
+///   binding and is refused as a model-visible policy denial (B's bytes
+///   match B's pins; that says nothing about Alice's consent);
+/// - Bob, who consented to B, runs it.
+#[tokio::test]
+async fn an_outstanding_grant_never_dispatches_a_package_its_user_did_not_consent_to() {
+    let root = tempfile::tempdir().unwrap();
+    let storage_root = root.path().join("standalone");
+    let gateway = Arc::new(SwapGateway::new(Some(1)));
+    let runtime = build_reborn_runtime(swap_runtime_input(
+        ALICE,
+        storage_root.clone(),
+        Arc::clone(&gateway),
+    ))
+    .await
+    .unwrap();
+    let conversation = runtime.new_conversation().await.unwrap();
+    runtime
+        .enable_global_auto_approve_for_test(&conversation)
+        .await;
+    registry_install_and_consent(&runtime, "a", ALICE, false).await;
+
+    // Control: the unchanged package runs for the user who consented to it.
+    let ran = send(&runtime, &conversation, "use swap").await;
+    assert!(
+        ran.starts_with("tool said:") && ran.contains(r#""status":"success""#),
+        "Alice's consented package runs: {ran}"
+    );
+
+    // Alice's next call is registered on her port, then the package changes.
+    let alice_turn = send(&runtime, &conversation, "use swap again");
+    let replace = async {
+        gateway.paused.notified().await;
+        let alice = UserId::new(ALICE).unwrap();
+        ironclaw_composition::test_support::extension_management_for_test(&runtime)
+            .remove(swap_ref(), &user_scope(ALICE), Some(&alice))
+            .await
+            .unwrap();
+        registry_install_and_consent(&runtime, "b", BOB, true).await;
+        gateway.resume.notify_one();
+    };
+    let (refused, ()) = tokio::join!(alice_turn, replace);
+    assert!(
+        refused.starts_with("tool said:") && !refused.contains(r#""status":"success""#),
+        "Alice's grant for A must not dispatch B: {refused}"
+    );
+    assert!(
+        refused.contains("policy_denied")
+            && refused.contains("has not consented to the version now installed"),
+        "the refusal is a policy denial with a plain reason: {refused}"
+    );
+    runtime.shutdown().await.unwrap();
+
+    // Bob consented to B: it runs for him.
+    let bob = build_reborn_runtime(swap_runtime_input(
+        BOB,
+        storage_root,
+        Arc::new(SwapGateway::new(None)),
+    ))
+    .await
+    .unwrap();
+    let bob_conversation = bob.new_conversation().await.unwrap();
+    bob.enable_global_auto_approve_for_test(&bob_conversation)
+        .await;
+    let bob_ran = send(&bob, &bob_conversation, "use swap").await;
+    assert!(
+        bob_ran.starts_with("tool said:") && bob_ran.contains(r#""status":"success""#),
+        "Bob's consented package runs for him: {bob_ran}"
+    );
+    bob.shutdown().await.unwrap();
 }

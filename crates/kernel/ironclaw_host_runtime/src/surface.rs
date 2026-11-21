@@ -705,6 +705,7 @@ fn host_api_error(error: ironclaw_host_api::error::HostApiError) -> HostRuntimeE
 mod tests {
     use super::*;
     use ironclaw_authorization::GrantAuthorizer;
+    use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
     use ironclaw_host_api::{
         capability::PermissionMode,
         capability_surface::CapabilitySurfacePolicy,
