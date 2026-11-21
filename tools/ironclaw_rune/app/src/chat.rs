@@ -58,7 +58,7 @@ mod stream_tests;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -83,6 +83,9 @@ pub use view::view;
 const TIMELINE_LIMIT: u32 = 200;
 /// How long the copy button shows its check.
 const COPIED_FOR: Duration = Duration::from_millis(1400);
+/// How long past [`COPIED_FOR`] the poll waits before clearing a copy check
+/// whose revert timer never came (`rows::mark_copied`).
+const COPIED_GRACE: Duration = Duration::from_millis(500);
 /// The pacer's step. MonoCode stepped at 30 Hz; each step here rebuilds the
 /// view, and Rune's word reveal already staggers a step's words in one after
 /// another, so 20 Hz reads the same at two thirds of the work.
@@ -203,6 +206,12 @@ pub struct ChatState {
     pub voice_send: Option<crate::voice::Submission>,
     /// The message whose copy button shows its check, and since when.
     pub(crate) copied: Option<(String, Instant)>,
+    /// Sent files being fetched to open (by attachment id): their cards
+    /// breathe meanwhile.
+    pub(crate) downloading: HashSet<String>,
+    /// Send's and Stop's plate colours (`composer::PlateTint`).
+    pub(crate) send_tint: composer::PlateTint,
+    pub(crate) stop_tint: composer::PlateTint,
     /// A headless scene's running turn (`fixtures`); `None` in the app.
     pub(crate) fixture_run: Option<String>,
     pub side: side::SideState,
@@ -264,6 +273,9 @@ impl ChatState {
             stream_gen: Generation::default(),
             voice_send: None,
             copied: None,
+            downloading: Default::default(),
+            send_tint: Default::default(),
+            stop_tint: Default::default(),
             fixture_run: None,
             side: Default::default(),
             model_picker: Default::default(),
@@ -868,14 +880,13 @@ fn poll_chat(s: &mut State, id: &str, input_waiting: bool, tx: &mut Tx) -> bool 
     let Some(c) = chat_for(s, id) else {
         return changed;
     };
-    if let Some((_, at)) = &c.copied {
-        let left = COPIED_FOR.saturating_sub(at.elapsed());
-        if left.is_zero() {
-            c.copied = None;
-            changed = crate::energy::polled(crate::energy::C::PollChatCopied, true);
-        } else {
-            tx.wake_after(left);
-        }
+    // The copy check reverts on its own timer (`rows::mark_copied`), which
+    // animates; this only clears one whose timer was lost, with no wake.
+    if let Some((_, at)) = &c.copied
+        && at.elapsed() >= COPIED_FOR + COPIED_GRACE
+    {
+        c.copied = None;
+        changed = crate::energy::polled(crate::energy::C::PollChatCopied, true);
     }
     // The working line counts seconds while a run is live: the label is
     // repainted in place when the shown second turns (the poll also runs on
@@ -963,5 +974,12 @@ pub fn embedded_view(
 /// side pane's toggles (and the screen-share toggle).
 pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
     s.chat.as_ref()?;
-    Some(side::titlebar_actions(s, cx, k, layer))
+    // The capsule fades in as a chat opens from another page, and out as
+    // one leaves for it, instead of popping with the page change.
+    Some(
+        rune::el()
+            .key("chat-titlebar-actions")
+            .transition(rune::Transition::opacity())
+            .child(side::titlebar_actions(s, cx, k, layer)),
+    )
 }

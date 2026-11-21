@@ -34,7 +34,7 @@ use zlo_client::wire::{Landed, SubmitAck};
 
 use super::dispatch::{self, Mode};
 use super::{
-    ChatState, actions, chat_for, chat_ref, composer::round_button, inline_files, set_error,
+    ChatState, actions, chat_for, chat_ref, composer::round_button_tinted, inline_files, set_error,
 };
 use crate::icons;
 use crate::jobs;
@@ -508,7 +508,9 @@ fn queue_add(s: &mut State, id: &str, draft: Draft) {
         s,
         "orchestration",
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The person's queued message rises into the queue.
+            tx.animated();
             settle_queue_add(
                 s,
                 &asked,
@@ -584,10 +586,12 @@ fn queue_call(s: &mut State, id: &str, action: QueueAction, failure: &'static st
         s,
         "orchestration",
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
-        move |s, result, _| {
+        move |s, result, tx| {
             if !super::orchestration::is_current(s, &asked, instance) {
                 return;
             }
+            // The person's send-now: the row leaves the queue with motion.
+            tx.animated();
             if let Some(c) = chat_for(s, &asked) {
                 c.orchestration.busy = false;
                 match result {
@@ -945,7 +949,13 @@ struct Stash {
 /// Both sit in one keyed `send-stop` row whatever shows, so typing while a
 /// turn runs brings Send in beside Stop (and Stop back on its own) as the
 /// same two buttons popping in and out, never a fresh row.
-pub(crate) fn render_send(s: &State, chat: &ChatState, running: bool, k: &Kit) -> El {
+pub(crate) fn render_send(
+    s: &State,
+    chat: &ChatState,
+    running: bool,
+    reduced: bool,
+    k: &Kit,
+) -> El {
     let o = &chat.orchestration;
     let ready = !chat.staged.is_empty() || !chat.composer.text.trim().is_empty();
     let editing = o.editing.is_some();
@@ -958,22 +968,38 @@ pub(crate) fn render_send(s: &State, chat: &ChatState, running: bool, k: &Kit) -
     if !running || ready || editing {
         let id = chat.thread_id.clone();
         group = group.child(
-            round_button(s, "send", look.icon, ready || resume, look.label, k)
-                .help(look.help)
-                .transition(super::composer::round_pop())
-                .on_press_tx(move |s: &mut State, tx| {
-                    let alternate = tx.mods().cmd;
-                    press_send(s, &id, resume, alternate, tx)
-                }),
+            round_button_tinted(
+                s,
+                "send",
+                look.icon,
+                ready || resume,
+                look.label,
+                Some((&chat.send_tint, reduced)),
+                k,
+            )
+            .help(look.help)
+            .transition(super::composer::round_pop())
+            .on_press_tx(move |s: &mut State, tx| {
+                let alternate = tx.mods().cmd;
+                press_send(s, &id, resume, alternate, tx)
+            }),
         );
     }
     if running {
         let stop_id = chat.thread_id.clone();
         group = group.child(
-            round_button(s, "stop", &icons::SQUARE, !ready, "Stop", k)
-                .help("Stop")
-                .transition(super::composer::round_pop())
-                .on_press_tx(move |s: &mut State, tx| press_stop(s, &stop_id, tx)),
+            round_button_tinted(
+                s,
+                "stop",
+                &icons::SQUARE,
+                !ready,
+                "Stop",
+                Some((&chat.stop_tint, reduced)),
+                k,
+            )
+            .help("Stop")
+            .transition(super::composer::round_pop())
+            .on_press_tx(move |s: &mut State, tx| press_stop(s, &stop_id, tx)),
         );
     }
     group
