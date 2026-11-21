@@ -264,6 +264,8 @@ pub(crate) fn render_question(
             },
         )
         .fill(p.text.alpha(0.035))
+        // Answering turns the rim and glyph quiet on the slide spring.
+        .motion(crate::design::styles::Style::of(&s.prefs).slide)
         .transition(flow::rise(8.))
         .child(
             row()
@@ -353,7 +355,17 @@ pub(crate) fn render_question(
             ),
         QuestionState::Closed(_) => rune::el(),
     };
-    card.child(actions)
+    // Keyed by state: the buttons give way to the "waiting" line in place.
+    let phase = match state {
+        QuestionState::Open => "open",
+        QuestionState::Sending(_) => "sending",
+        QuestionState::Closed(_) => "closed",
+    };
+    card.child(
+        actions
+            .key(format!("{key}-actions-{phase}"))
+            .transition(rune::Transition::blur_replace()),
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // arch-exempt: too_many_args, one row of a form card, as in the GPUI app

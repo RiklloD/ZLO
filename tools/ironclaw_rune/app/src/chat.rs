@@ -50,6 +50,8 @@ mod visual;
 #[cfg(test)]
 mod burst_tests;
 pub mod fixtures;
+#[cfg(test)]
+mod motion_tests;
 mod stream_inbox;
 #[cfg(test)]
 mod stream_tests;
