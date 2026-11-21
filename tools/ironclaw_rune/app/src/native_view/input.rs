@@ -74,22 +74,10 @@ fn on_event(event: *mut AnyObject) {
     // SAFETY: a live NSEvent handed to the monitor, on the main thread.
     let kind: u64 = unsafe { msg_send![event, type] };
     match kind {
-        LEFT_DOWN | RIGHT_DOWN => {
-            if hit_in(event, Hit::Rune) {
-                reclaim_focus();
-            }
-        }
+        LEFT_DOWN | RIGHT_DOWN if hit_in(event, Hit::Rune) => reclaim_focus(),
         // A link follows on the release, Back on a mouse's side button.
-        LEFT_UP | OTHER_UP => {
-            if hit_in(event, Hit::Page) {
-                touched();
-            }
-        }
-        KEY_DOWN => {
-            if keys_in_page(event) {
-                touched();
-            }
-        }
+        LEFT_UP | OTHER_UP if hit_in(event, Hit::Page) => touched(),
+        KEY_DOWN if keys_in_page(event) => touched(),
         _ => {}
     }
 }

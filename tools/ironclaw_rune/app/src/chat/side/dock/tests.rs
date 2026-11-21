@@ -29,7 +29,7 @@ fn remote_backend_disables_the_local_only_tabs() {
     .collect();
     assert_eq!(off, vec![Tab::Changes, Tab::History, Tab::Console]);
     assert_eq!(
-        super::remote_line(Tab::Console, "studio"),
+        super::empty::remote_line(Tab::Console, "studio"),
         "Console: Runs on studio — not available remotely yet"
     );
 

@@ -685,7 +685,7 @@ mod tests {
             None,
             "loaded, and the watch is over: no next tick"
         );
-        assert_eq!(loop_of(&s).0, false, "the loop has ended");
+        assert!(!loop_of(&s).0, "the loop has ended");
         // A load in progress keeps it going however long it takes.
         page_input(&mut s);
         let (polling, generation) = loop_of(&s);
