@@ -20,7 +20,12 @@ fn share_poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
 /// The `computer` scene in the app's real view, with only the share's
 /// poll (so "at rest" means the share's own wakes).
 fn runtime() -> Runtime<State> {
-    let app = App::new(AppSpec::new("ZLO test", (1280., 820.), no_init, crate::view));
+    let app = App::new(AppSpec::new(
+        "ZLO test",
+        (1280., 820.),
+        no_init,
+        crate::view,
+    ));
     let mut s = State::new(crate::jobs::Rt::new(app.handle()));
     super::scene(&mut s, false);
     let mut rt = Runtime::new(s, crate::view, (1280., 820.), Env::new(true, 1.));
@@ -55,7 +60,10 @@ fn share(rt: &mut Runtime<State>) -> &mut super::ComputerState {
 /// At rest the only clock is the status dot's 15 fps breath while the agent
 /// works or waits: never a display-rate frame.
 fn resting(rt: &mut Runtime<State>) -> bool {
-    !rt.frame(1. / 60.) && rt.wake_deadline().is_none_or(|due| due - rt_now(rt) >= 1. / 20.)
+    !rt.frame(1. / 60.)
+        && rt
+            .wake_deadline()
+            .is_none_or(|due| due - rt_now(rt) >= 1. / 20.)
 }
 
 /// The runtime clock, read back through a zero step.
@@ -93,7 +101,9 @@ fn a_rear_card_click_refans_the_deck_with_motion() {
     });
     rt.frame(1. / 60.);
     rt.frame(1. / 60.);
-    let (mid, opacity) = rt.presented("cu-card-12").expect("the same card, mid-shuffle");
+    let (mid, opacity) = rt
+        .presented("cu-card-12")
+        .expect("the same card, mid-shuffle");
     assert!(
         (opacity - 1.).abs() < 0.01,
         "it moves, it does not remount and fade in: {opacity}"
@@ -103,9 +113,15 @@ fn a_rear_card_click_refans_the_deck_with_motion() {
         "it grows toward the front: {rear:?} -> {mid:?} -> {front:?}"
     );
     let frames = settle(&mut rt);
-    assert!((10..=90).contains(&frames), "a calm spring: {frames} frames");
+    assert!(
+        (10..=90).contains(&frames),
+        "a calm spring: {frames} frames"
+    );
     let landed = rect(&rt, "cu-card-12").expect("card 12");
-    assert!(near(landed, front), "it lands in the front slot: {landed:?} vs {front:?}");
+    assert!(
+        near(landed, front),
+        "it lands in the front slot: {landed:?} vs {front:?}"
+    );
     assert!(
         rect(&rt, "cu-card-11").is_some_and(|r| r[2] < front[2]),
         "and the old front card stepped back, same key"
@@ -123,7 +139,10 @@ fn the_lightbox_zooms_out_of_its_card_and_back() {
         click_card(s, "t1", 11, true);
     });
     rt.frame(1. / 60.);
-    assert!(rect(&rt, "cu-card-11").is_none(), "the deck hands its card to the lightbox");
+    assert!(
+        rect(&rt, "cu-card-11").is_none(),
+        "the deck hands its card to the lightbox"
+    );
     rt.frame(1. / 60.);
     let mid = rect(&rt, "cu-big").expect("the enlarged card");
     let (_, veil) = rt.presented("cu-big-veil").expect("the veil");
@@ -172,7 +191,10 @@ fn frames_streaming_in_leave_the_deck_alone() {
     for _ in 0..30 {
         rt.frame(1. / 120.);
         let (now, opacity) = rt.presented("cu-card-11").expect("the same card");
-        assert!(near(now, before) && opacity > 0.99, "the card holds still: {now:?}");
+        assert!(
+            near(now, before) && opacity > 0.99,
+            "the card holds still: {now:?}"
+        );
         assert!(near(rect(&rt, "cu-card-12").expect("card 12"), rear));
         assert!(rect(&rt, "cu-big").is_none());
     }
@@ -209,7 +231,10 @@ fn the_drag_trail_fades_out_without_a_standing_timer() {
     let mut tx = Tx::default();
     assert!(!super::poll(&mut s, "t1", &mut tx), "nothing to redraw yet");
     let w = wakes(&tx);
-    assert!(w.starts_with("1.3") || w.starts_with("1.4"), "one wake ~1.4 s on: {w}");
+    assert!(
+        w.starts_with("1.3") || w.starts_with("1.4"),
+        "one wake ~1.4 s on: {w}"
+    );
 
     // Fading: a frame at a time.
     set_trail(&mut s, TRAIL - TRAIL_FADE / 2);
@@ -220,10 +245,12 @@ fn the_drag_trail_fades_out_without_a_standing_timer() {
     // Gone: one last redraw to clear it, then no wake.
     set_trail(&mut s, TRAIL + Duration::from_millis(10));
     let mut tx = Tx::default();
-    assert!(super::poll(&mut s, "t1", &mut tx), "the expired trail is cleared");
+    assert!(
+        super::poll(&mut s, "t1", &mut tx),
+        "the expired trail is cleared"
+    );
     assert_eq!(wakes(&tx), "");
     let mut tx = Tx::default();
     assert!(!super::poll(&mut s, "t1", &mut tx));
     assert_eq!(wakes(&tx), "");
 }
-

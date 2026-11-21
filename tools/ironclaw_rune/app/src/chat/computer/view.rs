@@ -547,7 +547,11 @@ pub fn view(
         bar = bar.child(
             el().key("cu-take-wrap")
                 .radius(6.)
-                .fill(if cu.mine { p.active } else { Color::TRANSPARENT })
+                .fill(if cu.mine {
+                    p.active
+                } else {
+                    Color::TRANSPARENT
+                })
                 .child(take),
         );
     }
