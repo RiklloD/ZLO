@@ -463,7 +463,10 @@ observed_date = "2026-11-17"
 # ceilings (33450 / 667) after the CLI-manager and steering merges. With the
 # plugin work on top: 34468 -> 34631, observed 34781, zero hidden headroom,
 # pending the owner's sign-off.
-loc_ceiling = 34631
+# ✎ 2026-11-21 (steering merged onto main with the plugin system): 34631 ->
+# 34693, observed 34843, zero hidden headroom, pending the owner's sign-off.
+# +62: the steering admission/delivery wiring in composition.
+loc_ceiling = 34693
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -588,7 +591,8 @@ loc_observed_date = "2026-11-19"
 # test fake: `PluginUiHost`, `ExtensionSettingsSource`, the installation
 # visibility port and the package-consent port.
 # ✎ 2026-11-21 (same re-merge): 684 -> 686, observed 701 (main alone: 693).
-arc_dyn_ceiling = 686
+# ✎ 2026-11-21 (steering merge): 686 -> 688, observed 703.
+arc_dyn_ceiling = 688
 arc_dyn_tolerance = 15
 # ✎ 2026-11-19: observed corrected 689 -> 699 (the measured count; the merge
 # entry above recorded 699 in its note but left this field at 689).
