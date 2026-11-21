@@ -18,6 +18,7 @@ use super::common::{
     BASE, Btn, SM, XS, actions, button, card, empty_state, error_line, glyph, header, icon_button,
     label, page_body, para, refresh_button, switch,
 };
+use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -45,7 +46,7 @@ pub fn opened(s: &mut State) {
 }
 
 pub fn refresh(s: &mut State) {
-    load_channels(s);
+    load_channels(s, false);
     jobs::run(
         s,
         "notifications",
@@ -72,7 +73,9 @@ pub fn refresh(s: &mut State) {
     );
 }
 
-fn load_channels(s: &mut State) {
+/// Read the channels; `shown` after the person flipped one, so its switch
+/// slides to what stuck.
+fn load_channels(s: &mut State, shown: bool) {
     jobs::run(
         s,
         "notifications",
@@ -95,7 +98,10 @@ fn load_channels(s: &mut State) {
             }
             Ok(channels)
         },
-        |s, result, _| {
+        move |s, result, tx| {
+            if shown {
+                tx.animated();
+            }
             let this = &mut s.pages.notifications;
             match result {
                 Ok(channels) => this.channels = channels,
@@ -120,7 +126,7 @@ fn toggle_channel(s: &mut State, id: RebornOutboundDeliveryTargetId) {
         "notifications",
         move |c| async move { c.set_notification_channels(ids).await },
         |s, result, _| match result {
-            Ok(_) => load_channels(s),
+            Ok(_) => load_channels(s, true),
             Err(e) => s.pages.notifications.error = Some(e.to_string()),
         },
     );
@@ -183,6 +189,8 @@ fn open(s: &mut State, id: &str) {
     let unread_id = item.read_at.is_none().then(|| item.id.clone());
     let thread = thread_of(item).map(str::to_string);
     if let Some(id) = unread_id {
+        // Read on the click, so its dot fades with it; the re-read confirms.
+        mark_read_here(s, Some(&id));
         mutate(
             s,
             move |c| async move { c.mark_notification_read(&id).await },
@@ -191,6 +199,24 @@ fn open(s: &mut State, id: &str) {
     if let Some(thread) = thread {
         crate::workspace::open_thread(s, thread);
     }
+}
+
+/// Mark `id` (every item for `None`) read in the shown list, ahead of the
+/// gateway's answer, so the change rides the person's click.
+fn mark_read_here(s: &mut State, id: Option<&str>) {
+    let now = chrono::Utc::now();
+    for n in &mut s.pages.notifications.items {
+        if n.read_at.is_none() && id.is_none_or(|id| n.id == id) {
+            n.read_at = Some(now);
+        }
+    }
+}
+
+/// Archive `id`: its row folds away on the click (the rest glide up), and
+/// the gateway is told; a failure puts it back with the next read.
+fn archive(s: &mut State, id: String) {
+    s.pages.notifications.items.retain(|n| n.id != id);
+    mutate(s, move |c| async move { c.archive_notification(&id).await });
 }
 
 fn mutate<F, Fut, T>(s: &mut State, f: F)
@@ -241,22 +267,31 @@ fn render_row(s: &State, k: &Kit, item: &ProductNotification) -> El {
         .center_y()
         .cursor(Cursor::Pointer)
         .hover(p.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
+        // Keyed by id: an archived row folds away and the rest glide up.
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
         .on_press(move |s: &mut State| open(s, &open_id))
         .child(glyph(icon, 16., tint))
         .child(text_col)
         .child(label(jobs::ago(item.created_at), XS, 400., p.text_muted));
     if unread {
-        r = r.child(el().size(8., 8.).radius(4.).fill(p.accent));
+        r = r.child(
+            el().key("unread")
+                .size(8., 8.)
+                .radius(4.)
+                .fill(p.accent)
+                .transition(motion::glyph_pop()),
+        );
     }
     // Archive shows while the pointer is on the row (GPUI `group_hover`).
     r.child(
         row().key("archive").group_opacity(0., 1.).child(
             icon_button(&icons::INBOX, "Archive")
-                .on_press(move |s: &mut State| {
-                    let id = archive_id.clone();
-                    mutate(s, move |c| async move { c.archive_notification(&id).await });
-                })
-                .build(k),
+                .on_press(move |s: &mut State| archive(s, archive_id.clone()))
+                .build(k)
+                .press_scale(motion::PRESS),
         ),
     )
 }
@@ -289,9 +324,12 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
             button("Mark all read", Btn::Ghost)
                 .icon(&icons::CHECK)
                 .on_press(|s: &mut State| {
+                    mark_read_here(s, None);
                     mutate(s, |c| async move { c.mark_all_notifications_read().await })
                 })
-                .build(k),
+                .build(k)
+                .key("mark-all-read")
+                .press_scale(motion::PRESS),
         );
     }
     head.push(refresh_button(k, refresh));
@@ -305,15 +343,18 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         .w_full()
         .child(header(p, "Notifications", actions(head)));
     if let Some(e) = &this.error {
-        body = body.child(error_line(p, e));
+        body = body.child(error_line(p, e).key("notifications-error"));
     }
     if this.loaded && rows.is_empty() {
-        body = body.child(empty_state(
-            p,
-            "Nothing here yet. IronClaw lists approvals it needs, failed runs and finished automations here.",
-        ));
+        body = body.child(
+            empty_state(
+                p,
+                "Nothing here yet. IronClaw lists approvals it needs, failed runs and finished automations here.",
+            )
+            .key("notifications-none"),
+        );
     }
-    body = body.child(col().w_full().gap(2.).children(rows));
+    body = body.child(col().key("notifications").w_full().gap(2.).children(rows));
     if !this.channels.is_empty() {
         body = body.child(render_channels(s, k));
     }
