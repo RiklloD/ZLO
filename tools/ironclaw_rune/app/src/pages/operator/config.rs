@@ -15,6 +15,7 @@ use rune_kit::Kit;
 use zlo_client::product_wire::{RebornOperatorConfigEntry, RebornOperatorConfigListResponse};
 
 use super::{confirm_row, diagnostic_row, notice_line, section_title};
+use crate::design::motion;
 use crate::jobs;
 use crate::state::State;
 
@@ -102,7 +103,9 @@ fn edit(s: &mut State, key: String) {
         s,
         "operator",
         move |c| async move { c.operator_config_key(&job_key).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's Edit: the editor wipes open.
+            tx.animated();
             let Some(p) = st(s) else { return };
             match result {
                 Ok(resp) => {
@@ -160,7 +163,9 @@ fn save(s: &mut State) {
         s,
         "operator",
         move |c| async move { c.set_operator_config_key(&key, value).await },
-        |s, result, _| {
+        |s, result, tx| {
+            // The reply to the person's Change: the editor folds away.
+            tx.animated();
             let Some(p) = st(s) else { return };
             match result {
                 // The response is the gateway's read-back of the stored key.
@@ -231,7 +236,8 @@ fn render_row(
             button_sized("Edit", Look::Ghost, Size::XSmall)
                 .on_press(move |s: &mut State| edit(s, key.clone()))
                 .build(k)
-                .key(format!("edit-key-{ix}")),
+                .key(format!("edit-key-{ix}"))
+                .press_scale(motion::PRESS),
         );
     }
     let mut c = col()
@@ -243,6 +249,8 @@ fn render_row(
     if let Some(editor) = editing {
         c = c.child(
             row()
+                .key("editor")
+                .transition(motion::reveal())
                 .w_full()
                 .gap(8.)
                 .center_y()
@@ -252,7 +260,8 @@ fn render_row(
                             .placeholder("JSON value, e.g. true or {\"state\": \"ask_each_time\"}")
                             .on_edit(editor_edit)
                             .build(k)
-                            .key(format!("key-editor-{ix}")),
+                            .key(format!("key-editor-{ix}"))
+                            .press_scale(motion::PRESS),
                     ),
                 )
                 .child(
@@ -263,7 +272,8 @@ fn render_row(
                         editor.saving,
                     )
                     .build(k)
-                    .key(format!("save-key-{ix}")),
+                    .key(format!("save-key-{ix}"))
+                    .press_scale(motion::PRESS),
                 )
                 .child(
                     button_sized("Cancel", Look::Ghost, Size::Small)
@@ -273,7 +283,8 @@ fn render_row(
                             }
                         })
                         .build(k)
-                        .key(format!("cancel-edit-{ix}")),
+                        .key(format!("cancel-edit-{ix}"))
+                        .press_scale(motion::PRESS),
                 ),
         );
         if editor.confirming {
@@ -290,7 +301,8 @@ fn render_row(
                         e.confirming = false;
                     }
                 }),
-            ));
+            )
+            .key("confirm-change"));
         }
     }
     col().w_full().child(c).child(rule(p))
@@ -343,7 +355,8 @@ pub fn view(s: &State, k: &Kit, panel: &ConfigPanel) -> El {
             .leading_icon(&crate::icons::SEARCH)
             .on_edit(filter_edit)
             .build(k)
-            .key("config-filter"),
+            .key("config-filter")
+            .press_scale(motion::PRESS),
     );
     if !loaded {
         c = c.child(spinner(k));

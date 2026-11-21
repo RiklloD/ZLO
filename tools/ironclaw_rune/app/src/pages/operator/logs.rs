@@ -211,7 +211,7 @@ pub fn page(panel: &LogsPanel, k: &Kit) -> El {
                     .w_full()
                     .pb(8.)
                     .child(super::top(s, &kit))
-                    .child(view(s, &kit, panel).key("operator-panel-Logs")),
+                    .child(super::panel_motion(view(s, &kit, panel), super::Tab::Logs)),
                 i if i <= lines => match panel.entries.get(i - 1) {
                     Some(e) => log_row(&s.palette, e),
                     None => col(),
@@ -244,14 +244,25 @@ fn older_button(k: &Kit, panel: &LogsPanel) -> Option<El> {
 /// The tab's controls above the lines: level, target, run, source, state.
 fn view(s: &State, k: &Kit, panel: &LogsPanel) -> El {
     let p = &s.palette;
-    let levels = row().gap(2.).children(LEVELS.iter().map(|(level, label)| {
-        let level = *level;
-        let look = crate::pages::common::choice_look(panel.level == level);
-        button_sized(*label, look, Size::XSmall)
-            .on_press(move |s: &mut State| set_level(s, level))
-            .build(k)
-            .key(format!("log-level-{label}"))
-    }));
+    // The kit's segmented control: its knob glides (and resizes) to the
+    // picked level on the person's press. The lines themselves stay instant.
+    let labels: Vec<&str> = LEVELS.iter().map(|(_, l)| *l).collect();
+    let picked = LEVELS
+        .iter()
+        .position(|(level, _)| *level == panel.level)
+        .unwrap_or(0);
+    let levels = crate::design::kit::segmented(
+        s,
+        "log-levels",
+        &labels,
+        picked,
+        false,
+        |s: &mut State, ix| {
+            if let Some((level, _)) = LEVELS.get(ix) {
+                set_level(s, *level);
+            }
+        },
+    );
     let mut c = col().w_full().gap(8.);
     if let Some(e) = &panel.error {
         c = c.child(error_line(p, e));
