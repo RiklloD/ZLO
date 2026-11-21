@@ -155,6 +155,8 @@ fn the_hero_staggers_on_a_new_draft_only() {
 }
 
 #[test]
+/// Send's plate eases on its live colours (`PlateTint`, paint-only), so the
+/// keystroke's commit itself never animates.
 fn the_first_keystroke_in_the_hero_eases_send_and_later_ones_land() {
     let mut rt = runtime(crate::workspace::fixtures::fixture_empty);
     let fill = |rt: &Runtime<State>| {
@@ -183,7 +185,7 @@ fn the_first_keystroke_in_the_hero_eases_send_and_later_ones_land() {
     assert_ne!(idle, ready, "the plate differs from the wash");
     assert!(
         mid != ready && mid != idle,
-        "the first keystroke eases ({mid:?})"
+        "the first keystroke eases the plate's paint ({mid:?})"
     );
     type_text(&mut rt, "b");
     frames(&mut rt, 1);
@@ -215,4 +217,60 @@ fn the_sidebar_crossfades_between_the_inbox_and_settings() {
     frames(&mut rt, 60);
     assert!(rt.presented("inbox").is_none());
     assert_eq!(rt.presented("settings-nav").map(|(_, o)| o), Some(1.));
+}
+
+/// Edits that change the hero composer's height land in their own frame:
+/// the card and the greeting above it take their places at once, while
+/// Send's plate still eases on its live colours. A multiline paste into an
+/// empty draft and a select-all delete of a multiline one both flip Send.
+#[test]
+fn editing_the_hero_lands_its_layout_at_once() {
+    let mut rt = runtime(crate::workspace::fixtures::fixture_empty);
+    frames(&mut rt, 90);
+    let [x, y, w, h] = rect(&rt, "composer-input");
+    rt.pointer_down(x + w / 2., y + h / 2.);
+    rt.pointer_up(x + w / 2., y + h / 2.);
+    frames(&mut rt, 30);
+    let rects = |rt: &Runtime<State>| (rect(rt, "draft-composer"), rect(rt, "draft-greeting"));
+    let fill = |rt: &Runtime<State>| {
+        rt.elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("round-draft-send"))
+            .expect("send")
+            .fill
+    };
+    let empty = rects(&rt);
+    let idle = fill(&rt);
+
+    rt.paste("one\ntwo\nthree\nfour");
+    frames(&mut rt, 1);
+    let pasted = rects(&rt);
+    let easing = fill(&rt);
+    frames(&mut rt, 60);
+    let tall = rects(&rt);
+    assert!(tall.0[3] > empty.0[3] + 20., "four lines grow the card");
+    assert_eq!(pasted, tall, "the paste's frame has the final layout");
+    let ready = fill(&rt);
+    assert!(
+        easing != idle && easing != ready,
+        "Send's plate eases on its own ({easing:?})"
+    );
+
+    rt.key(rune::KeyEvent {
+        key: rune::Key::Command('a'),
+        mods: rune::Mods {
+            cmd: true,
+            ..Default::default()
+        },
+    });
+    frames(&mut rt, 1);
+    rt.key(rune::KeyEvent {
+        key: rune::Key::Backspace,
+        mods: Default::default(),
+    });
+    frames(&mut rt, 1);
+    let cleared = rects(&rt);
+    frames(&mut rt, 60);
+    assert_eq!(rects(&rt), empty, "back to the one-line card");
+    assert_eq!(cleared, empty, "the delete's frame has the final layout");
 }
