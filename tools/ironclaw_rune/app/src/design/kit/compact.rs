@@ -113,7 +113,10 @@ pub fn composer_surface(p: &Palette) -> (Color, Color) {
     crate::chat::composer::composer_surface(p, false)
 }
 
-/// The popovers' surface: the composer's fill and rim, a soft drop.
+/// The popovers' surface: the composer's fill and rim, a soft drop, on
+/// continuous corners. It pops in and out in place (`motion::pop(0.)`)
+/// where its commit animates; inside `rune_kit::popover::anchored` (which
+/// lands its contents at once and fades them out) the anchor's motion wins.
 pub fn panel_surface(p: &Palette, e: El) -> El {
     let (fill, rim) = composer_surface(p);
     let drop = |a: f32, y: f32, blur: f32, spread: f32| Shadow {
@@ -126,6 +129,8 @@ pub fn panel_surface(p: &Palette, e: El) -> El {
     };
     let (a, b) = if p.light { (0.08, 0.04) } else { (0.35, 0.2) };
     e.radius(design::PANEL_RADIUS)
+        .continuous_corners()
+        .transition(design::motion::pop(0.))
         .fill(fill)
         .border(1., rim)
         .box_shadow(drop(a, 8., 24., -6.))
