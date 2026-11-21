@@ -507,6 +507,91 @@ fn session_with(s: &mut State, card: bool, picker: bool) {
     crate::chat::fixtures::refold_chat(s, "sc2");
 }
 
+/// Scene `side-details`: the thread details card with every section that
+/// has data: workspace, branch and pull request, git, changes, a server, a
+/// bound automation, lineage with running and previous agents, side chats,
+/// and the usage and context rows turned on.
+pub fn details(s: &mut State) {
+    let now = chrono::Utc::now();
+    let ms = now.timestamp_millis();
+    let task = |json: serde_json::Value| serde_json::from_value(json).ok();
+    set_data(FixtureData {
+        rows: vec![user("u1", "Match the thread details card to t3code")],
+        tasks: [
+            task(serde_json::json!({
+                "taskId": "a1", "title": "Port the servers panel", "status": "running",
+                "childThreadId": "c1", "createdAt": ms - 420_000, "startedAt": ms - 400_000
+            })),
+            task(serde_json::json!({
+                "taskId": "a2", "title": "Read t3code's usage logic", "status": "completed",
+                "createdAt": ms - 900_000, "startedAt": ms - 880_000, "finishedAt": ms - 300_000
+            })),
+            task(serde_json::json!({
+                "taskId": "a3", "title": "Port scripts", "status": "failed",
+                "createdAt": ms - 1_200_000, "error": "No scripts store."
+            })),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    });
+    let schedule: Option<zlo_client::schedules::ScheduleInfo> =
+        serde_json::from_value(serde_json::json!({
+            "id": "s1", "title": "Nightly test run", "prompt": "Run the tests",
+            "schedule": {"type": "cron", "cron": "0 2 * * *"}, "describe": "Every day at 02:00",
+            "enabled": true, "threadId": "t1",
+            "nextRunAt": (now + chrono::Duration::hours(7)).timestamp_millis(),
+            "lastRunAt": (now - chrono::Duration::hours(17)).timestamp_millis()
+        }))
+        .map_err(|e| tracing::warn!(error = %e, "fixture schedule"))
+        .ok();
+    s.prefs
+        .side_chats
+        .insert("t1".into(), vec!["sc1".into(), "sc2".into()]);
+    s.workspace.titles.remember("sc1", "Which test is flaky?");
+    s.workspace
+        .titles
+        .remember("sc2", "Name for the density enum");
+    s.workspace.titles.remember("f1", "Try a popover instead");
+    s.workspace.titles.remember("p0", "Port t3code's UI to ZLO");
+    base(s, None, None, |x| {
+        with_repo(x);
+        let changes = vec![git::Change {
+            path: "src/main.rs".into(),
+            from: None,
+            index: ' ',
+            worktree: 'M',
+        }];
+        changes::fixture(x, "thread-details", changes, PATCH, None);
+        routines::fixture(x, schedule.into_iter().collect(), Vec::new());
+        super::details::fixture(
+            x,
+            &[(5173, "node")],
+            Some((812, "Match the thread details card")),
+        );
+        x.session_open = true;
+    });
+    if let Some(chat) = s.chat.as_mut() {
+        chat.orchestration.lineage = serde_json::from_value(serde_json::json!({
+            "forkedFrom": {"id": "x0", "kind": "fork", "sourceThread": "p0", "targetThread": "t1"},
+            "forks": [
+                {"id": "x1", "kind": "fork", "sourceThread": "t1", "targetThread": "f1"},
+                {"id": "x2", "kind": "fork", "sourceThread": "t1", "targetThread": "sc1"}
+            ]
+        }))
+        .unwrap_or_default();
+    }
+    s.prefs.thread_details_items = [("usage".to_string(), true), ("context".to_string(), true)]
+        .into_iter()
+        .collect();
+    crate::pages::usage::fixture_limits(s);
+    s.workspace.telemetry = serde_json::from_value(serde_json::json!({
+        "threadId": "t1", "runtimeId": "claude_code", "provider": "anthropic",
+        "contextUsed": 84_000, "contextMax": 200_000
+    }))
+    .ok();
+}
+
 impl SideState {
     fn activity_open(&mut self, key: &str) {
         self.activity.open_step(key);

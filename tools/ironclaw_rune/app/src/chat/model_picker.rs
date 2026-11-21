@@ -37,7 +37,7 @@
 //! - `open(s)`: ⇧⌘M (`workspace::on_key`) toggles the focused chat's
 //!   picker (`focused_slot`: the side chat's while its composer has focus
 //!   or its picker is open); `close_open(s)` is Esc.
-//! - `model_label(&ModelPickerState) -> String`, `pretty_model(id)`,
+//! - `pretty_model(id)`,
 //!   `provider_mark(..)` for other views.
 //! - The draft screen keeps its own `ModelPickerState::new(None,
 //!   catalog_thread)` and renders it with `view::pills_for(s, Slot { .. }, ..)`;
@@ -262,11 +262,6 @@ impl ModelPickerState {
     /// Hidden providers plus hidden models, for the "Show hidden" toggle.
     pub(crate) fn hidden_count(&self) -> usize {
         self.prefs.hidden_providers.len() + self.prefs.hidden_models.len()
-    }
-
-    /// The model this thread runs, as its pill reads.
-    pub fn model_label(&self) -> String {
-        self.label().0
     }
 
     pub(crate) fn label(&self) -> (String, Option<String>) {

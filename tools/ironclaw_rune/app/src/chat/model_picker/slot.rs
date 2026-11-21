@@ -159,7 +159,7 @@ mod tests {
             Some("sc2")
         );
         assert_eq!(
-            slot.get(&s).map(|p| p.model_label()).as_deref(),
+            slot.get(&s).map(|p| p.label().0).as_deref(),
             Some("Claude Opus 5.5")
         );
         if let Some(p) = slot.get_mut(&mut s) {

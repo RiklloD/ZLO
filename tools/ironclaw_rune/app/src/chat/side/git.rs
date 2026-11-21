@@ -295,6 +295,62 @@ pub fn pull(dir: &Path) -> GitResult<()> {
     git(dir, &["pull", "-q", "--ff-only"]).map(drop)
 }
 
+/// Make `dir` a repository (the thread details card's "Initialize Git").
+pub fn init(dir: &Path) -> GitResult<()> {
+    git(dir, &["init", "-q"]).map(drop)
+}
+
+/// The pull request of the checked-out branch, as GitHub's `gh` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct PullRequest {
+    pub number: u64,
+    pub title: String,
+    /// `OPEN`, `CLOSED` or `MERGED`.
+    pub state: String,
+    pub url: String,
+    #[serde(default, rename = "isDraft")]
+    pub draft: bool,
+}
+
+impl PullRequest {
+    /// "Open", "Draft", "Merged" or "Closed".
+    pub fn state_label(&self) -> &'static str {
+        match self.state.as_str() {
+            "MERGED" => "Merged",
+            "CLOSED" => "Closed",
+            _ if self.draft => "Draft",
+            _ => "Open",
+        }
+    }
+}
+
+/// Where `gh` may live: an app started from Finder gets no shell `PATH`.
+const GH: [&str; 3] = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "gh"];
+
+/// The branch's pull request, or `None` without `gh`, a GitHub remote, a
+/// sign-in or a pull request. Never prompts.
+pub fn pull_request(dir: &Path) -> Option<PullRequest> {
+    let gh = GH
+        .iter()
+        .find(|p| !p.starts_with('/') || Path::new(p).exists())?;
+    let out = Command::new(gh)
+        .current_dir(dir)
+        .args(["pr", "view", "--json", "number,title,state,url,isDraft"])
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| tracing::debug!(error = %e, "gh did not run"))
+        .ok()?;
+    if !out.status.success() {
+        // silent-ok: no pull request for this branch is the common answer.
+        return None;
+    }
+    serde_json::from_slice(&out.stdout)
+        .map_err(|e| tracing::debug!(error = %e, "gh pr view answered something else"))
+        .ok()
+}
+
 /// One commit of the history graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {

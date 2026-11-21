@@ -108,13 +108,8 @@ pub fn load_timeline(s: &mut State) {
     chat::reload_timeline(s);
 }
 
-/// The model the composer will use, for the session card (GPUI `picker.model_label()`).
-pub fn model_label(s: &State) -> String {
-    open(s).map_or_else(|| "Default model".into(), |c| c.model_picker.model_label())
-}
-
 /// The profile the chat runs under: (display name, effective folder, git
-/// branch), for the session card (GPUI `approval.profile()`).
+/// branch), for the dock's folder line (GPUI `approval.profile()`).
 pub fn profile(s: &State) -> Option<(String, String, Option<String>)> {
     let info = open(s)?.approval.profile.as_ref()?;
     Some((

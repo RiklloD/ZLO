@@ -56,6 +56,7 @@ mod bridge;
 mod browser;
 mod changes;
 mod console;
+mod details;
 mod dock;
 pub mod git;
 mod history;
@@ -72,6 +73,9 @@ pub mod fixtures;
 
 // Entry points for areas A and B (see the module docs).
 pub use changes::on_cli_report;
+pub(crate) use details::{
+    ITEMS as DETAILS_ITEMS, set_item as set_details_item, visibility as details_visibility,
+};
 pub use dock::{docks, titlebar_actions};
 pub use session::new_side_chat;
 
@@ -327,8 +331,9 @@ pub struct SideState {
     shown: [bool; 2],
     /// When a closed dock's column may go (app clock, seconds).
     hold: [Option<f64>; 2],
-    /// The session card is open.
+    /// The thread details card is open, and its own state.
     session_open: bool,
+    details: details::DetailsState,
     /// A side chat is being forked.
     chat_busy: bool,
     /// The side chat shown in the right pane.

@@ -803,6 +803,7 @@ pub(super) fn no_folder(s: &State, k: &Kit, tab: Tab) -> El {
 pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let viewport = viewport(cx);
+    let window_h = cx.window_layout("window").map_or(820., |r| r[3]);
     let (sw, ww) = dock_widths(s, viewport);
     // The block spans both columns, and always has room for the toggles.
     let block = (ww + sw).max(CLUSTER);
@@ -903,7 +904,7 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
                 .fill(capsule_bg)
                 .border(1., p.border)
                 .no_window_drag()
-                .child(session::toggle(s, k, layer))
+                .child(session::toggle(s, k, layer, window_h))
                 .child(active(s, work_toggle, work_open))
                 .child(active(s, side_toggle, side_open)),
         );

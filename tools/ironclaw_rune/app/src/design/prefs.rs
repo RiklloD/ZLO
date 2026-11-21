@@ -105,6 +105,13 @@ pub struct Prefs {
     pub last_project: Option<PathBuf>,
     /// Steer or queue a message sent while a turn runs.
     pub follow_ups: FollowUps,
+    /// Thread details items shown or hidden by id (t3code's
+    /// `threadDetailsItems`). Only choices that differ from an item's
+    /// default are kept, so a later default change reaches everyone else.
+    pub thread_details_items: std::collections::BTreeMap<String, bool>,
+    /// The app the thread details card's "Open in" row uses, by name;
+    /// empty picks the first one installed.
+    pub open_in_editor: String,
 }
 
 impl Default for Prefs {
@@ -140,6 +147,8 @@ impl Default for Prefs {
             project_folders: Default::default(),
             last_project: None,
             follow_ups: FollowUps::Steer,
+            thread_details_items: Default::default(),
+            open_in_editor: String::new(),
         }
     }
 }

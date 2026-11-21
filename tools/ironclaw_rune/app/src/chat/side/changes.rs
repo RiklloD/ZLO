@@ -61,6 +61,8 @@ pub(super) struct ChangesState {
     changes: Vec<git::Change>,
     scope: Scope,
     working_patch: String,
+    /// Files, additions and deletions of `working_patch`.
+    working_stats: (usize, usize, usize),
     diff: Option<DiffState>,
     /// The patch the viewer holds, so an unchanged refresh keeps its scroll.
     shown: String,
@@ -90,6 +92,47 @@ impl ChangesState {
     pub(super) fn count(&self) -> usize {
         self.changes.len()
     }
+
+    fn set_working(&mut self, patch: String) {
+        self.working_stats = stats(&rune_kit::diff::parse(&patch));
+        self.working_patch = patch;
+    }
+}
+
+/// What the thread details card shows of the working tree, once loaded.
+pub(super) struct Summary<'a> {
+    pub branch: &'a git::Branch,
+    /// Something is uncommitted.
+    pub dirty: bool,
+    pub additions: usize,
+    pub deletions: usize,
+    /// The git action running ("pull", "push", "commit", ...).
+    pub busy: Option<&'static str>,
+}
+
+pub(super) fn summary(x: &SideState) -> Option<Summary<'_>> {
+    let state = &x.changes;
+    state.loaded.then_some(Summary {
+        branch: &state.branch,
+        dirty: !state.changes.is_empty(),
+        additions: state.working_stats.1,
+        deletions: state.working_stats.2,
+        busy: state.busy,
+    })
+}
+
+/// Pull the branch (Changes' Pull button, and the details card's).
+pub(super) fn pull(s: &mut State) {
+    git_action(s, "pull", |repo| {
+        git::pull(repo).map(|()| Some("Pulled.".into()))
+    });
+}
+
+/// Push the branch (Changes' Push button, and the details card's).
+pub(super) fn push(s: &mut State) {
+    git_action(s, "push", |repo| {
+        git::push(repo).map(|()| Some("Pushed.".into()))
+    });
 }
 
 struct Loaded {
@@ -153,7 +196,7 @@ pub(super) fn refresh(s: &mut State) {
             match loaded.working {
                 Ok(patch) => {
                     state.error = None;
-                    state.working_patch = patch;
+                    state.set_working(patch);
                 }
                 Err(e) => state.error = Some(e),
             }
@@ -559,22 +602,14 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(
             ui::busy(ui::btn("Pull"), busy == Some("pull"))
                 .disabled(busy.is_some() || b.upstream.is_none() || remote)
-                .on_press(|s: &mut State| {
-                    git_action(s, "pull", |repo| {
-                        git::pull(repo).map(|()| Some("Pulled.".into()))
-                    })
-                })
+                .on_press(pull)
                 .build(k)
                 .key("changes-pull"),
         )
         .child(
             ui::busy(ui::btn("Push").icon(&icons::UPLOAD), busy == Some("push"))
                 .disabled(busy.is_some() || remote)
-                .on_press(|s: &mut State| {
-                    git_action(s, "push", |repo| {
-                        git::push(repo).map(|()| Some("Pushed.".into()))
-                    })
-                })
+                .on_press(push)
                 .build(k)
                 .key("changes-push"),
         )
@@ -999,7 +1034,7 @@ fn remote_landed(
     match loaded.working {
         Ok(patch) => {
             state.error = None;
-            state.working_patch = patch;
+            state.set_working(patch);
         }
         Err(e) => state.error = Some(e),
     }

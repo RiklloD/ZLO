@@ -24,7 +24,7 @@ fn status_color(status: TaskStatus, p: &Palette) -> Color {
 }
 
 /// "3 min" from Unix milliseconds to now (or to the finish).
-fn elapsed(task: &TaskView) -> Option<String> {
+pub(super) fn elapsed(task: &TaskView) -> Option<String> {
     let start = task.started_at.unwrap_or(task.created_at);
     if start <= 0 {
         return None;

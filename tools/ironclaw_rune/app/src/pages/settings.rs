@@ -19,8 +19,8 @@ use zlo_client::product_wire::SettingsToolPermissionState;
 use zlo_client::wire::ToolPermission;
 
 use super::common::{
-    error_line, group_header, header, notice_line, page_body, refresh_button, rows_card, segmented,
-    setting_row, switch,
+    Btn, button_xs, error_line, group_header, header, notice_line, page_body, refresh_button,
+    rows_card, segmented, setting_row, switch,
 };
 use crate::jobs;
 use crate::state::{Page, State};
@@ -228,6 +228,37 @@ fn render_follow_ups(s: &State, k: &Kit) -> El {
     )
 }
 
+/// Thread details: what the titlebar's thread details card shows, the same
+/// list as the card's right-click menu (t3code's Settings copy of it).
+fn render_thread_details(s: &State, k: &Kit) -> El {
+    use crate::chat::side::{DETAILS_ITEMS, details_visibility, set_details_item};
+    let p = &s.palette;
+    let v = details_visibility(&s.prefs.thread_details_items);
+    let mut rows: Vec<El> = DETAILS_ITEMS
+        .iter()
+        .map(|d| {
+            let item = d.item;
+            let on = v.get(item);
+            let control = switch(k, on, false, d.label, move |s: &mut State| {
+                s.update_prefs(|p| set_details_item(&mut p.thread_details_items, item, !on))
+            });
+            setting_row(
+                p,
+                d.label,
+                None,
+                control.key(format!("thread-details-{}", d.id)),
+            )
+        })
+        .collect();
+    let reset = button_xs("Reset to default", Btn::Outline)
+        .disabled(v.is_default())
+        .on_press(|s: &mut State| s.update_prefs(|p| p.thread_details_items.clear()))
+        .build(k)
+        .key("thread-details-reset");
+    rows.push(setting_row(p, "Reset to default", None, reset));
+    rows_card(p, rows)
+}
+
 pub fn view(s: &State, page: Page, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let this = &s.pages.settings;
@@ -255,6 +286,12 @@ pub fn view(s: &State, page: Page, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec
             .child(group_header(p, "Conversations", None))
             .child(render_follow_ups(s, k))
             .child(compaction::view(s, k))
+            .child(group_header(
+                p,
+                "Thread details",
+                Some("What the thread details card in the titlebar shows. Right-click the card for the same list."),
+            ))
+            .child(render_thread_details(s, k))
             .child(group_header(
                 p,
                 "Import terminal sessions",

@@ -130,7 +130,7 @@ pub(in crate::chat::side) fn fixture(
         behind: 0,
     };
     state.changes = changes;
-    state.working_patch = patch.into();
+    state.set_working(patch.into());
     state.shown = patch.into();
     state.diff = Some(DiffState::new(rune_kit::diff::parse(patch)));
     if let Some(turn) = turn {

@@ -32,7 +32,7 @@ pub(super) struct RoutinesState {
 }
 
 /// "in 5 min", "in 3 h", or a local date for later.
-fn until(at: chrono::DateTime<Utc>) -> String {
+pub(super) fn until(at: chrono::DateTime<Utc>) -> String {
     let secs = (at - Utc::now()).num_seconds();
     match secs {
         s if s <= 0 => "due now".into(),
@@ -87,7 +87,8 @@ pub(super) fn load(s: &mut State) {
     );
 }
 
-fn schedule_action(s: &mut State, id: String, enabled: Option<bool>) {
+/// Pause or resume (`Some`) a schedule, or run it now (`None`).
+pub(super) fn schedule_action(s: &mut State, id: String, enabled: Option<bool>) {
     let key = format!("schedule:{id}");
     let Some(x) = side_mut(s) else { return };
     if !x.routines.busy.insert(key.clone()) {
@@ -243,6 +244,18 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
             }
             card
         })
+        .collect()
+}
+
+/// The schedules bound to `thread` (the thread details card's
+/// Automations), each with whether an action on it is running.
+pub(super) fn bound<'a>(x: &'a super::SideState, thread: &str) -> Vec<(&'a ScheduleInfo, bool)> {
+    let state = &x.routines;
+    state
+        .schedules
+        .iter()
+        .filter(|sch| sch.bind_to_current_thread && sch.thread_id == thread)
+        .map(|sch| (sch, state.busy.contains(&format!("schedule:{}", sch.id))))
         .collect()
 }
 

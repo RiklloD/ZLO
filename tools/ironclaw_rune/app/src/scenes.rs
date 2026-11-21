@@ -256,6 +256,7 @@ pub const SCENES: &[Scene] = &[
     ("side-browser", crate::chat::side::fixtures::browser),
     ("side-changes", crate::chat::side::fixtures::changes),
     ("side-console", crate::chat::side::fixtures::console),
+    ("side-details", crate::chat::side::fixtures::details),
     ("side-files", crate::chat::side::fixtures::files),
     ("side-machines", crate::chat::side::fixtures::machines),
     ("side-history", crate::chat::side::fixtures::history),

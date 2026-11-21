@@ -416,6 +416,17 @@ pub fn open_thread_at(s: &mut State, thread_id: String, message_id: String) {
     }
 }
 
+/// Re-read the open thread's telemetry now (the status bar polls it; the
+/// thread details card's context row asks when it opens).
+pub fn refresh_telemetry(s: &mut State) {
+    status::refresh_telemetry(s);
+}
+
+/// 51200 -> "51.2k", as the status bar shows token counts.
+pub fn short_tokens(n: u64) -> String {
+    status::tokens(n)
+}
+
 /// Show a page in the main column, loading it on first visit and refreshing
 /// it after. Other areas call this.
 pub fn show(s: &mut State, page: Page) {
