@@ -420,19 +420,25 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
         );
     }
     card = card.child(ui::rule(p)).child(footer);
+    // The scrim and the card are separate layer entries: an element that
+    // mounts with its parent rides the parent's entrance, so a card inside
+    // the scrim would only fade with it, never rise on its own.
     layer.push(
-        col()
-            .key(format!("cmdk-{}", menu.opened))
+        el().key(format!("cmdk-{}", menu.opened))
             .pin(Some(0.), Some(0.), Some(0.), Some(0.))
             .fill(Color::BLACK.alpha(0.22))
-            .transition(scrim_transition())
-            .items_center()
-            .pt(96.)
+            .transition(scrim_transition()),
+    );
+    layer.push(
+        row()
+            .key(format!("cmdk-rise-{}", menu.opened))
+            .pin(Some(0.), Some(96.), Some(0.), None)
+            .justify_center()
+            .transition(crate::design::motion::pop(CARD_RISE))
             .child(
                 // A press outside the card (on the scrim) closes it, as Esc.
                 ui::floating(p, card, 12.)
                     .key("cmdk-card")
-                    .transition(crate::design::motion::pop(CARD_RISE))
                     .modal(true, |s: &mut State| s.workspace.command = None),
             ),
     );
