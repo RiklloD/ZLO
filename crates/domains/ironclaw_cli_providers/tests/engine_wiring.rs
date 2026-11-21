@@ -90,6 +90,8 @@ async fn wired(after: &str) -> Wired {
             projects_dir: path.join("projects"),
             usage_file: None,
             autocompact: None,
+            artifacts: false,
+            skills: Default::default(),
         },
         sink,
         Some(bridge),

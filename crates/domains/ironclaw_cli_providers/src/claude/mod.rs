@@ -17,11 +17,16 @@
 //! and the CLI's own subagent and agent-team tools
 //! ([`crate::BUILTIN_SUBAGENT_TOOLS`]) are disallowed: subagents are
 //! orchestrator threads (`t3_delegate`).
+//!
+//! Context stays small: the CLI's artifact tools are disallowed unless the
+//! account keeps them ([`ClaudeCliConfig::artifacts`]), and `--settings`
+//! lists only hot skills in full (`skills.rs`).
 
 mod compact;
 mod control;
 pub(crate) mod import;
 mod input;
+mod skills;
 mod steer;
 mod stream;
 mod tasks;
@@ -47,6 +52,8 @@ use crate::bridge::{CliBridge, SESSION_TOKEN_TTL, SessionGrant, mcp_config_json}
 use control::{BridgedTurn, SharedSteers, Step, TurnIo};
 use input::{Input, InputState, SteerAdmit};
 use stream::TurnFold;
+
+pub use skills::SkillListing;
 
 /// The CLI release the wire handling was checked against (`claude --version`).
 /// `claude-codes` in Cargo.toml is pinned to the same number.
@@ -118,6 +125,11 @@ pub struct ClaudeCliConfig {
     /// Compact at about this many context tokens (`--autocompact`) instead
     /// of the CLI's default; it does not change the model's window.
     pub autocompact: Option<u64>,
+    /// Whether the CLI's artifact tools (`Artifact*`, `DesignSync`) and
+    /// their bundled skills stay on; off, they save about 12k tokens a turn.
+    pub artifacts: bool,
+    /// How the account's skills are listed (see `skills.rs`).
+    pub skills: SkillListing,
 }
 
 struct ActiveTurn {
@@ -167,6 +179,8 @@ struct TurnPlan<'a> {
     goal: Option<&'a str>,
     effort: Option<&'a str>,
     profile: Option<&'a TurnProfile>,
+    /// `--settings` JSON (the skill listing); `None` passes none.
+    settings: Option<&'a str>,
 }
 
 /// A turn's per-process MCP grant: the token and the 0600 config file.
@@ -415,8 +429,10 @@ impl ClaudeCliRuntime {
         ]);
         // Subagents are orchestrator threads the person can see and steer
         // (`t3_delegate`), never the CLI's own hidden ones.
-        cmd.arg("--disallowedTools")
-            .arg(crate::BUILTIN_SUBAGENT_TOOLS.join(","));
+        cmd.arg("--disallowedTools").arg(self.disallowed_tools());
+        if let Some(settings) = plan.settings {
+            cmd.arg("--settings").arg(settings);
+        }
         // Attached files are read from their landing folder (see `attachments`).
         if let Some(root) = crate::attachments::root() {
             cmd.arg("--add-dir").arg(root);
@@ -452,6 +468,36 @@ impl ClaudeCliRuntime {
             .process_group(0)
             .kill_on_drop(true);
         cmd
+    }
+
+    /// The CLI's own subagent tools, and its artifact tools unless the
+    /// account keeps them.
+    fn disallowed_tools(&self) -> String {
+        let artifacts: &[&str] = if self.config.artifacts {
+            &[]
+        } else {
+            &skills::ARTIFACT_TOOLS
+        };
+        crate::BUILTIN_SUBAGENT_TOOLS
+            .iter()
+            .chain(artifacts)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// The account's skill listing for its next turn.
+    async fn skill_settings(&self, profile: Option<&TurnProfile>) -> Option<String> {
+        skills::launch_settings(
+            &self.config.skills,
+            &self.config.login_file,
+            profile
+                .and_then(|p| p.skills.as_ref())
+                .map(|s| s.plugin_dir.as_path()),
+            self.config.artifacts,
+            u64::try_from(now_ms()).unwrap_or(0), // silent-ok: a clock before 1970 only ages every use
+        )
+        .await
     }
 
     fn is_active(&self, thread: &ThreadId) -> bool {
@@ -514,6 +560,7 @@ impl ClaudeCliRuntime {
             .ok_or_else(|| RuntimeError::Rejected("thread has no claude session".into()))?;
         // A new turn ends the idle period: no compaction may touch the session.
         self.compactor.preempt(&thread.thread_id).await;
+        let settings = self.skill_settings(profile).await;
         let plan = TurnPlan {
             dir: self
                 .session_dir(&thread.thread_id, &session_id, profile)
@@ -521,6 +568,7 @@ impl ClaudeCliRuntime {
             goal,
             effort,
             profile,
+            settings: settings.as_deref(),
         };
         tokio::fs::create_dir_all(&plan.dir)
             .await
@@ -640,6 +688,7 @@ impl ClaudeCliRuntime {
         let thread_id = thread.thread_id.clone();
         let provider = self.config.runtime_id.clone();
         let usage_file = self.config.usage_file.clone();
+        let skill_state = self.config.skills.state_file.clone();
         let run = run_id.clone();
         let steer_ack_timeout = self.steer_ack_timeout;
         let steer_idle_timeout = self.steer_idle_timeout;
@@ -654,6 +703,7 @@ impl ClaudeCliRuntime {
                 bridge.turn_started(&thread_id, &run);
             }
             let mut fold = TurnFold::default();
+            let mut skill_watch = skills::SkillWatch::default();
             let mut refused = None;
             let mut lines = BufReader::new(stdout).lines();
             // Absolute deadlines: unrelated output must not extend a wait.
@@ -781,6 +831,7 @@ impl ClaudeCliRuntime {
                     }
                     Ok(Some(line)) => {
                         fold.push_line(&line, Instant::now());
+                        skill_watch.push_line(&line);
                         if let Some(turn) = bridged.as_mut()
                             && turn.on_line(&line).await == Step::InitRefused
                         {
@@ -848,6 +899,11 @@ impl ClaudeCliRuntime {
                 bridge.turn_ended(&thread_id, &run, outcome.status.as_str());
             }
             end_mcp(mcp).await;
+            if let Some(path) = &skill_state {
+                skill_watch
+                    .record(path, u64::try_from(now_ms()).unwrap_or(0)) // silent-ok: a clock before 1970 only ages the use
+                    .await;
+            }
             if let (Some(path), Some(windows)) = (usage_file, fold.limit_windows()) {
                 write_limit_windows(&path, windows, now_ms()).await;
             }
@@ -1229,6 +1285,11 @@ pub fn default_accounts(home: &Path, binary: &Path) -> Vec<ClaudeCliConfig> {
     let autocompact = autocompact_setting(std::env::var("ZLO_CLAUDE_AUTOCOMPACT").ok().as_deref());
     let work_dir = home.join(".ironclaw").join("claude-cli");
     let usage_dir = home.join(".ironclaw").join("usage");
+    let skills_dir = home.join(".ironclaw").join("claude-skills");
+    let listing = |id: &str| SkillListing {
+        state_file: Some(skills_dir.join(format!("{id}.json"))),
+        ..SkillListing::default()
+    };
     let second = home.join(".claude-account2");
     vec![
         ClaudeCliConfig {
@@ -1241,6 +1302,8 @@ pub fn default_accounts(home: &Path, binary: &Path) -> Vec<ClaudeCliConfig> {
             projects_dir: home.join(".claude").join("projects"),
             usage_file: Some(usage_dir.join("claude-cli.json")),
             autocompact,
+            artifacts: false,
+            skills: listing("claude-cli"),
         },
         ClaudeCliConfig {
             runtime_id: "claude-cli-2".into(),
@@ -1252,6 +1315,8 @@ pub fn default_accounts(home: &Path, binary: &Path) -> Vec<ClaudeCliConfig> {
             projects_dir: second.join("projects"),
             usage_file: Some(usage_dir.join("claude-cli-2.json")),
             autocompact,
+            artifacts: false,
+            skills: listing("claude-cli-2"),
         },
     ]
 }
