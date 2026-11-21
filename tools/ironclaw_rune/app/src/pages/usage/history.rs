@@ -10,13 +10,31 @@ use crate::pages::common::controls::{rule, styled};
 use crate::pages::common::ts::{lg_semibold, sm, sm_medium, xs};
 use std::collections::BTreeMap;
 
-use rune::{Color, El, TextStyle, col, el, row};
+use rune::{Color, El, Spring, TextStyle, col, el, row};
+use rune_kit::{Kit, RollingText};
 use zlo_client::usage::{
     UsageBucket, UsageHistory, UsageHistorySource, UsagePricingStatus, UsageSourceStatus,
 };
 
-use crate::design::{self, Palette, rgb};
+use crate::design::{self, Palette, motion, rgb};
 use crate::state::State;
+
+/// The one spring every chart part morphs on (bars, segments, fills, pace
+/// markers) when the person switches Cost ↔ Tokens or the period: calm and
+/// critically damped, Screen Time's settle.
+pub(super) const MORPH: Spring = rune::tok::motion::CALM;
+
+/// A figure that rolls to its new value (`RollingText` on
+/// [`motion::ROLL`]); `value` sets the direction. `key` must be unique on
+/// the page: the label remembers its last text by it.
+fn roll(k: &Kit, key: String, text: String, value: f64, font: TextStyle, color: Color) -> El {
+    RollingText::new(key, text)
+        .font(font)
+        .color(color)
+        .value(value)
+        .spring(motion::ROLL)
+        .build(k)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metric {
@@ -125,7 +143,7 @@ fn dot(color: Color, size: f32) -> El {
 }
 
 /// The Cost or Tokens view of `history`; `loading` dims the figure.
-pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) -> El {
+pub fn view(s: &State, k: &Kit, history: &UsageHistory, metric: Metric, loading: bool) -> El {
     let p = &s.palette;
     let mut total = Sum::default();
     let mut by_provider: BTreeMap<&str, (Sum, u32)> = BTreeMap::new();
@@ -149,6 +167,7 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
     }
     let sessions: u32 = history.sources.iter().map(|s| s.distinct_sessions).sum();
     let figure = format_value(total.value(metric), metric);
+    let figure_value = total.value(metric);
 
     if total.tokens() == 0 {
         return col()
@@ -177,12 +196,17 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
         col()
             .gap(4.0)
             .child(
-                styled(
-                    figure,
-                    TextStyle::new(crate::design::styles::rem(34.0), 600.0),
-                    p.text,
-                )
-                .opacity(if loading { 0.55 } else { 1.0 }),
+                el().key("usage-figure-dim")
+                    .opacity(if loading { 0.55 } else { 1.0 })
+                    .opacity_motion(motion::SLIDE)
+                    .child(roll(
+                        k,
+                        "usage-figure".into(),
+                        figure,
+                        figure_value,
+                        TextStyle::new(crate::design::styles::rem(34.0), 600.0),
+                        p.text,
+                    )),
             )
             .child(styled(caption, xs(), p.text_muted)),
     );
@@ -197,6 +221,8 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
                 .key(format!("share-{provider}"))
                 .w_full()
                 .gap(2.0)
+                // Shares re-rank when the metric or period changes.
+                .motion(motion::ROW_RESORT)
                 .child(
                     row()
                         .w_full()
@@ -226,13 +252,23 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
                                     p.text_faint,
                                 )),
                         )
-                        .child(styled(
+                        .child(roll(
+                            k,
+                            format!("usage-share-{provider}"),
                             format_value(sum.value(metric), metric),
+                            sum.value(metric),
                             sm_medium(),
                             p.text,
                         )),
                 )
-                .child(styled(detail, xs(), p.text_muted)),
+                .child(roll(
+                    k,
+                    format!("usage-share-{provider}-detail"),
+                    detail,
+                    sum.value(metric),
+                    xs(),
+                    p.text_muted,
+                )),
         );
     }
 
@@ -255,11 +291,11 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
                     sm_medium(),
                     p.text,
                 ))
-                .child(daily_chart(p, history, &by_day, metric)),
+                .child(daily_chart(p, k, history, &by_day, metric)),
         );
 
     // Totals, t3code's metric row.
-    let tile = |key: &str, title: &str, value: String| {
+    let tile = |key: &str, title: &str, value: String, n: f64| {
         col()
             .key(key.to_string())
             .grow(1.0)
@@ -270,7 +306,14 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
             .border(1.0, p.border)
             .fill(p.surface_card)
             .child(styled(title, xs(), p.text_muted))
-            .child(styled(value, lg_semibold(), p.text))
+            .child(roll(
+                k,
+                format!("usage-{key}"),
+                value,
+                n,
+                lg_semibold(),
+                p.text,
+            ))
     };
     let totals = col()
         .key("totals")
@@ -286,22 +329,31 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
                     "tile-processed",
                     "Processed tokens",
                     format_tokens(total.tokens()),
+                    total.tokens() as f64,
                 ))
                 .child(tile(
                     "tile-cached",
                     "Cached input",
                     format_tokens(total.cached),
+                    total.cached as f64,
                 ))
                 .child(tile(
                     "tile-uncached",
                     "Uncached input",
                     format_tokens(total.uncached),
+                    total.uncached as f64,
                 ))
-                .child(tile("tile-output", "Output", format_tokens(total.output)))
+                .child(tile(
+                    "tile-output",
+                    "Output",
+                    format_tokens(total.output),
+                    total.output as f64,
+                ))
                 .child(tile(
                     "tile-savings",
                     "Cache savings",
                     format_usd(total.savings),
+                    total.savings,
                 )),
         )
         .child(share_bar(
@@ -345,9 +397,12 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
         } else {
             0.
         };
+        // Keyed by what the row is, so it re-ranks (glides to its new place)
+        // when the metric or the period changes the order.
         table = table.child(rule(p).key(format!("model-rule-{ix}"))).child(
             row()
-                .key(format!("usage-model-{ix}"))
+                .key(format!("usage-model-{provider}-{model}"))
+                .motion(motion::ROW_RESORT)
                 .w_full()
                 .px(12.0)
                 .py(8.0)
@@ -389,10 +444,12 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
                         .radius(3.0)
                         .fill(p.surface_raised)
                         .child(
-                            el().h_full()
+                            el().key("share")
+                                .h_full()
                                 .w_frac(share)
                                 .radius(3.0)
-                                .fill(provider_color(provider)),
+                                .fill(provider_color(provider))
+                                .motion(MORPH),
                         ),
                 ),
         );
@@ -420,6 +477,7 @@ pub fn view(s: &State, history: &UsageHistory, metric: Metric, loading: bool) ->
 /// their slot so the axis reads as time.
 fn daily_chart(
     p: &Palette,
+    k: &Kit,
     history: &UsageHistory,
     by_day: &BTreeMap<&str, BTreeMap<&str, Sum>>,
     metric: Metric,
@@ -437,11 +495,16 @@ fn daily_chart(
         .h(HEIGHT)
         .items_end()
         .gap(if days.len() > 40 { 1.0 } else { 3.0 });
-    for (ix, day) in days.iter().enumerate() {
+    for day in &days {
         let stack = by_day.get(day.as_str());
         let day_total: f64 = stack.map_or(0., |m| m.values().map(|s| s.value(metric)).sum());
+        // Keyed by its date, so a day keeps its bar from Cost to Tokens and
+        // from one period to the next (sliding to its new slot); a day the
+        // new period adds fades in, one it drops fades out.
         let mut column = col()
-            .key(format!("usage-day-{ix}"))
+            .key(format!("usage-day-{day}"))
+            .motion(MORPH)
+            .transition(motion::fade())
             .grow(1.0)
             .min_w(2.0)
             .h_full()
@@ -463,7 +526,8 @@ fn daily_chart(
                     el().key(provider.to_string())
                         .w_full()
                         .h(h)
-                        .fill(provider_color(provider)),
+                        .fill(provider_color(provider))
+                        .transition(motion::fade()),
                 );
             }
         }
@@ -476,8 +540,11 @@ fn daily_chart(
             .w_full()
             .justify_between()
             .child(styled(short_day(&first), xs(), p.text_faint))
-            .child(styled(
+            .child(roll(
+                k,
+                "usage-peak".into(),
                 format!("peak {}", format_value(peak, metric)),
+                peak,
                 xs(),
                 p.text_faint,
             ))
@@ -521,7 +588,13 @@ fn share_bar(
         .fill(p.surface_raised);
     for (name, v, color) in parts.iter().filter(|x| x.1 > 0.) {
         let f = if whole > 0. { (*v / whole) as f32 } else { 0. };
-        bar = bar.child(el().key(*name).h_full().w_frac(f).fill(*color));
+        bar = bar.child(
+            el().key(*name)
+                .h_full()
+                .w_frac(f)
+                .fill(*color)
+                .motion(MORPH),
+        );
     }
     let mut legend = row().w_full().flex_wrap().gap(16.0);
     for (name, v, color) in parts {
