@@ -30,13 +30,11 @@ const BINDINGS: &[Binding] = &[
         super::toggle_sidebar(s, tx)
     }),
     ("Toggle Right Pane", "alt+cmd+b", |s, tx| {
-        tx.animated();
-        tx.motion(crate::design::panels::REVEAL);
+        crate::chat::side::dock_slide(s, tx);
         toggle_right_pane(s)
     }),
     ("Toggle Changes and Files", "cmd+e", |s, tx| {
-        tx.animated();
-        tx.motion(crate::design::panels::REVEAL);
+        crate::chat::side::dock_slide(s, tx);
         toggle_work_panel(s)
     }),
     ("New Side Chat", "alt+cmd+n", |s, tx| {

@@ -216,7 +216,7 @@ pub fn toggle_status_bar(s: &mut State) {
 /// A light ↔ dark flip's colour morph: calm and critically damped, so the
 /// window dissolves into the other scheme instead of flashing. Rune turns it
 /// into its short Reduce Motion dissolve when motion is reduced.
-pub(crate) const SCHEME_MORPH: rune::Spring = rune::Spring::new(0.32, 0.0);
+pub(crate) const SCHEME_MORPH: rune::Spring = crate::design::motion::COLOR_MORPH;
 
 /// Ask this commit to morph the palette's colours on [`SCHEME_MORPH`]. It
 /// also asks for motion, because a theme flip from the native menu or the
