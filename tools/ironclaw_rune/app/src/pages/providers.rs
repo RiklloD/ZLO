@@ -4,6 +4,10 @@
 //! coding-agent runtimes that run a thread in their own harness.
 //!
 //! Connected providers sit on top; "Add a provider" is a searchable grid.
+//! Each connected provider (and each ready CLI agent) lists its models with
+//! a switch: this is where the chat's model picker is trimmed, the picker
+//! itself only reads the result. Removing a CLI agent takes it out of the
+//! picker altogether.
 //! "Background tasks" picks one model per background job (thread titles
 //! today); it applies to every profile.
 //!
@@ -57,12 +61,14 @@ pub struct ProvidersState {
     pub models: HashMap<String, Models>,
     /// Models offered by the chat's quick switcher.
     pub catalog: Option<UserModelCatalog>,
-    /// The orchestrator's catalog (CLI runtimes and their sign-in state),
-    /// read through any thread; `None` until read or without threads.
+    /// The orchestrator's catalog (every provider the model picker lists,
+    /// CLI runtimes with their sign-in state); `None` until read.
     pub runtimes: Option<Vec<RouteProvider>>,
-    /// The picker preferences read with the runtimes; removing a CLI agent
-    /// hides it there.
+    /// The picker preferences read with the runtimes: the models each
+    /// provider hides, and the CLI agents removed from ZLO.
     pub picker: Option<PickerPrefs>,
+    /// Catalog providers whose model list is open.
+    pub picker_open: std::collections::HashSet<String>,
     pub catalog_thread: Option<String>,
     /// The quick switcher's "Add model" field is open.
     pub pin_open: bool,
@@ -94,6 +100,7 @@ impl Default for ProvidersState {
             catalog: None,
             runtimes: None,
             picker: None,
+            picker_open: Default::default(),
             catalog_thread: None,
             pin_open: false,
             pin_input: TextEdit::new(""),
@@ -165,19 +172,67 @@ pub fn refresh(s: &mut State) {
         // silent-ok: an older gateway has no task models; the section hides.
         |s, result, _| st(s).task_models = result.ok(),
     );
-    if let Some(thread) = st(s).catalog_thread.clone() {
-        jobs::run(
+    jobs::run(
+        s,
+        "providers",
+        |c| async move { c.providers().await },
+        |s, result, _| {
+            // silent-ok: without the catalog the CLI tab says it cannot tell.
+            let catalog = result.ok();
+            let p = st(s);
+            p.picker = catalog.as_ref().map(|c| c.picker.clone());
+            p.runtimes = catalog.map(|c| c.providers);
+        },
+    );
+}
+
+/// Save one picker change: applied here at once, then onto the gateway's
+/// current preferences (re-read first, so a chat's picker starring a model
+/// meanwhile is kept). `edit` must give the same result applied twice.
+fn edit_picker(s: &mut State, edit: impl Fn(&mut PickerPrefs) + Send + 'static) {
+    let p = st(s);
+    let (Some(thread), Some(prefs)) = (p.catalog_thread.clone(), p.picker.as_mut()) else {
+        fail(
             s,
-            "providers",
-            move |c| async move { c.thread_route(&thread).await },
-            |s, result, _| {
-                // silent-ok: without the route the CLI tab says it cannot tell.
-                let route = result.ok();
-                let p = st(s);
-                p.picker = route.as_ref().map(|r| r.picker.clone());
-                p.runtimes = route.map(|r| r.providers);
-            },
+            "Start one thread first, then choose the picker's models here.",
         );
+        return;
+    };
+    edit(prefs);
+    jobs::run(
+        s,
+        "providers",
+        move |c| async move { c.edit_model_picker(&thread, edit).await },
+        |s, result, _| match result {
+            Ok(prefs) => st(s).picker = Some(prefs),
+            Err(e) => {
+                fail(s, e);
+                refresh(s);
+            }
+        },
+    );
+}
+
+/// Show or hide one model in the chat's model picker.
+fn set_model_shown(s: &mut State, provider: String, model: String, shown: bool) {
+    edit_picker(s, move |prefs| {
+        prefs.set_model_hidden(&provider, &model, !shown)
+    });
+}
+
+/// Show or hide every model of `provider` in the picker at once.
+fn set_all_shown(s: &mut State, provider: String, models: Vec<String>, shown: bool) {
+    edit_picker(s, move |prefs| {
+        for model in &models {
+            prefs.set_model_hidden(&provider, model, !shown);
+        }
+    });
+}
+
+fn toggle_picker_list(s: &mut State, provider: String) {
+    let open = &mut st(s).picker_open;
+    if !open.remove(&provider) {
+        open.insert(provider);
     }
 }
 
@@ -403,27 +458,13 @@ fn delete_provider(s: &mut State, id: String) {
     );
 }
 
-/// Remove a CLI agent from ZLO, or bring it back. The binary stays
-/// installed; the agent is hidden from the model picker and this list.
-fn toggle_cli_hidden(s: &mut State, provider: String) {
-    let p = st(s);
-    let (Some(thread), Some(prefs)) = (p.catalog_thread.clone(), p.picker.as_mut()) else {
-        fail(s, "Start one thread first, then remove CLI agents here.");
-        return;
-    };
-    prefs.toggle_provider(&provider);
-    let prefs = prefs.clone();
-    jobs::run(
-        s,
-        "providers",
-        move |c| async move { c.set_model_picker(&thread, &prefs).await },
-        |s, result, _| {
-            if let Err(e) = result {
-                fail(s, e);
-            }
-            refresh(s);
-        },
-    );
+/// Remove a CLI agent from ZLO (`removed`), or bring it back. The binary
+/// stays installed; a removed agent is gone from the model picker, with no
+/// way back but "Add back" here.
+fn set_cli_removed(s: &mut State, provider: String, removed: bool) {
+    edit_picker(s, move |prefs| {
+        prefs.set_provider_hidden(&provider, removed)
+    });
 }
 
 /// Show the device code, open the sign-in page, then wait for the gateway
