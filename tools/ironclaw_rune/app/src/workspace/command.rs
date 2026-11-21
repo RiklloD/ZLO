@@ -1,9 +1,11 @@
 //! The command menu (⌘K): one search field over threads, new threads per
 //! profile, every settings page and the view actions. (GPUI
-//! `workspace/command.rs`.) The scrim fades in and the card rises as it
-//! mounts (Rune's presence transition); the selected row is washed.
+//! `workspace/command.rs`.) The scrim fades in and the card rises a few
+//! points into place as it mounts, and both go faster than they came when it
+//! closes ([`SCRIM`], [`CARD_RISE`]); the selected row is washed. Rows are
+//! keyed by what they open ([`Cmd::key`]), never by position.
 
-use rune::{Color, El, Icon, Key, KeyEvent, ScrollSpec, TextEdit, Tx, col, el, row};
+use rune::{Color, El, Icon, Key, KeyEvent, ScrollSpec, TextEdit, Transition, Tx, col, el, row};
 use rune_kit::{Kit, TextInput};
 use zlo_client::history::HistoryHit;
 use zlo_client::profiles::DEFAULT_PROFILE_ID;
@@ -21,6 +23,13 @@ const MESSAGE_THREADS: usize = 8;
 const HITS_PER_THREAD: usize = 2;
 const LIST_MAX_H: f32 = 380.;
 const RESULTS: usize = 60;
+/// How far below its place the card starts as it opens.
+const CARD_RISE: f32 = 8.;
+
+/// The scrim's presence: a plain fade (Rune's default 0.2 s in, 0.15 s out).
+fn scrim_transition() -> Transition {
+    Transition::opacity()
+}
 
 #[derive(Clone, PartialEq)]
 enum Cmd {
@@ -36,6 +45,28 @@ enum Cmd {
     StatusBar,
     ToggleScheme,
     Browser,
+}
+
+impl Cmd {
+    /// The entry's identity, for its row's key: the same entry keeps its
+    /// row (and its wash's spring) as the list filters and reorders.
+    fn key(&self) -> String {
+        match self {
+            Cmd::Thread(id) => format!("thread:{id}"),
+            Cmd::Message { message_id, .. } => format!("message:{message_id}"),
+            Cmd::NewThread(profile) => format!("new:{profile}"),
+            Cmd::Page(page) => format!("page:{page:?}"),
+            Cmd::Scheme(value) => format!("scheme:{value}"),
+            Cmd::StatusBar => "status-bar".into(),
+            Cmd::ToggleScheme => "toggle-scheme".into(),
+            Cmd::Browser => "browser".into(),
+        }
+    }
+}
+
+/// A list line's key: `cmdk-line-` plus its entry's identity.
+fn line_key(e: &Entry) -> String {
+    format!("cmdk-line-{}", e.cmd.key())
 }
 
 #[derive(Clone)]
@@ -219,12 +250,15 @@ fn message_entries(s: &State, query: &str) -> Vec<Entry> {
 }
 
 fn move_selection(s: &mut State, delta: isize, tx: &mut Tx) {
-    let count = matches(s).len();
+    let entries = matches(s);
+    let count = entries.len();
     if let Some(menu) = s.workspace.command.as_mut()
         && count > 0
     {
         menu.selected = (menu.selected as isize + delta).rem_euclid(count as isize) as usize;
-        tx.scroll_into_view(format!("cmdk-line-{}", menu.selected));
+        if let Some(e) = entries.get(menu.selected) {
+            tx.scroll_into_view(line_key(e));
+        }
     }
 }
 
@@ -247,9 +281,13 @@ fn run(s: &mut State, cmd: Cmd, tx: &mut Tx) {
         } => super::open_thread_at(s, thread_id, message_id),
         Cmd::NewThread(profile) => super::start_in_profile(s, profile),
         Cmd::Page(page) => super::show(s, page),
-        Cmd::Scheme(value) => s.update_prefs(|p| p.scheme = value.into()),
+        Cmd::Scheme(value) => {
+            super::morph_colors(tx);
+            s.update_prefs(|p| p.scheme = value.into());
+            crate::design::look::reload(s);
+        }
         Cmd::StatusBar => super::toggle_status_bar(s),
-        Cmd::ToggleScheme => super::toggle_scheme(s),
+        Cmd::ToggleScheme => super::toggle_scheme(s, tx),
         Cmd::Browser => super::open_in_browser(s, tx),
     }
 }
@@ -287,9 +325,10 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
     let empty = entries.is_empty();
 
     // Every thread is an entry: the list builds only the rows near its
-    // viewport (Rune virtual rows), keyed by position as before.
+    // viewport (Rune virtual rows), each keyed by what it opens.
     let count = entries.len();
     let entries = std::rc::Rc::new(entries);
+    let keys = entries.clone();
     let list = col()
         .key("cmdk-list")
         .w_full()
@@ -297,7 +336,6 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .key("cmdk-list")
         .child(
             col()
                 .key("cmdk-rows")
@@ -307,7 +345,10 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 .virtual_rows(
                     count,
                     ROW_H,
-                    |_: &State, ix| format!("cmdk-line-{ix}").into(),
+                    move |_: &State, ix| match keys.get(ix) {
+                        Some(e) => line_key(e).into(),
+                        None => format!("cmdk-line-{ix}").into(),
+                    },
                     move |s: &State, ix| {
                         let mut line = col().w_full().px(4.);
                         if ix == 0 {
@@ -384,12 +425,14 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
             .key(format!("cmdk-{}", menu.opened))
             .pin(Some(0.), Some(0.), Some(0.), Some(0.))
             .fill(Color::BLACK.alpha(0.22))
+            .transition(scrim_transition())
             .items_center()
             .pt(96.)
             .child(
                 // A press outside the card (on the scrim) closes it, as Esc.
                 ui::floating(p, card, 12.)
                     .key("cmdk-card")
+                    .transition(crate::design::motion::pop(CARD_RISE))
                     .modal(true, |s: &mut State| s.workspace.command = None),
             ),
     );
@@ -427,7 +470,7 @@ fn entry_row(p: &crate::design::Palette, ix: usize, e: &Entry, on: bool) -> El {
     };
     let cmd = e.cmd.clone();
     row()
-        .key(format!("cmdk-row-{ix}"))
+        .key(format!("cmdk-row-{}", e.cmd.key()))
         .role("option")
         .h(ROW_H)
         .px(12.)
