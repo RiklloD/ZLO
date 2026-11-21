@@ -175,17 +175,6 @@ impl Primed {
         self.first(thread).then_some(preamble)
     }
 
-    /// `context`, only the first time per thread: [`Self::take`] for a
-    /// context the caller built (with or without a profile).
-    pub(crate) fn take_context(
-        &self,
-        thread: &ThreadId,
-        context: Option<String>,
-    ) -> Option<String> {
-        let context = context?;
-        self.first(thread).then_some(context)
-    }
-
     fn first(&self, thread: &ThreadId) -> bool {
         self.0
             .lock()

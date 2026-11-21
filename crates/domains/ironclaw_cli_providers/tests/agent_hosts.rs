@@ -1038,6 +1038,31 @@ async fn antigravity_inline_context_carries_the_notes_once_without_a_profile() {
     }
 }
 
+/// A profile picked after the notes already went out still reaches an agent
+/// that cannot append: its SOUL goes ahead of the next prompt.
+#[tokio::test]
+async fn antigravity_inline_context_follows_a_profile_picked_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity(dir.path(), None, &recorder);
+    let thread = thread(&rt, "default").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+    let mut profiled = input();
+    profiled.profile = Some(ironclaw_orchestrator::runtime::TurnProfile {
+        soul: "You are the release captain.".into(),
+        ..Default::default()
+    });
+    rt.start_turn(&thread, profiled).await.unwrap();
+    wait_for(|| recorder.finished.lock().unwrap().len() == 2).await;
+    let log = std::fs::read_to_string(dir.path().join("agy.log")).unwrap();
+    let prompts = frames(&log, "session/prompt");
+    assert_eq!(prompts.len(), 2, "{log}");
+    let second = prompts[1]["params"]["prompt"][0]["text"].as_str().unwrap();
+    assert!(second.contains("release captain"), "{second}");
+    assert!(second.ends_with("hi"), "{second}");
+}
+
 /// A session the agent lost is replaced by a fresh one that gets the
 /// thread so far (from IronClaw's journal) in its system prompt.
 #[tokio::test]

@@ -193,7 +193,7 @@ pub struct AntigravityRuntime {
     // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
     active: Slots<ActiveTurn>,
-    primed: crate::Primed,
+    primed: Arc<context::InlinePrimed>,
     /// Single flight for the background model-list refresh.
     refreshing: Arc<AtomicBool>,
     /// When the last refresh started (ms), for [`REFRESH_RETRY_MS`].
@@ -216,7 +216,7 @@ impl AntigravityRuntime {
             sink,
             bridge,
             active: Slots::default(),
-            primed: crate::Primed::default(),
+            primed: Arc::default(),
             refreshing: Arc::new(AtomicBool::new(false)),
             last_refresh: Arc::new(std::sync::atomic::AtomicI64::new(i64::MIN)),
             write_timeout: rpc::WRITE_TIMEOUT,
@@ -670,7 +670,12 @@ impl Turn {
             return (TurnOutcome::ended(TurnEndStatus::Cancelled, None), None);
         };
         let mut prompt = match first_sent {
-            Ok((pending, _written)) => Some(pending),
+            Ok((pending, _written)) => {
+                if self.carries_inline(agent) {
+                    self.context.inline_delivered();
+                }
+                Some(pending)
+            }
             Err(error) => {
                 answer = Err(error);
                 None
@@ -884,11 +889,16 @@ impl Turn {
     /// got the context there; otherwise it goes ahead of the text, except
     /// for a native command (`/goal ...`), which must lead the prompt.
     fn prompt_text(&self, agent: AgentTraits, recap: Option<&str>) -> String {
-        if agent.appends || self.text.trim_start().starts_with('/') {
+        if !self.carries_inline(agent) {
             return self.text.clone();
         }
         let context = crate::join_notes([recap.map(str::to_string), self.context.inline.clone()]);
         crate::with_context(&self.text, context.as_deref())
+    }
+
+    /// Whether the first prompt carries the inline context.
+    fn carries_inline(&self, agent: AgentTraits) -> bool {
+        !agent.appends && !self.text.trim_start().starts_with('/')
     }
 
     /// `initialize`, `authenticate`, then resume or create the session and
