@@ -3,6 +3,7 @@
 //! is live. Read-only — the framework switch is boot configuration and
 //! per-hook enablement has no backend yet. Port of GPUI `pages/hooks.rs`.
 
+use crate::design::motion;
 use crate::pages::common::controls::{header_with, outlined_tag, refresh_icon, spinner};
 use crate::pages::common::ts::{sm, sm_medium, xs};
 use crate::pages::common::{Tone, empty_state, error_line, page_body, rows_card};
@@ -108,10 +109,12 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         refresh_icon()
             .on_press(|s: &mut State| refresh(s))
             .build(k)
-            .key("refresh-hooks"),
+            .key("refresh-hooks")
+            .press_scale(motion::PRESS),
     ];
+    // The spinner gives way to the catalog with a fade.
     let content = match &h.catalog {
-        None => spinner(k),
+        None => spinner(k).key("hooks-loading").transition(motion::fade()),
         Some(catalog) => {
             let on_off = |b: bool| if b { "on" } else { "off" };
             let mut c = col().w_full().child(
@@ -129,6 +132,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
             if catalog.hooks.is_empty() {
                 c = c.child(empty_state(p, "No hooks are installed."));
             }
+            let c = c.key("hooks-catalog").transition(motion::fade());
             if catalog.hooks.is_empty() {
                 c
             } else {
@@ -141,7 +145,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     };
     let mut body = col().w_full().child(header_with(p, "Hooks", actions));
     if let Some(e) = &h.error {
-        body = body.child(error_line(p, e));
+        body = body.child(error_line(p, e).key("hooks-error"));
     }
     page_body("hooks-page", body.child(content))
 }
