@@ -68,7 +68,7 @@ pub fn press_button(
     if !loading {
         b = b.on_press(f);
     }
-    b.build(k).key(key.to_string())
+    super::pressable(b.build(k)).key(key.to_string())
 }
 
 /// A small ghost icon button with a tooltip, keyed and built.
@@ -79,10 +79,7 @@ pub fn press_icon(
     help: &str,
     f: impl Fn(&mut State) + 'static,
 ) -> El {
-    super::icon_button(glyph, help)
-        .on_press(f)
-        .build(k)
-        .key(key.to_string())
+    super::pressable(super::icon_button(glyph, help).on_press(f).build(k)).key(key.to_string())
 }
 
 /// [`press_icon`] that cannot be pressed.
@@ -171,7 +168,10 @@ pub fn outlined_tag(p: &Palette, tone: Tone, label: impl Into<String>) -> El {
 }
 
 /// GPUI `design::kit::row` as the pickers draw it: a hoverable list row,
-/// washed when `active`.
+/// washed when `active`. The hover wash fades, a selection change morphs on
+/// the slide spring, and a press washes and sinks it a little
+/// (`motion::PRESS_CARD`); give its text `.group_color(p.text)` to brighten
+/// with the hover.
 pub fn hover_row(p: &Palette, key: String, active: bool) -> El {
     row()
         .key(key)
@@ -183,6 +183,11 @@ pub fn hover_row(p: &Palette, key: String, active: bool) -> El {
         .radius(design::ROW_RADIUS)
         .fill(if active { p.active } else { Color::TRANSPARENT })
         .hover(design::kit::hover_wash(p))
+        .press(design::kit::hover_wash(p))
+        .hover_motion(design::motion::HOVER, design::motion::HOVER)
+        .hover_group()
+        .motion(design::motion::SLIDE)
+        .press_scale(design::motion::PRESS_CARD)
         .cursor(Cursor::Pointer)
 }
 
