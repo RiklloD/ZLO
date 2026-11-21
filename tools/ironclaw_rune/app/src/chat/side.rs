@@ -642,6 +642,8 @@ pub(crate) fn set_folder(s: &mut State, folder: PathBuf, remember: bool) {
     x.project = Default::default();
     x.changes = Default::default();
     x.history = Default::default();
+    // The card's pull request and servers belonged to the old folder.
+    x.details.forget_folder();
     let generation = x.folder_gen.bump();
     jobs::blocking(
         s,
@@ -651,7 +653,11 @@ pub(crate) fn set_folder(s: &mut State, folder: PathBuf, remember: bool) {
                 return;
             };
             x.repo = repo;
+            let card_open = x.session_open;
             load_shown(s);
+            if card_open {
+                details::opened(s);
+            }
         },
     );
 }

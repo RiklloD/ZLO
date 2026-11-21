@@ -71,7 +71,10 @@ pub struct Branch {
 }
 
 pub fn branch(dir: &Path) -> Branch {
+    // A fresh repository has no commit yet: rev-parse fails, but HEAD
+    // still names its (unborn) branch.
     let name = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .or_else(|_| git(dir, &["symbolic-ref", "--short", "HEAD"]))
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "HEAD".into());
     let upstream = git(dir, &["rev-parse", "--abbrev-ref", "@{upstream}"])

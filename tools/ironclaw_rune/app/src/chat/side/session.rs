@@ -37,9 +37,9 @@ pub fn new_side_chat(s: &mut State) {
         );
         return;
     }
+    super::details::close(s);
     if let Some(x) = side_mut(s) {
         x.chat_busy = true;
-        x.session_open = false;
     }
     let asked = parent.clone();
     jobs::run(
@@ -81,8 +81,8 @@ pub(super) fn open(s: &mut State, thread_id: String) {
     let Some(x) = side(s) else { return };
     let fresh = x.chat.as_ref().map(|c| c.thread_id.as_str()) != Some(thread_id.as_str());
     let chat = fresh.then(|| SideChat::new(s, thread_id.clone()));
+    super::details::close(s);
     let Some(x) = side_mut(s) else { return };
-    x.session_open = false;
     if let Some(chat) = chat {
         x.chat = Some(chat);
         crate::chat::start_side_chat(s, &thread_id);

@@ -80,6 +80,16 @@ enum Dropdown {
     Choose,
 }
 
+impl DetailsState {
+    /// What the card read from the old project folder.
+    pub(super) fn forget_folder(&mut self) {
+        self.pr = None;
+        self.servers.clear();
+        self.servers_more = false;
+        self.stopping = None;
+    }
+}
+
 fn visible(s: &State) -> Visibility {
     items::resolve(&s.prefs.thread_details_items)
 }
@@ -95,6 +105,7 @@ pub(super) fn opened(s: &mut State) {
     let Some(x) = side(s) else { return };
     let repo = x.repo.clone();
     let folder = x.folder.clone();
+    let generation = x.folder_gen;
     if repo.is_some() || remote_repo::remote(s) {
         changes::refresh(s);
     }
@@ -104,7 +115,7 @@ pub(super) fn opened(s: &mut State) {
             s,
             move || git::pull_request(&repo),
             move |s, pr, _| {
-                if let Some(x) = side_of(s, &asked) {
+                if let Some(x) = side_of(s, &asked).filter(|x| x.folder_gen == generation) {
                     x.details.pr = pr;
                 }
             },
@@ -114,7 +125,7 @@ pub(super) fn opened(s: &mut State) {
         routines::load(s);
     }
     if let Some(folder) = folder.filter(|_| !remote && v.get(Item::Servers)) {
-        refresh_servers(s, thread, folder);
+        refresh_servers(s, thread, folder, generation);
     }
     if v.get(Item::Usage) {
         crate::pages::usage::refresh(s, false);
@@ -124,12 +135,19 @@ pub(super) fn opened(s: &mut State) {
     }
 }
 
-fn refresh_servers(s: &mut State, thread: String, folder: std::path::PathBuf) {
+fn refresh_servers(
+    s: &mut State,
+    thread: String,
+    folder: std::path::PathBuf,
+    generation: jobs::Generation,
+) {
     jobs::blocking(
         s,
         move || servers::discover(&folder),
         move |s, found, _| {
-            let Some(x) = side_of(s, &thread) else { return };
+            let Some(x) = side_of(s, &thread).filter(|x| x.folder_gen == generation) else {
+                return;
+            };
             match found {
                 Ok(list) => x.details.servers = list,
                 Err(e) => tracing::debug!(error = %e, "server discovery failed"),
@@ -568,7 +586,7 @@ fn version_control(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
                 ),
             );
         }
-        if let Some(pr) = &x.details.pr {
+        if let Some(pr) = x.details.pr.as_ref().filter(|_| x.repo.is_some()) {
             let url = pr.url.clone();
             sec.row(
                 pressable(
@@ -723,9 +741,9 @@ fn init_git(s: &mut State, thread: String, folder: std::path::PathBuf) {
         s,
         move || git::init(&dir),
         move |s, result, _| {
-            if let Some(x) = side_of(s, &thread) {
-                x.details.initializing = false;
-            }
+            // The user moved to another thread: its folder and banner are not ours.
+            let Some(x) = side_of(s, &thread) else { return };
+            x.details.initializing = false;
             match result {
                 // Re-reading the folder finds the new repository.
                 Ok(()) => super::set_folder(s, folder.clone(), false),
@@ -747,15 +765,16 @@ fn servers_section(c: &Ctx) -> Option<Section> {
     } else {
         all.len().min(SERVER_PAGE)
     };
-    for server in &all[..shown] {
+    for (ix, server) in all[..shown].iter().enumerate() {
         let url = format!("http://localhost:{}", server.port);
         let pid = server.pid;
+        let target = server.clone();
         let stopping = x.details.stopping == Some(pid);
         let thread = c.thread.clone();
         let stop = ui::ibtn(&icons::SQUARE, "Stop server")
             .label(format!("Stop localhost:{}", server.port))
             .disabled(x.details.stopping.is_some())
-            .on_press(move |s: &mut State| stop_server(s, thread.clone(), pid))
+            .on_press(move |s: &mut State| stop_server(s, thread.clone(), target.clone()))
             .build(c.k)
             .key(format!("thread-details-server-stop-{}", server.port));
         let mut r = base(format!("thread-details-server-{}", server.port))
@@ -767,13 +786,21 @@ fn servers_section(c: &Ctx) -> Option<Section> {
         } else {
             r.child(stop)
         };
-        sec.row(pressable(s, r).help("Open in the browser panel.").on_press(
-            move |s: &mut State| {
-                close(s);
-                super::browser::go(s, url.clone());
-                super::show(s, Tab::Browser);
-            },
-        ));
+        let e =
+            pressable(s, r)
+                .help("Open in the browser panel.")
+                .on_press(move |s: &mut State| {
+                    close(s);
+                    super::browser::go(s, url.clone());
+                    super::show(s, Tab::Browser);
+                });
+        // As t3code: the overflow past the first page never counts toward
+        // the card's fit, so "Show more" can't drop the card's density.
+        if ix < SERVER_PAGE {
+            sec.row(e);
+        } else {
+            sec.rows.push(e);
+        }
     }
     if all.len() > SERVER_PAGE {
         let more = x.details.servers_more;
@@ -799,22 +826,23 @@ fn servers_section(c: &Ctx) -> Option<Section> {
     Some(sec)
 }
 
-fn stop_server(s: &mut State, thread: String, pid: u32) {
+fn stop_server(s: &mut State, thread: String, server: servers::Server) {
     let Some(x) = side_of(s, &thread) else { return };
-    x.details.stopping = Some(pid);
-    let folder = x.folder.clone();
+    let Some(dir) = x.folder.clone() else { return };
+    x.details.stopping = Some(server.pid);
+    let folder = Some(dir.clone());
     jobs::blocking(
         s,
-        move || servers::stop(pid),
+        move || servers::stop(&server, &dir),
         move |s, result, _| {
-            if let Some(x) = side_of(s, &thread) {
-                x.details.stopping = None;
-            }
+            let Some(x) = side_of(s, &thread) else { return };
+            x.details.stopping = None;
+            let generation = x.folder_gen;
             if let Err(e) = result {
                 bridge::set_error(s, e);
             }
             if let Some(folder) = folder {
-                refresh_servers(s, thread.clone(), folder);
+                refresh_servers(s, thread.clone(), folder, generation);
             }
         },
     );
@@ -1272,7 +1300,13 @@ fn meter(s: &State, key: String, name: &str, fill: Option<f64>, tone: Color, val
                     .h(4.)
                     .radius(2.)
                     .fill(p.border)
-                    .child(el().grow(f.max(0.01)).min_w(6.).h(4.).radius(2.).fill(tone))
+                    .child(
+                        el().grow(f.max(0.01))
+                            .min_w(if f > 0. { 6. } else { 0. })
+                            .h(4.)
+                            .radius(2.)
+                            .fill(if f > 0. { tone } else { Color::TRANSPARENT }),
+                    )
                     .child(el().grow((100. - f).max(0.01))),
             );
         }

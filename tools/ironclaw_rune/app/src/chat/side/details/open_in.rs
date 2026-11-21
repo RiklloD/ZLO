@@ -88,7 +88,12 @@ pub fn open(editor: &Editor, folder: &Path) {
     if editor.app != "Finder" {
         cmd.args(["-a", editor.app]);
     }
-    if let Err(e) = cmd.arg(folder).spawn() {
-        tracing::warn!(error = %e, app = editor.app, "could not open the folder");
-    }
+    let app = editor.app;
+    let folder = folder.to_path_buf();
+    // `open` returns at once; waiting on it on a thread reaps the child.
+    std::thread::spawn(move || {
+        if let Err(e) = cmd.arg(folder).status() {
+            tracing::warn!(error = %e, app, "could not open the folder");
+        }
+    });
 }

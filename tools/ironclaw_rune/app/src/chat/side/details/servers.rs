@@ -32,15 +32,22 @@ pub fn discover(folder: &Path) -> Result<Vec<Server>, String> {
     if listening.is_empty() {
         return Ok(Vec::new());
     }
+    // lsof reports working folders with symlinks resolved (/tmp is
+    // /private/tmp), so compare against the resolved folder.
+    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
     let pids = listening
         .iter()
-        .map(|s| s.pid.to_string())
+        .map(|s| s.pid)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|pid| pid.to_string())
         .collect::<Vec<_>>()
         .join(",");
     let cwds = parse_cwds(&lsof(&["-a", "-p", &pids, "-d", "cwd", "-Fn"])?);
     Ok(listening
         .into_iter()
-        .filter(|s| cwds.get(&s.pid).is_some_and(|cwd| cwd.starts_with(folder)))
+        .filter(|s| s.pid != std::process::id())
+        .filter(|s| cwds.get(&s.pid).is_some_and(|cwd| cwd.starts_with(&folder)))
         .collect())
 }
 
@@ -49,11 +56,13 @@ fn parse_listening(out: &str) -> Vec<Server> {
     let mut by_port = BTreeMap::new();
     let (mut pid, mut process) = (0u32, String::new());
     for line in out.lines() {
-        let (tag, value) = line.split_at(line.len().min(1));
+        let mut chars = line.chars();
+        let Some(tag) = chars.next() else { continue };
+        let value = chars.as_str();
         match tag {
-            "p" => pid = value.parse().unwrap_or(0),
-            "c" => process = value.to_string(),
-            "n" => {
+            'p' => pid = value.parse().unwrap_or(0),
+            'c' => process = value.to_string(),
+            'n' => {
                 let port = value.rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
                 if let Some(port) = port.filter(|_| pid != 0) {
                     by_port.entry(port).or_insert_with(|| Server {
@@ -74,10 +83,12 @@ fn parse_cwds(out: &str) -> HashMap<u32, PathBuf> {
     let mut cwds = HashMap::new();
     let mut pid = 0u32;
     for line in out.lines() {
-        let (tag, value) = line.split_at(line.len().min(1));
+        let mut chars = line.chars();
+        let Some(tag) = chars.next() else { continue };
+        let value = chars.as_str();
         match tag {
-            "p" => pid = value.parse().unwrap_or(0),
-            "n" if pid != 0 => {
+            'p' => pid = value.parse().unwrap_or(0),
+            'n' if pid != 0 => {
                 cwds.insert(pid, PathBuf::from(value));
             }
             _ => {}
@@ -86,8 +97,20 @@ fn parse_cwds(out: &str) -> HashMap<u32, PathBuf> {
     cwds
 }
 
-/// Ask the server's process to end (t3code's "Stop server").
-pub fn stop(pid: u32) -> Result<(), String> {
+/// Ask the server's process to end (t3code's "Stop server"). The process is
+/// looked up again first, so a pid that has since ended (and maybe been
+/// reused) or that is ZLO itself is never signalled.
+pub fn stop(server: &Server, folder: &Path) -> Result<(), String> {
+    let pid = server.pid;
+    if pid == 0 || pid == std::process::id() {
+        return Err("That server can't be stopped from here.".into());
+    }
+    if !discover(folder)?.contains(server) {
+        return Err(format!(
+            "localhost:{} is no longer served from this folder.",
+            server.port
+        ));
+    }
     let status = Command::new("/bin/kill")
         .args(["-TERM", &pid.to_string()])
         .stdin(Stdio::null())
@@ -135,5 +158,25 @@ mod tests {
         let cwds = parse_cwds(out);
         assert_eq!(cwds[&501], PathBuf::from("/Users/you/code/app"));
         assert_eq!(cwds[&77], PathBuf::from("/tmp"));
+    }
+
+    #[test]
+    fn non_ascii_lines_do_not_panic() {
+        let out = "p501\ncnodé\n\u{e9}weird\nn*:3000\n";
+        assert_eq!(parse_listening(out)[0].process, "nodé");
+        assert!(parse_cwds("\u{e9}x\np7\nn/a\n").contains_key(&7));
+    }
+
+    #[test]
+    fn stop_never_signals_pid_zero_or_zlo() {
+        let folder = Path::new("/");
+        for pid in [0, std::process::id()] {
+            let server = Server {
+                port: 1,
+                pid,
+                process: "x".into(),
+            };
+            assert!(stop(&server, folder).is_err());
+        }
     }
 }
