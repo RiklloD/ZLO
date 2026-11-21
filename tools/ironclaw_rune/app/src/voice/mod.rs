@@ -29,6 +29,7 @@ mod apple;
 mod composer;
 mod coordinator;
 mod engine;
+mod level;
 mod mic;
 mod ptt;
 mod session;
@@ -38,6 +39,8 @@ mod transcript;
 mod turn;
 pub mod ui;
 mod wake;
+#[cfg(test)]
+mod wave_tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -160,6 +163,9 @@ pub struct VoiceState {
     pub mic_menu: Option<rune::PointerPress>,
     /// Both permissions granted, as last checked (Settings shows it).
     pub authorized: bool,
+    /// The pill's waveform, sampled from the mic while it is live and
+    /// motion is allowed (`session::poll`); `None` draws the still pose.
+    pub bars: Option<[u8; level::BARS]>,
     /// Headless scenes only (`s.fixture`): Settings → Voice draws the
     /// composer controls and these SnapShot chips above the page, since the
     /// composers themselves belong to other areas.
@@ -182,6 +188,7 @@ impl Default for VoiceState {
             notice: None,
             mic_menu: None,
             authorized: false,
+            bars: None,
             fixture_preview: None,
         }
     }
@@ -406,7 +413,8 @@ fn bound(
     }
     if let Some(answer) = early {
         // Deferred like the GPUI app: the composer finishes its send first.
-        s.rt.handle.update(move |s, _| session::deliver(s, answer));
+        s.rt.handle
+            .update(move |s, tx| session::with_motion(s, tx, |s| session::deliver(s, answer)));
     }
 }
 
@@ -444,12 +452,14 @@ pub fn run_ended(s: &mut State, thread: &str, run: Option<&str>, completed: bool
         && let Some(e) = s.voice.engine.as_mut()
         && let Some(answer) = e.turn.run_ended(thread, run, spoken.clone())
     {
-        s.rt.handle.update(move |s, _| session::deliver(s, answer));
+        s.rt.handle
+            .update(move |s, tx| session::with_motion(s, tx, |s| session::deliver(s, answer)));
         return;
     }
     if reads {
-        s.rt.handle
-            .update(move |s, _| session::send(s, Input::ReadAloud(spoken)));
+        s.rt.handle.update(move |s, tx| {
+            session::with_motion(s, tx, |s| session::send(s, Input::ReadAloud(spoken)))
+        });
     }
 }
 
@@ -518,6 +528,8 @@ pub mod fixtures {
             let input = match *input {
                 "talk" => Input::TalkToggled,
                 "click" => Input::MicClicked,
+                "hold" => Input::HotkeyDown,
+                "release" => Input::HotkeyUp,
                 "words" => Input::Heard { words: true },
                 "tick" => Input::Tick,
                 "reply" => Input::ReplyFinished("Here it is.".into()),

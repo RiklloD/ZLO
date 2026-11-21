@@ -28,6 +28,7 @@ use super::engine::{
     DICTATION_OFF, PrivacyPane, SpeechSynthesizer, SpeechToText, SttConfig, SttEvent, SttFailure,
     SttSink,
 };
+use super::level::MicLevel;
 
 unsafe extern "C" {
     fn dlopen(path: *const c_char, mode: i32) -> *mut c_void;
@@ -260,9 +261,19 @@ impl Session {
 }
 
 /// `SFSpeechRecognizer` on the default input device.
-#[derive(Default)]
 pub(crate) struct AppleStt {
     session: Option<Session>,
+    /// Written by the audio tap, read by the pill (`level.rs`).
+    level: MicLevel,
+}
+
+impl AppleStt {
+    pub fn new(level: MicLevel) -> Self {
+        Self {
+            session: None,
+            level,
+        }
+    }
 }
 
 impl Drop for AppleStt {
@@ -354,11 +365,15 @@ impl SpeechToText for AppleStt {
                 return Err(fail("No microphone input is available.".into()));
             }
             let feed = request.clone();
+            let level = self.level.clone();
+            level.set(0.);
             let tap: TapBlock =
                 RcBlock::new(move |buffer: *mut AnyObject, _when: *mut AnyObject| {
                     if !buffer.is_null() {
                         // SAFETY: appending a PCM buffer is safe from the tap thread.
                         let _: () = msg_send![&*feed, appendAudioPCMBuffer: buffer];
+                        // SAFETY: the same live AVAudioPCMBuffer, read in place.
+                        level.feed(first_channel(buffer));
                     }
                 });
             let _: () = msg_send![
@@ -441,6 +456,7 @@ impl SpeechToText for AppleStt {
     }
 
     fn stop(&mut self) {
+        self.level.set(0.);
         if let Some(mut session) = self.session.take() {
             session.ended.store(true, Ordering::Relaxed);
             session.stop_recording();
@@ -451,6 +467,45 @@ impl SpeechToText for AppleStt {
                 }
             }
         }
+    }
+}
+
+/// The first channel of a tap's float PCM buffer, borrowed in place (no
+/// copy, no allocation: this runs on Core Audio's thread). Empty for a
+/// buffer that is not float PCM.
+///
+/// # Safety
+/// `buffer` is a live `AVAudioPCMBuffer` that outlives the slice.
+unsafe fn first_channel<'a>(buffer: *mut AnyObject) -> &'a [f32] {
+    // SAFETY: documented AVAudioPCMBuffer properties; `floatChannelData`
+    // is null for non-float formats, else holds one pointer per channel to
+    // `frameLength` samples.
+    unsafe {
+        let frames: u32 = msg_send![buffer, frameLength];
+        let data: *const *const f32 = msg_send![buffer, floatChannelData];
+        if data.is_null() || frames == 0 {
+            return &[];
+        }
+        let first = *data;
+        if first.is_null() {
+            return &[];
+        }
+        std::slice::from_raw_parts(first, frames as usize)
+    }
+}
+
+/// macOS's Reduce motion setting (`NSWorkspace`), read on the main thread.
+pub(crate) fn system_reduced_motion() -> bool {
+    let Ok(cls) = class(c"NSWorkspace") else {
+        return false;
+    };
+    // SAFETY: a class method and a BOOL property read on the main thread.
+    unsafe {
+        let ws: *mut AnyObject = msg_send![cls, sharedWorkspace];
+        if ws.is_null() {
+            return false;
+        }
+        msg_send![ws, accessibilityDisplayShouldReduceMotion]
     }
 }
 

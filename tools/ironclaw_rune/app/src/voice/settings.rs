@@ -11,6 +11,7 @@ use rune::{Color, Cx, El, ScrollSpec, TextStyle, col, el, row, text};
 use rune_kit::{Button, Kit, SegmentedControl, Switch, TextInput};
 
 use super::{HOTKEYS, VoicePrefs};
+use crate::design::motion;
 use crate::state::State;
 
 const PACES: [(f32, &str); 3] = [(0.42, "Slow"), (0.5, "Normal"), (0.58, "Fast")];
@@ -72,11 +73,13 @@ pub(super) fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>
             .key("voice-allowed")
             .font(TextStyle::new(crate::design::styles::rem(14.), 400.))
             .color(p.success)
+            .transition(motion::fade())
     } else {
         Button::new("Allow")
             .on_press(super::request_access)
             .build(k)
             .key("voice-allow")
+            .transition(motion::fade())
     };
     let phrase = el().key("voice-phrase").w(180.).child(
         TextInput::new(&s.voice.wake_phrase)

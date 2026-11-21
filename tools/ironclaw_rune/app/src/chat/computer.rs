@@ -29,6 +29,8 @@
 //! - `has_session(s, id)`, `hidden(s, id)`, `toggle_hidden(s, id)`: the side
 //!   pane's screen-share button (area S).
 
+#[cfg(test)]
+mod motion_tests;
 mod remote;
 mod view;
 
@@ -57,6 +59,8 @@ const MAX_CARDS: usize = 4;
 const GLIDE: Duration = Duration::from_millis(550);
 const RIPPLE: Duration = Duration::from_millis(600);
 const TRAIL: Duration = Duration::from_millis(1800);
+/// The drag trail fades out over the last part of its life.
+const TRAIL_FADE: Duration = Duration::from_millis(400);
 /// Pointer events older than this are placed, not animated.
 const FRESH_MS: i64 = 3000;
 const TYPING_MS: i64 = 4000;
@@ -135,10 +139,6 @@ impl Card {
             ripples: Vec::new(),
             trail: None,
         }
-    }
-
-    fn animating(&self) -> bool {
-        self.glide.is_some_and(|g| g.at().1) || !self.ripples.is_empty() || self.trail.is_some()
     }
 }
 
@@ -520,7 +520,10 @@ fn control(s: &mut State, id: &str, action: ComputerControl) {
         s,
         "computer use",
         move |c| async move { c.computer_control(&thread_id, action, &viewer).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's Take over / Hand back / Stop click:
+            // the pause scrim and the button's fill move as its answer.
+            tx.animated();
             control_landed(s, &asked, generation, owner, action, result.map(|_| ()))
         },
     );
@@ -672,7 +675,16 @@ fn follow_pointer(card: &mut Card, session: &ComputerSession, window: u32, skew_
     }
 }
 
-/// Expire finished animations; keep drawing while any runs.
+/// The drag trail's opacity: full, then fading to nothing over its last
+/// [`TRAIL_FADE`].
+fn trail_alpha(age: Duration) -> f32 {
+    let left = TRAIL.saturating_sub(age);
+    (left.as_secs_f32() / TRAIL_FADE.as_secs_f32()).clamp(0., 1.)
+}
+
+/// Expire finished animations; keep drawing while any runs. A drag trail
+/// that only stands still asks for one wake, when its fade begins, rather
+/// than a frame every 16 ms.
 pub fn poll(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     let Some(cu) = slot(s, id) else { return false };
     if cu.hidden || cu.session.is_none() {
@@ -680,17 +692,32 @@ pub fn poll(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     }
     let now = Instant::now();
     let mut animating = false;
+    let mut removed = false;
+    let mut fade_in: Option<Duration> = None;
     for card in cu.cards.values_mut() {
+        let ripples = card.ripples.len();
         card.ripples.retain(|r| now < r.starts + RIPPLE);
+        removed |= card.ripples.len() != ripples;
         if card.trail.is_some_and(|(_, _, at)| at.elapsed() > TRAIL) {
             card.trail = None;
+            removed = true;
         }
-        animating |= card.animating();
+        animating |= card.glide.is_some_and(|g| g.at().1) || !card.ripples.is_empty();
+        if let Some((_, _, at)) = card.trail {
+            let until = (TRAIL - TRAIL_FADE).saturating_sub(now.saturating_duration_since(at));
+            if until.is_zero() {
+                animating = true;
+            } else {
+                fade_in = Some(fade_in.map_or(until, |f| f.min(until)));
+            }
+        }
     }
     if animating {
         tx.wake_after(FRAME);
+    } else if let Some(fade) = fade_in {
+        tx.wake_after(fade);
     }
-    animating
+    animating || removed
 }
 
 /// A session with three windows, a pointer mid-glide and typing, for the
@@ -755,7 +782,8 @@ pub fn fixture(thread_id: &str) -> ComputerState {
             card.glide = Some(Glide {
                 from: (0.42, 0.36),
                 to: (0.42, 0.36),
-                started: Instant::now(),
+                // Already landed: the scene rests.
+                started: Instant::now().checked_sub(GLIDE).unwrap_or_else(Instant::now),
             });
             // A grey test picture, so the scene shows image placement.
             let (w, h) = (16u32, 10u32);
