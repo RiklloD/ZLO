@@ -646,4 +646,36 @@ mod tests {
             "folders first, the gateway's dot-files hidden"
         );
     }
+
+    /// A folder lists up to DIR_LIMIT entries: the tree builds only the
+    /// rows near its viewport, not one element per entry.
+    #[test]
+    fn a_huge_folder_builds_only_the_rows_in_view() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::chat::fixtures::chat(&mut s);
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-studio", "Studio");
+        s.prefs.work_open = true;
+        s.prefs.work_tab = super::super::Tab::Files.id().into();
+        let names: Vec<String> = (0..DIR_LIMIT).map(|i| format!("f{i:04}.txt")).collect();
+        let entries: Vec<(&str, bool)> = names.iter().map(|n| (n.as_str(), false)).collect();
+        if let Some(x) = side_mut(&mut s) {
+            fixture_remote(x, &entries);
+        }
+        let mut rt = rune::Runtime::new(s, crate::view, (1280., 820.), rune::Env::new(true, 1.));
+        rt.frame(0.);
+        for _ in 0..10 {
+            rt.frame(1. / 60.);
+        }
+        let built: HashSet<String> = rt
+            .elements()
+            .into_iter()
+            .filter_map(|e| e.key)
+            .filter(|k| k.starts_with("project-row-"))
+            .collect();
+        let built = built.len();
+        assert!(built > 0, "the tree draws");
+        // The viewport holds about 30; overscan builds some more.
+        assert!(built < 150, "{built} rows built for {DIR_LIMIT} entries");
+    }
 }

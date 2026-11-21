@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 
 use crate::design::kit::{self, Spinner};
+use crate::design::motion;
 use rune::{El, col, el, icon, row};
 use rune_kit::Kit;
 use zlo_client::GateDecision;
@@ -414,6 +415,8 @@ fn step_row(s: &State, row_: &Row) -> El {
         let toggle_key = key.to_string();
         line = line
             .hover(p.hover)
+            .hover_motion(motion::HOVER, motion::HOVER)
+            .press_scale(motion::PRESS_CARD)
             .cursor(rune::Cursor::Pointer)
             .on_press(move |s: &mut State| {
                 if let Some(x) = side_mut(s)

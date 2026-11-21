@@ -16,7 +16,7 @@ use zlo_client::workspace_views::{ProjectFsEntry, ProjectFsEntryKind};
 use super::drill::{self, Level};
 use super::preview::{self, Opened};
 use super::ui::{self, sm, xs};
-use super::{side, side_mut, side_of, thread_id};
+use super::{Tab, side, side_mut, side_of, tab_shown, thread_id};
 use crate::icons;
 use crate::jobs::{self, Generation};
 use crate::state::State;
@@ -59,10 +59,17 @@ pub(super) fn browse(s: &mut State, path: Option<String>) {
         s,
         "outputs",
         move |c| async move { c.thread_files(&asked, path.as_deref()).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            let shown =
+                thread_id(s).as_deref() == Some(thread.as_str()) && tab_shown(s, Tab::Outputs);
             let Some(x) = side_of(s, &thread).filter(|x| x.outputs.list_gen == generation) else {
                 return;
             };
+            // The folder the person opened (or the tab they switched to):
+            // its listing fades in over the spinner.
+            if shown {
+                tx.animated();
+            }
             // Ignore answers for a panel that was closed meanwhile.
             let Some(panel) = x.outputs.files.as_mut() else {
                 return;

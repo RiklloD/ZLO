@@ -55,6 +55,7 @@ mod activity;
 mod agents;
 mod bridge;
 mod browser;
+mod busy;
 mod changes;
 mod console;
 mod details;
@@ -906,8 +907,8 @@ fn tab_actions(s: &State, k: &Kit, tab: Tab) -> Vec<El> {
     match tab {
         Tab::Files => project::actions(s, k),
         Tab::Outputs => outputs::actions(s, k),
-        Tab::History => history::actions(k),
-        Tab::Routines => routines::actions(k),
+        Tab::History => history::actions(s, k),
+        Tab::Routines => routines::actions(s, k),
         Tab::Agents => agents::actions(k),
         Tab::Plugin => vec![
             ui::ibtn(&crate::icons::REFRESH_CW, "Refresh")

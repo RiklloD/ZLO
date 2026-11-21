@@ -38,6 +38,8 @@ fn folder_chip(s: &State, dock: Dock, folder: &std::path::Path) -> El {
         .radius(6.)
         .fill(p.hover)
         .hover(p.active)
+        .hover_motion(crate::design::motion::HOVER, crate::design::motion::HOVER)
+        .press_scale(crate::design::motion::PRESS)
         .border(1., p.border)
         .cursor(Cursor::Pointer)
         .no_window_drag()

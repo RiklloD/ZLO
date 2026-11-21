@@ -14,6 +14,7 @@ use zlo_client::transcript::Row;
 
 use super::ui::{self, xs, xs_med};
 use super::{Tab, bridge, side, side_mut, side_of, side_total, tab_shown, thread_id};
+use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::native_view::{self, Slot, Source, WebCommand, WebState};
@@ -311,6 +312,8 @@ fn link_row(s: &State, key: String, url: String) -> El {
         .fill(p.surface_card.alpha(if p.light { 0.8 } else { 0.55 }))
         .border(1., p.border)
         .hover(p.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
         .hover_group()
         .cursor(Cursor::Pointer)
         .child(
@@ -374,6 +377,8 @@ fn launchpad(s: &State, recent: &[String]) -> El {
             .fill(p.surface_card.alpha(if p.light { 0.8 } else { 0.55 }))
             .border(1., p.border)
             .hover(p.hover)
+            .hover_motion(motion::HOVER, motion::HOVER)
+            .press_scale(motion::PRESS_CARD)
             .hover_group()
             .cursor(Cursor::Pointer)
             .child(

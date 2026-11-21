@@ -37,6 +37,7 @@ use super::{
     session, short_path, side, side_mut, side_of, thread_id,
 };
 use crate::design::kit::{self, Turn};
+use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::state::{Page, State};
@@ -238,6 +239,8 @@ fn pressable(s: &State, e: El) -> El {
     e.role("button")
         .cursor(Cursor::Pointer)
         .hover(s.palette.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
 }
 
 /// A row split into its action and a chevron that opens its menu.
@@ -759,9 +762,12 @@ fn init_git(s: &mut State, thread: String, folder: std::path::PathBuf) {
     jobs::blocking(
         s,
         move || git::init(&dir),
-        move |s, result, _| {
+        move |s, result, tx| {
             // The user moved to another thread: its folder and banner are not ours.
             let Some(x) = side_of(s, &thread) else { return };
+            // The answer to the person's "Initialize": the banner leaves
+            // with motion.
+            tx.animated();
             x.details.initializing = false;
             match result {
                 // Re-reading the folder finds the new repository.
@@ -856,9 +862,11 @@ fn stop_server(s: &mut State, thread: String, server: servers::Server) {
     jobs::blocking(
         s,
         move || servers::stop(&server, &dir),
-        move |s, result, _| {
+        move |s, result, tx| {
             let Some(x) = side_of(s, &thread) else { return };
             x.details.stopping = None;
+            // The person's Stop: its spinner settles back with motion.
+            tx.animated();
             let generation = x.folder_gen;
             if let Err(e) = result {
                 bridge::set_error(s, e);
@@ -886,7 +894,8 @@ fn automations(c: &Ctx) -> Option<Section> {
     );
     let rows = bound
         .into_iter()
-        .map(|(sch, busy)| {
+        .map(|(sch, asked)| {
+            let busy = asked.is_some();
             let id = sch.id.clone();
             let next = sch
                 .next_run_at
@@ -934,14 +943,15 @@ fn automations(c: &Ctx) -> Option<Section> {
             if !sch.is_webhook() {
                 let run = id.clone();
                 r = r.child(
-                    ui::ibtn(&icons::PLAY, "Run now")
-                        .label(format!("Run {} now", sch.title))
-                        .disabled(busy)
-                        .on_press(move |s: &mut State| {
-                            routines::schedule_action(s, run.clone(), None)
-                        })
-                        .build(c.k)
-                        .key(format!("thread-details-automation-run-{id}")),
+                    super::busy::icon_button(
+                        c.k,
+                        format!("thread-details-automation-run-{id}"),
+                        &icons::PLAY,
+                        "Run now",
+                        routines::busy_of(asked.as_ref(), "run"),
+                        move |s: &mut State| routines::schedule_action(s, run.clone(), None),
+                    )
+                    .label(format!("Run {} now", sch.title)),
                 );
             }
             let enabled = sch.enabled;
@@ -1196,10 +1206,21 @@ fn side_chats(c: &Ctx) -> Section {
     };
     let mut sec = Section::new("thread-details-side-chats", title);
     let open_id = x.chat.as_ref().map(|c| c.thread_id.clone());
+    // The open side chat's wash is one pill gliding between rows (rows
+    // are ROW_H tall, no gap), not a fill that jumps.
+    let shown_ix = chats
+        .iter()
+        .position(|id| open_id.as_deref() == Some(id.as_str()));
+    let pill = kit::slide_pill_sized(
+        s,
+        "side-chats-pill",
+        shown_ix.map(|ix| ix as f32 * ROW_H),
+        ROW_H,
+    )
+    .map(|pill| pill.fill(p.active));
     let rows: Vec<El> = chats
         .into_iter()
         .map(|id| {
-            let shown = open_id.as_deref() == Some(id.as_str());
             let live = side_chat_running(s, &id);
             let name = bridge::title(s, &id).unwrap_or_else(|| "Side chat".into());
             let mut item = base(format!("session-side-chat-{id}"))
@@ -1208,16 +1229,16 @@ fn side_chats(c: &Ctx) -> Section {
             if live {
                 item = item.child(crate::design::kit::Spinner::new().size(12.).build(c.k));
             }
-            if shown {
-                item = item.fill(p.active);
-            }
             pressable(s, item)
                 .label(format!("Open side chat {name}"))
                 .on_press(move |s: &mut State| session::open(s, id.clone()))
         })
         .collect();
     if !rows.is_empty() {
-        sec.rows.push(list("thread-details-side-chats-list", rows));
+        sec.rows.push(list(
+            "thread-details-side-chats-list",
+            pill.into_iter().chain(rows).collect(),
+        ));
     }
     // ZLO's own: t3code only lists side chats; here they start from the card.
     let can_fork = !bridge::rows(s).is_empty();

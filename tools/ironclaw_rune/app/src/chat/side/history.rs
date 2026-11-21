@@ -8,12 +8,13 @@ use rune::{Color, El, canvas, col, el, row};
 use rune_kit::diff::{DiffMode, DiffState, DiffView};
 use rune_kit::{IconButtonVariant, Kit};
 
+use super::busy;
 use super::drill::{self, Level};
 use super::flash;
 use super::ui::{self, sm_med, tiny, xs};
 use super::{SideState, Tab, git, remote_repo, side, side_mut, side_of, thread_id};
 use crate::design::Palette;
-use crate::design::kit;
+use crate::design::{kit, motion};
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -303,14 +304,15 @@ fn list_view(s: &State, k: &Kit, x: &SideState) -> El {
 }
 
 /// The History tab's refresh button, for the dock's title row.
-pub(super) fn actions(k: &Kit) -> Vec<El> {
-    vec![
-        ui::ibtn(&icons::REFRESH_CW, "Refresh")
-            .label("Refresh history")
-            .on_press(refresh)
-            .build(k)
-            .key("history-refresh"),
-    ]
+pub(super) fn actions(s: &State, k: &Kit) -> Vec<El> {
+    let loading = side(s).is_some_and(|x| x.history.loading);
+    vec![busy::refresh(
+        k,
+        "history-refresh",
+        "Refresh history",
+        loading,
+        refresh,
+    )]
 }
 
 /// The loaded commits, when there are any.
@@ -356,6 +358,8 @@ fn commit_row(s: &State, i: usize, graph_w: f32) -> El {
         .gap(4.)
         .items_center()
         .hover(p.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
         .cursor(rune::Cursor::Pointer)
         .child(graph_cell(row_, graph_w, p))
         .child(
