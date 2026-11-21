@@ -218,6 +218,7 @@ fn filters(s: &State, k: &Kit) -> El {
         )]));
     }
     el().key("inbox-filters-panel")
+        .transition(rune::Transition::reveal(rune::Edge::Top))
         .min_w(0.0)
         .mx(8.)
         .mb(4.)

@@ -428,20 +428,26 @@ fn step(s: &mut State, delta: isize, tx: &mut Tx) {
     if delta > 0 && hidden > 0 && at == profiles as isize - 1 {
         picker.expanded = true;
         picker.selected = profiles;
-        let total = profiles + hidden;
-        tx.scroll_into_view(row_key(picker.selected, total));
+        // The first row the expansion unlocks.
+        let all = all_entries(s, now);
+        tx.scroll_into_view(row_key(&all, profiles));
         return;
     }
     picker.selected = (at + delta).rem_euclid(profiles as isize + 1) as usize;
-    tx.scroll_into_view(row_key(picker.selected, profiles));
+    tx.scroll_into_view(row_key(&vis, picker.selected));
 }
 
-fn row_key(ix: usize, profiles: usize) -> String {
-    if ix < profiles {
-        format!("pick-profile-{ix}")
-    } else {
-        NEW_ROW.into()
+/// Row `ix` of `profiles`' key: the profile's id, so a row keeps its place
+/// (and its wash) as the list filters; past the end, the "New profile" row.
+fn row_key(profiles: &[InboxProfile], ix: usize) -> String {
+    match profiles.get(ix) {
+        Some(profile) => profile_key(&profile.profile_id),
+        None => NEW_ROW.into(),
     }
+}
+
+fn profile_key(profile_id: &str) -> String {
+    format!("pick-profile-id-{profile_id}")
 }
 
 fn accept_ghost(s: &mut State) -> bool {
@@ -783,7 +789,7 @@ fn profile_row(
     // The selection wears the profile's color, the mark at full strength.
     let wash = profile_color(p, &profile.profile_id, 1.).alpha(if p.light { 0.1 } else { 0.16 });
     let mut r = row()
-        .key(format!("pick-profile-{ix}"))
+        .key(profile_key(&profile.profile_id))
         .role("button")
         .label(format!("Start in {}", profile.display_name))
         .w_full()

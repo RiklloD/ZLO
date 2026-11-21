@@ -303,8 +303,10 @@ pub(super) fn list(s: &State, tree: &Tree, row_data: &InboxRow, now: i64, k: &Ki
         })
         .collect();
     Some(
+        // Unfolds from the parent's edge and folds back into it.
         row()
             .key(format!("subagent-list-{}", row_data.thread_id))
+            .transition(rune::Transition::reveal(rune::Edge::Top))
             .ml(18.)
             .mr(4.)
             .mb(4.)
@@ -370,6 +372,9 @@ fn subagent_row(
     };
     row()
         .key(format!("subagent-row-{id}"))
+        // A subagent that moves in its parent's list glides there, as the
+        // inbox's rows do.
+        .motion(crate::design::motion::ROW_RESORT)
         .role("button")
         .label(format!("Subagent: {}", title_of(row_data)))
         .w_full()

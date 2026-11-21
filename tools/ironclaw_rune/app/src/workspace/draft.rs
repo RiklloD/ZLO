@@ -373,8 +373,10 @@ pub(super) fn attach(s: &mut State, paths: Vec<PathBuf>) {
             }
             Ok(out)
         },
-        move |s, result, _| {
+        move |s, result, tx| {
             let Ok(results) = result else { return };
+            // The person attached them: their cards enter rather than land.
+            tx.animated();
             let Some(draft) = s
                 .workspace
                 .draft
@@ -448,7 +450,9 @@ pub(super) fn attach_thread(s: &mut State, id: String, title: String) {
         s,
         "attach thread",
         move |c| async move { c.thread_attachment(&id, &title, &limits).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // Dropped there by the person: its card enters.
+            tx.animated();
             let (Some(draft), Some(session)) = (s.workspace.draft.as_mut(), s.session.as_ref())
             else {
                 return;
@@ -645,7 +649,11 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         crate::chat::model_picker::draft_pill(s, cx, k, layer),
         actions,
     );
+    // The card a dock flies back to (a new thread from a chat) lands on the
+    // dock's spring too: a matched flight takes its destination's
+    // `motion` when its commit names none (`motion::COMPOSER_MATCH`).
     let mut card = composer::dock_matched(s, card)
+        .motion(crate::design::motion::DOCK)
         .max_w(HERO_WIDTH)
         .on_drawn_layout_tx(super::thread_drag::saw_draft)
         .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()));
