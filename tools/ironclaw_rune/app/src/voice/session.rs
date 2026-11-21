@@ -207,7 +207,7 @@ pub(super) fn poll(s: &mut State, tx: &mut Tx) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Wave {
     /// Nothing to follow: idle voice, no pill, a still pose (reduced
-    /// motion, the battery saver, fixtures). No samples, no wakes.
+    /// motion, fixtures). No samples, no wakes.
     Off,
     /// The mic is live: sample the tap's level.
     Live,
@@ -236,14 +236,21 @@ fn wave(s: &State) -> Wave {
     wave
 }
 
-/// Motion is reduced (Appearance, the system setting, the battery saver):
-/// the pill holds a still pose and nothing samples the mic.
+/// Motion is reduced by the person (Appearance, or the system setting when
+/// Appearance follows it): the pill holds a still pose and nothing samples
+/// the mic. The battery saver does NOT still it: the saver engages whenever
+/// the window is in the background, which is exactly when push-to-talk from
+/// another app is used, and a live mic is the person acting, at ~16 Hz.
 fn still(s: &State) -> bool {
     #[cfg(target_os = "macos")]
     let system = super::apple::system_reduced_motion();
     #[cfg(not(target_os = "macos"))]
     let system = false;
-    crate::design::battery::reduced(&s.prefs, &s.look.battery, system)
+    match s.prefs.reduce_motion.as_str() {
+        "on" => true,
+        "off" => false,
+        _ => system,
+    }
 }
 
 /// The waveform's sample, at most every [`level::TICK`] while [`wave`] is

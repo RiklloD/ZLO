@@ -103,18 +103,13 @@ fn a_live_mic_is_sampled_on_its_tick_and_never_while_still() {
     assert!(!super::poll(&mut s, &mut Tx::default()));
     assert_eq!(s.voice.bars, Some(bars));
 
-    // The battery saver holds the still pose and stops the samples.
+    // The battery saver (a backgrounded window) does not still a live mic:
+    // push-to-talk from another app is when the waveform matters most.
     s.look.battery.set_active(false);
-    let mut tx = Tx::default();
-    assert!(
-        super::poll(&mut s, &mut tx),
-        "the bars give way to the pose"
-    );
-    assert_eq!(s.voice.bars, None);
-    assert!(!sampling(&s), "nothing samples under the saver");
+    assert!(sampling(&s), "a live mic samples under the saver");
     s.look.battery.set_active(true);
 
-    // So does Reduce motion.
+    // Reduce motion holds the still pose and stops the samples.
     s.prefs.reduce_motion = "on".into();
     let mut tx = Tx::default();
     super::poll(&mut s, &mut tx);
