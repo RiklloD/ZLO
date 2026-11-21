@@ -37,6 +37,12 @@ pub(super) struct OutputsState {
     open_gen: Generation,
 }
 
+impl OutputsState {
+    pub(super) fn count(&self) -> Option<usize> {
+        self.files.as_ref()?.entries.as_ref().map(Vec::len)
+    }
+}
+
 /// List `path` (the root when `None`) of the conversation's workspace.
 pub(super) fn browse(s: &mut State, path: Option<String>) {
     let Some(thread) = thread_id(s) else { return };
@@ -191,9 +197,12 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let body = match (&panel.entries, &panel.error) {
         (_, Some(e)) => ui::error_line(s, e.clone()),
         (None, None) => ui::loading(k),
-        (Some(entries), None) if entries.is_empty() => ui::empty(
+        (Some(entries), None) if entries.is_empty() => ui::empty_card(
             s,
-            "Nothing yet. Files IronClaw writes in this conversation show up here.",
+            &icons::FILE_TEXT,
+            "No outputs yet",
+            "Reports, exports, and files created in this conversation appear here for instant preview.",
+            None,
         ),
         (Some(entries), None) => {
             let mut list = col().w_full().px(8.);

@@ -78,7 +78,7 @@ fn device(
     }
 }
 
-fn base(s: &mut State) {
+pub(crate) fn base(s: &mut State) {
     let r = &mut s.remote;
     r.registry.environments = vec![
         env(STUDIO, "Studio", "studio.tail9915dd.ts.net", false),

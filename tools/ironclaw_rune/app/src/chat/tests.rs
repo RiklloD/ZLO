@@ -205,10 +205,14 @@ fn the_working_clock_repaints_its_seconds_without_a_new_view() {
         });
     };
     let label = |rt: &rune::Runtime<crate::state::State>| {
-        super::chat_ref(&rt.state, &id).map(|c| c.clock_text.get().to_string()).unwrap_or_default()
+        super::chat_ref(&rt.state, &id)
+            .map(|c| c.clock_text.get().to_string())
+            .unwrap_or_default()
     };
     let shown = |rt: &rune::Runtime<crate::state::State>| {
-        super::chat_ref(&rt.state, &id).and_then(|c| c.clock_secs).expect("a second shown")
+        super::chat_ref(&rt.state, &id)
+            .and_then(|c| c.clock_secs)
+            .expect("a second shown")
     };
     // Start on a second whose next one doesn't roll the word.
     if (shown(&rt) + 1) % 7 == 0 {

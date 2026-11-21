@@ -1,53 +1,60 @@
-//! Drawing the two docks and their titlebar strip (GPUI `side.rs`'s
-//! `render_docks`, `render_dock`, `render_titlebar_actions`,
-//! `render_dock_header`, `render_dock_tabs`, `render_no_folder`).
+//! Drawing the two docks and their titlebar strip: the work panel
+//! (`Changes`, `Files`, `Outputs`, `History`, `Console`) beside the
+//! conversation and the right pane (`Activity`, `Browser`, `Agents`,
+//! `Routines`, `Machines`, plus an open side chat) at the window's edge.
 //!
-//! GPUI eased each dock open and shut by hand (`panels::reveal`); here the
-//! dock's clip changes width and Rune's layout spring does the slide, the
-//! column inside keeping its full width so it doesn't rewrap. The dock's
-//! titlebar tabs sit in a clip of their own that opens and shuts with the
-//! column's, so header and body slide as one. Closing, both stay drawn at
-//! full opacity until the clips have shut ([`CLOSE_HOLD`], `side::poll`):
-//! the clip is the reveal, nothing fades.
-//!
-//! Everything in the titlebar block is keyed and always mounted, so opening
-//! a dock never shifts a sibling's identity (an unkeyed wrapper after a
-//! conditional child would remount, and the toggle inside it fly in anew).
+//! Layout design:
+//! - The titlebar holds one fixed top-right toggle capsule (`Session`, `Work`,
+//!   `Side`) whose buttons never move as columns open or close, and beside it a
+//!   single context/actions strip for each open dock (project folder chip,
+//!   active branch/host, tab actions, widen). That eliminates the old duplicate
+//!   title row and frees the titlebar from tiny unlabeled tab icons.
+//! - Each dock opens directly with a full-width, tactile segmented tab switcher
+//!   (five labeled pills with live counts per dock, 3 + 2 or one row when
+//!   wide), giving 1-click direct access with zero wasted space.
+//! - Each dock slides via a clipped width animation (`panels::REVEAL`) while
+//!   its inner column keeps its full width so nothing rewraps mid-slide.
+
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 use rune::{Color, Cursor, Cx, El, Phase, Transition, col, el, icon, row, text};
 use rune_kit::Kit;
 
-use super::ui::{self, xs, xs_med};
+use super::ui::{self, xs_med, xs_semi};
 use super::{
-    Dock, KEEP, Tab, WIDE_SHARE, WIDTH_DEFAULT, WIDTH_MAX, WIDTH_MIN, badge, bridge, dock_drawn,
-    dock_open, dock_tab, pick_project_folder, session, short_path, side, side_mut,
+    Dock, KEEP, Tab, WIDE_SHARE, WIDTH_DEFAULT, WIDTH_MAX, WIDTH_MIN, badge, bridge, browser,
+    dock_badge, dock_drawn, dock_open, dock_tab, pick_project_folder, session, short_path, side,
+    side_mut,
 };
-use crate::design::{motion, panels};
+use crate::design::{panels, styles::Style};
 use crate::icons;
 use crate::state::State;
 
-/// Room between titlebar buttons, toggles and tabs alike.
+/// Gap between buttons inside the toggle capsule.
 const TAB_GAP: f32 = 2.;
-/// Padding either side of the toggle cluster, and before a column's tabs.
+/// Outer margin around the toggle capsule and leading header padding.
 const CLUSTER_PAD: f32 = 8.;
-/// The toggle cluster's width: three toggles, their gaps and its padding.
-const CLUSTER: f32 = 3. * panels::TOGGLE_SIZE + 2. * TAB_GAP + 2. * CLUSTER_PAD;
-/// A column's title row: one small button tall, plus air.
-const TITLE_H: f32 = 32.;
+/// Inner horizontal padding of the toggle capsule.
+const CAPSULE_PAD: f32 = 3.;
+/// Width of the rounded toggle capsule holding the three dock toggles.
+const CAPSULE_W: f32 = 3. * panels::TOGGLE_SIZE + 2. * TAB_GAP + 2. * CAPSULE_PAD;
+/// Total horizontal space reserved on the right of the titlebar for toggles.
+const CLUSTER: f32 = CAPSULE_W + 2. * CLUSTER_PAD;
+
+/// Minimum width of the right pane when the window has room, keeping all 3
+/// labeled pills per row crisp without truncation.
+const SIDE_MIN: f32 = 300.;
+/// Width above which a dock's five tool tabs flow onto a single row.
+const WIDE_TABS_MIN: f32 = 560.;
 
 /// How long a closed dock's column stays drawn: the layout spring
-/// (`tok::motion::DEFAULT`, 0.3 s) has the clip within a point of shut by
-/// then.
-pub(super) const CLOSE_HOLD: f64 = 0.6;
+/// (`tok::motion::DEFAULT`) has the clip within half a point of shut by
+/// then — its `settling_duration(0.5 / SIDE_MIN)`, about 0.43 s. Holding
+/// longer only draws frames nobody can see.
+pub(super) const CLOSE_HOLD: f64 = 0.43;
 
-/// The right pane's narrowest: all its tabs (the side chat's too) beside
-/// the toggle cluster, none scrolled out of reach.
-const SIDE_MIN: f32 = CLUSTER + CLUSTER_PAD + 7. * (panels::TOGGLE_SIZE + TAB_GAP) - TAB_GAP;
-
-/// A dock's narrowest width with `room` left for it: the work panel's
-/// [`WIDTH_MIN`]; the right pane's [`SIDE_MIN`] where the window has the
-/// room, else down to [`WIDTH_MIN`] (its tabs then scroll), so a narrow
-/// window never pushes the pane and its toggles past its edge.
+/// A dock's narrowest width with `room` left for it.
 fn min_width(dock: Dock, room: f32) -> f32 {
     match dock {
         Dock::Work => WIDTH_MIN,
@@ -106,8 +113,8 @@ fn width(s: &State, dock: Dock, viewport: f32) -> f32 {
     }
 }
 
-/// The right pane's and the work panel's widths, 0 when closed (GPUI
-/// `dock_sizes`, settled), for the wallpaper's conversation area.
+/// The right pane's and the work panel's widths, 0 when closed, for the
+/// wallpaper's conversation area.
 pub fn dock_widths(s: &State, viewport: f32) -> (f32, f32) {
     let w = |dock| {
         if dock_open(s, dock) {
@@ -117,6 +124,14 @@ pub fn dock_widths(s: &State, viewport: f32) -> (f32, f32) {
         }
     };
     (w(Dock::Side), w(Dock::Work))
+}
+
+/// High-contrast layered surface fill shared by a dock's titlebar tint and
+/// body sheet so the column reads clearly over both plain themes and wallpapers.
+fn dock_fill(s: &State) -> Color {
+    let st = Style::of(&s.prefs);
+    let alpha = if st.vibrancy { 0.76 } else { 0.94 };
+    s.palette.surface.alpha(alpha)
 }
 
 /// Both docks, work panel first, for the chat's row.
@@ -158,18 +173,23 @@ fn dock(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, dock: Dock)
         .absolute(0., 0.)
         .w(w)
         .h_full()
-        // The clip reveals it: whole the frame it mounts, and gone only
-        // once the clip has shut.
         .transition(Transition::none())
-        // A tinted sheet, a step darker than the transcript, so the column
-        // reads as its own layer.
-        .fill(p.surface.alpha(0.45))
-        .child(title(s, k, dock, tab))
-        .child(ui::fill_col().child(body))
+        .fill(dock_fill(s))
+        // The pane's own parts never fade: they leave with the clip that
+        // shuts over them, not inside it after it is already closed.
+        .child(switcher(s, dock, w).transition(Transition::none()))
+        .child(
+            el().w_full()
+                .h(1.)
+                .fill(p.border)
+                .transition(Transition::none()),
+        )
+        .child(ui::fill_col().transition(Transition::none()).child(body))
         .child(
             el().pin(Some(0.), Some(0.), None, Some(0.))
                 .w(1.)
-                .fill(p.border),
+                .fill(p.border)
+                .transition(Transition::none()),
         )
         .child(edge(s, dock, w, dragging, viewport));
     clip.child(pane)
@@ -189,7 +209,7 @@ fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32) -> El {
         .w(6.)
         .cursor(Cursor::ResizeColumn)
         .child(el().w(1.).h_full().fill(if dragging {
-            p.accent.alpha(0.6)
+            p.accent.alpha(0.75)
         } else {
             Color::TRANSPARENT
         }))
@@ -234,38 +254,290 @@ fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32) -> El {
         })
 }
 
-/// The dock's title row: the tab's name (with its count), for coding tabs
-/// the worktree branch and the project folder (click to pick another), then
-/// at the right the tab's own buttons and the widen button. Every tab's
-/// actions live here, in the same place and at the same size.
-fn title(s: &State, k: &Kit, dock: Dock, tab: Tab) -> El {
+/// Full-width tactile segmented tab switcher mounted at the top of each dock.
+///
+/// - `Dock::Work`: the project tools (`Changes`, `Files`, `Outputs` /
+///   `History`, `Console`) with live count badges.
+/// - `Dock::Side`: `Activity`, `Browser`, `Agents` / `Routines`, `Machines`,
+///   plus a dedicated `Side chat` pill whenever a side chat is open.
+///
+/// Both lay their five pills out 3 + 2, on one row once the dock is wider
+/// than [`WIDE_TABS_MIN`].
+fn switcher(s: &State, dock: Dock, w: f32) -> El {
     let p = &s.palette;
-    let mut name = row()
-        .key(format!("side-{}-title", dock.key()))
-        .gap(6.)
-        .items_center()
-        .child(text(super::tab_title(s, tab)).font(xs_med()).color(p.text));
-    if let Some(n) = super::tab_count(s, tab) {
-        name = name.child(text(n.to_string()).font(xs()).color(p.text_faint));
-    }
-    let title = row()
+    let current = dock_tab(s, dock);
+    let well_bg = if p.light {
+        Color::BLACK.alpha(0.045)
+    } else {
+        Color::BLACK.alpha(0.24)
+    };
+    let mut well = col()
+        .key(format!("side-{}-tabs", dock.key()))
         .w_full()
-        .h(TITLE_H)
-        .pl(12.)
-        .pr(8.)
-        .gap(8.)
+        .padding(3.)
+        .gap(3.)
+        .radius(10.)
+        .fill(well_bg)
+        .border(1., p.border);
+
+    // Outer px(10) + well padding(3) on both sides, 3pt gaps between pills.
+    let inner = (w - 26.).max(0.);
+    let per = |n: usize| (inner - 3. * (n as f32 - 1.)) / n as f32;
+    let tools: &[Tab] = match dock {
+        Dock::Work => &Tab::WORK,
+        Dock::Side => {
+            if let Some(chat) = side(s).and_then(|x| x.chat.as_ref()) {
+                let extra =
+                    bridge::title(s, &chat.thread_id).filter(|t| !t.is_empty() && t != "Side chat");
+                well = well.child(tab_pill(
+                    s,
+                    Tab::SideChat,
+                    current == Tab::SideChat,
+                    extra,
+                    inner,
+                ));
+            }
+            &Tab::SIDE_TOOLS
+        }
+    };
+    // One row once every pill fits whole, else rows of three.
+    let per_row = if w >= WIDE_TABS_MIN { tools.len() } else { 3 };
+    for chunk in tools.chunks(per_row) {
+        let mut r = row().w_full().gap(3.).items_center();
+        for &t in chunk {
+            r = r.child(tab_pill(s, t, t == current, None, per(chunk.len())));
+        }
+        well = well.child(r);
+    }
+    // Plugins' tabs follow the app's own in the right pane, in rows of the
+    // same width.
+    if dock == Dock::Side {
+        let slots: Vec<&zlo_client::plugins::Slot> = s
+            .plugins
+            .of(zlo_client::plugins::SlotKind::PanelTab)
+            .collect();
+        let shown = super::plugin_tab(s);
+        for chunk in slots.chunks(per_row) {
+            let mut r = row().w_full().gap(3.).items_center();
+            for &slot in chunk {
+                let on = current == Tab::Plugin && shown == Some(slot);
+                r = r.child(plugin_pill(s, slot, on));
+            }
+            well = well.child(r);
+        }
+    }
+
+    el().w_full().px(10.).pt(4.).pb(8.).child(well)
+}
+
+/// A plugin's `panel.tab` slot as a pill in the right dock's switcher: the
+/// same shape and states as [`tab_pill`], named by the slot's own title.
+fn plugin_pill(s: &State, slot: &zlo_client::plugins::Slot, active: bool) -> El {
+    let p = &s.palette;
+    let st = Style::of(&s.prefs);
+    let (ext, id) = (slot.extension_id.clone(), slot.slot_id.clone());
+    let mut pill = row()
+        .key(format!("side-tab-plugin-{ext}-{id}"))
+        .role("button")
+        .label(slot.title.clone())
+        .help(slot.title.clone())
+        .focusable(true)
+        .focus_ring(2., 2.5, crate::design::kit(p).c.border_focus)
+        .grow(1.)
+        .min_w(0.)
+        .h(30.)
+        .px(7.)
+        .gap(5.)
         .items_center()
-        // The tab's name never gives way: the folder path beside it is the
-        // part that truncates.
-        .child(name);
+        .justify_center()
+        .radius(7.)
+        .cursor(Cursor::Pointer)
+        .hover_group()
+        .hover_motion(st.hover, st.hover)
+        .child(
+            icon(crate::icons::by_name(slot.icon.as_deref()), 14.5)
+                .color(if active { p.accent } else { p.text_muted })
+                .group_color(if active { p.accent } else { p.text }),
+        )
+        .child(
+            text(slot.title.clone())
+                .font(if active { xs_semi() } else { xs_med() })
+                .color(if active { p.text } else { p.text_muted })
+                .group_color(p.text)
+                .truncate()
+                .shrink()
+                .min_w(0.),
+        );
+    if active {
+        pill = pill
+            .fill(if p.light {
+                p.surface_card
+            } else {
+                p.surface_raised
+            })
+            .border(1., p.border_strong)
+            .shadow(
+                1.,
+                3.,
+                Color::BLACK.alpha(if p.light { 0.08 } else { 0.22 }),
+            );
+    } else {
+        pill = pill.hover(p.hover);
+    }
+    pill.on_press(move |s: &mut State| super::show_plugin(s, &ext, &id))
+}
+
+/// Below this pill width a count badge replaces the icon, so the label
+/// ("Outputs 4") stays whole instead of truncating to "Out…".
+const PILL_ICON_WITH_COUNT_MIN: f32 = 118.;
+
+/// One labeled, keyboard-focusable pill inside a dock's segmented switcher.
+/// `width` is the pill's laid-out width.
+fn tab_pill(s: &State, tab: Tab, active: bool, subtitle: Option<String>, width: f32) -> El {
+    let p = &s.palette;
+    let st = Style::of(&s.prefs);
+    let label_text = match subtitle {
+        Some(sub) => format!("{} · {sub}", tab.label()),
+        None => tab.label().to_string(),
+    };
+    let count = super::tab_count(s, tab);
+    let has_badge = badge(s, tab);
+    let icon_color = if active { p.accent } else { p.text_muted };
+    let text_color = if active { p.text } else { p.text_muted };
+
+    let mut pill = row()
+        .key(format!("side-tab-{}", tab.id()))
+        .role("button")
+        .label(tab.label())
+        .help(tab.label())
+        .focusable(true)
+        .focus_ring(2., 2.5, crate::design::kit(p).c.border_focus)
+        .grow(1.)
+        .min_w(0.)
+        .h(30.)
+        .px(7.)
+        .gap(5.)
+        .items_center()
+        .justify_center()
+        .radius(7.)
+        .cursor(Cursor::Pointer)
+        .hover_group()
+        .hover_motion(st.hover, st.hover);
+    if count.is_none() || width >= PILL_ICON_WITH_COUNT_MIN {
+        pill = pill.child(
+            icon(tab.icon(), 14.5)
+                .color(icon_color)
+                .group_color(if active { p.accent } else { p.text }),
+        );
+    }
+    pill = pill.child(
+        text(label_text)
+            .font(if active { xs_semi() } else { xs_med() })
+            .color(text_color)
+            .group_color(p.text)
+            .truncate()
+            .shrink()
+            .min_w(0.),
+    );
+
+    if let Some(n) = count {
+        pill = pill.child(ui::count_pill(s, n, active, has_badge));
+    } else if has_badge {
+        pill = pill.child(ui::dot(p.accent, 6.));
+    }
+
+    if active {
+        pill = pill
+            .fill(if p.light {
+                p.surface_card
+            } else {
+                p.surface_raised
+            })
+            .border(1., p.border_strong)
+            .shadow(
+                1.,
+                3.,
+                Color::BLACK.alpha(if p.light { 0.08 } else { 0.22 }),
+            );
+    } else {
+        pill = pill.hover(p.hover);
+    }
+
+    pill.on_press(move |s: &mut State| super::show(s, tab))
+}
+
+/// Clickable project folder chip rendered in the titlebar when a coding tab
+/// has a folder attached.
+fn folder_chip(s: &State, dock: Dock, folder: &std::path::Path) -> El {
+    let p = &s.palette;
+    let name = folder
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| short_path(folder));
+    row()
+        .key(format!("side-{}-folder", dock.key()))
+        .role("button")
+        .label(format!("Project folder {name}"))
+        .help(format!(
+            "{} — click to switch project folder",
+            short_path(folder)
+        ))
+        .min_w(0.)
+        .shrink()
+        .h(24.)
+        .px(7.)
+        .gap(5.)
+        .items_center()
+        .radius(6.)
+        .fill(p.hover)
+        .hover(p.active)
+        .border(1., p.border)
+        .cursor(Cursor::Pointer)
+        .no_window_drag()
+        .child(icon(&icons::FOLDER, 12.5).color(p.text_muted))
+        .child(ui::line(name, xs_med(), p.text).shrink())
+        .child(icon(&icons::CHEVRON_DOWN, 11.).color(p.text_faint))
+        .on_press_tx(|_: &mut State, tx| pick_project_folder(tx))
+}
+
+/// Compact branch pill for threads bound to their own git worktree.
+fn worktree_chip(s: &State, dock: Dock, wt: &zlo_client::orchestration::WorktreeView) -> El {
+    let p = &s.palette;
+    row()
+        .key(format!("side-{}-worktree", dock.key()))
+        .min_w(0.)
+        .max_w(130.)
+        .shrink()
+        .h(22.)
+        .px(6.)
+        .gap(4.)
+        .items_center()
+        .radius(6.)
+        .fill(p.accent_wash)
+        .child(icon(&icons::GIT_BRANCH, 11.5).color(p.accent))
+        .child(ui::line(wt.branch.clone(), ui::tiny(), p.accent).shrink())
+        .help(format!(
+            "Own git worktree {} on branch {}",
+            wt.path, wt.branch
+        ))
+}
+
+/// A dock's single unified titlebar header: context on the left (folder chip,
+/// branch, active domain, or side-chat controls) and tab actions + widen on
+/// the right. Replaces the old duplicate title row inside the pane.
+fn header_content(s: &State, k: &Kit, dock: Dock) -> El {
+    let p = &s.palette;
+    let tab = dock_tab(s, dock);
     let wide = side(s).is_some_and(|x| x.wide[dock.ix()]);
+
     let widen = ui::ibtn(
         if wide {
             &icons::MINIMIZE
         } else {
             &icons::MAXIMIZE
         },
-        if wide { "Narrow" } else { "Widen" },
+        if wide { "Narrow pane" } else { "Widen pane" },
     )
     .on_press(move |s: &mut State| {
         if let Some(x) = side_mut(s) {
@@ -273,81 +545,116 @@ fn title(s: &State, k: &Kit, dock: Dock, tab: Tab) -> El {
         }
     })
     .build(k)
+    .no_window_drag()
     .key(format!("side-{}-wide", dock.key()));
+
     let mut actions = row()
         .key(format!("side-{}-actions", dock.key()))
         .gap(2.)
-        .items_center();
+        .items_center()
+        .no_window_drag();
     for action in super::tab_actions(s, k, tab) {
-        actions = actions.child(action);
+        actions = actions.child(action.no_window_drag());
     }
-    let actions = actions.child(widen);
-    let Some(x) = side(s) else {
-        return title.child(ui::grow()).child(actions);
-    };
-    let mut title = title;
-    if tab.coding() {
-        if let Some(wt) = &x.worktree {
-            title = title.child(
-                // Gives way, as the folder does: the name and the actions
-                // keep their room.
-                row()
-                    .key(format!("side-{}-worktree", dock.key()))
-                    .gap(2.)
-                    .items_center()
-                    .max_w(160.)
-                    .min_w(0.)
-                    .shrink()
-                    .child(icon(&icons::GIT_BRANCH, 12.).color(p.text_muted))
-                    .child(ui::line(wt.branch.clone(), xs(), p.text_muted).shrink())
-                    .help(format!(
-                        "Own git worktree {} on branch {}",
-                        wt.path, wt.branch
-                    )),
-            );
-        }
-        if let Some(folder) = &x.folder {
-            title = title.child(
-                row()
-                    .key(format!("side-{}-folder", dock.key()))
-                    .min_w(0.)
-                    .shrink()
-                    .gap(4.)
-                    .items_center()
-                    .cursor(Cursor::Pointer)
-                    .child(ui::line(short_path(folder), xs(), p.text_faint).shrink())
-                    .child(icon(&icons::CHEVRON_DOWN, 12.).color(p.text_faint))
-                    .help("Choose the project folder")
-                    .on_press_tx(|_: &mut State, tx| pick_project_folder(tx)),
-            );
-        }
-    }
+    actions = actions.child(widen);
+
+    let mut bar = row()
+        .key(format!("side-{}-title", dock.key()))
+        .w_full()
+        .h_full()
+        .pl(10.)
+        .pr(6.)
+        .gap(6.)
+        .items_center();
+
     if tab == Tab::SideChat {
-        title = title.child(session::chat_actions(s));
+        bar = bar.child(session::chat_actions(s));
+    } else if tab.coding() {
+        if let Some(x) = side(s) {
+            if let Some(folder) = &x.folder {
+                bar = bar.child(folder_chip(s, dock, folder));
+                if let Some(wt) = &x.worktree {
+                    bar = bar.child(worktree_chip(s, dock, wt));
+                }
+            } else {
+                bar = bar.child(
+                    row()
+                        .gap(6.)
+                        .items_center()
+                        .min_w(0.)
+                        .shrink()
+                        .child(icon(tab.icon(), 13.5).color(p.text_muted))
+                        .child(ui::line(
+                            match dock {
+                                Dock::Work => "Workspace",
+                                Dock::Side => tab.label(),
+                            },
+                            xs_semi(),
+                            p.text,
+                        ))
+                        .child(ui::line("No folder", ui::tiny(), p.text_faint)),
+                );
+            }
+        }
+        bar = bar.child(ui::grow());
+    } else if tab == Tab::Browser {
+        bar = bar.child(browser::bar(s, k));
+    } else if let Some((line, tone)) = super::tab_status(s, tab) {
+        let color = match tone {
+            super::Tone::Live => p.accent,
+            super::Tone::Warn => p.warning,
+            super::Tone::Bad => p.danger,
+            super::Tone::Good => p.success,
+            super::Tone::Quiet => p.text_faint,
+        };
+        let mut dot = ui::dot(color, 7.);
+        if tone == super::Tone::Live {
+            dot = dot.cycle(crate::design::kit::loops::breathe(
+                1.2,
+                0.,
+                &crate::design::kit::loops::BREATH_45,
+            ));
+        }
+        bar = bar
+            .child(
+                row()
+                    .key(format!("side-{}-status", dock.key()))
+                    .gap(7.)
+                    .items_center()
+                    .min_w(0.)
+                    .shrink()
+                    .child(dot)
+                    .child(ui::line(line, xs_semi(), p.text).shrink()),
+            )
+            .child(ui::grow());
     } else {
-        title = title.child(ui::grow());
+        bar = bar
+            .child(
+                row()
+                    .gap(6.)
+                    .items_center()
+                    .min_w(0.)
+                    .shrink()
+                    .child(icon(tab.icon(), 13.5).color(p.text_muted))
+                    .child(ui::line(tab.label(), xs_semi(), p.text).shrink()),
+            )
+            .child(ui::grow());
     }
-    title.child(actions)
+
+    bar.child(actions)
 }
 
 /// A git or shell tab while the backend is on another computer.
 pub(super) fn remote_unavailable(s: &State, tab: Tab) -> El {
-    let p = &s.palette;
     ui::fill_col()
-        .items_center()
-        .justify_center()
-        .gap(12.)
-        .padding(24.)
-        .child(icon(&icons::FOLDER_GIT, 28.).color(p.text_faint))
-        .child(
-            ui::para(
-                remote_line(tab, &crate::remote::computer_label(s)),
-                ui::sm(),
-                p.text_muted,
-            )
-            .align(rune::Align::Center),
-        )
         .key("side-remote-unavailable")
+        .child(ui::empty_card(
+            s,
+            &icons::FOLDER_GIT,
+            format!("{} runs locally", tab.label()),
+            remote_line(tab, &crate::remote::computer_label(s)),
+            None,
+        ))
 }
 
 /// "Changes: Runs on studio — not available remotely yet".
@@ -359,51 +666,140 @@ pub(super) fn remote_line(tab: Tab, computer: &str) -> String {
     )
 }
 
-/// A coding tab before the thread has a project folder.
+/// Collect unique recent project folders for one-click attachment:
+/// current profile folder, last picked project, and folders used in other
+/// threads (up to 5).
+fn recent_folders(s: &State) -> Vec<(PathBuf, Option<&'static str>)> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let mut push = |path: PathBuf, tag: Option<&'static str>| {
+        if out.len() < 5 && !path.as_os_str().is_empty() && seen.insert(path.clone()) {
+            out.push((path, tag));
+        }
+    };
+    if let Some((_, folder, _)) = bridge::profile(s)
+        && !folder.trim().is_empty()
+    {
+        push(PathBuf::from(folder), Some("Profile"));
+    }
+    if let Some(last) = s.prefs.last_project.clone() {
+        push(last, Some("Last used"));
+    }
+    let mut others: Vec<PathBuf> = s.prefs.project_folders.values().cloned().collect();
+    others.sort();
+    for path in others {
+        push(path, None);
+    }
+    out
+}
+
+/// A coding tab before the thread has a project folder: structured hero card
+/// plus one-click recent project cards.
 pub(super) fn no_folder(s: &State, k: &Kit, tab: Tab) -> El {
     let p = &s.palette;
-    let mut col = ui::fill_col()
-        .items_center()
-        .justify_center()
-        .gap(12.)
-        .padding(24.)
-        .child(icon(&icons::FOLDER_GIT, 28.).color(p.text_faint))
-        .child(
-            ui::para(
-                format!(
-                    "{} works on a folder on this Mac. Pick the project this conversation is about.",
-                    tab.label()
-                ),
-                ui::sm(),
-                p.text_muted,
-            )
-            .align(rune::Align::Center),
-        )
-        .child(
-            ui::primary("Choose folder…")
-                .icon(&icons::FOLDER_PLUS)
-                .on_press_tx(|_: &mut State, tx| pick_project_folder(tx))
-                .build(k)
-                .key("side-pick-folder"),
-        );
-    if let Some(last) = s.prefs.last_project.clone() {
-        let label = format!("Use {}", short_path(&last));
-        col = col.child(
-            ui::btn(label)
-                .on_press(move |s: &mut State| super::set_folder(s, last.clone(), true))
-                .build(k)
-                .key("side-last-folder"),
-        );
+    let pick_btn = ui::primary("Choose folder…")
+        .icon(&icons::FOLDER_PLUS)
+        .on_press_tx(|_: &mut State, tx| pick_project_folder(tx))
+        .build(k)
+        .key("side-pick-folder");
+
+    let mut stack = col().w_full().gap(12.).child(ui::empty_card(
+        s,
+        tab.icon(),
+        "Connect a project folder",
+        format!(
+            "{} reads a folder on this Mac. Pick the project for this thread to inspect diffs, files, git history, and run commands.",
+            tab.label()
+        ),
+        Some(pick_btn),
+    ));
+
+    let recent = recent_folders(s);
+    if !recent.is_empty() {
+        let mut group = col()
+            .w_full()
+            .px(12.)
+            .gap(6.)
+            .child(ui::section_label(s, "Quick connect"));
+        for (ix, (path, tag)) in recent.into_iter().enumerate() {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| short_path(&path));
+            let display = short_path(&path);
+            let is_last = s.prefs.last_project.as_ref() == Some(&path);
+            let key = if is_last {
+                "side-last-folder".to_string()
+            } else {
+                format!("side-recent-folder-{ix}")
+            };
+            let mut title_row = row()
+                .gap(6.)
+                .items_center()
+                .child(ui::line(name, xs_semi(), p.text).shrink());
+            if let Some(tag) = tag {
+                title_row = title_row.child(
+                    el().h(16.)
+                        .px(5.)
+                        .radius(5.)
+                        .center()
+                        .fill(p.hover)
+                        .child(text(tag).font(ui::tiny()).color(p.text_muted)),
+                );
+            }
+            let target = path.clone();
+            group = group.child(
+                row()
+                    .key(key)
+                    .role("button")
+                    .label(format!("Use {display}"))
+                    .w_full()
+                    .min_h(44.)
+                    .px(10.)
+                    .py(6.)
+                    .gap(10.)
+                    .items_center()
+                    .radius(10.)
+                    .fill(p.surface_card.alpha(if p.light { 0.8 } else { 0.55 }))
+                    .border(1., p.border)
+                    .hover(p.hover)
+                    .hover_group()
+                    .cursor(Cursor::Pointer)
+                    .child(
+                        el().size(28., 28.).radius(7.).center().fill(p.hover).child(
+                            icon(&icons::FOLDER, 14.)
+                                .color(p.text_muted)
+                                .group_color(p.accent),
+                        ),
+                    )
+                    .child(
+                        col()
+                            .grow(1.)
+                            .min_w(0.)
+                            .gap(1.)
+                            .child(title_row)
+                            .child(ui::line(display, ui::tiny(), p.text_faint)),
+                    )
+                    .child(
+                        icon(&icons::ARROW_RIGHT, 14.)
+                            .color(p.text_faint)
+                            .group_color(p.text),
+                    )
+                    .on_press(move |s: &mut State| super::set_folder(s, target.clone(), true)),
+            );
+        }
+        stack = stack.child(group);
     }
-    col
+
+    ui::scroll("side-no-folder", stack)
 }
 
 /// The thread's end of the window titlebar. Its three toggles (the session
-/// card, the work panel, the right pane) sit together at the window's top
-/// right and never move: opening or closing a column leaves every toggle
-/// under the pointer. Each open column's tabs ride the titlebar above it,
-/// on the column's tint, so the column reads as one full-height sheet; the
-/// right pane's tabs stop short of the toggles.
+/// card, the work panel, the right pane) sit inside one framed glass capsule at
+/// the window's top right and never move: opening or closing a column leaves
+/// every toggle under the pointer. Each open column's context/actions strip
+/// rides the titlebar above it on the column's sheet fill.
 pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let viewport = viewport(cx);
@@ -429,12 +825,13 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
     }
     // A column's tint, `width` wide (0 while shut) and `right` from the
     // block's right edge.
+    let sheet = dock_fill(s);
     let tint = |dock: Dock, right: f32, width: f32| {
         el().key(format!("side-{}-tint", dock.key()))
             .pin(None, Some(0.), Some(right), Some(0.))
             .w(width)
             .clip_rounded(0.)
-            .fill(p.surface.alpha(0.45))
+            .fill(sheet)
             .child(
                 el().pin(Some(0.), Some(0.), None, Some(0.))
                     .w(1.)
@@ -443,41 +840,75 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
     };
     let work_open = dock_open(s, Dock::Work);
     let side_open = dock_open(s, Dock::Side);
-    let work_toggle = panels::toggle_with(
+    let mut work_toggle = panels::toggle_with(
         s,
         "side-work-toggle",
         if work_open {
-            "Hide changes and files"
+            "Hide workspace (⌘E)"
         } else {
-            "Changes, files and outputs"
+            "Workspace · Changes, Files, Outputs (⌘E)"
         },
-        icon(&icons::FOLDER_TREE, panels::GLYPH_PX)
-            .color(p.text_muted)
-            .group_color(p.text),
+        panels::work_glyph(
+            "side-work-toggle-glyph",
+            work_open,
+            panels::GLYPH_PX,
+            if work_open { p.text } else { p.text_muted },
+        )
+        .group_color(p.text),
     )
     .on_press(|s: &mut State| super::toggle_work_panel(s));
-    let side_toggle = panels::toggle(
+    if dock_badge(s, Dock::Work) {
+        work_toggle = work_toggle.child(ui::dot(p.accent, 6.).absolute(19., 3.));
+    }
+
+    let mut side_toggle = panels::toggle_with(
         s,
         "side-pane-toggle",
-        side_open,
-        true,
         if side_open {
-            "Hide pane"
+            "Hide tools pane (⌥⌘B)"
         } else {
-            "Activity, browser and side chat"
+            "Tools · Activity, Browser, Agents, Console (⌥⌘B)"
         },
+        panels::glyph(
+            "side-pane-toggle-glyph",
+            side_open,
+            true,
+            panels::GLYPH_PX,
+            if side_open { p.text } else { p.text_muted },
+        )
+        .group_color(p.text),
     )
     .on_press(|s: &mut State| super::toggle_right_pane(s));
+    if dock_badge(s, Dock::Side) {
+        side_toggle = side_toggle.child(ui::dot(p.accent, 6.).absolute(19., 3.));
+    }
+
+    let capsule_bg = if p.light {
+        Color::BLACK.alpha(0.04)
+    } else {
+        Color::WHITE.alpha(0.05)
+    };
     let toggles = row()
         .key("side-toggles")
         .pin(None, Some(0.), Some(0.), Some(0.))
         .px(CLUSTER_PAD)
-        .gap(TAB_GAP)
         .items_center()
-        .child(session::toggle(s, k, layer))
-        .child(active(s, work_toggle, work_open))
-        .child(active(s, side_toggle, side_open));
-    // The tabs' widths open, for the strips still drawn while they shut.
+        .child(
+            row()
+                .h(panels::TOGGLE_SIZE + 6.)
+                .px(CAPSULE_PAD)
+                .gap(TAB_GAP)
+                .items_center()
+                .radius(10.)
+                .fill(capsule_bg)
+                .border(1., p.border)
+                .no_window_drag()
+                .child(session::toggle(s, k, layer))
+                .child(active(s, work_toggle, work_open))
+                .child(active(s, side_toggle, side_open)),
+        );
+
+    // The headers' widths open, for the strips still drawn while they shut.
     let sw_open = width(s, Dock::Side, viewport);
     let ww_open = width(s, Dock::Work, viewport);
     // The work panel's strip ends at the right pane, or at the toggles when
@@ -496,6 +927,7 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         .child(tint(Dock::Side, 0., sw))
         .child(header(
             s,
+            k,
             Dock::Work,
             work_right,
             (ww - work_room).max(0.),
@@ -503,6 +935,7 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         ))
         .child(header(
             s,
+            k,
             Dock::Side,
             CLUSTER,
             (sw - CLUSTER).max(0.),
@@ -513,27 +946,29 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         .key("side-titlebar")
         .h_full()
         // Its toggles are all pinned: this keeps the row a button tall.
-        .min_h(panels::TOGGLE_SIZE)
+        .min_h(panels::TOGGLE_SIZE + 6.)
         .items_center()
         .child(thread)
         .child(strip)
 }
 
-/// A titlebar toggle's active wash while its panel shows (the workspace's
-/// sidebar button does the same over `panels::toggle`).
+/// A titlebar toggle's active highlight while its panel shows.
 pub(super) fn active(s: &State, toggle: El, on: bool) -> El {
-    toggle.fill(if on {
-        s.palette.active
+    let p = &s.palette;
+    if on {
+        toggle
+            .fill(if p.light { p.surface_card } else { p.active })
+            .border(1., p.border_strong)
     } else {
-        Color::TRANSPARENT
-    })
+        toggle.fill(Color::TRANSPARENT)
+    }
 }
 
-/// A dock's titlebar strip: its tabs in a clip `width` wide (0 while shut)
-/// with its right edge `right` from the block's right. The strip inside
-/// keeps its open width `full` and rides the clip's left edge, as the
+/// A dock's titlebar strip: its context and actions in a clip `width` wide
+/// (0 while shut) with its right edge `right` from the block's right. The strip
+/// inside keeps its open width `full` and rides the clip's left edge, as the
 /// column below rides its own clip.
-fn header(s: &State, dock: Dock, right: f32, width: f32, full: f32) -> El {
+fn header(s: &State, k: &Kit, dock: Dock, right: f32, width: f32, full: f32) -> El {
     let clip = el()
         .key(format!("side-{}-header", dock.key()))
         .pin(None, Some(0.), Some(right), Some(0.))
@@ -548,100 +983,17 @@ fn header(s: &State, dock: Dock, right: f32, width: f32, full: f32) -> El {
             .absolute(0., 0.)
             .w(full)
             .h_full()
-            .pl(CLUSTER_PAD)
             .items_center()
             .transition(Transition::none())
-            .child(
-                el().key(format!("side-{}-tabs", dock.key()))
-                    .grow(1.)
-                    .min_w(0.)
-                    .scroll_x()
-                    .child(tabs(s, dock)),
-            ),
+            .child(header_content(s, k, dock)),
     )
-}
-
-/// A dock's tabs: the same buttons as the titlebar toggles beside them
-/// (size, wash, muted ink that brightens on hover), each with its
-/// attention dot where the session toggle has its own. One selection pill,
-/// the toggles' active wash, glides between them on [`motion::PILL`]
-/// (GPUI's `flip` pill, Zeron's tab slide).
-fn tabs(s: &State, dock: Dock) -> El {
-    const CELL: f32 = panels::TOGGLE_SIZE;
-    let p = &s.palette;
-    let current = dock_tab(s, dock);
-    let has_chat = side(s).is_some_and(|x| x.chat.is_some());
-    let shown: Vec<Tab> = dock
-        .tabs()
-        .iter()
-        .copied()
-        .filter(|t| *t != Tab::SideChat || has_chat)
-        .collect();
-    // Plugins' tabs follow the app's own in the right pane.
-    let plugins: Vec<&zlo_client::plugins::Slot> = match dock {
-        Dock::Side => s
-            .plugins
-            .of(zlo_client::plugins::SlotKind::PanelTab)
-            .collect(),
-        Dock::Work => Vec::new(),
-    };
-    let current_plugin = super::plugin_tab(s);
-    let at = match current {
-        Tab::Plugin => current_plugin
-            .and_then(|c| plugins.iter().position(|x| *x == c))
-            .map(|ix| shown.len() + ix),
-        _ => shown.iter().position(|t| *t == current),
-    };
-    let mut strip = row().gap(TAB_GAP).items_center();
-    if let Some(ix) = at {
-        strip = strip.child(
-            el().key(format!("side-{}-tab-pill", dock.key()))
-                .absolute(ix as f32 * (CELL + TAB_GAP), 0.)
-                .size(CELL, CELL)
-                .radius(panels::TOGGLE_RADIUS)
-                .fill(p.active)
-                .a11y_hidden()
-                .motion(motion::PILL),
-        );
-    }
-    for t in shown {
-        let on = t == current;
-        let glyph = icon(t.icon(), panels::GLYPH_PX)
-            .color(if on { p.text } else { p.text_muted })
-            .group_color(p.text);
-        let mut cell = panels::toggle_with(s, &format!("side-tab-{}", t.id()), t.label(), glyph)
-            .on_press(move |s: &mut State| super::show(s, t));
-        if badge(s, t) {
-            cell = cell.child(ui::dot(p.accent, 6.).absolute(19., 3.));
-        }
-        strip = strip.child(cell);
-    }
-    for slot in plugins {
-        let on = current == Tab::Plugin && current_plugin == Some(slot);
-        let glyph = icon(
-            crate::icons::by_name(slot.icon.as_deref()),
-            panels::GLYPH_PX,
-        )
-        .color(if on { p.text } else { p.text_muted })
-        .group_color(p.text);
-        let (ext, id) = (slot.extension_id.clone(), slot.slot_id.clone());
-        let cell = panels::toggle_with(
-            s,
-            &format!("side-tab-plugin-{ext}-{id}"),
-            &slot.title,
-            glyph,
-        )
-        .on_press(move |s: &mut State| super::show_plugin(s, &ext, &id));
-        strip = strip.child(cell);
-    }
-    strip
 }
 
 #[cfg(test)]
 mod tests {
     use rune::{Env, Runtime};
 
-    use super::super::{Dock, dock_drawn, poll, toggle_right_pane};
+    use super::super::{Dock, Tab, dock_drawn, poll, toggle_right_pane, toggle_work_panel};
     use crate::state::State;
 
     fn blank(_: &State, _: &mut rune::Cx<State>) -> rune::El {
@@ -653,7 +1005,7 @@ mod tests {
     /// Mac is adopted for the thread.
     #[test]
     fn remote_backend_disables_the_local_only_tabs() {
-        use super::super::{Tab, set_folder};
+        use super::super::set_folder;
         let off: Vec<Tab> = [
             Tab::Changes,
             Tab::Files,
@@ -684,10 +1036,9 @@ mod tests {
 
     /// The titlebar's toggles hold their place whichever columns are open:
     /// a click that opens or closes one never moves another out from under
-    /// the pointer. Each column's tabs stop short of the toggles.
+    /// the pointer. Each column's header stops short of the toggles.
     #[test]
     fn the_titlebar_toggles_never_move() {
-        use super::super::toggle_work_panel;
         const TOGGLES: [&str; 3] = [
             "side-session-toggle",
             "side-work-toggle",
@@ -736,7 +1087,7 @@ mod tests {
                 let (pane, _) = rt.presented("side-session-toggle").expect("drawn");
                 assert!(
                     tabs[0] + tabs[2] <= pane[0],
-                    "{step}: the pane's tabs run under the toggles"
+                    "{step}: the pane's header runs under the toggles"
                 );
             }
         }
@@ -744,12 +1095,113 @@ mod tests {
         rt.update(|s, _| toggle_right_pane(s));
         settle(&mut rt);
         let elements = rt.elements();
-        for key in TOGGLES.iter().copied().chain(["side-tab-activity"]) {
+        for key in TOGGLES.iter().copied().chain([
+            "side-tab-activity",
+            "side-tab-browser",
+            "side-tab-agents",
+            "side-tab-routines",
+            "side-tab-machines",
+        ]) {
             let e = elements
                 .iter()
                 .find(|e| e.key.as_deref() == Some(key))
                 .expect("drawn");
             assert!(e.focusable, "{key} is not focusable");
+        }
+    }
+
+    /// Both docks' segmented tab switchers draw every tab pill with generous
+    /// width inside their own dock bounds and with zero overlap.
+    #[test]
+    fn both_docks_draw_non_overlapping_labeled_tab_pills() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::scenes::chat(&mut s);
+        s.prefs.work_open = true;
+        s.prefs.side_open = true;
+        let mut rt = Runtime::new(s, crate::view, (1440., 900.), Env::new(true, 1.));
+        let mut t = 0.;
+        for _ in 0..90 {
+            t += 1. / 60.;
+            rt.frame(t);
+            rt.update(|s, tx| {
+                poll(s, t, tx);
+            });
+        }
+        let (work_box, _) = rt.presented("side-work-pane").expect("work pane drawn");
+        let (side_box, _) = rt.presented("side-side-pane").expect("side pane drawn");
+        // Each dock: five pills, three on the first row and two below.
+        let docks = [
+            (
+                work_box,
+                ["side-tab-changes", "side-tab-files", "side-tab-outputs"],
+                ["side-tab-history", "side-tab-console"],
+            ),
+            (
+                side_box,
+                ["side-tab-activity", "side-tab-browser", "side-tab-agents"],
+                ["side-tab-routines", "side-tab-machines"],
+            ),
+        ];
+        for (pane, top, bottom) in docks {
+            let row1: Vec<[f32; 4]> = top.iter().map(|k| rt.presented(k).expect(k).0).collect();
+            let row2: Vec<[f32; 4]> = bottom.iter().map(|k| rt.presented(k).expect(k).0).collect();
+            for row in [&row1, &row2] {
+                for r in row.iter() {
+                    assert!(r[2] >= 70., "pill should be generously wide: {r:?}");
+                    assert!(
+                        r[0] >= pane[0] && r[0] + r[2] <= pane[0] + pane[2] + 0.5,
+                        "pill {r:?} escapes its pane {pane:?}"
+                    );
+                    assert!(
+                        (r[2] - row[0][2]).abs() <= 1.0 && (r[1] - row[0][1]).abs() <= 0.5,
+                        "a row's pills share width and line: {row:?}"
+                    );
+                }
+                for pair in row.windows(2) {
+                    assert!(
+                        pair[0][0] + pair[0][2] <= pair[1][0] + 0.5,
+                        "pills overlap: {row:?}"
+                    );
+                }
+            }
+            assert!(
+                row1[0][1] + row1[0][3] <= row2[0][1] + 0.5,
+                "the 2 rows do not overlap"
+            );
+        }
+
+        // Widening the side dock collapses its 5 tool pills onto a single row.
+        rt.update(|s, _| {
+            if let Some(x) = super::side_mut(s) {
+                x.wide[Dock::Side.ix()] = true;
+            }
+        });
+        for _ in 0..90 {
+            t += 1. / 60.;
+            rt.frame(t);
+            rt.update(|s, tx| {
+                poll(s, t, tx);
+            });
+        }
+        let wide_pills: Vec<[f32; 4]> = [
+            "side-tab-activity",
+            "side-tab-browser",
+            "side-tab-agents",
+            "side-tab-routines",
+            "side-tab-machines",
+        ]
+        .into_iter()
+        .map(|k| rt.presented(k).expect(k).0)
+        .collect();
+        for pair in wide_pills.windows(2) {
+            assert!(
+                (pair[0][1] - pair[1][1]).abs() <= 0.5,
+                "wide pills should share one row: {wide_pills:?}"
+            );
+            assert!(
+                pair[0][0] + pair[0][2] <= pair[1][0] + 0.5,
+                "wide pills overlap: {wide_pills:?}"
+            );
         }
     }
 

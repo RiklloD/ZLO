@@ -222,16 +222,14 @@ impl Rows {
                     k,
                 )
             }
-            Item::Pending { stopping } => {
-                super::super::pending::render_pending(
-                    s,
-                    *stopping,
-                    chat.run_started,
-                    &chat.clock_text,
-                    self.seed,
-                    k,
-                )
-            }
+            Item::Pending { stopping } => super::super::pending::render_pending(
+                s,
+                *stopping,
+                chat.run_started,
+                &chat.clock_text,
+                self.seed,
+                k,
+            ),
             Item::Tail => super::super::orchestration::tail(s, chat, k).unwrap_or_else(el),
             Item::Reserve => el().h(self.reserve_h),
         };

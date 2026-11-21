@@ -887,7 +887,8 @@ fn poll_chat(s: &mut State, id: &str, input_waiting: bool, tx: &mut Tx) -> bool 
                 c.clock_text.set(pending::format_elapsed(secs));
                 // A run's first second builds the line; later ones only
                 // when it changes.
-                let rebuilt = was.is_none_or(|w| pending::clock_view(w) != pending::clock_view(secs));
+                let rebuilt =
+                    was.is_none_or(|w| pending::clock_view(w) != pending::clock_view(secs));
                 changed |= crate::energy::polled(crate::energy::C::PollChatClock, rebuilt);
             }
             // Nobody watches the seconds of a window in the back; focus
