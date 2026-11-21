@@ -110,6 +110,7 @@ pub(super) struct IdleArm {
     goal: Option<String>,
     effort: Option<String>,
     profile: Option<TurnProfile>,
+    settings: Option<String>,
 }
 
 impl IdleArm {
@@ -148,6 +149,7 @@ impl IdleArm {
             goal: plan.goal.map(str::to_string),
             effort: plan.effort.map(str::to_string),
             profile: plan.profile.cloned(),
+            settings: plan.settings.map(str::to_string),
         }
     }
 
@@ -243,6 +245,7 @@ impl IdleArm {
             goal: self.goal.as_deref(),
             effort: self.effort.as_deref(),
             profile: self.profile.as_ref(),
+            settings: self.settings.as_deref(),
         };
         let spawned = rt
             .command(

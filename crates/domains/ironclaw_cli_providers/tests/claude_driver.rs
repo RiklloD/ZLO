@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ironclaw_cli_providers::bridge::{CliBridge, GateAnswer, LiveEvent, SessionGrant};
-use ironclaw_cli_providers::claude::{ClaudeCliConfig, ClaudeCliRuntime};
+use ironclaw_cli_providers::claude::{ClaudeCliConfig, ClaudeCliRuntime, SkillListing};
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
 use ironclaw_host_api::turn::DenialFeedback;
 use ironclaw_orchestrator::model::{Millis, RuntimeId, ThreadRecord, ThreadScope};
@@ -136,6 +136,12 @@ fn configured_runtime(
             projects_dir: dir.join("projects"),
             usage_file: Some(dir.join("usage").join("claude-cli.json")),
             autocompact,
+            artifacts: false,
+            skills: SkillListing {
+                state_file: Some(dir.join("skills").join("claude-cli.json")),
+                pinned_on: vec!["pinned".into()],
+                off: Vec::new(),
+            },
         },
         sink,
         bridge,
@@ -263,8 +269,12 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
         assert!(line.contains("--permission-prompts none"), "{line}");
         assert!(line.contains("--model claude-haiku-5-5"), "{line}");
         // The CLI's own subagents are off: subagents are t3_delegate threads.
+        // So are its artifact tools (about 12k tokens a turn).
         assert!(
-            line.contains("--disallowedTools Agent,Task,Workflow,SendMessage,ListAgents,TaskStop"),
+            line.contains(
+                "--disallowedTools Agent,Task,Workflow,SendMessage,ListAgents,TaskStop,\
+                 Artifact,ArtifactComments,ArtifactData,ArtifactCheck,DesignSync"
+            ),
             "{line}"
         );
         assert!(
@@ -1867,4 +1877,100 @@ async fn a_steer_after_stop_is_never_written_during_the_signal_grace() {
     let log = std::fs::read_to_string(dir.path().join("input.log")).unwrap_or_default();
     assert!(!log.contains("after stop"), "written after Stop: {log}");
     assert_eq!(*sink.unread.lock().unwrap(), vec!["after stop".to_string()]);
+}
+
+/// Init frame with a skill catalog, then one `Skill` call.
+const SKILLS: &str = r#"#!/bin/sh
+{ echo "$@" | tr '\n' ' '; echo; } >> "@ARGS@"
+read -r _line
+echo '{"type":"system","subtype":"init","cwd":"/w","session_id":"s","tools":[],"mcp_servers":[],"model":"claude-haiku-5-5","permissionMode":"default","skills":["hot","cold","fresh","pinned","ironclaw:mine","artifact-design"]}'
+echo '{"type":"assistant","message":{"id":"m","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"fresh"}}],"usage":{"input_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":1}},"session_id":"s","uuid":"u1"}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"duration_api_ms":1,"num_turns":1,"result":"ok","session_id":"s","total_cost_usd":0,"usage":{"input_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":1}}'
+"#;
+
+/// The skill listing a turn launches with comes from the account's catalog
+/// and ledger (ZLO's own merged with `.claude.json`'s `skillUsage`, which is
+/// never written); the turn's init frame and `Skill` calls update them.
+#[tokio::test]
+async fn skill_listing_follows_the_catalog_and_the_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let state_file = dir.path().join("skills").join("claude-cli.json");
+    std::fs::create_dir_all(state_file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &state_file,
+        serde_json::json!({
+            "catalog": ["hot", "cold", "pinned"],
+            "ledger": {"hot": {"count": 3, "last_used_ms": now}},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // The account's own ranking: "cold" was used, but a year ago.
+    let account = serde_json::json!({
+        "skillUsage": {"cold": {"usageCount": 1, "lastUsedAt": now - 365 * 86_400_000}},
+    })
+    .to_string();
+    std::fs::write(dir.path().join(".claude.json"), &account).unwrap();
+    let profile_dir = dir.path().join("plugin");
+    std::fs::create_dir_all(profile_dir.join(".claude-plugin")).unwrap();
+    std::fs::write(
+        profile_dir.join(".claude-plugin/plugin.json"),
+        r#"{"name":"ironclaw"}"#,
+    )
+    .unwrap();
+    let args_log = dir.path().join("args.log");
+    let body = SKILLS.replace("@ARGS@", args_log.to_str().unwrap());
+    let rt = runtime(dir.path(), script(dir.path(), "claude", &body), &sink);
+    let thread = thread(&rt).await;
+    let turn = || {
+        let mut turn = input();
+        turn.profile = Some(TurnProfile {
+            skills: Some(ProfileSkills {
+                plugin_dir: profile_dir.clone(),
+                index: String::new(),
+            }),
+            ..TurnProfile::default()
+        });
+        turn
+    };
+    for n in 1..=2 {
+        rt.start_turn(&thread, turn()).await.unwrap();
+        wait_for(|| sink.finished.lock().unwrap().len() == n).await;
+    }
+
+    let args = std::fs::read_to_string(&args_log).unwrap();
+    let settings: Vec<serde_json::Value> = args
+        .lines()
+        .map(|line| {
+            let rest = line.split("--settings ").nth(1).expect(line);
+            let json = rest.split(' ').next().unwrap();
+            serde_json::from_str(json).expect(json)
+        })
+        .collect();
+    let first = &settings[0]["skillOverrides"];
+    assert_eq!(first["hot"], "on");
+    assert_eq!(first["cold"], "name-only");
+    assert_eq!(first["pinned"], "on");
+    assert_eq!(first["artifact-design"], "off");
+    assert!(first.get("fresh").is_none(), "not in the catalog yet");
+    // The init frame replaced the catalog; the `Skill` call made "fresh" hot.
+    let second = &settings[1]["skillOverrides"];
+    assert_eq!(second["fresh"], "on");
+    assert_eq!(second["ironclaw:mine"], "on");
+    assert_eq!(second["cold"], "name-only");
+    assert_eq!(second["artifact-design"], "off");
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+    assert_eq!(state["ledger"]["fresh"]["count"], 2);
+    assert_eq!(state["catalog"].as_array().unwrap().len(), 6);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".claude.json")).unwrap(),
+        account,
+        "the account's file is never written"
+    );
 }

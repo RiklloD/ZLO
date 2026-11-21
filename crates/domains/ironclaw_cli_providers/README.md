@@ -186,6 +186,19 @@ CLI has its tools and every call waits for a person:
   (`BUILTIN_SUBAGENT_TOOLS`), and the hook denies those tools outright as a
   backstop, even on a "Full access" profile. Subagents are orchestrator
   threads; ZLO's own Stop covers background shells.
+- The CLI's artifact tools (`Artifact`, `ArtifactComments`, `ArtifactData`,
+  `ArtifactCheck`, `DesignSync`) are disallowed too unless the account sets
+  `ClaudeCliConfig::artifacts`, and their bundled skills go `off` (about 12k
+  tokens a turn). They are not denied by the hook: the launch flag removes
+  them from the model's tool list, and the setting is per account.
+- Skills are listed by use (`src/claude/skills.rs`): each turn's `init`
+  frame records the account's skill catalog and its `Skill` calls feed a
+  ledger (`~/.ironclaw/claude-skills/<runtime>.json`, 0600), merged
+  read-only with `.claude.json`'s `skillUsage`. The next turn passes
+  `--settings {"skillOverrides":…}`: profile plugin skills, pinned skills
+  and up to 12 skills scoring at least 0.5 (uses halved weekly, floor 0.1)
+  stay `on`; the rest go `name-only` (still callable). Nothing goes `off`
+  except configured skills.
 - No allow rules are passed, "always allow" is not offered, prompts are
   answered "no" (`--permission-prompts none`), and
   `--dangerously-skip-permissions` is never used.

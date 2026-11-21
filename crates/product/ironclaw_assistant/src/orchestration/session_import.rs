@@ -225,6 +225,8 @@ mod tests {
                 projects_dir: projects.clone(),
                 usage_file: None,
                 autocompact: None,
+                artifacts: false,
+                skills: Default::default(),
             },
             sink,
             None,
