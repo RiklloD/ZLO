@@ -128,7 +128,8 @@ pub fn toggle(s: &State, key: &str, open: bool, right: bool, label: &str) -> El 
 }
 
 /// [`toggle`] around any glyph (draw it in `p.text_muted` with
-/// `.group_color(p.text)` so it brightens with the hover).
+/// `.group_color(p.text)` so it brightens with the hover). It shrinks a
+/// little while pressed (`motion::PRESS`).
 pub fn toggle_with(s: &State, key: &str, label: &str, glyph: El) -> El {
     let p = &s.palette;
     let st = Style::of(&s.prefs);
@@ -143,10 +144,12 @@ pub fn toggle_with(s: &State, key: &str, label: &str, glyph: El) -> El {
         .help(label.to_string())
         .size(TOGGLE_SIZE, TOGGLE_SIZE)
         .radius(TOGGLE_RADIUS)
+        .continuous_corners()
         .center()
         .cursor(rune::Cursor::Pointer)
         .hover(wash)
         .press(wash)
+        .press_scale(super::motion::PRESS)
         .hover_motion(st.hover, st.hover)
         .hover_group()
         .no_window_drag()

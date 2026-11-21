@@ -202,13 +202,19 @@ pub(super) fn load(s: &mut State) {
         s,
         "context",
         move |c| async move { c.thread_context(&id).await },
-        move |s, result, _| {
+        move |s, result, tx| {
             if s.workspace.context.load_gen != generation {
                 return;
             }
             s.workspace.context.loading = false;
             if active_id(s) != Some(asked.as_str()) {
                 return;
+            }
+            // The person opened the popover and waits on it: "Measuring…"
+            // grows into the report, and its bar's segments slide to their
+            // new widths. A load for the banner alone lands.
+            if s.workspace.context.open {
+                tx.animated();
             }
             match result {
                 Ok(report) => {
@@ -284,11 +290,14 @@ fn new_from_summary(s: &mut State) {
             };
             c.fork_thread(&id, &options).await
         },
-        |s, result, _| {
+        |s, result, tx| {
             s.workspace.context.busy = false;
             match result {
                 Ok(forked) => {
-                    inbox::refresh(s);
+                    // Asked for: the fork's card enters and the chat opens
+                    // with the usual motion (a reply lands at once otherwise).
+                    tx.animated();
+                    inbox::refresh_shown(s);
                     super::open_thread(s, forked.fork_thread_id);
                 }
                 Err(e) => s.workspace.context.error = Some(e.to_string()),
@@ -368,6 +377,8 @@ fn popover(s: &State) -> El {
         ),
         None => tokens(report.used),
     };
+    // Keyed by category, so a new report slides each segment to its width.
+    let slide = crate::design::styles::Style::of(&s.prefs).slide;
     let bar = row()
         .mx(8.)
         .h(8.)
@@ -378,7 +389,13 @@ fn popover(s: &State) -> El {
         .children(
             segments(report, BAR_WIDTH)
                 .into_iter()
-                .map(|(category, w)| el().h_full().w(w).fill(category_color(category))),
+                .map(|(category, w)| {
+                    el().key(format!("context-segment-{category:?}"))
+                        .h_full()
+                        .w(w)
+                        .fill(category_color(category))
+                        .motion(slide)
+                }),
         );
     let rows = report.categories.iter().map(|c| {
         row()
@@ -523,9 +540,13 @@ pub(super) fn banner(s: &State, k: &Kit) -> Option<El> {
                 s.workspace.context.dismissed.insert(dismiss_key.clone());
             },
         ));
+    // Wipes in from the top and back out when dismissed (a poll that
+    // brings it lands it, as Rune lands what no input caused).
     Some(
         col()
+            .key("context-banner-box")
             .w_full()
+            .transition(rune::Transition::reveal(rune::Edge::Top))
             .child(line)
             .child(el().h(1.).w_full().fill(tint.alpha(0.35))),
     )

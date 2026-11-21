@@ -19,6 +19,7 @@ use super::coordinator::{Coordinator, Effect, Input, Mode, Purpose, TalkPhase};
 use super::engine::{
     PrivacyPane, SpeechSynthesizer, SpeechToText, SttConfig, SttEvent, SttFailure, SttSink,
 };
+use super::level::{self, MicLevel};
 use super::mic::{Mic, Start};
 use super::turn::{Answer, PendingTurn, Submission};
 use super::{Notice, wake};
@@ -54,6 +55,13 @@ pub(super) struct Engine {
     hotkey: Option<HotkeyArm>,
     /// Bumped on every (re)arm: events from an older watcher are dropped.
     hotkey_gen: u64,
+    /// The mic's live level, written by the audio tap (`level.rs`).
+    pub level: MicLevel,
+    /// The next waveform sample on the frame clock (`Tx::clock`), while
+    /// the pill shows a live mic.
+    pub(super) level_next: Option<f64>,
+    /// Waveform samples taken, for the bars' variation.
+    pub(super) level_tick: u32,
 }
 
 struct SpeechPoll {
@@ -82,21 +90,28 @@ impl Engine {
         if let Err(e) = spawned {
             tracing::warn!(error = %e, "voice: the recognizer event thread did not start");
         }
+        let level = MicLevel::default();
         #[cfg(target_os = "macos")]
         let (stt, tts): (Box<dyn SpeechToText>, Box<dyn SpeechSynthesizer>) = (
-            Box::<super::apple::AppleStt>::default(),
+            Box::new(super::apple::AppleStt::new(level.clone())),
             Box::<super::apple::AppleTts>::default(),
         );
         #[cfg(not(target_os = "macos"))]
         let (stt, tts): (Box<dyn SpeechToText>, Box<dyn SpeechSynthesizer>) =
             (Box::new(Unsupported), Box::new(Unsupported));
-        Self::with(s, stt, tts, sink)
+        Self::with(s, stt, tts, sink, level)
     }
 
     /// No microphone and no speaker: fixture scenes.
     pub fn silent(s: &State) -> Self {
         let (sink, _events) = unbounded::<(u64, SttEvent)>();
-        Self::with(s, Box::new(Unsupported), Box::new(Unsupported), sink)
+        Self::with(
+            s,
+            Box::new(Unsupported),
+            Box::new(Unsupported),
+            sink,
+            MicLevel::default(),
+        )
     }
 
     fn with(
@@ -104,6 +119,7 @@ impl Engine {
         stt: Box<dyn SpeechToText>,
         tts: Box<dyn SpeechSynthesizer>,
         sink: SttSink,
+        level: MicLevel,
     ) -> Self {
         let now = Instant::now();
         Self {
@@ -120,6 +136,9 @@ impl Engine {
             speech: None,
             hotkey: None,
             hotkey_gen: 0,
+            level,
+            level_next: None,
+            level_tick: 0,
         }
     }
 }
@@ -172,6 +191,7 @@ pub(super) fn poll(s: &mut State, tx: &mut Tx) -> bool {
             poll.next = now + SPEECH_POLL;
         }
     }
+    changed |= sample_level(s, tx);
     let Some(e) = engine(s) else { return changed };
     let next = [e.next_tick, e.speech.as_ref().map(|p| p.next)]
         .into_iter()
@@ -181,6 +201,97 @@ pub(super) fn poll(s: &mut State, tx: &mut Tx) -> bool {
         tx.wake_after(next.saturating_duration_since(now));
     }
     changed
+}
+
+/// How the pill's waveform follows the mic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wave {
+    /// Nothing to follow: idle voice, no pill, a still pose (reduced
+    /// motion, fixtures). No samples, no wakes.
+    Off,
+    /// The mic is live: sample the tap's level.
+    Live,
+    /// Push-to-talk was released and the recognizer finalizes: the tap has
+    /// stopped, so the bars settle to rest on their own.
+    Settling,
+}
+
+fn wave(s: &State) -> Wave {
+    let Some(e) = s.voice.engine.as_ref() else {
+        return Wave::Off;
+    };
+    let wave = match e.coord.mode() {
+        Mode::Dictating(_)
+        | Mode::Talk(TalkPhase::Listening)
+        | Mode::WakeArmed
+        | Mode::WakeCapture => Wave::Live,
+        Mode::Finishing { .. } => Wave::Settling,
+        _ => return Wave::Off,
+    };
+    // The pill shows only on the composer voice types into, and only
+    // while that composer is on screen: a chat kept under Settings or a
+    // side chat in a closed pane samples nothing.
+    let shown = e.target.as_ref().is_some_and(|t| t.shown(s));
+    if !shown || s.fixture || still(s) {
+        return Wave::Off;
+    }
+    wave
+}
+
+/// Motion is reduced by the person (Appearance, or the system setting when
+/// Appearance follows it): the pill holds a still pose and nothing samples
+/// the mic. The battery saver does NOT still it: the saver engages whenever
+/// the window is in the background, which is exactly when push-to-talk from
+/// another app is used, and a live mic is the person acting, at ~16 Hz.
+fn still(s: &State) -> bool {
+    #[cfg(target_os = "macos")]
+    let system = super::apple::system_reduced_motion();
+    #[cfg(not(target_os = "macos"))]
+    let system = false;
+    match s.prefs.reduce_motion.as_str() {
+        "on" => true,
+        "off" => false,
+        _ => system,
+    }
+}
+
+/// The waveform's sample, at most every [`level::TICK`] while [`wave`] is
+/// on; drops the bars when it goes off. Returns whether the bars changed.
+fn sample_level(s: &mut State, tx: &mut Tx) -> bool {
+    let now = tx.clock();
+    let wave = wave(s);
+    let Some(e) = engine(s) else { return false };
+    if wave == Wave::Off {
+        e.level_next = None;
+        e.level_tick = 0;
+        return s.voice.bars.take().is_some();
+    }
+    let due = *e.level_next.get_or_insert(now);
+    if now < due {
+        tx.wake_at(due);
+        return false;
+    }
+    let value = match wave {
+        Wave::Settling => {
+            let settled = e.level.get() * level::SETTLE;
+            let settled = if settled < 0.02 { 0. } else { settled };
+            e.level.set(settled);
+            settled
+        }
+        _ => e.level.get(),
+    };
+    e.level_tick = e.level_tick.wrapping_add(1);
+    let bars = level::bars(value, e.level_tick);
+    // Settled to rest: hold the flat line without sampling again.
+    e.level_next = (wave == Wave::Live || value > 0.).then_some(now + level::TICK.as_secs_f64());
+    if let Some(next) = e.level_next {
+        tx.wake_at(next);
+    }
+    if s.voice.bars == Some(bars) {
+        return false;
+    }
+    s.voice.bars = Some(bars);
+    true
 }
 
 /// Timers and the composer link follow the mode.
@@ -361,7 +472,10 @@ fn authorize_then_open(s: &mut State) {
         let handle = s.rt.handle.clone();
         std::thread::spawn(move || {
             let result = futures::executor::block_on(super::apple::authorize());
-            handle.update(move |s, _| {
+            handle.update(move |s, tx| {
+                // The answer to the person's Allow click: Allowed fades in
+                // and a refusal's notice pops, as the click's reply.
+                tx.animated();
                 s.voice.authorized = super::authorized();
                 let Some(e) = engine(s) else { return };
                 let waiting = e.mic.authorized();
@@ -516,7 +630,9 @@ pub(super) fn arm_hotkey(s: &mut State) {
                 .name("voice-ptt-events".into())
                 .spawn(move || {
                     while let Some(event) = futures::executor::block_on(events.next()) {
-                        handle.update(move |s, _| on_hotkey(s, generation, event));
+                        handle.update(move |s, tx| {
+                            with_motion(s, tx, |s| on_hotkey(s, generation, event))
+                        });
                     }
                     // The watcher thread stopped: a held take has no release.
                     handle.update(move |s, _| {
@@ -544,6 +660,18 @@ pub(super) fn arm_hotkey(s: &mut State) {
 }
 
 #[cfg(target_os = "macos")]
+/// Run `f`, a voice change the person caused (their push-to-talk key, the
+/// reply they are waiting for), and let its commit move if the status did:
+/// the pill pops in or out and its label rolls. Queued commits land at
+/// once otherwise; recognizer events and ticks stay that way.
+pub(super) fn with_motion(s: &mut State, tx: &mut Tx, f: impl FnOnce(&mut State)) {
+    let before = super::status(s);
+    f(s);
+    if super::status(s) != before {
+        tx.animated();
+    }
+}
+
 fn on_hotkey(s: &mut State, generation: u64, event: super::ptt::PttEvent) {
     use super::ptt::PttEvent;
     if !engine(s).is_some_and(|e| e.hotkey_gen == generation) {

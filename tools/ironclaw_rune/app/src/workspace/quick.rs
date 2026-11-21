@@ -34,6 +34,14 @@
 //!
 //! Voice resolves the quick composer first while it is open, and a voice
 //! key pressed in another app opens it (`draft::voice_composer`).
+//!
+//! ## Motion
+//!
+//! Each open remounts the card ([`QuickState::opens`]), which fades and
+//! scales up a hair into place; it never plays an exit (the window hides at
+//! once, and the last open's card must not fade out over the new one). The
+//! window follows the Reduce Motion preference as it stood when it opened,
+//! else the system setting ([`QuickState::reduce`]).
 
 use rune::{
     Align, App, AppHandle, AppSpec, Color, Cx, DisplayTarget, El, Key, KeyEvent, OverlayPlacement,
@@ -80,6 +88,11 @@ pub struct QuickState {
     main: AppHandle<State>,
     /// Became the key window once; only then does losing focus close it.
     seen_active: bool,
+    /// Bumped per open: the card's key, so every open plays its entrance.
+    opens: u64,
+    /// Reduced motion from the preference at the open: `Some` when it says
+    /// on or off, `None` to follow the system setting this window reads.
+    reduce: Option<bool>,
 }
 
 /// The parts of the field the mirror needs.
@@ -121,6 +134,8 @@ pub fn install(app: App<State>) -> (App<State>, AppHandle<QuickState>) {
                 voice: None,
                 main,
                 seen_active: false,
+                opens: 0,
+                reduce: None,
             }
         })
         .on_focus(|q, focused, tx| {
@@ -171,12 +186,17 @@ pub fn toggle(s: &mut State) {
         return;
     };
     let palette = s.palette;
-    q.update(move |q, _| {
+    let reduce = reduce_motion(s);
+    q.update(move |q, tx| {
         q.palette = palette;
         q.input.clear();
         q.input.focused = true;
         q.synced = Synced::of(&q.input);
         q.seen_active = false;
+        q.reduce = reduce;
+        q.opens += 1;
+        // A queued update: without this the new card lands at once.
+        tx.animated();
     });
     // Spotlight's spot: centred, a fifth of the way down the screen.
     q.place(
@@ -194,6 +214,28 @@ pub fn toggle(s: &mut State) {
     quick.input = TextEdit::new("");
     // Sent again by the next `poll`.
     quick.sent_controls = None;
+}
+
+/// The quick window's reduced motion ([`QuickState::reduce`]): the
+/// preference when it says on or off, else `None` for the system setting,
+/// which only a view can read. Not the battery saver: it rests the main
+/// window while that is in the back, which is when this panel is used.
+fn reduce_motion(s: &State) -> Option<bool> {
+    match s.prefs.reduce_motion.as_str() {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// The card's entrance: a fade with a hair of scale on the popover spring,
+/// and no exit (see the module's Motion notes).
+fn card_entrance() -> rune::Transition {
+    rune::Transition::asymmetric(
+        rune::Transition::scale(0.97)
+            .springs(rune::SpringPair::with_exit_ratio(design::styles::POP, 0.6)),
+        rune::Transition::none(),
+    )
 }
 
 /// The quick composer's distance from the top of a screen `height` points
@@ -312,12 +354,16 @@ fn submit(q: &mut QuickState, _tx: &mut Tx) {
     q.main.update(move |s, _| send(s, text));
 }
 
-fn view(q: &QuickState, _cx: &mut Cx<QuickState>) -> El {
+fn view(q: &QuickState, cx: &mut Cx<QuickState>) -> El {
+    // Held for one commit only, so set on every run (as `look::apply_motion`).
+    let reduced = q.reduce.unwrap_or_else(|| cx.system_reduced_motion());
+    cx.reduced_motion(reduced);
     let p = &q.palette;
     let input = ui::grow_box(
         ui::plain_area(&q.input, 16., PLACEHOLDER, p)
             .on_edit(|q: &mut QuickState| &mut q.input)
             .on_submit(submit),
+        ui::plain_area_line(16.),
         1,
         4,
     );
@@ -342,7 +388,11 @@ fn view(q: &QuickState, _cx: &mut Cx<QuickState>) -> El {
         .h_full()
         .padding(8.)
         .fill(Color::TRANSPARENT)
-        .child(ui::floating(p, card, 16.))
+        .child(
+            ui::floating(p, card, 16.)
+                .key(format!("quick-card-{}", q.opens))
+                .transition(card_entrance()),
+        )
 }
 
 /// The card's column: the field, then the hint row with the voice controls.
@@ -411,6 +461,22 @@ mod tests {
 
     fn unreachable_main() -> State {
         unreachable!("tests build their own state")
+    }
+
+    /// The quick window follows the Reduce Motion preference, else the
+    /// system setting.
+    #[test]
+    fn the_quick_window_reduces_motion_as_the_main_window_does() {
+        let mut s = state();
+        s.prefs.reduce_motion = "on".into();
+        assert_eq!(reduce_motion(&s), Some(true));
+        s.prefs.reduce_motion = "off".into();
+        assert_eq!(reduce_motion(&s), Some(false));
+        s.prefs.reduce_motion = "system".into();
+        assert_eq!(reduce_motion(&s), None, "the system decides");
+        // The saver rests the main window; the panel opens over other apps.
+        s.look.battery.set_active(false);
+        assert_eq!(reduce_motion(&s), None);
     }
 
     #[test]

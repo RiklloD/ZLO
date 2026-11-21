@@ -156,6 +156,7 @@ pub(crate) fn column(
             row()
                 .key("reconnect-banner")
                 .w_full()
+                .transition(banner())
                 .px(16.)
                 .py(4.)
                 .fill(p.warning)
@@ -174,6 +175,7 @@ pub(crate) fn column(
             col()
                 .key("agent-requests")
                 .w_full()
+                .transition(banner())
                 .px(16.)
                 .pt(8.)
                 .gap(8.)
@@ -204,15 +206,19 @@ pub(crate) fn column(
         main = main.child(screen);
     }
     if let Some(error) = &chat.error {
-        main = main.child(centered(
-            s,
-            text(error.clone())
-                .key("chat-error")
-                .font(flow::type_at(s, 13., 19., 400.))
-                .color(p.danger)
-                .wrap()
-                .selectable(true),
-        ));
+        main = main.child(
+            centered(
+                s,
+                text(error.clone())
+                    .key("chat-error-text")
+                    .font(flow::type_at(s, 13., 19., 400.))
+                    .color(p.danger)
+                    .wrap()
+                    .selectable(true),
+            )
+            .key("chat-error")
+            .transition(banner()),
+        );
     }
     // The orchestration panel centres itself and puts the plan first.
     let plan = super::plan_strip::view(s, chat);
@@ -258,6 +264,15 @@ pub(crate) fn column(
     )
 }
 
+/// A strip over or under the transcript (the reconnect banner, the agent's
+/// requests, an error): it wipes open from its top edge as it fades in.
+/// Rune plays it only in a commit an input caused; one a stream or a poll
+/// brought lands at once, so a streaming transcript never reflows on a
+/// spring under a banner nobody asked for.
+fn banner() -> rune::Transition {
+    rune::Transition::reveal(rune::Edge::Top).combined(rune::Transition::opacity())
+}
+
 /// `body` in the reading column, centered in the chat.
 fn centered(s: &State, body: El) -> El {
     row()
@@ -280,7 +295,7 @@ fn jump_button(s: &State, chat: &ChatState) -> El {
     let p = &s.palette;
     let id = chat.thread_id.clone();
     let mut pill = row()
-        .key("jump-latest")
+        .key("jump-pill")
         .role("button")
         .label("Jump to latest")
         .h(28.)
@@ -293,7 +308,7 @@ fn jump_button(s: &State, chat: &ChatState) -> El {
         .shadow(4., 12., rune::Color::BLACK.alpha(0.2))
         .hover(p.hover)
         .cursor(rune::Cursor::Pointer)
-        .transition(flow::rise(6.))
+        .press_scale(0.96)
         .child(icon(&icons::CHEVRON_DOWN, 13.).color(p.text_muted));
     if let Some(summary) = super::orchestration::tail_summary(s, &chat.thread_id) {
         pill = pill.child(
@@ -302,9 +317,14 @@ fn jump_button(s: &State, chat: &ChatState) -> El {
                 .color(p.text_muted),
         );
     }
+    // The keyed, pinned strip is what enters and leaves: the pill rises in
+    // from just below and drops away again, and it keeps its identity while
+    // the outline rail beside it comes and goes.
     row()
+        .key("jump-latest")
         .pin(Some(0.), None, Some(0.), Some(12.))
         .justify_center()
+        .transition(crate::design::motion::pop(8.))
         .child(pill.on_press_tx(move |s: &mut State, tx| {
             if let Some(c) = chat_for(s, &id) {
                 c.far_from_bottom = false;

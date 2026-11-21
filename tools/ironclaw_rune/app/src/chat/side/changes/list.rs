@@ -2,12 +2,14 @@
 //! staged and unstaged files, each with its actions. A row scrolls the diff
 //! to its file.
 
-use rune::{El, GrowthSpec, ScrollSpec, col, el, icon, row};
+use rune::{El, GrowthSpec, ScrollSpec, col, el, row};
 use rune_kit::Kit;
 
 use super::super::ui::{self, xs};
 use super::{ChangesState, change as git_change, confirmed, jump};
 use crate::chat::side::git;
+use crate::design::kit::{self, Turn};
+use crate::design::motion;
 use crate::icons;
 use crate::state::State;
 use zlo_client::repo_calls::ThreadGitAction;
@@ -126,27 +128,28 @@ fn change_row(
         } else {
             let stage_path = path.clone();
             row()
-                .child(
-                    ui::ibtn(
-                        if armed {
-                            &icons::TRIANGLE_ALERT
-                        } else {
-                            &icons::UNDO_2
-                        },
-                        if armed {
-                            "Click again to discard"
-                        } else {
-                            "Discard changes"
-                        },
-                    )
-                    .label("Discard changes")
-                    .variant(if armed {
+                .child({
+                    // Arming morphs the undo glyph into the warning (each
+                    // pops), on a raised button: one glyph, not a swap.
+                    let variant = if armed {
                         rune_kit::IconButtonVariant::Neutral
                     } else {
                         rune_kit::IconButtonVariant::Ghost
-                    })
-                    .disabled(busy)
-                    .on_press(move |s: &mut State| {
+                    };
+                    let ink = kit::icon_ink(k, variant);
+                    let (glyph, part) = if armed {
+                        (&icons::TRIANGLE_ALERT, "armed")
+                    } else {
+                        (&icons::UNDO_2, "undo")
+                    };
+                    let mark = el().size(16., 16.).a11y_hidden().child(
+                        rune::icon(glyph, 16.)
+                            .key(part)
+                            .color(ink)
+                            .absolute(0., 0.)
+                            .transition(motion::glyph_pop()),
+                    );
+                    let on_press = move |s: &mut State, _: &mut rune::Tx| {
                         if !confirmed(s, &discard_key) {
                             return;
                         }
@@ -157,10 +160,25 @@ fn change_row(
                         git_change(s, "discard", remote, move |repo| {
                             git::discard(repo, &one).map(|()| None)
                         })
-                    })
-                    .build(k)
-                    .key(format!("discard-{}", change.path)),
-                )
+                    };
+                    let tip = if armed {
+                        "Click again to discard"
+                    } else {
+                        "Discard changes"
+                    };
+                    let key = format!("discard-{}", change.path);
+                    if busy {
+                        // Kit's own disabled look while a git action runs.
+                        ui::ibtn(glyph, tip)
+                            .variant(variant)
+                            .disabled(true)
+                            .build(k)
+                            .key(key)
+                    } else {
+                        kit::glyph_button(k, &key, variant, tip, mark, on_press)
+                            .label("Discard changes")
+                    }
+                })
                 .child(
                     ui::ibtn(&icons::PLUS, "Stage")
                         .disabled(busy)
@@ -212,17 +230,14 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
         .gap(4.)
         .items_center()
         .cursor(rune::Cursor::Pointer)
-        .child(
-            icon(
-                if hidden {
-                    &icons::CHEVRON_RIGHT
-                } else {
-                    &icons::CHEVRON_DOWN
-                },
-                12.,
-            )
-            .color(p.text_muted),
-        )
+        .press_scale(motion::PRESS_CARD)
+        .child(kit::chevron(
+            "changes-list-chevron",
+            !hidden,
+            Turn::Disclose,
+            12.,
+            p.text_muted,
+        ))
         .child(ui::line(
             format!("{count} changed file{}", if count == 1 { "" } else { "s" }),
             xs(),
@@ -267,7 +282,6 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
             .scroll(ScrollSpec {
                 stick_bottom: false,
             })
-            .key("changes-list")
             .child(
                 col()
                     .key("changes-rows")

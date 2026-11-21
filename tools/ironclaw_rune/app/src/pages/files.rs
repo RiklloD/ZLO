@@ -9,6 +9,7 @@ use zlo_client::workspace_views::{FsMount, ProjectFsEntry, ProjectFsEntryKind, R
 use super::common::{
     SM, XL, XS, choice, empty_state, error_line, font, glyph, label, refresh_button,
 };
+use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -79,16 +80,25 @@ pub fn opened(s: &mut State) {
 }
 
 pub fn refresh(s: &mut State) {
+    load(s, false);
+}
+
+/// List the folder; `shown` when the person opened it (a folder, a crumb,
+/// a mount), so the new listing lands with motion.
+fn load(s: &mut State, shown: bool) {
     let (mount, path) = (s.pages.files.mount, s.pages.files.path.clone());
     let asked = path.clone();
     jobs::run(
         s,
         "files",
         move |c| async move { c.fs_list(mount, &path).await },
-        move |s, result, _| {
+        move |s, result, tx| {
             // A slow answer for a folder the person already left is dropped.
             if s.pages.files.mount != mount || s.pages.files.path != asked {
                 return;
+            }
+            if shown {
+                tx.animated();
             }
             match result {
                 Ok(mut listing) => {
@@ -125,7 +135,7 @@ fn navigate(s: &mut State, mount: FsMount, path: String) {
     this.path = path;
     this.selected = None;
     this.preview = None;
-    refresh(s);
+    load(s, true);
 }
 
 fn select(s: &mut State, entry: &ProjectFsEntry) {
@@ -143,10 +153,13 @@ fn select(s: &mut State, entry: &ProjectFsEntry) {
         s,
         "files",
         move |c| async move { c.fs_preview(mount, &path).await },
-        move |s, result, _| {
+        move |s, result, tx| {
             // Ignore a slow answer for a file the person already left.
             let this = &mut s.pages.files;
             if this.selected.as_deref() == Some(requested.as_str()) {
+                // The file the person clicked: its preview fades in over
+                // the spinner.
+                tx.animated();
                 this.preview = Some(result.map_err(|e| e.to_string()));
             }
         },
@@ -191,6 +204,8 @@ fn render_crumbs(s: &State) -> El {
                 crumb
                     .cursor(Cursor::Pointer)
                     .hover(p.hover)
+                    .hover_motion(motion::HOVER, motion::HOVER)
+                    .press_scale(motion::PRESS)
                     .on_press(move |s: &mut State| navigate(s, mount, path.clone()))
                     .child(label(name, XS, 400., p.text_muted))
             };
@@ -205,6 +220,9 @@ fn render_crumbs(s: &State) -> El {
 fn render_list(s: &State) -> El {
     let p = &s.palette;
     let this = &s.pages.files;
+    // Each row is as tall as its padded line (the 16 pt icon or the name's
+    // line, whichever is taller), so the selection pill knows where it sits.
+    let row_h = super::memory::line_of(font(SM, 400.)).max(16.) + 8.;
     let rows = this.entries.iter().map(|entry| {
         let dir = is_dir(entry);
         let selected = this.selected.as_deref() == Some(entry.path.as_str());
@@ -214,12 +232,13 @@ fn render_list(s: &State) -> El {
             .key(format!("entry-{}", entry.path))
             .role("button")
             .label(name.clone())
+            .h(row_h)
             .gap(8.)
             .px(8.)
-            .py(4.)
             .radius(crate::design::CONTROL_RADIUS)
             .center_y()
             .cursor(Cursor::Pointer)
+            .press_scale(motion::PRESS_CARD)
             .on_press(move |s: &mut State| select(s, &pick))
             .child(glyph(
                 if dir { &icons::FOLDER } else { &icons::FILE },
@@ -227,16 +246,27 @@ fn render_list(s: &State) -> El {
                 p.text_muted,
             ))
             .child(label(name, SM, 400., p.text).truncate().grow(1.0).min_w(0.));
-        r = if selected {
-            r.fill(p.active)
-        } else {
-            r.hover(p.hover)
-        };
+        // The selected row's fill is the pill under it.
+        if !selected {
+            r = r.hover(p.hover).hover_motion(motion::HOVER, motion::HOVER);
+        }
         r
     });
-    let mut list = col().w_full().padding(8.).gap(2.);
+    // One pill behind the rows glides from file to file.
+    let at = this
+        .selected
+        .as_deref()
+        .and_then(|sel| this.entries.iter().position(|e| e.path == sel));
+    let pill = super::memory::list_pill(
+        p,
+        "file-pill",
+        at.map(|ix| ix as f32 * (row_h + 2.)),
+        row_h,
+        crate::design::CONTROL_RADIUS,
+    );
+    let mut list = col().w_full().padding(8.);
     if this.loaded && this.entries.is_empty() && this.error.is_none() {
-        list = list.child(empty_state(p, "This folder is empty."));
+        list = list.child(empty_state(p, "This folder is empty.").key("files-none"));
     }
     col()
         .key("file-list")
@@ -247,7 +277,16 @@ fn render_list(s: &State) -> El {
             stick_bottom: false,
         })
         .key("file-list")
-        .child(list.children(rows))
+        .child(
+            list.child(
+                col()
+                    .key("entries")
+                    .w_full()
+                    .gap(2.)
+                    .children(pill)
+                    .children(rows),
+            ),
+        )
 }
 
 fn render_preview(s: &State, k: &Kit) -> El {
@@ -258,6 +297,13 @@ fn render_preview(s: &State, k: &Kit) -> El {
             .grow(1.0)
             .min_w(0.)
             .child(empty_state(p, "Select a file to preview it."));
+    };
+    // Each kind of body is its own element, so the spinner fades out as
+    // the preview fades in.
+    let part = match &this.preview {
+        None => "preview-loading",
+        Some(Err(_)) => "preview-error",
+        Some(Ok(_)) => "preview-body",
     };
     let body: El = match &this.preview {
         None => row()
@@ -320,7 +366,8 @@ fn render_preview(s: &State, k: &Kit) -> El {
                 .padding(16.)
                 .gap(12.)
                 .child(label(path.clone(), SM, 600., p.text).truncate())
-                .child(body),
+                // The spinner gives way to the preview with a fade.
+                .child(body.key(part).transition(motion::fade())),
         )
 }
 
@@ -354,9 +401,14 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     let this = &s.pages.files;
     let tabs = row().gap(4.).children(this.mounts.iter().map(|m| {
         let mount = m.mount;
+        // The picked plate fades across to the new mount (kit buttons
+        // size to their labels, so a pill would have to guess the track).
         choice(&m.label, mount == this.mount)
             .on_press(move |s: &mut State| navigate(s, mount, String::new()))
             .build(k)
+            .key(format!("mount-{}", m.label))
+            .motion(motion::SLIDE)
+            .press_scale(motion::PRESS)
     }));
     let mut top = col()
         .key("files-top")
@@ -381,7 +433,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         )
         .child(render_crumbs(s));
     if let Some(e) = &this.error {
-        top = top.child(error_line(p, e));
+        top = top.child(error_line(p, e).key("files-error"));
     }
     col()
         .key("files-page")

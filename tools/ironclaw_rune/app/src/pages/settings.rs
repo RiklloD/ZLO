@@ -6,6 +6,8 @@
 
 mod appearance;
 mod compaction;
+#[cfg(test)]
+mod motion_tests;
 pub mod session_import;
 mod snapshots;
 mod tools;
@@ -13,15 +15,16 @@ mod traces;
 
 use std::collections::HashSet;
 
-use rune::{Cx, El, TextEdit, col};
-use rune_kit::Kit;
+use rune::{Color, Cx, El, TextEdit, col};
+use rune_kit::{Kit, RollingText};
 use zlo_client::product_wire::SettingsToolPermissionState;
 use zlo_client::wire::ToolPermission;
 
 use super::common::{
-    Btn, button_xs, error_line, group_header, header, notice_line, page_body, refresh_button,
+    Btn, button_xs, error_line, font, group_header, header, notice_line, page_body, refresh_button,
     rows_card, segmented, setting_row, switch,
 };
+use crate::design::motion;
 use crate::jobs;
 use crate::state::{Page, State};
 
@@ -74,6 +77,19 @@ pub struct SettingsState {
     pub appearance_menu: Option<&'static str>,
 }
 
+/// A count the person's own action changes ("3 changed"), rolling to its
+/// new figure (`RollingText` on [`motion::ROLL`]; `value` sets the
+/// direction). `key` must be unique on the page: the label remembers its
+/// last text by it.
+fn roll(k: &Kit, key: String, text: String, value: f64, size: f32, color: Color) -> El {
+    RollingText::new(key, text)
+        .font(font(size, 400.))
+        .color(color)
+        .value(value)
+        .spring(motion::ROLL)
+        .build(k)
+}
+
 /// The page became visible: load on first visit, refresh after.
 pub fn opened(s: &mut State) {
     refresh(s);
@@ -117,16 +133,21 @@ fn set_auto_approve(s: &mut State, enabled: bool) {
         s,
         "settings",
         move |c| async move { c.set_auto_approve(enabled).await },
-        |s, result, _| match result {
+        |s, result, tx| match result {
             // Show the stored value the gateway read back, not the click.
             Ok(resp) => {
+                // The reply to the person's flip: the switch and its line move.
+                tx.animated();
                 s.pages.settings.auto_approve = resp.entry.value.as_bool();
                 s.pages.settings.error = None;
                 crate::chat::approval_mode_changed(s);
                 // Tools without their own setting follow the switch.
                 refresh(s);
             }
-            Err(e) => s.pages.settings.error = Some(e.to_string()),
+            Err(e) => {
+                tx.animated();
+                s.pages.settings.error = Some(e.to_string());
+            }
         },
     );
 }
@@ -137,7 +158,10 @@ fn set_tool(s: &mut State, id: String, state: SettingsToolPermissionState) {
         s,
         "settings",
         move |c| async move { c.set_tool_permission(&job_id, state).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's pick: the card's edge and the
+            // changed counts move to the stored value.
+            tx.animated();
             let this = &mut s.pages.settings;
             match result {
                 Ok(resp) => {
@@ -273,10 +297,10 @@ pub fn view(s: &State, page: Page, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec
         .w_full()
         .child(header(p, title, refresh_button(k, refresh)));
     if let Some(e) = &this.error {
-        body = body.child(error_line(p, e));
+        body = body.child(error_line(p, e).key("settings-error"));
     }
     if let Some(n) = &this.notice {
-        body = body.child(notice_line(n, p.success));
+        body = body.child(notice_line(n, p.success).key("settings-notice"));
     }
     let body = match section {
         Section::General => body

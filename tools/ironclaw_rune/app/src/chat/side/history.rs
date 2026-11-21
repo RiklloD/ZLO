@@ -5,12 +5,16 @@
 
 use rune::shape::{LineCap, Shape};
 use rune::{Color, El, canvas, col, el, row};
-use rune_kit::Kit;
 use rune_kit::diff::{DiffMode, DiffState, DiffView};
+use rune_kit::{IconButtonVariant, Kit};
 
+use super::busy;
+use super::drill::{self, Level};
+use super::flash;
 use super::ui::{self, sm_med, tiny, xs};
 use super::{SideState, Tab, git, remote_repo, side, side_mut, side_of, thread_id};
 use crate::design::Palette;
+use crate::design::{kit, motion};
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -215,11 +219,17 @@ fn open(s: &mut State, commit: git::Commit) {
             let message = git::message(&repo, &sha).ok();
             (message, git::show(&repo, &sha), sha)
         },
-        move |s, (message, patch, sha), _| {
+        move |s, (message, patch, sha), tx| {
+            let shown = shows_detail(s, &thread);
             let Some(x) = side_of(s, &thread) else { return };
             let Some(detail) = x.history.open.as_mut().filter(|d| d.commit.sha == sha) else {
                 return;
             };
+            // The commit the person just opened: its diff fades in over
+            // the spinner (a job's commit would land at once).
+            if shown {
+                tx.animated();
+            }
             detail.message = message;
             match patch {
                 Ok(patch) => {
@@ -231,6 +241,11 @@ fn open(s: &mut State, commit: git::Commit) {
             }
         },
     );
+}
+
+/// The History tab shows `thread`'s commit detail on screen.
+fn shows_detail(s: &State, thread: &str) -> bool {
+    thread_id(s).as_deref() == Some(thread) && super::tab_shown(s, Tab::History)
 }
 
 fn detail_diff(s: &State) -> &DiffState {
@@ -257,9 +272,14 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     if x.repo.is_none() && !remote_repo::remote(s) {
         return ui::empty(s, "This folder is not a git repository.");
     }
-    if let Some(detail) = x.history.open.as_ref() {
-        return commit_view(s, k, detail);
+    match x.history.open.as_ref() {
+        Some(detail) => drill::level("history", Level::Detail, commit_view(s, k, detail)),
+        None => drill::level("history", Level::List, list_view(s, k, x)),
     }
+}
+
+/// The log, or its loading / error / empty line.
+fn list_view(s: &State, k: &Kit, x: &SideState) -> El {
     let commits = match &x.history.commits {
         None => return ui::loading(k),
         Some(Err(e)) => return ui::error_line(s, e.clone()),
@@ -284,14 +304,15 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
 }
 
 /// The History tab's refresh button, for the dock's title row.
-pub(super) fn actions(k: &Kit) -> Vec<El> {
-    vec![
-        ui::ibtn(&icons::REFRESH_CW, "Refresh")
-            .label("Refresh history")
-            .on_press(refresh)
-            .build(k)
-            .key("history-refresh"),
-    ]
+pub(super) fn actions(s: &State, k: &Kit) -> Vec<El> {
+    let loading = side(s).is_some_and(|x| x.history.loading);
+    vec![busy::refresh(
+        k,
+        "history-refresh",
+        "Refresh history",
+        loading,
+        refresh,
+    )]
 }
 
 /// The loaded commits, when there are any.
@@ -337,6 +358,8 @@ fn commit_row(s: &State, i: usize, graph_w: f32) -> El {
         .gap(4.)
         .items_center()
         .hover(p.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
         .cursor(rune::Cursor::Pointer)
         .child(graph_cell(row_, graph_w, p))
         .child(
@@ -413,12 +436,21 @@ fn commit_view(s: &State, k: &Kit, detail: &Detail) -> El {
                         .grow(1.)
                         .min_w(0.),
                 )
-                .child(
-                    ui::ibtn(&icons::COPY, "Copy commit id")
-                        .on_press_tx(move |_: &mut State, tx| tx.copy(sha.clone()))
-                        .build(k)
-                        .key("commit-copy"),
-                ),
+                .child({
+                    let ink = kit::icon_ink(k, IconButtonVariant::GhostMuted);
+                    let copied = flash::shows(s, "commit-copy");
+                    kit::glyph_button(
+                        k,
+                        "commit-copy",
+                        IconButtonVariant::GhostMuted,
+                        if copied { "Copied" } else { "Copy commit id" },
+                        kit::copy_glyph("glyph", copied, 16., ink),
+                        move |s: &mut State, tx| {
+                            tx.copy(sha.clone());
+                            flash::flash(s, "commit-copy", tx);
+                        },
+                    )
+                }),
         )
         .child(el().w_full().h(1.).fill(p.border))
         .child(info)
@@ -490,11 +522,15 @@ fn remote_open(s: &mut State, commit: git::Commit) {
         s,
         "history",
         move |c| async move { c.thread_git_commit(&asked, &sha).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            let shown = shows_detail(s, &thread);
             let Some(x) = side_of(s, &thread) else { return };
             let Some(detail) = x.history.open.as_mut() else {
                 return;
             };
+            if shown {
+                tx.animated();
+            }
             match result {
                 Ok(view) if view.sha == detail.commit.sha => {
                     detail.message = Some(view.message);

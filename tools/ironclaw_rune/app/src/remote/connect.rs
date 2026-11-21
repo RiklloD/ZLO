@@ -489,7 +489,7 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
     s.remote.page.pending_backend = Some((generation, backend.clone()));
     backend.spawn(move |_| async move {
         let result = crate::jobs::flatten(job.await);
-        handle.update(move |s, _| {
+        handle.update(move |s, tx| {
             if s.fixture {
                 return;
             }
@@ -508,9 +508,19 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
                 Ok((session, inbox)) => {
                     s.remote.tunnel = tunnel;
                     s.remote.route_rank = route_rank;
-                    switched(s, mode, backend, computer, descriptor, session, inbox)
+                    switched(s, mode, backend, computer, descriptor, session, inbox, tx)
                 }
-                Err(e) => failed(s, mode, problem_of(&computer, &e)),
+                Err(e) => {
+                    // The launch screen giving way to the failure is the
+                    // answer the person is waiting on: it crossfades (a
+                    // reply lands at once otherwise). A retry that fails
+                    // again leaves the screen as it was.
+                    let before = std::mem::discriminant(&s.conn);
+                    failed(s, mode, problem_of(&computer, &e));
+                    if std::mem::discriminant(&s.conn) != before {
+                        tx.animated();
+                    }
+                }
             }
         });
     });
@@ -564,7 +574,9 @@ fn problem_of(computer: &Computer, e: &ClientError) -> Problem {
 }
 
 /// The new computer answered: everything of the old one goes, and the app
-/// reloads on the new one.
+/// reloads on the new one. `tx` is the reply's commit, which
+/// `workspace::connected` animates when it replaces the launch screen.
+#[allow(clippy::too_many_arguments)]
 fn switched(
     s: &mut State,
     mode: Mode,
@@ -573,6 +585,7 @@ fn switched(
     descriptor: Option<EnvironmentDescriptor>,
     session: SessionInfo,
     inbox: InboxList,
+    tx: &mut rune::Tx,
 ) {
     let old = s.onboarding.computer.key();
     let changed = old != computer.key() || mode == Mode::Switch;
@@ -616,7 +629,7 @@ fn switched(
     } else {
         s.remote.last_thread.get(&key).cloned()
     };
-    crate::workspace::connected(s, session, inbox, reopen);
+    crate::workspace::connected(s, session, inbox, reopen, tx);
     super::pairing::connected(s);
     super::linked::start_polling(s);
 }

@@ -21,6 +21,18 @@ pub(crate) struct RejectEditor {
     pub(crate) input: TextEdit,
 }
 
+#[cfg(test)]
+impl RejectEditor {
+    /// An open, empty field under `gate_ref`'s card.
+    pub(crate) fn new(gate_ref: String, run: String) -> Self {
+        Self {
+            gate_ref,
+            run,
+            input: TextEdit::new(""),
+        }
+    }
+}
+
 /// Open the feedback field under `gate_ref`'s card (one at a time).
 pub(crate) fn start_reject(s: &mut State, thread: &str, run: String, gate_ref: String) {
     let Some(c) = chat_for(s, thread) else { return };
@@ -69,6 +81,8 @@ fn submit_reject(s: &mut State, thread: &str, tx: &mut Tx) {
             if let Err(e) = result
                 && let Some(c) = chat_for(s, &thread_id)
             {
+                // The person's reject failed: the card comes back with motion.
+                tx.animated();
                 c.transcript.clear_gate_resolving(&gate_ref);
                 set_error(s, &thread_id, e.to_string());
                 super::refresh_rows(s, &thread_id, tx);

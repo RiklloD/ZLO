@@ -10,47 +10,65 @@ use rune_kit::{Kit, Select, SelectAppearance};
 
 use crate::design::look;
 use crate::design::prefs::Wallpaper;
-use crate::design::{Palette, rgb, themes};
+use crate::design::{Palette, motion, rgb, themes};
 use crate::icons;
 use crate::pages::common::{glyph, group_header, label, rows_card, setting_row, switch};
 use crate::state::State;
 
 const CARD_HEIGHT: f32 = 148.;
 const CARD_RADIUS: f32 = 6.;
+/// The gap between the scheme cards.
+const CARD_GAP: f32 = 16.;
+/// An accent swatch's size and the gap between swatches.
+const SWATCH: f32 = 30.;
+const SWATCH_GAP: f32 = 8.;
+
+/// The schemes in card order, with the pref value each sets.
+const SCHEMES: [&str; 3] = ["system", "light", "dark"];
 
 /// A small painting of the app in palette `p`: sidebar, a selected row, a
 /// message, some answer lines and the composer pill.
+///
+/// Every part is keyed, so a theme or accent pick (`motion::color_morph`)
+/// morphs each one to its new colour in place rather than the painting
+/// being rebuilt.
 fn preview(p: Palette) -> El {
-    let line = |w: f32, c: Color| el().h(4.).w(w).radius(2.).fill(c);
+    let line = |key: &'static str, w: f32, c: Color| el().key(key).h(4.).w(w).radius(2.).fill(c);
     row()
+        .key("preview")
         .w_full()
         .h_full()
         .fill(p.surface)
         .child(
             col()
+                .key("preview-sidebar")
                 .w(54.)
                 .h_full()
                 .padding(7.)
                 .gap(6.)
-                .child(
-                    row().gap(3.).pb(2.).children(
-                        [0xff5f57u32, 0xfebc2e, 0x28c840]
-                            .map(|c| el().size(5., 5.).radius(2.5).fill(rgb(c))),
-                    ),
-                )
-                .child(line(30., p.text_faint))
+                .child(row().key("lights").gap(3.).pb(2.).children(
+                    [0xff5f57u32, 0xfebc2e, 0x28c840].map(|c| {
+                        el().key(format!("light-{c:x}"))
+                            .size(5., 5.)
+                            .radius(2.5)
+                            .fill(rgb(c))
+                    }),
+                ))
+                .child(line("side-1", 30., p.text_faint))
                 .child(
                     row()
+                        .key("side-active")
                         .padding(3.)
                         .radius(4.)
                         .fill(p.active)
-                        .child(line(28., p.text)),
+                        .child(line("side-active-line", 28., p.text)),
                 )
-                .child(line(24., p.text_faint))
-                .child(line(32., p.text_faint)),
+                .child(line("side-2", 24., p.text_faint))
+                .child(line("side-3", 32., p.text_faint)),
         )
         .child(
             col()
+                .key("preview-chat")
                 .grow(1.0)
                 .min_w(0.)
                 .h_full()
@@ -61,35 +79,38 @@ fn preview(p: Palette) -> El {
                 .padding(8.)
                 .gap(6.)
                 .child(
-                    row().w_full().justify_end().child(
+                    row().key("message").w_full().justify_end().child(
                         row()
+                            .key("bubble")
                             .px(6.)
                             .py(4.)
                             .radius(6.)
                             .fill(p.text.alpha(0.08))
-                            .child(line(40., p.text_muted)),
+                            .child(line("bubble-line", 40., p.text_muted)),
                     ),
                 )
-                .child(line(90., p.text_muted))
-                .child(line(70., p.text_muted))
-                .child(line(46., p.accent))
-                .child(el().grow(1.0))
+                .child(line("answer-1", 90., p.text_muted))
+                .child(line("answer-2", 70., p.text_muted))
+                .child(line("answer-accent", 46., p.accent))
+                .child(el().key("answer-gap").grow(1.0))
                 .child(
                     row()
+                        .key("composer")
                         .h(18.)
                         .px(6.)
                         .center_y()
                         .radius(8.)
                         .border(1., p.border_strong)
-                        .child(line(36., p.text_faint))
-                        .child(el().grow(1.0))
-                        .child(el().size(10., 10.).radius(5.).fill(p.text)),
+                        .child(line("composer-line", 36., p.text_faint))
+                        .child(el().key("composer-gap").grow(1.0))
+                        .child(el().key("send").size(10., 10.).radius(5.).fill(p.text)),
                 ),
         )
 }
 
 /// Zeron's option card: the preview is the control, a quiet accent edge
-/// marks the choice and the caption sits underneath.
+/// marks the choice and the caption sits underneath. The edge is drawn by
+/// [`scheme_ring`], one ring that glides between the cards.
 fn option_card(
     p: &Palette,
     id: &'static str,
@@ -97,7 +118,7 @@ fn option_card(
     caption: &'static str,
     selected: bool,
     body: El,
-    on_press: impl Fn(&mut State) + 'static,
+    on_press: impl Fn(&mut State, &mut Tx) + 'static,
 ) -> El {
     let ink = if selected { p.accent } else { p.text_muted };
     col()
@@ -111,7 +132,8 @@ fn option_card(
         .items_center()
         .gap(8.)
         .cursor(Cursor::Pointer)
-        .on_press(on_press)
+        .on_press_tx(on_press)
+        .press_scale(motion::PRESS_CARD)
         .child(
             col()
                 .key("card")
@@ -119,7 +141,7 @@ fn option_card(
                 .w_full()
                 .radius(CARD_RADIUS)
                 .clip_rounded(CARD_RADIUS)
-                .border(1., if selected { p.accent } else { p.border })
+                .border(1., p.border)
                 .child(body),
         )
         .child(
@@ -171,7 +193,8 @@ fn select(
 }
 
 /// Switch preset: the light or dark slot, by the theme's own brightness.
-fn set_theme(s: &mut State, id: &str, _: &mut Tx) {
+fn set_theme(s: &mut State, id: &str, tx: &mut Tx) {
+    motion::color_morph(tx);
     let id = id.to_string();
     let light = themes::find(&id).is_light();
     s.update_prefs(|p| {
@@ -205,11 +228,14 @@ fn accent_swatches(s: &State) -> El {
             .iter()
             .map(|(id, name, d, l)| (*id, *name, rgb(if light { *l } else { *d }))),
     );
-    row()
+    let picked = std::iter::once("")
+        .chain(themes::ACCENTS.iter().map(|(id, ..)| *id))
+        .position(|id| id == prefs.accent);
+    let swatches = row()
         .key("accents")
         .role("radiogroup")
         .label("Accent color")
-        .gap(8.)
+        .gap(SWATCH_GAP)
         .children(choices.map(|(id, name, color)| {
             let on = prefs.accent == id;
             let id_owned = id.to_string();
@@ -221,26 +247,75 @@ fn accent_swatches(s: &State) -> El {
             .checked(on)
             .label(name)
             .focusable(true)
-            .size(30., 30.)
-            .radius(15.)
+            .size(SWATCH, SWATCH)
+            .radius(SWATCH / 2.)
             .padding(3.)
-            .border(
-                2.,
-                if on {
-                    p.text.alpha(0.85)
-                } else {
-                    Color::TRANSPARENT
-                },
-            )
+            // The ring is `accent_ring`'s; the swatch keeps the room for it.
+            .border(2., Color::TRANSPARENT)
             .hover(p.text.alpha(0.06))
             .help(name)
             .cursor(Cursor::Pointer)
-            .on_press(move |s: &mut State| {
+            .press_scale(motion::PRESS)
+            .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+                motion::color_morph(tx);
                 let id = id_owned.clone();
                 s.update_prefs(|p| p.accent = id);
             })
             .child(el().w_full().h_full().radius(12.).fill(color))
-        }))
+        }));
+    match picked {
+        Some(ix) => swatches.child(accent_ring(p, ix)),
+        None => swatches,
+    }
+}
+
+/// The ring around the picked accent: one element that glides from swatch
+/// to swatch (`motion::PILL`) instead of the old ring vanishing and a new
+/// one appearing. Positioned from the swatches' fixed size, not `matched`,
+/// which would fly it above the open menus.
+fn accent_ring(p: &Palette, ix: usize) -> El {
+    el().key("accent-ring")
+        .absolute(ix as f32 * (SWATCH + SWATCH_GAP), 0.)
+        .size(SWATCH, SWATCH)
+        .radius(SWATCH / 2.)
+        .border(2., p.text.alpha(0.85))
+        .inert()
+        .a11y_hidden()
+        .motion(motion::PILL)
+}
+
+/// The accent edge on the picked scheme card, gliding between the cards
+/// (`motion::PILL`). The cards share the row equally, `CARD_GAP` apart, so
+/// over a frame `CARD_GAP` wider than the row each card's slot is a third
+/// of it: the lead spacer's share sets where the ring sits.
+fn scheme_ring(p: &Palette, ix: usize) -> El {
+    let third = 1. / SCHEMES.len() as f32;
+    row()
+        .key("scheme-ring-frame")
+        .pin(Some(0.), Some(0.), Some(-CARD_GAP), None)
+        .h(CARD_HEIGHT)
+        .inert()
+        .a11y_hidden()
+        .child(
+            el().key("scheme-ring-lead")
+                .h_full()
+                .w_frac(ix as f32 * third)
+                .motion(motion::PILL),
+        )
+        .child(
+            el().key("scheme-ring-slot")
+                .h_full()
+                .w_frac(third)
+                .pr(CARD_GAP)
+                .child(
+                    el().key("scheme-ring")
+                        .w_full()
+                        .h_full()
+                        .radius(CARD_RADIUS)
+                        .border(1., p.accent)
+                        .motion(motion::PILL),
+                ),
+        )
 }
 
 /// Ask for a picture (or a folder of them) and use it as the wallpaper.
@@ -254,15 +329,19 @@ fn pick_picture(folder: bool, tx: &mut Tx) {
         .into(),
         ..Default::default()
     };
-    let done = move |s: &mut State, result: rune::FileDialogResult, _: &mut Tx| match result {
-        Ok(Some(path)) => set_wallpaper(
-            s,
-            if folder {
-                Wallpaper::Folder { path }
-            } else {
-                Wallpaper::Image { path }
-            },
-        ),
+    let done = move |s: &mut State, result: rune::FileDialogResult, tx: &mut Tx| match result {
+        // The person's own pick: the old wallpaper fades out under the new.
+        Ok(Some(path)) => {
+            tx.animated();
+            set_wallpaper(
+                s,
+                if folder {
+                    Wallpaper::Folder { path }
+                } else {
+                    Wallpaper::Image { path }
+                },
+            )
+        }
         Ok(None) => {}
         Err(e) => tracing::warn!(error = %e, "wallpaper picker failed"),
     };
@@ -302,7 +381,10 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             caption,
             prefs.scheme == value,
             body,
-            move |s: &mut State| s.update_prefs(|p| p.scheme = value.into()),
+            move |s: &mut State, tx: &mut Tx| {
+                motion::color_morph(tx);
+                s.update_prefs(|p| p.scheme = value.into());
+            },
         )
     };
     let system_body = row()
@@ -322,13 +404,13 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
                 .clip_rounded(0.)
                 .child(preview(dark_palette)),
         );
-    let cards = row()
+    let mut cards = row()
         .key("scheme-cards")
         .role("radiogroup")
         .label("Color scheme")
         .w_full()
         .items_start()
-        .gap(16.)
+        .gap(CARD_GAP)
         .child(scheme(
             "scheme-system",
             "system",
@@ -350,6 +432,9 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             "Dark",
             preview(dark_palette),
         ));
+    if let Some(ix) = SCHEMES.iter().position(|v| *v == prefs.scheme) {
+        cards = cards.child(scheme_ring(p, ix));
+    }
 
     let themes_of = |light: bool| {
         themes::THEMES

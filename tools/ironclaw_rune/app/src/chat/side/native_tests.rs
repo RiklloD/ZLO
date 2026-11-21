@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use rune::{Env, Runtime};
 
 use super::{Dock, NATIVE_SETTLE, Tab, browser, side_mut};
-use crate::native_view::probe;
+use crate::native_view::{cover_hold_ends, end_cover_hold, probe};
 use crate::state::{Page, State};
 
 const FRAME: f64 = 1. / 60.;
@@ -75,7 +75,24 @@ fn an_overlay_hides_the_page_in_the_same_frame_and_closing_it_shows_it_again() {
     });
     assert!(!shown(&rt), "a dialog covers the window: the page hides");
     one_frame(&mut rt, |s| s.workspace.confirm_delete = None);
-    assert!(shown(&rt), "the dialog closed: the page is back");
+    assert!(
+        !shown(&rt),
+        "the dialog closed but still fades out where the page would draw over it"
+    );
+    // The hold ends on the wall clock: one wake, for that moment.
+    rt.frame(FRAME);
+    let end = cover_hold_ends(&rt.state).expect("held while the dialog leaves");
+    let p = probe(&rt.state);
+    assert_eq!(p.next_change, Some(end));
+    assert_eq!(p.wake_asked, Some(end), "one wake, for the hold's end");
+    end_cover_hold(&rt.state);
+    rt.frame(FRAME);
+    assert!(shown(&rt), "the dialog has gone: the page is back");
+    assert_eq!(
+        probe(&rt.state).next_change,
+        None,
+        "and nothing more to wake for"
+    );
 }
 
 #[test]
@@ -133,4 +150,47 @@ fn a_dock_that_just_opened_shows_its_page_once_the_slide_has_settled() {
 fn an_open_page_at_rest_asks_for_no_wake() {
     let rt = browsing();
     assert_eq!(probe(&rt.state).next_change, None);
+}
+
+/// The model picker is rune-kit's anchored popover, whose fade out runs on
+/// a slower spring than a dialog's: the page stays hidden until that fade
+/// has run its visible course, not only the dialog's.
+#[test]
+fn closing_the_model_picker_keeps_the_page_hidden_through_its_fade() {
+    let mut rt = browsing();
+    one_frame(&mut rt, |s| {
+        if let Some(c) = s.chat.as_mut() {
+            c.model_picker = crate::chat::model_picker::fixture();
+        }
+    });
+    assert!(shown(&rt), "the pill alone covers nothing");
+    one_frame(&mut rt, |s| {
+        if let Some(c) = s.chat.as_mut() {
+            c.model_picker.open = true;
+        }
+    });
+    assert!(!shown(&rt), "the picker covers the window: the page hides");
+    let closed = Instant::now();
+    one_frame(&mut rt, |s| {
+        if let Some(c) = s.chat.as_mut() {
+            c.model_picker.open = false;
+        }
+    });
+    assert!(
+        !shown(&rt),
+        "the picker still fades where the page would be"
+    );
+    let end = cover_hold_ends(&rt.state).expect("held while the picker leaves");
+    // The popover's 0.25 s removal spring is still visibly drawn at 200 ms.
+    let fade = rune::Spring::new(0.25, 0.0);
+    let left = |t: Duration| fade.sample(1., 0., 0., t.as_secs_f32()).0;
+    assert!(left(Duration::from_millis(200)) > 0.02);
+    assert!(
+        end >= closed + Duration::from_millis(200),
+        "the hold outlasts the popover's visible fade"
+    );
+    assert!(left(end.saturating_duration_since(closed)) <= 0.02);
+    end_cover_hold(&rt.state);
+    rt.frame(FRAME);
+    assert!(shown(&rt), "the picker has gone: the page is back");
 }

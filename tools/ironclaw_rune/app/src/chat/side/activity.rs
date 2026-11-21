@@ -6,7 +6,8 @@
 
 use std::collections::HashSet;
 
-use crate::design::kit::Spinner;
+use crate::design::kit::{self, Spinner};
+use crate::design::motion;
 use rune::{El, col, el, icon, row};
 use rune_kit::Kit;
 use zlo_client::GateDecision;
@@ -38,6 +39,9 @@ impl ActivityState {
 
 /// One turn: its prompt and the steps under it.
 struct Turn<'a> {
+    /// The prompt row's key ("" for steps before any prompt): the turn's
+    /// identity, which a newer turn on top never shifts.
+    key: &'a str,
     prompt: &'a str,
     steps: Vec<&'a Row>,
 }
@@ -46,13 +50,15 @@ fn turns(rows: &[Row]) -> Vec<Turn<'_>> {
     let mut out: Vec<Turn> = Vec::new();
     for row in rows {
         match row {
-            Row::User { text, .. } => out.push(Turn {
+            Row::User { key, text, .. } => out.push(Turn {
+                key,
                 prompt: text,
                 steps: Vec::new(),
             }),
             Row::Tool { .. } | Row::Gate { .. } | Row::RunNotice { .. } | Row::Skills { .. } => {
                 if out.is_empty() {
                     out.push(Turn {
+                        key: "",
                         prompt: "",
                         steps: Vec::new(),
                     });
@@ -199,6 +205,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             0 => format!("{} steps", turn.steps.len()),
             n => format!("{} steps · {n} failed", turn.steps.len()),
         };
+        let key = if turn.key.is_empty() {
+            "activity-turn-earlier".to_string()
+        } else {
+            format!("activity-turn-{}", turn.key)
+        };
         let mut group = col().px(12.).pt(12.).gap(2.).child(
             row()
                 .gap(8.)
@@ -217,7 +228,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         for step in turn.steps {
             group = group.child(step_row(s, step));
         }
-        list = list.child(group.key(format!("activity-turn-{ix}")));
+        list = list.child(group.key(key));
     }
     if total > shown {
         list = list.child(
@@ -335,8 +346,10 @@ fn step_row(s: &State, row_: &Row) -> El {
             reason,
         } => {
             let mark = match status {
+                // Breathes at 15 fps (Rune's rotation loops draw at the
+                // display's rate, uncapped).
                 ToolStatus::Running => {
-                    mark(&icons::LOADER_CIRCLE, p.text_muted).looping(rune::LoopSpec::rotation(1.0))
+                    kit::busy_glyph("mark", &icons::LOADER_CIRCLE, true, 12., p.text_muted)
                 }
                 ToolStatus::Completed => mark(&icons::CHECK, p.success),
                 ToolStatus::Failed => mark(&icons::CIRCLE_X, p.danger),
@@ -360,7 +373,13 @@ fn step_row(s: &State, row_: &Row) -> El {
                 GateState::Closed(Some(_)) => (&icons::CIRCLE_CHECK, p.success, "Approved"),
                 GateState::Closed(None) => (&icons::CIRCLE_CHECK, p.text_faint, "Answered"),
             };
-            (key, mark(i, color), format!("{verb}: {headline}"), None)
+            let resolving = matches!(state, GateState::Resolving(_));
+            let mark = if resolving {
+                kit::busy_glyph("mark", i, true, 12., color)
+            } else {
+                mark(i, color)
+            };
+            (key, mark, format!("{verb}: {headline}"), None)
         }
         Row::RunNotice {
             key, text, failed, ..
@@ -396,6 +415,8 @@ fn step_row(s: &State, row_: &Row) -> El {
         let toggle_key = key.to_string();
         line = line
             .hover(p.hover)
+            .hover_motion(motion::HOVER, motion::HOVER)
+            .press_scale(motion::PRESS_CARD)
             .cursor(rune::Cursor::Pointer)
             .on_press(move |s: &mut State| {
                 if let Some(x) = side_mut(s)

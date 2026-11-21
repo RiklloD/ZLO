@@ -155,6 +155,9 @@ fn send(s: &mut State, key: MountKey, event: Option<(String, Value)>) {
     let asked = mount.asked.bump();
     mount.busy = true;
     let job_key = key.clone();
+    // A press's answer is the person's own: the tree's busy dim lifts and
+    // what changed moves. A first render or a re-render lands at once.
+    let pressed = event.is_some();
     jobs::run(
         s,
         "plugin ui",
@@ -177,13 +180,16 @@ fn send(s: &mut State, key: MountKey, event: Option<(String, Value)>) {
                 }
             }
         },
-        move |s, result, _| {
+        move |s, result, tx| {
             if s.plugins.slots_gen != slots_gen {
                 return;
             }
             let Some(mount) = s.plugins.mounts.get_mut(&key).filter(|m| m.asked == asked) else {
                 return;
             };
+            if pressed {
+                tx.animated();
+            }
             mount.busy = false;
             mount.view = Some(match result {
                 Ok(reply) => reply,

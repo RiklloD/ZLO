@@ -11,14 +11,27 @@
 //! composer's bottom row.
 
 use rune::{Color, Cursor, El, PointerPress, TextStyle, Tx, el, icon, row, text};
-use rune_kit::{Kit, MenuItem};
+use rune_kit::{Kit, MenuItem, RollingText};
 
+use super::level::{BARS, STEPS};
 use super::{Composer, Notice, Status};
-use crate::design::Palette;
+use crate::design::kit::loops::{BREATH_35, BREATH_45, breathe};
+use crate::design::{Palette, motion};
 use crate::icons;
 use crate::state::State;
 
 const PILL_TEXT: TextStyle = TextStyle::new(12., 400.);
+/// The waveform's bars: 1.5 pt wide, 1 pt apart, 2–12 pt tall.
+const BAR_W: f32 = 1.5;
+const BAR_GAP: f32 = 1.;
+const BAR_MIN: f32 = 2.;
+const BAR_MAX: f32 = 12.;
+/// Still poses, in height steps: what each state shows when nothing
+/// moves (reduced motion, the battery saver, a fixture), and the shapes
+/// the thinking and speaking loops brighten.
+const LISTENING_STILL: [u8; BARS] = [2, 5, 8, 5, 2];
+const THINKING: [u8; BARS] = [2, 3, 4, 3, 2];
+const SPEAKING: [u8; BARS] = [3, 6, 9, 6, 3];
 
 /// What a composer's controls show, read from the voice state. The quick
 /// composer draws in its own window with its own state type, so the main
@@ -32,6 +45,8 @@ pub struct Controls {
     talk: bool,
     tip: String,
     notice: Option<Notice>,
+    /// The live waveform (`VoiceState::bars`); `None` draws the still pose.
+    bars: Option<[u8; BARS]>,
 }
 
 impl Controls {
@@ -59,6 +74,7 @@ impl Controls {
             talk,
             tip,
             notice: s.voice.notice.clone(),
+            bars: s.voice.bars,
         }
     }
 
@@ -204,9 +220,9 @@ pub fn draw<S: 'static>(
     // Speaking shows everywhere (a reply read aloud has no composer); the
     // rest only on the composer voice is typing into.
     let pill = match c.status {
-        Status::Speaking => Some(status_pill(p, c.status, &on)),
+        Status::Speaking => Some(status_pill(p, c.status, c.bars, &on)),
         Status::Off | Status::Waiting => None,
-        _ if c.ours => Some(status_pill(p, c.status, &on)),
+        _ if c.ours => Some(status_pill(p, c.status, c.bars, &on)),
         _ => None,
     };
     let notice = c.notice.as_ref().map(|n| notice_pill(p, n, &on));
@@ -249,11 +265,18 @@ fn round_button(
         .cursor(Cursor::Pointer)
         .fill(fill)
         .hover(hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS)
         .child(icon(glyph, 14.).color(ink))
 }
 
-fn status_pill<S: 'static>(p: &Palette, status: Status, on: &impl Fn(Press) -> OnPress<S>) -> El {
-    let (label, dot) = match status {
+fn status_pill<S: 'static>(
+    p: &Palette,
+    status: Status,
+    bars: Option<[u8; BARS]>,
+    on: &impl Fn(Press) -> OnPress<S>,
+) -> El {
+    let (label, ink) = match status {
         Status::Dictating | Status::Listening => ("Listening", p.danger),
         Status::Thinking => ("Thinking…", p.warning),
         Status::Speaking => ("Speaking", p.accent),
@@ -270,6 +293,7 @@ fn status_pill<S: 'static>(p: &Palette, status: Status, on: &impl Fn(Press) -> O
         })
         .cursor(Cursor::Pointer)
         .px(2.)
+        .press_scale(motion::PRESS)
         .child(
             icon(
                 if speaking {
@@ -285,6 +309,13 @@ fn status_pill<S: 'static>(p: &Palette, status: Status, on: &impl Fn(Press) -> O
             let exit = on(Press::Exit { speaking });
             move |s: &mut S| exit(s)
         });
+    // State changes are events: the label rolls to its new words and the
+    // pill's width follows on the label's own spring.
+    let label = RollingText::new("voice-pill-label", label)
+        .font(PILL_TEXT)
+        .color(p.text)
+        .spring(motion::ROLL)
+        .build(&crate::design::kit(p));
     row()
         .key("voice-pill")
         .h(26.)
@@ -293,14 +324,54 @@ fn status_pill<S: 'static>(p: &Palette, status: Status, on: &impl Fn(Press) -> O
         .items_center()
         .radius(13.)
         .fill(p.hover)
-        .child(el().size(7., 7.).radius(3.5).fill(dot))
-        .child(text(label).font(PILL_TEXT).color(p.text))
+        .transition(motion::pop(6.))
+        .child(waveform(status, bars, ink))
+        .child(label)
         .child(close)
+}
+
+/// The pill's mini waveform, in the colour the dot had. Listening: the
+/// mic's level (`bars`, sampled at ~16 Hz), or a still pose. A sample's
+/// commit would spring the bars' heights on the layout spring, drawing at
+/// the display's rate between samples; `instant_changes` lands each one, so
+/// the bars step at the sample rate instead. Thinking: a low form breathing. Speaking:
+/// a brightness wave across the bars. Both loops are 15 fps `Cycle`s and
+/// hold still under reduced motion.
+fn waveform(status: Status, bars: Option<[u8; BARS]>, ink: Color) -> El {
+    let heights = match status {
+        Status::Thinking => THINKING,
+        Status::Speaking => SPEAKING,
+        _ => bars.unwrap_or(LISTENING_STILL),
+    };
+    let mut wave = row()
+        .key("voice-wave")
+        .h(BAR_MAX)
+        .gap(BAR_GAP)
+        .items_center()
+        .instant_changes()
+        .a11y_hidden();
+    for (i, steps) in heights.into_iter().enumerate() {
+        let h = BAR_MIN + (BAR_MAX - BAR_MIN) * f32::from(steps.min(STEPS)) / f32::from(STEPS);
+        let mut bar = el()
+            .key(format!("voice-bar-{i}"))
+            .size(BAR_W, h)
+            .radius(BAR_W / 2.)
+            .fill(ink);
+        bar = match status {
+            // Half a period in: the loops start lit, as their still pose is.
+            Status::Thinking => bar.cycle(breathe(1.6, 0.8, &BREATH_45)),
+            Status::Speaking => bar.cycle(breathe(1.0, 0.5 + i as f32 * 0.12, &BREATH_35)),
+            _ => bar,
+        };
+        wave = wave.child(bar);
+    }
+    wave
 }
 
 fn notice_pill<S: 'static>(p: &Palette, notice: &Notice, on: &impl Fn(Press) -> OnPress<S>) -> El {
     let mut pill = row()
         .key("voice-notice")
+        .transition(motion::pop(6.))
         .max_w(280.)
         .h(26.)
         .px(10.)
@@ -333,6 +404,7 @@ fn notice_pill<S: 'static>(p: &Palette, notice: &Notice, on: &impl Fn(Press) -> 
             .role("button")
             .label("Dismiss")
             .cursor(Cursor::Pointer)
+            .press_scale(motion::PRESS)
             .child(icon(&icons::CLOSE, 11.).color(p.text_muted))
             .on_press({
                 let dismiss = on(Press::DismissNotice);

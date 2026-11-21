@@ -197,7 +197,7 @@ fn render(s: &State, k: &Kit, opened: &Opened, key: &str) -> El {
     let p = &s.palette;
     let note = |content: String| ui::para(content, sm(), p.text_muted);
     match &opened.preview {
-        Preview::Loading => ui::loading(k),
+        Preview::Loading => ui::loading(k).key(format!("{key}-loading")),
         Preview::Failed(e) => ui::para(e.clone(), sm(), p.danger),
         Preview::TooLarge(size) => note(format!(
             "{} is too large to show here. Open it in its app.",
@@ -218,7 +218,7 @@ fn render(s: &State, k: &Kit, opened: &Opened, key: &str) -> El {
                 None => text.clone(),
                 Some(lang) => fenced(lang, text),
             };
-            let mut col = col().w_full().gap(8.).child(
+            let mut col = col().key(format!("{key}-text")).w_full().gap(8.).child(
                 Markdown::new(&source)
                     .selectable(true)
                     .build(k)
@@ -230,6 +230,17 @@ fn render(s: &State, k: &Kit, opened: &Opened, key: &str) -> El {
             col
         }
     }
+}
+
+/// Land a file's read `preview` in `opened`. The first read after the
+/// person opened it crossfades from the spinner (the read lands from a job,
+/// which Rune would apply at once); a rewrite of a file already shown
+/// swaps in place.
+pub(super) fn land(opened: &mut Opened, preview: Preview, tx: &mut rune::Tx) {
+    if matches!(opened.preview, Preview::Loading) {
+        tx.animated();
+    }
+    opened.preview = preview;
 }
 
 /// The body below the toolbar: a native view fills it edge to edge,

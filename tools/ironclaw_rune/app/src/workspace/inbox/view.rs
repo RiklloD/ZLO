@@ -4,7 +4,7 @@
 //! rows.
 
 use rune::{Color, Cx, El, col, el, row};
-use rune_kit::{ControlSize, Kit, Placement, TextInput};
+use rune_kit::{ControlSize, Kit, TextInput};
 use zlo_client::inbox::InboxState;
 use zlo_client::profiles::DEFAULT_PROFILE_ID;
 
@@ -33,7 +33,7 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
         let width = cx
             .window_layout_with("inbox-header", |r| r[2])
             .map_or(picker::WIDTH, |w| (w - 16.).max(picker::MIN_WIDTH));
-        layer.push(rune_kit::popover::anchored(
+        layer.push(picker::anchored(
             k,
             col()
                 .w(width)
@@ -43,7 +43,6 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
                 })
                 .child(picker::profile_picker(s, k)),
             "inbox-header",
-            Placement::Bottom,
             0.,
         ));
     }
@@ -218,6 +217,7 @@ fn filters(s: &State, k: &Kit) -> El {
         )]));
     }
     el().key("inbox-filters-panel")
+        .transition(rune::Transition::reveal(rune::Edge::Top))
         .min_w(0.0)
         .mx(8.)
         .mb(4.)
@@ -226,6 +226,7 @@ fn filters(s: &State, k: &Kit) -> El {
 
 pub(super) fn fold(
     p: &Palette,
+    k: &Kit,
     key: &'static str,
     label: &'static str,
     count: usize,
@@ -247,18 +248,24 @@ pub(super) fn fold(
             ui::side_tw(label, design::SIDEBAR_META_SIZE + 1., MEDIUM, p.text_muted)
                 .group_color(p.text),
         )
-        .child(ui::side_t(
-            count.to_string(),
-            design::SIDEBAR_META_SIZE + 1.,
-            p.text_faint,
-        ))
+        // The count rolls as a mark the person made moves a row in or out
+        // (those replies animate); a poll's change lands.
+        .child(
+            rune_kit::RollingText::new(format!("fold-{key}-count"), count.to_string())
+                .value(count as f64)
+                .font(ui::sidebar_style(
+                    design::SIDEBAR_META_SIZE + 1.,
+                    ui::REGULAR,
+                ))
+                .color(p.text_faint)
+                .spring(design::motion::ROLL)
+                .build(k),
+        )
         .child(el().grow(1.0))
-        .child(ui::glyph(
-            if open {
-                &icons::CHEVRON_DOWN
-            } else {
-                &icons::CHEVRON_RIGHT
-            },
+        .child(design::kit::chevron(
+            &format!("fold-{key}-chevron"),
+            open,
+            design::kit::Turn::Disclose,
             12.,
             p.text_faint,
         ))

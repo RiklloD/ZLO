@@ -167,8 +167,14 @@ fn breadcrumb(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut V
         .child(t(parent, 13., p.text_muted))
         .child(t("/", 13., p.text_faint))
         .child(
-            el().min_w(0.0)
-                .child(tw(leaf, 13., MEDIUM, p.text).truncate()),
+            // Keyed by its text: a new title the person caused (a thread
+            // switch, a page) crossfades in place instead of snapping.
+            el().min_w(0.0).child(
+                tw(leaf.clone(), 13., MEDIUM, p.text)
+                    .key(format!("breadcrumb-leaf-{leaf}"))
+                    .transition(rune::Transition::opacity())
+                    .truncate(),
+            ),
         );
     let mut bar = Toolbar::new().leading(crumbs);
     let actions = match s.page {

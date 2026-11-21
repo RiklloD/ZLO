@@ -43,17 +43,20 @@ pub(crate) fn with_actions(
     let thread = chat.thread_id.clone();
     let copy = {
         let (text, copy_key, thread) = (copy_text.to_string(), key.to_string(), thread.clone());
-        IconButton::new(if copied { &icons::CHECK } else { &icons::COPY })
-            .variant(IconButtonVariant::GhostMuted)
-            .control_size(ControlSize::Small)
-            .label("Copy message")
-            .help(if copied { "Copied" } else { "Copy" })
-            .on_press_tx(move |s: &mut State, tx| {
+        // The copy glyph pops into a check and back (`kit::copy_glyph`).
+        let ink = crate::design::kit::icon_ink(k, IconButtonVariant::GhostMuted);
+        crate::design::kit::glyph_button(
+            k,
+            &format!("{key}-copy"),
+            IconButtonVariant::GhostMuted,
+            if copied { "Copied" } else { "Copy" },
+            crate::design::kit::copy_glyph("copy-glyph", copied, 16., ink),
+            move |s: &mut State, tx| {
                 tx.copy(text.clone());
                 mark_copied(s, &thread, &copy_key, tx);
-            })
-            .build(k)
-            .key(format!("{key}-copy"))
+            },
+        )
+        .label("Copy message")
     };
     let mut bar = row().key(format!("{key}-bar")).h(22.).gap(2.).child(copy);
     if mine {
@@ -138,12 +141,26 @@ fn steer_marker(s: &State, key: &str, waiting: bool) -> El {
         )
 }
 
-/// Show the check, then one wake when it should turn back.
-fn mark_copied(s: &mut State, thread: &str, key: &str, tx: &mut Tx) {
+/// Show the check, then one timer when it should turn back. The revert is
+/// the result of the person's copy, so it pops back like the check came in
+/// (a timer's commit would otherwise land at once); a newer copy owns it.
+fn mark_copied(s: &mut State, thread: &str, key: &str, _tx: &mut Tx) {
+    let at = Instant::now();
     if let Some(c) = chat_for(s, thread) {
-        c.copied = Some((key.to_string(), Instant::now()));
+        c.copied = Some((key.to_string(), at));
     }
-    tx.wake_after(super::COPIED_FOR);
+    let thread = thread.to_string();
+    crate::jobs::after_if(s, super::COPIED_FOR, move |s, tx| {
+        let Some(c) = chat_for(s, &thread) else {
+            return false;
+        };
+        if c.copied.as_ref().is_none_or(|(_, t)| *t != at) {
+            return false;
+        }
+        c.copied = None;
+        tx.animated();
+        true
+    });
 }
 
 pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El {
@@ -207,8 +224,9 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
                     &icons::FILE,
                     &chip.filename,
                     sent_subtitle(chip),
+                    chat.downloading.contains(&chip.id),
                 );
-                files = files.child(openable(card, thread, chip));
+                files = files.child(openable(s, card, thread, chip));
             }
             out.child(files)
         }
@@ -303,11 +321,15 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
                 },
                 k,
             );
-            // An approval card with its "Reject with feedback…" field open.
-            match reject_feedback::render_reject_editor(chat, gate_ref, k) {
-                Some(editor) => col().w_full().child(card).child(editor),
-                None => card,
+            // An approval card, and under it its "Reject with feedback…"
+            // field while open. One keyed column either way: wrapping the
+            // card only while the field shows re-parented it, so the card
+            // entered again and the field's exit was cut.
+            let mut gate = col().key(format!("{key}-gatebox")).w_full().child(card);
+            if let Some(editor) = reject_feedback::render_reject_editor(chat, gate_ref, k) {
+                gate = gate.child(editor);
             }
+            gate
         }
         Row::RunNotice {
             key,
@@ -585,8 +607,9 @@ fn placed_body(
                     | MentionUri::Directory { path }
                     | MentionUri::Selection { path, .. } => {
                         let path = PathBuf::from(path);
-                        card.cursor(rune::Cursor::Pointer)
+                        pressable_card(s, card)
                             .on_press(move |s: &mut State| actions::open_backend_file(s, &path))
+                            .press_scale(crate::design::motion::PRESS_CARD)
                     }
                     _ => card,
                 };
@@ -620,7 +643,7 @@ fn placed_body(
                     &chip.filename,
                     line,
                 );
-                items.push(openable(card, thread, chip));
+                items.push(openable(s, card, thread, chip));
             }
         }
     }
@@ -636,12 +659,13 @@ fn placed_body(
 /// A sent file opens on click: the backend's copy from disk, or the upload
 /// fetched from the gateway (always, when the backend is remote: its copy
 /// is on that computer's disk, not this Mac's).
-fn openable(card: El, thread: &str, chip: &AttachmentChip) -> El {
+fn openable(s: &State, card: El, thread: &str, chip: &AttachmentChip) -> El {
     if chip.local_path.is_none() && chip.message_id.is_none() {
         return card;
     }
     let (chip, thread) = (chip.clone(), thread.to_string());
-    card.cursor(rune::Cursor::Pointer)
+    pressable_card(s, card)
+        .press_scale(crate::design::motion::PRESS_CARD)
         .on_press(move |s: &mut State| {
             let remote = crate::remote::backend_is_remote(s);
             match (&chip.local_path, &chip.message_id) {
@@ -651,6 +675,14 @@ fn openable(card: El, thread: &str, chip: &AttachmentChip) -> El {
                 (None, None) => {}
             }
         })
+}
+
+/// A file or mention card that opens on click: a pointer, and a wash one
+/// step stronger under it that fades in and out.
+fn pressable_card(s: &State, card: El) -> El {
+    card.cursor(rune::Cursor::Pointer)
+        .hover(s.palette.active)
+        .hover_motion(crate::design::motion::HOVER, crate::design::motion::HOVER)
 }
 
 /// A gate row's fields.
@@ -771,6 +803,9 @@ fn render_gate(s: &State, chat: &ChatState, g: Gate<'_>, k: &Kit) -> El {
             },
         )
         .fill(ink(0.045))
+        // Approving or declining turns the rim and the warning glyph quiet
+        // on the slide spring rather than at once.
+        .motion(crate::design::styles::Style::of(&s.prefs).slide)
         .transition(flow::rise(8.))
         .child(
             row()
@@ -818,7 +853,19 @@ fn render_gate(s: &State, chat: &ChatState, g: Gate<'_>, k: &Kit) -> El {
         card = card.child(line);
     }
     if let Some(actions_row) = actions_row {
-        card = card.child(el().pl(28.).child(actions_row));
+        // Keyed by the gate's state: the buttons give way to the "waiting
+        // to confirm" line as one replacing the other in place.
+        let phase = match g.state {
+            GateState::Open => "open",
+            GateState::Resolving(_) => "resolving",
+            GateState::Closed(_) => "closed",
+        };
+        card = card.child(
+            el().key(format!("{}-actions-{phase}", g.key))
+                .pl(28.)
+                .transition(rune::Transition::blur_replace())
+                .child(actions_row),
+        );
     }
     card
 }

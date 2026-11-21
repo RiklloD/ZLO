@@ -10,13 +10,19 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
-use rune::{El, col, icon, row};
+use rune::{El, el, icon, row};
 use rune_kit::Kit;
 
+use super::drill::{self, Level};
+use super::flash;
 use super::preview::{self, Opened};
 use super::ui::{self, xs};
 use super::{SideState, bridge, git, side, side_mut, side_of, thread_id};
+use crate::design::kit::{self, Turn};
+use crate::design::motion;
 use crate::icons;
 use crate::jobs::{self, Generation};
 use crate::state::State;
@@ -92,7 +98,17 @@ pub(super) struct ProjectState {
     error: Option<String>,
     pub(super) opened: Option<Opened>,
     open_gen: Generation,
+    /// The folder the person last opened, and when: its rows reveal for
+    /// [`REVEAL_FOR`] after, and never again as they scroll back in.
+    revealed: Option<(PathBuf, Instant)>,
 }
+
+/// How long after a folder opens its rows still mount with a reveal.
+const REVEAL_FOR: Duration = Duration::from_millis(500);
+/// A tree row's height (rows are fixed, so the tree is virtual rows: a
+/// folder can list up to [`DIR_LIMIT`] entries, and only those near the
+/// viewport are built).
+const TREE_ROW_H: f32 = 24.;
 
 fn list_dir(dir: &Path) -> Result<Vec<Entry>, String> {
     let mut out: Vec<Entry> = std::fs::read_dir(dir)
@@ -209,6 +225,7 @@ fn toggle(s: &mut State, dir: PathBuf) {
         return;
     }
     state.expanded.insert(dir.clone());
+    state.revealed = Some((dir.clone(), Instant::now()));
     if state.children.contains_key(&dir) {
         return;
     }
@@ -219,13 +236,16 @@ fn toggle(s: &mut State, dir: PathBuf) {
             s,
             "project",
             move |c| async move { Ok::<_, ClientError>(list_remote(c, asked, vec![listing]).await) },
-            move |s, listed, _| {
+            move |s, listed, tx| {
                 let Ok(listed) = listed else { return };
                 for (dir, result) in listed {
                     match result {
                         Ok(entries) => {
                             if let Some(x) = side_of(s, &thread) {
                                 x.project.children.insert(dir, entries);
+                                // The folder the person opened: its rows
+                                // reveal (a job's commit lands at once).
+                                tx.animated();
                             }
                         }
                         Err(e) => bridge::set_error(s, e),
@@ -238,10 +258,12 @@ fn toggle(s: &mut State, dir: PathBuf) {
     jobs::blocking(
         s,
         move || list_dir(&listing),
-        move |s, result, _| match result {
+        move |s, result, tx| match result {
             Ok(entries) => {
                 if let Some(x) = side_of(s, &thread) {
                     x.project.children.insert(dir, entries);
+                    // The folder the person opened: its rows reveal.
+                    tx.animated();
                 }
             }
             Err(e) => bridge::set_error(s, e),
@@ -265,11 +287,11 @@ pub(super) fn open(s: &mut State, path: PathBuf) {
     jobs::blocking(
         s,
         move || preview::read(&path),
-        move |s, read, _| {
+        move |s, read, tx| {
             if let Some(x) = side_of(s, &thread).filter(|x| x.project.open_gen == generation)
                 && let Some(opened) = x.project.opened.as_mut()
             {
-                opened.preview = read;
+                preview::land(opened, read, tx);
             }
         },
     );
@@ -295,7 +317,7 @@ fn open_remote(s: &mut State, thread: String, title: String, path: PathBuf) {
                 .map_err(|e| ClientError::Decode(format!("Couldn't save the file: {e}")))?;
             Ok::<_, ClientError>(tokio::task::spawn_blocking(move || preview::read(&local)).await)
         },
-        move |s, result, _| {
+        move |s, result, tx| {
             let read = match result {
                 Ok(Ok(read)) => read,
                 Ok(Err(e)) => preview::Preview::Failed(e.to_string()),
@@ -304,7 +326,7 @@ fn open_remote(s: &mut State, thread: String, title: String, path: PathBuf) {
             if let Some(x) = side_of(s, &thread).filter(|x| x.project.open_gen == generation)
                 && let Some(opened) = x.project.opened.as_mut()
             {
-                opened.preview = read;
+                preview::land(opened, read, tx);
             }
         },
     );
@@ -331,19 +353,44 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     };
     if let Some(opened) = x.project.opened.as_ref() {
         let attach = opened.path.clone();
-        return ui::fill_col()
-            .child(preview::toolbar(s, k, opened, "project", close_preview))
-            .child(
-                row().px(12.).pt(8.).child(
-                    ui::btn("Attach to next message")
-                        .icon(&icons::PAPERCLIP)
-                        .on_press(move |s: &mut State| bridge::attach(s, vec![attach.clone()]))
-                        .build(k)
-                        .key("project-attach"),
-                ),
-            )
-            .child(preview::body(s, k, opened, "project-preview"));
+        let attached = flash::shows(s, "project-attach");
+        let mut bar = row().px(12.).pt(8.).gap(6.).items_center().child(
+            ui::btn("Attach to next message")
+                .icon(&icons::PAPERCLIP)
+                .on_press_tx(move |s: &mut State, tx| {
+                    bridge::attach(s, vec![attach.clone()]);
+                    flash::flash(s, "project-attach", tx);
+                })
+                .build(k)
+                .key("project-attach")
+                .press_scale(motion::PRESS),
+        );
+        // "Attached ✓" beside the button for a moment, popping in and out.
+        if attached {
+            bar = bar.child(
+                row()
+                    .key("project-attached")
+                    .gap(4.)
+                    .items_center()
+                    .transition(motion::glyph_pop())
+                    .child(icon(&icons::CHECK, 12.).color(p.success))
+                    .child(ui::line("Attached", xs(), p.text_muted)),
+            );
+        }
+        return drill::level(
+            "project",
+            Level::Detail,
+            ui::fill_col()
+                .child(preview::toolbar(s, k, opened, "project", close_preview))
+                .child(bar)
+                .child(preview::body(s, k, opened, "project-preview")),
+        );
     }
+    drill::level("project", Level::List, tree(s, k, x))
+}
+
+/// The tree, or its loading / error line.
+fn tree(s: &State, k: &Kit, x: &SideState) -> El {
     let Some(root) = root(s, x) else {
         return ui::loading(k);
     };
@@ -356,65 +403,99 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     // Depth-first over the open folders.
     let mut rows: Vec<(Entry, usize)> = Vec::new();
     walk(x, &root, 0, &mut rows);
+    let rows = Rc::new(rows);
+    let keys = rows.clone();
+    ui::virtual_scroll(
+        "project-tree",
+        rows.len(),
+        TREE_ROW_H,
+        move |_, i| {
+            keys.get(i)
+                .map(|(e, _)| format!("project-row-{}", e.path.display()))
+                .unwrap_or_default()
+        },
+        move |s, i| match (side(s), rows.get(i)) {
+            (Some(x), Some((entry, depth))) => {
+                el().w_full().px(4.).child(tree_row(s, x, entry, *depth))
+            }
+            _ => el(),
+        },
+    )
+}
+
+/// One row of the tree: disclosure chevron (folders), glyph, name, git
+/// marks.
+fn tree_row(s: &State, x: &SideState, entry: &Entry, depth: usize) -> El {
+    let p = &s.palette;
     let show_ignored = x.project.show_ignored;
-    let mut list = col().w_full().px(4.);
-    for (ix, (entry, depth)) in rows.into_iter().enumerate() {
-        let rel = repo_rel(x, &entry.path);
-        let ignored = rel.as_ref().is_some_and(|r| x.project.ignored.contains(r));
-        let letter = rel.as_ref().and_then(|r| x.project.letters.get(r)).copied();
-        // A folder holding changes gets a dot.
-        let dirty_dir = entry.dir
-            && rel.as_ref().is_some_and(|r| {
-                let prefix = format!("{r}/");
-                x.project.letters.keys().any(|k| k.starts_with(&prefix))
-            });
-        let color = match letter {
-            Some('M') => p.warning,
-            Some('A') | Some('U') => p.success,
-            Some('D') => p.danger,
-            Some(_) => p.accent,
-            None if ignored => p.text_faint,
-            None => p.text.alpha(0.85),
-        };
-        let expanded = x.project.expanded.contains(&entry.path);
-        let path = entry.path.clone();
-        let dir = entry.dir;
-        let glyph = if dir {
-            if expanded {
-                &icons::FOLDER_OPEN
-            } else {
-                &icons::FOLDER
-            }
+    let rel = repo_rel(x, &entry.path);
+    let ignored = rel.as_ref().is_some_and(|r| x.project.ignored.contains(r));
+    let letter = rel.as_ref().and_then(|r| x.project.letters.get(r)).copied();
+    // A folder holding changes gets a dot.
+    let dirty_dir = entry.dir
+        && rel.as_ref().is_some_and(|r| {
+            let prefix = format!("{r}/");
+            x.project.letters.keys().any(|k| k.starts_with(&prefix))
+        });
+    let color = match letter {
+        Some('M') => p.warning,
+        Some('A') | Some('U') => p.success,
+        Some('D') => p.danger,
+        Some(_) => p.accent,
+        None if ignored => p.text_faint,
+        None => p.text.alpha(0.85),
+    };
+    let expanded = x.project.expanded.contains(&entry.path);
+    let path = entry.path.clone();
+    let dir = entry.dir;
+    let glyph = if dir {
+        if expanded {
+            &icons::FOLDER_OPEN
         } else {
-            &icons::FILE
-        };
-        let name = ui::line(entry.name.clone(), xs(), color).grow(1.).min_w(0.);
-        let mut line = ui::hover_row(s, format!("project-row-{}", entry.path.display()))
-            .min_h(24.)
-            .pl(6. + depth as f32 * 12.)
-            .gap(6.)
-            .child(icon(glyph, 12.).color(p.text_faint))
-            .child(if ignored && !show_ignored {
-                name.opacity(0.6)
-            } else {
-                name
-            });
-        if dirty_dir {
-            line = line.child(ui::dot(p.warning, 5.));
+            &icons::FOLDER
         }
-        if let Some(l) = letter {
-            line = line.child(ui::line(l.to_string(), xs(), color).w(12.));
-        }
-        let _ = ix;
-        list = list.child(line.on_press(move |s: &mut State| {
-            if dir {
-                toggle(s, path.clone())
-            } else {
-                open(s, path.clone())
-            }
-        }));
+    } else {
+        &icons::FILE
+    };
+    let name = ui::line(entry.name.clone(), xs(), color).grow(1.).min_w(0.);
+    let disclosure = if dir {
+        kit::chevron("chevron", expanded, Turn::Disclose, 10., p.text_faint)
+    } else {
+        el().w(10.)
+    };
+    let mut line = ui::hover_row(s, format!("project-row-{}", entry.path.display()))
+        .min_h(TREE_ROW_H)
+        .pl(6. + depth as f32 * 12.)
+        .gap(6.)
+        .child(disclosure)
+        .child(icon(glyph, 12.).color(p.text_faint))
+        .child(if ignored && !show_ignored {
+            name.opacity(0.6)
+        } else {
+            name
+        });
+    if dir {
+        line = line.expanded(expanded);
     }
-    ui::fill_col().child(ui::scroll("project-tree", list))
+    if dirty_dir {
+        line = line.child(ui::dot(p.warning, 5.));
+    }
+    if let Some(l) = letter {
+        line = line.child(ui::line(l.to_string(), xs(), color).w(12.));
+    }
+    // The rows of the folder the person just opened wipe open under it.
+    if x.project.revealed.as_ref().is_some_and(|(opened, at)| {
+        entry.path.parent() == Some(opened.as_path()) && at.elapsed() < REVEAL_FOR
+    }) {
+        line = line.transition(motion::reveal());
+    }
+    line.on_press(move |s: &mut State| {
+        if dir {
+            toggle(s, path.clone())
+        } else {
+            open(s, path.clone())
+        }
+    })
 }
 
 /// The Files tab's buttons, for the dock's title row: show ignored files,
@@ -564,5 +645,37 @@ mod tests {
             ],
             "folders first, the gateway's dot-files hidden"
         );
+    }
+
+    /// A folder lists up to DIR_LIMIT entries: the tree builds only the
+    /// rows near its viewport, not one element per entry.
+    #[test]
+    fn a_huge_folder_builds_only_the_rows_in_view() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::chat::fixtures::chat(&mut s);
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-studio", "Studio");
+        s.prefs.work_open = true;
+        s.prefs.work_tab = super::super::Tab::Files.id().into();
+        let names: Vec<String> = (0..DIR_LIMIT).map(|i| format!("f{i:04}.txt")).collect();
+        let entries: Vec<(&str, bool)> = names.iter().map(|n| (n.as_str(), false)).collect();
+        if let Some(x) = side_mut(&mut s) {
+            fixture_remote(x, &entries);
+        }
+        let mut rt = rune::Runtime::new(s, crate::view, (1280., 820.), rune::Env::new(true, 1.));
+        rt.frame(0.);
+        for _ in 0..10 {
+            rt.frame(1. / 60.);
+        }
+        let built: HashSet<String> = rt
+            .elements()
+            .into_iter()
+            .filter_map(|e| e.key)
+            .filter(|k| k.starts_with("project-row-"))
+            .collect();
+        let built = built.len();
+        assert!(built > 0, "the tree draws");
+        // The viewport holds about 30; overscan builds some more.
+        assert!(built < 150, "{built} rows built for {DIR_LIMIT} entries");
     }
 }

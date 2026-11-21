@@ -145,11 +145,21 @@ impl Ctx {
         let is_active =
             |ix: usize| self.active.as_deref() == rows.get(ix).map(|r| r.thread_id.as_str());
         let body = match self.lines.get(i) {
-            Some(Line::Searching) => el().px(12.).py(4.).child(crate::workspace::ui::side_t(
-                "Searching older chats…",
-                design::SIDEBAR_META_SIZE,
-                p.text_faint,
-            )),
+            // It breathes on the small loaders' 15 fps clock while the
+            // index catches up (still under Reduce Motion).
+            Some(Line::Searching) => el().px(12.).py(4.).child(
+                crate::workspace::ui::side_t(
+                    "Searching older chats…",
+                    design::SIDEBAR_META_SIZE,
+                    p.text_faint,
+                )
+                .key("inbox-searching-text")
+                .cycle(design::kit::loops::breathe(
+                    1.2,
+                    0.,
+                    &design::kit::loops::BREATH_55,
+                )),
+            ),
             Some(Line::Draft) => new_draft_card(s, k).unwrap_or_else(el),
             Some(Line::DraftRule) => el().mx(12.).my(6.).h(1.).fill(p.border),
             Some(Line::Card { ix, jump }) => match rows.get(*ix) {
@@ -167,7 +177,7 @@ impl Ctx {
                 label,
                 count,
                 open,
-            }) => fold(p, key, label, *count, *open),
+            }) => fold(p, k, key, label, *count, *open),
             Some(Line::Slim { ix }) => match rows.get(*ix) {
                 Some(r) => slim(s, &self.tree, r, is_active(*ix), self.now, k),
                 None => el(),
@@ -319,7 +329,6 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .key(SCROLL)
         .on_layout_tx(|s: &mut State, r: [f32; 4], tx: &mut rune::Tx| {
             if !ShelfGap::viewport(s, r[3]) {
                 tx.live_only();

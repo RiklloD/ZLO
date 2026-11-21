@@ -256,6 +256,10 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         let thread = r.thread_id.clone();
         list = list.child(
             ui::hover_row(s, format!("machine-thread-{}", r.thread_id))
+                // Live-sorted: a resort glides, an arrival or a finished
+                // thread wipes in and out, in commits that animate.
+                .motion(crate::design::motion::ROW_RESORT)
+                .transition(rune::Transition::reveal(rune::Edge::Top))
                 .min_h(40.)
                 .py(4.)
                 .child(status_dot(color, true))

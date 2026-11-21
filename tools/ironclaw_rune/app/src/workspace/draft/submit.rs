@@ -168,8 +168,12 @@ pub(super) fn submit(s: &mut State, sub: Submission, voice: Option<crate::voice:
         },
         move |s, result, tx| match result {
             Ok(id) => {
+                // The person sent it: this reply is a queued update, which
+                // Rune lands at once (no flight, no card entering) unless it
+                // asks for motion.
+                tx.animated();
                 settle(s, &sub, None);
-                inbox::refresh(s);
+                inbox::refresh_shown(s);
                 crate::workspace::open_thread(s, id.clone());
                 if crate::workspace::active_id(s) == Some(id.as_str()) {
                     crate::chat::send_text(s, sub.content, sub.pills, sub.files, voice, tx);
@@ -178,7 +182,12 @@ pub(super) fn submit(s: &mut State, sub: Submission, voice: Option<crate::voice:
                 }
                 // The hero composer flies to the chat's dock on its own
                 // spring (GPUI `dock::DOCK_SECS`); only this commit uses it.
-                // Set last: the send's prompt rise asks for its own curve.
+                // Set last: a matched flight takes the commit's spring over
+                // its element's, and the send asked for the prompt rise's.
+                // Nothing here needs that one: the new chat's transcript
+                // mounts in this same commit, so the prompt has no earlier
+                // place to climb from (the rise is the fade `prompt_rise`
+                // draws by time, which no commit spring touches).
                 tx.motion(crate::design::motion::DOCK);
             }
             Err(e) => {

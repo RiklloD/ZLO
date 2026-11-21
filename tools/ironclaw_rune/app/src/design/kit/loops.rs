@@ -22,15 +22,21 @@ use crate::design::styles::Style;
 use crate::state::State;
 
 /// Loop frame rate for small loaders (GPUI `Rate::Half`).
-const HALF_FPS: f32 = 15.;
+pub(crate) const HALF_FPS: f32 = 15.;
 
 /// A cosine breath from `low` up to full and back over one period.
 const fn breath(low: f32) -> [(f32, f32); 9] {
+    wave(low, 1.)
+}
+
+/// A cosine wave from `low` up to `high` and back over one period, as
+/// [`Cycle`] stops.
+const fn wave(low: f32, high: f32) -> [(f32, f32); 9] {
     const UP: [f32; 9] = [0., 0.146, 0.5, 0.854, 1., 0.854, 0.5, 0.146, 0.];
     let mut out = [(0., 0.); 9];
     let mut i = 0;
     while i < 9 {
-        out[i] = (i as f32 / 8., low + (1. - low) * UP[i]);
+        out[i] = (i as f32 / 8., low + (high - low) * UP[i]);
         i += 1;
     }
     out
@@ -266,12 +272,6 @@ impl Spinner {
             }
             let (x, y) = ((i % 4) as f32 * 4.0, (i / 4) as f32 * 4.0);
             let outer = matches!(i, 1 | 2 | 4 | 7 | 8 | 11 | 13 | 14);
-            let low = if outer { 0.15 } else { 0.4 };
-            let high = if outer { 0.35 } else { 1.0 };
-            // A fixed per-cell seed: 1–2 s periods and 0–1.5 s delays, stable
-            // across replays and goldens.
-            let period = 1.0 + ((i * 37) % 101) as f64 / 100.0;
-            let delay = ((i * 53) % 101) as f64 * 0.015;
             e = e.child(
                 el().key(format!("sq{i}"))
                     .size(3.0 * u, 3.0 * u)
@@ -279,9 +279,33 @@ impl Spinner {
                     .radius(u)
                     .fill(ink)
                     .a11y_hidden()
-                    .looping(rune::LoopSpec::opacity(period, delay, low, high)),
+                    .cycle(spinner_cell(i, outer)),
             );
         }
         e
+    }
+}
+
+/// The outer cells' pulse, 0.15 → 0.35 → 0.15, and the inner ones',
+/// 0.4 → 1 → 0.4: the eased triangle `LoopSpec::opacity` drew.
+static SPIN_OUTER: [(f32, f32); 9] = wave(0.15, 0.35);
+static SPIN_INNER: [(f32, f32); 9] = wave(0.4, 1.);
+
+/// Spinner cell `i`'s pulse on the small loaders' clock. It used to be a
+/// `LoopSpec::opacity` per cell, twelve tracks drawing at the display's rate
+/// (120 Hz on ProMotion) whenever a spinner was on screen; as a [`Cycle`] it
+/// asks for [`HALF_FPS`]. A fixed per-cell seed (1–2 s periods, 0–1.5 s
+/// offsets) keeps it stable across replays and goldens; reduced motion holds
+/// every cell at its low.
+fn spinner_cell(i: usize, outer: bool) -> Cycle {
+    let period = 1.0 + ((i * 37) % 101) as f32 / 100.0;
+    let delay = ((i * 53) % 101) as f32 * 0.015;
+    let stops: &'static [(f32, f32)] = if outer { &SPIN_OUTER } else { &SPIN_INNER };
+    Cycle {
+        period,
+        phase: delay / period,
+        stops,
+        still: stops[0].1,
+        fps: HALF_FPS,
     }
 }

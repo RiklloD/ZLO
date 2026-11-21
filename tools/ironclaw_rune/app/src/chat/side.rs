@@ -34,7 +34,8 @@
 //!   window titlebar.
 //! - `side::toggle_right_pane(s)` (⌥⌘B), `side::toggle_work_panel(s)` (⌘J),
 //!   `side::new_side_chat(s)` (⌥⌘N). Off the chat page the toggles only flip
-//!   the preference.
+//!   the preference. Call `side::dock_slide(s, tx)` first so the docks
+//!   slide on `panels::REVEAL`.
 //! - `side::dock_widths(s, viewport)` for the wallpaper's conversation area.
 //! - `main.rs`: `native_view::poll` in `poll`, `native_view::on_window` on
 //!   the `App`; the root view calls `native_view::cover` on every run (see
@@ -54,10 +55,13 @@ mod activity;
 mod agents;
 mod bridge;
 mod browser;
+mod busy;
 mod changes;
 mod console;
 mod details;
 mod dock;
+mod drill;
+mod flash;
 pub mod git;
 mod history;
 mod machines;
@@ -328,10 +332,11 @@ pub struct SideState {
     drag: Option<(Dock, f32)>,
     /// Each dock widened to [`WIDE_SHARE`], by [`Dock::ix`].
     wide: [bool; 2],
-    /// When each dock last opened, for native views to wait out the slide.
+    /// When each dock last opened, slid or resized (not by a drag), for
+    /// native views to wait out the motion ([`NATIVE_SETTLE`]).
     opened_at: [Option<Instant>; 2],
     /// Each dock's column is still drawn: open, or closed less than
-    /// [`dock::CLOSE_HOLD`] ago while its clip slides shut ([`poll`]).
+    /// [`dock::close_hold`] ago while its clip slides shut ([`poll`]).
     shown: [bool; 2],
     /// When a closed dock's column may go (app clock, seconds).
     hold: [Option<f64>; 2],
@@ -353,6 +358,8 @@ pub struct SideState {
     /// What the backend's git and console routes do for this thread, when
     /// the backend is on another computer.
     remote_repo: remote_repo::RemoteRepo,
+    /// The one short confirmation showing in the panes ([`flash`]).
+    flash: flash::Flash,
 }
 
 /// The open chat's side state.
@@ -394,6 +401,12 @@ pub fn dock_open(s: &State, dock: Dock) -> bool {
         Dock::Work => s.prefs.work_open,
         Dock::Side => s.prefs.side_open,
     }
+}
+
+/// The right pane is open on its side chat (voice asks whether the side
+/// chat's composer is on screen). Read-only.
+pub fn side_chat_shown(s: &State) -> bool {
+    dock_open(s, Dock::Side) && dock_tab(s, Dock::Side) == Tab::SideChat
 }
 
 /// The tab `dock` shows. Side chat falls back to Activity once closed, a
@@ -504,19 +517,41 @@ fn toggle_dock(s: &mut State, dock: Dock) {
         Dock::Work => p.work_open = open,
         Dock::Side => p.side_open = open,
     });
-    if open && s.page == Page::Chat && s.chat.is_some() {
-        mark_opened(s, dock);
-        load(s, dock_tab(s, dock));
+    if s.page == Page::Chat && s.chat.is_some() {
+        // The other dock moves (the work panel rides the right pane's
+        // edge) or resizes with this one: its native view waits too.
+        mark_opened(s, Dock::Work);
+        mark_opened(s, Dock::Side);
+        if open {
+            load(s, dock_tab(s, dock));
+        }
     }
+}
+
+/// Ready `tx` for a commit that opens, closes or resizes a dock, as the
+/// sidebar's fold does (`workspace::toggle_sidebar`): every column it moves
+/// rides [`panels::REVEAL`](crate::design::panels::REVEAL), rows pinned to
+/// the transcript's end ride its edge, and the follow-ups land the
+/// conversation's rewrapped rows once the slide has started
+/// (`workspace::settle_sidebar_slide`). Callers outside the chat's own
+/// buttons (⌥⌘B, ⌘J) call it before [`toggle_right_pane`] /
+/// [`toggle_work_panel`].
+pub fn dock_slide(s: &State, tx: &mut Tx) {
+    tx.animated();
+    tx.motion(crate::design::panels::REVEAL);
+    tx.follow_edge();
+    s.workspace.sidebar_slid.set(true);
 }
 
 /// Keeps a closed dock's column drawn until its clip has slid shut, so the
 /// body and its titlebar tabs leave with the slide instead of fading out
 /// ahead of it. Runs from the app's `poll`, whatever closed the dock.
 pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
+    // The Browser's page changed (its observer woke the app).
+    let page = browser::poll(s, tx);
     let open = [dock_open(s, Dock::Work), dock_open(s, Dock::Side)];
     let Some(x) = side_mut(s) else { return false };
-    let mut changed = false;
+    let mut changed = page;
     for (ix, open) in open.into_iter().enumerate() {
         if open {
             x.shown[ix] = true;
@@ -524,8 +559,9 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
         } else if x.shown[ix] {
             match x.hold[ix] {
                 None => {
-                    x.hold[ix] = Some(clock + dock::CLOSE_HOLD);
-                    tx.wake_after(std::time::Duration::from_secs_f64(dock::CLOSE_HOLD));
+                    let hold = dock::close_hold();
+                    x.hold[ix] = Some(clock + hold);
+                    tx.wake_after(std::time::Duration::from_secs_f64(hold));
                 }
                 Some(until) if clock >= until => {
                     x.shown[ix] = false;
@@ -875,8 +911,8 @@ fn tab_actions(s: &State, k: &Kit, tab: Tab) -> Vec<El> {
     match tab {
         Tab::Files => project::actions(s, k),
         Tab::Outputs => outputs::actions(s, k),
-        Tab::History => history::actions(k),
-        Tab::Routines => routines::actions(k),
+        Tab::History => history::actions(s, k),
+        Tab::Routines => routines::actions(s, k),
         Tab::Agents => agents::actions(k),
         Tab::Plugin => vec![
             ui::ibtn(&crate::icons::REFRESH_CW, "Refresh")

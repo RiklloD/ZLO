@@ -97,7 +97,9 @@ fn action(s: &mut State, action: ThreadAction, label: &'static str) {
         s,
         "codex",
         move |c| async move { c.thread_action(&asked, &action).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The answer to the person's Review click arrives with motion.
+            tx.animated();
             let Some(x) = side_of(s, &thread) else { return };
             x.changes.busy = None;
             if let Ok(ThreadActionOutcome::Refused {
@@ -296,10 +298,10 @@ pub(super) fn card(s: &State, k: &Kit) -> El {
         ));
     }
     if let Some(note) = state.codex.note.clone() {
-        card = card.child(ui::para(note, xs(), p.success));
+        card = card.child(ui::para(note, xs(), p.success).key("codex-note"));
     }
     if let Some(error) = state.codex.error.clone() {
-        card = card.child(ui::para(error, xs(), p.danger));
+        card = card.child(ui::para(error, xs(), p.danger).key("codex-error"));
     }
     if !findings.is_empty() {
         let mut list = col().gap(2.).child(ui::line(

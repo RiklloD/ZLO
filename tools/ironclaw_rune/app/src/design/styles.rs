@@ -27,7 +27,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use rune::{Curve, Spring, TextStyle};
 
-use super::motion::TAILWIND;
 use super::prefs::Prefs;
 
 /// Popovers and menus: a hair under critical, settles without a wobble
@@ -70,10 +69,10 @@ impl Style {
             row_height: super::ROW_HEIGHT,
             font_size: 16.,
             elevation: 1.,
-            hover: Curve::tween(0.110, TAILWIND),
+            hover: super::motion::HOVER,
             enter: Spring::new(0.32, 0.0),
             enter_rise: 8.,
-            slide: Spring::new(0.22, 0.0),
+            slide: super::motion::SLIDE,
         }
     }
 

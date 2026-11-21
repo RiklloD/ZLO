@@ -120,6 +120,77 @@ fn label(s: &State, t: &str, size: f32, muted: bool) -> El {
         .color(if muted { p.text_muted } else { p.text })
 }
 
+/// The glyphs that move: chevrons shut and open, the copy glyph before
+/// and after, a busy refresh, the spinner, label-sized segments and a
+/// scheme switch that morphs every colour.
+fn motion_row(s: &State) -> El {
+    use super::kit::Turn;
+    let p = &s.palette;
+    let k = super::kit(p);
+    let ink = kit::icon_ink(&k, rune_kit::IconButtonVariant::GhostMuted);
+    let glyphs = row()
+        .gap(14.)
+        .center_y()
+        .child(kit::chevron(
+            "chev-a",
+            false,
+            Turn::Disclose,
+            14.,
+            p.text_muted,
+        ))
+        .child(kit::chevron(
+            "chev-b",
+            true,
+            Turn::Disclose,
+            14.,
+            p.text_muted,
+        ))
+        .child(kit::chevron("chev-c", false, Turn::Flip, 14., p.text_muted))
+        .child(kit::chevron("chev-d", true, Turn::Flip, 14., p.text_muted))
+        .child(kit::glyph_button(
+            &k,
+            "copy-a",
+            rune_kit::IconButtonVariant::GhostMuted,
+            "Copy",
+            kit::copy_glyph("g", kit::copied(None), 16., ink),
+            |_, _| {},
+        ))
+        .child(kit::glyph_button(
+            &k,
+            "copy-b",
+            rune_kit::IconButtonVariant::GhostMuted,
+            "Copied",
+            kit::copy_glyph("g", kit::copied(Some(std::time::Instant::now())), 16., ink),
+            |_, _| {},
+        ))
+        .child(crate::pages::common::refresh_busy(
+            &k,
+            "refresh",
+            true,
+            |_| {},
+        ))
+        .child(kit::Spinner::new().size(16.).color(p.text_muted).build(&k))
+        .child(
+            Button::new("scheme")
+                .label("Switch scheme")
+                .small()
+                .on_press_tx(|s: &mut State, tx| {
+                    super::motion::color_morph(tx);
+                    let light = !s.palette.light;
+                    scheme(s, light);
+                })
+                .build(s),
+        );
+    col().gap(10.).child(glyphs).child(kit::segmented(
+        s,
+        "seg-wide",
+        &["Accounts", "CLI agents", "Keys"],
+        1,
+        false,
+        |_s, _i| {},
+    ))
+}
+
 /// A mock of the shell (sidebar, panel, composer) with the wallpaper
 /// placed as area B will place it: last child of the window.
 fn shell(s: &State) -> El {
@@ -366,7 +437,8 @@ fn gallery(s: &State) -> El {
         .child(section(s, "BUTTONS", buttons))
         .child(section(s, "CONTROLS", controls))
         .child(section(s, "LOOPS", loops))
-        .child(section(s, "PROVIDERS", logos));
+        .child(section(s, "PROVIDERS", logos))
+        .child(section(s, "MOTION", motion_row(s)));
     let right = col()
         .gap(22.)
         .child(section(s, "ROWS", rows))

@@ -109,6 +109,12 @@ pub fn layer_rounded(s: &State, area: &str, radius: f32) -> Option<El> {
         .inert()
         .a11y_hidden()
         .opacity(prefs.wallpaper_opacity.clamp(0., 1.))
+        // A new strength (Appearance's slider, a step) glides; the slider's
+        // drag moves still land at once, as drags do.
+        .opacity_motion(CROSSFADE)
+        // Turning the wallpaper off or moving it to another area fades the
+        // old layer out (and the new one in) on the crossfade's spring.
+        .transition(Transition::opacity().springs(SpringPair::with_exit_ratio(CROSSFADE, 0.8)))
         .on_layout_tx(|s: &mut State, r: [f32; 4], tx: &mut Tx| {
             if !measured(s, r[2], r[3]) {
                 tx.live_only();

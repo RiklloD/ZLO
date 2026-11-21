@@ -76,7 +76,8 @@ pub fn drag(s: &mut State, id: &str, title: &str, d: &Drag, tx: &mut Tx) {
             tx.live_only();
         }
         Phase::Move => {
-            let Some(dragged) = state.dragged.as_mut() else {
+            let before = hovered(s);
+            let Some(dragged) = s.workspace.thread_drag.dragged.as_mut() else {
                 return;
             };
             let was_live = dragged.live;
@@ -84,6 +85,17 @@ pub fn drag(s: &mut State, id: &str, title: &str, d: &Drag, tx: &mut Tx) {
             dragged.live |= d.dx.abs() > SLOP || d.dy.abs() > SLOP;
             if !was_live && !dragged.live {
                 tx.live_only();
+            } else if was_live {
+                if hovered(s) != before {
+                    // Crossing onto or off a target: its accent rim (or
+                    // wash) fades; the ghost still lands under the pointer
+                    // (its own `Spring::NONE`).
+                    tx.animated();
+                } else {
+                    // The ghost tracks the pointer exactly; only its first
+                    // appearance (the move that lifts it) plays an entrance.
+                    tx.instant();
+                }
             }
         }
         Phase::Up => {
@@ -199,7 +211,17 @@ pub fn ghost(s: &State) -> Option<El> {
     Some(
         row()
             .key("thread-drag-ghost")
+            // Lifts in a hair small and settles; shrinks away on the drop.
+            .transition(
+                rune::Transition::scale(0.95).springs(rune::SpringPair::with_exit_ratio(
+                    crate::design::styles::POP,
+                    0.6,
+                )),
+            )
             .pin(Some(x + 8.), Some(y + 8.), None, None)
+            // Exactly under the pointer even in the commit that crosses a
+            // target, which animates for the target's rim.
+            .motion(rune::Spring::NONE)
             .max_w(260.)
             .px(10.)
             .py(6.)
@@ -354,6 +376,12 @@ mod tests {
         );
         assert!(rt.find("thread-drag-ghost").is_some());
         assert!(over_draft(&rt.state));
+        // That move crossed onto the target, an animated commit (its rim
+        // fades in), yet the ghost sits exactly under the pointer.
+        rt.pointer_move(260., 210.);
+        step(&mut rt);
+        let ghost = rt.presented("thread-drag-ghost").map(|(r, _)| [r[0], r[1]]);
+        assert_eq!(ghost, Some([268., 218.]), "the ghost never trails");
         if let Some(d) = rt.state.workspace.draft.as_mut() {
             d.input.focused = false;
         }

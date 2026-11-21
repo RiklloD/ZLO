@@ -9,18 +9,28 @@ use rune_kit::{Kit, TextInput};
 use super::super::ui::{self, xs, xs_med};
 use super::{Comment, codex, save_draft, stats, sync_annotations};
 use crate::chat::side::{SideState, git, side, side_mut, side_total};
+use crate::design::motion;
 use crate::icons;
 use crate::state::State;
 
 pub(super) fn annotation(s: &State, k: &Kit, a: &Annotation) -> El {
     let p = &s.palette;
+    // The annotation the person just added wipes open; one the diff
+    // scrolls back in (or a re-render) does not replay it.
+    let fresh = side(s).is_some_and(|x| x.changes.fresh(&a.id));
     let base = col()
+        .key(format!("note-{}", a.id))
         .mx(8.)
         .my(4.)
         .padding(8.)
         .radius(8.)
         .fill(p.surface_raised)
         .border(1., p.accent.alpha(0.4));
+    let base = if fresh {
+        base.transition(motion::reveal())
+    } else {
+        base
+    };
     if let Some(ix) =
         a.id.strip_prefix("finding-")
             .and_then(|n| n.parse::<usize>().ok())

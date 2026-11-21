@@ -6,6 +6,7 @@ use rune::{El, col, row};
 use rune_kit::Kit;
 use zlo_client::product_wire::{RebornAccountTrace, RebornTraceCreditsResponse};
 
+use crate::design::motion;
 use crate::jobs;
 use crate::pages::common::{
     BASE, Btn, SM, XS, button, card, empty_state, error_line, font, label, loading, para,
@@ -31,11 +32,20 @@ impl TraceState {
 }
 
 pub fn refresh(s: &mut State) {
+    fetch(s, false);
+}
+
+/// [`refresh`]; `shown` lands the answers animated, for the refresh that
+/// follows the person's Authorize (the resolved hold folds away).
+fn fetch(s: &mut State, shown: bool) {
     jobs::run(
         s,
         "traces",
         |c| async move { c.trace_credits().await },
-        |s, result, _| {
+        move |s, result, tx| {
+            if shown {
+                tx.animated();
+            }
             let this = &mut s.pages.settings.traces;
             match result {
                 Ok(credits) => {
@@ -50,7 +60,10 @@ pub fn refresh(s: &mut State) {
         s,
         "traces",
         |c| async move { c.account_traces().await },
-        |s, result, _| {
+        move |s, result, tx| {
+            if shown {
+                tx.animated();
+            }
             let this = &mut s.pages.settings.traces;
             match result {
                 Ok(r) => {
@@ -74,7 +87,9 @@ fn authorize(s: &mut State, submission_id: String) {
         s,
         "traces",
         move |c| async move { c.authorize_trace_hold(&submission_id).await },
-        |s, result, _| {
+        |s, result, tx| {
+            // The reply to the person's Authorize: the notice wipes open.
+            tx.animated();
             let this = &mut s.pages.settings.traces;
             this.authorizing = None;
             this.notice = Some(match result {
@@ -82,7 +97,7 @@ fn authorize(s: &mut State, submission_id: String) {
                 Ok(_) => "That trace is no longer held.".into(),
                 Err(e) => e.to_string(),
             });
-            refresh(s);
+            fetch(s, true);
         },
     );
 }
@@ -101,6 +116,7 @@ fn open_account(s: &mut State) {
         "traces",
         |c| async move { c.trace_account_login_link().await },
         |s, result, tx| {
+            tx.animated();
             let this = &mut s.pages.settings.traces;
             this.opening = false;
             match result {
@@ -198,6 +214,8 @@ fn render_credits(s: &State, c: &RebornTraceCreditsResponse, k: &Kit) -> El {
     }
     if !c.holds.is_empty() {
         let mut holds = card(p)
+            .key("holds")
+            .transition(motion::reveal())
             .child(label("Held for review", BASE, 600., p.text))
             .child(para(
                 "Held because of higher privacy risk; review and authorize to submit.",
@@ -210,6 +228,7 @@ fn render_credits(s: &State, c: &RebornTraceCreditsResponse, k: &Kit) -> El {
             holds = holds.child(
                 row()
                     .key(format!("hold-{id}"))
+                    .transition(motion::reveal())
                     .gap(12.)
                     .center_y()
                     .child(
@@ -281,13 +300,16 @@ pub fn view(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let this = &s.pages.settings.traces;
     let body = match (&this.credits, &this.credits_error) {
-        (_, Some(e)) => error_line(p, e),
-        (None, None) => empty_state(p, "Loading…"),
+        (_, Some(e)) => error_line(p, e).key("credits-error"),
+        (None, None) => empty_state(p, "Loading…").key("credits-wait"),
         (Some(c), None) if !c.enrolled && c.submissions_total == 0 => empty_state(
             p,
             "Not enrolled. Ask your agent to onboard with a Trace Commons invite.",
-        ),
-        (Some(c), None) => render_credits(s, c, k),
+        )
+        .key("credits-none"),
+        (Some(c), None) => render_credits(s, c, k)
+            .key("credits")
+            .transition(motion::fade()),
     };
     let mut d = col().w_full().gap(12.).child(body);
     if let Some(t) = render_traces(s) {
@@ -306,7 +328,11 @@ pub fn view(s: &State, k: &Kit) -> El {
         );
     }
     if let Some(n) = &this.notice {
-        d = d.child(para(n.clone(), SM, p.text));
+        d = d.child(
+            para(n.clone(), SM, p.text)
+                .key("traces-notice")
+                .transition(motion::reveal()),
+        );
     }
     if this.enrolled()
         && let Some(c) = &this.credits

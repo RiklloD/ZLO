@@ -17,7 +17,7 @@ mod submit;
 use std::path::PathBuf;
 
 use rune::{Cx, El, FileDialogOptions, KeyEvent, TextEdit, Tx, col, el, row};
-use rune_kit::{Kit, Placement};
+use rune_kit::Kit;
 use zlo_client::attachments::{self, StagedFile};
 use zlo_client::commands::MenuItem;
 use zlo_client::profiles::DEFAULT_PROFILE_ID;
@@ -57,6 +57,13 @@ pub struct DraftState {
     pub worktree: bool,
     /// Bumped when the draft is replaced, so a late attach lands nowhere.
     pub generation: Generation,
+    /// Not drawn yet: the hero's greeting, profile switch and composer
+    /// stagger in as this draft first mounts ([`hero_entrance`]); a switch
+    /// back to it later shows it with the page's plain rise.
+    pub(super) fresh: bool,
+    /// Send's plate colours, which ease on a keystroke without animating
+    /// its commit (`chat::composer::PlateTint`).
+    pub(crate) send_tint: crate::chat::composer::PlateTint,
 }
 
 /// Where voice dictation types (GPUI `Workspace::voice_composer`).
@@ -373,8 +380,10 @@ pub(super) fn attach(s: &mut State, paths: Vec<PathBuf>) {
             }
             Ok(out)
         },
-        move |s, result, _| {
+        move |s, result, tx| {
             let Ok(results) = result else { return };
+            // The person attached them: their cards enter rather than land.
+            tx.animated();
             let Some(draft) = s
                 .workspace
                 .draft
@@ -448,7 +457,9 @@ pub(super) fn attach_thread(s: &mut State, id: String, title: String) {
         s,
         "attach thread",
         move |c| async move { c.thread_attachment(&id, &title, &limits).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // Dropped there by the person: its card enters.
+            tx.animated();
             let (Some(draft), Some(session)) = (s.workspace.draft.as_mut(), s.session.as_ref())
             else {
                 return;
@@ -482,19 +493,35 @@ pub(super) fn profile_name(s: &State) -> String {
     .unwrap_or_else(|| "Default".into())
 }
 
+/// The draft has something to send.
+fn send_ready(draft: &DraftState) -> bool {
+    !draft.staged.is_empty() || !draft.input.text.trim().is_empty()
+}
+
 pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let Some(draft) = s.workspace.draft.as_ref() else {
         return el();
     };
     let name = profile_name(s);
-    let ready = !draft.staged.is_empty() || !draft.input.text.trim().is_empty();
+    let ready = send_ready(draft);
+    let fresh = draft.fresh;
     // The chat composer's own controls, so the card that flies to the
     // chat's dock on send is one component.
-    let send_button = composer::round_button(s, "draft-send", &icons::ARROW_UP, ready, "Send", k)
-        .help("Send")
-        .opacity(if draft.sending { 0.35 } else { 1. })
-        .on_press(send);
+    let reduced =
+        crate::design::battery::reduced(&s.prefs, &s.look.battery, cx.system_reduced_motion());
+    let send_button = composer::round_button_tinted(
+        s,
+        "draft-send",
+        &icons::ARROW_UP,
+        ready,
+        "Send",
+        Some((&draft.send_tint, reduced)),
+        k,
+    )
+    .help("Send")
+    .opacity(if draft.sending { 0.35 } else { 1. })
+    .on_press(send);
     let attach_button = composer::round_button(
         s,
         "draft-attach",
@@ -542,7 +569,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         });
     // Under the heading, no resting underline (T3's pass): a chevron says
     // it opens. A long name truncates instead of widening the column.
-    let profile_switch = row()
+    let mut profile_switch = row()
         .key("draft-profile")
         .role("button")
         .label(format!("Profile: {name}"))
@@ -566,10 +593,16 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             .min_w(0.)
             .truncate(),
         )
-        .child(ui::glyph(&icons::CHEVRON_DOWN, 12., p.text_faint))
+        .child(crate::design::kit::chevron(
+            "draft-profile-chevron",
+            draft.menu_open,
+            crate::design::kit::Turn::Flip,
+            12.,
+            p.text_faint,
+        ))
         .on_press(picker::toggle_draft_menu);
     if draft.menu_open {
-        layer.push(rune_kit::popover::anchored(
+        layer.push(picker::anchored(
             k,
             col()
                 .w(picker::WIDTH)
@@ -579,42 +612,42 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
                 })
                 .child(picker::profile_picker(s, k)),
             "draft-profile",
-            Placement::Bottom,
             6.,
         ));
     }
     let snapshots = inline_files::snapshot_keys(s, &draft.staged);
+    let field_type = crate::chat::flow::type_at(s, 14., 22.75, 400.);
     let input = ui::grow_box(
         // The chat composer's field, type and all.
-        rune::text_input(
-            &draft.input,
-            crate::chat::flow::type_at(s, 14., 22.75, 400.),
-        )
-        .key("composer-input")
-        .w_full()
-        .color(p.text)
-        .placeholder("Ask anything…", p.text_faint)
-        .caret(p.text, k.selection())
-        .label("Message")
-        .pill_colors(p.hover, Some(p.text))
-        .pill_icon(move |pill| inline_files::pill_icon_for(&snapshots, pill))
-        .on_input_key(on_key)
-        .on_input_paste(|s: &mut State, content, _tx| {
-            let Some(pasted) = inline_files::pasted(content) else {
-                return false;
-            };
-            paste(s, pasted);
-            true
-        })
-        .on_edit(|s: &mut State| {
-            &mut s
-                .workspace
-                .draft
-                .get_or_insert_with(|| empty_draft(DEFAULT_PROFILE_ID))
-                .input
-        })
-        .on_input_change(|s: &mut State, _| on_change(s))
-        .on_submit(|s: &mut State, _| send(s)),
+        rune::text_input(&draft.input, field_type)
+            .key("composer-input")
+            .w_full()
+            .color(p.text)
+            .placeholder("Ask anything…", p.text_faint)
+            .caret(p.text, k.selection())
+            .label("Message")
+            .pill_colors(p.hover, Some(p.text))
+            .pill_icon(move |pill| inline_files::pill_icon_for(&snapshots, pill))
+            .on_input_key(on_key)
+            .on_input_paste(|s: &mut State, content, _tx| {
+                let Some(pasted) = inline_files::pasted(content) else {
+                    return false;
+                };
+                paste(s, pasted);
+                true
+            })
+            .on_edit(|s: &mut State| {
+                &mut s
+                    .workspace
+                    .draft
+                    .get_or_insert_with(|| empty_draft(DEFAULT_PROFILE_ID))
+                    .input
+            })
+            // Typing lands at once, layout and all (`ui::grow_box`); Send's
+            // plate eases on its live colours (`send_tint`), as the chat's.
+            .on_input_change(|s: &mut State, _tx: &mut Tx| on_change(s))
+            .on_submit(|s: &mut State, _| send(s)),
+        field_type.line_px(),
         1,
         8,
     );
@@ -645,12 +678,25 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         crate::chat::model_picker::draft_pill(s, cx, k, layer),
         actions,
     );
+    // The card a dock flies back to (a new thread from a chat) lands on the
+    // dock's spring too: a matched flight takes its destination's
+    // `motion` when its commit names none (`motion::COMPOSER_MATCH`).
     let mut card = composer::dock_matched(s, card)
+        .motion(crate::design::motion::DOCK)
         .max_w(HERO_WIDTH)
         .on_drawn_layout_tx(super::thread_drag::saw_draft)
         .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()));
     if thread_over {
         card = card.border(1., p.accent);
+    }
+    // A composer flying in from a chat's dock is its own entrance; with no
+    // dock to come from (or a wallpaper, which swaps it in place) it rises
+    // in last.
+    let flies_in = s.chat.is_some() && !crate::design::wallpaper::covers_composer(&s.prefs);
+    if fresh && !flies_in {
+        card = card
+            .transition(hero_entrance(s))
+            .enter_delay(2. * HERO_STAGGER);
     }
     // The hero card sits mid-screen, so the menu opens below it, as wide.
     let items = draft.menu.items(&draft.input.text);
@@ -676,6 +722,13 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             on_pick,
         );
     }
+    let mut greeting = el().key("draft-greeting");
+    if fresh {
+        greeting = greeting.transition(hero_entrance(s));
+        profile_switch = profile_switch
+            .transition(hero_entrance(s))
+            .enter_delay(HERO_STAGGER);
+    }
     // The centred hero: the big question, the project switcher under it,
     // then the card.
     let mut body = col()
@@ -690,7 +743,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             col()
                 .items_center()
                 .gap(8.)
-                .child(tw("What should we work on?", 32., SEMIBOLD, p.text))
+                .child(greeting.child(tw("What should we work on?", 32., SEMIBOLD, p.text)))
                 .child(profile_switch),
         )
         .child(card);
@@ -701,11 +754,23 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     let body = body.child(el().h(80.));
     // A flat panel: no glow, no band; a wallpaper, when one is picked, is
     // laid over the panel by the frame.
-    el().key("draft")
+    let mut root = el()
+        .key("draft")
         .w_full()
         .h_full()
-        .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()))
-        .child(body)
+        .on_drop_files(|s: &mut State, files, _| attach(s, files.to_vec()));
+    if fresh {
+        // Drawn once: from here on it is a kept draft, and coming back to
+        // it does not replay the stagger. No commit: nothing on screen
+        // changes.
+        root = root.on_drawn_layout_tx(|s: &mut State, _, tx| {
+            if let Some(d) = s.workspace.draft.as_mut() {
+                d.fresh = false;
+            }
+            tx.live_only();
+        });
+    }
+    root.child(body)
 }
 
 pub(super) fn empty_draft(profile: &str) -> DraftState {
@@ -720,8 +785,30 @@ pub(super) fn empty_draft(profile: &str) -> DraftState {
         error: None,
         worktree: false,
         generation: Generation::default(),
+        fresh: true,
+        send_tint: Default::default(),
     }
 }
+
+/// Whether the draft screen shows its first entrance now: a new draft,
+/// not yet drawn. The main column then gives the page no entrance of its
+/// own, so the hero's parts carry theirs.
+pub(super) fn entering(s: &State) -> bool {
+    s.page == Page::Draft && s.workspace.draft.as_ref().is_some_and(|d| d.fresh)
+}
+
+/// One part of the hero rising in on the page's entrance, `delay` seconds
+/// after the screen mounts (greeting, profile switch, composer: 0, 40,
+/// 80 ms), leaving faster with the page.
+fn hero_entrance(s: &State) -> rune::Transition {
+    let st = crate::design::styles::Style::of(&s.prefs);
+    rune::Transition::opacity()
+        .combined(rune::Transition::offset(0., st.enter_rise))
+        .springs(rune::SpringPair::with_exit_ratio(st.enter, 0.6))
+}
+
+/// The hero's stagger, in seconds per part.
+const HERO_STAGGER: f32 = 0.04;
 
 #[cfg(test)]
 mod tests {

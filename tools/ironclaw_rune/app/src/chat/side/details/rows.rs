@@ -16,7 +16,6 @@ use rune::{Color, Cursor, El, Key, SpringPair, Transition, Vec2, el, icon, row};
 use super::super::ui::{self, sm, sm_med, xs};
 use super::{Dropdown, ROW_H, close_menus, open_dropdown};
 use crate::design::styles::Style;
-use crate::icons;
 use crate::state::State;
 
 /// Rows' inner padding, so glyphs sit on one column.
@@ -97,6 +96,7 @@ pub(super) fn pressable(s: &State, e: El) -> El {
         .hover(p.hover)
         .press(p.active)
         .hover_motion(st.hover, st.hover)
+        .press_scale(crate::design::motion::PRESS_CARD)
         .focusable(true)
         .focus_fill(p.hover)
         .no_focus_ring()
@@ -137,7 +137,14 @@ pub(super) fn split(s: &State, key: &str, primary: El, which: Dropdown, open: bo
         .fill(if open { p.active } else { Color::TRANSPARENT })
         .focusable(false)
         .on_press(move |s: &mut State| super::toggle_dropdown(s, which))
-        .child(icon(&icons::CHEVRON_DOWN, 14.).color(if open { p.text } else { p.text_faint }));
+        // Turns over as its menu opens and back as it shuts.
+        .child(crate::design::kit::chevron(
+            "glyph",
+            open,
+            crate::design::kit::Turn::Flip,
+            14.,
+            if open { p.text } else { p.text_faint },
+        ));
     arrow_keys(
         row()
             .key(key.to_string())

@@ -46,6 +46,7 @@ use super::{
     SideState, Tab, agents, bridge, changes, git, pick_project_folder, remote_repo, routines,
     session, short_path, side, side_mut, side_of, thread_id,
 };
+use crate::design::kit::{self, Turn};
 use crate::icons;
 use crate::jobs;
 use crate::state::{Page, State};
@@ -133,8 +134,13 @@ pub(super) fn opened(s: &mut State) {
         jobs::blocking(
             s,
             move || git::pull_request(&repo),
-            move |s, pr, _| {
+            move |s, pr, tx| {
                 if let Some(x) = side_of(s, &asked).filter(|x| x.folder_gen == generation) {
+                    // A section arriving under the open card fades in and
+                    // eases the rows below aside instead of snapping.
+                    if x.session_open && x.details.pr.is_none() && pr.is_some() {
+                        tx.animated();
+                    }
                     x.details.pr = pr;
                 }
             },
@@ -163,12 +169,18 @@ fn refresh_servers(
     jobs::blocking(
         s,
         move || servers::discover(&folder),
-        move |s, found, _| {
+        move |s, found, tx| {
             let Some(x) = side_of(s, &thread).filter(|x| x.folder_gen == generation) else {
                 return;
             };
             match found {
-                Ok(list) => x.details.servers = list,
+                Ok(list) => {
+                    // As the PR row: the section arrives with motion.
+                    if x.session_open && x.details.servers.is_empty() && !list.is_empty() {
+                        tx.animated();
+                    }
+                    x.details.servers = list;
+                }
                 Err(e) => tracing::debug!(error = %e, "server discovery failed"),
             }
         },
@@ -825,9 +837,12 @@ fn init_git(s: &mut State, thread: String, folder: std::path::PathBuf) {
     jobs::blocking(
         s,
         move || git::init(&dir),
-        move |s, result, _| {
+        move |s, result, tx| {
             // The user moved to another thread: its folder and banner are not ours.
             let Some(x) = side_of(s, &thread) else { return };
+            // The answer to the person's "Initialize": the banner leaves
+            // with motion.
+            tx.animated();
             x.details.initializing = false;
             match result {
                 // Re-reading the folder finds the new repository.
@@ -898,7 +913,10 @@ fn servers_section(c: &Ctx) -> Option<Section> {
             pressable(
                 s,
                 base("thread-details-servers-more")
-                    .child(icon(&icons::PLUS, 16.).color(s.palette.text_faint))
+                    .child(
+                        icon(if more { &icons::MINUS } else { &icons::PLUS }, 16.)
+                            .color(s.palette.text_faint),
+                    )
                     .child(label(s, text, false)),
             )
             .on_press(|s: &mut State| {
@@ -919,9 +937,11 @@ fn stop_server(s: &mut State, thread: String, server: servers::Server) {
     jobs::blocking(
         s,
         move || servers::stop(&server, &dir),
-        move |s, result, _| {
+        move |s, result, tx| {
             let Some(x) = side_of(s, &thread) else { return };
             x.details.stopping = None;
+            // The person's Stop: its spinner settles back with motion.
+            tx.animated();
             let generation = x.folder_gen;
             if let Err(e) = result {
                 bridge::set_error(s, e);
@@ -949,7 +969,8 @@ fn automations(c: &Ctx) -> Option<Section> {
     );
     let rows = bound
         .into_iter()
-        .map(|(sch, busy)| {
+        .map(|(sch, asked)| {
+            let busy = asked.is_some();
             let id = sch.id.clone();
             let next = sch
                 .next_run_at
@@ -997,14 +1018,15 @@ fn automations(c: &Ctx) -> Option<Section> {
             if !sch.is_webhook() {
                 let run = id.clone();
                 r = r.child(
-                    ui::ibtn(&icons::PLAY, "Run now")
-                        .label(format!("Run {} now", sch.title))
-                        .disabled(busy)
-                        .on_press(move |s: &mut State| {
-                            routines::schedule_action(s, run.clone(), None)
-                        })
-                        .build(c.k)
-                        .key(format!("thread-details-automation-run-{id}")),
+                    super::busy::icon_button(
+                        c.k,
+                        format!("thread-details-automation-run-{id}"),
+                        &icons::PLAY,
+                        "Run now",
+                        routines::busy_of(asked.as_ref(), "run"),
+                        move |s: &mut State| routines::schedule_action(s, run.clone(), None),
+                    )
+                    .label(format!("Run {} now", sch.title)),
                 );
             }
             let enabled = sch.enabled;
@@ -1189,17 +1211,13 @@ fn lineage(c: &Ctx) -> Option<Section> {
         if !open {
             head = head.child(meta(s, previous.len().to_string()));
         }
-        head = head.child(
-            icon(
-                if open {
-                    &icons::CHEVRON_DOWN
-                } else {
-                    &icons::CHEVRON_RIGHT
-                },
-                16.,
-            )
-            .color(p.text_muted),
-        );
+        head = head.child(kit::chevron(
+            "previous-agents-chevron",
+            open,
+            Turn::Disclose,
+            16.,
+            p.text_muted,
+        ));
         rows.push(
             pressable(s, head)
                 .expanded(open)
@@ -1285,21 +1303,28 @@ fn side_chats(c: &Ctx) -> Section {
     };
     let mut sec = Section::new("thread-details-side-chats", title);
     let open_id = x.chat.as_ref().map(|c| c.thread_id.clone());
+    // The open side chat's wash is one pill gliding between rows (rows
+    // are ROW_H tall, no gap), not a fill that jumps.
+    let shown_ix = chats
+        .iter()
+        .position(|id| open_id.as_deref() == Some(id.as_str()));
+    let pill = kit::slide_pill_sized(
+        s,
+        "side-chats-pill",
+        shown_ix.map(|ix| ix as f32 * ROW_H),
+        ROW_H,
+    )
+    .map(|pill| pill.fill(p.active));
     let rows: Vec<El> = chats
         .into_iter()
-        .enumerate()
-        .map(|(ix, id)| {
-            let shown = open_id.as_deref() == Some(id.as_str());
+        .map(|id| {
             let live = side_chat_running(s, &id);
             let name = bridge::title(s, &id).unwrap_or_else(|| "Side chat".into());
-            let mut item = base(format!("session-side-chat-{ix}"))
+            let mut item = base(format!("session-side-chat-{id}"))
                 .child(glyph(s, &icons::MESSAGES_SQUARE))
                 .child(label(s, name.clone(), true));
             if live {
                 item = item.child(crate::design::kit::Spinner::new().size(12.).build(c.k));
-            }
-            if shown {
-                item = item.fill(p.active);
             }
             pressable(s, item)
                 .label(format!("Open side chat {name}"))
@@ -1307,7 +1332,10 @@ fn side_chats(c: &Ctx) -> Section {
         })
         .collect();
     if !rows.is_empty() {
-        sec.rows.push(list("thread-details-side-chats-list", rows));
+        sec.rows.push(list(
+            "thread-details-side-chats-list",
+            pill.into_iter().chain(rows).collect(),
+        ));
     }
     // ZLO's own: t3code only lists side chats; here they start from the card.
     let can_fork = !bridge::rows(s).is_empty();
@@ -1411,13 +1439,19 @@ fn meter(s: &State, key: String, name: &str, fill: Option<f64>, tone: Color, val
                     .radius(2.)
                     .fill(p.border)
                     .child(
-                        el().grow(f.max(0.01))
+                        el().key("fill")
+                            .grow(f.max(0.01))
                             .min_w(if f > 0. { 6. } else { 0. })
+                            .motion(crate::design::motion::PILL)
                             .h(4.)
                             .radius(2.)
                             .fill(if f > 0. { tone } else { Color::TRANSPARENT }),
                     )
-                    .child(el().grow((100. - f).max(0.01))),
+                    .child(
+                        el().key("rest")
+                            .grow((100. - f).max(0.01))
+                            .motion(crate::design::motion::PILL),
+                    ),
             );
         }
         None => r = r.child(ui::grow()),
@@ -1604,8 +1638,15 @@ pub(super) fn card(s: &State, k: &Kit, layer: &mut Vec<El>, anchor: &str, window
         .focus_group();
     let empty = secs.is_empty();
     for (ix, sec) in secs.into_iter().enumerate() {
+        // Keyed by the section below it, so a section arriving above does
+        // not hand its rule to another.
         if ix > 0 && sec.separated {
-            body = body.child(el().key(format!("rule-{ix}")).w_full().h(1.).fill(p.border));
+            body = body.child(
+                el().key(format!("rule-{}", sec.key))
+                    .w_full()
+                    .h(1.)
+                    .fill(p.border),
+            );
         }
         body = body.child(sec.render(s));
     }
@@ -1765,7 +1806,7 @@ mod tests {
             "thread-details-forked-from",
             "thread-details-agent-a1",
             "thread-details-previous-agents",
-            "session-side-chat-0",
+            "session-side-chat-sc1",
             "session-new-side-chat",
             "session-fork",
             "thread-details-usage-5h",

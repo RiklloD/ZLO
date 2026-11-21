@@ -25,7 +25,10 @@
 mod agents;
 pub mod fixtures;
 pub mod gateway;
+#[cfg(test)]
+mod motion_tests;
 mod projects;
+mod stepper;
 mod view;
 
 use std::path::PathBuf;
@@ -81,6 +84,12 @@ pub struct OnboardingState {
     /// `State::remote`).
     pub computer: gateway::Computer,
     pub step: Step,
+    /// Which way the last step change went: `1` forward, `-1` back, `0`
+    /// none yet. The new step's body arrives from that side.
+    pub direction: i8,
+    /// When setup first showed this launch: the claw mark draws itself in
+    /// once, within [`view::MARK_ENTRANCE`] of it, and never again.
+    pub shown_at: Option<std::time::Instant>,
     pub connect: ConnectState,
     pub agents: AgentsState,
     pub projects: ProjectsState,
@@ -91,6 +100,9 @@ pub struct OnboardingState {
     pub toast: Option<Toast>,
     /// A scene's record is in memory only.
     pub fixture_completed: bool,
+    /// The copy button that last copied, and when: it shows a check for
+    /// `kit::COPIED_FOR`.
+    pub copied: Option<(String, std::time::Instant)>,
 }
 
 pub struct Toast {
@@ -179,6 +191,7 @@ pub fn decide(s: &mut State) {
         jobs_write_record(s);
     }
     if decision == Decision::Wizard {
+        s.onboarding.shown_at = Some(std::time::Instant::now());
         tracing::debug!("first run: setup opens");
     }
 }
@@ -212,7 +225,13 @@ pub fn go_to(s: &mut State, step: Step) {
     if s.onboarding.projects.importing {
         return;
     }
-    s.onboarding.step = step;
+    let o = &mut s.onboarding;
+    o.direction = match step.index().cmp(&o.step.index()) {
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => o.direction,
+    };
+    o.step = step;
     match step {
         Step::Connect => {}
         Step::Agents => agents::entered(s),
@@ -226,6 +245,33 @@ pub fn window_focus(s: &mut State, focused: bool) {
     if focused && wizard_shown(s) && s.onboarding.step == Step::Agents {
         agents::refresh(s);
     }
+}
+
+/// Whether the copy button keyed `key` still shows its check.
+pub(crate) fn copied(s: &State, key: &str) -> bool {
+    s.onboarding
+        .copied
+        .as_ref()
+        .is_some_and(|(k, at)| k == key && at.elapsed() < crate::design::kit::glyphs::COPIED_FOR)
+}
+
+/// The copy button keyed `key` copied: its glyph pops to a check, and pops
+/// back after `kit::COPIED_FOR` with one timer.
+pub(crate) fn flash_copied(s: &mut State, key: String, tx: &mut rune::Tx) {
+    let at = std::time::Instant::now();
+    s.onboarding.copied = Some((key.clone(), at));
+    tx.animated();
+    crate::jobs::after(s, crate::design::kit::glyphs::COPIED_FOR, move |s, tx| {
+        if s.onboarding
+            .copied
+            .as_ref()
+            .is_some_and(|(k, t)| *k == key && *t == at)
+        {
+            s.onboarding.copied = None;
+            // The person's own confirmation going back, not a poll.
+            tx.animated();
+        }
+    });
 }
 
 /// How setup ends: what the Projects step brought in.
@@ -246,11 +292,16 @@ pub fn finish(s: &mut State, how: Finish) {
         land(s, how);
         return;
     }
-    crate::jobs::blocking(s, write_record, move |s, result, _| match result {
-        Ok(()) => land(s, how),
-        Err(e) => {
-            s.onboarding.finishing = false;
-            s.onboarding.finish_error = Some(e);
+    crate::jobs::blocking(s, write_record, move |s, result, tx| {
+        // The person's own Close or Import ending: setup leaves (or says
+        // why it can't) as they watch, not in one cut.
+        tx.animated();
+        match result {
+            Ok(()) => land(s, how),
+            Err(e) => {
+                s.onboarding.finishing = false;
+                s.onboarding.finish_error = Some(e);
+            }
         }
     });
 }
@@ -260,6 +311,7 @@ fn land(s: &mut State, how: Finish) {
     o.finishing = false;
     o.decision = Decision::App;
     o.step = Step::Connect;
+    o.direction = 0;
     let toast = match (&how.warning, how.imported) {
         (Some(w), _) => Some((
             "Some history was not imported".to_string(),
@@ -296,9 +348,12 @@ fn show_toast(s: &mut State, title: String, description: Option<String>, warning
     });
     // A warning stays until closed (t3code `timeout: 0`).
     if !warning {
-        crate::jobs::after(s, TOAST_FOR, move |s, _| {
+        crate::jobs::after(s, TOAST_FOR, move |s, tx| {
             if s.onboarding.toast.as_ref().map(|t| t.generation) == Some(generation) {
                 s.onboarding.toast = None;
+                // A note leaving on its own slides away as it came; a cut
+                // would read as a glitch.
+                tx.animated();
             }
         });
     }

@@ -12,8 +12,10 @@
 //! the style's `hover_motion`, no commit), hover ink is `group_color` under a
 //! `hover_group`, and a selection change is a keyed element whose fill,
 //! border or offset springs on the style's `slide`. A press is an overlay
-//! too: Rune has no one-pixel press sink (layout offsets do not follow the
-//! pointer).
+//! plus a small shrink about the centre (`El::press_scale`, [`motion::PRESS`]
+//! on controls, [`motion::PRESS_CARD`] on rows and cards; layout and hit
+//! testing keep the resting size, Reduce Motion turns it off). Surfaces
+//! round their corners on Apple's continuous curve (`continuous_corners`).
 //!
 //! # Public API (all take the root `&State` for palette and style)
 //!
@@ -32,15 +34,27 @@
 
 //! - `row(s, key, active) -> El` list/sidebar row; `row_ink(s, active) -> (Color, Color)`
 //! - `pill_row(s, key, active) -> El` a row over a `slide_pill`
-//! - `slide_pill(s, key, top: Option<f32>) -> Option<El>` gliding selection
-//! - `segmented(s, key, labels, selected, disabled, on_pick) -> El`
+//! - `slide_pill(s, key, top: Option<f32>) -> Option<El>` gliding selection;
+//!   `slide_pill_sized(s, key, top, height)` for rails whose rows are not
+//!   `row_height` tall
+//! - `segmented(s, key, labels, selected, disabled, on_pick) -> El` (gliding
+//!   knob, segments sized to their labels: `segment_width(label, px)`)
 //! - `chip(s, key, label, on) -> El` toggle chip (caller adds `.on_press`)
-//! - `shortcut_badge(s, index) -> El`, `cmd_digit(&KeyEvent) -> Option<usize>`
+//! - `shortcut_badge(s, index) -> El` (pops in and out while ⌘ is held)
 //! - `hover_bg(el, s) -> El` (a fading hover wash)
 //! - `activity_line(s, key, icon, title, detail) -> El`
 //! - `selectable(k, text) -> El` selectable, copyable plain text
 //! - `mono_editor(&edit).label() .rows(min, max) .on_edit(..) .build(k) -> El`
 //!   the multi-line mono editor (memory, SKILL.md)
+//!
+//! Glyphs that move (`kit::glyphs`):
+//! - `chevron(key, open, Turn::{Disclose, Flip}, size, color) -> El` one
+//!   chevron that rotates open and shut
+//! - `copy_glyph(key, copied, size, color) -> El` copy icon ↔ check, with
+//!   `copied(at)` (`glyphs::COPIED_FOR`)
+//! - `busy_glyph(key, icon, busy, size, color) -> El` breathes while busy
+//! - `glyph_button(k, key, variant, tip, glyph, on_press_tx) -> El` kit's
+//!   small icon button around one of those; `icon_ink(k, variant)`
 //!
 //! Loops (`kit::loops`, frozen by reduced motion / the battery saver):
 //! - `pulse_dots(key, color) -> El`, `gradient_spinner(key, cell) -> El`,
@@ -59,9 +73,15 @@
 
 pub mod compact;
 mod editor;
+pub mod glyphs;
 pub(crate) mod loops;
+#[cfg(test)]
+mod motion_tests;
+mod segmented;
 
 pub use editor::mono_editor;
+pub use glyphs::{Turn, busy_glyph, chevron, copied, copy_glyph, glyph_button, icon_ink};
+pub use segmented::segmented;
 
 pub use loops::{Spinner, claw_mark, gradient_spinner, pulse_dots, shimmer_text, status_dot};
 
@@ -111,8 +131,14 @@ pub struct Plate {
 }
 
 impl Plate {
+    /// Paint the plate on `el` (which sets its own radius), its corners on
+    /// Apple's continuous curve.
     pub fn apply(self, mut el: El) -> El {
-        el = el.fill(self.fill).border(1., self.rim).hover(self.hover);
+        el = el
+            .fill(self.fill)
+            .border(1., self.rim)
+            .hover(self.hover)
+            .continuous_corners();
         if let Some((top, bottom)) = self.gradient {
             el = el.gradient(top, bottom);
         }
@@ -351,6 +377,12 @@ impl Button {
         self.on_press = Some(Rc::new(move |s, _| f(s)));
         self
     }
+    /// [`Self::on_press`] whose handler also gets the transaction (to
+    /// `motion::color_morph(tx)`, copy, open a URL).
+    pub fn on_press_tx(mut self, f: impl Fn(&mut State, &mut Tx) + 'static) -> Self {
+        self.on_press = Some(Rc::new(f));
+        self
+    }
 
     pub fn build(self, s: &State) -> El {
         let st = Style::of(&s.prefs);
@@ -466,7 +498,8 @@ impl Button {
             .cursor(Cursor::Pointer)
             .hover_group()
             .hover_motion(st.hover, st.hover)
-            .press(if p.light { black(0.05) } else { white(0.05) });
+            .press(if p.light { black(0.05) } else { white(0.05) })
+            .press_scale(motion::PRESS);
         match self.on_press {
             Some(f) => b.on_press_tx(move |s: &mut State, tx: &mut Tx| f(s, tx)),
             None => b,
@@ -488,6 +521,7 @@ pub fn row_ink(s: &State, active: bool) -> (Color, Color) {
 /// A sidebar or list row with a fading hover wash and a selection that
 /// morphs in (the wash alone marks it, no ring or tick, as in Zeron). Give
 /// its text [`row_ink`] with `.group_color(..)`; the caller adds `.on_press`.
+/// It sinks a little while pressed ([`motion::PRESS_CARD`]).
 pub fn row(s: &State, key: &str, active: bool) -> El {
     let st = Style::of(&s.prefs);
     let p = &s.palette;
@@ -512,6 +546,7 @@ pub fn row(s: &State, key: &str, active: bool) -> El {
         .hover_motion(st.hover, st.hover)
         .hover_group()
         .cursor(Cursor::Pointer)
+        .press_scale(motion::PRESS_CARD)
         .motion(st.slide)
 }
 
@@ -543,13 +578,28 @@ pub fn pill_row(s: &State, key: &str, active: bool) -> El {
 /// glides between rows instead of jumping, and `None` fades it out where it
 /// was (its exit transition).
 pub fn slide_pill(s: &State, key: &str, top: Option<f32>) -> Option<El> {
-    let st = Style::of(&s.prefs);
+    slide_pill_sized(s, key, top, Style::of(&s.prefs).row_height)
+}
+
+/// [`slide_pill`] for a vertical rail whose rows are `height` points tall
+/// (a settings nav, a model picker's provider rail, a ⌘K list): the pill
+/// takes the row's height and glides between offsets. Its container needs
+/// no layout of its own beyond holding the rows (the pill is pinned
+/// left/right and out of flow); rows over it use [`pill_row`] (or any row
+/// without a selected fill).
+///
+/// ```ignore
+/// let top = selected.map(|ix| ix as f32 * (ROW_H + GAP));
+/// rail = rail.children(kit::slide_pill_sized(s, "nav-pill", top, ROW_H));
+/// ```
+pub fn slide_pill_sized(s: &State, key: &str, top: Option<f32>, height: f32) -> Option<El> {
     let top = top?;
     Some(
         el().key(key.to_string())
             .pin(Some(0.), Some(top), Some(0.), None)
-            .h(st.row_height)
+            .h(height)
             .radius(8.)
+            .continuous_corners()
             .fill(selected_wash(&s.palette))
             .a11y_hidden()
             .motion(motion::PILL)
@@ -557,76 +607,8 @@ pub fn slide_pill(s: &State, key: &str, top: Option<f32>) -> Option<El> {
     )
 }
 
-/// A segmented control whose highlight slides between equal-width segments
-/// (Zeron's 150 ms tab slide) instead of jumping.
-pub fn segmented(
-    s: &State,
-    key: &str,
-    labels: &[&str],
-    selected: usize,
-    disabled: bool,
-    on_pick: impl Fn(&mut State, usize) + Clone + 'static,
-) -> El {
-    const SEG_W: f32 = 54.;
-    const SEG_H: f32 = 24.;
-    const INSET: f32 = 2.;
-    let p = &s.palette;
-    let st = Style::of(&s.prefs);
-    let knob_fill = if p.light {
-        p.surface_raised
-    } else {
-        white(0.12)
-    };
-    let mut knob = el()
-        .key(format!("{key}-knob"))
-        .absolute(INSET + selected as f32 * SEG_W, INSET)
-        .size(SEG_W, SEG_H)
-        .radius(6.)
-        .fill(knob_fill)
-        .a11y_hidden()
-        .motion(motion::TAB_SLIDE);
-    if p.light {
-        knob = knob.shadow(1., 2., black(0.05));
-    }
-    let mut bar = rune::row()
-        .key(key.to_string())
-        .role("radiogroup")
-        .self_start()
-        .padding(INSET)
-        .radius(8.)
-        .fill(hover_wash(p))
-        .child(knob);
-    for (ix, label) in labels.iter().enumerate() {
-        let on = ix == selected;
-        let mut seg = el()
-            .key(format!("{key}-seg-{ix}"))
-            .role("radio")
-            .label(label.to_string())
-            .size(SEG_W, SEG_H)
-            .center()
-            .child(
-                text(label.to_string())
-                    .font(font(st.text(XS), 400.))
-                    .color(if on { p.text } else { p.text_muted })
-                    .group_color(p.text),
-            );
-        if !disabled && !on {
-            let pick = on_pick.clone();
-            seg = seg
-                .cursor(Cursor::Pointer)
-                .hover_group()
-                .on_press(move |s: &mut State| pick(s, ix));
-        }
-        bar = bar.child(seg);
-    }
-    if disabled {
-        bar = bar.dim(0.5);
-    }
-    bar
-}
-
-/// A toggle chip (filters, tags) with animated on/off. The caller adds
-/// `.on_press`.
+/// A toggle chip (filters, tags) with animated on/off; it shrinks while
+/// pressed ([`motion::PRESS`]). The caller adds `.on_press`.
 pub fn chip(s: &State, key: &str, label: &str, on: bool) -> El {
     let st = Style::of(&s.prefs);
     let p = &s.palette;
@@ -645,6 +627,7 @@ pub fn chip(s: &State, key: &str, label: &str, on: bool) -> El {
         })
         .hover(p.hover)
         .press(p.hover)
+        .press_scale(motion::PRESS)
         .hover_motion(st.hover, st.hover)
         .hover_group()
         .cursor(Cursor::Pointer)
@@ -657,11 +640,15 @@ pub fn chip(s: &State, key: &str, label: &str, on: bool) -> El {
         )
 }
 
-/// t3code's `⌘N` keycap, shown on rows while ⌘ is held.
+/// t3code's `⌘N` keycap, shown on rows while ⌘ is held. It is keyed
+/// `shortcut-badge` (one per row) and pops in as ⌘ goes down and out as it
+/// comes up ([`motion::glyph_pop`]) instead of flashing.
 pub fn shortcut_badge(s: &State, index: usize) -> El {
     let p = &s.palette;
     let st = Style::of(&s.prefs);
-    el().px(5.)
+    el().key("shortcut-badge")
+        .transition(motion::glyph_pop())
+        .px(5.)
         .py(1.)
         .radius(4.)
         .border(1., p.border_strong)
@@ -679,13 +666,20 @@ pub fn shortcut_badge(s: &State, index: usize) -> El {
 /// [`floating`].
 pub fn popover(s: &State, key: &str, content: El) -> El {
     let st = Style::of(&s.prefs);
-    floating(&st, &s.palette)
+    let card = floating(&st, &s.palette)
         .apply(
             content
                 .key(key.to_string())
                 .radius(st.panel_radius.clamp(6., 12.)),
         )
-        .transition(motion::pop(-6.))
+        .transition(motion::pop(-6.));
+    // Translucent only with the window's vibrancy: then blur what shows
+    // through, as a macOS menu does.
+    if st.vibrancy {
+        card.backdrop_blur(16.)
+    } else {
+        card
+    }
 }
 
 /// A raised card used for approval prompts and run notices, in the active

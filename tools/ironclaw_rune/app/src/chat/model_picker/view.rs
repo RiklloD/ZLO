@@ -5,7 +5,7 @@
 use rune::{
     Color, Cx, Cycle, El, Key, Modifier, MotionIntent, Phase, Spring, TextEdit, col, el, row,
 };
-use rune_kit::{Kit, Placement, RollingText, TextInput, popover, scrim};
+use rune_kit::{Kit, Placement, RollingText, TextInput, scrim};
 use zlo_client::orchestration::RouteProvider;
 
 use super::{
@@ -16,6 +16,7 @@ use crate::design::kit::compact::{
     ICON_SM, ICON_XS, SM, XS, ghost_icon, ico, panel_surface, spacer, spinner, txt, txt_medium,
 };
 use crate::design::kit::shortcut_badge;
+use crate::design::styles::rem;
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::State;
@@ -35,7 +36,10 @@ const ABOVE_OFFSET: f32 = 34.;
 const ABOVE_GAP: f32 = 8.;
 const PILL_H: f32 = 28.;
 /// A rail icon plus the rail's gap: one slot of travel when dragging.
-const RAIL_STEP: f32 = 34.;
+const RAIL_STEP: f32 = RAIL_ITEM + 4.;
+/// A rail item's square side, and the rail's padding around them.
+const RAIL_ITEM: f32 = 30.;
+const RAIL_PAD: f32 = 4.;
 
 /// The model pill of the chat showing `thread_id` (the open chat or a side
 /// chat), its popover into `layer`.
@@ -86,28 +90,44 @@ pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut
             14.,
         ));
     if !m.compact {
-        pill = pill.child(txt(label.clone(), SM, p.text));
+        // A picked model or level rolls in rather than cutting (the pick's
+        // reply asks for motion; the first load lands as it is).
+        pill = pill.child(rolling(k, slot.key("model-label"), label.clone(), p.text));
         if let Some(t) = &thinking {
-            pill = pill.child(txt(format!("· {t}"), SM, p.text_faint));
+            pill = pill.child(rolling(
+                k,
+                slot.key("model-thinking-label"),
+                format!("· {t}"),
+                p.text_faint,
+            ));
         }
     }
     if m.busy {
         pill = pill.child(spinner(k, ICON_XS, ink));
     } else if !m.compact {
-        pill = pill.child(ico(&icons::CHEVRON_DOWN, ICON_XS, ink));
+        // Turns over while the popover is open.
+        pill = pill.child(crate::design::kit::chevron(
+            "model-chevron",
+            m.open,
+            crate::design::kit::Turn::Flip,
+            ICON_XS,
+            ink,
+        ));
     }
     if m.compact && !m.open {
         pill = pill.help(full);
     }
     let toggle = slot.clone();
-    let pill = pill.on_press(move |s: &mut State| {
-        if let Some(m) = toggle.get_mut(s) {
-            m.toggle();
-            if m.open {
-                refresh_catalog(s, toggle.clone());
+    let pill = pill
+        .on_press(move |s: &mut State| {
+            if let Some(m) = toggle.get_mut(s) {
+                m.toggle();
+                if m.open {
+                    refresh_catalog(s, toggle.clone());
+                }
             }
-        }
-    });
+        })
+        .press_scale(design::motion::PRESS);
     let (placement, gap) = placement(m, &slot, cx);
     if m.open {
         let closing = slot.clone();
@@ -115,15 +135,35 @@ pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut
             close(s, &closing)
         }));
         let popover = model_popover(s, m, &slot, k);
-        layer.push(popover::anchored(
-            k,
-            popover,
-            &slot.key("model-pill"),
-            placement,
-            gap,
-        ));
+        layer.push(anchor(k, popover, &slot.key("model-pill"), placement, gap));
     }
     row().key(slot.key("model-pills")).center_y().child(pill)
+}
+
+/// A pill label at the pill's size whose changed characters roll.
+fn rolling(k: &Kit, key: String, label: String, color: Color) -> El {
+    rune_kit::RollingText::new(key, label)
+        .font(rune::TextStyle::new(rem(SM), 400.))
+        .color(color)
+        .spring(design::motion::ROLL)
+        .build(k)
+}
+
+/// The popover hung off its pill, as `rune_kit::popover::anchored` hangs a
+/// surface (fitted to the window, flipping when it doesn't fit), but without
+/// landing every change inside it: the panel pops in and out on its own
+/// transition (`panel_surface`), and the rail's pill and the thinking
+/// slider's knob glide. The model list lands its changes (its `instant_changes`), so switching tabs
+/// or searching swaps it at once.
+fn anchor(k: &Kit, content: El, anchor_key: &str, placement: Placement, gap: f32) -> El {
+    let side = match placement {
+        Placement::TopStart => rune::Side::Top,
+        _ => rune::Side::Bottom,
+    };
+    content
+        .anchored_fit(anchor_key, side, rune::Align::Start, gap)
+        .motion_intent(rune::MotionIntent::CUT)
+        .token_motion(k.motion.overlay)
 }
 
 /// The thinking level the pill shows, when the current model has levels.
@@ -245,12 +285,13 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
     let order = &s.prefs.provider_order;
     let recent = &s.prefs.recent_models;
 
-    let rail_item = |key: String, mark: El, on: bool, tip: String| {
+    // The selection is one pill gliding behind the rail's icons
+    // (`rail_pill`), so the items themselves carry no fill.
+    let rail_item = |key: String, mark: El, _on: bool, tip: String| {
         el().key(key)
             .size(30., 30.)
             .center()
             .radius(design::CONTROL_RADIUS)
-            .fill(if on { p.active } else { Color::TRANSPARENT })
             .hover(p.hover)
             .cursor(rune::Cursor::Pointer)
             .role("button")
@@ -269,22 +310,18 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
             },
         )
     };
-    let mut rail = col()
-        .key("model-rail-items")
-        .padding(4.)
-        .gap(4.)
-        .child(tab(
-            "rail-favorites",
-            &icons::STAR,
-            Rail::Favorites,
-            "Favorites",
-        ))
-        .child(tab(
-            "rail-all",
-            &icons::LAYOUT_GRID,
-            Rail::All,
-            "All providers",
-        ));
+    // The selected item's slot in the rail (Favorites, All, then each
+    // shown provider).
+    let mut selected = match &m.rail {
+        Rail::Favorites => Some(0),
+        Rail::All => Some(1),
+        Rail::Provider(_) => None,
+    };
+    let mut slots = 2;
+    let mut items = vec![
+        tab("rail-favorites", &icons::STAR, Rail::Favorites, "Favorites"),
+        tab("rail-all", &icons::LAYOUT_GRID, Rail::All, "All providers"),
+    ];
     for provider in m.ordered_providers(order) {
         if m.prefs.provider_hidden(&provider.provider) {
             continue;
@@ -299,6 +336,10 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
             &provider.provider,
             18.,
         );
+        if on {
+            selected = Some(slots);
+        }
+        slots += 1;
         let mut item = rail_item(format!("rail-{key}"), mark, on, tip);
         if let Some((dragged, dy)) = &m.rail_drag
             && *dragged == key
@@ -311,7 +352,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
         }
         let (k1, k4) = (key.clone(), key);
         let (s1, s4) = (slot.clone(), slot.clone());
-        rail = rail.child(
+        items.push(
             item.on_press(move |s: &mut State| {
                 if let Some(m) = s1.get_mut(s) {
                     m.rail = Rail::Provider(k1.clone());
@@ -320,6 +361,14 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
             .on_drag(move |s: &mut State, d, _| rail_drag(s, &s4, &k4, d)),
         );
     }
+
+    // The pill goes first, so the icons draw over it.
+    let rail = col()
+        .key("model-rail-items")
+        .padding(RAIL_PAD)
+        .gap(RAIL_STEP - RAIL_ITEM)
+        .children(selected.map(|ix| rail_pill(p, ix)))
+        .children(items);
 
     // Holding ⌘ numbers the first nine rows; ⌘N picks row N.
     let mut rows = col().key("model-rows").px(4.).py(4.);
@@ -376,12 +425,15 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
         .child(
             col()
                 .key("model-list")
+                // A new tab or search swaps the rows at once, rather than
+                // sliding the few they share across a list that changed.
+                .instant_changes()
                 .grow(1.)
                 .min_h(0.)
                 .scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 })
-                .key("model-list")
+                .scroll_edge_fade(16.)
                 .child(rows),
         );
     if let Some(bar) = thinking_row(s, m, slot, k) {
@@ -409,12 +461,27 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                     .scroll(rune::ScrollSpec {
                         stick_bottom: false,
                     })
-                    .key("model-rail")
+                    .scroll_edge_fade(16.)
                     .child(rail),
             )
             .child(el().w(1.).h_full().fill(p.border))
             .child(main),
     )
+}
+
+/// The rail's selection: one keyed plate behind the icon in slot `ix`,
+/// gliding to the next pick (a click, or Ctrl+Tab) on the pill spring. It
+/// sits where the selected item's own fill did, out of flow and under the
+/// icons.
+fn rail_pill(p: &Palette, ix: usize) -> El {
+    el().key("rail-pill")
+        .absolute(RAIL_PAD, RAIL_PAD + ix as f32 * RAIL_STEP)
+        .size(RAIL_ITEM, RAIL_ITEM)
+        .radius(design::CONTROL_RADIUS)
+        .fill(p.active)
+        .a11y_hidden()
+        .inert()
+        .motion(design::motion::PILL)
 }
 
 /// The search box's `TextEdit`, wherever the picker lives. A late edit
@@ -514,6 +581,8 @@ fn model_row(
     let (fav_p, fav_m) = (provider.provider.clone(), model.clone());
     let (pv, md) = (provider.provider.clone(), model);
     let (fav_slot, pick_slot) = (slot.clone(), slot.clone());
+    // The list lands its changes (`instant_changes`), so the star swaps; a pop
+    // here would never play.
     let star = ghost_icon(
         k,
         format!("fav-{id}"),

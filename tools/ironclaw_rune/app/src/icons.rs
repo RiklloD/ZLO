@@ -95,11 +95,6 @@ pub static CHEVRON_RIGHT: Icon = Icon {
     view: 24.0,
     body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m9 18 6-6-6-6" />"##,
 };
-pub static CHEVRON_UP: Icon = Icon {
-    name: "chevron-up",
-    view: 24.0,
-    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m18 15-6-6-6 6" />"##,
-};
 pub static CIRCLE_ALERT: Icon = Icon {
     name: "circle-alert",
     view: 24.0,

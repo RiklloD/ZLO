@@ -12,7 +12,7 @@
 //! Esc ↵ while it is open; ↑ in an empty composer recalls the last message.
 //! Plain ↵ sends (`on_submit`): Settings → Follow-ups while a turn runs.
 
-use rune::{Color, Cx, El, Icon, KeyEvent, Tx, auto_grow, col, el, icon, row, text, text_input};
+use rune::{Color, Cx, El, Icon, KeyEvent, Live, Tx, col, el, icon, row, text, text_input};
 use rune_kit::Kit;
 use zlo_client::GateDecision;
 use zlo_client::attachments::format_bytes;
@@ -114,6 +114,61 @@ pub fn round_button(
     glyph: &'static Icon,
     filled: bool,
     label: &str,
+    k: &Kit,
+) -> El {
+    round_button_tinted(s, id, glyph, filled, label, None, k)
+}
+
+/// Send's or Stop's plate colours as live values, so the plate glides between
+/// the idle wash and the solid plate even on a keystroke's commit, which
+/// Rune lands at once (typing never waits on a spring). The bindings are
+/// paint-only: the composer's height, the caret and the transcript still land
+/// in the keystroke's frame. One per button per chat ([`ChatState`]).
+#[derive(Clone)]
+pub(crate) struct PlateTint {
+    fill: Live<Color>,
+    ink: Live<Color>,
+}
+
+impl Default for PlateTint {
+    fn default() -> Self {
+        Self {
+            fill: Live::new(UNSET),
+            ink: Live::new(UNSET),
+        }
+    }
+}
+
+/// A [`PlateTint`] nothing has painted yet (no plate colour is fully clear).
+const UNSET: Color = Color::TRANSPARENT;
+
+/// The plate's colour change: short and critically damped, so its tail is
+/// over in a few frames instead of trailing sub-pixel steps.
+const PLATE: rune::Spring = rune::Spring::new(0.14, 0.);
+
+impl PlateTint {
+    /// Publish this view's colours: the first paint (and any paint under
+    /// reduced motion) lands, every later change glides on [`PLATE`].
+    fn paint(&self, fill: Color, ink: Color, reduced: bool) {
+        for (live, value) in [(&self.fill, fill), (&self.ink, ink)] {
+            if reduced || live.get() == UNSET {
+                live.snap(value);
+            } else {
+                live.set(value);
+            }
+        }
+    }
+}
+
+/// [`round_button`] for Send and Stop in a chat: `tint` carries the plate's
+/// colours (see [`PlateTint`]), `reduced` is the window's reduced motion.
+pub(crate) fn round_button_tinted(
+    s: &State,
+    id: &str,
+    glyph: &'static Icon,
+    filled: bool,
+    label: &str,
+    tint: Option<(&PlateTint, bool)>,
     _k: &Kit,
 ) -> El {
     let p = &s.palette;
@@ -134,18 +189,36 @@ pub fn round_button(
         } else {
             (wash, p.text_faint)
         };
-        return base
+        // The idle wash turns into the solid plate: on live colours in a
+        // chat (`PlateTint`, which a keystroke can move), else on the slide
+        // spring of an animated commit. A press sinks it a little. The glyph
+        // is keyed by what the button does, so a mode flip (send, steer,
+        // queue, update, resume) swaps it with a small blur pop rather than
+        // a cut.
+        let mut plate = base
             .size(28., 28.)
             .radius(7.)
             .fill(fill)
+            .motion(design::styles::Style::of(&s.prefs).slide)
+            .press_scale(0.94)
             .hover(if filled {
                 p.bg.alpha(0.15)
             } else {
                 Color::TRANSPARENT
-            })
-            .child(icon(glyph, 14.).color(ink));
+            });
+        let mut mark = icon(glyph, 14.)
+            .key(format!("glyph-{label}"))
+            .color(ink)
+            .transition(glyph_swap());
+        if let Some((tint, reduced)) = tint {
+            tint.paint(fill, ink, reduced);
+            plate = plate.live_fill(tint.fill.smooth(PLATE));
+            mark = mark.live_text_color(tint.ink.smooth(PLATE));
+        }
+        return plate.child(mark);
     }
-    let mut b = base.size(28., 28.).radius(7.);
+    // Attach (and the other bare glyphs) sink a little while pressed.
+    let mut b = base.size(28., 28.).radius(7.).press_scale(0.94);
     b = if filled {
         b.fill(p.text).hover(p.bg.alpha(0.15))
     } else {
@@ -154,14 +227,35 @@ pub fn round_button(
     b.child(icon(glyph, 14.).color(if filled { p.bg } else { p.text_muted }))
 }
 
+/// A send-button glyph replacing another in place: a short blur, scale and
+/// fade, out faster than in. Under reduced motion Rune makes it a fade.
+fn glyph_swap() -> rune::Transition {
+    rune::Transition::blur_replace()
+        .combined(rune::Transition::scale(0.8))
+        .allow_small_scale()
+        .springs(rune::SpringPair::with_exit_ratio(GLYPH_SPRING, 0.6))
+}
+
+const GLYPH_SPRING: rune::Spring = rune::Spring::new(0.2, 0.);
+
+/// Send or Stop arriving beside the other (typing while a turn runs) or
+/// leaving: a small scale pop with a fade, on the pop spring.
+pub(crate) fn round_pop() -> rune::Transition {
+    rune::Transition::scale(0.75)
+        .allow_small_scale()
+        .springs(rune::SpringPair::with_exit_ratio(design::styles::POP, 0.6))
+}
+
 /// An attachment card, the one look for staged and sent files: an icon
-/// tile, the name, and a muted second line (folder, size or type).
+/// tile, the name, and a muted second line (folder, size or type). `busy`:
+/// the file is being fetched to open, and its glyph breathes meanwhile.
 pub fn attachment_card(
     s: &State,
     key: String,
     glyph: &'static Icon,
     title: &str,
     subtitle: Option<String>,
+    busy: bool,
 ) -> El {
     let p = &s.palette;
     let mut words = col().min_w(0.).child(
@@ -194,7 +288,13 @@ pub fn attachment_card(
                 .center()
                 .radius(6.)
                 .border(1., p.border_strong)
-                .child(icon(glyph, 14.).color(p.text_muted)),
+                .child(crate::design::kit::busy_glyph(
+                    "file-glyph",
+                    glyph,
+                    busy,
+                    14.,
+                    p.text_muted,
+                )),
         )
         .child(words)
 }
@@ -220,7 +320,8 @@ pub(crate) fn view(
 ) -> El {
     let p = &s.palette;
     let id = chat.thread_id.clone();
-    let send = steer::render_send(s, chat, running, k);
+    let reduced = design::battery::reduced(&s.prefs, &s.look.battery, cx.system_reduced_motion());
+    let send = steer::render_send(s, chat, running, reduced, k);
     let attach_id = id.clone();
     let attach = round_button(s, "attach", &icons::PAPERCLIP, false, "Attach files", k)
         .help("Attach files")
@@ -247,6 +348,9 @@ pub(crate) fn view(
         .pill_icon(move |pill| inline_files::pill_icon_for(&snapshots, pill))
         .on_edit(move |s: &mut State| super::composer_edit(s, &edit_id))
         .on_input_key(move |s: &mut State, ev: &KeyEvent, tx: &mut Tx| on_key(s, &key_id, ev, tx))
+        // A keystroke's commit lands at once, height and all; Send's plate
+        // follows on its live colours (`PlateTint`), never by animating
+        // the keystroke (`workspace::ui::grow_box`).
         .on_input_change(move |s: &mut State, _tx: &mut Tx| on_change(s, &change_id))
         .on_submit(move |s: &mut State, tx: &mut Tx| actions::send(s, &submit_id, tx))
         .on_input_paste(move |s: &mut State, content, _tx| {
@@ -256,7 +360,7 @@ pub(crate) fn view(
             actions::paste(s, &paste_id, pasted);
             true
         });
-    let input = auto_grow(field, 1, 8);
+    let input = crate::workspace::ui::grow_box(field, style.line_px(), 1, 8);
     let target = crate::voice::Composer::Chat(id.clone());
     let voice = crate::voice::ui::composer_controls(s, k, layer, &target, Some(&chat.thread_id));
     let controls = row()
@@ -281,8 +385,7 @@ pub(crate) fn view(
         controls,
     );
     // The new-thread composer flies down to this dock (GPUI `design/dock.rs`)
-    // on the send's own spring (`motion::DOCK`, set on that commit); any
-    // other move rides the commit's curve with the rest of the chat.
+    // and back on `motion::DOCK` (`dock_matched`).
     match chat.embedded {
         false => dock_matched(s, card),
         true => card,
@@ -298,11 +401,18 @@ pub(crate) fn view(
 /// A thread switch gives the new dock a new id (`WorkspaceState::dock_flight`):
 /// two docked composers sit at the same rect, and a flight between them
 /// would only keep frames coming with nothing moving.
+///
+/// The card carries `DOCK` as its own spring, so a flight the commit names
+/// no spring for (back to the new-thread screen) glides on it too, not on
+/// Rune's slower default; its rim and the controls' layout inside it move on
+/// it as well. A focus change from a click lands at once (Rune snaps the
+/// pointer-down commit), so the rim follows focus without lag.
 pub fn dock_matched(s: &State, card: El) -> El {
     if design::wallpaper::covers_composer(&s.prefs) {
         card
     } else {
         card.matched(design::motion::composer_match(s.workspace.dock_flight))
+            .motion(design::motion::DOCK)
     }
 }
 

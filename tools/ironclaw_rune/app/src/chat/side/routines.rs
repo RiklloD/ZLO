@@ -5,7 +5,7 @@
 //! every one is listed here; they are created and edited on the Automations
 //! page.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use chrono::Utc;
 use rune::{El, col, icon, row};
@@ -17,6 +17,7 @@ use zlo_client::product_wire::{
 };
 use zlo_client::schedules::{LastOutcome, ScheduleInfo};
 
+use super::busy::{self, Busy};
 use super::ui::{self, sm, xs};
 use super::{bridge, side, side_mut};
 use crate::icons;
@@ -27,8 +28,30 @@ use crate::state::State;
 pub(super) struct RoutinesState {
     list: Option<Result<Vec<RebornAutomationInfo>, String>>,
     scheduler_off: bool,
-    busy: HashSet<String>,
+    /// Items with a request in flight, and which button asked it
+    /// (`run`, `pause`, `resume`): that one breathes, the others dim.
+    busy: HashMap<String, &'static str>,
     schedules: Vec<ScheduleInfo>,
+    /// Lists still loading (two requests per [`load`]).
+    loading: u8,
+}
+
+/// The button `asked` asks for an action on an item.
+fn which(enabled: Option<bool>) -> &'static str {
+    match enabled {
+        None => "run",
+        Some(false) => "pause",
+        Some(true) => "resume",
+    }
+}
+
+/// How button `button` of an item stands while `asked` (if any) runs.
+pub(super) fn busy_of(asked: Option<&&'static str>, button: &str) -> Busy {
+    match asked {
+        None => Busy::Idle,
+        Some(b) if *b == button => Busy::Running,
+        Some(_) => Busy::Blocked,
+    }
 }
 
 /// "in 5 min", "in 3 h", or a local date for later.
@@ -51,23 +74,31 @@ fn schedule(source: &RebornAutomationSource) -> String {
 
 /// Both lists. Routines are global, so a late answer applies to any thread.
 pub(super) fn load(s: &mut State) {
+    if let Some(x) = side_mut(s) {
+        x.routines.loading = 2;
+    }
     jobs::run(
         s,
         "routines",
         |c| async move { c.list_schedules().await },
-        |s, result, _| match result {
-            Ok(list) => {
-                if let Some(x) = side_mut(s) {
-                    x.routines.schedules = list;
-                }
+        |s, result, _| {
+            if let Some(x) = side_mut(s) {
+                x.routines.loading = x.routines.loading.saturating_sub(1);
             }
-            // silent-ok: a gateway without schedules lists routines only.
-            Err(e) if e.is_not_found() => {
-                if let Some(x) = side_mut(s) {
-                    x.routines.schedules.clear();
+            match result {
+                Ok(list) => {
+                    if let Some(x) = side_mut(s) {
+                        x.routines.schedules = list;
+                    }
                 }
+                // silent-ok: a gateway without schedules lists routines only.
+                Err(e) if e.is_not_found() => {
+                    if let Some(x) = side_mut(s) {
+                        x.routines.schedules.clear();
+                    }
+                }
+                Err(e) => bridge::set_error(s, e.to_string()),
             }
-            Err(e) => bridge::set_error(s, e.to_string()),
         },
     );
     jobs::run(
@@ -76,6 +107,7 @@ pub(super) fn load(s: &mut State) {
         |c| async move { c.list_automations().await },
         |s, result, _| {
             let Some(x) = side_mut(s) else { return };
+            x.routines.loading = x.routines.loading.saturating_sub(1);
             match result {
                 Ok(list) => {
                     x.routines.scheduler_off = !list.scheduler_enabled;
@@ -91,9 +123,10 @@ pub(super) fn load(s: &mut State) {
 pub(super) fn schedule_action(s: &mut State, id: String, enabled: Option<bool>) {
     let key = format!("schedule:{id}");
     let Some(x) = side_mut(s) else { return };
-    if !x.routines.busy.insert(key.clone()) {
+    if x.routines.busy.contains_key(&key) {
         return;
     }
+    x.routines.busy.insert(key.clone(), which(enabled));
     jobs::run(
         s,
         "routines",
@@ -103,10 +136,13 @@ pub(super) fn schedule_action(s: &mut State, id: String, enabled: Option<bool>) 
                 None => c.run_schedule(&id).await.map(|_| ()),
             }
         },
-        move |s, result, _| {
+        move |s, result, tx| {
             if let Some(x) = side_mut(s) {
                 x.routines.busy.remove(&key);
             }
+            // The answer to the person's press: the button settles back
+            // with motion (the reload after it lands as a load does).
+            tx.animated();
             if let Err(e) = result {
                 bridge::set_error(s, e.to_string());
             }
@@ -117,18 +153,25 @@ pub(super) fn schedule_action(s: &mut State, id: String, enabled: Option<bool>) 
 
 fn routine_action(s: &mut State, id: String, action: AutomationAction) {
     let Some(x) = side_mut(s) else { return };
-    if !x.routines.busy.insert(id.clone()) {
+    if x.routines.busy.contains_key(&id) {
         return;
     }
+    let button = match action {
+        AutomationAction::RunNow => "run",
+        AutomationAction::Pause => "pause",
+        _ => "resume",
+    };
+    x.routines.busy.insert(id.clone(), button);
     let key = id.clone();
     jobs::run(
         s,
         "routines",
         move |c| async move { c.automation_action(&id, action).await },
-        move |s, result, _| {
+        move |s, result, tx| {
             if let Some(x) = side_mut(s) {
                 x.routines.busy.remove(&key);
             }
+            tx.animated();
             if let Err(e) = result {
                 bridge::set_error(s, e.to_string());
             }
@@ -144,7 +187,7 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
         .iter()
         .map(|sch| {
             let id = sch.id.clone();
-            let busy = state.busy.contains(&format!("schedule:{id}"));
+            let asked = state.busy.get(&format!("schedule:{id}"));
             let next = sch
                 .next_run_at
                 .filter(|_| sch.enabled)
@@ -161,11 +204,14 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                           glyph: &'static rune::Icon,
                           enabled: Option<bool>| {
                 let id = id.clone();
-                ui::ibtn(glyph, label)
-                    .disabled(busy)
-                    .on_press(move |s: &mut State| schedule_action(s, id.clone(), enabled))
-                    .build(k)
-                    .key(format!("schedule-{key}-{}", sch.id))
+                busy::icon_button(
+                    k,
+                    format!("schedule-{key}-{}", sch.id),
+                    glyph,
+                    label,
+                    busy_of(asked, which(enabled)),
+                    move |s: &mut State| schedule_action(s, id.clone(), enabled),
+                )
             };
             let last = sch
                 .last_run_at
@@ -236,6 +282,10 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                             p.text_muted,
                         ))
                         .child(icon(&icons::ARROW_RIGHT, 12.).color(p.text_muted))
+                        .radius(5.)
+                        .hover(p.hover)
+                        .hover_motion(hover_curve(s), hover_curve(s))
+                        .press_scale(crate::design::motion::PRESS_CARD)
                         .cursor(rune::Cursor::Pointer)
                         .on_press(move |s: &mut State| {
                             crate::workspace::open_thread(s, thread.clone())
@@ -249,25 +299,34 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
 
 /// The schedules bound to `thread` (the thread details card's
 /// Automations), each with whether an action on it is running.
-pub(super) fn bound<'a>(x: &'a super::SideState, thread: &str) -> Vec<(&'a ScheduleInfo, bool)> {
+pub(super) fn bound<'a>(
+    x: &'a super::SideState,
+    thread: &str,
+) -> Vec<(&'a ScheduleInfo, Option<&'static str>)> {
     let state = &x.routines;
     state
         .schedules
         .iter()
         .filter(|sch| sch.bind_to_current_thread && sch.thread_id == thread)
-        .map(|sch| (sch, state.busy.contains(&format!("schedule:{}", sch.id))))
+        .map(|sch| {
+            (
+                sch,
+                state.busy.get(&format!("schedule:{}", sch.id)).copied(),
+            )
+        })
         .collect()
 }
 
 /// The Routines tab's refresh button, for the dock's title row.
-pub(super) fn actions(k: &Kit) -> Vec<El> {
-    vec![
-        ui::ibtn(&icons::REFRESH_CW, "Refresh")
-            .label("Refresh routines")
-            .on_press(load)
-            .build(k)
-            .key("routines-refresh"),
-    ]
+pub(super) fn actions(s: &State, k: &Kit) -> Vec<El> {
+    let loading = side(s).is_some_and(|x| x.routines.loading > 0);
+    vec![busy::refresh(
+        k,
+        "routines-refresh",
+        "Refresh routines",
+        loading,
+        load,
+    )]
 }
 
 /// How many routines and schedules the tab lists, once loaded.
@@ -318,7 +377,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     }
     for info in list {
         let id = info.automation_id.clone();
-        let busy = state.busy.contains(&id);
+        let asked = state.busy.get(&id);
         let paused = matches!(
             info.state,
             RebornAutomationState::Paused | RebornAutomationState::Disabled
@@ -342,11 +401,19 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         };
         let action = |label: &'static str, glyph: &'static rune::Icon, act: AutomationAction| {
             let id = id.clone();
-            ui::ibtn(glyph, label)
-                .disabled(busy)
-                .on_press(move |s: &mut State| routine_action(s, id.clone(), act))
-                .build(k)
-                .key(format!("routine-{label}-{}", info.automation_id))
+            let button = match act {
+                AutomationAction::RunNow => "run",
+                AutomationAction::Pause => "pause",
+                _ => "resume",
+            };
+            busy::icon_button(
+                k,
+                format!("routine-{label}-{}", info.automation_id),
+                glyph,
+                label,
+                busy_of(asked, button),
+                move |s: &mut State| routine_action(s, id.clone(), act),
+            )
         };
         let run_thread = last
             .as_ref()
@@ -399,10 +466,17 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .pl(22.)
                 .gap(4.)
                 .items_center()
-                .child(ui::dot(last_color, 6.))
+                .child(running_dot(
+                    last_color,
+                    last.status == RebornAutomationRecentRunStatus::Running,
+                ))
                 .child(ui::line(format!("{label} {when}"), xs(), p.text_muted));
             if let Some(thread) = run_thread {
                 line = line
+                    .radius(5.)
+                    .hover(p.hover)
+                    .hover_motion(hover_curve(s), hover_curve(s))
+                    .press_scale(crate::design::motion::PRESS_CARD)
                     .cursor(rune::Cursor::Pointer)
                     .child(icon(&icons::ARROW_RIGHT, 12.).color(p.text_muted))
                     .on_press(move |s: &mut State| {
@@ -416,6 +490,21 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     ui::scroll("routines-list", out)
 }
 
+/// A last run's dot: it breathes while the run is going, on the small
+/// loaders' capped clock (still under reduced motion).
+fn running_dot(color: rune::Color, running: bool) -> El {
+    let d = ui::dot(color, 6.);
+    if running {
+        d.cycle(crate::design::kit::loops::breathe(
+            1.2,
+            0.,
+            &crate::design::kit::loops::BREATH_45,
+        ))
+    } else {
+        d
+    }
+}
+
 /// Fixture lists for scenes.
 pub(super) fn fixture(
     x: &mut super::SideState,
@@ -424,4 +513,9 @@ pub(super) fn fixture(
 ) {
     x.routines.schedules = schedules;
     x.routines.list = Some(Ok(list));
+}
+
+/// The app's hover fade.
+fn hover_curve(s: &State) -> rune::Curve {
+    crate::design::styles::Style::of(&s.prefs).hover
 }

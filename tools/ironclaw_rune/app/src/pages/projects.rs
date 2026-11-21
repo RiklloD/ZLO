@@ -10,6 +10,7 @@ use super::common::{
     BASE, Btn, SM, Tone, XS, actions, button, card, empty_state, error_line, glyph, header,
     icon_button, label, loading, page_body, para, refresh_button, tag,
 };
+use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -63,7 +64,10 @@ fn create(s: &mut State) {
         s,
         "projects",
         move |c| async move { c.create_project(&name, &description).await },
-        |s, result, _| {
+        |s, result, tx| {
+            // The person's Create: the new card wipes in at the top and the
+            // rest glide down.
+            tx.animated();
             let this = &mut s.pages.projects;
             this.creating = false;
             match result {
@@ -84,7 +88,10 @@ fn set_state(s: &mut State, id: String, state: RebornProjectState) {
         s,
         "projects",
         move |c| async move { c.set_project_state(&id, state).await },
-        |s, result, _| {
+        |s, result, tx| {
+            // Archive / Restore: the card folds away (or back) and the
+            // archived count rolls.
+            tx.animated();
             let this = &mut s.pages.projects;
             match result {
                 Ok(updated) => {
@@ -110,7 +117,8 @@ fn delete(s: &mut State, id: String) {
         s,
         "projects",
         move |c| async move { c.delete_project(&job_id).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            tx.animated();
             let this = &mut s.pages.projects;
             match result {
                 Ok(()) => this.items.retain(|p| p.project_id != id),
@@ -140,27 +148,44 @@ fn render_row(s: &State, k: &Kit, pr: &RebornProjectInfo) -> El {
                 .min_w(0.),
         );
     if archived {
-        head = head.child(tag(p, "Archived", Tone::Secondary));
+        head = head.child(
+            tag(p, "Archived", Tone::Secondary)
+                .key("archived")
+                .transition(motion::glyph_pop()),
+        );
     }
     let state_button = {
         let id = id.clone();
         icon_button(icon, tip)
             .on_press(move |s: &mut State| set_state(s, id.clone(), next))
             .build(k)
+            .key("state")
+            .press_scale(motion::PRESS)
     };
     let delete_button = if s.pages.projects.confirm_delete.as_deref() == Some(id.as_str()) {
         let id = id.clone();
         button("Delete?", Btn::Danger)
             .on_press(move |s: &mut State| delete(s, id.clone()))
             .build(k)
+            .key("delete-confirm")
+            .press_scale(motion::PRESS)
     } else {
         let id = id.clone();
         icon_button(&icons::DELETE, "Delete project")
             .on_press(move |s: &mut State| s.pages.projects.confirm_delete = Some(id.clone()))
             .build(k)
+            .key("delete")
+            .press_scale(motion::PRESS)
     };
     head = head.child(actions([state_button, delete_button]));
-    let mut c = card(p).key(format!("project-{id}")).child(head);
+    // Keyed by id: it arrives, leaves and glides to a new place when the
+    // person creates, archives or deletes one (a background re-read lands
+    // at once).
+    let mut c = card(p)
+        .key(format!("project-{id}"))
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
+        .child(head);
     if !pr.description.trim().is_empty() {
         c = c.child(para(pr.description.clone(), SM, p.text));
     }
@@ -187,12 +212,16 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         } else {
             format!("Show archived ({archived_count})")
         };
+        // The count rolls when the person archives or restores one.
         head.push(
             button(&title, Btn::Ghost)
+                .rolling("projects-archived-label")
                 .on_press(|s: &mut State| {
                     s.pages.projects.show_archived = !s.pages.projects.show_archived
                 })
-                .build(k),
+                .build(k)
+                .key("show-archived")
+                .press_scale(motion::PRESS),
         );
     }
     head.push(refresh_button(k, refresh));
@@ -221,7 +250,9 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
             row().w_full().justify_end().child(
                 loading(button("Create", Btn::Primary), this.creating)
                     .on_press(create)
-                    .build(k),
+                    .build(k)
+                    .key("create")
+                    .press_scale(motion::PRESS),
             ),
         );
 
@@ -235,13 +266,20 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
 
     let mut body = col().w_full().child(header(p, "Projects", actions(head)));
     if let Some(e) = &this.error {
-        body = body.child(error_line(p, e));
+        body = body.child(error_line(p, e).key("projects-error"));
     }
     body = body.child(form);
     if this.loaded && rows.is_empty() {
-        body = body.child(empty_state(p, "No projects yet."));
+        body = body.child(empty_state(p, "No projects yet.").key("projects-none"));
     }
-    body = body.child(col().w_full().pt(16.).gap(12.).children(rows));
+    body = body.child(
+        col()
+            .key("projects")
+            .w_full()
+            .pt(16.)
+            .gap(12.)
+            .children(rows),
+    );
     page_body("projects-page", body)
 }
 

@@ -16,7 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use rune::TextEdit;
+use rune::{TextEdit, Tx};
+use zlo_client::ClientError;
 use zlo_client::inbox::{
     InboxAction, InboxEngine, InboxListResponse, InboxProfile, InboxRow, InboxState, InboxStatus,
 };
@@ -78,6 +79,9 @@ pub struct Inbox {
     settle_poll_until: i64,
     loading: bool,
     stale: bool,
+    /// A read the person caused is waiting or in flight ([`refresh_shown`]):
+    /// its answer moves the rows instead of landing them.
+    shown: bool,
     /// Parents whose subagent list is unfolded (closed by default).
     pub expanded: BTreeSet<String>,
     /// The thread whose parents were last unfolded to show it.
@@ -139,6 +143,7 @@ impl Inbox {
             settle_poll_until: 0,
             loading: false,
             stale: false,
+            shown: false,
             expanded: BTreeSet::new(),
             revealed: None,
             cmd_held: false,
@@ -430,6 +435,11 @@ pub(super) fn poll_for_title(s: &mut State) {
 }
 
 /// Re-read the inbox. Coalesces: a call during a read marks it stale.
+///
+/// A background read (a poll, a wake, the window coming to the front, a
+/// chat's update) lands its answer at once, as Rune lands any commit no
+/// input caused: data changing under the person doesn't move. A read the
+/// person caused goes through [`refresh_shown`].
 pub fn refresh(s: &mut State) {
     if s.rt.backend.is_none() {
         return;
@@ -443,33 +453,78 @@ pub fn refresh(s: &mut State) {
         s,
         "inbox",
         |c| async move { c.inbox().await },
-        |s, result, _| {
+        |s, result, tx| {
             s.workspace.inbox.loading = false;
+            // A newer read is due: a shown read waits for it, the newest.
+            let again = std::mem::take(&mut s.workspace.inbox.stale);
+            let shown = !again && std::mem::take(&mut s.workspace.inbox.shown);
             match result {
-                Ok(list) => apply(s, list),
+                Ok(list) => refreshed(s, list, shown, tx),
                 // silent-ok: the list keeps its last state; the next event retries.
                 Err(e) => tracing::debug!(error = %e, "inbox refresh failed"),
             }
-            if std::mem::take(&mut s.workspace.inbox.stale) {
+            if again {
                 refresh(s);
             }
         },
     );
 }
 
-/// Write one mark; the answer is the new list.
+/// [`refresh`] for a read the person caused (a new thread they made, a
+/// fork they asked for): its answer moves the rows, a new card enters and
+/// the others step aside on `ROW_RESORT`.
+pub fn refresh_shown(s: &mut State) {
+    if s.rt.backend.is_none() {
+        return;
+    }
+    s.workspace.inbox.shown = true;
+    refresh(s);
+}
+
+/// An inbox read answered; `shown` when the person caused it.
+fn refreshed(s: &mut State, list: InboxListResponse, shown: bool, tx: &mut Tx) {
+    if shown {
+        tx.animated();
+    }
+    apply(s, list);
+}
+
+/// Write one mark the person made (pin, unpin, snooze, wake, unsettle,
+/// opening a row with a result); the answer is the new list, and its rows
+/// move to their new places on `ROW_RESORT` (a reply is a queued update,
+/// which Rune lands at once unless it asks for motion).
 pub fn mark(s: &mut State, thread_id: String, action: InboxAction, until: Option<i64>) {
+    mark_as(s, thread_id, action, until, true);
+}
+
+/// [`mark`] for one the app makes on its own (a run seen live as it ended):
+/// the rows land where the answer puts them.
+pub fn mark_quietly(s: &mut State, thread_id: String, action: InboxAction) {
+    mark_as(s, thread_id, action, None, false);
+}
+
+fn mark_as(s: &mut State, thread_id: String, action: InboxAction, until: Option<i64>, shown: bool) {
     s.workspace.inbox.snooze_menu = None;
     jobs::run(
         s,
         "inbox mark",
         move |c| async move { c.inbox_mutate(&thread_id, action, until).await },
-        |s, result, _| match result {
-            Ok(list) => apply(s, list),
-            // silent-ok: an older gateway has no marks; the row stays as it was.
-            Err(e) => tracing::debug!(error = %e, "inbox mark failed"),
-        },
+        move |s, result, tx| marked(s, result, shown, tx),
     );
+}
+
+/// A mark answered.
+fn marked(s: &mut State, result: Result<InboxListResponse, ClientError>, shown: bool, tx: &mut Tx) {
+    match result {
+        Ok(list) => {
+            if shown {
+                tx.animated();
+            }
+            apply(s, list);
+        }
+        // silent-ok: an older gateway has no marks; the row stays as it was.
+        Err(e) => tracing::debug!(error = %e, "inbox mark failed"),
+    }
 }
 
 /// Navigate only after the gateway confirms the mark. Never use an old
@@ -480,7 +535,7 @@ pub fn settle(s: &mut State, thread_id: String) {
         s,
         "inbox settle",
         move |c| async move { c.inbox_mutate(&id, InboxAction::Settle, None).await },
-        move |s, result, _| {
+        move |s, result, tx| {
             let list = match result {
                 Ok(list) => list,
                 Err(e) => {
@@ -488,15 +543,18 @@ pub fn settle(s: &mut State, thread_id: String) {
                     return;
                 }
             };
-            settled(s, &thread_id, list);
+            settled(s, &thread_id, list, tx);
         },
     );
 }
 
 /// The gateway confirmed the settle. Only the thread on screen moves the
 /// screen: settling a background card (found by search, say) leaves the
-/// open chat where it is.
-fn settled(s: &mut State, thread_id: &str, list: InboxListResponse) {
+/// open chat where it is. The person settled it, so the card leaves and the
+/// rows close up on `ROW_RESORT`, and the thread that takes the screen
+/// arrives with the usual motion.
+fn settled(s: &mut State, thread_id: &str, list: InboxListResponse, tx: &mut Tx) {
+    tx.animated();
     let open = s.page == Page::Chat && active_id(s) == Some(thread_id);
     apply(s, list);
     if !open {
@@ -714,13 +772,47 @@ mod tests {
             rows,
             ..Default::default()
         };
-        settled(&mut s, "b", list(rows()));
+        let mut tx = Tx::default();
+        settled(&mut s, "b", list(rows()), &mut tx);
         assert_eq!(active_id(&s), Some("a"));
 
         let mut last = rows();
         last[0].state = InboxState::Settled;
-        settled(&mut s, "a", list(last));
+        settled(&mut s, "a", list(last), &mut tx);
         assert_eq!(active_id(&s), None);
+    }
+
+    /// The answers to what the person did move the rows on `ROW_RESORT`:
+    /// a reply is a queued update, which a real window lands at once
+    /// unless it asks for motion (a headless `Runtime` animates every
+    /// commit, so the flag is what shows it). Reads and marks the app
+    /// makes on its own land.
+    #[test]
+    fn only_answers_to_what_the_person_did_move_the_rows() {
+        use crate::workspace::asked_motion;
+        let list = || InboxListResponse {
+            rows: vec![row("a", InboxState::Pinned, None)],
+            ..Default::default()
+        };
+        let mut s = crate::chat::fixtures::test_state();
+
+        let mut tx = Tx::default();
+        marked(&mut s, Ok(list()), true, &mut tx);
+        assert!(asked_motion(&tx), "a pin, snooze or wake glides");
+        let mut tx = Tx::default();
+        marked(&mut s, Ok(list()), false, &mut tx);
+        assert!(!asked_motion(&tx), "a run seen ending lands");
+
+        let mut tx = Tx::default();
+        settled(&mut s, "a", list(), &mut tx);
+        assert!(asked_motion(&tx), "a settle glides");
+
+        let mut tx = Tx::default();
+        refreshed(&mut s, list(), false, &mut tx);
+        assert!(!asked_motion(&tx), "a background read lands");
+        let mut tx = Tx::default();
+        refreshed(&mut s, list(), true, &mut tx);
+        assert!(asked_motion(&tx), "a read the person caused glides");
     }
 
     /// A side chat (a fork handoff) is an open row the sidebar hides under

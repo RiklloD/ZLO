@@ -17,6 +17,7 @@ use rune_kit::{Kit, Markdown, Switch};
 use zlo_client::product_wire::{RebornSkillInfo, RebornSkillSourceKind};
 
 use crate::design::kit::mono_editor;
+use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -57,11 +58,24 @@ pub fn opened(s: &mut State) {
 }
 
 pub fn refresh(s: &mut State) {
+    load(s, false);
+}
+
+/// Re-list after something the person did here (install, remove, save, a
+/// switch): cards arrive, leave and glide, switches slide to what stuck.
+fn refresh_shown(s: &mut State) {
+    load(s, true);
+}
+
+fn load(s: &mut State, shown: bool) {
     jobs::run(
         s,
         "skills",
         |c| async move { c.skills().await },
-        |s, result, _| {
+        move |s, result, tx| {
+            if shown {
+                tx.animated();
+            }
             let p = st(s);
             match result {
                 Ok(list) => {
@@ -87,7 +101,9 @@ fn toggle_content(s: &mut State, name: String) {
         s,
         "skills",
         move |c| async move { c.skill_content(&job_name).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The person's View: the instructions wipe in under the card.
+            tx.animated();
             let p = st(s);
             match result {
                 Ok(skill) if p.open.contains_key(&name) => {
@@ -110,7 +126,7 @@ fn set_auto(s: &mut State, name: String, enabled: bool) {
         move |c| async move { c.set_skill_auto_activate(&name, enabled).await },
         |s, result, _| match result {
             // Re-list so the switch shows the stored value.
-            Ok(_) => refresh(s),
+            Ok(_) => refresh_shown(s),
             Err(e) => st(s).error = Some(e.to_string()),
         },
     );
@@ -122,7 +138,7 @@ fn set_auto_learned(s: &mut State, enabled: bool) {
         "skills",
         move |c| async move { c.set_auto_activate_learned(enabled).await },
         |s, result, _| match result {
-            Ok(_) => refresh(s),
+            Ok(_) => refresh_shown(s),
             Err(e) => st(s).error = Some(e.to_string()),
         },
     );
@@ -153,7 +169,8 @@ fn save_editor(s: &mut State) {
             // Read back what the gateway stored.
             c.skill_content(&name).await
         },
-        |s, result, _| {
+        |s, result, tx| {
+            tx.animated();
             let p = st(s);
             p.busy = None;
             match result {
@@ -162,7 +179,7 @@ fn save_editor(s: &mut State) {
                     p.error = None;
                     p.editor = None;
                     p.open.insert(skill.name, Some(skill.content));
-                    refresh(s);
+                    refresh_shown(s);
                 }
                 Err(e) => p.error = Some(e.to_string()),
             }
@@ -178,13 +195,14 @@ fn remove(s: &mut State, name: String) {
         s,
         "skills",
         move |c| async move { c.remove_skill(&name).await },
-        |s, result, _| {
+        |s, result, tx| {
+            tx.animated();
             let p = st(s);
             p.busy = None;
             match result {
                 Ok(resp) => {
                     p.notice = Some(resp.message);
-                    refresh(s);
+                    refresh_shown(s);
                 }
                 Err(e) => p.error = Some(e.to_string()),
             }
@@ -204,7 +222,9 @@ fn search(s: &mut State) {
         s,
         "skills",
         move |c| async move { c.search_skills(&query).await },
-        |s, result, _| {
+        |s, result, tx| {
+            // The person's search: the results wipe in.
+            tx.animated();
             let p = st(s);
             p.searching = false;
             p.results = Some(match result {
@@ -255,13 +275,14 @@ fn install(s: &mut State, name: String) {
         s,
         "skills",
         move |c| async move { c.install_skill(&name).await },
-        |s, result, _| {
+        |s, result, tx| {
+            tx.animated();
             let p = st(s);
             p.busy = None;
             match result {
                 Ok(resp) if resp.success => {
                     p.notice = Some(resp.message);
-                    refresh(s);
+                    refresh_shown(s);
                 }
                 Ok(resp) => p.error = Some(resp.message),
                 Err(e) => p.error = Some(e.to_string()),
@@ -270,7 +291,7 @@ fn install(s: &mut State, name: String) {
     );
 }
 
-fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
+fn render_skill(s: &State, k: &Kit, x: &RebornSkillInfo) -> El {
     let p = &s.palette;
     let sk = &s.pages.skills;
     let source = match x.source_kind {
@@ -315,7 +336,7 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
                 .on_toggle(move |s: &mut State| set_auto(s, name.clone(), !on))
                 .build(k)
                 .help("Activate automatically when relevant")
-                .key(format!("auto-{ix}")),
+                .key(format!("auto-{}", x.name)),
         );
         // The gateway serves skill content only for editable skills.
         let name = x.name.clone();
@@ -327,7 +348,8 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
             )
             .on_press(move |s: &mut State| toggle_content(s, name.clone()))
             .build(k)
-            .key(format!("view-{ix}")),
+            .key(format!("view-{}", x.name))
+            .press_scale(motion::PRESS),
         );
     }
     if x.can_edit && matches!(open, Some(Some(_))) && !editing {
@@ -336,7 +358,8 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
             button_sized("Edit", Look::Ghost, Size::Small)
                 .on_press(move |s: &mut State| open_editor(s, name.clone()))
                 .build(k)
-                .key(format!("edit-{ix}")),
+                .key(format!("edit-{}", x.name))
+                .press_scale(motion::PRESS),
         );
     }
     if x.can_delete {
@@ -346,59 +369,80 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
                 .disabled(busy)
                 .on_press(move |s: &mut State| remove(s, name.clone()))
                 .build(k)
-                .key(format!("confirm-remove-skill-{ix}"))
+                .key(format!("confirm-remove-skill-{}", x.name))
+                .press_scale(motion::PRESS)
         } else {
             icon_button_sized(&icons::DELETE, "Remove skill", Size::Small)
                 .label(format!("Remove {}", x.name))
                 .on_press(move |s: &mut State| st(s).confirm_remove = Some(name.clone()))
                 .build(k)
-                .key(format!("remove-skill-{ix}"))
+                .key(format!("remove-skill-{}", x.name))
+                .press_scale(motion::PRESS)
         });
     }
 
-    let mut c = card(p).key(format!("skill-{}", x.name)).child(head);
+    // Keyed by name: installed or removed by the person, it arrives or
+    // folds away and the rest glide.
+    let mut c = card(p)
+        .key(format!("skill-{}", x.name))
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
+        .child(head);
     if let Some(content) = open {
-        c = c.child(match (content, editing) {
-            (_, true) => col()
-                .w_full()
-                .gap(8.)
-                .child(rule(p))
-                .child(
-                    mono_editor(&sk.editor_text)
-                        .rows(8, 30)
-                        .label(format!("/{} instructions", x.name))
-                        .on_edit(|s: &mut State| &mut s.pages.skills.editor_text)
-                        .build(k)
-                        .key(format!("editor-{ix}")),
-                )
-                .child(
-                    row()
-                        .w_full()
-                        .gap(8.)
-                        .justify_end()
-                        .child(
-                            button_sized("Cancel", Look::Ghost, Size::Small)
-                                .on_press(|s: &mut State| st(s).editor = None)
-                                .build(k)
-                                .key(format!("cancel-edit-{ix}")),
-                        )
-                        .child(
-                            loading(
-                                button_sized("Save", Look::Primary, Size::Small)
-                                    .on_press(|s: &mut State| save_editor(s)),
-                                busy,
-                            )
+        // Each state of the open section is its own keyed part, so the
+        // spinner, the instructions and the editor wipe open in turn.
+        let part = match (content, editing) {
+            (_, true) => "editing",
+            (None, false) => "loading",
+            (Some(_), false) => "reading",
+        };
+        c = c.child(
+            match (content, editing) {
+                (_, true) => col()
+                    .w_full()
+                    .gap(8.)
+                    .child(rule(p))
+                    .child(
+                        mono_editor(&sk.editor_text)
+                            .rows(8, 30)
+                            .label(format!("/{} instructions", x.name))
+                            .on_edit(|s: &mut State| &mut s.pages.skills.editor_text)
                             .build(k)
-                            .key(format!("save-edit-{ix}")),
-                        ),
+                            .key(format!("editor-{}", x.name)),
+                    )
+                    .child(
+                        row()
+                            .w_full()
+                            .gap(8.)
+                            .justify_end()
+                            .child(
+                                button_sized("Cancel", Look::Ghost, Size::Small)
+                                    .on_press(|s: &mut State| st(s).editor = None)
+                                    .build(k)
+                                    .key(format!("cancel-edit-{}", x.name))
+                                    .press_scale(motion::PRESS),
+                            )
+                            .child(
+                                loading(
+                                    button_sized("Save", Look::Primary, Size::Small)
+                                        .on_press(|s: &mut State| save_editor(s)),
+                                    busy,
+                                )
+                                .build(k)
+                                .key(format!("save-edit-{}", x.name))
+                                .press_scale(motion::PRESS),
+                            ),
+                    ),
+                (None, false) => spinner(k),
+                (Some(body), false) => col().w_full().gap(8.).child(rule(p)).child(
+                    Markdown::new(body.clone())
+                        .build(k)
+                        .key(format!("skill-md-{}", x.name)),
                 ),
-            (None, false) => spinner(k),
-            (Some(body), false) => col().w_full().gap(8.).child(rule(p)).child(
-                Markdown::new(body.clone())
-                    .build(k)
-                    .key(format!("skill-md-{ix}")),
-            ),
-        });
+            }
+            .key(part)
+            .transition(motion::reveal()),
+        );
     }
     c
 }
@@ -410,47 +454,47 @@ fn render_results(s: &State, k: &Kit) -> Option<El> {
     Some(match r {
         Err(e) => error_line(p, e),
         Ok(list) if list.is_empty() => empty_state(p, "No matching skills."),
-        Ok(list) => col()
-            .w_full()
-            .children(list.iter().enumerate().map(|(ix, hit)| {
-                let have = sk.skills.iter().any(|x| x.name == hit.name);
-                let name = hit.name.clone();
-                let busy = sk.busy.as_deref() == Some(hit.name.as_str());
-                col()
-                    .key(format!("hit-{}", hit.name))
-                    .w_full()
-                    .child(
-                        row()
-                            .w_full()
-                            .gap(12.)
-                            .py(8.)
-                            .center_y()
-                            .child(
-                                col()
-                                    .grow(1.)
-                                    .min_w(0.)
-                                    .child(text(hit.name.clone()).font(sm_medium()).color(p.text))
-                                    .child(
-                                        text(hit.description.clone())
-                                            .font(xs())
-                                            .color(p.text_muted)
-                                            .wrap(),
-                                    ),
+        Ok(list) => col().w_full().children(list.iter().map(|hit| {
+            let have = sk.skills.iter().any(|x| x.name == hit.name);
+            let name = hit.name.clone();
+            let busy = sk.busy.as_deref() == Some(hit.name.as_str());
+            col()
+                .key(format!("hit-{}", hit.name))
+                .transition(motion::reveal())
+                .w_full()
+                .child(
+                    row()
+                        .w_full()
+                        .gap(12.)
+                        .py(8.)
+                        .center_y()
+                        .child(
+                            col()
+                                .grow(1.)
+                                .min_w(0.)
+                                .child(text(hit.name.clone()).font(sm_medium()).color(p.text))
+                                .child(
+                                    text(hit.description.clone())
+                                        .font(xs())
+                                        .color(p.text_muted)
+                                        .wrap(),
+                                ),
+                        )
+                        .child(if have {
+                            outlined_tag(p, Tone::Success, "Installed")
+                        } else {
+                            loading(
+                                button_sized("Install", Look::Outline, Size::Small)
+                                    .on_press(move |s: &mut State| install(s, name.clone())),
+                                busy,
                             )
-                            .child(if have {
-                                outlined_tag(p, Tone::Success, "Installed")
-                            } else {
-                                loading(
-                                    button_sized("Install", Look::Outline, Size::Small)
-                                        .on_press(move |s: &mut State| install(s, name.clone())),
-                                    busy,
-                                )
-                                .build(k)
-                                .key(format!("install-skill-{ix}"))
-                            }),
-                    )
-                    .child(rule(p))
-            })),
+                            .build(k)
+                            .key(format!("install-skill-{}", hit.name))
+                            .press_scale(motion::PRESS)
+                        }),
+                )
+                .child(rule(p))
+        })),
     })
 }
 
@@ -461,14 +505,15 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         refresh_icon()
             .on_press(|s: &mut State| refresh(s))
             .build(k)
-            .key("refresh-skills"),
+            .key("refresh-skills")
+            .press_scale(motion::PRESS),
     ];
     let mut body = col().w_full().child(header_with(p, "Skills", actions));
     if let Some(e) = &sk.error {
-        body = body.child(error_line(p, e));
+        body = body.child(error_line(p, e).key("skills-error"));
     }
     if let Some(n) = &sk.notice {
-        body = body.child(notice_line(n, p.text_muted));
+        body = body.child(notice_line(n, p.text_muted).key("skills-notice"));
     }
     if let Some(on) = sk.auto_learned {
         body = body.child(
@@ -530,18 +575,24 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
             ),
     );
     if let Some(r) = render_results(s, k) {
-        body = body.child(col().w_full().pb(24.).child(r));
+        body = body.child(
+            col()
+                .key("skills-results")
+                .transition(motion::reveal())
+                .w_full()
+                .pb(24.)
+                .child(r),
+        );
     }
     if sk.loaded && sk.skills.is_empty() {
-        body = body.child(empty_state(p, "No skills installed."));
+        body = body.child(empty_state(p, "No skills installed.").key("skills-none"));
     }
     body = body.child(
-        col().w_full().gap(12.).children(
-            sk.skills
-                .iter()
-                .enumerate()
-                .map(|(ix, x)| render_skill(s, k, ix, x)),
-        ),
+        col()
+            .key("skills")
+            .w_full()
+            .gap(12.)
+            .children(sk.skills.iter().map(|x| render_skill(s, k, x))),
     );
     page_body("skills-page", body)
 }

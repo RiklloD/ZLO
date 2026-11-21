@@ -13,6 +13,9 @@ use super::common::{
     Btn, Tone, error_line, group_header, header, notice_line, page_body, refresh_button, rows_card,
     setting_row, switch, tag,
 };
+use super::flash;
+use crate::design::kit::loops;
+use crate::design::motion;
 use crate::remote::pairing::{self, Issued};
 use crate::remote::updates::{self, RowState};
 use crate::remote::{self, EnvState};
@@ -25,8 +28,14 @@ pub fn opened(s: &mut State) {
     pairing::opened(s);
 }
 
+/// The person's Refresh: a tailnet scan it starts lands with motion (new
+/// computers wipe in, gone ones fold away); scans on their own land at once.
 fn refresh(s: &mut State) {
+    let scanning = s.remote.page.discovering;
     pairing::opened(s);
+    if !scanning && s.remote.page.discovering {
+        s.remote.page.scan_shown = true;
+    }
 }
 
 pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
@@ -36,10 +45,10 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         .w_full()
         .child(header(p, "Computers", refresh_button(k, refresh)));
     if let Some(e) = &page.error {
-        body = body.child(error_line(p, e));
+        body = body.child(error_line(p, e).key("computers-error"));
     }
     if let Some(n) = &page.notice {
-        body = body.child(notice_line(n, p.success));
+        body = body.child(notice_line(n, p.success).key("computers-notice"));
     }
     // A Light bundle has no IronClaw of its own: This Mac is not offered.
     if !s.remote.app_only {
@@ -106,7 +115,11 @@ fn state_tag(s: &State, st: &EnvState) -> Option<El> {
     let p = &s.palette;
     Some(match st {
         EnvState::Connected => tag(p, "Connected", Tone::Success),
-        EnvState::Connecting => tag(p, "Connecting…", Tone::Secondary),
+        // Breathes (15 fps, only while it connects and is on screen, still
+        // under Reduce Motion and the battery saver) so it reads as live.
+        EnvState::Connecting => tag(p, "Connecting…", Tone::Secondary)
+            .key("connecting")
+            .cycle(loops::breathe(1.2, 0., &loops::BREATH_55)),
         EnvState::Asleep => tag(p, "Asleep", Tone::Secondary),
         EnvState::Blocked(_) => tag(p, "Not connected", Tone::Danger),
         EnvState::Saved => return None,
@@ -368,9 +381,13 @@ pub fn add_computer(s: &State, k: &Kit) -> El {
                 false,
                 move |s| pairing::use_code_for(s, o.clone(), l.clone()),
             ));
+            // Keyed by name: a computer a scan the person asked for found
+            // wipes in, and the rest glide aside.
             list = list.child(
                 row()
                     .key(format!("found-{}", f.peer.dns_name))
+                    .motion(motion::ROW_RESORT)
+                    .transition(motion::reveal())
                     .w_full()
                     .gap(10.)
                     .px(12.)
@@ -570,8 +587,11 @@ fn issued_code(s: &State, k: &Kit, issued: &Issued) -> El {
     let expired = issued.expires_at <= chrono::Utc::now();
     let link = issued.link.clone();
     let code = issued.code.clone();
+    let copied = flash::shows(s, "copy-link");
+    // Wipes in when the person makes a code.
     col()
         .key("issued-code")
+        .transition(motion::reveal())
         .w_full()
         .gap(8.)
         .child(
@@ -604,17 +624,28 @@ fn issued_code(s: &State, k: &Kit, issued: &Issued) -> El {
             row()
                 .gap(6.)
                 .child(
-                    super::common::button("Copy link", Btn::Secondary)
-                        .icon(&crate::icons::COPY)
-                        .on_press_tx(move |_: &mut State, tx: &mut rune::Tx| {
-                            tx.copy(if link.is_empty() {
-                                code.clone()
-                            } else {
-                                link.clone()
-                            })
-                        })
-                        .build(k)
-                        .key("copy-link"),
+                    // Says "Copied" with a check for a moment, then rolls back.
+                    super::common::button(
+                        if copied { "Copied" } else { "Copy link" },
+                        Btn::Secondary,
+                    )
+                    .icon(if copied {
+                        &crate::icons::CHECK
+                    } else {
+                        &crate::icons::COPY
+                    })
+                    .rolling("copy-link-label")
+                    .on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
+                        tx.copy(if link.is_empty() {
+                            code.clone()
+                        } else {
+                            link.clone()
+                        });
+                        flash::flash(s, "copy-link", tx);
+                    })
+                    .build(k)
+                    .key("copy-link")
+                    .press_scale(motion::PRESS),
                 )
                 .child(press_button(
                     k,

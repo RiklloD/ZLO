@@ -264,6 +264,27 @@ impl Rows {
         if matches!(item, Item::Reserve) || turn_start == Some(ix) {
             line = line.arrives_whole();
         }
+        // A finished activity group folds open and shut (its header, or a
+        // step's opened output) on its own spring, its moving edge
+        // feathered; the header holds still under the pointer
+        // (`keep_on_screen`). A live group keeps the stack's streaming pace,
+        // since each new step would otherwise glide in on its own. Only
+        // while a person's fold plays (`fold_now`): carried at rest, the
+        // glide costs a commit on every scroll through a long group. A group
+        // with a nested virtual tree opens at once (`folds_on_glide`).
+        let folding = chat
+            .folding_until
+            .is_some_and(|until| std::time::Instant::now() < until);
+        if let Item::Activity {
+            live: false,
+            rows: group,
+            ..
+        } = item
+            && folding
+            && flow::folds_on_glide(group.len())
+        {
+            line = line.fold_glide(FOLD).fold_feather(FOLD_FEATHER);
+        }
         // Rows of the newest turn report their height to size the reserve.
         if turn_start.is_some_and(|s| ix >= s) && !matches!(item, Item::Reserve) {
             let (thread, key, anchor) = (id.clone(), key.clone(), self.anchor.clone());
@@ -311,6 +332,11 @@ impl Rows {
         line
     }
 }
+
+/// An activity group folding open or shut (`motion::ROW_RESORT`'s time).
+const FOLD: rune::Spring = crate::design::motion::ROW_RESORT;
+/// How deep a folding group's moving edge feathers, in points.
+const FOLD_FEATHER: f32 = 16.;
 
 pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
     let items = chat.items.clone();
@@ -376,7 +402,6 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
         .min_h(0.)
         .items_center()
         .scroll(ScrollSpec { stick_bottom: true })
-        .key(transcript_key(&id))
         .scroll_edge_fade(24.)
         .on_layout_tx(move |s: &mut State, r, tx| {
             let Some(c) = chat_for(s, &layout_id) else {

@@ -10,7 +10,10 @@
 //! Port of GPUI `pages/extensions.rs`: state and gateway calls here, the
 //! rendering in `extensions/view.rs`.
 
+pub(crate) mod drill;
 pub mod fixtures;
+#[cfg(test)]
+mod motion_tests;
 pub mod plugin;
 mod plugin_view;
 mod view;
@@ -214,7 +217,10 @@ fn install(s: &mut State, entry: &RebornExtensionRegistryEntry) {
         s,
         "extensions",
         move |c| async move { c.install_extension(&package_ref).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's own action: let it move.
+            tx.animated();
+
             st(s).busy = None;
             match result {
                 Ok(resp) => {
@@ -240,7 +246,10 @@ fn remove(s: &mut State, id: String) {
         s,
         "extensions",
         move |c| async move { c.remove_extension(&id).await },
-        |s, result, _| {
+        |s, result, tx| {
+            // The reply to the person's own action: let it move.
+            tx.animated();
+
             st(s).busy = None;
             match result {
                 Ok(resp) => {
@@ -274,12 +283,16 @@ fn open_setup(s: &mut State, id: String) {
         s,
         "extensions",
         move |c| async move { c.extension_setup(&job_id).await },
-        move |s, result, _| match result {
-            Ok(view) => fill_setup(s, &id, view),
-            Err(e) => {
-                let ext = st(s);
-                ext.setup = None;
-                ext.error = Some(e.to_string());
+        move |s, result, tx| {
+            // The reply to the person's own action: let it move.
+            tx.animated();
+            match result {
+                Ok(view) => fill_setup(s, &id, view),
+                Err(e) => {
+                    let ext = st(s);
+                    ext.setup = None;
+                    ext.error = Some(e.to_string());
+                }
             }
         },
     );
@@ -334,7 +347,10 @@ fn submit_setup(s: &mut State) {
         s,
         "extensions",
         move |c| async move { c.submit_extension_setup(&id, secrets, fields).await },
-        |s, result, _| {
+        |s, result, tx| {
+            // The reply to the person's own action: let it move.
+            tx.animated();
+
             if let Some(x) = st(s).setup.as_mut() {
                 x.submitting = false;
             }
@@ -385,7 +401,12 @@ fn poll_pairing(s: &mut State, id: String, delay: Option<Duration>) {
             }
             c.pairing_status(&job_id).await
         },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The first read answers the person opening the drawer; the
+            // follow-up polls are background and land at once.
+            if delay.is_none() {
+                tx.animated();
+            }
             let ext = st(s);
             let Some(p) = ext.pairing.as_mut().filter(|p| p.id == id) else {
                 return;
@@ -416,7 +437,10 @@ fn mint_pairing(s: &mut State) {
         s,
         "extensions",
         move |c| async move { c.mint_pairing_code(&job_id).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's own action: let it move.
+            tx.animated();
+
             let ext = st(s);
             let Some(p) = ext.pairing.as_mut().filter(|p| p.id == id) else {
                 return;
@@ -447,14 +471,18 @@ fn unpair(s: &mut State) {
         s,
         "extensions",
         move |c| async move { c.unpair_extension(&job_id).await },
-        move |s, result, _| match result {
-            Ok(()) => poll_pairing(s, id, None),
-            Err(e) => {
-                let ext = st(s);
-                if let Some(p) = ext.pairing.as_mut() {
-                    p.busy = false;
+        move |s, result, tx| {
+            // The reply to the person's own action: let it move.
+            tx.animated();
+            match result {
+                Ok(()) => poll_pairing(s, id, None),
+                Err(e) => {
+                    let ext = st(s);
+                    if let Some(p) = ext.pairing.as_mut() {
+                        p.busy = false;
+                    }
+                    ext.error = Some(e.to_string());
                 }
-                ext.error = Some(e.to_string());
             }
         },
     );
@@ -498,21 +526,25 @@ fn submit_mcp(s: &mut State) {
         s,
         "extensions",
         move |c| async move { c.register_hosted_mcp(&slug, &name, &endpoint, auth).await },
-        |s, result, _| match result {
-            Ok(done) => {
-                let ext = st(s);
-                ext.mcp = None;
-                ext.notice = Some(done.message);
-                // Bearer and OAuth servers need their credential next.
-                open_setup(s, done.package_ref.id.as_str().to_string());
-                refresh(s);
-            }
-            Err(e) => {
-                let ext = st(s);
-                if let Some(f) = ext.mcp.as_mut() {
-                    f.submitting = false;
+        |s, result, tx| {
+            // The reply to the person's own action: let it move.
+            tx.animated();
+            match result {
+                Ok(done) => {
+                    let ext = st(s);
+                    ext.mcp = None;
+                    ext.notice = Some(done.message);
+                    // Bearer and OAuth servers need their credential next.
+                    open_setup(s, done.package_ref.id.as_str().to_string());
+                    refresh(s);
                 }
-                ext.error = Some(e.to_string());
+                Err(e) => {
+                    let ext = st(s);
+                    if let Some(f) = ext.mcp.as_mut() {
+                        f.submitting = false;
+                    }
+                    ext.error = Some(e.to_string());
+                }
             }
         },
     );
@@ -545,7 +577,9 @@ fn import_bundle(_: &mut State, tx: &mut Tx) {
                     .map_err(|e| ClientError::Config(format!("cannot read the file: {e}")))?;
                 c.import_extension(bundle).await
             },
-            |s, result, _| {
+            |s, result, tx| {
+                // The reply to the person's own import.
+                tx.animated();
                 st(s).importing = false;
                 match result {
                     Ok(resp) => {

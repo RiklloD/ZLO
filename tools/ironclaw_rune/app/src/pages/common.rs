@@ -14,7 +14,7 @@ use rune_kit::{
     Switch,
 };
 
-use crate::design::Palette;
+use crate::design::{Palette, motion};
 use crate::state::State;
 
 /// Zeron's settings column (`widgets::page_column`).
@@ -130,7 +130,6 @@ pub fn page_body(key: &str, content: El) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .key(key)
         .child(
             row()
                 .w_full()
@@ -162,7 +161,6 @@ pub fn page_body_virtual(
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .key(page_key)
         .child(
             col()
                 .key("page-rows")
@@ -186,34 +184,84 @@ pub fn page_body_virtual(
         )
 }
 
-/// A quiet centered line for empty lists and placeholders.
+/// A quiet centered line for empty lists and placeholders. It fades in and
+/// out (`motion::fade`) as the list empties or fills.
 pub fn empty_state(p: &Palette, msg: impl Into<String>) -> El {
     row()
+        .transition(motion::fade())
         .w_full()
         .py(48.)
         .justify_center()
         .child(para(msg, SM, p.text_muted).align(rune::Align::Center))
 }
 
-/// A request's error in danger red.
+/// A request's error in danger red. It wipes open from its top and fades
+/// (`motion::reveal`) when it appears after a press, and out when cleared;
+/// key it at the call site (`.key("save-error")`) if its siblings come and
+/// go.
 pub fn error_line(p: &Palette, msg: &str) -> El {
-    col().w_full().pb(12.).child(para(msg, SM, p.danger))
+    col()
+        .w_full()
+        .pb(12.)
+        .transition(motion::reveal())
+        .child(para(msg, SM, p.danger))
 }
 
-/// A status line (success, warning) under the header.
+/// A status line (success, warning) under the header; arrives and leaves
+/// as [`error_line`] does.
 pub fn notice_line(msg: &str, color: Color) -> El {
-    col().w_full().pb(12.).child(para(msg, SM, color))
+    col()
+        .w_full()
+        .pb(12.)
+        .transition(motion::reveal())
+        .child(para(msg, SM, color))
 }
 
 /// The ghost refresh icon every page header carries.
 pub fn refresh_button(k: &Kit, on_press: impl Fn(&mut State) + 'static) -> El {
-    icon_button(&crate::icons::REFRESH_CW, "Refresh")
-        .on_press(on_press)
-        .build(k)
+    pressable(
+        icon_button(&crate::icons::REFRESH_CW, "Refresh")
+            .on_press(on_press)
+            .build(k),
+    )
+}
+
+/// [`refresh_button`] that breathes its arrows while `loading` (a list
+/// reloading after the press) and takes no press meanwhile, instead of
+/// sitting still until the rows land. Key it as [`controls::keyed_refresh`]
+/// is keyed. The breath runs at 15 fps only while loading and holds still
+/// under Reduce Motion.
+pub fn refresh_busy(
+    k: &Kit,
+    key: &str,
+    loading: bool,
+    on_press: impl Fn(&mut State) + 'static,
+) -> El {
+    let ink = crate::design::kit::icon_ink(k, IconButtonVariant::Ghost);
+    let glyph = crate::design::kit::busy_glyph(
+        "refresh-glyph",
+        &crate::icons::REFRESH_CW,
+        loading,
+        16.,
+        ink,
+    );
+    crate::design::kit::glyph_button(
+        k,
+        key,
+        IconButtonVariant::Ghost,
+        "Refresh",
+        glyph,
+        move |s: &mut State, _: &mut Tx| {
+            if !loading {
+                on_press(s);
+            }
+        },
+    )
 }
 
 /// GPUI `ui::card`: the neutral raised plate (a faint lit fill, a hairline
-/// rim), 12 px padding, rows 8 px apart.
+/// rim), 12 px padding, rows 8 px apart, on continuous corners. A card the
+/// person can press also takes `.press_scale(motion::PRESS_CARD)`.
 pub fn card(p: &Palette) -> El {
     let (fill, rim) = if p.light {
         (p.surface_card, Color::BLACK.alpha(0.07))
@@ -225,6 +273,7 @@ pub fn card(p: &Palette) -> El {
         .gap(8.)
         .padding(12.)
         .radius(crate::design::PANEL_RADIUS)
+        .continuous_corners()
         .fill(fill)
         .border(1., rim)
 }
@@ -239,7 +288,8 @@ pub enum Tone {
 }
 
 /// A small status tag: a tinted pill, no rim, one line. Every status in the
-/// app (Active, Paused, Needs setup, Ready, On) wears this one look.
+/// app (Active, Paused, Needs setup, Ready, On) wears this one look. A tone
+/// change on a kept tag morphs its tint (`motion::SLIDE`).
 pub fn tag(p: &Palette, s: &str, tone: Tone) -> El {
     let ink = match tone {
         Tone::Success => p.success,
@@ -252,7 +302,9 @@ pub fn tag(p: &Palette, s: &str, tone: Tone) -> El {
         .px(6.)
         .center_y()
         .radius(crate::design::CONTROL_RADIUS)
+        .continuous_corners()
         .fill(ink.alpha(if tone == Tone::Secondary { 0.12 } else { 0.15 }))
+        .motion(motion::SLIDE)
         .child(label(s, XS, 500., ink).single_line())
 }
 
@@ -270,7 +322,10 @@ pub enum Btn {
 }
 
 /// A small labelled button (GPUI `Button::new(..).label(..).small()`);
-/// chain `on_press`, `disabled`, `icon` and `build(k)`.
+/// chain `on_press`, `disabled`, `icon` and `build(k)`. It returns kit's
+/// builder, so the press shrink goes on the built element:
+/// `button(..).on_press(f).build(k).press_scale(motion::PRESS)`, or use
+/// [`pressable`]. The keyed `controls::press_*` helpers already do.
 pub fn button(s: &str, kind: Btn) -> Button {
     Button::new(s)
         .variant(match kind {
@@ -299,11 +354,18 @@ pub fn loading(b: Button, on: bool) -> Button {
 }
 
 /// The pages' choice chips: the picked one sits on the neutral raised
-/// plate, the rest are quiet ghosts. Picking is not an action, so it never
+/// plate, the rest are quiet ghosts. Built, it takes the press shrink as
+/// [`button`] does ([`pressable`]). Picking is not an action, so it never
 /// wears the accent (that stays for the page's one primary button). For a
 /// fixed set of a few options prefer [`tab_bar`] / [`segmented`].
 pub fn choice(s: &str, on: bool) -> Button {
     button(s, choice_look(on))
+}
+
+/// A built kit button (or icon button) that shrinks while pressed, as
+/// every ZLO control does: `pressable(choice("Week", on).on_press(f).build(k))`.
+pub fn pressable(built: El) -> El {
+    built.press_scale(motion::PRESS)
 }
 
 /// [`choice`]'s look, for callers that build their own button.

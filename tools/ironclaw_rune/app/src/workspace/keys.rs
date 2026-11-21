@@ -13,35 +13,50 @@ use crate::state::{Conn, State};
 /// One View menu entry: title, chord, action.
 type Binding = (&'static str, &'static str, fn(&mut State, &mut Tx));
 
+// A menu item runs as a queued update, which no input in the window caused,
+// so Rune commits it at once unless the handler asks for motion
+// (`Tx::animated`). Every View action here is something the person asked to
+// see move: a column sliding, the composer flying back to a new draft, ⌘K
+// or the model picker rising, the status bar folding, the palette morphing.
 const BINDINGS: &[Binding] = &[
-    ("New Thread", "cmd+shift+o", |s, _| new_thread(s)),
-    // The column toggles slide like their titlebar buttons. A menu item runs
-    // as a queued update, which no input in the window caused, so Rune
-    // commits it at once unless the handler asks for motion.
+    ("New Thread", "cmd+shift+o", |s, tx| {
+        tx.animated();
+        new_thread(s)
+    }),
+    // The column toggles slide like their titlebar buttons, on the panels'
+    // one curve.
     ("Toggle Sidebar", "cmd+b", |s, tx| {
         tx.animated();
         super::toggle_sidebar(s, tx)
     }),
     ("Toggle Right Pane", "alt+cmd+b", |s, tx| {
-        tx.animated();
+        crate::chat::side::dock_slide(s, tx);
         toggle_right_pane(s)
     }),
     // ⌘J opens and closes the middle column (the work panel) with the
     // same slide as its titlebar button; ⌘E stays an alias (`ALIASES`).
     ("Toggle Workspace Panel", "cmd+j", |s, tx| {
-        tx.animated();
+        crate::chat::side::dock_slide(s, tx);
         toggle_work_panel(s)
     }),
-    ("New Side Chat", "alt+cmd+n", |s, _| new_side_chat(s)),
-    ("Command Menu…", "cmd+k", |s, _| open_command_menu(s)),
-    ("Model Picker…", "cmd+shift+m", |s, _| {
+    ("New Side Chat", "alt+cmd+n", |s, tx| {
+        tx.animated();
+        new_side_chat(s)
+    }),
+    ("Command Menu…", "cmd+k", |s, tx| {
+        tx.animated();
+        open_command_menu(s)
+    }),
+    ("Model Picker…", "cmd+shift+m", |s, tx| {
+        tx.animated();
         crate::chat::model_picker::open(s)
     }),
-    ("Toggle Status Bar", "cmd+shift+s", |s, _| {
+    ("Toggle Status Bar", "cmd+shift+s", |s, tx| {
+        tx.animated();
         super::toggle_status_bar(s)
     }),
-    ("Toggle Light and Dark", "cmd+shift+y", |s, _| {
-        super::toggle_scheme(s)
+    ("Toggle Light and Dark", "cmd+shift+y", |s, tx| {
+        super::toggle_scheme(s, tx)
     }),
 ];
 
@@ -181,6 +196,26 @@ pub(super) fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A menu item is a queued update: without `Tx::animated` a real
+    /// window commits it at once (a headless `Runtime` animates every
+    /// commit, so only the flag shows it). Every View action asks.
+    #[test]
+    fn every_view_action_asks_for_motion() {
+        for (title, _, action) in BINDINGS {
+            let mut s = crate::chat::fixtures::test_state();
+            let mut tx = Tx::default();
+            action(&mut s, &mut tx);
+            assert!(crate::workspace::asked_motion(&tx), "{title} lands at once");
+        }
+        let mut s = crate::chat::fixtures::test_state();
+        let mut tx = Tx::default();
+        action("Toggle Light and Dark")(&mut s, &mut tx);
+        assert!(
+            crate::workspace::asked_color_motion(&tx),
+            "the palette morphs"
+        );
+    }
 
     #[test]
     fn every_binding_parses_as_a_chord_and_a_shortcut() {

@@ -52,7 +52,10 @@ pub fn new_side_chat(s: &mut State) {
             };
             c.fork_thread(&asked, &options).await
         },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The side chat the person asked for opens with motion (a
+            // job's commit would land at once).
+            tx.animated();
             // The link to the parent is saved even if the user switched
             // threads meanwhile, so the child never shows up in the inbox
             // as a stray thread.

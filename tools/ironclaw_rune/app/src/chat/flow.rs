@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use rune::{
-    Color, El, Icon, LineCap, Path, Shape, TextStyle, Transition, canvas, col, el, icon, row, text,
+    Color, El, Icon, LineCap, Path, Shape, TextStyle, Transition, canvas, col, el, row, text,
 };
 use rune_kit::{Kit, RollingText};
 use zlo_client::GateDecision;
@@ -553,11 +553,23 @@ fn rail(leaf: &Leaf, last: bool, p: &Palette) -> El {
                 .size(GUTTER_WIDTH, TREE_ROW_HEIGHT)
                 .absolute(0., 0.),
         )
+        // A running step's glyph breathes on the loaders' 15 fps clock
+        // (still under reduced motion and the battery saver). Its finish
+        // lands with the stream, which Rune commits at once, so the glyph
+        // just stops breathing there.
         .child(
-            icon(leaf.icon, ICON_SIZE)
-                .color(tint)
+            crate::design::kit::busy_glyph("leaf-glyph", leaf.icon, leaf.running, ICON_SIZE, tint)
                 .absolute(ICON_LEFT, mid - ICON_SIZE / 2.),
         )
+}
+
+/// Whether a finished group of `rows` folds on its own glide. A group long
+/// enough to nest its tree as a virtual list (`timeline::NEST_AFTER`) opens
+/// at once: gliding it open leaves the nested list committing on every
+/// scroll through it afterwards, for a fold that shows only its first
+/// screen anyway.
+pub(crate) fn folds_on_glide(rows: usize) -> bool {
+    rows <= timeline::NEST_AFTER
 }
 
 /// The activity group: a summary line that opens to the tree.
@@ -607,13 +619,15 @@ pub fn render_activity(
             .color(p.text_muted)
             .build(k)
     };
-    let chevron = icon(&icons::CHEVRON_DOWN, 13.)
-        .color(p.text_muted)
-        .rotate(if open {
-            0.
-        } else {
-            -std::f32::consts::FRAC_PI_2
-        });
+    // The shared disclosure chevron: its turn springs between closed and
+    // open instead of snapping a quarter turn.
+    let chevron = crate::design::kit::chevron(
+        "chevron",
+        open,
+        crate::design::kit::Turn::Disclose,
+        13.,
+        p.text_muted,
+    );
     let header = row()
         .key(format!("{key}-head"))
         .role("button")
@@ -637,6 +651,7 @@ pub fn render_activity(
             };
             let now = c.activity_open(&toggle_key, live);
             c.toggles.insert(toggle_key.clone(), !now);
+            super::fold_now(c, tx);
             tx.keep_on_screen(head_key.clone());
         });
 
@@ -687,6 +702,9 @@ pub fn render_activity(
     group.child(timeline::tree(s, thread, tree, lines))
 }
 
+/// One step of the tree: its label line, then its opened text while open.
+/// The caller's `{key}-step` column holds both, so opening a step never
+/// moves `{key}-leaf` under a new parent (which cut its motion short).
 fn tree_row(
     s: &State,
     thread: &str,
@@ -695,7 +713,7 @@ fn tree_row(
     last: bool,
     expanded: bool,
     open_key: String,
-) -> El {
+) -> Vec<El> {
     let p = &s.palette;
     let tint = if leaf.failed { p.danger } else { p.text_muted };
     let expandable = leaf.body.is_some() || leaf.output.is_some();
@@ -743,11 +761,12 @@ fn tree_row(
                 };
                 let on = c.toggles.get(&open_key).copied().unwrap_or(expanded);
                 c.toggles.insert(open_key.clone(), !on);
+                super::fold_now(c, tx);
                 tx.keep_on_screen(leaf_key.clone());
             });
     }
     if !expanded || (leaf.body.is_none() && leaf.output.is_none()) {
-        return line;
+        return vec![line];
     }
     // An opened row's full text hangs under its label, the trunk carrying on
     // beside it unless this is the last row.
@@ -774,18 +793,15 @@ fn tree_row(
     if let Some(output) = &leaf.output {
         body_col = body_col.child(output_tail(s, output, leaf.running));
     }
-    col()
-        .key(format!("{key}-leafbox"))
-        .w_full()
-        .child(line)
-        .child(
-            row()
-                .key(format!("{key}-detail"))
-                .w_full()
-                .transition(rise(4.))
-                .child(gutter)
-                .child(body_col),
-        )
+    vec![
+        line,
+        row()
+            .key(format!("{key}-detail"))
+            .w_full()
+            .transition(rise(4.))
+            .child(gutter)
+            .child(body_col),
+    ]
 }
 
 fn design_radius() -> f32 {

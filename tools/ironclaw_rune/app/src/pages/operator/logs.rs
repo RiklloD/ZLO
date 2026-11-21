@@ -211,7 +211,7 @@ pub fn page(panel: &LogsPanel, k: &Kit) -> El {
                     .w_full()
                     .pb(8.)
                     .child(super::top(s, &kit))
-                    .child(view(s, &kit, panel).key("operator-panel-Logs")),
+                    .child(super::panel_motion(view(s, &kit, panel), super::Tab::Logs)),
                 i if i <= lines => match panel.entries.get(i - 1) {
                     Some(e) => log_row(&s.palette, e),
                     None => col(),
@@ -244,6 +244,9 @@ fn older_button(k: &Kit, panel: &LogsPanel) -> Option<El> {
 /// The tab's controls above the lines: level, target, run, source, state.
 fn view(s: &State, k: &Kit, panel: &LogsPanel) -> El {
     let p = &s.palette;
+    // The level choices stay plain buttons: this head is row 0 of the
+    // page's virtual list, where Rune lands every change at once, so a
+    // gliding knob (kit::segmented) would only change the look.
     let levels = row().gap(2.).children(LEVELS.iter().map(|(level, label)| {
         let level = *level;
         let look = crate::pages::common::choice_look(panel.level == level);
@@ -251,6 +254,7 @@ fn view(s: &State, k: &Kit, panel: &LogsPanel) -> El {
             .on_press(move |s: &mut State| set_level(s, level))
             .build(k)
             .key(format!("log-level-{label}"))
+            .press_scale(crate::design::motion::PRESS)
     }));
     let mut c = col().w_full().gap(8.);
     if let Some(e) = &panel.error {

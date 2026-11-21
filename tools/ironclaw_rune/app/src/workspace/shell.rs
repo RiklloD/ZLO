@@ -5,7 +5,7 @@
 //! bar below, the wallpaper layers over each area (`design::look` draws them), and
 //! the ⌘K menu and dialogs above everything.
 
-use rune::{Cx, El, col, el, row};
+use rune::{Cx, Edge, El, Transition, col, el, row};
 use rune_kit::{Dialog, Kit};
 
 use super::ui::{SEMIBOLD, SM, XS, t, tw};
@@ -24,12 +24,20 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     // Follow the system appearance. Only the view can read it (`Cx`), so a
     // change is queued back into the state: `s.system_dark` and
     // `s.palette` stay current for every reader (⇧⌘Y, pages, wallpaper).
-    // This frame already paints with the new palette.
+    // The window's first frame paints with the system's side at once (the
+    // state starts out guessing dark); after that a flip morphs the colours
+    // from the palette on screen (`design::motion::color_morph`).
     let dark = cx.system_dark();
+    let first = !s.workspace.painted.replace(true);
     if dark != s.system_dark {
-        s.rt.handle.update(move |s, _| apply_system_dark(s, dark));
+        s.rt.handle.update(move |s, tx| {
+            if !first {
+                crate::design::motion::color_morph(tx);
+            }
+            apply_system_dark(s, dark);
+        });
     }
-    let p = if dark == s.system_dark {
+    let p = if dark == s.system_dark || !first {
         s.palette
     } else {
         design::resolve(&s.prefs, dark)
@@ -41,6 +49,9 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     if intro {
         s.intro.reduced.set(cx.is_reduced_motion());
     }
+    // Loading, failed and the app crossfade where their commit animates (the
+    // connect reply that brings the app or the failure asks for it). Under
+    // the launch intro the stage's iris is the entrance: no crossfade too.
     let body = match &s.conn {
         // The intro draws the launch screen itself, over the shell; what
         // it opens onto mounts only once the reveal starts.
@@ -49,6 +60,11 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         Conn::Connecting => loading(s, &p),
         Conn::Failed { message, retry_in } => failed(s, &p, &k, message, *retry_in),
         Conn::Ready => ready(s, &p, cx, &k, &mut layer),
+    };
+    let body = if intro {
+        body
+    } else {
+        body.transition(boot_swap())
     };
     // The shell: the surface at the style's shell alpha. Translucent, the
     // desktop shows through it, blurred by the WindowServer (`backdrop`).
@@ -70,7 +86,11 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         // Connected, on the panel's fill, so the bar is the same plane as
         // the panel above it rather than a darker strip of the shell; while
         // connecting or failed there is no panel, and it stays on the shell.
-        let mut bar = el().w_full();
+        // ⇧⌘S wipes it in from the window's edge and back out.
+        let mut bar = el()
+            .key("status-bar")
+            .w_full()
+            .transition(Transition::reveal(Edge::Bottom));
         if matches!(s.conn, Conn::Ready) {
             bar = bar.fill(p.bg.alpha(st.panel_alpha));
         }
@@ -117,6 +137,17 @@ fn note_field_focus(s: &State, cx: &Cx<State>) {
             .field_focused
             .set(cx.caret("kit-root").is_some());
     }
+}
+
+/// The launch screens' swap (loading → the app or the failure): a fade
+/// from a hair small, on the style's enter-like calm spring, out faster.
+fn boot_swap() -> Transition {
+    Transition::opacity()
+        .combined(Transition::scale(0.98))
+        .springs(rune::SpringPair::with_exit_ratio(
+            rune::Spring::new(0.3, 0.0),
+            0.6,
+        ))
 }
 
 /// The loading caption's entrance: hidden 700 ms, then in over 300 ms.

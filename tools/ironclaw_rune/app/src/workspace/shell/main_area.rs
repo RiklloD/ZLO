@@ -31,6 +31,30 @@ fn entrance(s: &State) -> rune::Transition {
         .springs(rune::SpringPair::new(st.enter, rune::Spring::NONE))
 }
 
+/// The page's presence. The new-thread screen differs: a new draft's hero
+/// staggers its own parts in (`draft::entering`), so the page itself only
+/// appears; and it fades out quickly rather than cutting, so a send leaves
+/// the greeting dissolving while the composer flies to the chat's dock.
+fn page_transition(s: &State) -> rune::Transition {
+    if s.page != Page::Draft {
+        return entrance(s);
+    }
+    let base = if draft::entering(s) {
+        rune::Transition::identity()
+    } else {
+        entrance(s)
+    };
+    let st = crate::design::styles::Style::of(&s.prefs);
+    rune::Transition {
+        removal: rune::Transition::opacity().removal,
+        springs: rune::SpringPair::new(st.enter, DRAFT_EXIT),
+        ..base
+    }
+}
+
+/// How fast the new-thread screen fades out (as a popover leaves).
+const DRAFT_EXIT: rune::Spring = rune::Spring::new(0.15, 0.0);
+
 /// The main column under the breadcrumb. One keyed structure whatever
 /// shows: the chat host (context banner slot over the chat) and, above it,
 /// the page, so the banner coming or going and a visit to Settings never
@@ -94,7 +118,7 @@ pub(super) fn main_area(
         let over = el()
             .key(format!("main-{:?}", s.page))
             .pin(Some(0.), Some(0.), Some(0.), Some(0.))
-            .transition(entrance(s))
+            .transition(page_transition(s))
             .child(page);
         main = main.child(over);
     }

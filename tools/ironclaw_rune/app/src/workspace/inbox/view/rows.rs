@@ -176,6 +176,10 @@ pub(super) fn card(
         .fill(rest)
         .hover(if active { Color::TRANSPARENT } else { hover })
         .hover_group()
+        // The wash and the hover actions fade in, and the card sinks a
+        // hair while pressed (springing back as a drag leaves it).
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
         .on_press(move |s: &mut State| {
             if !thread_drag::take_press(s) {
                 crate::workspace::open_thread(s, open_id.clone());
@@ -206,6 +210,9 @@ pub(super) fn card(
                             if unread { SEMIBOLD } else { ui::REGULAR },
                             ink,
                         )
+                        // Full ink while the card is hovered, on its hover
+                        // fade (paint only, no commit).
+                        .group_color(p.text)
                         .truncate(),
                     ),
                 )
@@ -217,9 +224,10 @@ pub(super) fn card(
     if let Some(line) = subagents::line(s, tree, row_data, false) {
         card = card.child(line);
     }
-    // A resorted row glides to its new place (GPUI `flip::ROW_SECS`).
+    // A resorted row glides to its new place (GPUI `flip::ROW_SECS`). Not
+    // `card-{id}`: that is the list line holding it (`list::Ctx::key`).
     let mut out = col()
-        .key(format!("card-{id}"))
+        .key(format!("card-box-{id}"))
         .w_full()
         .motion(motion::ROW_RESORT)
         .child(card);
@@ -374,6 +382,8 @@ pub(super) fn slim(
             ui::hover_wash(p)
         })
         .hover_group()
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
         .on_press(move |s: &mut State| crate::workspace::open_thread(s, open_id.clone()))
         .on_secondary_press(move |s: &mut State, at, tx| {
             crate::workspace::inbox::open_row_menu(s, &menu_id, at, tx)
@@ -400,11 +410,10 @@ pub(super) fn slim(
         .child(el().child(when).child(buttons));
     let line = subagents::line(s, tree, row_data, true);
     let list = subagents::list(s, tree, row_data, now, k);
-    if line.is_none() {
-        return slim;
-    }
+    // Always in its box, so a subagent line arriving never re-parents the
+    // row (that would remount it). Not `slim-{id}`: that is the list line.
     let mut out = col()
-        .key(format!("slim-{id}"))
+        .key(format!("slim-box-{id}"))
         .w_full()
         .motion(motion::ROW_RESORT)
         .child(slim);
@@ -534,8 +543,12 @@ pub(in crate::workspace) fn status_label(
                 .child(t(short_age(row_data.last_activity_at, now), XS, p.accent)),
             None => plain(short_age(row_data.last_activity_at, now), p.text_faint),
         };
-    // Keyed by status: a change crossfades instead of snapping.
-    el().key(key).child(body)
+    // Keyed by status: a change the person caused (a mark, a wake)
+    // crossfades instead of snapping; one a poll brought lands, as Rune
+    // lands what no input caused.
+    el().key(key)
+        .transition(rune::Transition::opacity())
+        .child(body)
 }
 
 /// Three dots pulsing in turn (GPUI `kit::pulse_dots`).

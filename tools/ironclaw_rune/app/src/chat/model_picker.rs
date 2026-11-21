@@ -537,12 +537,14 @@ pub(crate) fn pick_effort(s: &mut State, slot: Slot, effort: Option<String>) {
         s,
         "model picker",
         move |c| async move { c.set_thread_effort(&thread_id, &wire).await },
-        move |s, result, _| {
+        move |s, result, tx| {
             if let Err(e) = result {
                 if let Some(p) = slot
                     .get_mut(s)
                     .filter(|p| p.generation == generation && p.effort_seq == seq)
                 {
+                    // The knob glides back to the level that stuck.
+                    tx.animated();
                     p.effort = previous;
                 }
                 slot.event(s, PickerEvent::Failed(e.to_string()));
@@ -586,10 +588,13 @@ pub(crate) fn pick(s: &mut State, slot: Slot, provider: String, model: String) {
             c.set_thread_route(&thread_id, &pv, &md, effort.as_deref())
                 .await
         },
-        move |s, result, _| {
+        move |s, result, tx| {
             let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else {
                 return;
             };
+            // The person's pick: the pill's spinner gives way and the new
+            // name rolls in (a reply lands at once otherwise).
+            tx.animated();
             p.busy = false;
             match result {
                 Ok(change) => {

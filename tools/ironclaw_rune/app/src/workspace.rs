@@ -33,6 +33,8 @@ mod inbox;
 pub mod intro;
 mod keys;
 mod message_search;
+#[cfg(test)]
+mod motion_tests;
 pub mod quick;
 mod shell;
 mod sidebar_pane;
@@ -129,6 +131,9 @@ pub struct WorkspaceState {
     /// The sidebar was just toggled; the view that commits the slide
     /// queues its follow-ups (`settle_sidebar_slide`).
     pub sidebar_slid: std::cell::Cell<bool>,
+    /// The window has drawn once (`shell::view`): later system appearance
+    /// flips morph instead of landing.
+    pub(crate) painted: std::cell::Cell<bool>,
     /// The thread whose delete is being confirmed.
     pub confirm_delete: Option<String>,
     pub timers: Timers,
@@ -163,6 +168,7 @@ impl Default for WorkspaceState {
             window_active: true,
             field_focused: Default::default(),
             sidebar_slid: Default::default(),
+            painted: Default::default(),
             confirm_delete: None,
             timers: Timers::default(),
             quick_fixture: false,
@@ -211,9 +217,13 @@ pub fn toggle_status_bar(s: &mut State) {
 }
 
 /// Flip between the light and dark theme without opening Settings (⇧⌘Y).
-pub fn toggle_scheme(s: &mut State) {
+/// The palette and the wallpaper's repaint are asked in one handler, so the
+/// colours glide while the picture repaints for the new side.
+pub fn toggle_scheme(s: &mut State, tx: &mut Tx) {
+    crate::design::motion::color_morph(tx);
     let dark = crate::design::scheme_is_dark(&s.prefs, s.system_dark);
     s.update_prefs(|p| p.scheme = if dark { "light" } else { "dark" }.into());
+    crate::design::look::reload(s);
 }
 
 use sidebar_pane::persist_sidebar;
@@ -268,7 +278,14 @@ pub(crate) fn connected(
     session: zlo_client::wire::SessionInfo,
     list: zlo_client::inbox::InboxListResponse,
     reopen: Option<String>,
+    tx: &mut Tx,
 ) {
+    // The launch (or failure) screen giving way to the app is what the
+    // person is waiting on: this one reply crossfades (`shell::view`). A
+    // route refresh, already on the app, lands as replies do.
+    if !matches!(s.conn, Conn::Ready) {
+        tx.animated();
+    }
     s.workspace.connect_attempt = 0;
     s.session = Some(session);
     inbox::apply(s, list);
@@ -577,11 +594,15 @@ pub fn delete_thread(s: &mut State, thread_id: String) {
         s,
         "delete thread",
         move |c| async move { c.delete_thread(&id).await },
-        move |s, result, _| {
+        move |s, result, tx| {
             // Remove only after the gateway confirmed the delete.
             if result.is_err() {
                 return;
             }
+            // The person asked for it: the row fades and the rows under it
+            // close the gap on `ROW_RESORT`, and a fallback thread opens with
+            // the usual motion (a reply is a queued update, instant otherwise).
+            tx.animated();
             s.workspace
                 .inbox
                 .list
@@ -617,7 +638,7 @@ pub fn run_ended(s: &mut State, thread_id: String, failed: bool) {
     }
     // Watched live: the result is seen, so no Done badge.
     if s.workspace.window_active && s.page == Page::Chat {
-        inbox::mark(s, thread_id.clone(), InboxAction::Visit, None);
+        inbox::mark_quietly(s, thread_id.clone(), InboxAction::Visit);
     } else {
         inbox::refresh(s);
     }
@@ -872,9 +893,39 @@ pub fn set_unread(s: &mut State, unread: usize) {
     s.workspace.unread = unread;
 }
 
+/// Whether a handler asked for motion (`Tx::animated`). Rune keeps the flag
+/// private; its `Debug` shows it. A headless `Runtime` animates every
+/// commit, so a test that wants to know whether a queued update (a reply, a
+/// menu item) will move in a real window runs the handler on a fresh `Tx`
+/// and reads this.
+#[cfg(test)]
+pub(crate) fn asked_motion(tx: &Tx) -> bool {
+    format!("{tx:?}").contains("asked_motion: true")
+}
+
+/// Whether a handler set a colour spring for its commit (`Tx::color_motion`).
+#[cfg(test)]
+pub(crate) fn asked_color_motion(tx: &Tx) -> bool {
+    !format!("{tx:?}").contains("color_motion: None")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The seam the motion tests read: a fresh `Tx` asks nothing, and
+    /// `animated` is what sets the flag (`motion` alone does not).
+    #[test]
+    fn asked_motion_reads_the_flag() {
+        let mut tx = Tx::default();
+        assert!(!asked_motion(&tx) && !asked_color_motion(&tx));
+        tx.motion(crate::design::motion::DOCK);
+        assert!(!asked_motion(&tx), "a spring alone leaves it unprompted");
+        tx.animated();
+        assert!(asked_motion(&tx));
+        crate::design::motion::color_morph(&mut tx);
+        assert!(asked_color_motion(&tx));
+    }
 
     #[test]
     fn an_unreachable_mac_says_what_to_do() {

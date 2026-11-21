@@ -11,7 +11,7 @@
 //! check on the current one (the global row says what it resolves to), and
 //! the hint for the current choice at the bottom.
 
-use rune::{Color, El, PopupItem, PopupMenu, Tx, icon, row, text};
+use rune::{Color, El, PopupItem, PopupMenu, Tx, icon, row};
 use rune_kit::Kit;
 use zlo_client::profiles::{ApprovalMode, DEFAULT_PROFILE_ID, ProfileInfo};
 
@@ -159,10 +159,13 @@ fn pick(s: &mut State, id: &str, mode: Option<ApprovalMode>) {
             info.settings.approval_mode = mode;
             c.update_profile(&profile_id, &info.settings).await
         },
-        move |s, result, _| {
+        move |s, result, tx| {
             let Some(c) = chat_for(s, &thread) else {
                 return;
             };
+            // The person's pick: the label rolls and the icon morphs to
+            // the stored mode (a reply lands at once otherwise).
+            tx.animated();
             c.approval.busy = false;
             // silent-ok: a failed save keeps the stored mode on the pill (jobs logs it).
             if let Ok(info) = result {
@@ -181,6 +184,18 @@ fn mode_icon(mode: Option<ApprovalMode>) -> &'static rune::Icon {
         Some(ApprovalMode::AskFirst) => &icons::SHIELD_CHECK,
         None => &icons::SETTINGS_2,
     }
+}
+
+/// The pill's mode icon: keyed by mode, so a switch pops the new one in
+/// over the old (shield ↔ bolt), each in its own tint.
+fn mode_glyph(mark: Option<ApprovalMode>, tint: Color) -> El {
+    rune::el().size(13., 13.).a11y_hidden().child(
+        icon(mode_icon(mark), 13.)
+            .key(key(mark))
+            .color(tint)
+            .absolute(0., 0.)
+            .transition(crate::design::motion::glyph_pop()),
+    )
 }
 
 /// Full access reads warm (nothing stops a call), ask first calm.
@@ -214,6 +229,11 @@ fn menu(pill: &ApprovalPill, current: Option<ApprovalMode>) -> PopupMenu {
         .item(PopupItem::new("hint", hint).enabled(false))
 }
 
+/// The approval pill's key in chat `thread`.
+fn pill_key(thread: &str) -> String {
+    format!("approval-pill:{thread}")
+}
+
 /// The pill after the model pill; nothing until the profile is known.
 pub fn pill(s: &State, chat: &ChatState, _k: &Kit) -> El {
     let p = &s.palette;
@@ -230,8 +250,11 @@ pub fn pill(s: &State, chat: &ChatState, _k: &Kit) -> El {
         Some(ApprovalMode::AskFirst)
     };
     let id = chat.thread_id.clone();
+    // Scoped by chat: the main chat's and a side chat's pills are both on
+    // screen, and the menu anchors to the key.
+    let anchor = pill_key(&id);
     let mut pill = row()
-        .key("approval-pill")
+        .key(anchor.clone())
         .role("button")
         .label(format!("Approvals: {label_text}"))
         .gap(6.)
@@ -241,32 +264,43 @@ pub fn pill(s: &State, chat: &ChatState, _k: &Kit) -> El {
         .radius(design::CONTROL_RADIUS)
         .hover(p.hover)
         .cursor(rune::Cursor::Pointer)
-        .child(icon(mode_icon(mark), 13.).color(tint(mark, a.global, p)));
+        .child(mode_glyph(mark, tint(mark, a.global, p)));
     if !a.compact {
+        // Ask first ↔ Full access rolls instead of cutting.
         pill = pill.child(
-            text(label_text)
+            rune_kit::RollingText::new(format!("{anchor}-label"), label_text)
                 .font(flow::type_at(s, 13., 18., 400.))
-                .color(p.text_muted),
+                .color(p.text_muted)
+                .spring(crate::design::motion::ROLL)
+                .build(_k),
         );
     }
     if a.busy {
         pill = pill.child(crate::design::kit::Spinner::new().size(12.).build(_k));
     } else if !a.compact {
-        pill = pill.child(icon(&icons::CHEVRON_DOWN, 12.).color(p.text_muted));
+        // The menu is native and modal: the chevron stays down.
+        pill = pill.child(crate::design::kit::chevron(
+            "approval-chevron",
+            false,
+            crate::design::kit::Turn::Flip,
+            12.,
+            p.text_muted,
+        ));
     }
     if a.compact {
         pill = pill.help(format!("Approvals: {label_text}"));
     }
-    pill.on_press_tx(move |s: &mut State, tx: &mut Tx| {
-        let Some(c) = chat_ref(s, &id) else { return };
-        let menu = menu(&c.approval, current);
-        // Re-read, so an edit on the Profiles page shows next time.
-        load(s, &id);
-        let thread = id.clone();
-        tx.popup_menu(menu, "approval-pill", move |s: &mut State, picked, _| {
-            if let Some(mode) = picked.and_then(from_key) {
-                pick(s, &thread, mode);
-            }
-        });
-    })
+    pill.press_scale(design::motion::PRESS)
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+            let Some(c) = chat_ref(s, &id) else { return };
+            let menu = menu(&c.approval, current);
+            // Re-read, so an edit on the Profiles page shows next time.
+            load(s, &id);
+            let thread = id.clone();
+            tx.popup_menu(menu, anchor.clone(), move |s: &mut State, picked, _| {
+                if let Some(mode) = picked.and_then(from_key) {
+                    pick(s, &thread, mode);
+                }
+            });
+        })
 }

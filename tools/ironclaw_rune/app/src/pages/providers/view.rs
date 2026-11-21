@@ -12,13 +12,16 @@ use zlo_client::operator_llm::{LlmConfigSnapshot, LlmProviderView};
 use zlo_client::orchestration::RouteProvider;
 use zlo_client::task_models::TaskModelChoice;
 
-use super::catalog::{KNOWN_CLIS, Kind, display_name, kind_of};
+use super::catalog::{Kind, display_name, kind_of};
 use super::{CODEX_ADAPTER, Models, ProvidersState, Tab, connected, task_choices};
 use crate::design::brands::provider_logo;
+use crate::design::kit::{self, Turn};
+use crate::design::motion;
 use crate::icons;
+use crate::pages::common::pressable;
 use crate::state::State;
 
-const LOGO: f32 = 22.;
+pub(super) const LOGO: f32 = 22.;
 const TILE_LOGO: f32 = 20.;
 
 pub fn page(s: &State, cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
@@ -36,7 +39,7 @@ pub fn page(s: &State, cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El 
         .map(|llm| {
             connected(llm)
                 .into_iter()
-                .map(|(ix, provider)| render_provider(s, k, ix, provider))
+                .map(|(_, provider)| render_provider(s, k, provider))
                 .collect()
         })
         .unwrap_or_default();
@@ -53,7 +56,11 @@ pub fn page(s: &State, cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El 
     } else if connected_rows.is_empty() {
         empty_state(p, "Nothing connected yet. Add a provider below.")
     } else {
-        col().w_full().gap(12.).children(connected_rows)
+        col()
+            .key("providers-connected")
+            .w_full()
+            .gap(12.)
+            .children(connected_rows)
     });
     if ps.task_models.is_some() {
         body = body
@@ -64,10 +71,20 @@ pub fn page(s: &State, cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El 
         .child(section_title(p, "Add a provider", 24.))
         .child(render_tabs(s, k))
         .child(col().key(ADD_KEY).w_full().pt(12.).child(match ps.tab {
-            Tab::Accounts => render_accounts(s, k, tile_columns(cx)),
-            Tab::Cli => render_cli(s, k),
+            Tab::Accounts => tab_panel("accounts", render_accounts(s, k, tile_columns(cx))),
+            Tab::Cli => tab_panel("cli", super::cli::render_cli(s, k)),
         }));
     page_body("providers-page", body)
+}
+
+/// One tab's content under "Add a provider", keyed by tab so switching
+/// tabs crossfades the two instead of swapping them in one frame.
+fn tab_panel(tab: &str, content: El) -> El {
+    col()
+        .key(format!("providers-tab-{tab}"))
+        .w_full()
+        .transition(motion::fade())
+        .child(content)
 }
 
 fn render_task_models(s: &State, k: &Kit) -> El {
@@ -96,31 +113,24 @@ fn render_task_models(s: &State, k: &Kit) -> El {
                         "Names a thread after its first reply. One model for every profile.",
                     )),
             )
-            .child(
-                button_sized(label, Look::Outline, Size::Small)
-                    .icon(if ps.titles_open {
-                        &icons::CHEVRON_UP
-                    } else {
-                        &icons::CHEVRON_DOWN
-                    })
-                    .on_press(|s: &mut State| {
-                        let p = &mut s.pages.providers;
-                        p.titles_open = !p.titles_open;
-                    })
-                    .build(k)
-                    .key("title-model"),
-            ),
+            .child(title_trigger(s, k, label)),
     );
     if ps.titles_open {
         let off = crate::pages::common::choice_look(current.is_none());
-        let mut list = col().w_full().gap(8.).pt(8.).child(
-            row().child(
-                button_sized("Off", off, Size::Small)
-                    .on_press(|s: &mut State| super::set_title_model(s, None))
-                    .build(k)
-                    .key("title-model-off"),
-            ),
-        );
+        let mut list = col()
+            .key("title-models")
+            .w_full()
+            .gap(8.)
+            .pt(8.)
+            .transition(motion::reveal())
+            .child(
+                row().child(pressable(
+                    button_sized("Off", off, Size::Small)
+                        .on_press(|s: &mut State| super::set_title_model(s, None))
+                        .build(k)
+                        .key("title-model-off"),
+                )),
+            );
         for (pix, (provider, name, models)) in task_choices(ps).into_iter().enumerate() {
             let buttons = models.into_iter().enumerate().map(|(mix, model)| {
                 let selected = current
@@ -130,13 +140,15 @@ fn render_task_models(s: &State, k: &Kit) -> El {
                     provider_id: provider.clone(),
                     model: model.clone(),
                 };
-                button_sized(
-                    model,
-                    crate::pages::common::choice_look(selected),
-                    Size::Small,
+                pressable(
+                    button_sized(
+                        model,
+                        crate::pages::common::choice_look(selected),
+                        Size::Small,
+                    )
+                    .on_press(move |s: &mut State| super::set_title_model(s, Some(choice.clone())))
+                    .build(k),
                 )
-                .on_press(move |s: &mut State| super::set_title_model(s, Some(choice.clone())))
-                .build(k)
                 .key(format!("title-model-{pix}-{mix}"))
             });
             list = list.child(
@@ -152,13 +164,39 @@ fn render_task_models(s: &State, k: &Kit) -> El {
     card
 }
 
+/// The thread-title model's button: its chevron turns over as the list
+/// opens and shuts (`kit::chevron`) instead of swapping glyphs. Drawn as the
+/// kit's outline button with its icon slot carrying the turning chevron, so
+/// at rest it is the same button.
+fn title_trigger(s: &State, k: &Kit, label: String) -> El {
+    let open = s.pages.providers.titles_open;
+    pressable(
+        button_sized(label.clone(), Look::Outline, Size::Small)
+            .expanded(open)
+            .label_with(move |font, ink| {
+                row()
+                    .gap(6.)
+                    .center_y()
+                    .child(kit::chevron("title-model-chev", open, Turn::Flip, 16., ink))
+                    .child(text(label).key("label").font(font).color(ink))
+            })
+            .on_press(|s: &mut State| {
+                let p = &mut s.pages.providers;
+                p.titles_open = !p.titles_open;
+            })
+            .build(k),
+    )
+    .key("title-model")
+}
+
 /// The narrowest a connected provider's logo and name get before its
 /// status and actions wrap below them, at the 16 pt UI font.
 const IDENTITY_MIN: f32 = 200.;
 
-fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
+fn render_provider(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
     let p = &s.palette;
     let ps = &s.pages.providers;
+    let ix = pv.id.as_str();
     let usable = pv.api_key_set || !pv.api_key_required;
     let editing = ps.key_editor.as_deref() == Some(pv.id.as_str());
     let status = if pv.active {
@@ -187,7 +225,8 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
             button_sized("Models", Look::Ghost, Size::Small)
                 .on_press(move |s: &mut State| super::toggle_models(s, provider.clone()))
                 .build(k)
-                .key(format!("models-{ix}")),
+                .key(format!("models-{ix}"))
+                .press_scale(motion::PRESS),
         );
     }
     if usable && pv.adapter != CODEX_ADAPTER {
@@ -200,7 +239,8 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                 running,
             )
             .build(k)
-            .key(format!("test-{ix}")),
+            .key(format!("test-{ix}"))
+            .press_scale(motion::PRESS),
         );
     }
     if pv.adapter == CODEX_ADAPTER && !pv.active {
@@ -210,7 +250,8 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                 .disabled(ps.codex.is_some())
                 .on_press(move |s: &mut State| super::start_codex(s, id.clone()))
                 .build(k)
-                .key(format!("codex-login-{ix}")),
+                .key(format!("codex-login-{ix}"))
+                .press_scale(motion::PRESS),
         );
     }
     if pv.accepts_api_key {
@@ -227,7 +268,8 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
             )
             .on_press(move |s: &mut State| super::open_key_editor(s, id.clone()))
             .build(k)
-            .key(format!("set-key-{ix}")),
+            .key(format!("set-key-{ix}"))
+            .press_scale(motion::PRESS),
         );
     }
     // Remove sits last. A built-in stays in the catalog: removing it drops
@@ -244,7 +286,8 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                 .disabled(pv.active)
                 .on_press(move |s: &mut State| s.pages.providers.confirm_delete = Some(id.clone()))
                 .build(k)
-                .key(format!("delete-provider-{ix}")),
+                .key(format!("delete-provider-{ix}"))
+                .press_scale(motion::PRESS),
         );
     }
 
@@ -279,46 +322,64 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                         .truncate(),
                 ),
         );
-    let mut card = card(p).key(format!("provider-{}", pv.id)).child(
-        row()
-            .w_full()
-            .flex_wrap()
-            .gap(12.)
-            .center_y()
-            .child(identity)
-            .child(row().gap(8.).center_y().child(status).child(actions)),
-    );
+    // Keyed by id: when the active provider moves to the top, or a provider
+    // joins the connected list after the person's own action, the cards
+    // glide to their new places (`ROW_RESORT`) and a new one wipes in.
+    let mut card = card(p)
+        .key(format!("provider-{}", pv.id))
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
+        .child(
+            row()
+                .w_full()
+                .flex_wrap()
+                .gap(12.)
+                .center_y()
+                .child(identity)
+                .child(row().gap(8.).center_y().child(status).child(actions)),
+        );
 
     if let Some(models) = ps.models.get(&pv.id) {
-        card = card.child(match models {
-            Models::Loading => spinner_line(p, k, "Loading models"),
-            Models::Failed(e) => error_line(p, e),
+        let content = match models {
+            Models::Loading => spinner_line(p, k, "Loading models").key("loading"),
+            Models::Failed(e) => error_line(p, e).key("failed"),
             Models::Loaded(list) => {
                 let current = pv.active.then(|| pv.active_model.clone()).flatten();
-                row()
-                    .w_full()
-                    .flex_wrap()
-                    .gap(4.)
-                    .children(list.iter().enumerate().map(|(mix, model)| {
+                row().key("list").w_full().flex_wrap().gap(4.).children(
+                    list.iter().enumerate().map(|(mix, model)| {
                         let selected = current.as_deref() == Some(model.as_str());
                         let (id, m) = (pv.id.clone(), model.clone());
-                        button_sized(
-                            model.clone(),
-                            crate::pages::common::choice_look(selected),
-                            Size::Small,
+                        pressable(
+                            button_sized(
+                                model.clone(),
+                                crate::pages::common::choice_look(selected),
+                                Size::Small,
+                            )
+                            .on_press(move |s: &mut State| {
+                                super::set_active(s, id.clone(), Some(m.clone()))
+                            })
+                            .build(k),
                         )
-                        .on_press(move |s: &mut State| {
-                            super::set_active(s, id.clone(), Some(m.clone()))
-                        })
-                        .build(k)
-                        .key(format!("model-{ix}-{mix}"))
-                    }))
+                        .key(format!("model-{mix}"))
+                    }),
+                )
             }
-        });
+        };
+        // The list opens under the card's head; the spinner gives way to
+        // the models (or the error) in place.
+        card = card.child(
+            col()
+                .key("models")
+                .w_full()
+                .transition(motion::reveal())
+                .child(content.transition(motion::fade())),
+        );
     }
     if let Some(Some((ok, msg))) = ps.probes.get(&pv.id) {
         card = card.child(
             row()
+                .key("probe")
+                .transition(motion::reveal())
                 .w_full()
                 .gap(8.)
                 .center_y()
@@ -334,6 +395,8 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
         let id = pv.id.clone();
         card = card.child(
             row()
+                .key("confirm-delete")
+                .transition(motion::reveal())
                 .w_full()
                 .gap(8.)
                 .center_y()
@@ -351,23 +414,28 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                     button_sized("Remove", Look::Danger, Size::Small)
                         .on_press(move |s: &mut State| super::delete_provider(s, id.clone()))
                         .build(k)
-                        .key(format!("confirm-delete-{ix}")),
+                        .key(format!("confirm-delete-{ix}"))
+                        .press_scale(motion::PRESS),
                 )
                 .child(
                     button_sized("Cancel", Look::Ghost, Size::Small)
                         .on_press(|s: &mut State| s.pages.providers.confirm_delete = None)
                         .build(k)
-                        .key(format!("cancel-delete-{ix}")),
+                        .key(format!("cancel-delete-{ix}"))
+                        .press_scale(motion::PRESS),
                 ),
         );
     }
     if let Some(login) = ps.codex.as_ref().filter(|l| l.provider_id == pv.id) {
         let uri = login.uri.clone();
-        card = card.child(rule(p)).child(
+        card = card.child(
             col()
+                .key("device-login")
+                .transition(motion::reveal())
                 .w_full()
-                .gap(6.)
-                .child(muted(
+                .gap(8.)
+                .child(rule(p))
+                .child(col().w_full().gap(6.).child(muted(
                     p,
                     if login.code.is_empty() {
                         "Finish signing in on the ChatGPT page that just opened. Allow IronClaw to use your plan."
@@ -390,15 +458,17 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                             button_sized("Open page", Look::Ghost, Size::Small)
                                 .on_press_tx(move |_: &mut State, tx| open_url(tx, &uri))
                                 .build(k)
-                                .key(format!("codex-open-{ix}")),
+                                .key(format!("codex-open-{ix}"))
+                                .press_scale(motion::PRESS),
                         )
                         .child(
                             button_sized("Cancel", Look::Ghost, Size::Small)
                                 .on_press(|s: &mut State| s.pages.providers.codex = None)
                                 .build(k)
-                                .key(format!("codex-cancel-{ix}")),
+                                .key(format!("codex-cancel-{ix}"))
+                                .press_scale(motion::PRESS),
                         ),
-                ),
+                )),
         );
     }
     if pv.active {
@@ -411,6 +481,8 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
         let provider = pv.clone();
         card = card.child(
             row()
+                .key("key-editor")
+                .transition(motion::reveal())
                 .w_full()
                 .gap(8.)
                 .center_y()
@@ -429,13 +501,15 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
                     button_sized("Save", Look::Primary, Size::Small)
                         .on_press(move |s: &mut State| super::save_key(s, provider.clone()))
                         .build(k)
-                        .key(format!("save-key-{ix}")),
+                        .key(format!("save-key-{ix}"))
+                        .press_scale(motion::PRESS),
                 )
                 .child(
                     button_sized("Cancel", Look::Ghost, Size::Small)
                         .on_press(|s: &mut State| s.pages.providers.key_editor = None)
                         .build(k)
-                        .key(format!("cancel-key-{ix}")),
+                        .key(format!("cancel-key-{ix}"))
+                        .press_scale(motion::PRESS),
                 ),
         );
     }
@@ -460,7 +534,7 @@ fn catalog_row<'a>(ps: &'a ProvidersState, pv: &LlmProviderView) -> Option<&'a R
 /// Which of a provider's models the chat's model picker offers: a folded
 /// line ("Models in the picker · 7 of 12"), open, one switch per model and
 /// a show-all / hide-all pair. Needs the picker preferences.
-fn render_picker_models(s: &State, k: &Kit, route: &RouteProvider) -> El {
+pub(super) fn render_picker_models(s: &State, k: &Kit, route: &RouteProvider) -> El {
     let p = &s.palette;
     let ps = &s.pages.providers;
     let Some(prefs) = ps.picker.as_ref() else {
@@ -491,18 +565,14 @@ fn render_picker_models(s: &State, k: &Kit, route: &RouteProvider) -> El {
                 .color(p.text_muted)
                 .grow(1.),
         )
-        .child(
-            rune::icon(
-                if open {
-                    &icons::CHEVRON_UP
-                } else {
-                    &icons::CHEVRON_DOWN
-                },
-                12.,
-            )
-            .color(p.text_muted),
-        );
-    let mut c = col().w_full().gap(6.).child(rule(p)).child(head);
+        .child(kit::chevron(
+            &format!("picker-models-{id}-chev"),
+            open,
+            Turn::Flip,
+            12.,
+            p.text_muted,
+        ));
+    let c = col().w_full().gap(6.).child(rule(p)).child(head);
     if !open {
         return c;
     }
@@ -510,7 +580,13 @@ fn render_picker_models(s: &State, k: &Kit, route: &RouteProvider) -> El {
         (id.clone(), route.models.clone()),
         (id.clone(), route.models.clone()),
     );
-    c = c.child(
+    // The open list wipes in under its line and back out.
+    let mut body = col()
+        .key(format!("picker-models-{id}-list"))
+        .w_full()
+        .gap(6.)
+        .transition(motion::reveal());
+    body = body.child(
         row()
             .gap(4.)
             .child(
@@ -570,7 +646,7 @@ fn render_picker_models(s: &State, k: &Kit, route: &RouteProvider) -> El {
                 )),
         );
     }
-    c.child(list)
+    c.child(body.child(list))
 }
 
 /// Models the chat's switcher offers. The gateway binds the list to the
@@ -603,29 +679,39 @@ fn render_quick_switch(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
                 .w_full()
                 .flex_wrap()
                 .gap(4.)
-                .children(pinned.iter().enumerate().map(|(pix, model)| {
+                .children(pinned.iter().map(|model| {
                     let (m, a) = (model.clone(), active.clone());
-                    button_sized(model.clone(), Look::Outline, Size::XSmall)
-                        .icon(&icons::CLOSE)
-                        .on_press(move |s: &mut State| super::toggle_pin(s, m.clone(), a.clone()))
-                        .build(k)
-                        .key(format!("pinned-{pix}"))
+                    pressable(
+                        button_sized(model.clone(), Look::Outline, Size::XSmall)
+                            .icon(&icons::CLOSE)
+                            .on_press(move |s: &mut State| {
+                                super::toggle_pin(s, m.clone(), a.clone())
+                            })
+                            .build(k),
+                    )
+                    .key(format!("pinned-{model}"))
+                    .motion(motion::ROW_RESORT)
+                    .transition(motion::glyph_pop())
                 })),
         );
     }
     if !ps.pin_open {
         c = c.child(
             row().child(
-                button_sized("Add model", Look::Ghost, Size::XSmall)
-                    .icon(&icons::PLUS)
-                    .on_press(|s: &mut State| super::open_pin_input(s))
-                    .build(k)
-                    .key("pin-open"),
+                pressable(
+                    button_sized("Add model", Look::Ghost, Size::XSmall)
+                        .icon(&icons::PLUS)
+                        .on_press(|s: &mut State| super::open_pin_input(s))
+                        .build(k),
+                )
+                .key("pin-open"),
             ),
         );
     } else {
         c = c.child(
             row()
+                .key("pin-editor")
+                .transition(motion::reveal())
                 .w_full()
                 .gap(8.)
                 .center_y()
@@ -640,10 +726,12 @@ fn render_quick_switch(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
                     ),
                 )
                 .child(
-                    button_sized("Add", Look::Outline, Size::Small)
-                        .on_press(|s: &mut State| super::add_pin(s))
-                        .build(k)
-                        .key("pin-add"),
+                    pressable(
+                        button_sized("Add", Look::Outline, Size::Small)
+                            .on_press(|s: &mut State| super::add_pin(s))
+                            .build(k),
+                    )
+                    .key("pin-add"),
                 ),
         );
     }
@@ -685,13 +773,17 @@ fn render_tabs(s: &State, k: &Kit) -> El {
         )
 }
 
-fn render_tile(s: &State, ix: usize, pv: &LlmProviderView) -> El {
+fn render_tile(s: &State, pv: &LlmProviderView) -> El {
     let p = &s.palette;
     let open = s.pages.providers.adding.as_deref() == Some(pv.id.as_str());
     let provider = pv.clone();
     let base = p.hover;
+    // Keyed by provider id, not its place in the catalog: a tile keeps its
+    // identity as tiles around it leave (a provider connected) and glides
+    // to its new cell; its open/closed rim morphs instead of flipping.
     col()
-        .key(format!("tile-{ix}"))
+        .key(format!("tile-{}", pv.id))
+        .motion(motion::ROW_RESORT)
         .role("button")
         .label(display_name(&pv.id))
         .focusable(true)
@@ -702,8 +794,10 @@ fn render_tile(s: &State, ix: usize, pv: &LlmProviderView) -> El {
         .border(1., if open { p.accent } else { p.border })
         .fill(if open { p.active } else { base })
         .hover(p.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
         .cursor(rune::Cursor::Pointer)
         .on_press(move |s: &mut State| super::open_tile(s, &provider))
+        .press_scale(motion::PRESS_CARD)
         .child(
             row()
                 .w_full()
@@ -770,10 +864,9 @@ fn render_accounts(s: &State, k: &Kit, columns: usize) -> El {
         let tiles: Vec<El> = llm
             .providers
             .iter()
-            .enumerate()
-            .filter(|(_, pv)| !(pv.active || pv.api_key_set) && kind_of(&pv.id) == kind)
-            .filter(|(_, pv)| matches(&query, pv))
-            .map(|(ix, pv)| render_tile(s, ix, pv))
+            .filter(|pv| !(pv.active || pv.api_key_set) && kind_of(&pv.id) == kind)
+            .filter(|pv| matches(&query, pv))
+            .map(|pv| render_tile(s, pv))
             .collect();
         if tiles.is_empty() {
             continue;
@@ -804,8 +897,8 @@ fn render_accounts(s: &State, k: &Kit, columns: usize) -> El {
         );
     }
     let mut c = col().w_full().gap(16.);
-    if let Some((ix, pv)) = open {
-        c = c.child(render_provider(s, k, ix, pv));
+    if let Some(pv) = open {
+        c = c.child(render_provider(s, k, pv));
     }
     if groups.is_empty() {
         c = c.child(empty_state(p, "No provider matches."));
@@ -814,169 +907,9 @@ fn render_accounts(s: &State, k: &Kit, columns: usize) -> El {
 }
 
 /// The tile opened from "Add a provider", while it is not connected yet.
-fn open_tile<'a>(
-    ps: &ProvidersState,
-    llm: &'a LlmConfigSnapshot,
-) -> Option<(usize, &'a LlmProviderView)> {
+fn open_tile<'a>(ps: &ProvidersState, llm: &'a LlmConfigSnapshot) -> Option<&'a LlmProviderView> {
     let id = ps.adding.as_ref()?;
     llm.providers
         .iter()
-        .enumerate()
-        .find(|(_, pv)| pv.id == *id && !(pv.active || pv.api_key_set))
-}
-
-/// One CLI agent row: logo, name, blurb, a shell command to copy, status,
-/// and the remove / add-back button.
-struct CliRow {
-    id: String,
-    logo_ids: Vec<String>,
-    name: String,
-    blurb: String,
-    status: El,
-    command: Option<(&'static str, &'static str)>,
-    remove: Option<(String, bool)>,
-    /// The agent's models in the picker, while it is ready.
-    models: Option<El>,
-}
-
-fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
-    let p = &s.palette;
-    let ids: Vec<&str> = r.logo_ids.iter().map(String::as_str).collect();
-    let hidden = r.remove.as_ref().is_some_and(|(_, h)| *h);
-    let mut info = col()
-        .grow(1.)
-        .min_w(0.)
-        .child(text(r.name).font(body_semibold()).color(p.text))
-        .child(text(r.blurb).font(xs()).color(p.text_muted).wrap());
-    if let Some((label, cmd)) = r.command {
-        info = info.child(
-            row()
-                .pt(4.)
-                .gap(8.)
-                .center_y()
-                .child(text(label).font(xs()).color(p.text_muted))
-                .child(text(cmd).font(MONO_XS).color(p.text).selectable(true))
-                .child(
-                    icon_button_sized(&icons::COPY, "Copy command", Size::XSmall)
-                        .on_press_tx(move |_: &mut State, tx| tx.copy(cmd))
-                        .build(k)
-                        .key(format!("copy-{}", r.id)),
-                ),
-        );
-    }
-    let mut line = row()
-        .w_full()
-        .gap(12.)
-        .center_y()
-        .child(provider_logo(s, &ids, LOGO))
-        .child(info)
-        .child(r.status);
-    if let Some((provider, hidden)) = r.remove {
-        let b = if hidden {
-            button_sized("Add back", Look::Outline, Size::XSmall)
-                .on_press(move |s: &mut State| super::set_cli_removed(s, provider.clone(), false))
-                .build(k)
-        } else {
-            icon_button_sized(
-                &icons::CLOSE,
-                "Remove from ZLO and its model picker (the CLI stays installed)",
-                Size::XSmall,
-            )
-            .on_press(move |s: &mut State| super::set_cli_removed(s, provider.clone(), true))
-            .build(k)
-        };
-        line = line.child(b.key(format!("cli-remove-{}", r.id)));
-    }
-    let mut c = card(p).key(format!("cli-{}", r.id)).child(line);
-    if let Some(models) = r.models {
-        c = c.child(models);
-    }
-    if hidden { c.opacity(0.6) } else { c }
-}
-
-fn render_cli(s: &State, k: &Kit) -> El {
-    let p = &s.palette;
-    let ps = &s.pages.providers;
-    let runtimes = ps.runtimes.clone().unwrap_or_default();
-    let query = ps.search.text.trim().to_lowercase();
-    let mut rows: Vec<El> = Vec::new();
-    for known in KNOWN_CLIS {
-        if !query.is_empty() && !known.name.to_lowercase().contains(&query) {
-            continue;
-        }
-        let found: Vec<&RouteProvider> = runtimes
-            .iter()
-            .filter(|r| {
-                r.provider.starts_with(known.runtime) || r.runtime.starts_with(known.runtime)
-            })
-            .collect();
-        if found.is_empty() {
-            let status = if known.planned {
-                outlined_tag(p, Tone::Secondary, "Driver coming next")
-            } else if ps.runtimes.is_none() {
-                outlined_tag(p, Tone::Secondary, "Unknown")
-            } else {
-                outlined_tag(p, Tone::Warning, "Not detected")
-            };
-            rows.push(cli_row(
-                s,
-                k,
-                CliRow {
-                    id: known.runtime.into(),
-                    logo_ids: vec![known.runtime.to_string()],
-                    name: known.name.to_string(),
-                    blurb: known.blurb.to_string(),
-                    status,
-                    command: known.install.map(|c| ("Install", c)),
-                    remove: None,
-                    models: None,
-                },
-            ));
-            continue;
-        }
-        for r in found {
-            let hidden = ps
-                .picker
-                .as_ref()
-                .is_some_and(|pp| pp.provider_hidden(&r.provider));
-            let status = if hidden {
-                outlined_tag(p, Tone::Secondary, "Removed")
-            } else if r.authenticated {
-                outlined_tag(
-                    p,
-                    Tone::Success,
-                    format!("Ready · {} models", r.models.len()),
-                )
-            } else {
-                outlined_tag(p, Tone::Warning, "Not signed in")
-            };
-            let command = (!r.authenticated)
-                .then_some(known.login)
-                .flatten()
-                .map(|c| ("Sign in", c));
-            rows.push(cli_row(
-                s,
-                k,
-                CliRow {
-                    id: r.provider.clone(),
-                    logo_ids: vec![r.provider.clone(), r.runtime.clone()],
-                    name: r.name.clone(),
-                    blurb: known.blurb.to_string(),
-                    status,
-                    command,
-                    remove: ps.picker.is_some().then(|| (r.provider.clone(), hidden)),
-                    models: (!hidden && r.authenticated && !r.models.is_empty())
-                        .then(|| render_picker_models(s, k, r)),
-                },
-            ));
-        }
-    }
-    let mut c = col().w_full().gap(12.);
-    if ps.runtimes.is_none() {
-        c = c.child(muted(
-            p,
-            "Start one thread to let IronClaw report which CLI agents it found.",
-        ));
-    }
-    c.children(rows)
+        .find(|pv| pv.id == *id && !(pv.active || pv.api_key_set))
 }

@@ -1,9 +1,11 @@
 //! The command menu (⌘K): one search field over threads, new threads per
 //! profile, every settings page and the view actions. (GPUI
-//! `workspace/command.rs`.) The scrim fades in and the card rises as it
-//! mounts (Rune's presence transition); the selected row is washed.
+//! `workspace/command.rs`.) The scrim fades in and the card rises a few
+//! points into place as it mounts, and both go faster than they came when it
+//! closes ([`SCRIM`], [`CARD_RISE`]); one wash glides to the selected row. Rows are
+//! keyed by what they open ([`Cmd::key`]), never by position.
 
-use rune::{Color, El, Icon, Key, KeyEvent, ScrollSpec, TextEdit, Tx, col, el, row};
+use rune::{Color, El, Icon, Key, KeyEvent, ScrollSpec, TextEdit, Transition, Tx, col, el, row};
 use rune_kit::{Kit, TextInput};
 use zlo_client::history::HistoryHit;
 use zlo_client::profiles::DEFAULT_PROFILE_ID;
@@ -14,6 +16,9 @@ use crate::icons;
 use crate::state::{Page, State};
 
 const ROW_H: f32 = 36.;
+/// The list's inset around its rows (each line's sides, the first line's
+/// top, the last line's bottom).
+const LINE_INSET: f32 = 4.;
 /// The "In messages" section header above the message hits.
 const HEADER_H: f32 = 28.;
 /// Message hits shown: threads, and hits per thread.
@@ -21,6 +26,13 @@ const MESSAGE_THREADS: usize = 8;
 const HITS_PER_THREAD: usize = 2;
 const LIST_MAX_H: f32 = 380.;
 const RESULTS: usize = 60;
+/// How far below its place the card starts as it opens.
+const CARD_RISE: f32 = 8.;
+
+/// The scrim's presence: a plain fade (Rune's default 0.2 s in, 0.15 s out).
+fn scrim_transition() -> Transition {
+    Transition::opacity()
+}
 
 #[derive(Clone, PartialEq)]
 enum Cmd {
@@ -36,6 +48,28 @@ enum Cmd {
     StatusBar,
     ToggleScheme,
     Browser,
+}
+
+impl Cmd {
+    /// The entry's identity, for its row's key: the same entry keeps its
+    /// row (and its wash's spring) as the list filters and reorders.
+    fn key(&self) -> String {
+        match self {
+            Cmd::Thread(id) => format!("thread:{id}"),
+            Cmd::Message { message_id, .. } => format!("message:{message_id}"),
+            Cmd::NewThread(profile) => format!("new:{profile}"),
+            Cmd::Page(page) => format!("page:{page:?}"),
+            Cmd::Scheme(value) => format!("scheme:{value}"),
+            Cmd::StatusBar => "status-bar".into(),
+            Cmd::ToggleScheme => "toggle-scheme".into(),
+            Cmd::Browser => "browser".into(),
+        }
+    }
+}
+
+/// A list line's key: `cmdk-line-` plus its entry's identity.
+fn line_key(e: &Entry) -> String {
+    format!("cmdk-line-{}", e.cmd.key())
 }
 
 #[derive(Clone)]
@@ -219,12 +253,15 @@ fn message_entries(s: &State, query: &str) -> Vec<Entry> {
 }
 
 fn move_selection(s: &mut State, delta: isize, tx: &mut Tx) {
-    let count = matches(s).len();
+    let entries = matches(s);
+    let count = entries.len();
     if let Some(menu) = s.workspace.command.as_mut()
         && count > 0
     {
         menu.selected = (menu.selected as isize + delta).rem_euclid(count as isize) as usize;
-        tx.scroll_into_view(format!("cmdk-line-{}", menu.selected));
+        if let Some(e) = entries.get(menu.selected) {
+            tx.scroll_into_view(line_key(e));
+        }
     }
 }
 
@@ -247,9 +284,13 @@ fn run(s: &mut State, cmd: Cmd, tx: &mut Tx) {
         } => super::open_thread_at(s, thread_id, message_id),
         Cmd::NewThread(profile) => super::start_in_profile(s, profile),
         Cmd::Page(page) => super::show(s, page),
-        Cmd::Scheme(value) => s.update_prefs(|p| p.scheme = value.into()),
+        Cmd::Scheme(value) => {
+            crate::design::motion::color_morph(tx);
+            s.update_prefs(|p| p.scheme = value.into());
+            crate::design::look::reload(s);
+        }
         Cmd::StatusBar => super::toggle_status_bar(s),
-        Cmd::ToggleScheme => super::toggle_scheme(s),
+        Cmd::ToggleScheme => super::toggle_scheme(s, tx),
         Cmd::Browser => super::open_in_browser(s, tx),
     }
 }
@@ -287,9 +328,20 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
     let empty = entries.is_empty();
 
     // Every thread is an entry: the list builds only the rows near its
-    // viewport (Rune virtual rows), keyed by position as before.
+    // viewport (Rune virtual rows), each keyed by what it opens.
     let count = entries.len();
     let entries = std::rc::Rc::new(entries);
+    let keys = entries.clone();
+    // The selection is one pill gliding behind the rows (arrowing slides
+    // it); virtual rows hold no other children, so it sits beside them.
+    let pill = (!empty)
+        .then(|| selected_top(selected, first_message))
+        .and_then(|top| {
+            crate::design::kit::slide_pill_sized(s, "cmdk-pill", Some(top), ROW_H).map(|pill| {
+                pill.pin(Some(LINE_INSET), Some(top), Some(LINE_INSET), None)
+                    .fill(p.active)
+            })
+        });
     let list = col()
         .key("cmdk-list")
         .w_full()
@@ -297,34 +349,38 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .key("cmdk-list")
         .child(
-            col()
-                .key("cmdk-rows")
-                .w_full()
-                .growth(rune::GrowthSpec::default())
-                .whole_rows()
-                .virtual_rows(
-                    count,
-                    ROW_H,
-                    |_: &State, ix| format!("cmdk-line-{ix}").into(),
-                    move |s: &State, ix| {
-                        let mut line = col().w_full().px(4.);
-                        if ix == 0 {
-                            line = line.pt(4.);
-                        }
-                        if ix + 1 == count {
-                            line = line.pb(4.);
-                        }
-                        let Some(e) = entries.get(ix) else {
-                            return line;
-                        };
-                        if Some(ix) == first_message {
-                            line = line.child(messages_header(&s.palette, indexing));
-                        }
-                        line.child(entry_row(&s.palette, ix, e, ix == selected))
-                    },
-                ),
+            col().key("cmdk-body").w_full().children(pill).child(
+                col()
+                    .key("cmdk-rows")
+                    .w_full()
+                    .growth(rune::GrowthSpec::default())
+                    .whole_rows()
+                    .virtual_rows(
+                        count,
+                        ROW_H,
+                        move |_: &State, ix| match keys.get(ix) {
+                            Some(e) => line_key(e).into(),
+                            None => format!("cmdk-line-{ix}").into(),
+                        },
+                        move |s: &State, ix| {
+                            let mut line = col().w_full().px(LINE_INSET);
+                            if ix == 0 {
+                                line = line.pt(LINE_INSET);
+                            }
+                            if ix + 1 == count {
+                                line = line.pb(LINE_INSET);
+                            }
+                            let Some(e) = entries.get(ix) else {
+                                return line;
+                            };
+                            if Some(ix) == first_message {
+                                line = line.child(messages_header(&s.palette, indexing));
+                            }
+                            line.child(entry_row(&s.palette, ix, e, ix == selected))
+                        },
+                    ),
+            ),
         );
     let input = TextInput::new(&menu.input)
         .width(None)
@@ -354,9 +410,7 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .child(t("↵ open", XS, p.text_faint))
         .child(t("esc close", XS, p.text_faint));
     if indexing {
-        footer = footer
-            .child(el().grow(1.0))
-            .child(t("Searching older chats…", XS, p.text_faint));
+        footer = footer.child(el().grow(1.0)).child(searching_line(p));
     }
     let mut card = col()
         .w(600.)
@@ -379,13 +433,21 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
         );
     }
     card = card.child(ui::rule(p)).child(footer);
+    // The scrim and the card are separate layer entries: an element that
+    // mounts with its parent rides the parent's entrance, so a card inside
+    // the scrim would only fade with it, never rise on its own.
     layer.push(
-        col()
-            .key(format!("cmdk-{}", menu.opened))
+        el().key(format!("cmdk-{}", menu.opened))
             .pin(Some(0.), Some(0.), Some(0.), Some(0.))
             .fill(Color::BLACK.alpha(0.22))
-            .items_center()
-            .pt(96.)
+            .transition(scrim_transition()),
+    );
+    layer.push(
+        row()
+            .key(format!("cmdk-rise-{}", menu.opened))
+            .pin(Some(0.), Some(96.), Some(0.), None)
+            .justify_center()
+            .transition(crate::design::motion::pop(CARD_RISE))
             .child(
                 // A press outside the card (on the scrim) closes it, as Esc.
                 ui::floating(p, card, 12.)
@@ -393,6 +455,29 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
                     .modal(true, |s: &mut State| s.workspace.command = None),
             ),
     );
+}
+
+/// Where row `ix` sits in the list's content: the top inset, the rows
+/// above it, and the "In messages" header once past the first message hit.
+fn selected_top(ix: usize, first_message: Option<usize>) -> f32 {
+    let header = if first_message.is_some_and(|f| ix >= f) {
+        HEADER_H
+    } else {
+        0.
+    };
+    LINE_INSET + ix as f32 * ROW_H + header
+}
+
+/// "Searching older chats…" in the footer, breathing on the small loaders'
+/// 15 fps clock while the index catches up (still under Reduce Motion).
+fn searching_line(p: &crate::design::Palette) -> El {
+    t("Searching older chats…", XS, p.text_faint)
+        .key("cmdk-searching")
+        .cycle(crate::design::kit::loops::breathe(
+            1.2,
+            0.,
+            &crate::design::kit::loops::BREATH_55,
+        ))
 }
 
 /// "In messages" over the first message hit.
@@ -427,7 +512,7 @@ fn entry_row(p: &crate::design::Palette, ix: usize, e: &Entry, on: bool) -> El {
     };
     let cmd = e.cmd.clone();
     row()
-        .key(format!("cmdk-row-{ix}"))
+        .key(format!("cmdk-row-{}", e.cmd.key()))
         .role("option")
         .h(ROW_H)
         .px(12.)
@@ -435,7 +520,6 @@ fn entry_row(p: &crate::design::Palette, ix: usize, e: &Entry, on: bool) -> El {
         .center_y()
         .radius(8.)
         .cursor(rune::Cursor::Pointer)
-        .fill(if on { p.active } else { Color::TRANSPARENT })
         .on_hover(move |s: &mut State| {
             if let Some(m) = s.workspace.command.as_mut()
                 && m.selected != ix

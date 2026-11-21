@@ -10,15 +10,18 @@
 //!   `git stash create` checkpoint), with Review, Keep and Undo;
 //! - on Codex threads, Codex's own diff, review and revert (`codex.rs`).
 
+use std::time::{Duration, Instant};
+
 use rune::{El, TextEdit, Tx, col, el, icon, row};
 use rune_kit::diff::{Annotation, DiffMode, DiffState, DiffView, LineRange, LineRef, Side};
-use rune_kit::{ButtonVariant, Kit, TextInput};
+use rune_kit::{ButtonVariant, Kit, RollingText, TextInput};
 
 use super::ui::{self, xs, xs_med};
 use super::{
     SideState, Tab, bridge, git, remote_repo, short_path, side, side_mut, side_of, side_total,
     thread_id,
 };
+use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -70,6 +73,12 @@ pub(super) struct ChangesState {
     wrap: bool,
     pub(super) busy: Option<&'static str>,
     note: Option<String>,
+    /// When `note` landed: it goes on its own after [`NOTE_FOR`].
+    note_at: Option<Instant>,
+    /// The annotation the person just added (the draft they opened, the
+    /// comment they saved) and when: it wipes open once, never again as
+    /// the diff scrolls it back in ([`FRESH_FOR`]).
+    fresh: Option<(String, Instant)>,
     /// The destructive button waiting for its second click.
     confirm: Option<String>,
     commit: TextEdit,
@@ -84,7 +93,19 @@ pub(super) struct ChangesState {
     codex: codex::CodexState,
 }
 
+/// How long a git action's success note stays.
+const NOTE_FOR: Duration = Duration::from_secs(4);
+/// How long after it is added an annotation still mounts with a reveal.
+const FRESH_FOR: Duration = Duration::from_millis(500);
+
 impl ChangesState {
+    /// Whether annotation `id` was just added ([`FRESH_FOR`]).
+    pub(super) fn fresh(&self, id: &str) -> bool {
+        self.fresh
+            .as_ref()
+            .is_some_and(|(f, at)| f == id && at.elapsed() < FRESH_FOR)
+    }
+
     pub(super) fn has_turn(&self) -> bool {
         self.turn_stats.is_some_and(|(files, _, _)| files > 0)
     }
@@ -355,17 +376,43 @@ fn git_action(
     jobs::blocking(
         s,
         move || f(&repo),
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The answer to the person's own click: its note, error and
+            // reshuffled rows move rather than snap.
+            tx.animated();
             let Some(x) = side_of(s, &thread) else { return };
             x.changes.busy = None;
             match result {
-                Ok(note) => x.changes.note = note,
+                Ok(note) => show_note(s, &thread, note),
                 Err(e) => x.changes.error = Some(e),
             }
             refresh(s);
             super::history::stale(s);
         },
     );
+}
+
+/// A git action's success `note` on `thread`'s Changes tab: it shows with
+/// a check and goes on its own after [`NOTE_FOR`] (one timer, no loop),
+/// unless a newer note took its place.
+fn show_note(s: &mut State, thread: &str, note: Option<String>) {
+    let Some(x) = side_of(s, thread) else { return };
+    let at = Instant::now();
+    x.changes.note_at = note.is_some().then_some(at);
+    x.changes.note = note;
+    if x.changes.note.is_none() {
+        return;
+    }
+    let thread = thread.to_string();
+    jobs::after(s, NOTE_FOR, move |s, tx| {
+        let Some(x) = side_of(s, &thread) else { return };
+        if x.changes.note_at == Some(at) {
+            x.changes.note = None;
+            x.changes.note_at = None;
+            // The person's own confirmation leaving, as it came.
+            tx.animated();
+        }
+    });
 }
 
 /// One git change: on the backend's machine when it is remote (`remote`),
@@ -454,6 +501,7 @@ fn start_draft(s: &mut State, range: LineRange) {
     let mut input = TextEdit::new("");
     input.focused = true;
     x.changes.draft = Some(Draft { range, path, input });
+    x.changes.fresh = Some(("draft".into(), Instant::now()));
     sync_annotations(s);
 }
 
@@ -466,6 +514,7 @@ fn save_draft(s: &mut State) {
     let text = draft.input.text.trim().to_string();
     if !text.is_empty() {
         state.next_comment += 1;
+        state.fresh = Some((format!("comment-{}", state.next_comment), Instant::now()));
         state.comments.push(Comment {
             id: state.next_comment,
             range: draft.range,
@@ -649,13 +698,13 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .key("changes-wrap"),
             state.wrap,
         ))
-        .child(
-            ui::ibtn(&icons::REFRESH_CW, "Refresh")
-                .label("Refresh changes")
-                .on_press(refresh)
-                .build(k)
-                .key("changes-refresh"),
-        );
+        .child(super::busy::refresh(
+            k,
+            "changes-refresh",
+            "Refresh changes",
+            state.loading,
+            refresh,
+        ));
 
     let mut col = ui::fill_col().child(toolbar);
 
@@ -666,11 +715,28 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     if bridge::thread_runtime(s) == Some("codex") {
         col = col.child(codex::card(s, k));
     }
+    // Keyed, so they fade in and out without shifting their neighbours'
+    // identities.
     if let Some(note) = state.note.clone() {
-        col = col.child(ui::line(note, xs(), p.success).px(12.).pt(4.));
+        col = col.child(
+            row()
+                .key("changes-note")
+                .px(12.)
+                .pt(4.)
+                .gap(6.)
+                .items_center()
+                .transition(motion::reveal())
+                .child(
+                    icon(&icons::CHECK, 12.)
+                        .key("changes-note-check")
+                        .color(p.success)
+                        .transition(motion::glyph_pop()),
+                )
+                .child(ui::line(note, xs(), p.success).grow(1.).min_w(0.)),
+        );
     }
     if let Some(e) = state.error.clone() {
-        col = col.child(ui::error_line(s, e));
+        col = col.child(ui::error_line(s, e).key("changes-error"));
     }
     if remote {
         col = col.child(
@@ -754,42 +820,55 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     // Comments waiting to be sent.
     let count = state.comments.len();
     if count > 0 {
-        col = col.child(el().w_full().h(1.).fill(p.border)).child(
-            row()
-                .w_full()
-                .px(8.)
-                .py(6.)
-                .gap(4.)
-                .items_center()
-                .child(icon(&icons::MESSAGE_SQUARE_PLUS, 12.).color(p.accent))
-                .child(
-                    ui::line(
-                        format!("{count} comment{}", if count == 1 { "" } else { "s" }),
-                        xs(),
-                        p.text,
-                    )
-                    .grow(1.),
-                )
-                .child(
-                    ui::btn("Clear")
-                        .on_press(|s: &mut State| {
-                            if let Some(x) = side_mut(s) {
-                                x.changes.comments.clear();
-                            }
-                            sync_annotations(s);
-                        })
-                        .build(k)
-                        .key("comments-clear"),
-                )
-                .child(
-                    ui::primary("Add to message")
-                        .on_press(send_comments)
-                        .build(k)
-                        .key("comments-send"),
-                ),
+        col = col.child(
+            col_keyed("changes-comments")
+                .transition(motion::reveal())
+                .child(el().w_full().h(1.).fill(p.border))
+                .child(comments_bar(s, k, count)),
         );
     }
     col
+}
+
+/// The bar of comments waiting to be sent: how many, Clear, Add to message.
+fn comments_bar(s: &State, k: &Kit, count: usize) -> El {
+    let p = &s.palette;
+    row()
+        .w_full()
+        .px(8.)
+        .py(6.)
+        .gap(4.)
+        .items_center()
+        .child(icon(&icons::MESSAGE_SQUARE_PLUS, 12.).color(p.accent))
+        .child(
+            ui::line(
+                format!("{count} comment{}", if count == 1 { "" } else { "s" }),
+                xs(),
+                p.text,
+            )
+            .grow(1.),
+        )
+        .child(
+            ui::btn("Clear")
+                .on_press(|s: &mut State| {
+                    if let Some(x) = side_mut(s) {
+                        x.changes.comments.clear();
+                    }
+                    sync_annotations(s);
+                })
+                .build(k)
+                .key("comments-clear"),
+        )
+        .child(
+            ui::primary("Add to message")
+                .on_press(send_comments)
+                .build(k)
+                .key("comments-send"),
+        )
+}
+
+fn col_keyed(key: &str) -> El {
+    col().key(key.to_string()).w_full()
 }
 
 fn col_box() -> El {
@@ -825,8 +904,21 @@ fn turn_card(s: &State, k: &Kit, state: &ChangesState, files: usize, add: usize,
                     )
                     .grow(1.),
                 )
-                .child(ui::line(format!("+{add}"), xs(), p.success))
-                .child(ui::line(format!("−{del}"), xs(), p.danger)),
+                // The counts roll as a new turn or a refresh changes them.
+                .child(
+                    RollingText::new("changes-turn-add", format!("+{add}"))
+                        .value(add as f64)
+                        .font(xs())
+                        .color(p.success)
+                        .build(k),
+                )
+                .child(
+                    RollingText::new("changes-turn-del", format!("−{del}"))
+                        .value(del as f64)
+                        .font(xs())
+                        .color(p.danger)
+                        .build(k),
+                ),
         )
         .child(
             row()
@@ -907,7 +999,10 @@ fn turn_card(s: &State, k: &Kit, state: &ChangesState, files: usize, add: usize,
                         });
                     })
                     .build(k)
-                    .key("turn-undo"),
+                    .key("turn-undo")
+                    // Arming widens it to "Undo? Click again": it grows
+                    // rather than jumps.
+                    .motion(motion::SLIDE),
                 ),
         )
 }
@@ -1075,12 +1170,14 @@ fn remote_change(s: &mut State, label: &'static str, action: ThreadGitAction) {
         s,
         "changes",
         move |c| async move { c.thread_git_change(&asked, &action).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // As `git_action`: the person's own change lands with motion.
+            tx.animated();
             let Some(x) = side_of(s, &thread) else { return };
             x.changes.busy = None;
             match result {
                 Ok(done) => {
-                    x.changes.note = done.note;
+                    let note = done.note;
                     x.remote_repo.checkpoint = done.status.checkpoint;
                     x.changes.branch = remote_repo::branch(done.status.branch);
                     x.changes.changes = done
@@ -1089,6 +1186,7 @@ fn remote_change(s: &mut State, label: &'static str, action: ThreadGitAction) {
                         .into_iter()
                         .map(remote_repo::change)
                         .collect();
+                    show_note(s, &thread, note);
                 }
                 Err(e) => {
                     if remote_repo::note(x, false, Err(&e)) {

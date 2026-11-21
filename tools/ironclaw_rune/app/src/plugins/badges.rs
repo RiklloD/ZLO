@@ -104,7 +104,12 @@ pub fn row_badges(s: &State, row: &InboxRow) -> Vec<El> {
                         key.extension_id, key.slot_id, key.thread_id
                     ))
                     .max_w(96.)
-                    .help(slot.title.clone()),
+                    .help(slot.title.clone())
+                    // A badge lands from a background render, so it lands
+                    // at once; where its row moves with the person (a
+                    // filter, a reorder) it fades in and out instead of
+                    // popping.
+                    .transition(crate::design::motion::fade()),
             );
         }
     }

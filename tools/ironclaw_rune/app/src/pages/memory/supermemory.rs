@@ -10,19 +10,26 @@ use crate::pages::common::controls::{
 use crate::pages::common::empty_state;
 use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs};
 use rune::{El, TextEdit, col, row};
-use rune_kit::{Kit, TextInput};
+use rune_kit::{Kit, RollingText, TextInput};
 use zlo_client::memory_page::{
     SupermemoryBindingInfo, SupermemoryBindingOrigin, SupermemoryDocumentPage,
     SupermemoryDocumentSummary, SupermemoryMemoryHit, SupermemoryStatus,
 };
 
 use super::{MemoryState, fail, field_row};
+use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
 
 /// Profiles, status and the first page of documents for the chosen profile.
 pub(super) fn load(s: &mut State) {
+    load_with(s, false);
+}
+
+/// [`load`]; `shown` when the person asked for it (picked a profile), so
+/// the new page lands with motion.
+fn load_with(s: &mut State, shown: bool) {
     let m = &s.pages.memory;
     let profile = m.profile.clone();
     let container = m.container.clone();
@@ -53,7 +60,10 @@ pub(super) fn load(s: &mut State) {
             };
             Ok((profiles, status, page))
         },
-        move |s, result, _tx| {
+        move |s, result, tx| {
+            if shown {
+                tx.animated();
+            }
             let m = &mut s.pages.memory;
             // Another profile was picked meanwhile: its own load answers.
             if m.profile != asked {
@@ -72,6 +82,9 @@ pub(super) fn load(s: &mut State) {
     );
 }
 
+/// One page of documents. Every caller is the person's own (Previous /
+/// Next, a container, a delete), so the page lands with motion: its rows
+/// come and go and the page number rolls.
 fn load_page(s: &mut State, page: u32) {
     let m = &s.pages.memory;
     let (profile, container) = (m.profile.clone(), m.container.clone());
@@ -83,7 +96,8 @@ fn load_page(s: &mut State, page: u32) {
             c.supermemory_documents(profile.as_deref(), container.as_deref(), page)
                 .await
         },
-        move |s, result, _tx| {
+        move |s, result, tx| {
+            tx.animated();
             let m = &mut s.pages.memory;
             if (m.profile.clone(), m.container.clone()) != asked {
                 return;
@@ -111,7 +125,9 @@ fn run_search(s: &mut State) {
             c.supermemory_search(profile.as_deref(), &query, container.as_deref())
                 .await
         },
-        |s, result, _tx| {
+        |s, result, tx| {
+            // The person's search: the hits wipe in.
+            tx.animated();
             let m = &mut s.pages.memory;
             match result {
                 Ok(found) => m.sm_hits = Some(found.hits),
@@ -130,8 +146,9 @@ fn delete_remote_document(s: &mut State, id: String) {
         s,
         "memory",
         move |c| async move { c.supermemory_delete_document(profile.as_deref(), &id).await },
-        |s, result, _tx| match result {
+        |s, result, tx| match result {
             Ok(evidence) => {
+                tx.animated();
                 let m = &mut s.pages.memory;
                 m.busy = false;
                 m.notice = Some(if evidence.verified {
@@ -159,8 +176,10 @@ fn forget_remote_memory(s: &mut State, container: String, id: String) {
             c.supermemory_forget(profile.as_deref(), &container, &id)
                 .await
         },
-        |s, result, _tx| match result {
+        |s, result, tx| match result {
             Ok(evidence) if evidence.forgotten => {
+                // The forgotten hit folds away.
+                tx.animated();
                 let m = &mut s.pages.memory;
                 m.busy = false;
                 m.notice = Some("Supermemory will no longer recall that.".into());
@@ -183,7 +202,7 @@ fn pick_profile(s: &mut State, id: Option<String>) {
     m.profile = id;
     m.container = None;
     m.sm_hits = None;
-    load(s);
+    load_with(s, true);
 }
 
 fn pick_container(s: &mut State, tag: String) {
@@ -238,15 +257,20 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
     );
     for (ix, (id, name)) in choices.enumerate() {
         let look = crate::pages::common::choice_look(m.profile == id);
-        profile_picker = profile_picker.child(press_button(
-            k,
-            &format!("sm-profile-{ix}"),
-            &name,
-            look,
-            None,
-            false,
-            move |s: &mut State| pick_profile(s, id.clone()),
-        ));
+        profile_picker = profile_picker.child(
+            press_button(
+                k,
+                &format!("sm-profile-{ix}"),
+                &name,
+                look,
+                None,
+                false,
+                move |s: &mut State| pick_profile(s, id.clone()),
+            )
+            // The picked plate fades across instead of jumping (the chips
+            // wrap, so a gliding pill has no fixed track to run on).
+            .motion(motion::SLIDE),
+        );
     }
     let primary = status.binding.as_ref().map(|b| b.primary_container.clone());
     let containers: Vec<String> = status
@@ -267,15 +291,18 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
             Look::Ghost
         };
         let t = tag.clone();
-        container_picker = container_picker.child(press_button(
-            k,
-            &format!("sm-container-{ix}"),
-            &tag,
-            look,
-            None,
-            false,
-            move |s: &mut State| pick_container(s, t.clone()),
-        ));
+        container_picker = container_picker.child(
+            press_button(
+                k,
+                &format!("sm-container-{ix}"),
+                &tag,
+                look,
+                None,
+                false,
+                move |s: &mut State| pick_container(s, t.clone()),
+            )
+            .motion(motion::SLIDE),
+        );
     }
     let writable = current.is_some() && current == primary;
     let mut c = col()
@@ -316,10 +343,10 @@ fn render_hits(s: &State, k: &Kit, hits: &[SupermemoryMemoryHit], primary: Optio
     let p = &s.palette;
     let m = &s.pages.memory;
     if hits.is_empty() {
-        return empty_state(p, "Nothing matches.").key("sm-hits");
+        return empty_state(p, "Nothing matches.").key("sm-hits-none");
     }
-    let mut list = col().key("sm-hits").w_full();
-    for (ix, hit) in hits.iter().enumerate() {
+    let mut list = col().key("sm-hits").w_full().transition(motion::reveal());
+    for hit in hits {
         let key = format!("memory:{}", hit.id);
         let confirming = m.confirm_remote.as_deref() == Some(key.as_str());
         let (container, id) = (hit.container.clone(), hit.id.clone());
@@ -337,6 +364,7 @@ fn render_hits(s: &State, k: &Kit, hits: &[SupermemoryMemoryHit], primary: Optio
         );
         let mut r = row()
             .key(format!("sm-hit-{}", hit.id))
+            .transition(motion::reveal())
             .w_full()
             .gap(12.0)
             .py(8.0)
@@ -351,7 +379,7 @@ fn render_hits(s: &State, k: &Kit, hits: &[SupermemoryMemoryHit], primary: Optio
             r = r.child(if confirming {
                 press_button(
                     k,
-                    &format!("sm-forget-confirm-{ix}"),
+                    &format!("sm-forget-confirm-{}", hit.id),
                     "Forget",
                     Look::Danger,
                     None,
@@ -361,16 +389,18 @@ fn render_hits(s: &State, k: &Kit, hits: &[SupermemoryMemoryHit], primary: Optio
             } else {
                 press_icon(
                     k,
-                    &format!("sm-forget-{ix}"),
+                    &format!("sm-forget-{}", hit.id),
                     &icons::DELETE,
                     "Forget this memory",
                     move |s: &mut State| s.pages.memory.confirm_remote = Some(key.clone()),
                 )
             });
         }
-        list = list
-            .child(r)
-            .child(rule(p).key(format!("sm-hit-rule-{ix}")));
+        list = list.child(r).child(
+            rule(p)
+                .key(format!("sm-hit-rule-{}", hit.id))
+                .transition(motion::fade()),
+        );
     }
     list
 }
@@ -389,7 +419,7 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
     if page.documents.is_empty() {
         list = list.child(empty_state(p, "Nothing captured here yet."));
     }
-    for (ix, document) in page.documents.iter().enumerate() {
+    for document in &page.documents {
         let key = format!("document:{}", document.id);
         let confirming = m.confirm_remote.as_deref() == Some(key.as_str());
         let id = document.id.clone();
@@ -420,6 +450,7 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
         ));
         let mut r = row()
             .key(format!("sm-doc-{}", document.id))
+            .transition(motion::reveal())
             .w_full()
             .gap(12.0)
             .py(8.0)
@@ -428,7 +459,7 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
             r = r.child(if confirming {
                 press_button(
                     k,
-                    &format!("sm-delete-confirm-{ix}"),
+                    &format!("sm-delete-confirm-{}", document.id),
                     "Delete from Supermemory",
                     Look::Danger,
                     None,
@@ -438,16 +469,18 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
             } else {
                 press_icon(
                     k,
-                    &format!("sm-delete-{ix}"),
+                    &format!("sm-delete-{}", document.id),
                     &icons::DELETE,
                     "Delete document",
                     move |s: &mut State| s.pages.memory.confirm_remote = Some(key.clone()),
                 )
             });
         }
-        list = list
-            .child(r)
-            .child(rule(p).key(format!("sm-doc-rule-{ix}")));
+        list = list.child(r).child(
+            rule(p)
+                .key(format!("sm-doc-rule-{}", document.id))
+                .transition(motion::fade()),
+        );
     }
     let total = page.total_pages.unwrap_or(page.page);
     let current_page = page.page;
@@ -482,11 +515,16 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
             .justify_end()
             .center_y()
             .child(prev)
-            .child(styled(
-                format!("{current_page} / {total}"),
-                xs(),
-                p.text_muted,
-            ))
+            // Rolls to the new number on Previous / Next (the page
+            // lands with motion); a background re-read sets it at once.
+            .child(
+                RollingText::new("sm-page", format!("{current_page} / {total}"))
+                    .font(xs())
+                    .color(p.text_muted)
+                    .value(f64::from(current_page))
+                    .spring(motion::ROLL)
+                    .build(k),
+            )
             .child(next),
     )
 }

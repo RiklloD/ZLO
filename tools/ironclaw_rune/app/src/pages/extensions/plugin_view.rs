@@ -9,7 +9,7 @@ use zlo_client::plugins::{PluginSetting, PluginState, RequestKind, SettingKind, 
 use zlo_client::wire::InstalledExtension;
 
 use super::plugin::{self, Detail, SettingsLoad, field_text};
-use crate::design::Palette;
+use crate::design::{Palette, motion};
 use crate::icons;
 use crate::pages::common::controls::{
     Look, Size, button_sized, icon_button_sized, keyed_setting_row, outlined_tag, refresh_icon,
@@ -22,6 +22,14 @@ use crate::pages::common::{
 };
 use crate::plugins::{Density, MountKey};
 use crate::state::State;
+
+/// A dirty setting's Save button arriving beside its field: a short slide
+/// from the left with a fade, leaving faster.
+fn save_slide() -> rune::Transition {
+    rune::Transition::offset(-8., 0.)
+        .combined(rune::Transition::opacity())
+        .springs(rune::SpringPair::with_exit_ratio(motion::SLIDE, 0.6))
+}
 
 /// The lifecycle state as a tag on the plugin's card.
 pub fn state_tag(p: &Palette, state: PluginState) -> El {
@@ -45,6 +53,7 @@ pub fn held_note(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> Optio
             .on_press(move |s: &mut State| plugin::open_consent(s, id.clone()))
             .build(k)
             .key(format!("review-{ix}"))
+            .press_scale(motion::PRESS)
     };
     let (line, ink, buttons) = match e.installation_state {
         PluginState::ConsentRequired => (
@@ -62,7 +71,8 @@ pub fn held_note(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> Optio
                     button_sized("Remove", Look::Danger, Size::Small)
                         .on_press(move |s: &mut State| super::remove(s, remove_id.clone()))
                         .build(k)
-                        .key(format!("tampered-remove-{ix}")),
+                        .key(format!("tampered-remove-{ix}"))
+                        .press_scale(motion::PRESS),
                 ],
             )
         }
@@ -159,7 +169,11 @@ pub fn consent_sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
         );
     }
     if let Some(err) = &sheet.error {
-        body = body.child(para(err.clone(), SM, p.danger));
+        body = body.child(
+            para(err.clone(), SM, p.danger)
+                .key("consent-error")
+                .transition(motion::reveal()),
+        );
     }
     let mut buttons = row().w_full().gap(8.).center_y();
     if tampered {
@@ -171,7 +185,8 @@ pub fn consent_sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
                     super::remove(s, id.clone());
                 })
                 .build(k)
-                .key("consent-remove"),
+                .key("consent-remove")
+                .press_scale(motion::PRESS),
         );
     }
     buttons = buttons
@@ -180,7 +195,8 @@ pub fn consent_sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
             button_sized("Don't allow", Look::Secondary, Size::Small)
                 .on_press(|s: &mut State| plugin::close_consent(s))
                 .build(k)
-                .key("consent-deny"),
+                .key("consent-deny")
+                .press_scale(motion::PRESS),
         )
         .child(
             loading(
@@ -190,7 +206,8 @@ pub fn consent_sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 sheet.granting,
             )
             .build(k)
-            .key("consent-allow"),
+            .key("consent-allow")
+            .press_scale(motion::PRESS),
         );
     Dialog::new("plugin-consent", title)
         .open(true)
@@ -219,14 +236,16 @@ pub fn detail_page(s: &State, k: &Kit, d: &Detail) -> El {
             icon_button_sized(&icons::ARROW_LEFT, "All plugins", Size::Small)
                 .on_press(|s: &mut State| plugin::close_detail(s))
                 .build(k)
-                .key("plugin-back"),
+                .key("plugin-back")
+                .press_scale(motion::PRESS),
         )
         .child(label(name.to_string(), XL, 500., p.text).grow(1.).min_w(0.))
         .child(
             refresh_icon()
                 .on_press(move |s: &mut State| plugin::open_detail(s, reopen.clone()))
                 .build(k)
-                .key("plugin-refresh"),
+                .key("plugin-refresh")
+                .press_scale(motion::PRESS),
         );
     let mut body = col().w_full().child(head);
     if let Some(n) = &ext.notice {
@@ -263,6 +282,7 @@ pub fn detail_page(s: &State, k: &Kit, d: &Detail) -> El {
         SettingsLoad::Loading => Some(
             col()
                 .key("plugin-settings-loading")
+                .transition(motion::fade())
                 .pt(32.)
                 .child(spinner_line(p, k, "Loading settings")),
         ),
@@ -270,6 +290,7 @@ pub fn detail_page(s: &State, k: &Kit, d: &Detail) -> El {
         SettingsLoad::Failed(reason) => Some(
             col()
                 .key("plugin-settings-failed")
+                .transition(motion::fade())
                 .child(group_header(p, "Settings", None))
                 .child(para(reason.clone(), SM, p.text_muted)),
         ),
@@ -312,7 +333,10 @@ fn settings_groups(s: &State, k: &Kit, d: &Detail, list: &[PluginSetting]) -> El
         }
     }
     groups.sort_by_key(|(g, _)| g.is_some());
-    let mut out = col().key("plugin-settings").w_full();
+    let mut out = col()
+        .key("plugin-settings")
+        .transition(motion::fade())
+        .w_full();
     for (section, items) in groups {
         let title = section.unwrap_or("Settings");
         out = out
@@ -388,9 +412,13 @@ fn setting(s: &State, k: &Kit, d: &Detail, x: &PluginSetting) -> El {
                             move |s: &mut State, _| plugin::save_field(s, id.clone())
                         })
                         .build(k)
-                        .key(format!("{key}-input")),
+                        .key(format!("{key}-input"))
+                        .press_scale(motion::PRESS),
                 );
                 if changed || this_saving {
+                    // The dirty field's Save slides in beside it, and out
+                    // once the save lands. Typing lands its commit at once
+                    // (Rune), so the slide shows on the save's reply.
                     field = field.child(
                         loading(
                             button_sized("Save", Look::Primary, Size::Small)
@@ -398,7 +426,9 @@ fn setting(s: &State, k: &Kit, d: &Detail, x: &PluginSetting) -> El {
                             this_saving,
                         )
                         .build(k)
-                        .key(format!("{key}-save")),
+                        .key(format!("{key}-save"))
+                        .press_scale(motion::PRESS)
+                        .transition(save_slide()),
                     );
                 }
                 field
@@ -421,6 +451,7 @@ fn setting(s: &State, k: &Kit, d: &Detail, x: &PluginSetting) -> El {
     if let Some(reason) = d.errors.get(&x.id) {
         out = out.child(
             el().key(format!("{key}-error"))
+                .transition(motion::reveal())
                 .w_full()
                 .px(16.)
                 .pb(12.)

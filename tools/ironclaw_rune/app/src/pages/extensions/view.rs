@@ -13,7 +13,9 @@ use zlo_client::plugins::PluginState;
 use zlo_client::product_wire::{RebornExtensionCredentialSetup, RebornExtensionRegistryEntry};
 use zlo_client::wire::InstalledExtension;
 
+use super::drill::{self, Level};
 use super::{MCP_AUTH, McpForm, Pairing, Setup};
+use crate::design::{kit, motion};
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -23,14 +25,19 @@ pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
     let ext = &s.pages.extensions;
     super::plugin_view::consent_sheet(s, k, layer);
     if let Some(d) = &ext.detail {
-        return super::plugin_view::detail_page(s, k, d);
+        return drill::page(
+            DRILL,
+            Level::Detail,
+            super::plugin_view::detail_page(s, k, d),
+        );
     }
     let actions = vec![
         button_sized("MCP server", Look::Outline, Size::Small)
             .icon(&icons::PLUS)
             .on_press(|s: &mut State| super::toggle_mcp(s))
             .build(k)
-            .key("add-mcp"),
+            .key("add-mcp")
+            .press_scale(motion::PRESS),
         loading(
             button_sized("Import bundle", Look::Outline, Size::Small)
                 .help("Upload a tool bundle .zip (operator only)")
@@ -38,11 +45,13 @@ pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
             ext.importing,
         )
         .build(k)
-        .key("import-bundle"),
+        .key("import-bundle")
+        .press_scale(motion::PRESS),
         refresh_icon()
             .on_press(|s: &mut State| super::refresh(s))
             .build(k)
-            .key("refresh-extensions"),
+            .key("refresh-extensions")
+            .press_scale(motion::PRESS),
     ];
     let installed: Vec<El> = ext
         .installed
@@ -65,7 +74,14 @@ pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
         body = body.child(notice_line(n, p.text_muted));
     }
     if let Some(f) = &ext.mcp {
-        body = body.child(col().w_full().pb(16.).child(render_mcp(s, k, f)));
+        body = body.child(
+            col()
+                .key("mcp-drawer")
+                .w_full()
+                .pb(16.)
+                .transition(motion::reveal())
+                .child(render_mcp(s, k, f)),
+        );
     }
     body = body.child(section_title(p, "Installed", 0.));
     if ext.loaded && installed.is_empty() {
@@ -75,11 +91,21 @@ pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
         .child(col().w_full().gap(12.).children(installed))
         .child(section_title(p, "Available", 24.))
         .child(col().w_full().children(catalog));
-    page_body("extensions-page", body)
+    drill::page(DRILL, Level::List, page_body("extensions-page", body))
 }
+
+/// The Plugins list ↔ a plugin's page drill-down.
+pub(super) const DRILL: &str = "plugins-drill";
 
 fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
     let p = &s.palette;
+    // Which step the drawer shows: a step change crossfades in place.
+    let part = match &pr.status {
+        None => "checking",
+        Some(st) if st.connected => "connected",
+        Some(st) if st.pending.is_some() => "pending",
+        Some(_) => "idle",
+    };
     let body = match &pr.status {
         None => spinner_line(p, k, "Checking connection"),
         Some(st) if st.connected => row()
@@ -95,7 +121,8 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
                     pr.busy,
                 )
                 .build(k)
-                .key("unpair"),
+                .key("unpair")
+                .press_scale(motion::PRESS),
             ),
         Some(st) => match &st.pending {
             Some(code) => {
@@ -106,7 +133,8 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
                             .icon(&icons::EXTERNAL_LINK)
                             .on_press_tx(move |_: &mut State, tx| open_url(tx, &url))
                             .build(k)
-                            .key("pair-link"),
+                            .key("pair-link")
+                            .press_scale(motion::PRESS),
                     );
                 }
                 actions = actions
@@ -117,9 +145,10 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
                             pr.busy,
                         )
                         .build(k)
-                        .key("pair-new"),
+                        .key("pair-new")
+                        .press_scale(motion::PRESS),
                     )
-                    .child(text("Waiting for the bot").font(xs()).color(p.text_muted));
+                    .child(waiting(s, p.text_muted));
                 col()
                     .w_full()
                     .gap(8.)
@@ -158,11 +187,36 @@ fn render_pairing(s: &State, k: &Kit, pr: &Pairing) -> El {
                         pr.busy,
                     )
                     .build(k)
-                    .key("pair-mint"),
+                    .key("pair-mint")
+                    .press_scale(motion::PRESS),
                 ),
         },
     };
-    col().w_full().gap(8.).child(rule(p)).child(body)
+    col()
+        .key("pairing")
+        .transition(motion::reveal())
+        .w_full()
+        .gap(8.)
+        .child(rule(p))
+        .child(
+            body.key(format!("pairing-{part}"))
+                .transition(motion::fade()),
+        )
+}
+
+/// "Waiting for the bot" while a pairing code is out: the line breathes on
+/// the small loaders' 15 fps clock while it waits (still under Reduce
+/// Motion and the battery saver), so it reads as live without new chrome.
+fn waiting(s: &State, color: rune::Color) -> El {
+    let line = text("Waiting for the bot")
+        .key("pair-waiting")
+        .font(xs())
+        .color(color);
+    if crate::design::look::saving(s) {
+        line
+    } else {
+        line.cycle(kit::loops::breathe(1.6, 0., &kit::loops::BREATH_45))
+    }
 }
 
 fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
@@ -177,6 +231,7 @@ fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
             })
             .build(k)
             .key(format!("mcp-auth-{ix}"))
+            .press_scale(motion::PRESS)
     });
     card(p)
         .key("mcp-form")
@@ -190,7 +245,8 @@ fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
                 .placeholder("Name, e.g. Linear")
                 .on_edit(|s: &mut State| super::mcp_input(s, false))
                 .build(k)
-                .key("mcp-name"),
+                .key("mcp-name")
+                .press_scale(motion::PRESS),
         )
         .child(
             input(&form.endpoint)
@@ -198,7 +254,8 @@ fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
                 .on_edit(|s: &mut State| super::mcp_input(s, true))
                 .on_submit(|s: &mut State, _| super::submit_mcp(s))
                 .build(k)
-                .key("mcp-endpoint"),
+                .key("mcp-endpoint")
+                .press_scale(motion::PRESS),
         )
         .child(
             row()
@@ -217,13 +274,15 @@ fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
                         form.submitting,
                     )
                     .build(k)
-                    .key("mcp-add"),
+                    .key("mcp-add")
+                    .press_scale(motion::PRESS),
                 )
                 .child(
                     button_sized("Cancel", Look::Ghost, Size::Small)
                         .on_press(|s: &mut State| super::toggle_mcp(s))
                         .build(k)
-                        .key("mcp-cancel"),
+                        .key("mcp-cancel")
+                        .press_scale(motion::PRESS),
                 ),
         )
 }
@@ -231,7 +290,9 @@ fn render_mcp(s: &State, k: &Kit, form: &McpForm) -> El {
 fn render_setup(s: &State, k: &Kit, setup: &Setup) -> El {
     let p = &s.palette;
     let Some(view) = setup.view.as_ref() else {
-        return spinner_line(p, k, "Loading setup");
+        return spinner_line(p, k, "Loading setup")
+            .key("setup-loading")
+            .transition(motion::fade());
     };
     let needs_browser = view
         .secrets
@@ -310,7 +371,8 @@ fn render_setup(s: &State, k: &Kit, setup: &Setup) -> El {
                 setup.submitting,
             )
             .build(k)
-            .key("submit-setup"),
+            .key("submit-setup")
+            .press_scale(motion::PRESS),
         );
     }
     if needs_browser {
@@ -319,7 +381,8 @@ fn render_setup(s: &State, k: &Kit, setup: &Setup) -> El {
                 .icon(&icons::EXTERNAL_LINK)
                 .on_press_tx(move |_: &mut State, tx| open_url(tx, &browser))
                 .build(k)
-                .key("setup-in-browser"),
+                .key("setup-in-browser")
+                .press_scale(motion::PRESS),
         );
     }
     if let Some(url) = setup_url {
@@ -328,10 +391,16 @@ fn render_setup(s: &State, k: &Kit, setup: &Setup) -> El {
                 .icon(&icons::EXTERNAL_LINK)
                 .on_press_tx(move |_: &mut State, tx| open_url(tx, &url))
                 .build(k)
-                .key("setup-url"),
+                .key("setup-url")
+                .press_scale(motion::PRESS),
         );
     }
-    let mut c = col().w_full().gap(12.).child(rule(p));
+    let mut c = col()
+        .key("setup-form")
+        .transition(motion::fade())
+        .w_full()
+        .gap(12.)
+        .child(rule(p));
     if let Some(t) = instructions {
         c = c.child(text(t).font(sm()).color(p.text).wrap());
     }
@@ -358,6 +427,7 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
             .on_press(move |s: &mut State| super::remove(s, id.clone()))
             .build(k)
             .key(format!("confirm-remove-{ix}"))
+            .press_scale(motion::PRESS)
     } else {
         let id = id.clone();
         icon_button_sized(&icons::DELETE, "Remove", Size::Small)
@@ -365,6 +435,7 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
             .on_press(move |s: &mut State| s.pages.extensions.confirm_remove = Some(id.clone()))
             .build(k)
             .key(format!("remove-{ix}"))
+            .press_scale(motion::PRESS)
     };
     let mut head = row()
         .w_full()
@@ -402,7 +473,8 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
             .disabled(busy)
             .on_press(move |s: &mut State| super::toggle_pairing(s, pair_id.clone()))
             .build(k)
-            .key(format!("pair-{ix}")),
+            .key(format!("pair-{ix}"))
+            .press_scale(motion::PRESS),
         );
     }
     let setup_id = id.clone();
@@ -416,7 +488,8 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
             .disabled(busy)
             .on_press(move |s: &mut State| super::open_setup(s, setup_id.clone()))
             .build(k)
-            .key(format!("setup-{ix}")),
+            .key(format!("setup-{ix}"))
+            .press_scale(motion::PRESS),
         );
     }
     let open_id = id.clone();
@@ -426,30 +499,46 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
                 .disabled(busy)
                 .on_press(move |s: &mut State| super::plugin::open_detail(s, open_id.clone()))
                 .build(k)
-                .key(format!("open-{ix}")),
+                .key(format!("open-{ix}"))
+                .press_scale(motion::PRESS),
         )
         .child(remove_button);
-    let mut c = card(p).key(format!("ext-{id}")).child(head).child(
-        text(format!(
-            "{} · {} tools{}",
-            e.runtime,
-            e.tools.len(),
-            e.version
-                .as_deref()
-                .map(|v| format!(" · v{v}"))
-                .unwrap_or_default()
-        ))
-        .font(xs())
-        .color(p.text_muted),
-    );
+    // Keyed by id: a plugin arriving or leaving after the person's own
+    // install or remove wipes in or out, and the cards below glide.
+    let mut c = card(p)
+        .key(format!("ext-{id}"))
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
+        .child(head)
+        .child(
+            text(format!(
+                "{} · {} tools{}",
+                e.runtime,
+                e.tools.len(),
+                e.version
+                    .as_deref()
+                    .map(|v| format!(" · v{v}"))
+                    .unwrap_or_default()
+            ))
+            .font(xs())
+            .color(p.text_muted),
+        );
     if let Some(note) = super::plugin_view::held_note(s, k, ix, e) {
         c = c.child(note);
     }
     if let Some(err) = &e.activation_error {
-        c = c.child(error_line(p, err));
+        c = c.child(error_line(p, err).key("activation-error"));
     }
     if let Some(x) = setup {
-        c = c.child(render_setup(s, k, x));
+        // The drawer wipes open under the head; inside it the spinner
+        // gives way to the form in place.
+        c = c.child(
+            col()
+                .key("setup")
+                .w_full()
+                .transition(motion::reveal())
+                .child(render_setup(s, k, x)),
+        );
     }
     if let Some(x) = pairing {
         c = c.child(render_pairing(s, k, x));
@@ -463,6 +552,8 @@ fn render_catalog(s: &State, k: &Kit, ix: usize, entry: &RebornExtensionRegistry
     let e = entry.clone();
     col()
         .key(format!("catalog-{}", entry.package_ref.id.as_str()))
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
         .w_full()
         .child(
             row()
@@ -494,7 +585,8 @@ fn render_catalog(s: &State, k: &Kit, ix: usize, entry: &RebornExtensionRegistry
                         busy,
                     )
                     .build(k)
-                    .key(format!("install-{ix}")),
+                    .key(format!("install-{ix}"))
+                    .press_scale(motion::PRESS),
                 ),
         )
         .child(rule(p))

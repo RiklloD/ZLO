@@ -3,17 +3,17 @@
 
 use std::time::Instant;
 
-use rune::{Color, Cx, El, Shape, TextStyle, canvas, col, el, row, text};
+use rune::{Color, Cx, El, Shape, Spring, TextStyle, canvas, col, el, row, text};
 use rune_kit::{ButtonVariant, Kit};
 use zlo_client::computer_use::{ComputerApp, ComputerSession};
 
 use super::{
     Card, ComputerState, RIPPLE, TYPING_MS, click_card, close_big, now_ms, permissions, slot, stop,
-    take_over_or_back, toggle_hidden,
+    take_over_or_back, toggle_hidden, trail_alpha,
 };
 use crate::chat::ChatState;
 use crate::design::kit::compact::{XS, ghost_button, ghost_icon, txt, variant_button};
-use crate::design::{Palette, rgb};
+use crate::design::{Palette, motion, rgb};
 use crate::icons;
 use crate::state::State;
 
@@ -23,6 +23,9 @@ const DECK_W: f32 = 560.;
 const INDIGO: u32 = 0x6366f1;
 const INDIGO_SOFT: u32 = 0x818cf8;
 const AMBER: u32 = 0xf59e0b;
+/// The lightbox's zoom out of its card (Photos' hero): a hair slower than
+/// the deck's shuffle, which also carries it back.
+const ZOOM: Spring = Spring::new(0.32, 0.0);
 
 struct Status {
     dot: u32,
@@ -107,8 +110,10 @@ fn content_rect(natural: (u32, u32), w: f32, h: f32) -> (f32, f32, f32, f32) {
 fn overlay(card: &Card, rect: (f32, f32, f32, f32), scale: f32) -> Shape {
     let at = |f: (f32, f32)| [rect.0 + f.0 * rect.2, rect.1 + f.1 * rect.3];
     let mut shape = Shape::new();
-    if let Some((a, b, _)) = card.trail {
-        // A 4-on, 3-off dashed line.
+    if let Some((a, b, drawn)) = card.trail {
+        // A 4-on, 3-off dashed line, fading out as it expires (the poll
+        // redraws only while it fades).
+        let ink = rgb(INDIGO_SOFT).alpha(trail_alpha(drawn.elapsed()));
         let (pa, pb) = (at(a), at(b));
         let len = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt();
         if len > 0. {
@@ -118,7 +123,7 @@ fn overlay(card: &Card, rect: (f32, f32, f32, f32), scale: f32) -> Shape {
                 let e = (d + 4.).min(len);
                 let p0 = [pa[0] + dir[0] * d, pa[1] + dir[1] * d];
                 let p1 = [pa[0] + dir[0] * e, pa[1] + dir[1] * e];
-                shape = shape.stroke(vec![p0, p1], 2., rgb(INDIGO_SOFT));
+                shape = shape.stroke(vec![p0, p1], 2., ink);
                 d += 7.;
             }
         }
@@ -228,8 +233,12 @@ fn card_view(
         );
     }
     if let Some(note) = note {
+        // Paused (the person's Take over) or connecting: fades over the
+        // picture when a click caused it, lands at once on data.
         stage = stage.child(
-            el().pin(Some(0.), Some(0.), Some(0.), Some(0.))
+            el().key("cu-scrim")
+                .transition(motion::fade())
+                .pin(Some(0.), Some(0.), Some(0.), Some(0.))
                 .center()
                 .padding(12.)
                 .fill(Color::BLACK.alpha(0.55))
@@ -273,7 +282,8 @@ fn card_view(
             None => (rect.0 + 8., rect.1 + rect.3 - 28.),
         };
         stage = stage.child(
-            el().pin(Some(x.min(w - 60.)), Some(y.min(h - 20.)), None, None)
+            el().key("cu-typing")
+                .pin(Some(x.min(w - 60.)), Some(y.min(h - 20.)), None, None)
                 .px(7.)
                 .py(2.)
                 .radius(6.)
@@ -282,8 +292,16 @@ fn card_view(
                 .child(txt(format!("⌨ {}", t.text), 10.5, Color::WHITE).truncate()),
         );
     }
+    // The deck card and the lightbox share one hero id: opening flies the
+    // card up into the enlarged view and closing flies it back (the deck
+    // leaves that card out while it is enlarged). The deck's cards spring
+    // to their new place when a click re-fans it; frames streaming in land
+    // at once (no input caused them).
     let mut out = el()
         .key(key)
+        .matched(format!("cu-hero-{window}"))
+        .motion(if big { ZOOM } else { motion::ROW_RESORT })
+        .press_scale(motion::PRESS_CARD)
         .w(w)
         .h(h)
         .radius(radius)
@@ -331,6 +349,7 @@ fn permissions_card(p: &Palette, id: &str, cu: &ComputerState, k: &Kit) -> El {
         .contains(&permissions::Permission::ScreenRecording);
     col()
         .key("cu-permissions")
+        .transition(motion::pop(-6.))
         .pin(None, Some(12.), Some(12.), None)
         .w(CARD_W + 40.)
         .gap(8.)
@@ -394,6 +413,7 @@ fn remote_line_card(p: &Palette, id: &str, line: String, ready: bool, k: &Kit) -
     let hide_id = id.to_string();
     row()
         .key("cu-remote-readiness")
+        .transition(motion::pop(-6.))
         .pin(None, Some(12.), Some(12.), None)
         .max_w(CARD_W + 40.)
         .gap(8.)
@@ -446,6 +466,10 @@ pub fn view(
     let apps = cu.apps();
     let mut deck = el().key("cu-deck").w(DECK_W).h(STAGE_H + 30.);
     for (ix, app) in apps.iter().enumerate().rev() {
+        if cu.big == Some(app.window_id) {
+            // Enlarged: the lightbox holds it (one hero, one place).
+            continue;
+        }
         let scale = 0.82f32.powi(ix as i32);
         let (w, h) = (CARD_W * scale, STAGE_H * scale);
         let right = ix as f32 * 110.;
@@ -518,11 +542,18 @@ pub fn view(
         } else {
             "Pause the agent and use the computer yourself until you hand it back"
         });
-        bar = bar.child(if cu.mine {
-            el().radius(6.).fill(p.active).child(take)
-        } else {
-            take
-        });
+        // One wrapper in both states, so the keyed button never moves
+        // between parents; its fill marks "you have control".
+        bar = bar.child(
+            el().key("cu-take-wrap")
+                .radius(6.)
+                .fill(if cu.mine {
+                    p.active
+                } else {
+                    Color::TRANSPARENT
+                })
+                .child(take),
+        );
     }
     let hide_id = id.to_string();
     bar = bar.child(ghost_icon(
@@ -544,6 +575,7 @@ pub fn view(
         };
         layer.push(
             el().key("cu-big-veil")
+                .transition(motion::fade())
                 .absolute(0., 0.)
                 .w_full()
                 .h_full()
@@ -559,6 +591,7 @@ pub fn view(
     Some(
         col()
             .key("cu-stack")
+            .transition(motion::pop(-6.))
             .pin(None, Some(52.), Some(16.), None)
             .w(DECK_W)
             .child(deck)

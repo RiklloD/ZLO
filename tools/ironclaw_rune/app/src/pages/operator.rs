@@ -12,6 +12,8 @@ mod extensions;
 pub mod fixtures;
 mod inspector;
 mod logs;
+#[cfg(test)]
+mod motion_tests;
 mod setup;
 mod status;
 
@@ -24,6 +26,7 @@ use zlo_client::product_wire::{
     RebornOperatorConfigDiagnostic, RebornOperatorConfigDiagnosticSeverity,
 };
 
+use crate::design::motion;
 use crate::icons;
 use crate::state::State;
 
@@ -132,7 +135,8 @@ fn top(s: &State, k: &Kit) -> El {
         refresh_icon()
             .on_press(|s: &mut State| refresh(s))
             .build(k)
-            .key("refresh-operator"),
+            .key("refresh-operator")
+            .press_scale(motion::PRESS),
     ];
     let tabs = crate::pages::common::tab_bar(k, "operator-tabs", &TABS, o.tab, show).pb(16.);
     col()
@@ -162,9 +166,18 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     };
     let mut body = col().w_full().child(top(s, k));
     if let Some(panel) = panel {
-        body = body.child(panel.key(format!("operator-panel-{:?}", o.tab)));
+        // Keyed by tab: switching tabs crossfades the panels in place.
+        body = body.child(panel_motion(panel, o.tab));
     }
     page_body("operator-page", body)
+}
+
+/// A tab's panel, keyed by its tab so a switch crossfades the two panels
+/// (`motion::fade`) instead of swapping them in one frame.
+fn panel_motion(panel: El, tab: Tab) -> El {
+    panel
+        .key(format!("operator-panel-{tab:?}"))
+        .transition(motion::fade())
 }
 
 // --- shared widgets ---
@@ -178,9 +191,11 @@ fn section_title(s: &State, title: &str) -> El {
         .pb(8.)
 }
 
-/// A success notice line.
+/// A success notice line; it wipes in and out (`motion::reveal`).
 fn notice_line(s: &State, msg: &str) -> El {
     text(msg.to_string())
+        .key("operator-notice")
+        .transition(motion::reveal())
         .font(sm())
         .color(s.palette.success)
         .wrap()
@@ -188,9 +203,12 @@ fn notice_line(s: &State, msg: &str) -> El {
 }
 
 /// A danger-outlined confirm row: what will happen, then confirm or cancel.
+/// It wipes open under what it confirms and away when answered; callers
+/// key it among their siblings.
 fn confirm_row(s: &State, k: &Kit, message: String, confirm: Button, cancel: Button) -> El {
     let p = &s.palette;
     row()
+        .transition(motion::reveal())
         .w_full()
         .gap(8.)
         .center_y()
@@ -205,8 +223,8 @@ fn confirm_row(s: &State, k: &Kit, message: String, confirm: Button, cancel: But
                 .grow(1.)
                 .min_w(0.),
         )
-        .child(confirm.build(k).key("confirm"))
-        .child(cancel.build(k).key("cancel"))
+        .child(confirm.build(k).key("confirm").press_scale(motion::PRESS))
+        .child(cancel.build(k).key("cancel").press_scale(motion::PRESS))
 }
 
 fn diagnostic_row(s: &State, d: &RebornOperatorConfigDiagnostic) -> El {

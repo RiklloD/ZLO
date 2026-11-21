@@ -4,18 +4,43 @@
 //! outside does nothing, and Close (or Escape) finishes setup, as t3code's
 //! close press does.
 
-use rune::{El, col, el, row, text};
-use rune_kit::{Checkbox, Kit};
+use rune::{El, Spring, SpringPair, Transition, Tx, col, el, row, text};
+use rune_kit::{Checkbox, IconButtonVariant, Kit};
+
+use crate::design::{kit as zkit, motion};
 
 use crate::pages::common::controls::{Look, Size, button_sized, icon_button_sized};
+use crate::pages::common::pressable;
 use crate::pages::common::ts::{MONO_XS, sm, sm_medium, xs};
 use crate::state::{Conn, State};
 
-use super::{Finish, STEPS, Step, Toast};
+use super::{Finish, Step, Toast};
 use crate::remote::EnvState;
 use zlo_client::environments::Active;
 
 const WIDTH: f32 = 720.;
+
+/// How far a step's body travels as it arrives: a nudge toward where the
+/// person is going, not a full-width push.
+const STEP_NUDGE: f32 = 22.;
+/// A step's body arriving (the page entrance spring).
+const STEP_IN: Spring = Spring::new(0.32, 0.0);
+/// The old body fading out: quick, so the two cross only briefly.
+const STEP_OUT: Spring = Spring::new(0.14, 0.0);
+/// How long a new step's body waits for the old one's fade.
+const STEP_HANDOFF: f32 = 0.05;
+
+/// A step's body: forward arrives from the right, back from the left,
+/// fading in; the old body fades out in place, faster. The exit is
+/// direction-free because an exiting element keeps the transition of its
+/// last render, which cannot know where the person goes next.
+pub(super) fn step_transition(direction: i8) -> Transition {
+    Transition::asymmetric(
+        Transition::offset(f32::from(direction) * STEP_NUDGE, 0.).combined(Transition::opacity()),
+        Transition::opacity(),
+    )
+    .springs(SpringPair::new(STEP_IN, STEP_OUT))
+}
 
 fn close(s: &mut State) {
     if s.onboarding.projects.importing || s.remote.page.busy.is_some() {
@@ -38,14 +63,24 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
         Step::Agents => super::agents::view(s, k),
         Step::Projects => super::projects::view(s, k),
     };
+    let body = col()
+        .key(format!("onboarding-step-body-{:?}", o.step))
+        .w_full()
+        .transition(step_transition(o.direction))
+        // The old step mostly gone before the new one starts in, so the
+        // two don't read as one muddle.
+        .enter_delay(STEP_HANDOFF)
+        .child(body);
     let mut panel_body = col().w_full().child(body);
     if let Some(e) = &o.finish_error {
         panel_body = panel_body.child(
             text(format!("Could not finish setup. {e}"))
+                .key("onboarding-finish-error")
                 .font(sm())
                 .color(p.danger)
                 .pt(12.)
-                .wrap(),
+                .wrap()
+                .transition(motion::reveal()),
         );
     }
     let panel = col()
@@ -66,15 +101,20 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 .py(20.)
                 .fill(p.bg.alpha(0.5))
                 .border(1., p.border)
+                // While the panel springs to the next step's height, the
+                // step fading out must not spill past its edge.
+                .clip_rounded(0.)
                 .child(panel_body),
         )
         .token_motion(k.motion.overlay)
+        .transition(motion::pop(8.))
         .modal(false, close);
     layer.push(
         el().key("onboarding-scrim")
             .pin(Some(0.), Some(0.), Some(0.), Some(0.))
             .fill(rune::Color::BLACK.alpha(0.35))
-            .a11y_hidden(),
+            .a11y_hidden()
+            .transition(motion::fade()),
     );
     layer.push(
         el().key("onboarding-layer")
@@ -103,7 +143,7 @@ fn header(s: &State, k: &Kit) -> El {
                 .w_full()
                 .gap(10.)
                 .center_y()
-                .child(mark(s))
+                .child(super::stepper::mark(s))
                 .child(
                     text("ZLO")
                         .font(rune::TextStyle::new(22., 600.))
@@ -115,112 +155,11 @@ fn header(s: &State, k: &Kit) -> El {
                         .disabled(busy)
                         .on_press(close)
                         .build(k)
-                        .key("onboarding-close"),
+                        .key("onboarding-close")
+                        .press_scale(motion::PRESS),
                 ),
         )
-        .child(steps(s))
-}
-
-/// The claw mark's three strokes at wordmark size (t3code's identity).
-fn mark(s: &State) -> El {
-    let p = &s.palette;
-    let stroke = |h: f32| {
-        el().w(4.)
-            .h(h)
-            .radius(2.)
-            .gradient(crate::design::lift(p.accent, 0.12), p.accent_strong)
-    };
-    row()
-        .h(22.)
-        .gap(3.)
-        .center_y()
-        .child(stroke(14.))
-        .child(stroke(20.))
-        .child(stroke(14.))
-}
-
-/// t3code `WizardSteps`: done steps take a check and can be reopened.
-fn steps(s: &State) -> El {
-    let p = &s.palette;
-    let current = s.onboarding.step.index();
-    let busy = s.onboarding.projects.importing;
-    let mut list = row()
-        .key("onboarding-steps")
-        .role("list")
-        .label("Setup progress")
-        .w_full()
-        .gap(4.)
-        .padding(4.)
-        .radius(12.)
-        .fill(p.bg)
-        .border(1., p.border);
-    for (step, name) in STEPS {
-        let ix = step.index();
-        let here = ix == current;
-        let done = ix < current;
-        let badge = el()
-            .w(20.)
-            .h(20.)
-            .radius(10.)
-            .center()
-            .fill(if done {
-                p.accent
-            } else if here {
-                p.accent.alpha(0.12)
-            } else {
-                p.surface_card
-            })
-            .border(
-                1.,
-                if done {
-                    p.accent
-                } else if here {
-                    p.accent.alpha(0.3)
-                } else {
-                    p.border_strong
-                },
-            )
-            .child(if done {
-                rune::icon(&crate::icons::CHECK, 14.).color(p.on_accent())
-            } else {
-                text((ix + 1).to_string()).font(sm_medium()).color(if here {
-                    p.accent
-                } else {
-                    p.text_muted
-                })
-            });
-        let mut item = row()
-            .key(format!("onboarding-step-{ix}"))
-            .grow(1.)
-            .min_w(0.)
-            .gap(8.)
-            .px(10.)
-            .py(8.)
-            .radius(8.)
-            .center_y()
-            .label(format!("{name}, step {}", ix + 1))
-            .child(badge)
-            .child(
-                text(name)
-                    .font(sm_medium())
-                    .color(if here { p.text } else { p.text_muted })
-                    .truncate()
-                    .min_w(0.),
-            );
-        if here {
-            item = item.fill(p.surface_card).border(1., p.border);
-        }
-        if done && !busy {
-            item = item
-                .role("button")
-                .focusable(true)
-                .cursor(rune::Cursor::Pointer)
-                .hover(p.surface_card)
-                .on_press(move |s: &mut State| super::go_to(s, step));
-        }
-        list = list.child(item);
-    }
-    list
+        .child(super::stepper::steps(s))
 }
 
 /// t3code `StepShell`: the step's title and description.
@@ -270,12 +209,23 @@ pub fn command_block(s: &State, k: &Kit, command: &'static str, key: &str) -> El
                         .min_w(0.),
                 ),
         )
-        .child(
-            icon_button_sized(&crate::icons::COPY, "Copy command", Size::XSmall)
-                .on_press_tx(move |_: &mut State, tx| tx.copy(command))
-                .build(k)
-                .key(format!("{key}-copy")),
-        )
+        .child({
+            let copy_key = format!("{key}-copy");
+            let copied = super::copied(s, &copy_key);
+            let ink = zkit::icon_ink(k, IconButtonVariant::Ghost);
+            let flash_key = copy_key.clone();
+            zkit::glyph_button(
+                k,
+                &copy_key,
+                IconButtonVariant::Ghost,
+                if copied { "Copied" } else { "Copy command" },
+                zkit::copy_glyph("glyph", copied, 16., ink),
+                move |s: &mut State, tx: &mut Tx| {
+                    tx.copy(command);
+                    super::flash_copied(s, flash_key.clone(), tx);
+                },
+            )
+        })
 }
 
 /// A computer setup can pick: its key, label and caption.
@@ -349,7 +299,19 @@ fn connect_step(s: &State, k: &Kit) -> El {
                         .min_w(0.)
                         .wrap(),
                 )
-                .child(text(status).font(xs()).color(p.text_muted)),
+                .child({
+                    let status_line = text(status).key("status").font(xs()).color(p.text_muted);
+                    // Breathes on the loaders' 15 fps clock only while it
+                    // connects; still under Reduce Motion.
+                    if matches!(
+                        crate::remote::state_of(s, &choice.key),
+                        EnvState::Connecting
+                    ) {
+                        status_line.cycle(zkit::loops::breathe(1.6, 0., &zkit::loops::BREATH_55))
+                    } else {
+                        status_line
+                    }
+                }),
         );
         if let Some(caption) = &choice.caption {
             info = info.child(text(caption.clone()).font(xs()).color(p.text_muted).pt(2.));
@@ -370,6 +332,7 @@ fn connect_step(s: &State, k: &Kit) -> El {
                 .border(1., if on { p.accent.alpha(0.5) } else { p.border })
                 .fill(p.bg)
                 .cursor(rune::Cursor::Pointer)
+                .press_scale(motion::PRESS_CARD)
                 .on_press(move |s: &mut State| pick(s, row_target.clone()))
                 .child(
                     Checkbox::new(on)
@@ -404,12 +367,14 @@ fn connect_step(s: &State, k: &Kit) -> El {
     .child(list)
     .child(
         row().w_full().pt(24.).justify_end().child(
-            button_sized("Continue", Look::Primary, Size::Small)
-                .icon(&crate::icons::ARROW_RIGHT)
-                .disabled(!ready || s.remote.page.busy.is_some())
-                .on_press(|s: &mut State| super::go_to(s, Step::Agents))
-                .build(k)
-                .key("connect-continue"),
+            pressable(
+                button_sized("Continue", Look::Primary, Size::Small)
+                    .icon(&crate::icons::ARROW_RIGHT)
+                    .disabled(!ready || s.remote.page.busy.is_some())
+                    .on_press(|s: &mut State| super::go_to(s, Step::Agents))
+                    .build(k),
+            )
+            .key("connect-continue"),
         ),
     )
 }
@@ -418,15 +383,13 @@ fn connect_step(s: &State, k: &Kit) -> El {
 fn pairing(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let open = s.onboarding.connect.pairing_open;
-    let chevron = rune::icon(
-        if open {
-            &crate::icons::CHEVRON_DOWN
-        } else {
-            &crate::icons::CHEVRON_RIGHT
-        },
+    let chevron = zkit::chevron(
+        "pairing-chevron",
+        open,
+        zkit::Turn::Disclose,
         16.,
-    )
-    .color(p.text_muted);
+        p.text_muted,
+    );
     let card = col()
         .key("pairing")
         .w_full()
@@ -446,6 +409,8 @@ fn pairing(s: &State, k: &Kit) -> El {
                 .label("Add a computer")
                 .cursor(rune::Cursor::Pointer)
                 .hover(p.hover)
+                .hover_motion(motion::HOVER, motion::HOVER)
+                .press_scale(motion::PRESS_CARD)
                 .on_press(|s: &mut State| {
                     if s.remote.page.busy.is_some() {
                         return;
@@ -466,9 +431,11 @@ fn pairing(s: &State, k: &Kit) -> El {
     }
     card.child(
         col()
+            .key("pairing-drawer")
             .w_full()
             .px(12.)
             .pb(12.)
+            .transition(motion::reveal())
             .child(crate::pages::computers::add_computer(s, k)),
     )
 }
@@ -486,6 +453,8 @@ pub fn toast(s: &State, k: &Kit, toast: &Toast) -> El {
     }
     el().key("onboarding-toast-layer")
         .pin(None, None, Some(20.), Some(20.))
+        .transition(toast_transition())
+        .enter_delay(TOAST_DELAY)
         .child(
             row()
                 .key("onboarding-toast")
@@ -518,3 +487,14 @@ pub fn toast(s: &State, k: &Kit, toast: &Toast) -> El {
                 ),
         )
 }
+
+/// The note after setup rises into the corner once the wizard has begun to
+/// leave, and sinks away faster.
+fn toast_transition() -> Transition {
+    Transition::offset(0., 14.)
+        .combined(Transition::opacity())
+        .springs(SpringPair::with_exit_ratio(STEP_IN, 0.6))
+}
+
+/// How long the note waits for the wizard's exit before it rises.
+pub(super) const TOAST_DELAY: f32 = 0.12;

@@ -112,7 +112,9 @@ fn save(s: &mut State, ix: usize) {
             // Read back what the gateway stored.
             c.extension_configuration().await.map(|l| (id, l))
         },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's Save: "Saved." slides in.
+            tx.animated();
             let Some(p) = st(s) else { return };
             match result {
                 Ok((id, list)) => {
@@ -212,7 +214,11 @@ fn render_group(s: &State, k: &Kit, ix: usize, g: &GroupForm) -> El {
     }
     let mut actions = row().w_full().gap(8.).justify_end().center_y();
     if g.saved {
-        actions = actions.child(muted(p, "Saved."));
+        actions = actions.child(
+            muted(p, "Saved.")
+                .key("saved")
+                .transition(crate::design::motion::fade()),
+        );
     }
     c.child(
         actions.child(
@@ -222,7 +228,8 @@ fn render_group(s: &State, k: &Kit, ix: usize, g: &GroupForm) -> El {
                 g.saving,
             )
             .build(k)
-            .key(format!("save-ext-config-{ix}")),
+            .key(format!("save-ext-config-{ix}"))
+            .press_scale(crate::design::motion::PRESS),
         ),
     )
 }

@@ -16,7 +16,7 @@ use crate::design::kit::compact::{
     ICON_XS, SM, XS, ghost_button, ghost_icon, ghost_icon_tx, ico, spinner, txt, txt_medium,
     variant_button,
 };
-use crate::design::{self, Palette};
+use crate::design::{self, Palette, motion};
 use crate::icons;
 use crate::state::State;
 
@@ -49,6 +49,9 @@ pub fn composer(s: &State, chat: &ChatState, k: &Kit, plan: Option<El>) -> Optio
         .children(goal)
         .children(queue)
         .children(strip);
+    // The block wipes open above the composer; each part inside it wipes
+    // in on its own once the block is up (a queued message, the goal
+    // editor, a note). Both play only on commits the person caused.
     Some(
         row()
             .key("orchestration")
@@ -56,6 +59,7 @@ pub fn composer(s: &State, chat: &ChatState, k: &Kit, plan: Option<El>) -> Optio
             .px(16.)
             .pt(8.)
             .justify_center()
+            .transition(motion::reveal())
             .child(inner),
     )
 }
@@ -100,7 +104,8 @@ fn queue_panel(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
         .w_full()
         .gap(8.)
         .role("list")
-        .label(format!("{n} queued"));
+        .label(format!("{n} queued"))
+        .transition(motion::reveal());
     for (ix, item) in o.queue.items.iter().enumerate().take(shown) {
         list = list.child(queued_row(s, thread, o, item, ix, n, running, k));
     }
@@ -222,6 +227,8 @@ fn queued_row(
     };
     col()
         .key(format!("queued-row-{}", item.id))
+        // Queued, removed or sent: the row rises in and wipes away.
+        .transition(motion::reveal().combined(rune::Transition::offset(0., 6.)))
         .hover_group()
         .w_full()
         .items_end()
@@ -258,7 +265,8 @@ fn queued_row(
         )
 }
 
-/// A clickable muted line in the strip.
+/// A clickable muted line in the strip: its ink brightens under the
+/// pointer and it sinks a little while pressed.
 fn link_chip(p: &Palette, key: &str, i: &'static Icon, label: String, open: String) -> El {
     row()
         .key(key)
@@ -267,9 +275,12 @@ fn link_chip(p: &Palette, key: &str, i: &'static Icon, label: String, open: Stri
         .gap(4.)
         .center_y()
         .cursor(rune::Cursor::Pointer)
-        .child(ico(i, ICON_XS, p.text_muted))
-        .child(txt(label, XS, p.text_muted))
+        .hover_group()
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .child(ico(i, ICON_XS, p.text_muted).group_color(p.text))
+        .child(txt(label, XS, p.text_muted).group_color(p.text))
         .on_press(move |s: &mut State| crate::workspace::open_thread(s, open.clone()))
+        .press_scale(motion::PRESS)
 }
 
 fn text_chip(p: &Palette, key: String, i: &'static Icon, label: impl Into<String>) -> El {
@@ -393,17 +404,16 @@ fn strip(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
     }
 
     if let Some(note) = o.note.clone() {
-        chips.push(text_chip(
-            p,
-            "strip-note".into(),
-            &icons::CIRCLE_CHECK,
-            note,
-        ));
+        chips.push(
+            text_chip(p, "strip-note".into(), &icons::CIRCLE_CHECK, note)
+                .transition(motion::fade()),
+        );
     }
 
     (!chips.is_empty()).then(|| {
         row()
             .key("orchestration-strip")
+            .transition(motion::reveal())
             .flex_wrap()
             .center_y()
             .gaps(4., 12.)
@@ -450,8 +460,12 @@ fn frame(p: &Palette, thread: &str, o: &OrchestrationState, k: &Kit) -> Option<E
         } else {
             "Cancel this subagent and everything it delegated"
         };
+        // Keyed apart, so Cancel gives way to the spinner with a fade.
         let cancel = if cancelling {
-            spinner(k, ICON_XS, p.text_muted).help(tip)
+            spinner(k, ICON_XS, p.text_muted)
+                .help(tip)
+                .key(format!("cancelling-{}", task.task_id))
+                .transition(motion::fade())
         } else {
             ghost_icon(
                 k,
@@ -461,6 +475,7 @@ fn frame(p: &Palette, thread: &str, o: &OrchestrationState, k: &Kit) -> Option<E
                 move |s| cancel_task(s, &chat, task_id.clone()),
             )
             .label("Cancel subagent")
+            .transition(motion::fade())
         };
         let mut r = row()
             .key(format!("subagent-{}", task.task_id))
@@ -469,6 +484,7 @@ fn frame(p: &Palette, thread: &str, o: &OrchestrationState, k: &Kit) -> Option<E
             .py(4.)
             .center_y()
             .radius(design::ROW_RADIUS)
+            .transition(motion::reveal())
             .child(icon)
             .child(
                 txt_medium(task.title.clone(), SM, p.text)
@@ -489,9 +505,11 @@ fn frame(p: &Palette, thread: &str, o: &OrchestrationState, k: &Kit) -> Option<E
         if let Some(child) = task.child_thread_id.clone() {
             r = r
                 .hover(p.hover)
+                .hover_motion(motion::HOVER, motion::HOVER)
                 .cursor(rune::Cursor::Pointer)
                 .role("button")
-                .on_press(move |s: &mut State| crate::workspace::open_thread(s, child.clone()));
+                .on_press(move |s: &mut State| crate::workspace::open_thread(s, child.clone()))
+                .press_scale(motion::PRESS_CARD);
         }
         rows = rows.child(r);
     }

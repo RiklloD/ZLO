@@ -13,11 +13,14 @@ use serde_json::Value;
 use zlo_client::plugin_ui::{ButtonStyle, ListItem, Node, TextStyle, Tone};
 
 use super::MountKey;
-use crate::design::{self, Palette};
+use crate::design::{self, Palette, motion};
 use crate::icons;
 use crate::pages::common::controls::{Look, Size, button_sized};
 use crate::pages::common::{block_fill, ts};
 use crate::state::State;
+
+/// How far a mount's actionable rows dim while its plugin answers a press.
+const BUSY_DIM: f32 = 0.55;
 
 /// Where a tree is drawn, which sets its type scale and spacing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -247,7 +250,8 @@ fn button(
         button_sized(label, look, size)
             .disabled(cx.busy)
             .on_press(press(cx, action, payload))
-            .build(cx.k),
+            .build(cx.k)
+            .press_scale(motion::PRESS),
     )
 }
 
@@ -331,10 +335,19 @@ fn list_item(cx: &Ctx, path: &str, item: &ListItem) -> El {
         out = out
             .role("button")
             .label(item.title.clone())
-            .cursor(Cursor::Pointer);
+            .cursor(Cursor::Pointer)
+            // While the plugin answers a press the rows that act dim, and
+            // light again as the answer lands, on the slide spring.
+            .opacity(if cx.busy { BUSY_DIM } else { 1. })
+            .opacity_motion(motion::SLIDE);
         if !cx.busy {
+            // The hover wash fades and a press sinks the row a hair, as
+            // the app's own rows do.
             out = out
                 .hover(design::kit::hover_wash(p))
+                .press(design::kit::hover_wash(p))
+                .hover_motion(motion::HOVER, motion::HOVER)
+                .press_scale(motion::PRESS_CARD)
                 .on_press(press(cx, action, &item.payload));
         }
         out = out.child(

@@ -10,12 +10,13 @@ use crate::pages::common::ts::{sm, xs};
 use std::collections::BTreeSet;
 
 use rune::{Color, Cursor, El, FileDialogOptions, ScrollSpec, Tx, col, el, row};
-use rune_kit::{Kit, Placement, TextInput};
+use rune_kit::{Kit, TextInput};
 use zlo_client::orchestration::RouteProvider;
 use zlo_client::profiles::{ApprovalMode, ProfileInfo, ProfileSettings, ProfileSupermemory};
 
 use super::ProfilesState;
-use crate::design::{self, Palette};
+use crate::design::kit::{self, Turn};
+use crate::design::{self, Palette, motion};
 use crate::icons;
 use crate::state::State;
 
@@ -214,12 +215,10 @@ pub(super) fn trigger(s: &State, k: &Kit, layer: &mut Vec<El>, menu: Menu, summa
         };
         let width = if menu == Menu::Model { 460.0 } else { 380.0 };
         layer.push(rune_kit::scrim(format!("{key}-scrim"), close));
-        layer.push(rune_kit::popover::anchored(
+        layer.push(anchored(
             k,
             floating(k, content.w(width).key(format!("{key}-pop"))),
             &key,
-            Placement::BottomEnd,
-            4.0,
         ));
     }
     row()
@@ -234,16 +233,36 @@ pub(super) fn trigger(s: &State, k: &Kit, layer: &mut Vec<El>, menu: Menu, summa
         .center_y()
         .radius(design::CONTROL_RADIUS)
         .border(1.0, if open { p.accent } else { p.border })
+        .motion(motion::SLIDE)
         .cursor(Cursor::Pointer)
         .hover(p.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
         .child(
             styled(summary, sm(), p.text)
                 .truncate()
                 .grow(1.0)
                 .min_w(0.0),
         )
-        .child(glyph(&icons::CHEVRON_DOWN, 12.0, p.text_muted))
+        .child(kit::chevron(
+            &format!("profile-menu-{}-chev", menu as u8),
+            open,
+            Turn::Flip,
+            12.0,
+            p.text_muted,
+        ))
         .on_press(move |s: &mut State| toggle_menu(s, menu))
+        .press_scale(motion::PRESS)
+}
+
+/// A picker's menu as a layer entry under its trigger (keyed `anchor`),
+/// right edges aligned, fitted to the window as
+/// `rune_kit::popover::anchored` fits it. Not that helper itself: it opens
+/// at once and lands every change inside at once; this one pops in falling
+/// into place and out faster (`motion::pop`), and its check boxes morph.
+fn anchored(k: &Kit, menu: El, anchor: &str) -> El {
+    menu.anchored_fit(anchor, rune::Side::Bottom, rune::Align::End, 4.0)
+        .transition(motion::pop(-6.))
+        .token_motion(k.motion.overlay)
 }
 
 pub(super) fn model_summary(ps: &ProfilesState) -> String {
@@ -527,7 +546,7 @@ fn checklist_popover(s: &State, k: &Kit, menu: Menu, empty_label: &'static str) 
                 .checked(on)
                 .items_start()
                 .py(4.0)
-                .child(check_box(p, on))
+                .child(check_box(p, &format!("check-{}-{}", menu as u8, c.id), on))
                 .child(text)
                 .on_press(move |s: &mut State| {
                     let set = picked_set(pr(s), menu);
@@ -574,8 +593,12 @@ fn pick_row(p: &Palette, key: String, text: String, on: bool) -> El {
     r
 }
 
-fn check_box(p: &Palette, on: bool) -> El {
+/// A checklist row's box: its fill and rim morph on the slide spring as it
+/// is ticked, and the tick pops in (`motion::glyph_pop`).
+fn check_box(p: &Palette, key: &str, on: bool) -> El {
     let b = row()
+        .key(format!("{key}-box"))
+        .motion(motion::SLIDE)
         .mt(2.0)
         .w(14.0)
         .h(14.0)
@@ -584,8 +607,11 @@ fn check_box(p: &Palette, on: bool) -> El {
         .border(1.0, if on { p.accent } else { p.border_strong })
         .a11y_hidden();
     if on {
-        b.fill(p.accent)
-            .child(glyph(&icons::CHECK, 10.0, p.on_solid))
+        b.fill(p.accent).child(
+            glyph(&icons::CHECK, 10.0, p.on_solid)
+                .key(format!("{key}-tick"))
+                .transition(motion::glyph_pop()),
+        )
     } else {
         b.fill(Color::TRANSPARENT)
     }

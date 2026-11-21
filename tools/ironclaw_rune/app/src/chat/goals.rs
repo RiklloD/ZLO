@@ -298,10 +298,14 @@ fn apply_goal(
     asked: &str,
     instance: jobs::Instance,
     result: Result<ThreadGoalResponse, ClientError>,
+    tx: &mut rune::Tx,
 ) {
     let Some(g) = slot_of(s, asked, instance) else {
         return;
     };
+    // Every write is the person's (a /goal line, the editor, the strip's
+    // buttons): the editor folds away and the strip arrives with motion.
+    tx.animated();
     match result {
         Ok(doc) => {
             g.goal = doc.goal;
@@ -326,7 +330,7 @@ fn write_goal(s: &mut State, id: &str, objective: Option<String>, status: Option
             c.set_thread_goal(&thread_id, objective.as_deref(), status)
                 .await
         },
-        move |s, result, _| apply_goal(s, &asked, instance, result),
+        move |s, result, tx| apply_goal(s, &asked, instance, result, tx),
     );
 }
 
@@ -349,7 +353,7 @@ fn write_goal_check(
             c.set_thread_goal_check(&thread_id, objective.as_deref(), check.as_ref())
                 .await
         },
-        move |s, result, _| apply_goal(s, &asked, instance, result),
+        move |s, result, tx| apply_goal(s, &asked, instance, result, tx),
     );
 }
 
@@ -364,7 +368,7 @@ fn goal_check_action(s: &mut State, id: &str, action: GoalCheckAction, revision:
         s,
         "goal",
         move |c| async move { c.goal_check_action(&thread_id, action, revision).await },
-        move |s, result, _| apply_goal(s, &asked, instance, result),
+        move |s, result, tx| apply_goal(s, &asked, instance, result, tx),
     );
 }
 
@@ -453,6 +457,7 @@ pub fn view(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
         return Some(
             row()
                 .key("goal-editor")
+                .transition(crate::design::motion::reveal())
                 .gap(8.)
                 .center_y()
                 .child(ico(i, ICON_XS, muted))
@@ -650,7 +655,12 @@ pub fn view(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
         None => {}
     }
     strip = strip.child(actions);
-    let mut out = col().key("goal").child(strip);
+    // Set, cleared or back from its editor: the strip fades in place (it
+    // sits in the transcript's growth stack, which moves the rows).
+    let mut out = col()
+        .key("goal")
+        .transition(crate::design::motion::fade())
+        .child(strip);
     if let Some(line) = below {
         out = out.child(line);
     }
@@ -725,15 +735,21 @@ mod tests {
         };
         let inst =
             crate::chat::orchestration::instance_of(&mut s, "sc2").expect("side chat extras");
-        apply_goal(&mut s, "sc2", inst, Ok(doc()));
+        apply_goal(&mut s, "sc2", inst, Ok(doc()), &mut rune::Tx::default());
         assert!(chat_ref(&s, "sc2").is_some_and(|c| c.goals.goal.is_some()));
         assert!(
             chat_ref(&s, "t1").is_some_and(|c| c.goals.goal.is_none()),
             "the open chat's goal is its own"
         );
         close_side_chat(&mut s);
-        apply_goal(&mut s, "sc2", inst, Ok(doc()));
-        apply_goal(&mut s, "sc2", inst, Err(ClientError::Config("gone".into())));
+        apply_goal(&mut s, "sc2", inst, Ok(doc()), &mut rune::Tx::default());
+        apply_goal(
+            &mut s,
+            "sc2",
+            inst,
+            Err(ClientError::Config("gone".into())),
+            &mut rune::Tx::default(),
+        );
         let main = chat_ref(&s, "t1");
         assert!(main.is_some_and(|c| c.goals.goal.is_none() && c.error.is_none()));
     }
@@ -750,8 +766,14 @@ mod tests {
             thread_id: "sc2".into(),
             goal: fixture().goal,
         };
-        apply_goal(&mut s, "sc2", old, Ok(doc));
-        apply_goal(&mut s, "sc2", old, Err(ClientError::Config("late".into())));
+        apply_goal(&mut s, "sc2", old, Ok(doc), &mut rune::Tx::default());
+        apply_goal(
+            &mut s,
+            "sc2",
+            old,
+            Err(ClientError::Config("late".into())),
+            &mut rune::Tx::default(),
+        );
         let side = chat_ref(&s, "sc2").expect("reopened side chat");
         assert!(side.goals.goal.is_none(), "the old chat's goal never lands");
         assert!(side.error.is_none(), "nor its error");
@@ -764,6 +786,7 @@ mod tests {
                 thread_id: "sc2".into(),
                 goal: fixture().goal,
             }),
+            &mut rune::Tx::default(),
         );
         assert!(chat_ref(&s, "sc2").is_some_and(|c| c.goals.goal.is_some()));
     }

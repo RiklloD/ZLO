@@ -16,7 +16,9 @@ use rune::{El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, col, el, row, text};
 use rune_kit::{ButtonVariant, Kit, TextInput};
 
 use super::ui::{self, MONO_XS, xs};
-use super::{Tab, remote_repo, short_path, side, side_mut, side_of, side_total, thread_id};
+use super::{
+    Tab, remote_repo, short_path, side, side_mut, side_of, side_total, tab_shown, thread_id,
+};
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -48,6 +50,9 @@ struct Running {
 pub(super) struct ConsoleState {
     input: TextEdit,
     pub(super) lines: Vec<(Kind, String)>,
+    /// Lines ever dropped from the front (past [`LINES_MAX`], or cleared):
+    /// `gone + ix` is a line's lasting number, its key.
+    gone: u64,
     running: Option<Running>,
     history: Vec<String>,
     /// Position while stepping through `history` with the arrows.
@@ -161,11 +166,37 @@ fn spawn(command: &str, dir: &Path) -> Result<(u32, mpsc::Receiver<Msg>), String
     Ok((pid, rx))
 }
 
+impl ConsoleState {
+    /// Empty the log; later lines keep numbering on.
+    fn clear_lines(&mut self) {
+        self.gone += self.lines.len() as u64;
+        self.lines.clear();
+    }
+}
+
+impl ConsoleState {
+    /// Every line this console has shown, dropped ones included: it grows
+    /// whenever a line lands.
+    fn seen(&self) -> u64 {
+        self.gone + self.lines.len() as u64
+    }
+
+    /// Whether command output (not the console's own info lines, such as
+    /// "Done in 1.2 s") landed after [`Self::seen`] was `seen`.
+    fn output_since(&self, seen: u64) -> bool {
+        let new = (self.seen().saturating_sub(seen) as usize).min(self.lines.len());
+        self.lines[self.lines.len() - new..]
+            .iter()
+            .any(|(kind, _)| *kind != Kind::Info)
+    }
+}
+
 fn push(state: &mut ConsoleState, kind: Kind, text: String) {
     state.lines.push((kind, text));
     if state.lines.len() > LINES_MAX {
         let drop = state.lines.len() - LINES_MAX;
         state.lines.drain(..drop);
+        state.gone += drop as u64;
     }
 }
 
@@ -182,7 +213,7 @@ fn run(s: &mut State, tx: &mut Tx) {
         return;
     }
     if command == "clear" {
-        x.console.lines.clear();
+        x.console.clear_lines();
         x.console.input.clear();
         return;
     }
@@ -214,31 +245,51 @@ fn forward(s: &State, thread: String, rx: mpsc::Receiver<Msg>) {
             let mut batch = vec![first];
             batch.extend(rx.try_iter());
             let thread = thread.clone();
-            handle.update(move |s, tx| {
-                let Some(x) = side_of(s, &thread) else { return };
-                let state = &mut x.console;
-                for msg in batch {
-                    match msg {
-                        Msg::Line(kind, text) => push(state, kind, text),
-                        Msg::Exit(code) => {
-                            let secs = state
-                                .running
-                                .take()
-                                .map(|r| r.started.elapsed().as_secs_f32())
-                                .unwrap_or_default();
-                            let text = match code {
-                                Some(0) => format!("Done in {secs:.1} s"),
-                                Some(c) => format!("Exited with {c} after {secs:.1} s"),
-                                None => "Stopped".into(),
-                            };
-                            push(state, Kind::Info, text);
-                        }
-                    }
-                }
-                tx.scroll_to_bottom(OUT_KEY);
-            });
+            handle.update(move |s, tx| land(s, &thread, batch, tx));
         }
     });
+}
+
+/// Land a batch of a local command's output on `thread`'s console. A
+/// stream commit lands instantly; only a batch that is the command's end
+/// alone, on the console showing, turns Stop back into Run with motion
+/// ([`exit_motion`]).
+fn land(s: &mut State, thread: &str, batch: Vec<Msg>, tx: &mut Tx) {
+    let lines = batch.iter().any(|m| matches!(m, Msg::Line(..)));
+    let ended = batch.iter().any(|m| matches!(m, Msg::Exit(_)));
+    let animate = ended && exit_motion(s, thread, lines);
+    let Some(x) = side_of(s, thread) else { return };
+    let state = &mut x.console;
+    for msg in batch {
+        match msg {
+            Msg::Line(kind, text) => push(state, kind, text),
+            Msg::Exit(code) => {
+                let secs = state
+                    .running
+                    .take()
+                    .map(|r| r.started.elapsed().as_secs_f32())
+                    .unwrap_or_default();
+                let text = match code {
+                    Some(0) => format!("Done in {secs:.1} s"),
+                    Some(c) => format!("Exited with {c} after {secs:.1} s"),
+                    None => "Stopped".into(),
+                };
+                push(state, Kind::Info, text);
+            }
+        }
+    }
+    if animate {
+        tx.animated();
+    }
+    tx.scroll_to_bottom(OUT_KEY);
+}
+
+/// Whether a command's end on `thread` may swap Stop for Run with motion,
+/// though no input caused the commit: only on the console on screen, and
+/// only when no output lands with it (`tx.animated()` covers the whole
+/// commit, so output lines, their layout and the scroll would move too).
+fn exit_motion(s: &State, thread: &str, lines_landed: bool) -> bool {
+    !lines_landed && thread_id(s).as_deref() == Some(thread) && tab_shown(s, Tab::Console)
 }
 
 fn stop(s: &mut State) {
@@ -365,7 +416,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .wrap_anywhere()
                 .min_h(16.)
                 .mt(top)
-                .key(format!("console-line-{ix}")),
+                .key(format!("console-line-{}", state.gone + ix as u64)),
         );
     }
     let out = col()
@@ -374,7 +425,6 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .grow(1.)
         .min_h(0.)
         .scroll(ScrollSpec { stick_bottom: true })
-        .key(OUT_KEY)
         .child(lines);
     let action = if running {
         ui::btn("Stop")
@@ -413,13 +463,23 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                     .key("console-input"),
             ),
         )
-        .child(action)
+        // One slot for Run and Stop: its width springs between the two, so
+        // the field beside it eases instead of jumping as a command starts
+        // or ends, and the buttons crossfade inside it.
+        .child(
+            row()
+                .key("console-action")
+                .items_center()
+                .justify_end()
+                .motion(crate::design::styles::Style::of(&s.prefs).slide)
+                .child(action),
+        )
         .child(
             ui::ibtn(&icons::DELETE, "Clear")
                 .label("Clear output")
                 .on_press(|s: &mut State| {
                     if let Some(x) = side_mut(s) {
-                        x.console.lines.clear();
+                        x.console.clear_lines();
                     }
                 })
                 .build(k)
@@ -451,7 +511,7 @@ fn remote_run(s: &mut State, tx: &mut Tx) {
     }
     x.console.input.clear();
     if command == "clear" {
-        x.console.lines.clear();
+        x.console.clear_lines();
         return;
     }
     let state = &mut x.console;
@@ -510,10 +570,22 @@ fn poll(s: &mut State, wait: bool) {
             c.thread_console(&asked, after).await
         },
         move |s, result, tx| {
-            if let Some(x) = side_of(s, &thread) {
+            let (was, seen) = side_of(s, &thread).map_or((false, 0), |x| {
                 x.console.remote.polling = false;
-            }
+                (x.console.remote.running, x.console.seen())
+            });
             let more = landed(s, &thread, result);
+            // As a local command's end: Run and Stop swap with motion, on
+            // the console showing and when no output lands with it.
+            let (swapped, lines) = side_of(s, &thread).map_or((false, false), |x| {
+                (
+                    x.console.remote.running != was,
+                    x.console.output_since(seen),
+                )
+            });
+            if swapped && exit_motion(s, &thread, lines) {
+                tx.animated();
+            }
             tx.scroll_to_bottom(OUT_KEY);
             if more {
                 poll(s, true);
@@ -584,6 +656,75 @@ fn landed(
 mod tests {
     use super::*;
     use zlo_client::repo_calls::ConsoleLine;
+
+    /// A line's key is its lasting number (`gone + ix`): dropping old lines
+    /// from the front or clearing the log never hands a line another's key.
+    #[test]
+    fn console_line_numbers_survive_the_front_dropping() {
+        let mut st = ConsoleState::default();
+        for i in 0..LINES_MAX + 3 {
+            push(&mut st, Kind::Out, i.to_string());
+        }
+        assert_eq!(st.gone, 3);
+        assert_eq!(
+            st.lines[0].1,
+            (st.gone).to_string(),
+            "line 3 keeps number 3"
+        );
+        st.clear_lines();
+        push(&mut st, Kind::Out, "next".into());
+        assert_eq!(st.gone, LINES_MAX as u64 + 3, "numbering carries on");
+    }
+
+    /// The open chat `t1` with its console running a command, on `tab`.
+    fn running_on(tab: Tab) -> State {
+        let mut s = crate::chat::fixtures::test_state();
+        s.chat = Some(crate::chat::ChatState::new("t1".into()));
+        s.prefs.work_open = true;
+        s.prefs.work_tab = tab.id().into();
+        if let Some(x) = side_mut(&mut s) {
+            x.console.running = Some(Running {
+                pid: 0,
+                started: Instant::now(),
+            });
+        }
+        s
+    }
+
+    fn landed_with_motion(s: &mut State, batch: Vec<Msg>) -> bool {
+        let mut tx = Tx::default();
+        land(s, "t1", batch, &mut tx);
+        crate::workspace::asked_motion(&tx)
+    }
+
+    /// Output streams in instantly; only the end alone, on the console on
+    /// screen, swaps Stop for Run with motion.
+    #[test]
+    fn only_a_shown_consoles_bare_exit_lands_with_motion() {
+        let mut s = running_on(Tab::Console);
+        assert!(!landed_with_motion(
+            &mut s,
+            vec![Msg::Line(Kind::Out, "building".into())]
+        ));
+        assert!(
+            !landed_with_motion(
+                &mut s,
+                vec![Msg::Line(Kind::Out, "done".into()), Msg::Exit(Some(0))]
+            ),
+            "output and the end together: the output must not move"
+        );
+        assert!(!is_running(&s));
+
+        let mut s = running_on(Tab::Console);
+        assert!(landed_with_motion(&mut s, vec![Msg::Exit(Some(0))]));
+
+        let mut s = running_on(Tab::Changes);
+        assert!(
+            !landed_with_motion(&mut s, vec![Msg::Exit(Some(0))]),
+            "a console out of sight lands instantly"
+        );
+        assert!(!is_running(&s));
+    }
 
     fn remote_state() -> State {
         let mut s = crate::chat::fixtures::test_state();

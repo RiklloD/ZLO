@@ -46,6 +46,9 @@ const CAPSULE_LIMIT: usize = 4;
 /// Fast dynamic `⌘1..⌘N` shortcuts (only visible while holding `⌘`).
 const CMD_SHORTCUTS: usize = 5;
 const ROW_H: f32 = 30.;
+/// The profile list's padding and the gap between its rows.
+const ROWS_PAD: f32 = 4.;
+const ROWS_GAP: f32 = 1.;
 /// Hard vertical ceiling for the expanded or filtered list (~8 rows).
 const EXPANDED_MAX_H: f32 = 248.;
 /// Exponential half-life for profile frecency (in days).
@@ -81,6 +84,12 @@ impl ProfilePicker {
     /// Scenes: the row an arrow key would have reached.
     pub(in crate::workspace) fn fixture_select(&mut self, ix: usize) {
         self.selected = ix;
+    }
+
+    /// Tests: ⌘ held (or let go) while the menu is open.
+    #[cfg(test)]
+    pub(in crate::workspace) fn fixture_cmd(&mut self, held: bool) {
+        self.cmd_held = held;
     }
 }
 
@@ -428,20 +437,32 @@ fn step(s: &mut State, delta: isize, tx: &mut Tx) {
     if delta > 0 && hidden > 0 && at == profiles as isize - 1 {
         picker.expanded = true;
         picker.selected = profiles;
-        let total = profiles + hidden;
-        tx.scroll_into_view(row_key(picker.selected, total));
+        // The first row the expansion unlocks.
+        let all = all_entries(s, now);
+        tx.scroll_into_view(row_key(&all, profiles));
         return;
     }
     picker.selected = (at + delta).rem_euclid(profiles as isize + 1) as usize;
-    tx.scroll_into_view(row_key(picker.selected, profiles));
+    tx.scroll_into_view(row_key(&vis, picker.selected));
 }
 
-fn row_key(ix: usize, profiles: usize) -> String {
-    if ix < profiles {
-        format!("pick-profile-{ix}")
-    } else {
-        NEW_ROW.into()
+/// Row `ix` of `profiles`' key: the profile's id, so a row keeps its place
+/// (and its wash) as the list filters; past the end, the "New profile" row.
+fn row_key(profiles: &[InboxProfile], ix: usize) -> String {
+    match profiles.get(ix) {
+        Some(profile) => profile_key(&profile.profile_id),
+        None => NEW_ROW.into(),
     }
+}
+
+/// The selection's wash: the profile's own colour, lightly (its mark goes
+/// to full strength with it).
+fn profile_wash(p: &design::Palette, profile_id: &str) -> Color {
+    profile_color(p, profile_id, 1.).alpha(if p.light { 0.1 } else { 0.16 })
+}
+
+fn profile_key(profile_id: &str) -> String {
+    format!("pick-profile-id-{profile_id}")
 }
 
 fn accept_ghost(s: &mut State) -> bool {
@@ -674,6 +695,26 @@ fn search_field(s: &State, k: &Kit, placeholder: String, ghost: Option<&str>) ->
         .child(value)
 }
 
+/// The menu as a layer entry under the element keyed `anchor`, `gap`
+/// points below it, fitted to the window as `rune_kit::popover::anchored`
+/// fits it. Not that helper itself: it lands every change inside the menu
+/// at once (`El::instant_changes`), and this menu moves. It pops in, falling
+/// into place, and out faster ([`motion::pop`](crate::design::motion::pop));
+/// its selection glides, its height follows the rows as it expands, and
+/// the ⌘N keycaps pop.
+pub(in crate::workspace) fn anchored(k: &Kit, menu: El, anchor: &str, gap: f32) -> El {
+    menu.key("profile-menu")
+        .anchored_fit(anchor, rune::Side::Bottom, rune::Align::Center, gap)
+        .transition(crate::design::motion::pop(-6.))
+        .token_motion(k.motion.overlay)
+}
+
+/// Where the selected profile row sits in its list: the list's padding,
+/// then a row and a gap per row above it.
+fn row_top(ix: usize) -> f32 {
+    ROWS_PAD + ix as f32 * (ROW_H + ROWS_GAP)
+}
+
 /// The menu's card, for either trigger's popover.
 pub fn profile_picker(s: &State, k: &Kit) -> El {
     let p = &s.palette;
@@ -694,7 +735,22 @@ pub fn profile_picker(s: &State, k: &Kit) -> El {
         .get(selected)
         .and_then(|item| ghost_suffix(query, &item.display_name));
 
-    let mut rows = col().key("profile-rows").w_full().padding(4.).gap(1.);
+    let mut rows = col()
+        .key("profile-rows")
+        .w_full()
+        .padding(ROWS_PAD)
+        .gap(ROWS_GAP);
+    // The selection is one pill gliding behind the rows, in the selected
+    // profile's colour (it morphs as it moves); on the New row it fades.
+    let pill = entries.get(selected).and_then(|profile| {
+        let top = row_top(selected);
+        design::kit::slide_pill_sized(s, "profile-pill", Some(top), ROW_H).map(|pill| {
+            pill.pin(Some(ROWS_PAD), Some(top), Some(ROWS_PAD), None)
+                .radius(design::CONTROL_RADIUS)
+                .fill(profile_wash(p, &profile.profile_id))
+        })
+    });
+    rows = rows.children(pill);
     for (ix, profile) in entries.iter().enumerate() {
         let id = profile.profile_id.as_str();
         rows = rows.child(profile_row(
@@ -780,10 +836,8 @@ fn profile_row(
 ) -> El {
     let p = &s.palette;
     let id = profile.profile_id.clone();
-    // The selection wears the profile's color, the mark at full strength.
-    let wash = profile_color(p, &profile.profile_id, 1.).alpha(if p.light { 0.1 } else { 0.16 });
     let mut r = row()
-        .key(format!("pick-profile-{ix}"))
+        .key(profile_key(&profile.profile_id))
         .role("button")
         .label(format!("Start in {}", profile.display_name))
         .w_full()
@@ -793,7 +847,6 @@ fn profile_row(
         .center_y()
         .radius(design::CONTROL_RADIUS)
         .cursor(rune::Cursor::Pointer)
-        .fill(if on { wash } else { Color::TRANSPARENT })
         .on_hover(move |s: &mut State| select(s, ix))
         .child(profile_mark(
             p,

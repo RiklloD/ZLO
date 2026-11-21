@@ -6,16 +6,18 @@
 
 use chrono::{DateTime, Utc};
 use rune::{Cursor, El, col, el, row, text};
-use rune_kit::Kit;
+use rune_kit::{IconButtonVariant, Kit};
 use zlo_client::schedules::{LastOutcome, ScheduleInfo, ScheduleSecret, curl_example};
 
 use super::{ScheduleAction, form, schedule_act, schedule_key};
+use crate::design::{kit, motion};
 use crate::icons;
 use crate::jobs;
 use crate::pages::common::{
     BASE, Btn, Tone, XS, actions, block_fill, button, button_xs, card, font, glyph, icon_button,
     label, tag,
 };
+use crate::pages::flash;
 use crate::state::State;
 
 const MASK: &str = "••••••••••••••••";
@@ -29,6 +31,22 @@ enum CopyWhat {
     Url,
     Secret,
     Curl,
+}
+
+impl CopyWhat {
+    fn part(self) -> &'static str {
+        match self {
+            CopyWhat::Url => "url",
+            CopyWhat::Secret => "secret",
+            CopyWhat::Curl => "curl",
+        }
+    }
+}
+
+/// The [`flash`] key of one copy button: its check shows once the copy
+/// (fetched on the click) landed.
+fn copy_key(id: &str, what: CopyWhat) -> String {
+    format!("schedule-copy-{id}-{}", what.part())
 }
 
 pub(super) fn render_schedule(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
@@ -79,6 +97,8 @@ pub(super) fn render_schedule(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
             .disabled(busy)
             .on_press(move |s: &mut State| schedule_act(s, id.clone(), ScheduleAction::RunNow))
             .build(k)
+            .key("run-now")
+            .press_scale(motion::PRESS)
     };
     let pause = {
         let id = id.clone();
@@ -87,11 +107,15 @@ pub(super) fn render_schedule(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
                 .disabled(busy)
                 .on_press(move |s: &mut State| schedule_act(s, id.clone(), ScheduleAction::Pause))
                 .build(k)
+                .key("pause")
+                .press_scale(motion::PRESS)
         } else {
             button("Resume", Btn::Outline)
                 .disabled(busy)
                 .on_press(move |s: &mut State| schedule_act(s, id.clone(), ScheduleAction::Resume))
                 .build(k)
+                .key("resume")
+                .press_scale(motion::PRESS)
         }
     };
     let edit = {
@@ -100,6 +124,8 @@ pub(super) fn render_schedule(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
             .disabled(busy)
             .on_press(move |s: &mut State| form::open_form(s, Some(row.clone())))
             .build(k)
+            .key("edit")
+            .press_scale(motion::PRESS)
     };
     let delete = {
         let id = id.clone();
@@ -108,6 +134,8 @@ pub(super) fn render_schedule(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
                 .disabled(busy)
                 .on_press(move |s: &mut State| schedule_act(s, id.clone(), ScheduleAction::Delete))
                 .build(k)
+                .key("delete-confirm")
+                .press_scale(motion::PRESS)
         } else {
             icon_button(&icons::DELETE, "Delete automation")
                 .disabled(busy)
@@ -115,6 +143,8 @@ pub(super) fn render_schedule(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
                     s.pages.automations.confirm_delete_schedule = Some(id.clone())
                 })
                 .build(k)
+                .key("delete")
+                .press_scale(motion::PRESS)
         }
     };
 
@@ -140,8 +170,12 @@ pub(super) fn render_schedule(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
         })
         .child(actions([run, pause, edit, delete]));
 
+    // Arrives, leaves and glides on the person's own changes
+    // (`refresh_shown`); a background re-read lands at once.
     let mut c = card(p)
         .key(format!("schedule-{id}"))
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
         .child(title_row)
         .child(
             col()
@@ -159,6 +193,8 @@ pub(super) fn render_schedule(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
     if let Some(e) = &s.last_error {
         c = c.child(
             row()
+                .key("last-error")
+                .transition(motion::reveal())
                 .gap(6.)
                 .center_y()
                 .child(glyph(&icons::CIRCLE_ALERT, 12., p.danger))
@@ -166,7 +202,7 @@ pub(super) fn render_schedule(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
         );
     }
     if s.is_webhook() {
-        c = c.child(render_webhook(st, k, s));
+        c = c.child(render_webhook(st, k, s).key("webhook"));
     }
     c
 }
@@ -197,12 +233,22 @@ fn render_webhook(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
         )
         .on_press(move |s: &mut State| toggle_reveal(s, id.clone()))
         .build(k)
+        .key("reveal")
+        .press_scale(motion::PRESS)
     };
+    // The copy icon turns into a check once the copy landed, and back.
     let copy_button = |what: CopyWhat| {
         let id = id.clone();
-        icon_button(&icons::COPY, "Copy")
-            .on_press(move |s: &mut State| copy_secret(s, id.clone(), what))
-            .build(k)
+        let ink = kit::icon_ink(k, IconButtonVariant::Ghost);
+        let copied = flash::shows(st, &copy_key(&id, what));
+        kit::glyph_button(
+            k,
+            &format!("copy-{}", what.part()),
+            IconButtonVariant::Ghost,
+            "Copy",
+            kit::copy_glyph("glyph", copied, 16., ink),
+            move |s: &mut State, _| copy_secret(s, id.clone(), what),
+        )
     };
     let line = |title: &str, value: String, extra: El| {
         row()
@@ -238,6 +284,8 @@ fn render_webhook(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
                         schedule_act(s, id.clone(), ScheduleAction::RotateSecret)
                     })
                     .build(k)
+                    .key("rotate-confirm")
+                    .press_scale(motion::PRESS)
             } else {
                 icon_button(&icons::REFRESH_CW, "Rotate secret")
                     .disabled(busy)
@@ -245,6 +293,8 @@ fn render_webhook(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
                         s.pages.automations.confirm_rotate = Some(id.clone())
                     })
                     .build(k)
+                    .key("rotate")
+                    .press_scale(motion::PRESS)
             }
         };
         d = d.child(line(
@@ -279,7 +329,7 @@ fn render_webhook(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
         );
     }
     let curl_open = this.show_curl.contains(&id);
-    let mut curl_row = row().gap(4.).child({
+    let mut curl_row = row().key("curl-row").gap(4.).child({
         let id = id.clone();
         button_xs(
             if curl_open {
@@ -296,6 +346,8 @@ fn render_webhook(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
             }
         })
         .build(k)
+        .key("curl-toggle")
+        .press_scale(motion::PRESS)
     });
     if curl_open {
         curl_row = curl_row.child(copy_button(CopyWhat::Curl));
@@ -307,8 +359,11 @@ fn render_webhook(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
             revealed.and_then(|r| r.signature.as_ref()),
             signed,
         );
+        // The example wipes open under its button and folds away on Hide.
         d = d.child(
-            el().w_full()
+            el().key("curl")
+                .transition(motion::reveal())
+                .w_full()
                 .padding(8.)
                 .radius(crate::design::CONTROL_RADIUS)
                 .fill(block_fill(p))
@@ -320,12 +375,16 @@ fn render_webhook(st: &State, k: &Kit, s: &ScheduleInfo) -> El {
                 ),
         );
         if revealed.is_none() && signed {
-            d = d.child(label(
-                "Reveal to fill in the URL and secret, or export ZLO_WEBHOOK_URL and ZLO_WEBHOOK_SECRET.",
-                XS,
-                400.,
-                p.text_muted,
-            ));
+            d = d.child(
+                label(
+                    "Reveal to fill in the URL and secret, or export ZLO_WEBHOOK_URL and ZLO_WEBHOOK_SECRET.",
+                    XS,
+                    400.,
+                    p.text_muted,
+                )
+                .key("curl-hint")
+                .transition(motion::reveal()),
+            );
         }
     }
     d
@@ -341,7 +400,9 @@ fn toggle_reveal(s: &mut State, id: String) {
         s,
         "automations",
         move |c| async move { c.reveal_schedule_secret(&key).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The person's Reveal: the URL and secret change in place.
+            tx.animated();
             let this = &mut s.pages.automations;
             match result {
                 Ok(secret) => {
@@ -363,6 +424,7 @@ fn copy_secret(s: &mut State, id: String, what: CopyWhat) {
         .find(|sch| sch.id == id)
         .and_then(|sch| sch.signature.as_ref())
         .is_some_and(|sig| sig.has_secret);
+    let key = id.clone();
     jobs::run(
         s,
         "automations",
@@ -380,6 +442,7 @@ fn copy_secret(s: &mut State, id: String, what: CopyWhat) {
                     CopyWhat::Curl => curl_example(Some(&url), secret.signature.as_ref(), signed),
                 };
                 tx.copy(text);
+                flash::flash(s, copy_key(&key, what), tx);
             }
             Err(e) => s.pages.automations.error = Some(e.to_string()),
         },

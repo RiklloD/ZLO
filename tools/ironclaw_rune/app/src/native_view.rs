@@ -40,22 +40,61 @@
 //! clicked.
 
 use std::cell::{Cell, RefCell};
-use std::ffi::{CStr, c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use objc2::encode::{Encode, Encoding};
 use objc2::msg_send;
-use objc2::rc::{Allocated, Retained};
+use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use raw_window_handle::RawWindowHandle;
-use rune::{El, Tx, el};
+use rune::{El, Spring, Tx, el};
 
 use crate::state::State;
+
+mod appkit;
+mod input;
+mod observe;
+use appkit::{CGPoint, CGRect, CGSize, file_url, new_look_view, new_web_view, ns_string, string};
 
 /// Added to a timed wake so it lands after its deadline, never a hair
 /// before (the poll it runs would find nothing due and ask for no other).
 const WAKE_PAD: Duration = Duration::from_millis(20);
+
+/// The exits of the overlays that can close over a native view, slowest
+/// first. Rune does not tell the app when a removed element's exit has
+/// finished, so the hold is derived from these springs:
+/// - rune-kit's anchored popover (model picker, profile pickers, menus
+///   built on it) fades out on a 0.25 s removal spring
+///   (`rune-kit/src/overlays/popover.rs`);
+/// - a plain `Transition::opacity()` (the ⌘K scrim, kit scrims and
+///   dialogs) leaves on Rune's default 0.15 s;
+/// - the app's own popovers and cards (`design::motion::pop`) leave on the
+///   pop spring at 60 %.
+const OVERLAY_EXITS: [Spring; 3] = [
+    Spring::new(0.25, 0.0),
+    Spring::new(0.15, 0.0),
+    Spring::new(0.22 * 0.6, 0.03),
+];
+
+/// An exiting overlay at or under this opacity no longer reads as drawn.
+const EXIT_GONE: f32 = 0.02;
+
+/// How long the views stay hidden after the overlay layer empties. A
+/// closing overlay is gone from the layer at once but still plays its exit
+/// where the views would draw over it, since they sit above Rune's view:
+/// the slowest of [`OVERLAY_EXITS`] to fade to [`EXIT_GONE`], plus a frame.
+fn cover_hold() -> Duration {
+    let slowest = OVERLAY_EXITS
+        .iter()
+        .map(|s| s.settling_duration(EXIT_GONE))
+        .fold(0f32, f32::max);
+    Duration::from_secs_f32(slowest) + Duration::from_millis(17)
+}
+
+/// A view coming into sight fades in over this, on Core Animation's clock:
+/// Rune draws no frames for it. Hiding stays instant, so nothing Rune
+/// draws over the view's place is ever under it.
+const REVEAL_FADE: f64 = 0.15;
 
 /// Which of the two native views an element shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -116,12 +155,23 @@ pub struct NativeViews {
     /// ([`cover`]), so it is a `Cell`: the view only reads the state, and
     /// the views hide in that same view run.
     covered: Cell<bool>,
+    /// When the overlay layer last emptied: the views stay hidden for
+    /// [`cover_hold`] after, while the overlay plays its exit.
+    uncovered: Cell<Option<Instant>>,
 }
 
 impl NativeViews {
     /// Whether an overlay covers the window, as the last view run drew it.
     pub fn covered(&self) -> bool {
         self.covered.get()
+    }
+
+    /// When the hold after an overlay closed ends, while it runs.
+    fn hold_ends(&self) -> Option<Instant> {
+        self.uncovered
+            .get()
+            .map(|at| at + cover_hold())
+            .filter(|end| *end > Instant::now())
     }
 }
 
@@ -131,7 +181,12 @@ impl NativeViews {
 /// frame (the tab, the page, an overlay) shows or hides the views here, at
 /// once.
 pub fn cover(s: &State, covered: bool) {
-    s.native.covered.set(covered);
+    let was = s.native.covered.replace(covered);
+    if covered {
+        s.native.uncovered.set(None);
+    } else if was {
+        s.native.uncovered.set(Some(Instant::now()));
+    }
     reconcile(s);
     // A view run has no `Tx` to set a timed wake with: the poll does.
     if unasked_wake(s).is_some() {
@@ -209,7 +264,7 @@ pub fn on_window(window: &rune::WindowHandle) {
                 close_view(slot);
             }
             HOST.with(|h| *h.borrow_mut() = Some(view));
-            install_click_monitor();
+            input::install_monitor();
         }
         Ok(None) => {}
         Err(e) => tracing::debug!(error = %e, "no native window handle for previews"),
@@ -220,6 +275,7 @@ pub fn on_window(window: &rune::WindowHandle) {
 /// ask for the one wake time alone calls for; call before every frame from
 /// the app's `poll`.
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
+    observe::keep_waker(&s.rt.handle);
     reconcile(s);
     if let Some(at) = unasked_wake(s) {
         tx.wake_after(at.saturating_duration_since(Instant::now()) + WAKE_PAD);
@@ -230,7 +286,8 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
 
 /// Each slot's source and place, or `None` to hide it.
 fn plan(s: &State) -> [Option<(Source, [f32; 4])>; 2] {
-    let wanted = if s.native.covered() || s.fixture {
+    let held = s.native.covered() || s.native.hold_ends().is_some();
+    let wanted = if held || s.fixture {
         [None, None]
     } else {
         crate::chat::side::native_wanted(s)
@@ -251,15 +308,37 @@ fn reconcile(s: &State) {
     PLANNED.with(|p| *p.borrow_mut() = plan.clone().map(|slot| slot.map(|(_, rect)| rect)));
     for (slot, planned) in Slot::ALL.into_iter().zip(plan) {
         match planned {
-            Some((source, rect)) => show(slot, &source, rect),
+            Some((source, rect)) => show(slot, &source, rect, || fades(s)),
             None => hide(slot),
         }
     }
 }
 
+/// Whether a view coming into sight fades in: not under reduced motion
+/// (Settings, the battery saver, or the system's setting).
+fn fades(s: &State) -> bool {
+    !crate::design::battery::reduced(&s.prefs, &s.look.battery, system_reduced_motion())
+}
+
+/// macOS's Reduce motion setting.
+fn system_reduced_motion() -> bool {
+    let Some(cls) = AnyClass::get(c"NSWorkspace") else {
+        return false;
+    };
+    // SAFETY: a class method and a BOOL property read on the main thread.
+    unsafe {
+        let ws: *mut AnyObject = msg_send![cls, sharedWorkspace];
+        if ws.is_null() {
+            return false;
+        }
+        msg_send![ws, accessibilityDisplayShouldReduceMotion]
+    }
+}
+
 /// The next moment the plan changes with no state change behind it, so no
-/// view run or handler to reconcile on: a dock's slide has settled (its
-/// native view may show), or a hidden view has been idle long enough to end.
+/// view run or handler to reconcile on: a dock's slide has settled or a
+/// closed overlay's exit is over (its native view may show), or a hidden
+/// view has been idle long enough to end.
 fn next_change(s: &State) -> Option<Instant> {
     if s.fixture {
         return None;
@@ -268,10 +347,14 @@ fn next_change(s: &State) -> Option<Instant> {
         let all = cell.borrow();
         Slot::ALL.map(|slot| all[slot as usize].as_ref().and_then(|s| s.hidden))
     });
-    [idle_end(hidden), crate::chat::side::native_settles_at(s)]
-        .into_iter()
-        .flatten()
-        .min()
+    [
+        idle_end(hidden),
+        crate::chat::side::native_settles_at(s),
+        s.native.hold_ends(),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
 }
 
 /// When the first of the hidden views (hidden since `hidden`, by slot) ends.
@@ -321,86 +404,22 @@ pub fn alive() -> bool {
     SURFACES.with(|cell| cell.borrow().iter().any(Option::is_some))
 }
 
-/// A mouse-down anywhere in the window takes the keyboard back from a
-/// clicked page. Rune has no window-wide press hook, so an AppKit local
-/// event monitor does it: a left or right
-/// click that lands on Rune's view, not on a preview, hands the keyboard
-/// back. Installed once for the app's life; every event passes unchanged.
-fn install_click_monitor() {
-    thread_local! {
-        static INSTALLED: Cell<bool> = const { Cell::new(false) };
-    }
-    if INSTALLED.with(|i| i.replace(true)) {
-        return;
-    }
-    let Some(cls) = AnyClass::get(c"NSEvent") else {
-        return;
-    };
-    let block = block2::RcBlock::new(|event: *mut AnyObject| -> *mut AnyObject {
-        if !event.is_null() && alive() && click_on_rune(event) {
-            reclaim_focus();
-        }
-        event
-    });
-    // NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown.
-    const MASK: u64 = (1 << 1) | (1 << 3);
-    // SAFETY: the block matches `NSEvent *(^)(NSEvent *)`; AppKit copies it
-    // and keeps the monitor until it is removed (never, here).
-    unsafe {
-        let _monitor: *mut AnyObject =
-            msg_send![cls, addLocalMonitorForEventsMatchingMask: MASK, handler: &*block];
-    }
+/// What the app's poll should do about the page now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageChange {
+    /// Nothing changed.
+    None,
+    /// Read the page now.
+    Read,
+    /// Something changed, but the last read was too recent: wake after this.
+    After(Duration),
 }
 
-/// Whether a mouse-down `event` hit Rune's own view in its window (not a
-/// QuickLook or WebKit preview lying above it).
-fn click_on_rune(event: *mut AnyObject) -> bool {
-    let Some(view) = HOST.with(|h| h.borrow().clone()) else {
-        return false;
-    };
-    // SAFETY: plain AppKit queries on live objects, on the main thread (local
-    // monitors run there); every returned pointer is null-checked.
-    unsafe {
-        let win: *mut AnyObject = msg_send![&*view, window];
-        let event_win: *mut AnyObject = msg_send![event, window];
-        if win.is_null() || !std::ptr::eq(win, event_win) {
-            return false;
-        }
-        let parent: *mut AnyObject = msg_send![&*view, superview];
-        if parent.is_null() {
-            return false;
-        }
-        let at: CGPoint = msg_send![event, locationInWindow];
-        let at: CGPoint =
-            msg_send![parent, convertPoint: at, fromView: std::ptr::null::<AnyObject>()];
-        let hit: *mut AnyObject = msg_send![parent, hitTest: at];
-        if hit.is_null() {
-            return false;
-        }
-        let inside: bool = msg_send![hit, isDescendantOf: &*view];
-        inside
-    }
-}
-
-/// A click on Rune's view takes the keyboard back from a page clicked
-/// earlier (from the click monitor above).
-fn reclaim_focus() {
-    if !alive() {
-        return;
-    }
-    let Some(view) = HOST.with(|h| h.borrow().clone()) else {
-        return;
-    };
-    unsafe {
-        let win: *mut AnyObject = msg_send![&*view, window];
-        if win.is_null() {
-            return;
-        }
-        let first: *mut AnyObject = msg_send![win, firstResponder];
-        if !std::ptr::eq(first, Retained::as_ptr(&view)) {
-            let _: bool = msg_send![win, makeFirstResponder: &*view];
-        }
-    }
+/// Whether the Browser's page changed since the app last read it (its
+/// observer noticed), and so whether to read it now or after a moment:
+/// reads are capped at four a second (`observe.rs`). Call from the poll.
+pub fn take_page_change(now: Instant) -> PageChange {
+    observe::take(now)
 }
 
 /// Reload `source` if it is showing (its file was rewritten).
@@ -432,6 +451,8 @@ pub struct WebState {
     pub title: String,
     pub url: String,
     pub loading: bool,
+    /// WebKit's `estimatedProgress` of the load, 0 to 1.
+    pub progress: f64,
     pub back: bool,
     pub forward: bool,
 }
@@ -447,6 +468,7 @@ pub fn web_state() -> Option<WebState> {
                 title: string(title),
                 url: current_url(v),
                 loading: msg_send![v, isLoading],
+                progress: msg_send![v, estimatedProgress],
                 back: msg_send![v, canGoBack],
                 forward: msg_send![v, canGoForward],
             })
@@ -526,6 +548,28 @@ pub(crate) struct Probe {
     pub wake_asked: Option<Instant>,
 }
 
+/// Let the hold after a closed overlay run out, as if [`cover_hold`] had
+/// passed on the wall clock.
+#[cfg(test)]
+pub(crate) fn end_cover_hold(s: &State) {
+    if let Some(at) = s.native.uncovered.get() {
+        s.native.uncovered.set(Some(at - cover_hold()));
+    }
+}
+
+/// When the hold after a closed overlay ends, while it runs.
+#[cfg(test)]
+pub(crate) fn cover_hold_ends(s: &State) -> Option<Instant> {
+    s.native.hold_ends()
+}
+
+/// What the page's observer does when WebKit notifies it, minus the wake
+/// (a test has no app to wake): whether it would wake.
+#[cfg(test)]
+pub(crate) fn note_page_change() -> bool {
+    observe::note_for_tests()
+}
+
 #[cfg(test)]
 pub(crate) fn probe(s: &State) -> Probe {
     Probe {
@@ -545,6 +589,9 @@ struct Surface {
     frame: Option<CGRect>,
     /// Hidden since then, awaiting its idle end.
     hidden: Option<Instant>,
+    /// The Browser page's key-value observer (`observe.rs`), removed in
+    /// [`Surface::destroy`] before the view goes.
+    observer: Option<Retained<AnyObject>>,
 }
 
 impl Surface {
@@ -559,6 +606,10 @@ impl Surface {
                 Engine::Look => new_look_view()?,
                 Engine::Web => new_web_view()?,
             };
+            // Hidden until `show` places it and fades it in; layer-backed
+            // so the fade is Core Animation's.
+            let _: () = msg_send![&*view, setWantsLayer: true];
+            let _: () = msg_send![&*view, setHidden: true];
             // NSWindowAbove = 1.
             let _: () = msg_send![host, addSubview: &*view, positioned: 1isize, relativeTo: &*rune];
             view
@@ -570,8 +621,12 @@ impl Surface {
             engine,
             source: source.clone(),
             frame: None,
-            hidden: None,
+            hidden: Some(Instant::now()),
+            observer: None,
         };
+        if slot == Slot::Browser && engine == Engine::Web {
+            surface.observer = observe::attach(&surface.view);
+        }
         let resume = RESUME.with(|r| {
             r.borrow()
                 .as_ref()
@@ -662,16 +717,47 @@ impl Surface {
         }
     }
 
-    fn set_hidden(&mut self, hidden: bool) {
-        if self.hidden.is_some() != hidden {
-            self.hidden = hidden.then(Instant::now);
-            unsafe {
-                let _: () = msg_send![&*self.view, setHidden: hidden];
+    /// Hide at once, or show: faded in over [`REVEAL_FADE`] when `fade`
+    /// says so (asked only when the view comes into sight).
+    fn set_hidden(&mut self, hidden: bool, fade: impl FnOnce() -> bool) {
+        if self.hidden.is_some() == hidden {
+            return;
+        }
+        self.hidden = hidden.then(Instant::now);
+        let v = &*self.view;
+        // SAFETY: AppKit calls on a live view, on the main thread.
+        unsafe {
+            if hidden {
+                let _: () = msg_send![v, setHidden: true];
+                return;
             }
+            let ctx = AnyClass::get(c"NSAnimationContext").filter(|_| fade());
+            let Some(ctx) = ctx else {
+                let _: () = msg_send![v, setAlphaValue: 1.0f64];
+                let _: () = msg_send![v, setHidden: false];
+                return;
+            };
+            let _: () = msg_send![v, setAlphaValue: 0.0f64];
+            let _: () = msg_send![v, setHidden: false];
+            let _: () = msg_send![ctx, beginGrouping];
+            let current: *mut AnyObject = msg_send![ctx, currentContext];
+            if !current.is_null() {
+                let _: () = msg_send![current, setDuration: REVEAL_FADE];
+            }
+            let animator: *mut AnyObject = msg_send![v, animator];
+            if animator.is_null() {
+                let _: () = msg_send![v, setAlphaValue: 1.0f64];
+            } else {
+                let _: () = msg_send![animator, setAlphaValue: 1.0f64];
+            }
+            let _: () = msg_send![ctx, endGrouping];
         }
     }
 
     fn destroy(self) {
+        if let Some(observer) = &self.observer {
+            observe::detach(&self.view, observer);
+        }
         unsafe {
             if self.slot == Slot::Browser && self.engine == Engine::Web {
                 let page = current_url(&self.view);
@@ -691,7 +777,7 @@ impl Surface {
     }
 }
 
-fn show(slot: Slot, source: &Source, rect: [f32; 4]) {
+fn show(slot: Slot, source: &Source, rect: [f32; 4], fade: impl FnOnce() -> bool) {
     let Some(rune) = HOST.with(|h| h.borrow().clone()) else {
         return;
     };
@@ -714,7 +800,7 @@ fn show(slot: Slot, source: &Source, rect: [f32; 4]) {
             s.load(source);
         }
         s.place(rect);
-        s.set_hidden(false);
+        s.set_hidden(false, fade);
     });
 }
 
@@ -722,7 +808,7 @@ fn show(slot: Slot, source: &Source, rect: [f32; 4]) {
 fn hide(slot: Slot) {
     let expired = with(slot, |s| match s {
         Some(s) => {
-            s.set_hidden(true);
+            s.set_hidden(true, || false);
             s.hidden.is_some_and(|t| t.elapsed() >= slot.idle())
         }
         None => false,
@@ -730,132 +816,6 @@ fn hide(slot: Slot) {
     if expired {
         close_view(slot);
     }
-}
-
-// ---- framework loading and object construction ----
-
-unsafe extern "C" {
-    fn dlopen(path: *const c_char, mode: i32) -> *mut c_void;
-}
-
-/// Load a system framework once; its classes register with the runtime.
-fn framework(path: &CStr) -> bool {
-    const RTLD_LAZY: i32 = 0x1;
-    unsafe { !dlopen(path.as_ptr(), RTLD_LAZY).is_null() }
-}
-
-const ZERO: CGRect = CGRect {
-    origin: CGPoint { x: 0., y: 0. },
-    size: CGSize {
-        width: 0.,
-        height: 0.,
-    },
-};
-
-unsafe fn new_look_view() -> Option<Retained<AnyObject>> {
-    if !framework(c"/System/Library/Frameworks/Quartz.framework/Quartz") {
-        return None;
-    }
-    let cls = AnyClass::get(c"QLPreviewView")?;
-    unsafe {
-        let alloc: Allocated<AnyObject> = msg_send![cls, alloc];
-        // QLPreviewViewStyleNormal = 0.
-        let view: Option<Retained<AnyObject>> =
-            msg_send![alloc, initWithFrame: ZERO, style: 0usize];
-        let view = view?;
-        let _: () = msg_send![&*view, setShouldCloseWithWindow: false];
-        Some(view)
-    }
-}
-
-unsafe fn new_web_view() -> Option<Retained<AnyObject>> {
-    if !framework(c"/System/Library/Frameworks/WebKit.framework/WebKit") {
-        return None;
-    }
-    let config_cls = AnyClass::get(c"WKWebViewConfiguration")?;
-    let store_cls = AnyClass::get(c"WKWebsiteDataStore")?;
-    let cls = AnyClass::get(c"WKWebView")?;
-    unsafe {
-        let config: Retained<AnyObject> = msg_send![config_cls, new];
-        let store: Option<Retained<AnyObject>> = msg_send![store_cls, nonPersistentDataStore];
-        if let Some(store) = store {
-            let _: () = msg_send![&*config, setWebsiteDataStore: &*store];
-        }
-        let alloc: Allocated<AnyObject> = msg_send![cls, alloc];
-        let view: Option<Retained<AnyObject>> =
-            msg_send![alloc, initWithFrame: ZERO, configuration: &*config];
-        view
-    }
-}
-
-unsafe fn ns_string(text: &str) -> Option<Retained<AnyObject>> {
-    let cls = AnyClass::get(c"NSString")?;
-    unsafe {
-        let alloc: Allocated<AnyObject> = msg_send![cls, alloc];
-        // NSUTF8StringEncoding = 4.
-        msg_send![
-            alloc,
-            initWithBytes: text.as_ptr().cast::<c_void>(),
-            length: text.len(),
-            encoding: 4usize
-        ]
-    }
-}
-
-unsafe fn file_url(path: &Path) -> Option<Retained<AnyObject>> {
-    let cls = AnyClass::get(c"NSURL")?;
-    unsafe {
-        let s = ns_string(&path.to_string_lossy())?;
-        msg_send![cls, fileURLWithPath: &*s]
-    }
-}
-
-unsafe fn string(ns: *mut AnyObject) -> String {
-    if ns.is_null() {
-        return String::new();
-    }
-    unsafe {
-        let utf8: *const c_char = msg_send![ns, UTF8String];
-        if utf8.is_null() {
-            return String::new();
-        }
-        CStr::from_ptr(utf8).to_string_lossy().into_owned()
-    }
-}
-
-// ---- CoreGraphics geometry, declared here so no binding crate is needed ----
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CGPoint {
-    x: f64,
-    y: f64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CGSize {
-    width: f64,
-    height: f64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CGRect {
-    origin: CGPoint,
-    size: CGSize,
-}
-
-unsafe impl Encode for CGPoint {
-    const ENCODING: Encoding = Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
-}
-
-unsafe impl Encode for CGSize {
-    const ENCODING: Encoding = Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
-}
-
-unsafe impl Encode for CGRect {
-    const ENCODING: Encoding = Encoding::Struct("CGRect", &[CGPoint::ENCODING, CGSize::ENCODING]);
 }
 
 #[cfg(test)]
@@ -871,6 +831,17 @@ mod tests {
         assert!(Source::Url("http://localhost:3000".into()).engine() == Engine::Web);
         assert!(shows_natively(Path::new("memo.docx")));
         assert!(!shows_natively(Path::new("main.rs")));
+    }
+
+    /// The anchored popover (the model picker) fades on a 0.25 s spring:
+    /// still plainly drawn at the old 180 ms hold, gone by the hold's end.
+    #[test]
+    fn the_cover_hold_outlasts_the_popover_fade() {
+        let popover = Spring::new(0.25, 0.0);
+        let opacity = |t: Duration| popover.sample(1., 0., 0., t.as_secs_f32()).0;
+        assert!(opacity(Duration::from_millis(180)) > 0.05);
+        assert!(opacity(cover_hold()) <= EXIT_GONE);
+        assert!(cover_hold() < Duration::from_millis(400), "still brief");
     }
 
     #[test]

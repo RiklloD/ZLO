@@ -4,9 +4,12 @@
 
 use rune::{Cursor, Cx, El, col, el, row};
 use rune_kit::Kit;
+use std::collections::HashMap;
+
+use rune::Tx;
 use zlo_client::notification_inbox::{
-    ProductNotification, ProductNotificationAction, ProductNotificationKind,
-    ProductNotificationSeverity,
+    ProductListNotificationsResponse, ProductNotification, ProductNotificationAction,
+    ProductNotificationKind, ProductNotificationSeverity,
 };
 use zlo_client::product_wire::{
     RebornNotificationSetupStatusResponse, RebornOutboundDeliveryTargetId,
@@ -18,6 +21,7 @@ use super::common::{
     BASE, Btn, SM, XS, actions, button, card, empty_state, error_line, glyph, header, icon_button,
     label, page_body, para, refresh_button, switch,
 };
+use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -33,10 +37,50 @@ pub struct Channel {
 
 #[derive(Default)]
 pub struct NotificationsState {
+    /// What the gateway last listed. Never edited ahead of its answer: the
+    /// person's archives and reads in flight are [`Self::pending`], which
+    /// the view lays over these records.
     pub items: Vec<ProductNotification>,
     pub channels: Vec<Channel>,
     pub loaded: bool,
     pub error: Option<String>,
+    /// The person's changes the view already shows (so they ride the
+    /// click) while the gateway has not confirmed them, by what they change.
+    pending: HashMap<Change, Pending>,
+    /// The listing whose answer may land; every newer listing or change
+    /// replaces it, so an older answer never overwrites newer state.
+    list_gen: jobs::Generation,
+}
+
+/// One change the person made that the view shows ahead of the gateway.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum Change {
+    Archive(String),
+    Read(String),
+    ReadAll,
+}
+
+/// A change in flight, or confirmed and waiting for a listing that shows it.
+#[derive(Clone, Copy, Debug)]
+struct Pending {
+    asked: jobs::Generation,
+    confirmed: bool,
+}
+
+impl NotificationsState {
+    /// The records as the person sees them: archived ones hidden.
+    fn shown(&self) -> impl Iterator<Item = &ProductNotification> {
+        self.items
+            .iter()
+            .filter(|n| !self.pending.contains_key(&Change::Archive(n.id.clone())))
+    }
+
+    /// Whether `n` shows as unread, counting reads in flight.
+    fn unread(&self, n: &ProductNotification) -> bool {
+        n.read_at.is_none()
+            && !self.pending.contains_key(&Change::ReadAll)
+            && !self.pending.contains_key(&Change::Read(n.id.clone()))
+    }
 }
 
 /// The page became visible: load on first visit, refresh after.
@@ -45,34 +89,50 @@ pub fn opened(s: &mut State) {
 }
 
 pub fn refresh(s: &mut State) {
-    load_channels(s);
+    load_channels(s, false);
+    let asked = s.pages.notifications.list_gen.bump();
     jobs::run(
         s,
         "notifications",
         |c| async move { c.list_notifications(PAGE_LIMIT).await },
-        |s, result, _| {
-            match result {
-                Ok(page) => {
-                    let threads: Vec<String> = page
-                        .notifications
-                        .iter()
-                        .filter_map(thread_of)
-                        .map(str::to_string)
-                        .collect();
-                    crate::workspace::titles_ensure(s, threads);
-                    let this = &mut s.pages.notifications;
-                    this.items = page.notifications;
-                    this.error = None;
-                    crate::workspace::set_unread(s, page.unread_count);
-                }
-                Err(e) => s.pages.notifications.error = Some(e.to_string()),
-            }
-            s.pages.notifications.loaded = true;
-        },
+        move |s, result, _| list_landed(s, asked, result.map_err(|e| e.to_string())),
     );
 }
 
-fn load_channels(s: &mut State) {
+/// A listing answered. Only the newest one asked lands (a change made
+/// since, or a later listing, supersedes it); it takes over every change
+/// the gateway already confirmed, which it now shows itself.
+fn list_landed(
+    s: &mut State,
+    asked: jobs::Generation,
+    result: Result<ProductListNotificationsResponse, String>,
+) {
+    if s.pages.notifications.list_gen != asked {
+        return;
+    }
+    match result {
+        Ok(page) => {
+            let threads: Vec<String> = page
+                .notifications
+                .iter()
+                .filter_map(thread_of)
+                .map(str::to_string)
+                .collect();
+            crate::workspace::titles_ensure(s, threads);
+            let this = &mut s.pages.notifications;
+            this.items = page.notifications;
+            this.pending.retain(|_, p| !p.confirmed);
+            this.error = None;
+            crate::workspace::set_unread(s, page.unread_count);
+        }
+        Err(e) => s.pages.notifications.error = Some(e),
+    }
+    s.pages.notifications.loaded = true;
+}
+
+/// Read the channels; `shown` after the person flipped one, so its switch
+/// slides to what stuck.
+fn load_channels(s: &mut State, shown: bool) {
     jobs::run(
         s,
         "notifications",
@@ -95,7 +155,10 @@ fn load_channels(s: &mut State) {
             }
             Ok(channels)
         },
-        |s, result, _| {
+        move |s, result, tx| {
+            if shown {
+                tx.animated();
+            }
             let this = &mut s.pages.notifications;
             match result {
                 Ok(channels) => this.channels = channels,
@@ -120,7 +183,7 @@ fn toggle_channel(s: &mut State, id: RebornOutboundDeliveryTargetId) {
         "notifications",
         move |c| async move { c.set_notification_channels(ids).await },
         |s, result, _| match result {
-            Ok(_) => load_channels(s),
+            Ok(_) => load_channels(s, true),
             Err(e) => s.pages.notifications.error = Some(e.to_string()),
         },
     );
@@ -177,32 +240,103 @@ fn render_channels(s: &State, k: &Kit) -> El {
 }
 
 fn open(s: &mut State, id: &str) {
-    let Some(item) = s.pages.notifications.items.iter().find(|n| n.id == id) else {
+    let this = &s.pages.notifications;
+    let Some(item) = this.shown().find(|n| n.id == id) else {
         return;
     };
-    let unread_id = item.read_at.is_none().then(|| item.id.clone());
+    let unread_id = this.unread(item).then(|| item.id.clone());
     let thread = thread_of(item).map(str::to_string);
     if let Some(id) = unread_id {
-        mutate(
-            s,
-            move |c| async move { c.mark_notification_read(&id).await },
-        );
+        // Shown read on the click, so its dot fades with it.
+        let change = Change::Read(id.clone());
+        mutate(s, change, move |c| async move {
+            c.mark_notification_read(&id).await
+        });
     }
     if let Some(thread) = thread {
         crate::workspace::open_thread(s, thread);
     }
 }
 
-fn mutate<F, Fut, T>(s: &mut State, f: F)
+/// Archive `id`: its row folds away on the click (the rest glide up) while
+/// the gateway is told; a refusal brings it back.
+fn archive(s: &mut State, id: String) {
+    let change = Change::Archive(id.clone());
+    mutate(s, change, move |c| async move {
+        c.archive_notification(&id).await
+    });
+}
+
+fn mark_all_read(s: &mut State) {
+    mutate(s, Change::ReadAll, |c| async move {
+        c.mark_all_notifications_read().await
+    });
+}
+
+/// Show `change` now and send it. Any listing still on its way was asked
+/// before it, so its answer will not land.
+fn mutate<F, Fut, T>(s: &mut State, change: Change, f: F)
 where
     F: FnOnce(Client) -> Fut,
     Fut: std::future::Future<Output = Result<T, ClientError>> + Send + 'static,
     T: Send + 'static,
 {
-    jobs::run(s, "notifications", f, |s, result, _| match result {
-        Ok(_) => refresh(s),
-        Err(e) => s.pages.notifications.error = Some(e.to_string()),
+    let asked = begin(s, change.clone());
+    jobs::run(s, "notifications", f, move |s, result, tx| {
+        change_landed(
+            s,
+            &change,
+            asked,
+            result.map(|_| ()).map_err(|e| e.to_string()),
+            tx,
+        )
     });
+}
+
+/// Lay `change` over the records and supersede listings in flight.
+fn begin(s: &mut State, change: Change) -> jobs::Generation {
+    let this = &mut s.pages.notifications;
+    let asked = jobs::Generation::unique();
+    this.pending.insert(
+        change,
+        Pending {
+            asked,
+            confirmed: false,
+        },
+    );
+    this.list_gen.bump();
+    asked
+}
+
+/// The gateway answered `change` (asked as `asked`). Confirmed: it stays
+/// shown until a listing asked from now on carries it. Refused: it is taken
+/// back with motion (the row returns, the dot comes back) and the error
+/// shows. A later change to the same record owns its entry.
+fn change_landed(
+    s: &mut State,
+    change: &Change,
+    asked: jobs::Generation,
+    result: Result<(), String>,
+    tx: &mut Tx,
+) {
+    let this = &mut s.pages.notifications;
+    let ours = this.pending.get(change).is_some_and(|p| p.asked == asked);
+    match result {
+        Ok(()) => {
+            if ours && let Some(p) = this.pending.get_mut(change) {
+                p.confirmed = true;
+            }
+            refresh(s);
+        }
+        Err(e) => {
+            // The person's change undone: as visible as it was made.
+            tx.animated();
+            if ours {
+                this.pending.remove(change);
+            }
+            this.error = Some(e);
+        }
+    }
 }
 
 fn render_row(s: &State, k: &Kit, item: &ProductNotification) -> El {
@@ -214,7 +348,7 @@ fn render_row(s: &State, k: &Kit, item: &ProductNotification) -> El {
         ProductNotificationSeverity::Success => p.success,
         ProductNotificationSeverity::Info => p.text_muted,
     };
-    let unread = item.read_at.is_none();
+    let unread = s.pages.notifications.unread(item);
     let thread = thread_of(item)
         .map(|id| crate::workspace::title_of(s, id).unwrap_or_else(|| "Conversation".to_string()));
     let (open_id, archive_id) = (item.id.clone(), item.id.clone());
@@ -241,22 +375,31 @@ fn render_row(s: &State, k: &Kit, item: &ProductNotification) -> El {
         .center_y()
         .cursor(Cursor::Pointer)
         .hover(p.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
+        // Keyed by id: an archived row folds away and the rest glide up.
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
         .on_press(move |s: &mut State| open(s, &open_id))
         .child(glyph(icon, 16., tint))
         .child(text_col)
         .child(label(jobs::ago(item.created_at), XS, 400., p.text_muted));
     if unread {
-        r = r.child(el().size(8., 8.).radius(4.).fill(p.accent));
+        r = r.child(
+            el().key("unread")
+                .size(8., 8.)
+                .radius(4.)
+                .fill(p.accent)
+                .transition(motion::glyph_pop()),
+        );
     }
     // Archive shows while the pointer is on the row (GPUI `group_hover`).
     r.child(
         row().key("archive").group_opacity(0., 1.).child(
             icon_button(&icons::INBOX, "Archive")
-                .on_press(move |s: &mut State| {
-                    let id = archive_id.clone();
-                    mutate(s, move |c| async move { c.archive_notification(&id).await });
-                })
-                .build(k),
+                .on_press(move |s: &mut State| archive(s, archive_id.clone()))
+                .build(k)
+                .press_scale(motion::PRESS),
         ),
     )
 }
@@ -282,38 +425,37 @@ pub fn describe(kind: ProductNotificationKind) -> (&'static rune::Icon, &'static
 pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let this = &s.pages.notifications;
-    let has_unread = this.items.iter().any(|n| n.read_at.is_none());
+    let has_unread = this.shown().any(|n| this.unread(n));
     let mut head = Vec::new();
     if has_unread {
         head.push(
             button("Mark all read", Btn::Ghost)
                 .icon(&icons::CHECK)
-                .on_press(|s: &mut State| {
-                    mutate(s, |c| async move { c.mark_all_notifications_read().await })
-                })
-                .build(k),
+                .on_press(mark_all_read)
+                .build(k)
+                .key("mark-all-read")
+                .press_scale(motion::PRESS),
         );
     }
     head.push(refresh_button(k, refresh));
 
-    let rows: Vec<El> = this
-        .items
-        .iter()
-        .map(|item| render_row(s, k, item))
-        .collect();
+    let rows: Vec<El> = this.shown().map(|item| render_row(s, k, item)).collect();
     let mut body = col()
         .w_full()
         .child(header(p, "Notifications", actions(head)));
     if let Some(e) = &this.error {
-        body = body.child(error_line(p, e));
+        body = body.child(error_line(p, e).key("notifications-error"));
     }
     if this.loaded && rows.is_empty() {
-        body = body.child(empty_state(
-            p,
-            "Nothing here yet. IronClaw lists approvals it needs, failed runs and finished automations here.",
-        ));
+        body = body.child(
+            empty_state(
+                p,
+                "Nothing here yet. IronClaw lists approvals it needs, failed runs and finished automations here.",
+            )
+            .key("notifications-none"),
+        );
     }
-    body = body.child(col().w_full().gap(2.).children(rows));
+    body = body.child(col().key("notifications").w_full().gap(2.).children(rows));
     if !this.channels.is_empty() {
         body = body.child(render_channels(s, k));
     }
@@ -374,3 +516,7 @@ pub fn fixture(s: &mut State) {
     }
     this.loaded = true;
 }
+
+#[cfg(test)]
+#[path = "notifications_tests.rs"]
+mod tests;
