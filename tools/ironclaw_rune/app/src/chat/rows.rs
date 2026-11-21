@@ -303,11 +303,15 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
                 },
                 k,
             );
-            // An approval card with its "Reject with feedback…" field open.
-            match reject_feedback::render_reject_editor(chat, gate_ref, k) {
-                Some(editor) => col().w_full().child(card).child(editor),
-                None => card,
+            // An approval card, and under it its "Reject with feedback…"
+            // field while open. One keyed column either way: wrapping the
+            // card only while the field shows re-parented it, so the card
+            // entered again and the field's exit was cut.
+            let mut gate = col().key(format!("{key}-gatebox")).w_full().child(card);
+            if let Some(editor) = reject_feedback::render_reject_editor(chat, gate_ref, k) {
+                gate = gate.child(editor);
             }
+            gate
         }
         Row::RunNotice {
             key,
@@ -771,6 +775,9 @@ fn render_gate(s: &State, chat: &ChatState, g: Gate<'_>, k: &Kit) -> El {
             },
         )
         .fill(ink(0.045))
+        // Approving or declining turns the rim and the warning glyph quiet
+        // on the slide spring rather than at once.
+        .motion(crate::design::styles::Style::of(&s.prefs).slide)
         .transition(flow::rise(8.))
         .child(
             row()
@@ -818,7 +825,19 @@ fn render_gate(s: &State, chat: &ChatState, g: Gate<'_>, k: &Kit) -> El {
         card = card.child(line);
     }
     if let Some(actions_row) = actions_row {
-        card = card.child(el().pl(28.).child(actions_row));
+        // Keyed by the gate's state: the buttons give way to the "waiting
+        // to confirm" line as one replacing the other in place.
+        let phase = match g.state {
+            GateState::Open => "open",
+            GateState::Resolving(_) => "resolving",
+            GateState::Closed(_) => "closed",
+        };
+        card = card.child(
+            el().key(format!("{}-actions-{phase}", g.key))
+                .pl(28.)
+                .transition(rune::Transition::blur_replace())
+                .child(actions_row),
+        );
     }
     card
 }

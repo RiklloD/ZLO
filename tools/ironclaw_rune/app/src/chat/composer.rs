@@ -134,16 +134,28 @@ pub fn round_button(
         } else {
             (wash, p.text_faint)
         };
+        // The idle wash turns into the solid plate on the slide spring (the
+        // first keystroke asks for it, `on_change`); a press sinks it a
+        // little. The glyph is keyed by what the button does, so a mode flip
+        // (send, steer, queue, update, resume) swaps it with a small blur
+        // pop rather than a cut.
         return base
             .size(28., 28.)
             .radius(7.)
             .fill(fill)
+            .motion(design::styles::Style::of(&s.prefs).slide)
+            .press_scale(0.94)
             .hover(if filled {
                 p.bg.alpha(0.15)
             } else {
                 Color::TRANSPARENT
             })
-            .child(icon(glyph, 14.).color(ink));
+            .child(
+                icon(glyph, 14.)
+                    .key(format!("glyph-{label}"))
+                    .color(ink)
+                    .transition(glyph_swap()),
+            );
     }
     let mut b = base.size(28., 28.).radius(7.);
     b = if filled {
@@ -152,6 +164,25 @@ pub fn round_button(
         b.hover(wash)
     };
     b.child(icon(glyph, 14.).color(if filled { p.bg } else { p.text_muted }))
+}
+
+/// A send-button glyph replacing another in place: a short blur, scale and
+/// fade, out faster than in. Under reduced motion Rune makes it a fade.
+fn glyph_swap() -> rune::Transition {
+    rune::Transition::blur_replace()
+        .combined(rune::Transition::scale(0.8))
+        .allow_small_scale()
+        .springs(rune::SpringPair::with_exit_ratio(GLYPH_SPRING, 0.6))
+}
+
+const GLYPH_SPRING: rune::Spring = rune::Spring::new(0.2, 0.);
+
+/// Send or Stop arriving beside the other (typing while a turn runs) or
+/// leaving: a small scale pop with a fade, on the pop spring.
+pub(crate) fn round_pop() -> rune::Transition {
+    rune::Transition::scale(0.75)
+        .allow_small_scale()
+        .springs(rune::SpringPair::with_exit_ratio(design::styles::POP, 0.6))
 }
 
 /// An attachment card, the one look for staged and sent files: an icon
@@ -229,6 +260,9 @@ pub(crate) fn view(
     let style = flow::type_at(s, 14., 22.75, 400.);
     let (edit_id, key_id, change_id, submit_id, paste_id) =
         (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
+    // Whether Send was ready when this view was built: the state before the
+    // next edit, since every edit builds the view again.
+    let was_ready = send_ready(chat);
     let field = text_input(&chat.composer, style)
         .key("composer-input")
         .w_full()
@@ -247,7 +281,10 @@ pub(crate) fn view(
         .pill_icon(move |pill| inline_files::pill_icon_for(&snapshots, pill))
         .on_edit(move |s: &mut State| super::composer_edit(s, &edit_id))
         .on_input_key(move |s: &mut State, ev: &KeyEvent, tx: &mut Tx| on_key(s, &key_id, ev, tx))
-        .on_input_change(move |s: &mut State, _tx: &mut Tx| on_change(s, &change_id))
+        .on_input_change(move |s: &mut State, tx: &mut Tx| {
+            on_change(s, &change_id);
+            ready_flip(s, &change_id, was_ready, tx);
+        })
         .on_submit(move |s: &mut State, tx: &mut Tx| actions::send(s, &submit_id, tx))
         .on_input_paste(move |s: &mut State, content, _tx| {
             let Some(pasted) = inline_files::pasted(content) else {
@@ -281,8 +318,7 @@ pub(crate) fn view(
         controls,
     );
     // The new-thread composer flies down to this dock (GPUI `design/dock.rs`)
-    // on the send's own spring (`motion::DOCK`, set on that commit); any
-    // other move rides the commit's curve with the rest of the chat.
+    // and back on `motion::DOCK` (`dock_matched`).
     match chat.embedded {
         false => dock_matched(s, card),
         true => card,
@@ -298,11 +334,34 @@ pub(crate) fn view(
 /// A thread switch gives the new dock a new id (`WorkspaceState::dock_flight`):
 /// two docked composers sit at the same rect, and a flight between them
 /// would only keep frames coming with nothing moving.
+///
+/// The card carries `DOCK` as its own spring, so a flight the commit names
+/// no spring for (back to the new-thread screen) glides on it too, not on
+/// Rune's slower default; its rim and the controls' layout inside it move on
+/// it as well. A focus change from a click lands at once (Rune snaps the
+/// pointer-down commit), so the rim follows focus without lag.
 pub fn dock_matched(s: &State, card: El) -> El {
     if design::wallpaper::covers_composer(&s.prefs) {
         card
     } else {
         card.matched(design::motion::composer_match(s.workspace.dock_flight))
+            .motion(design::motion::DOCK)
+    }
+}
+
+/// Send has something to send.
+fn send_ready(chat: &ChatState) -> bool {
+    !chat.staged.is_empty() || !chat.composer.text.trim().is_empty()
+}
+
+/// The keystroke that gives the draft its first word (or takes its last)
+/// animates, though typing lands at once: Send's wash turns into its plate
+/// and, while a turn runs, Send pops in beside Stop. Only that keystroke:
+/// every other one stays instant, so the caret and the transcript never wait
+/// on a spring.
+fn ready_flip(s: &State, id: &str, was_ready: bool, tx: &mut Tx) {
+    if chat_ref(s, id).is_some_and(|c| send_ready(c) != was_ready) {
+        tx.animated();
     }
 }
 

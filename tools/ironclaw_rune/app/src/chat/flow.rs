@@ -58,6 +58,9 @@ pub fn type_at(s: &State, size: f32, line: f32, weight: f32) -> TextStyle {
     TextStyle::new(ui(s, size), weight).lh(ui(s, line))
 }
 
+/// A disclosure chevron's quarter turn (the side dock's tab pill spring).
+const CHEVRON_TURN: rune::Spring = crate::design::motion::PILL;
+
 /// An entering row's motion: it rises `y` points while it fades in.
 pub fn rise(y: f32) -> Transition {
     let mut t = Transition::offset(0., y);
@@ -607,13 +610,17 @@ pub fn render_activity(
             .color(p.text_muted)
             .build(k)
     };
+    // Keyed so its turn springs between closed and open instead of
+    // snapping a quarter turn.
     let chevron = icon(&icons::CHEVRON_DOWN, 13.)
+        .key("chevron")
         .color(p.text_muted)
         .rotate(if open {
             0.
         } else {
             -std::f32::consts::FRAC_PI_2
-        });
+        })
+        .rotate_motion(CHEVRON_TURN);
     let header = row()
         .key(format!("{key}-head"))
         .role("button")
@@ -687,6 +694,9 @@ pub fn render_activity(
     group.child(timeline::tree(s, thread, tree, lines))
 }
 
+/// One step of the tree: its label line, then its opened text while open.
+/// The caller's `{key}-step` column holds both, so opening a step never
+/// moves `{key}-leaf` under a new parent (which cut its motion short).
 fn tree_row(
     s: &State,
     thread: &str,
@@ -695,7 +705,7 @@ fn tree_row(
     last: bool,
     expanded: bool,
     open_key: String,
-) -> El {
+) -> Vec<El> {
     let p = &s.palette;
     let tint = if leaf.failed { p.danger } else { p.text_muted };
     let expandable = leaf.body.is_some() || leaf.output.is_some();
@@ -747,7 +757,7 @@ fn tree_row(
             });
     }
     if !expanded || (leaf.body.is_none() && leaf.output.is_none()) {
-        return line;
+        return vec![line];
     }
     // An opened row's full text hangs under its label, the trunk carrying on
     // beside it unless this is the last row.
@@ -774,18 +784,15 @@ fn tree_row(
     if let Some(output) = &leaf.output {
         body_col = body_col.child(output_tail(s, output, leaf.running));
     }
-    col()
-        .key(format!("{key}-leafbox"))
-        .w_full()
-        .child(line)
-        .child(
-            row()
-                .key(format!("{key}-detail"))
-                .w_full()
-                .transition(rise(4.))
-                .child(gutter)
-                .child(body_col),
-        )
+    vec![
+        line,
+        row()
+            .key(format!("{key}-detail"))
+            .w_full()
+            .transition(rise(4.))
+            .child(gutter)
+            .child(body_col),
+    ]
 }
 
 fn design_radius() -> f32 {

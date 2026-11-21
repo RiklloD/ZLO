@@ -21,6 +21,18 @@ pub(crate) struct RejectEditor {
     pub(crate) input: TextEdit,
 }
 
+#[cfg(test)]
+impl RejectEditor {
+    /// An open, empty field under `gate_ref`'s card.
+    pub(crate) fn new(gate_ref: String, run: String) -> Self {
+        Self {
+            gate_ref,
+            run,
+            input: TextEdit::new(""),
+        }
+    }
+}
+
 /// Open the feedback field under `gate_ref`'s card (one at a time).
 pub(crate) fn start_reject(s: &mut State, thread: &str, run: String, gate_ref: String) {
     let Some(c) = chat_for(s, thread) else { return };

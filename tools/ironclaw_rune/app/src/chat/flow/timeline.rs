@@ -38,7 +38,7 @@ pub(super) fn tree(s: &State, thread: &str, tree: El, lines: Vec<Line>) -> El {
             col()
                 .w_full()
                 .key(format!("{}-step", l.key))
-                .child(tree_row(
+                .children(tree_row(
                     s, thread, &l.key, l.leaf, l.last, l.expanded, l.open_key,
                 ))
         }));
@@ -62,7 +62,7 @@ pub(super) fn tree(s: &State, thread: &str, tree: El, lines: Vec<Line>) -> El {
             // sits in a plain column and keeps `{key}-leaf`, which its
             // press holds on screen.
             move |s: &State, i| match lines.get(i) {
-                Some(l) => col().w_full().child(tree_row(
+                Some(l) => col().w_full().children(tree_row(
                     s,
                     &thread,
                     &l.key,

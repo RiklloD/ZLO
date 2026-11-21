@@ -116,16 +116,13 @@ pub fn view(s: &State, chat: &ChatState) -> Option<El> {
                 .min_w(0.)
                 .grow(1.),
         )
+        // One chevron that turns over as the list opens and shuts.
         .child(
-            icon(
-                if open {
-                    &icons::CHEVRON_UP
-                } else {
-                    &icons::CHEVRON_DOWN
-                },
-                12.,
-            )
-            .color(p.text_muted),
+            icon(&icons::CHEVRON_DOWN, 12.)
+                .key("plan-chevron")
+                .color(p.text_muted)
+                .rotate(if open { std::f32::consts::PI } else { 0. })
+                .rotate_motion(crate::design::motion::PILL),
         );
     let mut strip = col().key("plan-strip").role("status").w_full().child(head);
     if open {

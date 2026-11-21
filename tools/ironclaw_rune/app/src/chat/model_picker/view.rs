@@ -401,7 +401,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                 .scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 })
-                .key("model-list")
+                .scroll_edge_fade(16.)
                 .child(rows),
         );
     if let Some(bar) = thinking_row(s, m, slot) {
@@ -450,7 +450,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                     .scroll(rune::ScrollSpec {
                         stick_bottom: false,
                     })
-                    .key("model-rail")
+                    .scroll_edge_fade(16.)
                     .child(rail),
             )
             .child(el().w(1.).h_full().fill(p.border))

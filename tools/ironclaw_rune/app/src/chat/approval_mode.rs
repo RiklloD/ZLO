@@ -214,6 +214,11 @@ fn menu(pill: &ApprovalPill, current: Option<ApprovalMode>) -> PopupMenu {
         .item(PopupItem::new("hint", hint).enabled(false))
 }
 
+/// The approval pill's key in chat `thread`.
+fn pill_key(thread: &str) -> String {
+    format!("approval-pill:{thread}")
+}
+
 /// The pill after the model pill; nothing until the profile is known.
 pub fn pill(s: &State, chat: &ChatState, _k: &Kit) -> El {
     let p = &s.palette;
@@ -230,8 +235,11 @@ pub fn pill(s: &State, chat: &ChatState, _k: &Kit) -> El {
         Some(ApprovalMode::AskFirst)
     };
     let id = chat.thread_id.clone();
+    // Scoped by chat: the main chat's and a side chat's pills are both on
+    // screen, and the menu anchors to the key.
+    let anchor = pill_key(&id);
     let mut pill = row()
-        .key("approval-pill")
+        .key(anchor.clone())
         .role("button")
         .label(format!("Approvals: {label_text}"))
         .gap(6.)
@@ -263,7 +271,7 @@ pub fn pill(s: &State, chat: &ChatState, _k: &Kit) -> El {
         // Re-read, so an edit on the Profiles page shows next time.
         load(s, &id);
         let thread = id.clone();
-        tx.popup_menu(menu, "approval-pill", move |s: &mut State, picked, _| {
+        tx.popup_menu(menu, anchor.clone(), move |s: &mut State, picked, _| {
             if let Some(mode) = picked.and_then(from_key) {
                 pick(s, &thread, mode);
             }
