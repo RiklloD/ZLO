@@ -8,6 +8,7 @@ pub mod common;
 pub mod computers;
 pub mod extensions;
 pub mod files;
+pub mod flash;
 pub mod hooks;
 pub mod memory;
 pub mod notifications;
@@ -39,6 +40,8 @@ pub struct PagesState {
     pub memory: memory::MemoryState,
     pub usage: usage::UsageState,
     pub settings: settings::SettingsState,
+    /// A copy button's check on any page (`flash::flash`).
+    pub flash: flash::Flash,
 }
 
 /// `page` became visible: load it on first visit, refresh otherwise.
