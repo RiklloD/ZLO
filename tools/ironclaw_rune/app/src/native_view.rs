@@ -57,6 +57,17 @@ use crate::state::State;
 /// before (the poll it runs would find nothing due and ask for no other).
 const WAKE_PAD: Duration = Duration::from_millis(20);
 
+/// How long the views stay hidden after the overlay layer empties. A
+/// closing overlay is gone from the layer at once but still plays its exit
+/// (a menu's pop back, a dialog and its scrim fading, about 0.15 s) where
+/// the views would draw over it, since they sit above Rune's view.
+const COVER_HOLD: Duration = Duration::from_millis(180);
+
+/// A view coming into sight fades in over this, on Core Animation's clock:
+/// Rune draws no frames for it. Hiding stays instant, so nothing Rune
+/// draws over the view's place is ever under it.
+const REVEAL_FADE: f64 = 0.15;
+
 /// Which of the two native views an element shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slot {
@@ -116,12 +127,23 @@ pub struct NativeViews {
     /// ([`cover`]), so it is a `Cell`: the view only reads the state, and
     /// the views hide in that same view run.
     covered: Cell<bool>,
+    /// When the overlay layer last emptied: the views stay hidden for
+    /// [`COVER_HOLD`] after, while the overlay plays its exit.
+    uncovered: Cell<Option<Instant>>,
 }
 
 impl NativeViews {
     /// Whether an overlay covers the window, as the last view run drew it.
     pub fn covered(&self) -> bool {
         self.covered.get()
+    }
+
+    /// When the hold after an overlay closed ends, while it runs.
+    fn hold_ends(&self) -> Option<Instant> {
+        self.uncovered
+            .get()
+            .map(|at| at + COVER_HOLD)
+            .filter(|end| *end > Instant::now())
     }
 }
 
@@ -131,7 +153,12 @@ impl NativeViews {
 /// frame (the tab, the page, an overlay) shows or hides the views here, at
 /// once.
 pub fn cover(s: &State, covered: bool) {
-    s.native.covered.set(covered);
+    let was = s.native.covered.replace(covered);
+    if covered {
+        s.native.uncovered.set(None);
+    } else if was {
+        s.native.uncovered.set(Some(Instant::now()));
+    }
     reconcile(s);
     // A view run has no `Tx` to set a timed wake with: the poll does.
     if unasked_wake(s).is_some() {
@@ -230,7 +257,8 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
 
 /// Each slot's source and place, or `None` to hide it.
 fn plan(s: &State) -> [Option<(Source, [f32; 4])>; 2] {
-    let wanted = if s.native.covered() || s.fixture {
+    let held = s.native.covered() || s.native.hold_ends().is_some();
+    let wanted = if held || s.fixture {
         [None, None]
     } else {
         crate::chat::side::native_wanted(s)
@@ -251,15 +279,37 @@ fn reconcile(s: &State) {
     PLANNED.with(|p| *p.borrow_mut() = plan.clone().map(|slot| slot.map(|(_, rect)| rect)));
     for (slot, planned) in Slot::ALL.into_iter().zip(plan) {
         match planned {
-            Some((source, rect)) => show(slot, &source, rect),
+            Some((source, rect)) => show(slot, &source, rect, || fades(s)),
             None => hide(slot),
         }
     }
 }
 
+/// Whether a view coming into sight fades in: not under reduced motion
+/// (Settings, the battery saver, or the system's setting).
+fn fades(s: &State) -> bool {
+    !crate::design::battery::reduced(&s.prefs, &s.look.battery, system_reduced_motion())
+}
+
+/// macOS's Reduce motion setting.
+fn system_reduced_motion() -> bool {
+    let Some(cls) = AnyClass::get(c"NSWorkspace") else {
+        return false;
+    };
+    // SAFETY: a class method and a BOOL property read on the main thread.
+    unsafe {
+        let ws: *mut AnyObject = msg_send![cls, sharedWorkspace];
+        if ws.is_null() {
+            return false;
+        }
+        msg_send![ws, accessibilityDisplayShouldReduceMotion]
+    }
+}
+
 /// The next moment the plan changes with no state change behind it, so no
-/// view run or handler to reconcile on: a dock's slide has settled (its
-/// native view may show), or a hidden view has been idle long enough to end.
+/// view run or handler to reconcile on: a dock's slide has settled or a
+/// closed overlay's exit is over (its native view may show), or a hidden
+/// view has been idle long enough to end.
 fn next_change(s: &State) -> Option<Instant> {
     if s.fixture {
         return None;
@@ -268,10 +318,14 @@ fn next_change(s: &State) -> Option<Instant> {
         let all = cell.borrow();
         Slot::ALL.map(|slot| all[slot as usize].as_ref().and_then(|s| s.hidden))
     });
-    [idle_end(hidden), crate::chat::side::native_settles_at(s)]
-        .into_iter()
-        .flatten()
-        .min()
+    [
+        idle_end(hidden),
+        crate::chat::side::native_settles_at(s),
+        s.native.hold_ends(),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
 }
 
 /// When the first of the hidden views (hidden since `hidden`, by slot) ends.
@@ -526,6 +580,21 @@ pub(crate) struct Probe {
     pub wake_asked: Option<Instant>,
 }
 
+/// Let the hold after a closed overlay run out, as if [`COVER_HOLD`] had
+/// passed on the wall clock.
+#[cfg(test)]
+pub(crate) fn end_cover_hold(s: &State) {
+    if let Some(at) = s.native.uncovered.get() {
+        s.native.uncovered.set(Some(at - COVER_HOLD));
+    }
+}
+
+/// When the hold after a closed overlay ends, while it runs.
+#[cfg(test)]
+pub(crate) fn cover_hold_ends(s: &State) -> Option<Instant> {
+    s.native.hold_ends()
+}
+
 #[cfg(test)]
 pub(crate) fn probe(s: &State) -> Probe {
     Probe {
@@ -559,6 +628,10 @@ impl Surface {
                 Engine::Look => new_look_view()?,
                 Engine::Web => new_web_view()?,
             };
+            // Hidden until `show` places it and fades it in; layer-backed
+            // so the fade is Core Animation's.
+            let _: () = msg_send![&*view, setWantsLayer: true];
+            let _: () = msg_send![&*view, setHidden: true];
             // NSWindowAbove = 1.
             let _: () = msg_send![host, addSubview: &*view, positioned: 1isize, relativeTo: &*rune];
             view
@@ -570,7 +643,7 @@ impl Surface {
             engine,
             source: source.clone(),
             frame: None,
-            hidden: None,
+            hidden: Some(Instant::now()),
         };
         let resume = RESUME.with(|r| {
             r.borrow()
@@ -662,12 +735,40 @@ impl Surface {
         }
     }
 
-    fn set_hidden(&mut self, hidden: bool) {
-        if self.hidden.is_some() != hidden {
-            self.hidden = hidden.then(Instant::now);
-            unsafe {
-                let _: () = msg_send![&*self.view, setHidden: hidden];
+    /// Hide at once, or show: faded in over [`REVEAL_FADE`] when `fade`
+    /// says so (asked only when the view comes into sight).
+    fn set_hidden(&mut self, hidden: bool, fade: impl FnOnce() -> bool) {
+        if self.hidden.is_some() == hidden {
+            return;
+        }
+        self.hidden = hidden.then(Instant::now);
+        let v = &*self.view;
+        // SAFETY: AppKit calls on a live view, on the main thread.
+        unsafe {
+            if hidden {
+                let _: () = msg_send![v, setHidden: true];
+                return;
             }
+            let ctx = AnyClass::get(c"NSAnimationContext").filter(|_| fade());
+            let Some(ctx) = ctx else {
+                let _: () = msg_send![v, setAlphaValue: 1.0f64];
+                let _: () = msg_send![v, setHidden: false];
+                return;
+            };
+            let _: () = msg_send![v, setAlphaValue: 0.0f64];
+            let _: () = msg_send![v, setHidden: false];
+            let _: () = msg_send![ctx, beginGrouping];
+            let current: *mut AnyObject = msg_send![ctx, currentContext];
+            if !current.is_null() {
+                let _: () = msg_send![current, setDuration: REVEAL_FADE];
+            }
+            let animator: *mut AnyObject = msg_send![v, animator];
+            if animator.is_null() {
+                let _: () = msg_send![v, setAlphaValue: 1.0f64];
+            } else {
+                let _: () = msg_send![animator, setAlphaValue: 1.0f64];
+            }
+            let _: () = msg_send![ctx, endGrouping];
         }
     }
 
@@ -691,7 +792,7 @@ impl Surface {
     }
 }
 
-fn show(slot: Slot, source: &Source, rect: [f32; 4]) {
+fn show(slot: Slot, source: &Source, rect: [f32; 4], fade: impl FnOnce() -> bool) {
     let Some(rune) = HOST.with(|h| h.borrow().clone()) else {
         return;
     };
@@ -714,7 +815,7 @@ fn show(slot: Slot, source: &Source, rect: [f32; 4]) {
             s.load(source);
         }
         s.place(rect);
-        s.set_hidden(false);
+        s.set_hidden(false, fade);
     });
 }
 
@@ -722,7 +823,7 @@ fn show(slot: Slot, source: &Source, rect: [f32; 4]) {
 fn hide(slot: Slot) {
     let expired = with(slot, |s| match s {
         Some(s) => {
-            s.set_hidden(true);
+            s.set_hidden(true, || false);
             s.hidden.is_some_and(|t| t.elapsed() >= slot.idle())
         }
         None => false,

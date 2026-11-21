@@ -34,7 +34,8 @@
 //!   window titlebar.
 //! - `side::toggle_right_pane(s)` (⌥⌘B), `side::toggle_work_panel(s)` (⌘E),
 //!   `side::new_side_chat(s)` (⌥⌘N). Off the chat page the toggles only flip
-//!   the preference.
+//!   the preference. Call `side::dock_slide(s, tx)` first so the docks
+//!   slide on `panels::REVEAL`.
 //! - `side::dock_widths(s, viewport)` for the wallpaper's conversation area.
 //! - `main.rs`: `native_view::poll` in `poll`, `native_view::on_window` on
 //!   the `App`; the root view calls `native_view::cover` on every run (see
@@ -327,10 +328,11 @@ pub struct SideState {
     drag: Option<(Dock, f32)>,
     /// Each dock widened to [`WIDE_SHARE`], by [`Dock::ix`].
     wide: [bool; 2],
-    /// When each dock last opened, for native views to wait out the slide.
+    /// When each dock last opened, slid or resized (not by a drag), for
+    /// native views to wait out the motion ([`NATIVE_SETTLE`]).
     opened_at: [Option<Instant>; 2],
     /// Each dock's column is still drawn: open, or closed less than
-    /// [`dock::CLOSE_HOLD`] ago while its clip slides shut ([`poll`]).
+    /// [`dock::close_hold`] ago while its clip slides shut ([`poll`]).
     shown: [bool; 2],
     /// When a closed dock's column may go (app clock, seconds).
     hold: [Option<f64>; 2],
@@ -503,10 +505,30 @@ fn toggle_dock(s: &mut State, dock: Dock) {
         Dock::Work => p.work_open = open,
         Dock::Side => p.side_open = open,
     });
-    if open && s.page == Page::Chat && s.chat.is_some() {
-        mark_opened(s, dock);
-        load(s, dock_tab(s, dock));
+    if s.page == Page::Chat && s.chat.is_some() {
+        // The other dock moves (the work panel rides the right pane's
+        // edge) or resizes with this one: its native view waits too.
+        mark_opened(s, Dock::Work);
+        mark_opened(s, Dock::Side);
+        if open {
+            load(s, dock_tab(s, dock));
+        }
     }
+}
+
+/// Ready `tx` for a commit that opens, closes or resizes a dock, as the
+/// sidebar's fold does (`workspace::toggle_sidebar`): every column it moves
+/// rides [`panels::REVEAL`](crate::design::panels::REVEAL), rows pinned to
+/// the transcript's end ride its edge, and the follow-ups land the
+/// conversation's rewrapped rows once the slide has started
+/// (`workspace::settle_sidebar_slide`). Callers outside the chat's own
+/// buttons (⌥⌘B, ⌘E) call it before [`toggle_right_pane`] /
+/// [`toggle_work_panel`].
+pub fn dock_slide(s: &State, tx: &mut Tx) {
+    tx.animated();
+    tx.motion(crate::design::panels::REVEAL);
+    tx.follow_edge();
+    s.workspace.sidebar_slid.set(true);
 }
 
 /// Keeps a closed dock's column drawn until its clip has slid shut, so the
@@ -523,8 +545,9 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
         } else if x.shown[ix] {
             match x.hold[ix] {
                 None => {
-                    x.hold[ix] = Some(clock + dock::CLOSE_HOLD);
-                    tx.wake_after(std::time::Duration::from_secs_f64(dock::CLOSE_HOLD));
+                    let hold = dock::close_hold();
+                    x.hold[ix] = Some(clock + hold);
+                    tx.wake_after(std::time::Duration::from_secs_f64(hold));
                 }
                 Some(until) if clock >= until => {
                     x.shown[ix] = false;

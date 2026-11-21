@@ -18,7 +18,9 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use rune::{Color, Cursor, Cx, El, Phase, Transition, col, el, icon, row, text};
+use rune::{
+    Color, Cursor, Cx, El, Phase, Spring, SpringPair, Transition, col, el, icon, row, text,
+};
 use rune_kit::Kit;
 
 use super::ui::{self, xs_med, xs_semi};
@@ -27,7 +29,7 @@ use super::{
     dock_badge, dock_drawn, dock_open, dock_tab, pick_project_folder, session, short_path, side,
     side_mut,
 };
-use crate::design::{panels, styles::Style};
+use crate::design::{motion, panels, styles::Style};
 use crate::icons;
 use crate::state::State;
 
@@ -48,11 +50,17 @@ const SIDE_MIN: f32 = 300.;
 /// Width above which a dock's five tool tabs flow onto a single row.
 const WIDE_TABS_MIN: f32 = 560.;
 
-/// How long a closed dock's column stays drawn: the layout spring
-/// (`tok::motion::DEFAULT`) has the clip within half a point of shut by
-/// then — its `settling_duration(0.5 / SIDE_MIN)`, about 0.43 s. Holding
-/// longer only draws frames nobody can see.
-pub(super) const CLOSE_HOLD: f64 = 0.43;
+/// How long a closed dock's column stays drawn: until its clip is within
+/// half a point of shut. The clip rides [`panels::REVEAL`] whoever closes
+/// it: the shell's split view sets that spring on the whole main column
+/// (`workspace/shell/frame.rs`), and the chat's own buttons name it too
+/// (`side::dock_slide`). Measured for the widest column a window gives
+/// ([`WIDE_SHARE`] of a 2560 pt screen). Holding longer only draws frames
+/// nobody can see; less would drop the column while its clip still shows.
+pub(super) fn close_hold() -> f64 {
+    const WIDEST: f32 = 2560. * WIDE_SHARE;
+    f64::from(panels::REVEAL.settling_duration(0.5 / WIDEST))
+}
 
 /// A dock's narrowest width with `room` left for it.
 fn min_width(dock: Dock, room: f32) -> f32 {
@@ -184,7 +192,17 @@ fn dock(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, dock: Dock)
                 .fill(p.border)
                 .transition(Transition::none()),
         )
-        .child(ui::fill_col().transition(Transition::none()).child(body))
+        .child(
+            ui::fill_col().transition(Transition::none()).child(
+                // Keyed by tab, so a switch fades the new tab's body in
+                // over the old one's quicker exit, and nothing re-fires
+                // while the tab stays.
+                ui::fill_col()
+                    .key(format!("side-{}-body-{}", dock.key(), tab.id()))
+                    .transition(body_fade())
+                    .child(body),
+            ),
+        )
         .child(
             el().pin(Some(0.), Some(0.), None, Some(0.))
                 .w(1.)
@@ -193,6 +211,13 @@ fn dock(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, dock: Dock)
         )
         .child(edge(s, dock, w, dragging, viewport));
     clip.child(pane)
+}
+
+/// A tab body's entrance and exit on a switch: a short fade in over a
+/// shorter fade out. Rune turns it into its reduced fade under reduced
+/// motion.
+fn body_fade() -> Transition {
+    Transition::opacity().springs(SpringPair::new(Spring::new(0.18, 0.), Spring::new(0.1, 0.)))
 }
 
 /// The resize strip along the dock's left border. A double click resets
@@ -204,27 +229,43 @@ fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32) -> El {
         Dock::Work if dock_open(s, Dock::Side) => viewport - width(s, Dock::Side, viewport),
         _ => viewport,
     };
+    let st = Style::of(&s.prefs);
+    // The 1 pt line fades in under the pointer as a hint that the border
+    // drags, and holds the accent while it does.
     el().key(format!("side-{}-edge", dock.key()))
         .pin(Some(0.), Some(0.), None, Some(0.))
         .w(6.)
         .cursor(Cursor::ResizeColumn)
-        .child(el().w(1.).h_full().fill(if dragging {
-            p.accent.alpha(0.75)
-        } else {
-            Color::TRANSPARENT
-        }))
+        .hover_group()
+        .hover_motion(st.hover, st.hover)
+        .child(
+            el().key(format!("side-{}-edge-line", dock.key()))
+                .w(1.)
+                .h_full()
+                .fill(if dragging {
+                    p.accent.alpha(0.75)
+                } else {
+                    p.border_strong
+                })
+                .group_opacity(if dragging { 1. } else { 0. }, 1.),
+        )
         .on_drag(move |s: &mut State, d, tx| {
+            // A double click springs back to the default width with the
+            // columns beside it; the drag itself follows the pointer.
+            if d.phase == Phase::Down && d.clicks >= 2 {
+                super::dock_slide(s, tx);
+                if let Some(x) = side_mut(s) {
+                    x.drag = None;
+                    x.opened_at[dock.ix()] = Some(std::time::Instant::now());
+                }
+                s.update_prefs(|p| match dock {
+                    Dock::Work => p.work_width = 0.,
+                    Dock::Side => p.side_width = 0.,
+                });
+                return;
+            }
             tx.instant();
             match d.phase {
-                Phase::Down if d.clicks >= 2 => {
-                    if let Some(x) = side_mut(s) {
-                        x.drag = None;
-                    }
-                    s.update_prefs(|p| match dock {
-                        Dock::Work => p.work_width = 0.,
-                        Dock::Side => p.side_width = 0.,
-                    });
-                }
                 Phase::Down => {
                     if let Some(x) = side_mut(s) {
                         x.wide[dock.ix()] = false;
@@ -283,19 +324,26 @@ fn switcher(s: &State, dock: Dock, w: f32) -> El {
     // Outer px(10) + well padding(3) on both sides, 3pt gaps between pills.
     let inner = (w - 26.).max(0.);
     let per = |n: usize| (inner - 3. * (n as f32 - 1.)) / n as f32;
+    // The active pill's place in the well, found as the rows are laid out
+    // below: the gliding highlight sits there.
+    let mut glide: Option<[f32; 3]> = None;
+    let mut rows = 0usize;
+    let place = |rows: usize, ix: usize, width: f32| {
+        let at = |n: usize, step: f32| WELL_PAD + n as f32 * (step + PILL_GAP);
+        [at(ix, width), at(rows, PILL_H), width]
+    };
     let tools: &[Tab] = match dock {
         Dock::Work => &Tab::WORK,
         Dock::Side => {
             if let Some(chat) = side(s).and_then(|x| x.chat.as_ref()) {
                 let extra =
                     bridge::title(s, &chat.thread_id).filter(|t| !t.is_empty() && t != "Side chat");
-                well = well.child(tab_pill(
-                    s,
-                    Tab::SideChat,
-                    current == Tab::SideChat,
-                    extra,
-                    inner,
-                ));
+                let on = current == Tab::SideChat;
+                if on {
+                    glide = Some(place(rows, 0, inner));
+                }
+                well = well.child(tab_pill(s, Tab::SideChat, on, extra, inner));
+                rows += 1;
             }
             &Tab::SIDE_TOOLS
         }
@@ -303,11 +351,15 @@ fn switcher(s: &State, dock: Dock, w: f32) -> El {
     // One row once every pill fits whole, else rows of three.
     let per_row = if w >= WIDE_TABS_MIN { tools.len() } else { 3 };
     for chunk in tools.chunks(per_row) {
-        let mut r = row().w_full().gap(3.).items_center();
-        for &t in chunk {
+        let mut r = row().w_full().gap(PILL_GAP).items_center();
+        for (ix, &t) in chunk.iter().enumerate() {
+            if t == current {
+                glide = Some(place(rows, ix, per(chunk.len())));
+            }
             r = r.child(tab_pill(s, t, t == current, None, per(chunk.len())));
         }
         well = well.child(r);
+        rows += 1;
     }
     // Plugins' tabs follow the app's own in the right pane, in rows of the
     // same width.
@@ -318,16 +370,57 @@ fn switcher(s: &State, dock: Dock, w: f32) -> El {
             .collect();
         let shown = super::plugin_tab(s);
         for chunk in slots.chunks(per_row) {
-            let mut r = row().w_full().gap(3.).items_center();
-            for &slot in chunk {
+            let mut r = row().w_full().gap(PILL_GAP).items_center();
+            for (ix, &slot) in chunk.iter().enumerate() {
                 let on = current == Tab::Plugin && shown == Some(slot);
+                if on {
+                    glide = Some(place(rows, ix, per(chunk.len())));
+                }
                 r = r.child(plugin_pill(s, slot, on));
             }
             well = well.child(r);
+            rows += 1;
         }
+    }
+    if let Some([x, y, width]) = glide {
+        well = well.child(active_pill(s, dock, x, y, width));
     }
 
     el().w_full().px(10.).pt(4.).pb(8.).child(well)
+}
+
+/// Padding inside a switcher's well, the gap between its pills and their
+/// height: the active highlight's place is computed from them.
+const WELL_PAD: f32 = 3.;
+const PILL_GAP: f32 = 3.;
+const PILL_H: f32 = 30.;
+
+/// The active tab's raised highlight, one element per dock behind the
+/// pills: a switch glides it to the new tab on [`motion::PILL`] (a dock
+/// resizing carries it with the pills on the resize's spring) instead of
+/// one pill dropping its fill as the next gains it. It comes last in the
+/// well (absolute, so the pills keep their places) and paints under them.
+fn active_pill(s: &State, dock: Dock, x: f32, y: f32, w: f32) -> El {
+    let p = &s.palette;
+    el().key(format!("side-{}-tab-glide", dock.key()))
+        .absolute(x, y)
+        .size(w, PILL_H)
+        .radius(7.)
+        .fill(if p.light {
+            p.surface_card
+        } else {
+            p.surface_raised
+        })
+        .border(1., p.border_strong)
+        .shadow(
+            1.,
+            3.,
+            Color::BLACK.alpha(if p.light { 0.08 } else { 0.22 }),
+        )
+        .paint_order(-1)
+        .a11y_hidden()
+        .transition(Transition::none())
+        .motion(motion::PILL)
 }
 
 /// A plugin's `panel.tab` slot as a pill in the right dock's switcher: the
@@ -368,20 +461,8 @@ fn plugin_pill(s: &State, slot: &zlo_client::plugins::Slot, active: bool) -> El 
                 .shrink()
                 .min_w(0.),
         );
-    if active {
-        pill = pill
-            .fill(if p.light {
-                p.surface_card
-            } else {
-                p.surface_raised
-            })
-            .border(1., p.border_strong)
-            .shadow(
-                1.,
-                3.,
-                Color::BLACK.alpha(if p.light { 0.08 } else { 0.22 }),
-            );
-    } else {
+    // The raised highlight is the switcher's gliding `active_pill`.
+    if !active {
         pill = pill.hover(p.hover);
     }
     pill.on_press(move |s: &mut State| super::show_plugin(s, &ext, &id))
@@ -446,20 +527,8 @@ fn tab_pill(s: &State, tab: Tab, active: bool, subtitle: Option<String>, width: 
         pill = pill.child(ui::dot(p.accent, 6.));
     }
 
-    if active {
-        pill = pill
-            .fill(if p.light {
-                p.surface_card
-            } else {
-                p.surface_raised
-            })
-            .border(1., p.border_strong)
-            .shadow(
-                1.,
-                3.,
-                Color::BLACK.alpha(if p.light { 0.08 } else { 0.22 }),
-            );
-    } else {
+    // The raised highlight is the switcher's gliding `active_pill`.
+    if !active {
         pill = pill.hover(p.hover);
     }
 
@@ -539,9 +608,12 @@ fn header_content(s: &State, k: &Kit, dock: Dock) -> El {
         },
         if wide { "Narrow pane" } else { "Widen pane" },
     )
-    .on_press(move |s: &mut State| {
+    .on_press_tx(move |s: &mut State, tx| {
+        super::dock_slide(s, tx);
         if let Some(x) = side_mut(s) {
             x.wide[dock.ix()] = !x.wide[dock.ix()];
+            // Its native view waits out the resize instead of chasing it.
+            x.opened_at[dock.ix()] = Some(std::time::Instant::now());
         }
     })
     .build(k)
@@ -857,7 +929,10 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         )
         .group_color(p.text),
     )
-    .on_press(|s: &mut State| super::toggle_work_panel(s));
+    .on_press_tx(|s: &mut State, tx| {
+        super::dock_slide(s, tx);
+        super::toggle_work_panel(s);
+    });
     if dock_badge(s, Dock::Work) {
         work_toggle = work_toggle.child(ui::dot(p.accent, 6.).absolute(19., 3.));
     }
@@ -879,7 +954,10 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         )
         .group_color(p.text),
     )
-    .on_press(|s: &mut State| super::toggle_right_pane(s));
+    .on_press_tx(|s: &mut State, tx| {
+        super::dock_slide(s, tx);
+        super::toggle_right_pane(s);
+    });
     if dock_badge(s, Dock::Side) {
         side_toggle = side_toggle.child(ui::dot(p.accent, 6.).absolute(19., 3.));
     }
@@ -953,15 +1031,20 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         .child(strip)
 }
 
-/// A titlebar toggle's active highlight while its panel shows.
+/// A titlebar toggle's active highlight while its panel shows. It fades
+/// in and out on the selection spring rather than snapping; the off state
+/// keeps a clear ring so the border fades instead of vanishing.
 pub(super) fn active(s: &State, toggle: El, on: bool) -> El {
     let p = &s.palette;
+    let toggle = toggle.motion(Style::of(&s.prefs).slide);
     if on {
         toggle
             .fill(if p.light { p.surface_card } else { p.active })
             .border(1., p.border_strong)
     } else {
-        toggle.fill(Color::TRANSPARENT)
+        toggle
+            .fill(Color::TRANSPARENT)
+            .border(1., Color::TRANSPARENT)
     }
 }
 
@@ -993,6 +1076,8 @@ fn header(s: &State, k: &Kit, dock: Dock, right: f32, width: f32, full: f32) -> 
 #[cfg(test)]
 mod tests {
     use rune::{Env, Runtime};
+
+    use crate::design::panels;
 
     use super::super::{Dock, Tab, dock_drawn, poll, toggle_right_pane, toggle_work_panel};
     use crate::state::State;
@@ -1206,6 +1291,127 @@ mod tests {
         }
     }
 
+    /// The raised highlight sits exactly on the active pill in both docks,
+    /// at rest, and glides there on a switch: mid-switch it is between the
+    /// two pills rather than snapped onto either.
+    #[test]
+    fn the_active_tab_highlight_sits_on_its_pill_and_glides_on_a_switch() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::scenes::chat(&mut s);
+        s.prefs.work_open = true;
+        s.prefs.side_open = true;
+        let mut rt = Runtime::new(s, crate::view, (1440., 900.), Env::new(true, 1.));
+        let mut t = 0.;
+        let mut run = |rt: &mut Runtime<State>, frames: usize| {
+            for _ in 0..frames {
+                t += 1. / 60.;
+                rt.frame(1. / 60.);
+                rt.update(|s, tx| {
+                    poll(s, t, tx);
+                });
+            }
+        };
+        run(&mut rt, 90);
+        let on = |rt: &Runtime<State>, dock: &str, tab: &str| {
+            let (glide, _) = rt
+                .presented(&format!("side-{dock}-tab-glide"))
+                .expect("highlight drawn");
+            let (pill, _) = rt.presented(&format!("side-tab-{tab}")).expect("pill");
+            glide
+                .iter()
+                .zip(pill.iter())
+                .all(|(a, b)| (a - b).abs() <= 0.5)
+        };
+        for (key, dock) in [("work", Dock::Work), ("side", Dock::Side)] {
+            let tab = super::super::dock_tab(&rt.state, dock);
+            assert!(
+                on(&rt, key, tab.id()),
+                "{key}: the highlight is off {tab:?}"
+            );
+        }
+        // Switch the right pane to a pill on the other row.
+        rt.update(|s, _| super::super::show(s, Tab::Machines));
+        run(&mut rt, 4);
+        let (mid, _) = rt.presented("side-side-tab-glide").expect("drawn");
+        let (to, _) = rt.presented("side-tab-machines").expect("drawn");
+        assert!(
+            (mid[1] - to[1]).abs() > 1.,
+            "a few frames in, the highlight is still on its way: {mid:?} vs {to:?}"
+        );
+        run(&mut rt, 60);
+        assert!(on(&rt, "side", "machines"), "it lands on the new pill");
+        // Widened to one row, it rides with the pills.
+        rt.update(|s, _| {
+            if let Some(x) = super::side_mut(s) {
+                x.wide[Dock::Side.ix()] = true;
+            }
+        });
+        run(&mut rt, 90);
+        assert!(on(&rt, "side", "machines"), "it follows a resize");
+    }
+
+    /// A dock slides on `panels::REVEAL`, the sidebar's spring: the
+    /// shell's split view sets it on the whole main column, so a toggle
+    /// from anywhere rides it, and the chat's own buttons also queue the
+    /// sidebar's follow-ups (`dock_slide`) that land the rewrapped
+    /// conversation.
+    #[test]
+    fn a_dock_slides_on_the_reveal_spring() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::scenes::chat(&mut s);
+        s.prefs.side_open = false;
+        s.prefs.work_open = false;
+        let mut rt = Runtime::new(s, crate::view, (1440., 900.), Env::new(true, 1.));
+        for _ in 0..30 {
+            rt.frame(1. / 60.);
+        }
+        rt.update(|s, tx| {
+            super::super::dock_slide(s, tx);
+            toggle_right_pane(s);
+        });
+        assert!(
+            rt.state.workspace.sidebar_slid.get(),
+            "follow-ups wait for the view"
+        );
+        let full = super::width(&rt.state, Dock::Side, 1440.);
+        let mut seen = Vec::new();
+        for _ in 0..12 {
+            rt.frame(1. / 60.);
+            seen.push(rt.presented("side-side-dock").expect("drawn").0[2]);
+        }
+        assert!(
+            !rt.state.workspace.sidebar_slid.get(),
+            "the view queued them"
+        );
+        let between = seen.iter().filter(|w| **w > 1. && **w < full - 1.).count();
+        assert!(
+            between >= 4,
+            "the dock slides through {between} frames: {seen:?}"
+        );
+        // Eight frames in, where REVEAL has it (within a frame's travel).
+        let at =
+            |spring: rune::Spring, frames: f32| full * spring.sample(0., 0., 1., frames / 60.).0;
+        let drawn = seen[7];
+        assert!(
+            at(panels::REVEAL, 7.) - 1. <= drawn && drawn <= at(panels::REVEAL, 9.) + 1.,
+            "{drawn} is not on REVEAL ({}–{})",
+            at(panels::REVEAL, 7.),
+            at(panels::REVEAL, 9.)
+        );
+    }
+
+    /// The hold that keeps a closed dock drawn covers its clip's slide on
+    /// REVEAL for the widest column, and is far shorter than the fixed
+    /// 0.6 s it replaced.
+    #[test]
+    fn the_close_hold_covers_the_reveal_slide() {
+        let hold = super::close_hold();
+        assert!((0.2..0.5).contains(&hold), "{hold}");
+        let widest = 2560. * super::WIDE_SHARE;
+        let left = widest * (1. - panels::REVEAL.sample(0., 0., 1., hold as f32).0);
+        assert!(left.abs() <= 0.5, "within half a point of shut: {left}");
+    }
+
     /// In a narrow window with both columns open the right pane gives up
     /// its roomy minimum before it pushes the toggles past the window's
     /// edge.
@@ -1239,7 +1445,7 @@ mod tests {
     }
 
     /// A closed dock stays drawn (so the clip, not a fade, hides it) until
-    /// `CLOSE_HOLD` has passed on the app clock, and a reopen mid-hold
+    /// [`close_hold`] has passed on the app clock, and a reopen mid-hold
     /// keeps it.
     #[test]
     fn a_closed_dock_is_drawn_until_its_clip_has_shut() {
@@ -1257,11 +1463,11 @@ mod tests {
         });
         assert!(dock_drawn(&rt.state, Dock::Side), "held while sliding");
         rt.update(|s, tx| {
-            poll(s, 1. + super::CLOSE_HOLD / 2., tx);
+            poll(s, 1. + super::close_hold() / 2., tx);
         });
         assert!(dock_drawn(&rt.state, Dock::Side), "still sliding");
         let mut changed = false;
-        rt.update(|s, tx| changed = poll(s, 1. + super::CLOSE_HOLD, tx));
+        rt.update(|s, tx| changed = poll(s, 1. + super::close_hold(), tx));
         assert!(changed, "the drop commits");
         assert!(!dock_drawn(&rt.state, Dock::Side), "gone once shut");
         // Closed, reopened mid-hold and closed again: the first close's
@@ -1283,7 +1489,7 @@ mod tests {
             poll(s, 5.3, tx);
         });
         rt.update(|s, tx| {
-            poll(s, 5.1 + super::CLOSE_HOLD + 0.05, tx);
+            poll(s, 5.1 + super::close_hold() + 0.05, tx);
         });
         assert!(
             dock_drawn(&rt.state, Dock::Side),
