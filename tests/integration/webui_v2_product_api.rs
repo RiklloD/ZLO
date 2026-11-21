@@ -2368,12 +2368,16 @@ async fn command_list_and_model_execute_are_gated_by_command_admin_role() {
         .collect();
     assert_eq!(
         admin_names.len(),
-        15,
+        16,
         "admin must see the full registry including the Lifecycle family: {body}"
     );
     assert!(
         admin_names.contains(&"extension_list"),
         "admin list must include a Lifecycle-family command: {body}"
+    );
+    assert!(
+        admin_names.contains(&"extension_grant_consent"),
+        "admin list must include the plugin consent grant: {body}"
     );
 
     let (status, body) = post_json(
