@@ -2236,11 +2236,12 @@ pub(crate) fn tool_component(wat_src: &str) -> Vec<u8> {
 
     embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8).unwrap();
 
-    let mut encoder = ComponentEncoder::default()
+    ComponentEncoder::default()
         .module(&module)
         .unwrap()
-        .validate(true);
-    encoder.encode().unwrap()
+        .validate(true)
+        .encode()
+        .unwrap()
 }
 
 /// Rewrites HTTP_TOOL_WAT's success(string) `response` encoding into the

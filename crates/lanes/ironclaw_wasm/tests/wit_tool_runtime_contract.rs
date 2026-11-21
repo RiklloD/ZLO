@@ -411,11 +411,12 @@ fn tool_component_with_wit(wat_src: &str, wit_src: &str) -> Vec<u8> {
     embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8)
         .expect("component metadata must embed");
 
-    let mut encoder = ComponentEncoder::default()
+    ComponentEncoder::default()
         .module(&module)
         .expect("fixture module must decode")
-        .validate(true);
-    encoder.encode().expect("component must encode")
+        .validate(true)
+        .encode()
+        .expect("component must encode")
 }
 
 #[test]

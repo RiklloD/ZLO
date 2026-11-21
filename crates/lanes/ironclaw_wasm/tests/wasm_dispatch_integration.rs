@@ -1096,7 +1096,8 @@ fn tool_component(wat_src: &str) -> Vec<u8> {
     embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8)
         .expect("component metadata must embed");
 
-    let mut encoder = ComponentEncoder::default()
+    let mut encoder = ComponentEncoder::default();
+    encoder
         .module(&module)
         .expect("fixture module must decode")
         .validate(true);
