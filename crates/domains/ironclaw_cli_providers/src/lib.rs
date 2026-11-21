@@ -102,6 +102,15 @@ pub(crate) fn session_preamble(profile: &TurnProfile) -> Option<String> {
     join_notes([soul, delegation(), visuals(), skills])
 }
 
+/// [`session_preamble`] for a turn with or without a profile: without
+/// one, still the delegation and visuals notes every session needs.
+pub(crate) fn session_context(profile: Option<&TurnProfile>) -> Option<String> {
+    match profile {
+        Some(profile) => session_preamble(profile),
+        None => join_notes([delegation(), visuals()]),
+    }
+}
+
 /// Estimated tokens of what a CLI agent with a system prompt flag gets
 /// from ZLO besides the transcript: the [`system_note`] pieces, the
 /// profile's skill index, and the orchestrator tools of the loopback MCP
@@ -163,8 +172,13 @@ impl Primed {
     /// The preamble to send now: `Some` only the first time per thread.
     pub(crate) fn take(&self, thread: &ThreadId, profile: Option<&TurnProfile>) -> Option<String> {
         let preamble = session_preamble(profile?)?;
-        let mut primed = self.0.lock().ok()?; // silent-ok: a poisoned set only follows a panic elsewhere
-        primed.insert(thread.clone()).then_some(preamble)
+        self.first(thread).then_some(preamble)
+    }
+
+    fn first(&self, thread: &ThreadId) -> bool {
+        self.0
+            .lock()
+            .is_ok_and(|mut primed| primed.insert(thread.clone())) // silent-ok: a poisoned set only follows a panic elsewhere
     }
 }
 

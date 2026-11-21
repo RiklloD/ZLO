@@ -1,3 +1,4 @@
+// arch-exempt: large_file, the MCP grant and session notes moved to context.rs; the turn driver still awaits decomposition, plan #v3-cli-bridge
 //! The Antigravity agent as an orchestrator runtime, driven over the
 //! Agent Client Protocol: `initialize`, `authenticate` eagerly,
 //! `session/new` once, then `session/resume` instead of replaying history.
@@ -26,7 +27,21 @@
 //! `session/request_permission` goes through [`crate::permissions::decide`]:
 //! an IronClaw approval in the thread when the host has a bridge, a denial
 //! otherwise.
+//!
+//! ZLO's orchestrator tools reach `agy acp` as an HTTP MCP server
+//! (`mcpServers` on `session/new` and `session/resume`; `agy` 1.5 takes
+//! `http` though its `initialize` lists no `mcpCapabilities`), with a bearer
+//! token minted for the turn and revoked when the turn ends ([`McpToken`]).
+//! One agent process serves one turn, so the token never outlives the
+//! process that holds it. `agy` asks `session/request_permission` before
+//! every MCP tool call, so those calls are IronClaw approvals like any other.
+//! The legacy runtime gets no server: its MCP support was never checked.
+//! The delegation, visuals and tool notes go to every session, with or
+//! without a profile ([`TurnContext`]). `agy`'s own subagent tools run
+//! without asking, so the client cannot block them; the notes forbid them
+//! and a permission request for one is refused ([`AGY_SUBAGENT_TOOLS`]).
 
+mod context;
 mod fold;
 pub mod launch;
 mod live;
@@ -58,6 +73,9 @@ use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
 use crate::slot::{Claim, GroupGuard, Slots};
+use context::{
+    AGY_SUBAGENT_DENIAL, AGY_SUBAGENT_TOOLS, ANTIGRAVITY_TOOLS_PROMPT, McpToken, TurnContext,
+};
 use fold::PromptFold;
 use launch::AgentLaunch;
 use live::LiveFold;
@@ -175,7 +193,7 @@ pub struct AntigravityRuntime {
     // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
     active: Slots<ActiveTurn>,
-    primed: crate::Primed,
+    primed: Arc<context::InlinePrimed>,
     /// Single flight for the background model-list refresh.
     refreshing: Arc<AtomicBool>,
     /// When the last refresh started (ms), for [`REFRESH_RETRY_MS`].
@@ -184,17 +202,6 @@ pub struct AntigravityRuntime {
     write_timeout: Duration,
     #[cfg(test)]
     prep_gate: Option<Arc<crate::slot::PrepGate>>,
-}
-
-/// What a turn sends besides the user's text.
-#[derive(Default)]
-struct TurnContext {
-    /// Profile preamble and goal, whole: for an agent that appends it to its
-    /// system prompt (it keeps none of it between processes).
-    system: Option<String>,
-    /// Profile preamble (first turn this process runs for the thread) and
-    /// goal, put ahead of the prompt for an agent that cannot.
-    inline: Option<String>,
 }
 
 impl AntigravityRuntime {
@@ -209,7 +216,7 @@ impl AntigravityRuntime {
             sink,
             bridge,
             active: Slots::default(),
-            primed: crate::Primed::default(),
+            primed: Arc::default(),
             refreshing: Arc::new(AtomicBool::new(false)),
             last_refresh: Arc::new(std::sync::atomic::AtomicI64::new(i64::MIN)),
             write_timeout: rpc::WRITE_TIMEOUT,
@@ -309,7 +316,14 @@ impl AntigravityRuntime {
             return Ok(run_id);
         }
 
+        let mcp = McpToken::mint(
+            &self.config.launch,
+            self.bridge.as_ref(),
+            &thread.thread_id,
+            &run_id,
+        );
         let turn = Turn {
+            mcp,
             config: Arc::clone(&self.config),
             key,
             model: thread.model.clone(),
@@ -560,6 +574,8 @@ struct Turn {
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
     run_id: String,
+    /// ZLO's MCP server for this turn; revoked when the turn is dropped.
+    mcp: Option<McpToken>,
 }
 
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
@@ -654,7 +670,12 @@ impl Turn {
             return (TurnOutcome::ended(TurnEndStatus::Cancelled, None), None);
         };
         let mut prompt = match first_sent {
-            Ok((pending, _written)) => Some(pending),
+            Ok((pending, _written)) => {
+                if self.carries_inline(agent) {
+                    self.context.inline_delivered();
+                }
+                Some(pending)
+            }
             Err(error) => {
                 answer = Err(error);
                 None
@@ -868,11 +889,16 @@ impl Turn {
     /// got the context there; otherwise it goes ahead of the text, except
     /// for a native command (`/goal ...`), which must lead the prompt.
     fn prompt_text(&self, agent: AgentTraits, recap: Option<&str>) -> String {
-        if agent.appends || self.text.trim_start().starts_with('/') {
+        if !self.carries_inline(agent) {
             return self.text.clone();
         }
         let context = crate::join_notes([recap.map(str::to_string), self.context.inline.clone()]);
         crate::with_context(&self.text, context.as_deref())
+    }
+
+    /// Whether the first prompt carries the inline context.
+    fn carries_inline(&self, agent: AgentTraits) -> bool {
+        !agent.appends && !self.text.trim_start().starts_with('/')
     }
 
     /// `initialize`, `authenticate`, then resume or create the session and
@@ -923,13 +949,14 @@ impl Turn {
             }
             params
         };
+        let servers = json!(self.mcp.iter().map(McpToken::server).collect::<Vec<_>>());
         let mut opened = None;
         if let Some(id) = store::read_session_id(&self.config.session_file(&self.key)).await {
             let resumed = client
                 .request(
                     "session/resume",
                     with_meta(
-                        json!({"sessionId": id, "cwd": cwd, "mcpServers": []}),
+                        json!({"sessionId": id, "cwd": cwd, "mcpServers": servers}),
                         meta(None),
                     ),
                     SESSION_TIMEOUT,
@@ -954,7 +981,7 @@ impl Turn {
                     .request(
                         "session/new",
                         with_meta(
-                            json!({"cwd": cwd, "mcpServers": []}),
+                            json!({"cwd": cwd, "mcpServers": servers}),
                             meta(recap.as_deref()),
                         ),
                         SESSION_TIMEOUT,
@@ -1344,8 +1371,14 @@ async fn permission_answer(
         // what the model said before the call.
         reason: None,
     };
-    let (decision, receipt) =
-        permissions::decide_receipted(bridge, thread, run_id, &request, claim).await;
+    let (decision, receipt) = if AGY_SUBAGENT_TOOLS.contains(&request.tool.as_str()) {
+        let feedback = DenialFeedback::new(AGY_SUBAGENT_DENIAL)
+            .inspect_err(|error| tracing::debug!(%error, "antigravity: subagent denial unsent"))
+            .ok(); // silent-ok: the call is still refused, only the explanation is lost
+        (PermissionDecision::Deny { feedback }, Receipt::none())
+    } else {
+        permissions::decide_receipted(bridge, thread, run_id, &request, claim).await
+    };
     let (kind, feedback) = match decision {
         PermissionDecision::AllowOnce => ("allow_once", None),
         // ACP's permission outcome is an option id with no message: the
@@ -1367,6 +1400,19 @@ async fn permission_answer(
 impl TurnRuntime for AntigravityRuntime {
     fn id(&self) -> RuntimeId {
         self.id.clone()
+    }
+
+    fn injected_context(
+        &self,
+        profile: Option<&TurnProfile>,
+        goal: Option<&str>,
+    ) -> ironclaw_orchestrator::context_report::ContextSample {
+        let mut sample = crate::injected_context(profile, goal);
+        sample.add_text(
+            ironclaw_product_contracts::orchestration::ContextCategory::Instructions,
+            ANTIGRAVITY_TOOLS_PROMPT.trim(),
+        );
+        sample
     }
 
     fn capabilities(&self) -> RuntimeCapabilities {
@@ -1404,17 +1450,12 @@ impl TurnRuntime for AntigravityRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
-        let goal = input.goal.as_deref();
-        let context = TurnContext {
-            system: crate::prompt_context(
-                input.profile.as_ref().and_then(crate::session_preamble),
-                goal,
-            ),
-            inline: crate::prompt_context(
-                self.primed.take(&thread.thread_id, input.profile.as_ref()),
-                goal,
-            ),
-        };
+        let context = TurnContext::new(
+            &self.primed,
+            &thread.thread_id,
+            input.profile.as_ref(),
+            input.goal.as_deref(),
+        );
         let run_id = self
             .spawn_turn(claim, &thread, &input.text, input.effort, context)
             .await?;
@@ -1462,8 +1503,9 @@ impl TurnRuntime for AntigravityRuntime {
         let Some(claim) = self.active.claim(&thread.thread_id) else {
             return Ok(SteerOutcome::Rejected);
         };
-        self.spawn_turn(claim, thread, text, None, TurnContext::default())
-            .await?;
+        // The restarted turn is a new agent process: it needs the notes too.
+        let context = TurnContext::new(&self.primed, &thread.thread_id, None, None);
+        self.spawn_turn(claim, thread, text, None, context).await?;
         Ok(SteerOutcome::Restarted)
     }
 
@@ -1686,6 +1728,48 @@ mod tests {
             waiter.await.unwrap(),
             json!({"outcome": {"outcome": "selected", "optionId": "yes"}})
         );
+    }
+
+    /// `agy`'s own subagent tools are refused before any gate opens, with
+    /// feedback that points at `t3_delegate`.
+    #[tokio::test]
+    async fn agy_subagent_tools_are_refused_without_a_gate() {
+        let bridge = CliBridge::new(crate::bridge::DEFAULT_APPROVAL_TIMEOUT);
+        let thread = ThreadId::new("t1").unwrap();
+        bridge.turn_started(&thread, "r1");
+        for tool in AGY_SUBAGENT_TOOLS {
+            let request = json!({
+                "sessionId": "s",
+                "toolCall": {"toolCallId": "call_1", "name": tool, "kind": "other", "title": "Run it"},
+                "options": [
+                    {"optionId": "allow", "kind": "allow_once", "name": "Allow"},
+                    {"optionId": "deny", "kind": "reject_once", "name": "Deny"},
+                ],
+            });
+            let (answer, feedback, _) = permission_answer(
+                Some(&bridge),
+                &thread,
+                "r1",
+                "antigravity",
+                "s",
+                &request,
+                bridge.claim_call(&thread, "r1"),
+            )
+            .await;
+            assert_eq!(
+                answer,
+                json!({"outcome": {"outcome": "selected", "optionId": "deny"}}),
+                "{tool}"
+            );
+            assert!(
+                feedback.is_some_and(|f| f.as_str().contains("mcp_ironclaw_t3_delegate")),
+                "{tool}"
+            );
+            assert!(
+                bridge.snapshot(&thread).is_none_or(|s| s.gates.is_empty()),
+                "no gate for {tool}"
+            );
+        }
     }
 
     /// Run one permission request through the same path `handle` takes and
