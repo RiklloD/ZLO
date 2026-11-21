@@ -613,6 +613,26 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
+    /// The setters land the same state however often they run, so a
+    /// change re-applied on a fresher copy (`edit_model_picker`) never flips
+    /// it back the way a toggle would.
+    #[test]
+    fn picker_setters_are_idempotent() {
+        let mut p = super::PickerPrefs::default();
+        p.set_provider_hidden("muse-code", true);
+        p.set_provider_hidden("muse-code", true);
+        assert_eq!(p.hidden_providers, vec!["muse-code".to_string()]);
+        p.set_model_hidden("glm", "glm-5", true);
+        p.set_model_hidden("glm", "glm-5", true);
+        assert!(p.model_hidden("glm", "glm-5") && p.hidden_models.len() == 1);
+        p.set_model_hidden("glm", "glm-5", false);
+        p.set_model_hidden("glm", "glm-5", false);
+        assert!(p.hidden_models.is_empty());
+        p.set_favorite("codex", "gpt-6.2-sol", true);
+        p.set_provider_hidden("muse-code", false);
+        assert!(p.favorite("codex", "gpt-6.2-sol") && p.hidden_providers.is_empty());
+    }
+
     use super::*;
 
     #[test]
@@ -832,6 +852,37 @@ impl PickerPrefs {
     pub fn toggle_favorite(&mut self, provider: &str, model: &str) {
         toggle(&mut self.favorites, PickerModel::new(provider, model));
     }
+
+    /// Remove a provider from ZLO (`true`) or bring it back. A removed
+    /// provider is out of the model picker entirely.
+    pub fn set_provider_hidden(&mut self, provider: &str, hidden: bool) {
+        set(&mut self.hidden_providers, provider.to_string(), hidden);
+    }
+
+    pub fn set_model_hidden(&mut self, provider: &str, model: &str, hidden: bool) {
+        set(
+            &mut self.hidden_models,
+            PickerModel::new(provider, model),
+            hidden,
+        );
+    }
+
+    pub fn set_favorite(&mut self, provider: &str, model: &str, on: bool) {
+        set(&mut self.favorites, PickerModel::new(provider, model), on);
+    }
+}
+
+/// Put `item` in `list` (once) or take it out: unlike [`toggle`], applying
+/// it twice, or to a fresher copy, gives the same result.
+fn set<T: PartialEq>(list: &mut Vec<T>, item: T, on: bool) {
+    let at = list.iter().position(|x| *x == item);
+    match (at, on) {
+        (None, true) => list.push(item),
+        (Some(ix), false) => {
+            list.remove(ix);
+        }
+        _ => {}
+    }
 }
 
 fn toggle<T: PartialEq>(list: &mut Vec<T>, item: T) {
@@ -898,6 +949,26 @@ impl Client {
     }
 
     /// Replace the picker preferences; read through any of the user's threads.
+    /// Re-read the picker preferences, apply `edit`, and save them. The
+    /// chat's picker and Settings each hold a copy; saving a copy read
+    /// before the other view changed it would undo that change (a removed
+    /// provider coming back), so every edit starts from the gateway's.
+    /// Edits from this app run one at a time: two read before either saved
+    /// would each write back a document missing the other's change. (The
+    /// gateway takes the whole document, with no version to check.)
+    pub async fn edit_model_picker(
+        &self,
+        thread_id: &str,
+        edit: impl FnOnce(&mut PickerPrefs),
+    ) -> Result<PickerPrefs, ClientError> {
+        static EDITS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _one_at_a_time = EDITS.lock().await;
+        let mut prefs = self.providers().await?.picker;
+        edit(&mut prefs);
+        self.set_model_picker(thread_id, &prefs).await?;
+        Ok(prefs)
+    }
+
     pub async fn set_model_picker(
         &self,
         thread_id: &str,

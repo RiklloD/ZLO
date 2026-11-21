@@ -404,6 +404,9 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
     if pv.active {
         card = card.child(render_quick_switch(s, k, pv));
     }
+    if let Some(route) = catalog_row(ps, pv) {
+        card = card.child(render_picker_models(s, k, route));
+    }
     if editing {
         let provider = pv.clone();
         card = card.child(
@@ -437,6 +440,137 @@ fn render_provider(s: &State, k: &Kit, ix: usize, pv: &LlmProviderView) -> El {
         );
     }
     card
+}
+
+/// A connected provider's row in the model picker's catalog: the active
+/// provider runs as IronClaw's own loop (the `ironclaw` row), the others
+/// under their own id.
+fn catalog_row<'a>(ps: &'a ProvidersState, pv: &LlmProviderView) -> Option<&'a RouteProvider> {
+    let id = if pv.active {
+        crate::chat::model_picker::NATIVE
+    } else {
+        pv.id.as_str()
+    };
+    ps.runtimes
+        .as_ref()?
+        .iter()
+        .find(|r| r.provider == id && !r.models.is_empty())
+}
+
+/// Which of a provider's models the chat's model picker offers: a folded
+/// line ("Models in the picker · 7 of 12"), open, one switch per model and
+/// a show-all / hide-all pair. Needs the picker preferences.
+fn render_picker_models(s: &State, k: &Kit, route: &RouteProvider) -> El {
+    let p = &s.palette;
+    let ps = &s.pages.providers;
+    let Some(prefs) = ps.picker.as_ref() else {
+        return el();
+    };
+    let id = route.provider.clone();
+    let shown = route
+        .models
+        .iter()
+        .filter(|m| !prefs.model_hidden(&id, m))
+        .count();
+    let open = ps.picker_open.contains(&id);
+    let toggle = id.clone();
+    let head = row()
+        .key(format!("picker-models-{id}"))
+        .w_full()
+        .gap(8.)
+        .center_y()
+        .role("button")
+        .label("Models in the picker")
+        .expanded(open)
+        .cursor(rune::Cursor::Pointer)
+        .on_press(move |s: &mut State| super::toggle_picker_list(s, toggle.clone()))
+        .child(text("Models in the picker").font(xs_medium()).color(p.text))
+        .child(
+            text(format!("{shown} of {}", route.models.len()))
+                .font(xs())
+                .color(p.text_muted)
+                .grow(1.),
+        )
+        .child(
+            rune::icon(
+                if open {
+                    &icons::CHEVRON_UP
+                } else {
+                    &icons::CHEVRON_DOWN
+                },
+                12.,
+            )
+            .color(p.text_muted),
+        );
+    let mut c = col().w_full().gap(6.).child(rule(p)).child(head);
+    if !open {
+        return c;
+    }
+    let (all_on, all_off) = (
+        (id.clone(), route.models.clone()),
+        (id.clone(), route.models.clone()),
+    );
+    c = c.child(
+        row()
+            .gap(4.)
+            .child(
+                button_sized("Show all", Look::Ghost, Size::XSmall)
+                    .disabled(shown == route.models.len())
+                    .on_press(move |s: &mut State| {
+                        super::set_all_shown(s, all_on.0.clone(), all_on.1.clone(), true)
+                    })
+                    .build(k)
+                    .key(format!("picker-all-{id}")),
+            )
+            .child(
+                button_sized("Hide all", Look::Ghost, Size::XSmall)
+                    .disabled(shown == 0)
+                    .on_press(move |s: &mut State| {
+                        super::set_all_shown(s, all_off.0.clone(), all_off.1.clone(), false)
+                    })
+                    .build(k)
+                    .key(format!("picker-none-{id}")),
+            ),
+    );
+    let mut list = col().w_full();
+    for model in &route.models {
+        let on = !prefs.model_hidden(&id, model);
+        let name = crate::chat::model_picker::pretty_model(model);
+        let (pv, md) = (id.clone(), model.clone());
+        list = list.child(
+            row()
+                .key(format!("picker-model-{id}-{model}"))
+                .w_full()
+                .gap(12.)
+                .py(4.)
+                .center_y()
+                .child(
+                    col()
+                        .grow(1.)
+                        .min_w(0.)
+                        .child(
+                            text(name.clone())
+                                .font(sm())
+                                .color(if on { p.text } else { p.text_muted })
+                                .truncate(),
+                        )
+                        .child(
+                            text(model.clone())
+                                .font(MONO_XS)
+                                .color(p.text_faint)
+                                .truncate(),
+                        ),
+                )
+                .child(crate::pages::common::switch(
+                    k,
+                    on,
+                    false,
+                    &format!("Show {name} in the model picker"),
+                    move |s: &mut State| super::set_model_shown(s, pv.clone(), md.clone(), !on),
+                )),
+        );
+    }
+    c.child(list)
 }
 
 /// Models the chat's switcher offers. The gateway binds the list to the
@@ -701,6 +835,8 @@ struct CliRow {
     status: El,
     command: Option<(&'static str, &'static str)>,
     remove: Option<(String, bool)>,
+    /// The agent's models in the picker, while it is ready.
+    models: Option<El>,
 }
 
 fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
@@ -738,20 +874,23 @@ fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
     if let Some((provider, hidden)) = r.remove {
         let b = if hidden {
             button_sized("Add back", Look::Outline, Size::XSmall)
-                .on_press(move |s: &mut State| super::toggle_cli_hidden(s, provider.clone()))
+                .on_press(move |s: &mut State| super::set_cli_removed(s, provider.clone(), false))
                 .build(k)
         } else {
             icon_button_sized(
                 &icons::CLOSE,
-                "Remove from ZLO (the CLI stays installed)",
+                "Remove from ZLO and its model picker (the CLI stays installed)",
                 Size::XSmall,
             )
-            .on_press(move |s: &mut State| super::toggle_cli_hidden(s, provider.clone()))
+            .on_press(move |s: &mut State| super::set_cli_removed(s, provider.clone(), true))
             .build(k)
         };
         line = line.child(b.key(format!("cli-remove-{}", r.id)));
     }
-    let c = card(p).key(format!("cli-{}", r.id)).child(line);
+    let mut c = card(p).key(format!("cli-{}", r.id)).child(line);
+    if let Some(models) = r.models {
+        c = c.child(models);
+    }
     if hidden { c.opacity(0.6) } else { c }
 }
 
@@ -790,6 +929,7 @@ fn render_cli(s: &State, k: &Kit) -> El {
                     status,
                     command: known.install.map(|c| ("Install", c)),
                     remove: None,
+                    models: None,
                 },
             ));
             continue;
@@ -825,6 +965,8 @@ fn render_cli(s: &State, k: &Kit) -> El {
                     status,
                     command,
                     remove: ps.picker.is_some().then(|| (r.provider.clone(), hidden)),
+                    models: (!hidden && r.authenticated && !r.models.is_empty())
+                        .then(|| render_picker_models(s, k, r)),
                 },
             ));
         }

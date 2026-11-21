@@ -174,6 +174,11 @@ pub fn providers(s: &mut State) {
         Some((true, "Reached the provider and listed 12 models.".into())),
     );
     p.titles_open = true;
+    // The active provider's models, one hidden from the picker.
+    p.picker_open.insert("ironclaw".into());
+    if let Some(picker) = p.picker.as_mut() {
+        picker.set_model_hidden("ironclaw", "claude-haiku-5-5", true);
+    }
 }
 
 /// "Add a provider" with a tile open on its API-key field.
@@ -185,12 +190,13 @@ pub fn catalog(s: &mut State) {
     p.confirm_delete = Some("zai".into());
 }
 
-/// The CLI agents tab, one agent removed.
+/// The CLI agents tab, one agent removed, Claude Code's models open.
 pub fn cli(s: &mut State) {
     base(s);
     let p = &mut s.pages.providers;
     p.tab = Tab::Cli;
     if let Some(picker) = p.picker.as_mut() {
-        picker.toggle_provider("codex");
+        picker.set_provider_hidden("codex", true);
     }
+    p.picker_open.insert("claude-cli".into());
 }
