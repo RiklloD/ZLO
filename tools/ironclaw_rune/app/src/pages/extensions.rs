@@ -12,6 +12,8 @@
 
 pub(crate) mod drill;
 pub mod fixtures;
+#[cfg(test)]
+mod motion_tests;
 pub mod plugin;
 mod plugin_view;
 mod view;

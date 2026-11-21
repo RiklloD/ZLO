@@ -174,3 +174,23 @@ fn the_providers_page_draws_nothing_at_rest() {
         assert_at_rest(&mut rt, "Providers");
     }
 }
+
+/// Frames a host draws over `secs`: every frame while the runtime asks for
+/// continuous frames, else one at each wake deadline.
+pub(crate) fn frames_over(rt: &mut Runtime<State>, secs: f64) -> usize {
+    let (mut t, mut frames, mut continuous) = (0., 0, rt.frame(0.));
+    while t < secs {
+        let dt = if continuous {
+            1. / 120.
+        } else {
+            match rt.wake_deadline() {
+                Some(due) => (due - t).max(1. / 120.),
+                None => break,
+            }
+        };
+        t += dt;
+        continuous = rt.frame(dt);
+        frames += 1;
+    }
+    frames
+}
