@@ -138,6 +138,13 @@ impl Intro {
         !self.done && self.reveal_at.is_none() && self.t >= self.settle()
     }
 
+    /// The stage still hides the whole window (before the reveal): the
+    /// shell mounts nothing under it and takes no input, so nothing
+    /// concealed can be seen through it or pressed.
+    pub fn covers(&self) -> bool {
+        self.playing() && !self.revealing()
+    }
+
     /// The reveal has started.
     pub fn revealing(&self) -> bool {
         !self.done && self.reveal_at.is_some_and(|at| self.t >= at)

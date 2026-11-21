@@ -42,7 +42,9 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         s.intro.reduced.set(cx.is_reduced_motion());
     }
     let body = match &s.conn {
-        // The intro draws the launch screen itself, over the shell.
+        // The intro draws the launch screen itself, over the shell; what
+        // it opens onto mounts only once the reveal starts.
+        _ if s.intro.covers() => el(),
         Conn::Connecting if intro => el(),
         Conn::Connecting => loading(s, &p),
         Conn::Failed { message, retry_in } => failed(s, &p, &k, message, *retry_in),
@@ -89,7 +91,9 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     confirm_delete(s, &k, &mut layer);
     // First-run setup over the home screen, whatever the connection does
     // (it switches computers itself).
-    crate::onboarding::view(s, &k, &mut layer);
+    if !s.intro.covers() {
+        crate::onboarding::view(s, &k, &mut layer);
+    }
     // The launch intro above everything, until it has irised open.
     if intro {
         layer.push(super::intro::stage(s, &p, shell));

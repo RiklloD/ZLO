@@ -93,6 +93,10 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         workspace::quit(s, tx);
         return true;
     }
+    // Nothing under the launch intro's stage takes keys until it opens.
+    if s.intro.covers() {
+        return true;
+    }
     workspace::on_key(s, ev, tx)
 }
 
