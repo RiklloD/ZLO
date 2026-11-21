@@ -5,7 +5,7 @@
 use rune::{Color, El, Icon, TextStyle, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 
-use crate::design::Palette;
+use crate::design::{Palette, motion};
 use crate::state::State;
 
 /// GPUI's `text_xs` / `text_sm` in points.
@@ -153,7 +153,10 @@ pub fn draft_wash(p: &Palette) -> Color {
     p.accent.alpha(if p.light { 0.07 } else { 0.09 })
 }
 
-/// A filter chip: rounded, accent-washed when on.
+/// A filter chip: rounded, accent-washed when on. Its hover wash fades,
+/// on/off morphs on the slide spring and it shrinks while pressed, as
+/// `design::kit::chip` does (which it matches in motion; it keeps the
+/// sidebar's 24 pt height and its own type scale, so it does not delegate).
 pub fn chip(
     p: &Palette,
     key: String,
@@ -174,16 +177,24 @@ pub fn chip(
             Color::TRANSPARENT
         })
         .hover(p.hover)
+        .press(p.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .hover_group()
+        .motion(motion::SLIDE)
         .cursor(rune::Cursor::Pointer)
         .role("button")
         .label(label.to_string())
-        .child(t(label, XS, if on { p.text } else { p.text_muted }))
+        .child(t(label, XS, if on { p.text } else { p.text_muted }).group_color(p.text))
         .on_press(f)
+        .press_scale(motion::PRESS)
 }
 
-/// `⌘N` in a key-cap.
+/// `⌘N` in a key-cap, keyed `shortcut-badge` (one per row): it pops in
+/// as ⌘ goes down and out as it comes up (`motion::glyph_pop`).
 pub fn shortcut_badge(p: &Palette, index: usize) -> El {
     row()
+        .key("shortcut-badge")
+        .transition(motion::glyph_pop())
         .px(5.)
         .py(1.)
         .radius(4.)
@@ -193,10 +204,15 @@ pub fn shortcut_badge(p: &Palette, index: usize) -> El {
 }
 
 /// The floating card of menus and popovers: overlay fill, a hairline and a
-/// soft shadow.
+/// soft shadow, on continuous corners. It pops in, falling 6 pt into place,
+/// and pops out faster (`motion::pop(-6.)`) where its commit animates;
+/// inside `rune_kit::popover::anchored` the anchor's instant open and fade
+/// win. A caller's own `.transition(..)` after this call replaces it.
 pub fn floating(p: &Palette, content: El, radius: f32) -> El {
     content
         .radius(radius)
+        .continuous_corners()
+        .transition(motion::pop(-6.))
         .fill(p.surface_overlay)
         .border(1., p.border_strong)
         .shadow(

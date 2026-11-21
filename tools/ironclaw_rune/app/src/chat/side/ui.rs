@@ -4,9 +4,12 @@
 //! replace these at integration.
 
 use crate::design::kit::Spinner;
+use crate::design::motion;
 use rune::tok::TextStyle;
 use rune::{Color, El, GrowthSpec, Icon, ScrollSpec, col, el, icon, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
+use rune_kit::{
+    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, RollingText,
+};
 
 use crate::state::State;
 
@@ -55,9 +58,11 @@ pub fn para(content: impl Into<String>, style: TextStyle, color: Color) -> El {
         .w_full()
 }
 
-/// A muted line for empty lists.
+/// A muted line for empty lists; fades in and out as the list empties or
+/// fills (`motion::fade`).
 pub fn empty(s: &State, content: impl Into<String>) -> El {
     el().w_full()
+        .transition(motion::fade())
         .padding(16.)
         .child(para(content, sm(), s.palette.text_muted))
 }
@@ -92,13 +97,18 @@ pub fn empty_card(
         .padding(14.)
         .gap(12.)
         .radius(crate::design::PANEL_RADIUS)
+        .continuous_corners()
         .fill(p.surface_card.alpha(if p.light { 0.85 } else { 0.65 }))
         .border(1., p.border)
         .child(header);
     if let Some(action) = action {
         card = card.child(action);
     }
-    el().w_full().px(12.).pt(12.).child(card)
+    el().w_full()
+        .px(12.)
+        .pt(12.)
+        .transition(motion::fade())
+        .child(card)
 }
 
 /// Compact uppercase section label used inside side-pane launchpads.
@@ -110,7 +120,10 @@ pub fn section_label(s: &State, content: impl Into<String>) -> El {
     ))
 }
 
-/// Compact count pill for tab buttons and headers.
+/// Compact count pill for tab buttons and headers. Its tint morphs as it
+/// turns active, and a changed count rolls to the new figure
+/// (`rune_kit::RollingText`, keyed `count`): pass counts that change on
+/// events, never on a clock.
 pub fn count_pill(s: &State, count: usize, active: bool, accent: bool) -> El {
     let p = &s.palette;
     let (bg, fg) = if accent {
@@ -145,21 +158,47 @@ pub fn count_pill(s: &State, count: usize, active: bool, accent: bool) -> El {
         .radius(8.)
         .center()
         .fill(bg)
-        .child(text(label).font(micro_semi()).color(fg))
+        .motion(motion::SLIDE)
+        .child(rolling(s, "count", label, count as f64, micro_semi(), fg))
 }
 
+/// A `RollingText` label in an explicit font and colour, so it needs no
+/// per-call `Kit` (one is kept per thread for the builder's defaults). It
+/// rolls on a calm spring with no overshoot; `value` sets the direction
+/// (rising rolls up, falling down).
+fn rolling(s: &State, key: &str, label: String, value: f64, font: TextStyle, color: Color) -> El {
+    thread_local! {
+        static KIT: std::cell::OnceCell<Kit> = const { std::cell::OnceCell::new() };
+    }
+    KIT.with(|kit| {
+        let k = kit.get_or_init(|| crate::design::kit(&s.palette));
+        RollingText::new(key, label)
+            .font(font)
+            .color(color)
+            .value(value)
+            .spring(motion::ROLL)
+            .build(k)
+    })
+}
+
+/// A request's error in danger red: wipes open from its top and fades
+/// (`motion::reveal`) when it appears after a press, and out when cleared.
 pub fn error_line(s: &State, content: impl Into<String>) -> El {
     el().w_full()
         .px(12.)
         .py(8.)
+        .transition(motion::reveal())
         .child(para(content, xs(), s.palette.danger))
 }
 
+/// The tab's loading spinner; it fades out as the content replaces it
+/// (`motion::fade`).
 pub fn loading(k: &Kit) -> El {
     row()
         .w_full()
         .justify_center()
         .py(24.)
+        .transition(motion::fade())
         .child(Spinner::new().size(16.).build(k))
 }
 
@@ -187,7 +226,6 @@ pub fn scroll(key: impl Into<String>, content: El) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .key(key)
         .child(col().w_full().pb(12.).child(content))
 }
 
@@ -211,7 +249,6 @@ pub fn virtual_scroll(
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .key(scroll_key)
         .child(
             col()
                 .key("rows")
@@ -276,9 +313,12 @@ pub fn busy(b: Button, loading: bool) -> Button {
     }
 }
 
-/// gpui-kit's `.selected(true)` on a ghost button: the active fill behind it.
+/// gpui-kit's `.selected(true)` on a ghost button: the active fill behind
+/// it, which morphs in and out on the slide spring.
 pub fn selected(s: &State, button: El, on: bool) -> El {
     el().radius(crate::design::CONTROL_RADIUS)
+        .continuous_corners()
+        .motion(motion::SLIDE)
         .fill(if on {
             s.palette.active
         } else {
@@ -287,7 +327,9 @@ pub fn selected(s: &State, button: El, on: bool) -> El {
         .child(button)
 }
 
-/// `kit::row`: a pressable row with the hover wash.
+/// `kit::row`: a pressable row with the hover wash, which fades in and out;
+/// a press washes and sinks it a little (`motion::PRESS_CARD`). Give its
+/// text `.group_color(..)` to brighten with the hover.
 pub fn hover_row(s: &State, key: impl Into<String>) -> El {
     row()
         .key(key)
@@ -298,6 +340,11 @@ pub fn hover_row(s: &State, key: impl Into<String>) -> El {
         .items_center()
         .radius(crate::design::ROW_RADIUS)
         .hover(s.palette.hover)
+        .press(s.palette.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .hover_group()
+        .motion(motion::SLIDE)
+        .press_scale(motion::PRESS_CARD)
         .cursor(rune::Cursor::Pointer)
 }
 

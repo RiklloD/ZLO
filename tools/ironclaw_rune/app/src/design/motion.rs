@@ -27,7 +27,7 @@
 //! for all of it: `look::apply_motion` sets `Cx::reduced_motion`, under which
 //! travel snaps, loops hold their resting pose and colours take a short fade.
 
-use rune::{Color, Easing, Spring, SpringPair, Transition};
+use rune::{Color, Curve, Easing, Spring, SpringPair, Transition, Tx};
 
 // ---- Curves -------------------------------------------------------------
 
@@ -62,15 +62,88 @@ pub fn composer_match(generation: u64) -> String {
     format!("{COMPOSER_MATCH}:{generation}")
 }
 
+// ---- Press, hover and selection (the style's springs as constants) -------
+
+/// How far a control shrinks while a press on it is held (`El::press_scale`),
+/// as iOS and macOS buttons do. For buttons, chips, toggles, icon buttons:
+/// `.on_press(..).press_scale(motion::PRESS)`. Layout and hit testing keep
+/// the resting size; Reduce Motion turns it off.
+pub const PRESS: f32 = 0.97;
+/// [`PRESS`] for large surfaces (cards, full-width rows), which read as
+/// pressed at a smaller travel: `.press_scale(motion::PRESS_CARD)`.
+pub const PRESS_CARD: f32 = 0.985;
+/// The hover wash's fade (`Style::hover`), for helpers that only have a
+/// palette: `.hover_motion(motion::HOVER, motion::HOVER)`.
+pub const HOVER: Curve = Curve::tween(0.110, TAILWIND);
+/// Sliding selections and toggled fills (`Style::slide`), for helpers that
+/// only have a palette: `.motion(motion::SLIDE)`.
+pub const SLIDE: Spring = Spring::new(0.22, 0.0);
+
+/// A `rune_kit::RollingText` figure rolling to its new value without the
+/// kit's overshoot: `RollingText::new(..).spring(motion::ROLL)`. Only for
+/// figures that change on events (a count, a total), never on a clock.
+pub const ROLL: Spring = Spring::new(0.3, 0.0);
+
 // ---- Presence transitions (GPUI `fade_in` / `pop_in` / `collapse`) ------
 
-/// Popover and menu entrance: fades in while travelling `from` points
-/// toward its resting place (negative starts above it), on the style's
-/// pop spring (a hair under critical, settles without a wobble).
+/// The scale a popover grows from as it pops in ([`pop`]).
+const POP_SCALE: f32 = 0.97;
+
+/// Popover and menu entrance: fades in and grows from a hair smaller while
+/// travelling `from` points toward its resting place (negative starts above
+/// it, for a menu dropping from its trigger; positive below, for one rising
+/// over the composer; `0.` grows in place), on the style's pop spring (a
+/// hair under critical, settles without a wobble). The exit runs on a
+/// spring 60 % as long. Put it on the floating surface itself:
+/// `card.transition(motion::pop(-6.))`. It plays only on commits an input
+/// caused (Rune applies others at once).
 pub fn pop(from: f32) -> Transition {
     Transition::opacity()
+        .combined(Transition::scale(POP_SCALE))
         .combined(Transition::offset(0., from))
         .springs(SpringPair::with_exit_ratio(super::styles::POP, 0.6))
+}
+
+/// A banner, error or notice line arriving in a column: wipes open from its
+/// top edge and fades, leaving faster. `line.transition(motion::reveal())`;
+/// key the line at the call site when its siblings come and go.
+pub fn reveal() -> Transition {
+    Transition::reveal(rune::Edge::Top)
+        .combined(Transition::opacity())
+        .springs(SpringPair::with_exit_ratio(Spring::new(0.24, 0.0), 0.7))
+}
+
+/// A quiet in-place fade for content swapping with a placeholder (a
+/// spinner giving way to its list, an empty line): in on the style's
+/// slide, out faster. `el.transition(motion::fade())`.
+pub fn fade() -> Transition {
+    Transition::opacity().springs(SpringPair::with_exit_ratio(SLIDE, 0.6))
+}
+
+/// A small glyph popping in and out (a `⌘1` keycap while ⌘ is held, a
+/// check replacing a copy icon, a star): fades and grows from 80 %, out
+/// faster. `badge.transition(motion::glyph_pop())`.
+pub fn glyph_pop() -> Transition {
+    Transition::scale(0.8)
+        .allow_small_scale()
+        .springs(SpringPair::new(
+            Spring::new(0.14, 0.0),
+            Spring::new(0.09, 0.0),
+        ))
+}
+
+/// The spring a theme, scheme or accent change morphs every colour on.
+pub const COLOR_MORPH: Spring = rune::tok::motion::CALM;
+
+/// Make the commit in `tx` morph every colour in the window (a light ↔ dark
+/// switch, a theme or accent pick) instead of flashing to the new palette:
+/// call it in the handler that changes the palette,
+/// `motion::color_morph(tx); s.palette = ..`. It also asks for an animated
+/// commit, so it works from native menu items and `jobs` callbacks too.
+/// Reduce Motion shortens it to a brief fade (Rune's rule for colours).
+pub fn color_morph(tx: &mut Tx) {
+    tx.animated();
+    tx.color_motion(COLOR_MORPH);
 }
 
 // ---- The working glyph and vocabulary -----------------------------------
