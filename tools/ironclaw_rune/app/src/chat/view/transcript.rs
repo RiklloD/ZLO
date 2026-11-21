@@ -210,17 +210,29 @@ impl Rows {
                 live,
             } => {
                 let open = chat.activity_open(key, *live);
-                flow::render_activity(
-                    s,
-                    id,
-                    key,
-                    group,
-                    *live,
-                    open,
-                    &chat.toggles,
-                    &self.outputs,
-                    k,
-                )
+                let build = || {
+                    flow::render_activity(
+                        s,
+                        id,
+                        key,
+                        group,
+                        *live,
+                        open,
+                        &chat.toggles,
+                        &self.outputs,
+                        k,
+                    )
+                };
+                if *live {
+                    // The live group breathes and grows with the run.
+                    build()
+                } else {
+                    // A settled group only changes with its steps, what is
+                    // open and the look: keep its built tree (a turn's
+                    // thousand tool calls otherwise rebuild on every view).
+                    let version = activity_version(group, open, &chat.toggles, &self.outputs);
+                    memo(format!("{key}-group"), (version, self.look), build)
+                }
             }
             Item::Pending { stopping } => {
                 super::super::pending::render_pending(s, *stopping, chat.run_started, self.seed, k)
@@ -397,6 +409,54 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
 }
 
 /// A fingerprint of what finished rows look like beyond their own content.
+/// What a settled activity group's tree is built from, hashed: every step
+/// (as its `Debug` text, streamed into the hasher), whether the group is
+/// open, the steps opened inside it and each tool's captured output.
+fn activity_version(
+    group: &[Row],
+    open: bool,
+    toggles: &HashMap<String, bool>,
+    outputs: &HashMap<String, CliBody>,
+) -> u64 {
+    use std::fmt::Write as _;
+    use std::hash::{Hash, Hasher};
+    struct Feed<'a>(&'a mut std::collections::hash_map::DefaultHasher);
+    impl std::fmt::Write for Feed<'_> {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.write(s.as_bytes());
+            Ok(())
+        }
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    open.hash(&mut h);
+    group.len().hash(&mut h);
+    if !open {
+        // A shut group shows only its summary, which its steps make.
+        for row in group {
+            let _ = write!(Feed(&mut h), "{row:?}");
+        }
+        return h.finish();
+    }
+    for row in group {
+        let _ = write!(Feed(&mut h), "{row:?}");
+        if let Some(out) = outputs.get(row.key()) {
+            (&out.run, &out.body, out.truncated).hash(&mut h);
+        }
+    }
+    // Step toggles (`leaf:{key}`) in any order: an order-free sum of each
+    // entry's own hash.
+    let opened = toggles
+        .iter()
+        .filter(|(k, _)| k.starts_with("leaf:"))
+        .fold(0u64, |acc, entry| {
+            let mut e = std::collections::hash_map::DefaultHasher::new();
+            entry.hash(&mut e);
+            acc.wrapping_add(e.finish())
+        });
+    opened.hash(&mut h);
+    h.finish()
+}
+
 fn look(s: &State, column: f32) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -404,4 +464,51 @@ fn look(s: &State, column: f32) -> u64 {
     s.prefs.ui_font_size.to_bits().hash(&mut h);
     column.to_bits().hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use zlo_client::transcript::{CliBody, Row, ToolStatus};
+
+    use super::activity_version;
+
+    fn step(i: usize, status: ToolStatus) -> Row {
+        Row::Tool {
+            key: format!("tool:{i}"),
+            title: "Read".into(),
+            detail: Some(format!("file{i}.rs")),
+            status,
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn a_settled_groups_version_moves_only_with_what_its_tree_shows() {
+        let rows: Vec<Row> = (0..3).map(|i| step(i, ToolStatus::Completed)).collect();
+        let (none, outs) = (HashMap::new(), HashMap::new());
+        let base = activity_version(&rows, true, &none, &outs);
+        assert_eq!(base, activity_version(&rows, true, &none, &outs), "stable");
+        assert_ne!(base, activity_version(&rows, false, &none, &outs), "shut");
+
+        let mut failed = rows.clone();
+        failed[1] = step(1, ToolStatus::Failed);
+        assert_ne!(base, activity_version(&failed, true, &none, &outs), "a step changed");
+
+        let opened = HashMap::from([("leaf:tool:1".to_string(), true)]);
+        assert_ne!(base, activity_version(&rows, true, &opened, &outs), "a step opened");
+        let other = HashMap::from([("tool:9".to_string(), true)]);
+        assert_eq!(base, activity_version(&rows, true, &other, &outs), "a group toggle");
+
+        let out = HashMap::from([(
+            "tool:2".to_string(),
+            CliBody { run: None, body: "ok".into(), truncated: false },
+        )]);
+        assert_ne!(base, activity_version(&rows, true, &none, &out), "output arrived");
+        // A shut group shows only its summary, so its steps' toggles and
+        // outputs don't build it again.
+        let shut = activity_version(&rows, false, &none, &outs);
+        assert_eq!(shut, activity_version(&rows, false, &opened, &out));
+    }
 }
