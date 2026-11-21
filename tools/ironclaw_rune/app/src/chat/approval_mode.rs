@@ -115,6 +115,8 @@ pub(crate) fn load(s: &mut State, id: &str) {
                     && c.approval.seq == seq
                 {
                     c.approval.profile = Some(info);
+                    // A thread with no folder of its own works in the profile's.
+                    super::side::adopt_profile_folder(s, &thread);
                 }
             }
         },

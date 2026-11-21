@@ -470,6 +470,7 @@ pub fn init(s: &mut State) {
     if let Some(folder) = s.prefs.project_folders.get(&thread).cloned() {
         set_folder(s, folder, false);
     }
+    adopt_profile_folder(s, &thread);
     worktree_load(s);
     session::restore(s);
     load_shown(s);
@@ -660,6 +661,33 @@ pub(crate) fn set_folder(s: &mut State, folder: PathBuf, remember: bool) {
             }
         },
     );
+}
+
+/// A thread with no project folder of its own works in its profile's folder
+/// (the one picked when the profile was made). Called once the profile has
+/// loaded; the folder is not remembered, so a later profile edit follows.
+pub fn adopt_profile_folder(s: &mut State, thread: &str) {
+    if thread_id(s).as_deref() != Some(thread) || side(s).is_none_or(|x| x.folder.is_some()) {
+        return;
+    }
+    let Some(folder) = bridge::profile(s).and_then(|(_, f, _)| profile_path(&f)) else {
+        return;
+    };
+    if folder.is_dir() {
+        set_folder(s, folder, false);
+    }
+}
+
+/// A profile's effective folder as a path (`~/` expanded).
+fn profile_path(folder: &str) -> Option<PathBuf> {
+    let folder = folder.trim();
+    if folder.is_empty() {
+        return None;
+    }
+    match folder.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME").map(|h| PathBuf::from(h).join(rest)),
+        None => Some(PathBuf::from(folder)),
+    }
 }
 
 /// A mention root picked for a thread with no project folder of its own
@@ -1054,6 +1082,41 @@ mod native_tests;
 #[cfg(test)]
 mod tests {
     use super::{Link, link_target};
+
+    /// A thread with no folder of its own works in its profile's folder
+    /// (the details card then names it, not "No project"); a folder the
+    /// thread already has wins, and another thread's profile is ignored.
+    #[test]
+    fn a_thread_without_a_folder_works_in_its_profile_folder() {
+        let dir = std::env::temp_dir();
+        let profile = zlo_client::profiles::ProfileInfo {
+            profile_id: "techclub".into(),
+            settings: Default::default(),
+            is_default: false,
+            effective_folder: dir.display().to_string(),
+            git_branch: None,
+            thread_count: 1,
+            last_used_at: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let mut s = crate::chat::fixtures::test_state();
+        s.chat = Some(crate::chat::ChatState::new("t1".into()));
+        let c = s.chat.as_mut().expect("chat");
+        c.approval.profile = Some(profile);
+
+        super::adopt_profile_folder(&mut s, "t2");
+        assert!(super::folder(&s).is_none(), "another thread's profile");
+
+        super::adopt_profile_folder(&mut s, "t1");
+        assert_eq!(super::folder(&s), Some(dir.as_path()));
+
+        let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let c = s.chat.as_mut().expect("chat");
+        c.side.folder = Some(own.to_path_buf());
+        super::adopt_profile_folder(&mut s, "t1");
+        assert_eq!(super::folder(&s), Some(own), "the thread's own folder wins");
+    }
 
     #[test]
     fn chat_links_find_their_tab() {

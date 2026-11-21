@@ -89,7 +89,10 @@ fn a_toggle_from_an_update_slides_the_pane() {
             .map_or(0., |e| e.rect[0] + e.rect[2])
     };
     let open = width(&rt);
-    rt.update(crate::workspace::toggle_sidebar);
+    // The real window commits a queued update at once unless the handler
+    // asks for motion (`Tx::animated`); a bare runtime animates every
+    // commit, so this runs the menu's own action.
+    rt.update(crate::workspace::keys::action("Toggle Sidebar"));
     assert!(
         rt.state.workspace.sidebar_slid.get(),
         "the follow-ups wait for the view"
