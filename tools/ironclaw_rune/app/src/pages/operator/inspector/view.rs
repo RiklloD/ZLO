@@ -15,7 +15,6 @@ use zlo_client::operator::inspector::{
 use super::super::logs::log_row;
 use super::super::section_title;
 use super::{InspectorPanel, ToolDetail, short_id};
-use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{CONTROL_RADIUS, Palette};
 use crate::icons;
 use crate::jobs;
@@ -68,7 +67,7 @@ fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
             .scroll(ScrollSpec {
                 stick_bottom: false,
             })
-            .wheel_glide("inspect-threads")
+            .key("inspect-threads")
             .children(threads),
     );
     if panel.thread.is_some() {
@@ -405,7 +404,7 @@ fn render_prompt(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
                         .scroll(ScrollSpec {
                             stick_bottom: false,
                         })
-                        .wheel_glide("inspector-prompt")
+                        .key("inspector-prompt")
                         .child(code_block(p, body)),
                 ),
             )

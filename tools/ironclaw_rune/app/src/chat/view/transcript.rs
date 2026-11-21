@@ -18,7 +18,6 @@ use zlo_client::transcript::{CliBody, PREFIX_KEY, Row};
 
 use super::super::{ChatState, Item, chat_for, chat_ref, flow, outline, question_form, rows};
 use super::{row_key, transcript_key};
-use crate::design::smooth_scroll::WheelGlide;
 use crate::state::State;
 
 /// Room each side of a transcript row's reading column.
@@ -224,7 +223,14 @@ impl Rows {
                 )
             }
             Item::Pending { stopping } => {
-                super::super::pending::render_pending(s, *stopping, chat.run_started, self.seed, k)
+                super::super::pending::render_pending(
+                    s,
+                    *stopping,
+                    chat.run_started,
+                    &chat.clock_text,
+                    self.seed,
+                    k,
+                )
             }
             Item::Tail => super::super::orchestration::tail(s, chat, k).unwrap_or_else(el),
             Item::Reserve => el().h(self.reserve_h),
@@ -370,7 +376,7 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
         .min_h(0.)
         .items_center()
         .scroll(ScrollSpec { stick_bottom: true })
-        .wheel_glide(transcript_key(&id))
+        .key(transcript_key(&id))
         .scroll_edge_fade(24.)
         .on_layout_tx(move |s: &mut State, r, tx| {
             let Some(c) = chat_for(s, &layout_id) else {
