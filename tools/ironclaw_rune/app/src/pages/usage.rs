@@ -21,6 +21,8 @@
 
 mod compactions;
 mod history;
+#[cfg(test)]
+mod motion_tests;
 
 use crate::pages::common::controls::{header_with, rule, styled};
 use crate::pages::common::ts::{body_semibold, sm, xs};
@@ -214,18 +216,25 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     let u = &s.pages.usage;
     let (metric, days) = (u.metric, u.days);
     let (metric_labels, metric_ix) = segments(&METRICS, metric);
-    let mut actions = row().gap(8.0).center_y().child(design::kit::segmented(
-        s,
-        "usage-metric",
-        &metric_labels,
-        metric_ix,
-        false,
-        |s, ix| {
-            if let Some((m, _)) = METRICS.get(ix) {
-                set_metric(s, *m);
-            }
-        },
-    ));
+    // The header keeps the height the old pill switch gave it (12 pt text,
+    // 4 pt padding, 2 pt inset), so the page below does not move.
+    let mut actions =
+        row()
+            .h(xs().line_px() + 12.0)
+            .gap(8.0)
+            .center_y()
+            .child(design::kit::segmented(
+                s,
+                "usage-metric",
+                &metric_labels,
+                metric_ix,
+                false,
+                |s, ix| {
+                    if let Some((m, _)) = METRICS.get(ix) {
+                        set_metric(s, *m);
+                    }
+                },
+            ));
     if metric != Metric::Limits {
         let (period_labels, period_ix) = segments(&PERIODS, days);
         actions = actions.child(

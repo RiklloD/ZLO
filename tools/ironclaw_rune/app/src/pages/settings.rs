@@ -6,6 +6,8 @@
 
 mod appearance;
 mod compaction;
+#[cfg(test)]
+mod motion_tests;
 pub mod session_import;
 mod snapshots;
 mod tools;
