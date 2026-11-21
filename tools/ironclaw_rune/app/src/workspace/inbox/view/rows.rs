@@ -176,6 +176,10 @@ pub(super) fn card(
         .fill(rest)
         .hover(if active { Color::TRANSPARENT } else { hover })
         .hover_group()
+        // The wash and the hover actions fade in, and the card sinks a
+        // hair while pressed (springing back as a drag leaves it).
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
         .on_press(move |s: &mut State| {
             if !thread_drag::take_press(s) {
                 crate::workspace::open_thread(s, open_id.clone());
@@ -378,6 +382,8 @@ pub(super) fn slim(
             ui::hover_wash(p)
         })
         .hover_group()
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
         .on_press(move |s: &mut State| crate::workspace::open_thread(s, open_id.clone()))
         .on_secondary_press(move |s: &mut State, at, tx| {
             crate::workspace::inbox::open_row_menu(s, &menu_id, at, tx)

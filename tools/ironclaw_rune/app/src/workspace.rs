@@ -32,6 +32,8 @@ pub mod fixtures;
 mod inbox;
 mod keys;
 mod message_search;
+#[cfg(test)]
+mod motion_tests;
 pub mod quick;
 mod shell;
 mod sidebar_pane;
@@ -213,24 +215,11 @@ pub fn toggle_status_bar(s: &mut State) {
     s.update_prefs(|p| p.status_bar_hidden = !p.status_bar_hidden);
 }
 
-/// A light ↔ dark flip's colour morph: calm and critically damped, so the
-/// window dissolves into the other scheme instead of flashing. Rune turns it
-/// into its short Reduce Motion dissolve when motion is reduced.
-pub(crate) const SCHEME_MORPH: rune::Spring = crate::design::motion::COLOR_MORPH;
-
-/// Ask this commit to morph the palette's colours on [`SCHEME_MORPH`]. It
-/// also asks for motion, because a theme flip from the native menu or the
-/// system appearance is a queued update, which Rune lands at once otherwise.
-pub(crate) fn morph_colors(tx: &mut Tx) {
-    tx.animated();
-    tx.color_motion(SCHEME_MORPH);
-}
-
 /// Flip between the light and dark theme without opening Settings (⇧⌘Y).
 /// The palette and the wallpaper's repaint are asked in one handler, so the
 /// colours glide while the picture repaints for the new side.
 pub fn toggle_scheme(s: &mut State, tx: &mut Tx) {
-    morph_colors(tx);
+    crate::design::motion::color_morph(tx);
     let dark = crate::design::scheme_is_dark(&s.prefs, s.system_dark);
     s.update_prefs(|p| p.scheme = if dark { "light" } else { "dark" }.into());
     crate::design::look::reload(s);
@@ -288,7 +277,14 @@ pub(crate) fn connected(
     session: zlo_client::wire::SessionInfo,
     list: zlo_client::inbox::InboxListResponse,
     reopen: Option<String>,
+    tx: &mut Tx,
 ) {
+    // The launch (or failure) screen giving way to the app is what the
+    // person is waiting on: this one reply crossfades (`shell::view`). A
+    // route refresh, already on the app, lands as replies do.
+    if !matches!(s.conn, Conn::Ready) {
+        tx.animated();
+    }
     s.workspace.connect_attempt = 0;
     s.session = Some(session);
     inbox::apply(s, list);
@@ -926,7 +922,7 @@ mod tests {
         assert!(!asked_motion(&tx), "a spring alone leaves it unprompted");
         tx.animated();
         assert!(asked_motion(&tx));
-        morph_colors(&mut tx);
+        crate::design::motion::color_morph(&mut tx);
         assert!(asked_color_motion(&tx));
     }
 

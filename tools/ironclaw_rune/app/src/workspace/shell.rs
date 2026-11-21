@@ -26,13 +26,13 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     // `s.palette` stay current for every reader (⇧⌘Y, pages, wallpaper).
     // The window's first frame paints with the system's side at once (the
     // state starts out guessing dark); after that a flip morphs the colours
-    // from the palette on screen (`workspace::morph_colors`).
+    // from the palette on screen (`design::motion::color_morph`).
     let dark = cx.system_dark();
     let first = !s.workspace.painted.replace(true);
     if dark != s.system_dark {
         s.rt.handle.update(move |s, tx| {
             if !first {
-                super::morph_colors(tx);
+                crate::design::motion::color_morph(tx);
             }
             apply_system_dark(s, dark);
         });
@@ -45,11 +45,14 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     note_field_focus(s, cx);
     let k = design::kit(&p);
     let mut layer: Vec<El> = Vec::new();
+    // Loading, failed and the app crossfade where their commit animates (the
+    // connect reply that brings the app or the failure asks for it).
     let body = match &s.conn {
         Conn::Connecting => loading(s, &p),
         Conn::Failed { message, retry_in } => failed(s, &p, &k, message, *retry_in),
         Conn::Ready => ready(s, &p, cx, &k, &mut layer),
-    };
+    }
+    .transition(boot_swap());
     // The shell: the surface at the style's shell alpha. Translucent, the
     // desktop shows through it, blurred by the WindowServer (`backdrop`).
     let st = design::styles::Style::of(&s.prefs);
@@ -108,6 +111,17 @@ fn note_field_focus(s: &State, cx: &Cx<State>) {
             .field_focused
             .set(cx.caret("kit-root").is_some());
     }
+}
+
+/// The launch screens' swap (loading → the app or the failure): a fade
+/// from a hair small, on the style's enter-like calm spring, out faster.
+fn boot_swap() -> Transition {
+    Transition::opacity()
+        .combined(Transition::scale(0.98))
+        .springs(rune::SpringPair::with_exit_ratio(
+            rune::Spring::new(0.3, 0.0),
+            0.6,
+        ))
 }
 
 /// The loading caption's entrance: hidden 700 ms, then in over 300 ms.

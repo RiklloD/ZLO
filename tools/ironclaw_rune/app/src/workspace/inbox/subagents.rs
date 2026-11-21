@@ -238,17 +238,13 @@ pub(super) fn line(s: &State, tree: &Tree, row_data: &InboxRow, compact: bool) -
         .flex_wrap()
         .cursor(rune::Cursor::Pointer)
         .hover_group()
-        .child(
-            icon(
-                if open {
-                    &icons::CHEVRON_DOWN
-                } else {
-                    &icons::CHEVRON_RIGHT
-                },
-                12.,
-            )
-            .color(p.text_faint),
-        )
+        .child(design::kit::chevron(
+            &format!("subagents-{root}-chevron"),
+            open,
+            design::kit::Turn::Disclose,
+            12.,
+            p.text_faint,
+        ))
         .child(icon(&icons::BOT, 12.).color(p.text_muted))
         .child(
             text(if compact {
@@ -392,6 +388,8 @@ fn subagent_row(
         })
         .hover(crate::workspace::ui::hover_wash(p))
         .hover_group()
+        .hover_motion(crate::design::motion::HOVER, crate::design::motion::HOVER)
+        .press_scale(crate::design::motion::PRESS_CARD)
         .on_press(move |s: &mut State| crate::workspace::open_thread(s, open_id.clone()))
         .on_secondary_press(move |s: &mut State, at, tx| super::open_row_menu(s, &menu_id, at, tx))
         // Resting on it warms the thread for the click (`chat::prewarm`).
