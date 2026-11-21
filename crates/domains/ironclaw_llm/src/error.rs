@@ -945,6 +945,20 @@ mod tests {
         let oversized_body = vec![b'x'; MAX_PROVIDER_ERROR_BODY_BYTES + 4_096];
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept request");
+            // Read the request before answering, as a real server does: the
+            // client rejects a response that arrives before it sent one.
+            {
+                use tokio::io::AsyncReadExt as _;
+                let mut seen = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = socket.read(&mut chunk).await.expect("read request");
+                    if n == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&chunk[..n]);
+                }
+            }
             let headers = format!(
                 "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 oversized_body.len()
