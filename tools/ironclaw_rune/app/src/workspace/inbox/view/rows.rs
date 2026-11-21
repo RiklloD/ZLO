@@ -159,7 +159,7 @@ pub(super) fn card(
         title_of(row_data)
     );
     let open_id = id.clone();
-    let menu_id = id.clone();
+    let (menu_id, warm_id) = (id.clone(), id.clone());
     let (drag_id, drag_title) = (id.clone(), title_of(row_data).to_string());
     let mut card = col()
         .key(format!("row-{id}"))
@@ -183,6 +183,10 @@ pub(super) fn card(
         })
         .on_secondary_press(move |s: &mut State, at, tx| {
             crate::workspace::inbox::open_row_menu(s, &menu_id, at, tx)
+        })
+        // Resting on it warms the thread for the click (`chat::prewarm`).
+        .on_hover_change(move |s: &mut State, inside, tx| {
+            crate::chat::prewarm::hover(s, &warm_id, inside, tx)
         })
         // Drop it on a chat to hand that chat this thread's transcript.
         .on_drag(move |s: &mut State, d, tx| thread_drag::drag(s, &drag_id, &drag_title, d, tx))
@@ -294,6 +298,7 @@ pub(super) fn slim(
         ),
     };
     let (undo_id, delete_id, open_id, menu_id) = (id.clone(), id.clone(), id.clone(), id.clone());
+    let warm_id = id.clone();
     let undo_label = if snoozed {
         "Wake now"
     } else {
@@ -361,6 +366,10 @@ pub(super) fn slim(
         .on_press(move |s: &mut State| crate::workspace::open_thread(s, open_id.clone()))
         .on_secondary_press(move |s: &mut State, at, tx| {
             crate::workspace::inbox::open_row_menu(s, &menu_id, at, tx)
+        })
+        // Resting on it warms the thread for the click (`chat::prewarm`).
+        .on_hover_change(move |s: &mut State, inside, tx| {
+            crate::chat::prewarm::hover(s, &warm_id, inside, tx)
         })
         .child(
             el().opacity(0.4)

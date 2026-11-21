@@ -119,6 +119,15 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed
 }
 
+/// The timeline a bench scene's gateway would send for `thread`, for a
+/// fetch ahead of the open (`chat::prewarm`); `None` outside the switch scene.
+pub fn timeline(s: &State, thread: &str) -> Option<Vec<Row>> {
+    match &s.bench.as_ref()?.feed {
+        Feed::Timelines(timelines) => timelines.get(thread).cloned(),
+        _ => None,
+    }
+}
+
 /// Grow the streaming reply of `thread` by `text`, as a stream delta would
 /// (rows rebuilt, then folded through the pacer); `finish` ends the run.
 fn stream_into(s: &mut State, thread: &str, text: &str, finish: bool, tx: &mut Tx) {

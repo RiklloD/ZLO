@@ -644,6 +644,9 @@ pub(crate) fn reset_for_switch(s: &mut State) {
     s.workspace.run_clock = Default::default();
     s.workspace.confirm_delete = None;
     s.workspace.unread = 0;
+    // Warm threads belong to the computer they were fetched from; the same
+    // thread id on another computer is another thread.
+    s.prewarm = Default::default();
     s.remote.descriptor = None;
     s.remote.page.devices = None;
     s.remote.page.issued = None;

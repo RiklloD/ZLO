@@ -90,6 +90,8 @@ pub struct State {
     pub remote: crate::remote::RemoteState,
     /// A `bench-*` scene's feed (`crate::bench`); `None` otherwise.
     pub bench: Option<Box<crate::bench::Bench>>,
+    /// Threads made ready under a resting pointer (`chat::prewarm`).
+    pub prewarm: crate::chat::prewarm::Prewarm,
 }
 
 impl State {
@@ -118,6 +120,7 @@ impl State {
             onboarding: Default::default(),
             remote: Default::default(),
             bench: None,
+            prewarm: Default::default(),
         }
     }
 

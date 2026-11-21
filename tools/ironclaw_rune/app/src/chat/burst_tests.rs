@@ -91,7 +91,12 @@ struct Burst {
 /// `per_frame` deltas land as separate updates (the UI drained between
 /// each), then one frame runs; `frames` times.
 fn burst(turns: usize, frames: u32, per_frame: u32) -> Burst {
-    let mut rt = Runtime::new(long_thread(turns), counted_view, (1000., 760.), Env::new(true, 1.));
+    let mut rt = Runtime::new(
+        long_thread(turns),
+        counted_view,
+        (1000., 760.),
+        Env::new(true, 1.),
+    );
     rt.poll = Some(timed_poll);
     rt.update(|s, tx| {
         super::refresh_rows(s, "t1", tx);
@@ -150,7 +155,12 @@ fn a_burst_of_deltas_rebuilds_rows_at_most_once_per_frame() {
         b.rows_rebuilt,
         b.frames
     );
-    assert!(b.views <= u64::from(b.frames), "{} views over {} frames", b.views, b.frames);
+    assert!(
+        b.views <= u64::from(b.frames),
+        "{} views over {} frames",
+        b.views,
+        b.frames
+    );
     // The stream still shows: the reply's rows were rebuilt.
     assert!(b.rows_rebuilt > 0);
 }
@@ -190,7 +200,12 @@ fn stream_burst_bench() {
 /// the whole thread.
 #[test]
 fn a_queued_input_puts_the_stream_fold_off_by_a_frame() {
-    let mut rt = Runtime::new(long_thread(40), counted_view, (1000., 760.), Env::new(true, 1.));
+    let mut rt = Runtime::new(
+        long_thread(40),
+        counted_view,
+        (1000., 760.),
+        Env::new(true, 1.),
+    );
     rt.update(|s, tx| {
         super::refresh_rows(s, "t1", tx);
     });
@@ -204,7 +219,10 @@ fn a_queued_input_puts_the_stream_fold_off_by_a_frame() {
     rt.update_if(|s, tx| super::poll_chat(s, "t1", true, tx));
     assert_eq!(rows(&rt), before, "input waiting: the fold waits");
     assert!(
-        rt.state.chat.as_ref().is_some_and(|c| c.rows_stale.is_some()),
+        rt.state
+            .chat
+            .as_ref()
+            .is_some_and(|c| c.rows_stale.is_some()),
         "still owed to the next frame"
     );
 
@@ -212,14 +230,20 @@ fn a_queued_input_puts_the_stream_fold_off_by_a_frame() {
     assert_eq!(rows(&rt), before + 1, "the next frame folds it");
 
     // Input every frame (a long scroll) delays the fold by a bounded time.
-    rt.update_if(move |s, tx| super::on_stream(s, "t1", generation, vec![delta("Hello there")], tx));
+    rt.update_if(move |s, tx| {
+        super::on_stream(s, "t1", generation, vec![delta("Hello there")], tx)
+    });
     rt.update(|s, _| {
         if let Some(c) = s.chat.as_mut() {
             c.rows_stale = Some(Instant::now() - super::INPUT_YIELD_MAX);
         }
     });
     rt.update_if(|s, tx| super::poll_chat(s, "t1", true, tx));
-    assert_eq!(rows(&rt), before + 2, "waited long enough: folded under input");
+    assert_eq!(
+        rows(&rt),
+        before + 2,
+        "waited long enough: folded under input"
+    );
 }
 
 #[test]
@@ -227,5 +251,9 @@ fn work_yields_to_input_only_while_it_is_fresh() {
     let now = Instant::now();
     assert!(super::yields_to_input(true, now, now));
     assert!(!super::yields_to_input(false, now, now));
-    assert!(!super::yields_to_input(true, now - super::INPUT_YIELD_MAX, now));
+    assert!(!super::yields_to_input(
+        true,
+        now - super::INPUT_YIELD_MAX,
+        now
+    ));
 }
