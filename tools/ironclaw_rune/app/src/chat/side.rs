@@ -32,7 +32,7 @@
 //! For the workspace:
 //! - `side::titlebar_actions(s, cx, k, layer) -> El`: the thread's end of the
 //!   window titlebar.
-//! - `side::toggle_right_pane(s)` (⌥⌘B), `side::toggle_work_panel(s)` (⌘E),
+//! - `side::toggle_right_pane(s)` (⌥⌘B), `side::toggle_work_panel(s)` (⌘J),
 //!   `side::new_side_chat(s)` (⌥⌘N). Off the chat page the toggles only flip
 //!   the preference.
 //! - `side::dock_widths(s, viewport)` for the wallpaper's conversation area.
@@ -493,7 +493,7 @@ pub fn toggle_right_pane(s: &mut State) {
     toggle_dock(s, Dock::Side);
 }
 
-/// ⌘E. Off the chat page it only flips the preference.
+/// ⌘J (or ⌘E). Off the chat page it only flips the preference.
 pub fn toggle_work_panel(s: &mut State) {
     toggle_dock(s, Dock::Work);
 }
