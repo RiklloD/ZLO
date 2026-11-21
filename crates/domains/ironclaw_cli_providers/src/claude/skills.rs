@@ -228,11 +228,11 @@ pub(crate) async fn save(path: &Path, state: &SkillState) -> std::io::Result<()>
     if let Some(dir) = path.parent() {
         tokio::fs::create_dir_all(dir).await?;
     }
-    let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    // Unique per write, created exclusively: two writers never share an inode.
+    let tmp = path.with_extension(format!("json.tmp-{}", uuid::Uuid::new_v4().simple()));
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(&tmp)
         .await?;
@@ -240,8 +240,20 @@ pub(crate) async fn save(path: &Path, state: &SkillState) -> std::io::Result<()>
     file.flush().await?;
     drop(file);
     tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
-    tokio::fs::rename(&tmp, path).await
+    let renamed = tokio::fs::rename(&tmp, path).await;
+    if renamed.is_err()
+        && let Err(error) = tokio::fs::remove_file(&tmp).await
+    {
+        tracing::debug!(%error, "claude skills: temp state file left behind");
+    }
+    renamed
 }
+
+/// Serializes every load-apply-save of a state file in this process, so
+/// overlapping turns never drop each other's updates. Only one ZLO backend
+/// runs per user; another process writing the same file could still lose
+/// one turn's usage counts, which only ages a skill's ranking (accepted).
+static RECORD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The profile plugin's name (`.claude-plugin/plugin.json`).
 pub(crate) async fn plugin_name(plugin_dir: &Path) -> Option<String> {
@@ -318,6 +330,7 @@ impl SkillWatch {
         if self.catalog.is_none() && self.used.is_empty() {
             return;
         }
+        let _serialized = RECORD_LOCK.lock().await;
         let mut state = load(path).await;
         if !self.apply(&mut state, now_ms) {
             return;
@@ -491,5 +504,29 @@ mod tests {
         assert_eq!(load(&path).await, s);
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn overlapping_turns_keep_every_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude-cli.json");
+        let turns: Vec<_> = (0..32)
+            .map(|_| {
+                let path = path.clone();
+                tokio::spawn(async move {
+                    let mut watch = SkillWatch::default();
+                    watch.push_line(
+                        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"a"}}]}}"#,
+                    );
+                    watch.record(&path, NOW).await;
+                })
+            })
+            .collect();
+        for turn in turns {
+            turn.await.unwrap();
+        }
+        assert_eq!(load(&path).await.ledger["a"].count, 32);
+        let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(leftovers, 1, "no temp files left behind");
     }
 }
