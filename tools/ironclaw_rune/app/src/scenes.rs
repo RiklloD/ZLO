@@ -30,6 +30,10 @@ pub const SCENES: &[Scene] = &[
     ("chat-wallpaper-conversation", |s| {
         crate::chat::fixtures::wallpaper_area(s, "conversation")
     }),
+    (
+        "chat-wallpaper-window",
+        crate::chat::fixtures::wallpaper_window,
+    ),
     ("chat-wallpaper-pane", |s| {
         crate::chat::fixtures::wallpaper_area(s, "pane")
     }),
@@ -220,9 +224,11 @@ pub const SCENES: &[Scene] = &[
     ("shell", ws::fixture_shell),
     ("side-activity", crate::chat::side::fixtures::activity),
     ("side-agents", crate::chat::side::fixtures::agents),
+    ("side-browser", crate::chat::side::fixtures::browser),
     ("side-changes", crate::chat::side::fixtures::changes),
     ("side-console", crate::chat::side::fixtures::console),
     ("side-files", crate::chat::side::fixtures::files),
+    ("side-machines", crate::chat::side::fixtures::machines),
     ("side-history", crate::chat::side::fixtures::history),
     ("side-no-folder", crate::chat::side::fixtures::no_folder),
     ("side-outputs", crate::chat::side::fixtures::outputs),

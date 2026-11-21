@@ -5,7 +5,7 @@
 
 use crate::design::kit::Spinner;
 use rune::tok::TextStyle;
-use rune::{Color, El, GrowthSpec, Icon, ScrollSpec, col, el, row, text};
+use rune::{Color, El, GrowthSpec, Icon, ScrollSpec, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 
 use crate::state::State;
@@ -18,17 +18,26 @@ fn at(size: f32, weight: f32) -> TextStyle {
 pub fn tiny() -> TextStyle {
     at(10., 400.)
 }
+pub fn micro_semi() -> TextStyle {
+    at(10.5, 600.)
+}
 pub fn xs() -> TextStyle {
     at(12., 400.)
 }
 pub fn xs_med() -> TextStyle {
     at(12., 500.)
 }
+pub fn xs_semi() -> TextStyle {
+    at(12., 600.)
+}
 pub fn sm() -> TextStyle {
     at(13., 400.)
 }
 pub fn sm_med() -> TextStyle {
     at(13., 500.)
+}
+pub fn sm_semi() -> TextStyle {
+    at(13.5, 600.)
 }
 pub const MONO_XS: TextStyle = TextStyle::new(12., 400.).mono();
 
@@ -51,6 +60,92 @@ pub fn empty(s: &State, content: impl Into<String>) -> El {
     el().w_full()
         .padding(16.)
         .child(para(content, sm(), s.palette.text_muted))
+}
+
+/// A structured empty-state card with an accented icon badge, clear headline,
+/// concise body copy, and an optional direct action button.
+pub fn empty_card(
+    s: &State,
+    glyph: &'static Icon,
+    title: impl Into<String>,
+    subtitle: impl Into<String>,
+    action: Option<El>,
+) -> El {
+    let p = &s.palette;
+    let badge = el()
+        .size(36., 36.)
+        .radius(10.)
+        .center()
+        .fill(p.accent_wash)
+        .border(1., p.accent.alpha(0.22))
+        .child(icon(glyph, 18.).color(p.accent));
+    let header = row().w_full().gap(12.).items_center().child(badge).child(
+        col()
+            .grow(1.)
+            .min_w(0.)
+            .gap(2.)
+            .child(line(title, sm_semi(), p.text))
+            .child(para(subtitle, xs(), p.text_muted)),
+    );
+    let mut card = col()
+        .w_full()
+        .padding(14.)
+        .gap(12.)
+        .radius(crate::design::PANEL_RADIUS)
+        .fill(p.surface_card.alpha(if p.light { 0.85 } else { 0.65 }))
+        .border(1., p.border)
+        .child(header);
+    if let Some(action) = action {
+        card = card.child(action);
+    }
+    el().w_full().px(12.).pt(12.).child(card)
+}
+
+/// Compact uppercase section label used inside side-pane launchpads.
+pub fn section_label(s: &State, content: impl Into<String>) -> El {
+    el().w_full().px(4.).pt(6.).pb(2.).child(line(
+        content.into().to_uppercase(),
+        micro_semi(),
+        s.palette.text_faint,
+    ))
+}
+
+/// Compact count pill for tab buttons and headers.
+pub fn count_pill(s: &State, count: usize, active: bool, accent: bool) -> El {
+    let p = &s.palette;
+    let (bg, fg) = if accent {
+        (p.accent_wash, p.accent)
+    } else if active {
+        (
+            if p.light {
+                Color::BLACK.alpha(0.08)
+            } else {
+                Color::WHITE.alpha(0.12)
+            },
+            p.text,
+        )
+    } else {
+        (
+            if p.light {
+                Color::BLACK.alpha(0.05)
+            } else {
+                Color::WHITE.alpha(0.07)
+            },
+            p.text_muted,
+        )
+    };
+    let label = if count > 99 {
+        "99+".into()
+    } else {
+        count.to_string()
+    };
+    el().h(16.)
+        .min_w(16.)
+        .px(5.)
+        .radius(8.)
+        .center()
+        .fill(bg)
+        .child(text(label).font(micro_semi()).color(fg))
 }
 
 pub fn error_line(s: &State, content: impl Into<String>) -> El {

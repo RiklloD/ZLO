@@ -86,6 +86,10 @@ impl ChangesState {
     pub(super) fn has_turn(&self) -> bool {
         self.turn_stats.is_some_and(|(files, _, _)| files > 0)
     }
+
+    pub(super) fn count(&self) -> usize {
+        self.changes.len()
+    }
 }
 
 struct Loaded {
@@ -506,11 +510,19 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             let why = x.changes.error.clone().unwrap_or_else(|| {
                 "This conversation has no git repository on its computer.".into()
             });
-            return ui::empty(s, &why);
+            return ui::empty_card(s, &icons::FILE_DIFF, "No git repository", why, None);
         }
-        return ui::empty(
+        let pick = ui::outline("Choose another folder…")
+            .icon(&icons::FOLDER_PLUS)
+            .on_press_tx(|_: &mut State, tx| super::pick_project_folder(tx))
+            .build(k)
+            .key("changes-pick-folder");
+        return ui::empty_card(
             s,
-            "This folder is not a git repository, so there are no changes to review. Pick another folder from the title above.",
+            &icons::FILE_DIFF,
+            "Not a git repository",
+            "This folder isn't tracked by git, so there are no diffs to review here.",
+            Some(pick),
         );
     }
     let state = &x.changes;

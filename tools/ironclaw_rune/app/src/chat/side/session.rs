@@ -183,10 +183,15 @@ pub(super) fn toggle(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         &format!("{TOGGLE_KEY}-glyph"),
         open,
         panels::GLYPH_PX,
-        p.text_muted,
+        if open { p.text } else { p.text_muted },
     )
     .group_color(p.text);
-    let toggle = panels::toggle_with(s, TOGGLE_KEY, "Session and side chats", glyph);
+    let toggle = panels::toggle_with(
+        s,
+        TOGGLE_KEY,
+        "Session & side chats · ⌥⌘N new side chat",
+        glyph,
+    );
     let mut toggle = super::dock::active(s, toggle, open).on_press(|s: &mut State| {
         let Some(x) = side_mut(s) else { return };
         x.session_open = !x.session_open;
