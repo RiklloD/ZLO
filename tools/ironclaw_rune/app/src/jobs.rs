@@ -126,13 +126,26 @@ pub fn blocking<T: Send + 'static>(
 /// connection: a timer set before the first connection, or across a switch
 /// to another computer, still fires.
 pub fn after(s: &State, delay: Duration, f: impl FnOnce(&mut State, &mut Tx) + Send + 'static) {
+    after_if(s, delay, move |s, tx| {
+        f(s, tx);
+        true
+    });
+}
+
+/// [`after`] for a timer that often changes nothing the view reads (a
+/// debounced save, a stale poll): `f` returns whether it did, and on false
+/// the view doesn't re-run and the window doesn't redraw
+/// (`AppHandle::update_if`).
+pub fn after_if(
+    s: &State,
+    delay: Duration,
+    f: impl FnOnce(&mut State, &mut Tx) -> bool + Send + 'static,
+) {
     let handle = s.rt.handle.clone();
     timers::schedule(delay, move || {
-        handle.update(move |s, tx| {
+        handle.update_if(move |s, tx| {
             crate::energy::hit(crate::energy::C::UpdateTimer);
-            if !s.fixture {
-                f(s, tx)
-            }
+            !s.fixture && f(s, tx)
         });
     });
 }

@@ -1,4 +1,5 @@
 #![deny(clippy::let_underscore_must_use)]
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use std::{
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex},
@@ -684,6 +685,8 @@ fn first_party_registry_with_effects(effects: Vec<EffectKind>) -> ExtensionRegis
             },
             host_apis: Vec::new(),
             host_api_surfaces: Vec::new(),
+            settings: Vec::new(),
+            ui_slots: Vec::new(),
             capabilities: vec![CapabilityManifest {
                 id: capability_id(),
                 description: "Reports host status".to_string(),
@@ -712,7 +715,8 @@ fn first_party_registry_with_effects(effects: Vec<EffectKind>) -> ExtensionRegis
         },
         VirtualPath::new("/system/extensions/host").unwrap(),
     )
-    .unwrap();
+    .unwrap()
+    .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     registry

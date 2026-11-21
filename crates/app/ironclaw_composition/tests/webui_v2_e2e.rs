@@ -648,7 +648,11 @@ async fn build_harness_without_google_oauth_backend() -> Harness {
 fn test_google_oauth_backend() -> OAuthClientConfig {
     OAuthClientConfig::new(
         "e2e-google-client-id.apps.googleusercontent.com",
-        "http://127.0.0.1/oauth/callback/google",
+        // The production redirect shape (`<origin>/api/reborn/product-auth/
+        // oauth/<vendor>/callback`): composition derives the OAuth callback
+        // base from it, and without one no flow is startable, so the
+        // provider-instance readiness gate (upstream #8102) fails closed.
+        "http://127.0.0.1/api/reborn/product-auth/oauth/google/callback",
         None,
     )
     .expect("valid test google oauth client config")

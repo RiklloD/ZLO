@@ -9,9 +9,9 @@ use ironclaw_assistant::{
     ResolveApprovalInteractionRequest,
 };
 use ironclaw_composition::{
-    HooksActivationConfig, PollSettings, RebornHostBindings, RebornRuntimeError,
-    RebornRuntimeIdentity, RebornRuntimeInput, RebornSkillActivationSource, RebornTurnDriveOutcome,
-    TurnRunnerSettings, build_reborn_runtime,
+    PollSettings, RebornHostBindings, RebornRuntimeError, RebornRuntimeIdentity,
+    RebornRuntimeInput, RebornSkillActivationSource, RebornTurnDriveOutcome, TurnRunnerSettings,
+    build_reborn_runtime,
 };
 use ironclaw_composition::{RebornCompositionProfile, local_runtime_build_input_with_options};
 use ironclaw_host_api::runtime_policy::{
@@ -521,86 +521,6 @@ async fn production_background_delivery_wires_result_queue_ack_and_edge_close() 
     runtime.shutdown().await.unwrap();
 }
 
-#[derive(Default)]
-struct HookDeniedEchoGateway {
-    call_count: std::sync::Mutex<usize>,
-}
-
-#[async_trait]
-impl HostManagedModelGateway for HookDeniedEchoGateway {
-    async fn stream_model(
-        &self,
-        _request: HostManagedModelRequest,
-    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
-        Err(HostManagedModelError::safe(
-            HostManagedModelErrorKind::InvalidRequest,
-            "HookDeniedEchoGateway requires the capability-aware model path",
-        ))
-    }
-
-    async fn stream_model_with_capabilities(
-        &self,
-        request: HostManagedModelRequest,
-        capabilities: Arc<dyn LoopCapabilityPort>,
-    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
-        let call_index = {
-            let mut count = self
-                .call_count
-                .lock()
-                .expect("hook gateway call lock poisoned");
-            let index = *count;
-            *count += 1;
-            index
-        };
-        if call_index > 0 {
-            assert!(
-                request
-                    .messages
-                    .iter()
-                    .any(|message| message.content.contains("hook_predicate_denied")),
-                "post-hook model request should include the hook-denied tool result: {:?}",
-                request.messages
-            );
-            return Ok(HostManagedModelResponse::assistant_reply(
-                "hook denied echo".to_string(),
-            ));
-        }
-
-        let echo_id = CapabilityId::new("builtin.echo").expect("echo capability id");
-        let echo_tool = capabilities
-            .tool_definitions()
-            .map_err(|err| {
-                HostManagedModelError::safe(
-                    HostManagedModelErrorKind::InvalidRequest,
-                    format!("tool_definitions failed: {err}"),
-                )
-            })?
-            .into_iter()
-            .find(|def| def.capability_id == echo_id)
-            .expect("builtin.echo must be visible in standalone capability surface");
-        let call = capabilities
-            .register_provider_tool_call(RegisterProviderToolCallRequest::new(ProviderToolCall {
-                provider_id: "runtime-hook-provider".to_string(),
-                provider_model_id: "runtime-hook-model".to_string(),
-                turn_id: Some("runtime-hook-turn".to_string()),
-                id: "runtime-hook-echo".to_string(),
-                name: echo_tool.name,
-                arguments: json!({"message": "hook should deny this"}),
-                response_reasoning: None,
-                reasoning: None,
-                signature: None,
-            }))
-            .await
-            .map_err(|err| {
-                HostManagedModelError::safe(
-                    HostManagedModelErrorKind::InvalidRequest,
-                    format!("register_provider_tool_call(echo) failed: {err}"),
-                )
-            })?;
-        Ok(HostManagedModelResponse::capability_calls(vec![call], ""))
-    }
-}
-
 /// Production wiring at the composition seam: drive submit, process claim,
 /// terminal projection, and graceful shutdown over the composed journal.
 #[tokio::test]
@@ -786,123 +706,12 @@ async fn skill_execution_adapter_prepares_filesystem_bundles_end_to_end() {
     runtime.shutdown().await.unwrap();
 }
 
-/// Drives `build_reborn_runtime` through the third-party hook activation wiring
-/// (runtime.rs: third-party discovery input + projection registry + tenant
-/// threading) with BOTH flags on and a real `/system/extensions` manifest tree
-/// on the standalone host filesystem.
-///
-/// This is the only test that exercises the `build_reborn_runtime` third-party
-/// path end-to-end: `tests/third_party_hook_projection.rs` calls
-/// `build_hook_projection_registry` + `build_hook_dispatcher_builder_factory_for_tenant`
-/// directly against a fake filesystem, and every other `build_reborn_runtime`
-/// call here uses the default disabled `HooksActivationConfig`. A regression in
-/// the wiring (dropped `hooks_config`, wrong `extension_filesystem`, mis-threaded
-/// tenant) would surface here as a build/start failure rather than going
-/// uncovered. The turn invokes `builtin.echo` and must observe the projected
-/// hook denial in the model-visible tool-result replay; if runtime composition
-/// drops `hook_dispatcher_builder_factory`, the echo capability succeeds and
-/// this test fails.
-#[tokio::test]
-async fn build_reborn_runtime_wires_third_party_hooks_when_enabled() {
-    let _guard = runtime_composition_test_guard().await;
-    let root = tempfile::tempdir().unwrap();
-    let storage_root = root.path().join("standalone");
-
-    // Plant a discoverable third-party extension carrying a `[[hooks]]` block at
-    // the per-owner `/system/extensions` discovery root that standalone mounts.
-    // The hook is scoped to its own provider and targets `builtin.echo`; naming
-    // the discovered extension `builtin` lets this hook exercise the same
-    // provider-scoped path the built-in first-party capability uses without
-    // adding a test-only first-party hook catalog.
-    let extension_dir = storage_root.join("system/extensions/builtin");
-    std::fs::create_dir_all(&extension_dir).unwrap();
-    std::fs::write(
-        extension_dir.join("manifest.toml"),
-        third_party_hook_manifest("builtin", "builtin.echo"),
-    )
-    .unwrap();
-    let gateway = Arc::new(HookDeniedEchoGateway::default());
-
-    let input = RebornRuntimeInput::from_build_input(
-        ironclaw_composition::local_filesystem_build_input("runtime-hooks-owner", storage_root)
-            .with_runtime_policy(standalone_runtime_policy()),
-    )
-    .with_tool_disclosure(ToolDisclosureMode::Off)
-    .with_identity(RebornRuntimeIdentity {
-        tenant_id: "runtime-hooks-tenant".to_string(),
-        agent_id: "runtime-hooks-agent".to_string(),
-        source_binding_id: "runtime-hooks-source".to_string(),
-        reply_target_binding_id: "runtime-hooks-reply".to_string(),
-    })
-    .with_hooks_config(HooksActivationConfig::enabled().with_third_party_enabled(true))
-    .with_model_gateway_override(gateway)
-    .with_runner_settings(
-        TurnRunnerSettings::default()
-            .set_heartbeat_interval(Duration::from_millis(25))
-            .set_poll_interval(Duration::from_millis(10)),
-    );
-
-    let runtime = build_reborn_runtime(input).await.unwrap();
-    assert_eq!(runtime.default_run_profile_id(), "reborn-planned-default");
-
-    let conversation = runtime.new_conversation().await.unwrap();
-    runtime
-        .enable_global_auto_approve_for_test(&conversation)
-        .await;
-    let reply = tokio::time::timeout(
-        SEND_USER_MESSAGE_TIMEOUT,
-        runtime.send_user_message(&conversation, "use echo"),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(reply.status, TurnStatus::Completed, "reply: {reply:?}");
-    assert_eq!(reply.text.as_deref(), Some("hook denied echo"));
-
-    runtime.shutdown().await.unwrap();
-}
-
-/// A discoverable v2 installed-extension manifest carrying a single
-/// `before_capability` hook over its own capability. Mirrors the canonical
-/// shape in `tests/third_party_hook_projection.rs`.
-fn third_party_hook_manifest(id: &str, deny_target: &str) -> String {
-    format!(
-        r#"schema_version = "reborn.extension_manifest.v2"
-id = "{id}"
-name = "{id}"
-version = "0.1.0"
-description = "{id} extension"
-trust = "third_party"
-
-[runtime]
-kind = "wasm"
-module = "wasm/{id}.wasm"
-
-[[host_api]]
-id = "ironclaw.capability_provider/v1"
-section = "capability_provider.tools"
-
-[capability_provider.tools]
-
-[[capability_provider.tools.capabilities]]
-id = "{id}.run"
-description = "Run {id}"
-effects = ["network"]
-default_permission = "ask"
-visibility = "model"
-input_schema_ref = "schemas/{id}/run.input.v1.json"
-output_schema_ref = "schemas/{id}/run.output.v1.json"
-prompt_doc_ref = "prompts/{id}/run.md"
-required_host_ports = ["host.runtime.http_egress"]
-
-[[hooks]]
-id = "deny-run"
-kind = "before_capability"
-scope = "own_capabilities"
-body = {{ mode = "predicate", spec = {{ type = "deny_capability", reason = "blocked", when = {{ type = "name_equals", name = "{deny_target}" }} }} }}
-"#
-    )
-}
+// The `build_reborn_runtime` third-party hook wiring is pinned end to end by
+// `tests/plugin_package_surfaces.rs`: hooks follow the active extension set
+// (activation registers them, deactivation removes them), so a package that
+// is merely present on disk — what this file's former
+// `build_reborn_runtime_wires_third_party_hooks_when_enabled` relied on —
+// contributes no hooks.
 
 fn skill_md(name: &str, keyword: &str, prompt: &str) -> String {
     format!(

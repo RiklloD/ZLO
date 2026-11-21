@@ -16,7 +16,6 @@ pub mod motion;
 pub mod paint;
 pub mod panels;
 pub mod prefs;
-pub mod smooth_scroll;
 pub mod styles;
 pub mod themes;
 pub mod wallpaper;

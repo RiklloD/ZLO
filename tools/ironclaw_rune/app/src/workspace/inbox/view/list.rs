@@ -18,7 +18,6 @@ use super::rows::{card, slim};
 use super::{fold, new_draft_card};
 use crate::design;
 use crate::design::motion;
-use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::state::{Page, State};
 use crate::workspace::active_id;
@@ -320,7 +319,7 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .wheel_glide(SCROLL)
+        .key(SCROLL)
         .on_layout_tx(|s: &mut State, r: [f32; 4], tx: &mut rune::Tx| {
             if !ShelfGap::viewport(s, r[3]) {
                 tx.live_only();
@@ -332,6 +331,7 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
                 .w_full()
                 .min_h(0.0)
                 .growth(GrowthSpec::default())
+                .whole_rows()
                 .on_layout_tx(|s: &mut State, r: [f32; 4], tx: &mut rune::Tx| {
                     if !ShelfGap::content(s, r[3]) {
                         tx.live_only();

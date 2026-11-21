@@ -350,6 +350,7 @@ impl IronHubService {
                         name: LifecyclePackageId::new(installed.name)
                             .map_err(|error| invalid(error.to_string()))?,
                     }),
+                    consent: None,
                 }
             }
             IronHubEntryKind::Tool => {

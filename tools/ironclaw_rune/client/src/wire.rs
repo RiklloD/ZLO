@@ -8,7 +8,6 @@
 //! decoding.
 
 use chrono::{DateTime, Utc};
-use ironclaw_extension_contracts::state::LifecyclePublicState;
 use ironclaw_product_contracts::outbound::{
     CapabilityActivityView, CapabilityDisplayPreviewView, FinalReplyView, GatePromptView,
     ProductProjectionState, ProgressUpdateView,
@@ -18,6 +17,8 @@ use ironclaw_product_contracts::product_wire::{
     RebornExtensionOnboardingPayload, RebornExtensionSurface, SettingsToolPermissionState,
 };
 use serde::Deserialize;
+
+use crate::plugins::{Consent, PluginState};
 
 /// `GET /session`.
 #[derive(Debug, Clone, Deserialize)]
@@ -412,7 +413,13 @@ pub struct InstalledExtension {
     pub description: String,
     #[serde(default)]
     pub tools: Vec<String>,
-    pub installation_state: LifecyclePublicState,
+    /// The lifecycle state, plugin states included (`consent_required`,
+    /// `tampered`); unknown states decode as `Other`.
+    pub installation_state: PluginState,
+    /// What the plugin asks for, when it waits for consent or changed
+    /// after it (older backends send none).
+    #[serde(default)]
+    pub consent: Option<Consent>,
     #[serde(default)]
     pub activation_error: Option<String>,
     #[serde(default)]
@@ -429,6 +436,10 @@ impl InstalledExtension {
         self.surfaces
             .iter()
             .any(|s| matches!(s, RebornExtensionSurface::Channel { .. }))
+    }
+
+    pub fn id(&self) -> &str {
+        self.package_ref.id.as_str()
     }
 }
 

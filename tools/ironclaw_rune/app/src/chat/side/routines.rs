@@ -287,9 +287,19 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     }
     out = out.children(schedule_rows);
     if list.is_empty() && state.schedules.is_empty() {
-        let empty = ui::empty(
+        let open_auto = ui::outline("Open Automations")
+            .icon(&icons::CALENDAR)
+            .on_press(|s: &mut State| {
+                s.page = crate::state::Page::Automations;
+            })
+            .build(k)
+            .key("routines-open-page");
+        let empty = ui::empty_card(
             s,
-            "No routines yet. Ask IronClaw to do something on a schedule (\"every morning at 8, check…\") and it shows up here.",
+            &icons::CALENDAR,
+            "No routines yet",
+            "Ask IronClaw to run something on a schedule (\"every morning at 8, check…\") or manage automations directly.",
+            Some(open_auto),
         );
         return ui::scroll("routines-list", out.child(empty));
     }

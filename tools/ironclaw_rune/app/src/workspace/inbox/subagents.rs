@@ -333,6 +333,7 @@ fn subagent_row(
         _ => p.success,
     };
     let (open_id, mark_id, menu_id) = (id.clone(), id.clone(), id.clone());
+    let warm_id = id.clone();
     let action = if settled {
         crate::workspace::ui::ghost_icon(
             k,
@@ -388,6 +389,10 @@ fn subagent_row(
         .hover_group()
         .on_press(move |s: &mut State| crate::workspace::open_thread(s, open_id.clone()))
         .on_secondary_press(move |s: &mut State, at, tx| super::open_row_menu(s, &menu_id, at, tx))
+        // Resting on it warms the thread for the click (`chat::prewarm`).
+        .on_hover_change(move |s: &mut State, inside, tx| {
+            crate::chat::prewarm::hover(s, &warm_id, inside, tx)
+        })
         .child(el().size(6., 6.).radius(3.).fill(dot))
         .child(
             el().grow(1.0).min_w(0.0).child(

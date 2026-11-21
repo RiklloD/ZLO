@@ -1359,7 +1359,13 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // 13_026 -> 12_491 (2026-11-10): the fake-only `ProtocolHttpEgress` /
         // `OutboundDeliverySink` ports and their request/response/status
         // types were deleted. Count read from this test's own failure message.
-        ("ironclaw_extension_contracts", 8_160),
+        // 8_160 -> 8_703 (2026-11-18, plugin UI slot protocol): the
+        // `plugin_ui` module — the `reborn.plugin_ui.v1` node tree, its
+        // strict validator (depth/node/size limits, unknown type/field
+        // rejection), and the `[[ui.slots]]` slot vocabulary. Shape
+        // validation only; manifest cross-checks live in the registry and
+        // rendering in product. Count read from this test's failure message.
+        ("ironclaw_extension_contracts", 8_703),
         // Raised 17_501 -> 18_570 by #6831 (standardized messaging framework):
         // the growth is the `messaging` vocabulary — the StandardMessagingOp
         // enum, the 12-code error taxonomy, compiled-in canonical schema/prompt
@@ -1702,7 +1708,18 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `SecretReferenceReader` ports). Behaviour lives in
         // `ironclaw_orchestrator::{peer, agent_requests}`, the identity
         // records, and the WebUI peer client.
-        ("ironclaw_product_contracts", 16_566),
+        // 16_566 -> 16_976 (2026-11-18, plugins-integration): +410 lines of
+        // wire DTOs and ports for plugins, landed together from three
+        // branches — the `plugin_ui` views and `PluginUiHost` port (caller
+        // `ironclaw_assistant`, implementor `ironclaw_composition`), the
+        // `extension_settings` descriptors and `ExtensionSettingsSource`
+        // port (implementor `ironclaw_extension_manager`), and the consent
+        // fields/states on the package lifecycle wire. Tree validation lives
+        // in `ironclaw_extension_contracts`, settings grammar and the store
+        // in `ironclaw_extension_registry`, consent policy in
+        // `ironclaw_extension_host`. Count read from this test's failure
+        // message.
+        ("ironclaw_product_contracts", 16_976),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

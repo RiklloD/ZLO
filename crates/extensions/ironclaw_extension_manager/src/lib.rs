@@ -22,9 +22,13 @@
 pub mod admin_configuration;
 pub mod admin_configuration_capability;
 pub mod channel_config_product_service;
+#[cfg(test)]
+mod extension_consent_tests;
 pub mod extension_lifecycle_capabilities;
 pub mod extension_lifecycle_command;
+pub mod extension_settings_product_service;
 mod install_guidance;
+pub mod installation_visibility;
 pub mod ironhub;
 pub mod lifecycle_product_service;
 pub mod operator_config_capability;

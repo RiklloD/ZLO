@@ -168,7 +168,7 @@ fn live_runtime() -> (rune::Runtime<crate::state::State>, String) {
 }
 
 #[test]
-fn the_working_clock_rebuilds_the_view_once_a_second_not_every_frame() {
+fn the_working_clock_repaints_its_seconds_without_a_new_view() {
     use std::cell::Cell;
     use std::rc::Rc;
     use std::time::{Duration, Instant};
@@ -196,13 +196,39 @@ fn the_working_clock_rebuilds_the_view_once_a_second_not_every_frame() {
     for _ in 0..5 {
         assert!(!poll(&mut rt), "same second, no new view");
     }
-    // The next second turns.
     let back = id.clone();
-    rt.update(move |s, _| {
-        let c = super::chat_for(s, &back).expect("chat");
-        c.run_started = c.run_started.map(|t| t - Duration::from_secs(1));
-    });
-    assert!(poll(&mut rt), "a new second, a new view");
+    let earlier = move |rt: &mut rune::Runtime<crate::state::State>, secs: u64| {
+        let back = back.clone();
+        rt.update(move |s, _| {
+            let c = super::chat_for(s, &back).expect("chat");
+            c.run_started = c.run_started.map(|t| t - Duration::from_secs(secs));
+        });
+    };
+    let label = |rt: &rune::Runtime<crate::state::State>| {
+        super::chat_ref(&rt.state, &id)
+            .map(|c| c.clock_text.get().to_string())
+            .unwrap_or_default()
+    };
+    let shown = |rt: &rune::Runtime<crate::state::State>| {
+        super::chat_ref(&rt.state, &id)
+            .and_then(|c| c.clock_secs)
+            .expect("a second shown")
+    };
+    // Start on a second whose next one doesn't roll the word.
+    if (shown(&rt) + 1) % 7 == 0 {
+        earlier(&mut rt, 1);
+        poll(&mut rt);
+    }
+    let at = shown(&rt);
+    // The next second turns: the live label repaints, the view stays.
+    earlier(&mut rt, 1);
+    assert!(!poll(&mut rt), "a tick built a new view");
+    assert_eq!(label(&rt), super::pending::format_elapsed(at + 1));
+    // The word rolls (every 7 s): the line itself changes, a new view.
+    let roll = 7 - (at + 1) % 7;
+    earlier(&mut rt, roll);
+    assert!(poll(&mut rt), "the rolled word needs a new view");
+    assert_eq!(label(&rt), super::pending::format_elapsed(at + 1 + roll));
 }
 
 /// The seconds of a run nobody is looking at need no wake of their own;

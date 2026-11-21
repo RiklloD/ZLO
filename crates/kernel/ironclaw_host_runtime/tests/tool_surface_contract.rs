@@ -2,6 +2,7 @@
 #![deny(clippy::let_underscore_must_use)]
 mod support;
 
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use support::legacy_capability_fixture_to_v2_with_schema_suffix as legacy_capability_fixture_to_v2;
 
 use std::{
@@ -362,7 +363,8 @@ async fn hot_capability_catalog_resolves_standard_messaging_schema_ref_without_f
         manifest,
         VirtualPath::new("/system/extensions/slack").unwrap(),
     )
-    .unwrap();
+    .unwrap()
+    .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     // Deliberately unmounted: any attempt to read a package asset from disk
@@ -597,7 +599,8 @@ output_schema_ref = "schemas/github/comment.output.json"
         manifest,
         VirtualPath::new("/system/extensions/github").unwrap(),
     )
-    .unwrap();
+    .unwrap()
+    .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     let runtime = runtime_with(registry, Arc::new(GrantAuthorizer)).with_trust_policy(Arc::new(
@@ -2156,7 +2159,8 @@ fn hot_catalog_fixture_with_manifest(
         manifest,
         VirtualPath::new("/system/extensions/echo").unwrap(),
     )
-    .unwrap();
+    .unwrap()
+    .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
 
@@ -2247,8 +2251,9 @@ fn registry_from_manifests<const N: usize>(manifests: [(&str, &str); N]) -> Exte
     let mut registry = ExtensionRegistry::new();
     for (manifest, root) in manifests {
         let manifest = parse_manifest(manifest);
-        let package =
-            ExtensionPackage::from_manifest(manifest, VirtualPath::new(root).unwrap()).unwrap();
+        let package = ExtensionPackage::from_manifest(manifest, VirtualPath::new(root).unwrap())
+            .unwrap()
+            .with_unverified_contents_for_test();
         registry.insert(package).unwrap();
     }
     registry
@@ -2267,7 +2272,8 @@ fn registry_from_manifest_source(manifest: &str, source: ManifestSource) -> Exte
         manifest,
         VirtualPath::new("/system/extensions/echo").unwrap(),
     )
-    .unwrap();
+    .unwrap()
+    .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     registry

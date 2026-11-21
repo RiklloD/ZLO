@@ -1,0 +1,36 @@
+{
+ "events": [
+  {
+   "t": 0.3,
+   "type": "tap",
+   "key": "act-tool:b0-head"
+  },
+  {
+   "t": 1.0,
+   "type": "scroll",
+   "x": 1000,
+   "y": 420,
+   "dy": 3000,
+   "dur": 0.45,
+   "fling": true
+  },
+  {
+   "t": 2.0,
+   "type": "scroll",
+   "x": 1000,
+   "y": 420,
+   "dy": 3000,
+   "dur": 0.45,
+   "fling": true
+  },
+  {
+   "t": 3.0,
+   "type": "scroll",
+   "x": 1000,
+   "y": 420,
+   "dy": -5000,
+   "dur": 0.5,
+   "fling": true
+  }
+ ]
+}

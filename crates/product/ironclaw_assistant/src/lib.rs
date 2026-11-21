@@ -48,6 +48,7 @@ mod fakes;
 // Durable filesystem-backed idempotency ledger. The filesystem contract is a
 // base dependency; concrete libSQL/Postgres implementations remain gated.
 mod delivery_coordinator;
+pub mod extension_settings_page;
 mod filesystem_ledger;
 mod gate_state;
 pub mod history_search;
@@ -64,6 +65,7 @@ pub mod native_questions;
 mod notification_channel_resolution;
 pub mod orchestration;
 mod outbound_delivery;
+pub mod plugin_ui;
 mod policy;
 mod process_gate_turn_view;
 mod product_surface_inbound;

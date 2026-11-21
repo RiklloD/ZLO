@@ -1,4 +1,7 @@
-//! Extensions: what is installed, the catalog, install/remove, and setup.
+//! Settings → Plugins: what is installed, the catalog, install/remove,
+//! setup, consent, and each plugin's own page (`plugin.rs`: its settings
+//! and `settings.page` slots). The code keeps the backend's word,
+//! "extension"; people see "Plugins".
 //!
 //! API keys, config fields and channel pairing are handled here, as are
 //! custom MCP servers and tool-bundle imports. OAuth and device linking
@@ -8,6 +11,8 @@
 //! rendering in `extensions/view.rs`.
 
 pub mod fixtures;
+pub mod plugin;
+mod plugin_view;
 mod view;
 
 use std::collections::BTreeMap;
@@ -18,6 +23,7 @@ use rune_kit::Kit;
 use zlo_client::ClientError;
 use zlo_client::extension_state::LifecyclePublicState;
 use zlo_client::hosted_mcp::HostedMcpAuthSelection;
+use zlo_client::plugins::PluginState;
 use zlo_client::product_wire::{
     RebornExtensionCredentialSetup, RebornExtensionRegistryEntry, RebornSetupExtensionResponse,
 };
@@ -90,6 +96,12 @@ pub struct ExtensionsState {
     pub loaded: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
+    /// The consent sheet, when open.
+    pub consent: Option<plugin::ConsentSheet>,
+    /// A plugin's own page, when open (it replaces the list).
+    pub detail: Option<plugin::Detail>,
+    /// Just installed: open its consent sheet once the list shows it asks.
+    ask_after_install: Option<String>,
     /// What a field's edit accessor gets when its form closed meanwhile
     /// (Rune's accessors must always return a field).
     scratch: TextEdit,
@@ -109,12 +121,15 @@ impl Default for ExtensionsState {
             loaded: false,
             error: None,
             notice: None,
+            consent: None,
+            detail: None,
+            ask_after_install: None,
             scratch: TextEdit::new(""),
         }
     }
 }
 
-fn st(s: &mut State) -> &mut ExtensionsState {
+pub(super) fn st(s: &mut State) -> &mut ExtensionsState {
     &mut s.pages.extensions
 }
 
@@ -161,10 +176,18 @@ pub fn refresh(s: &mut State) {
                     ext.installed = installed.extensions;
                     ext.catalog = catalog.entries;
                     ext.error = None;
+                    // A fresh install that waits for consent asks at once.
+                    if let Some(id) = ext.ask_after_install.take()
+                        && ext.installed.iter().any(|e| {
+                            e.id() == id && e.installation_state == PluginState::ConsentRequired
+                        })
+                    {
+                        plugin::open_consent(s, id);
+                    }
                 }
                 Err(e) => ext.error = Some(e.to_string()),
             }
-            ext.loaded = true;
+            st(s).loaded = true;
         },
     );
 }
@@ -198,9 +221,10 @@ fn install(s: &mut State, entry: &RebornExtensionRegistryEntry) {
                     let ext = st(s);
                     ext.error = None;
                     ext.notice = Some(resp.message);
+                    ext.ask_after_install = Some(id.clone());
                     // Installing usually needs a credential next.
                     open_setup(s, id.clone());
-                    refresh(s);
+                    plugin::lifecycle_changed(s);
                 }
                 Err(e) => st(s).error = Some(e.to_string()),
             }
@@ -223,7 +247,9 @@ fn remove(s: &mut State, id: String) {
                     let ext = st(s);
                     ext.notice = Some(resp.message);
                     ext.setup = None;
-                    refresh(s);
+                    ext.consent = None;
+                    ext.detail = None;
+                    plugin::lifecycle_changed(s);
                 }
                 Err(e) => st(s).error = Some(e.to_string()),
             }
@@ -318,11 +344,11 @@ fn submit_setup(s: &mut State) {
                     if matches!(view.phase, LifecyclePublicState::Active) {
                         let ext = st(s);
                         ext.setup = None;
-                        ext.notice = Some("Extension is active.".into());
+                        ext.notice = Some("The plugin is active.".into());
                     } else if let Some(id) = st(s).setup.as_ref().map(|x| x.id.clone()) {
                         fill_setup(s, &id, view);
                     }
-                    refresh(s);
+                    plugin::lifecycle_changed(s);
                 }
                 Err(e) => st(s).error = Some(e.to_string()),
             }

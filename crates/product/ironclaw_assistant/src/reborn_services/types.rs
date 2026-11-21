@@ -282,6 +282,12 @@ pub struct RebornExtensionInfo {
     /// (#5459 P1); `None` on pre-#5459 payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_scope: Option<LifecycleInstallScope>,
+    /// What the caller is asked to consent to, when this third-party package
+    /// is `consent_required` or `tampered` for them: the digest to grant
+    /// (`POST /api/webchat/v2/extensions/{package_id}/consent`) and the
+    /// requests (`{ kind, title, detail }`). Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<ironclaw_product_contracts::package_consent::LifecycleConsentSummary>,
 }
 
 /// Generic client-side effect produced by a product command. Keeping this

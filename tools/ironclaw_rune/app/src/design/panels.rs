@@ -31,7 +31,7 @@ pub const REVEAL: Spring = Spring::new(0.24, 0.0);
 pub const TOGGLE_SIZE: f32 = 28.;
 /// Its corner radius, and the active wash's under it.
 pub const TOGGLE_RADIUS: f32 = 7.;
-const GLYPH_SIZE: f32 = 16.;
+const GLYPH_SIZE: f32 = 17.;
 /// The glyph size [`toggle_with`] callers draw at.
 pub const GLYPH_PX: f32 = GLYPH_SIZE;
 /// The rounded frame both glyphs share: `<rect x=3 y=4 w=18 h=16 rx=4
@@ -64,6 +64,27 @@ pub fn glyph(key: &str, open: bool, right: bool, size: f32, color: Color) -> El 
     } else {
         panel.pin(Some(inset), Some(7.5 * s), None, None)
     };
+    el().key(key.to_string())
+        .size(size, size)
+        .a11y_hidden()
+        .child(frame(s, color))
+        .child(panel)
+}
+
+/// The work-panel glyph: the same rounded frame with a centred column that
+/// widens as the work dock opens beside the conversation.
+pub fn work_glyph(key: &str, open: bool, size: f32, color: Color) -> El {
+    let s = size / 24.;
+    let w = if open { 5.5 } else { 2.0 } * s;
+    let left = (12. - if open { 2.75 } else { 1.0 }) * s;
+    let panel = el()
+        .key(format!("{key}-col"))
+        .absolute(left, 7.5 * s)
+        .w(w)
+        .h(9. * s)
+        .radius(0.875 * s)
+        .fill(color)
+        .motion(GLYPH);
     el().key(key.to_string())
         .size(size, size)
         .a11y_hidden()

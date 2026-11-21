@@ -646,11 +646,23 @@ where
                         truncation.omitted_through_kind,
                     ),
                 });
-        let messages = prompt_context_budget::select_prompt_context_messages(
+        let selection = prompt_context_budget::select_prompt_context_messages(
             context.messages,
             self.prompt_context_budget,
             accepted_task_message_id(&self.run_context),
         )?;
+        let budget_truncation =
+            selection
+                .truncation
+                .map(|truncation| LoopContextWindowTruncation {
+                    omitted_through_sequence: truncation.omitted_through_sequence,
+                    omitted_through_kind: compaction_kind_for_message(
+                        truncation.omitted_through_kind,
+                    ),
+                });
+        let recent_window_truncation =
+            newest_context_truncation(recent_window_truncation, budget_truncation);
+        let messages = selection;
         trace_loop_host_latency_ok(
             "context_select_messages",
             &self.run_context,
@@ -2009,11 +2021,40 @@ where
 
     async fn resolve_model_messages(
         &self,
-        requested_messages: Vec<LoopModelMessage>,
+        mut requested_messages: Vec<LoopModelMessage>,
     ) -> Result<Vec<HostManagedModelMessage>, AgentLoopHostError> {
-        let context = self
+        let mut context = self
             .load_model_context_window(!requested_messages.is_empty())
             .await?;
+
+        if !requested_messages.is_empty() {
+            let transcript_refs = context
+                .messages
+                .iter()
+                .filter_map(message_ref_from_context)
+                .collect::<HashSet<_>>();
+            let selection = prompt_context_budget::select_prompt_context_messages(
+                std::mem::take(&mut context.messages),
+                self.prompt_context_budget,
+                accepted_task_message_id(&self.run_context),
+            )?;
+            let truncated = selection.truncation.is_some();
+            let selected_messages = selection
+                .into_iter()
+                .map(|(message, _)| message)
+                .collect::<Vec<_>>();
+            if truncated {
+                let retained_refs = selected_messages
+                    .iter()
+                    .filter_map(message_ref_from_context)
+                    .collect::<HashSet<_>>();
+                requested_messages.retain(|message| {
+                    !transcript_refs.contains(&message.content_ref)
+                        || retained_refs.contains(&message.content_ref)
+                });
+            }
+            context.messages = selected_messages;
+        }
 
         if requested_messages.is_empty() {
             let context_messages = prompt_context_budget::select_prompt_context_messages(
@@ -2332,6 +2373,17 @@ pub trait HostManagedModelGateway: Send + Sync {
             return None;
         }
         resolved_model_route.and_then(|route| ProviderModelId::new(route.model_id()).ok())
+    }
+
+    /// Best-effort context window for the concrete provider model selected for
+    /// this run. `None` keeps the configured host limit.
+    async fn model_context_window_tokens(
+        &self,
+        _model_profile_id: &ModelProfileId,
+        _fallback_index: u32,
+        _resolved_model_route: Option<&HostManagedModelRouteSnapshot>,
+    ) -> Option<u64> {
+        None
     }
 
     async fn stream_model(
@@ -3280,7 +3332,10 @@ where
                 MessageKind::User => (SystemInferenceContextRole::User, message.content),
                 MessageKind::Assistant => (SystemInferenceContextRole::Assistant, message.content),
                 MessageKind::ToolResultReference => {
-                    let envelope = ToolResultReferenceEnvelope::from_json_str(&message.content)
+                    let envelope =
+                        ToolResultReferenceEnvelope::from_json_str_for_model_projection(
+                            &message.content,
+                        )
                         .map_err(|error| {
                             tracing::debug!(%error, "structured finalization tool result context is invalid");
                             AgentLoopHostError::new(
@@ -3422,6 +3477,38 @@ fn history_summaries_by_ref(summaries: Vec<SummaryArtifact>) -> HashMap<String, 
         .collect()
 }
 
+fn newest_context_truncation(
+    left: Option<LoopContextWindowTruncation>,
+    right: Option<LoopContextWindowTruncation>,
+) -> Option<LoopContextWindowTruncation> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let left_eligible = context_truncation_is_compactable(&left);
+            let right_eligible = context_truncation_is_compactable(&right);
+            match (left_eligible, right_eligible) {
+                (true, false) => Some(left),
+                (false, true) => Some(right),
+                (true, true) | (false, false) => {
+                    if left.omitted_through_sequence >= right.omitted_through_sequence {
+                        Some(left)
+                    } else {
+                        Some(right)
+                    }
+                }
+            }
+        }
+        (Some(truncation), None) | (None, Some(truncation)) => Some(truncation),
+        (None, None) => None,
+    }
+}
+
+fn context_truncation_is_compactable(truncation: &LoopContextWindowTruncation) -> bool {
+    matches!(
+        truncation.omitted_through_kind,
+        LoopContextCompactionKind::User | LoopContextCompactionKind::ToolResult
+    )
+}
+
 fn context_message_to_compaction_metadata(
     message: &ContextMessage,
 ) -> Option<LoopContextCompactionMetadata> {
@@ -3554,16 +3641,18 @@ fn tool_result_content_for_context_message(
     if message.kind != MessageKind::ToolResultReference {
         return Ok(None);
     }
-    let envelope =
-        ToolResultReferenceEnvelope::from_json_str(&message.content).map_err(|error| {
-            raw_agent_loop_host_error(
-                "model_context",
-                "decode_tool_result_reference",
-                AgentLoopHostErrorKind::InvalidInvocation,
-                "tool result reference transcript content is invalid",
-                error,
-            )
-        })?;
+    let envelope = ToolResultReferenceEnvelope::from_json_str_for_model_projection(
+        &message.content,
+    )
+    .map_err(|error| {
+        raw_agent_loop_host_error(
+            "model_context",
+            "decode_tool_result_reference",
+            AgentLoopHostErrorKind::InvalidInvocation,
+            "tool result reference transcript content is invalid",
+            error,
+        )
+    })?;
     Ok(Some(HostManagedToolResultContent::Reference { envelope }))
 }
 
@@ -3731,6 +3820,40 @@ mod tests {
     use crate::memory_context::latest_user_message_text;
 
     use super::*;
+
+    #[test]
+    fn truncation_merge_preserves_earlier_compactable_watermark() {
+        let tool_result = LoopContextWindowTruncation {
+            omitted_through_sequence: 3,
+            omitted_through_kind: LoopContextCompactionKind::ToolResult,
+        };
+        let later_assistant = LoopContextWindowTruncation {
+            omitted_through_sequence: 4,
+            omitted_through_kind: LoopContextCompactionKind::Assistant,
+        };
+
+        assert_eq!(
+            newest_context_truncation(Some(tool_result.clone()), Some(later_assistant)),
+            Some(tool_result)
+        );
+    }
+
+    #[test]
+    fn truncation_merge_uses_newest_when_eligibility_matches() {
+        let earlier = LoopContextWindowTruncation {
+            omitted_through_sequence: 3,
+            omitted_through_kind: LoopContextCompactionKind::ToolResult,
+        };
+        let later = LoopContextWindowTruncation {
+            omitted_through_sequence: 5,
+            omitted_through_kind: LoopContextCompactionKind::User,
+        };
+
+        assert_eq!(
+            newest_context_truncation(Some(earlier), Some(later.clone())),
+            Some(later)
+        );
+    }
 
     struct BlockingPromptDiagnosticSink {
         calls: std::sync::atomic::AtomicUsize,

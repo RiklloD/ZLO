@@ -161,6 +161,7 @@ pub struct RebornIntegrationHarnessBuilder {
     model_mode: ThreadModelMode,
     /// Vendor id the scripted provider reports (`None`: the trait default).
     scripted_provider_id: Option<String>,
+    model_context_window_tokens: Option<u32>,
     /// Wire production's RootFilesystem-backed durable loop milestone sink.
     durable_milestone_event_store: bool,
     operator_metrics: Option<Arc<ironclaw_operator::OperatorMetrics>>,
@@ -303,6 +304,12 @@ impl RebornIntegrationHarnessBuilder {
         self
     }
 
+    /// Set the scripted provider's reported model context window.
+    pub fn with_model_context_window_for_test(mut self, tokens: u32) -> Self {
+        self.model_context_window_tokens = Some(tokens);
+        self
+    }
+
     /// Fail this harness's model call unconditionally with a fixed, non-retryable
     /// `LlmError` (E-GATEWAY seam, C-ERRORS). See
     /// [`RebornThreadBuilder::fail_model`](super::group::RebornThreadBuilder::fail_model).
@@ -324,6 +331,22 @@ impl RebornIntegrationHarnessBuilder {
     /// recovery and provider chain advance to scripted fallback index one.
     pub fn advance_fallback_after_unavailable(mut self) -> Self {
         self.model_mode = ThreadModelMode::FallbackAdvance;
+        self
+    }
+
+    /// Let the primary route serve `successful_primary_calls`, then fail over
+    /// to a route with a distinct reported context window.
+    pub fn advance_fallback_after_successes(
+        mut self,
+        successful_primary_calls: usize,
+        primary_context_window: u32,
+        fallback_context_window: u32,
+    ) -> Self {
+        self.model_mode = ThreadModelMode::FallbackAdvanceAfter {
+            successful_primary_calls,
+            primary_context_window,
+            fallback_context_window,
+        };
         self
     }
 
@@ -835,6 +858,7 @@ impl RebornIntegrationHarnessBuilder {
             .thread(self.conversation_id)
             .script(self.replies)
             .model_mode(self.model_mode)
+            .model_context_window_tokens(self.model_context_window_tokens)
             .record_model_calls_for_test(self.record_model_calls);
         if let Some(provider_id) = self.scripted_provider_id {
             thread = thread.with_scripted_provider_id(provider_id);
@@ -946,6 +970,7 @@ impl RebornIntegrationHarness {
             shell_mode: ShellMode::default(),
             model_mode: ThreadModelMode::Normal,
             scripted_provider_id: None,
+            model_context_window_tokens: None,
             turn_event_sink: false,
             durable_milestone_event_store: false,
             operator_metrics: None,

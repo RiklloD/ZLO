@@ -327,6 +327,22 @@ pub fn wallpaper_area(s: &mut State, area: &str) {
     crate::design::look::fixture_wallpaper(s, (800, 600));
 }
 
+/// The wallpaper over the whole window, as most people set it, with both
+/// docks open (Work on History, Side on Activity): the docks get the
+/// lighter share of the picture.
+pub fn wallpaper_window(s: &mut State) {
+    super::side::fixtures::history(s);
+    s.prefs.side_open = true;
+    s.prefs.side_tab = "activity".into();
+    s.prefs.wallpaper = crate::design::prefs::Wallpaper::Scene {
+        name: "dusk".into(),
+    };
+    s.prefs.wallpaper_effect = "none".into();
+    s.prefs.wallpaper_area = "window".into();
+    s.prefs.wallpaper_opacity = 0.35;
+    crate::design::look::fixture_wallpaper(s, (1280, 820));
+}
+
 /// An approval waiting on the person, with its reason, and the reject field
 /// open under it.
 pub fn gate(s: &mut State) {

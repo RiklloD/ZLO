@@ -84,6 +84,58 @@ pub(super) fn waiting(s: &State) -> usize {
     bridge::rows(s).iter().filter(|r| is_open_gate(r)).count()
 }
 
+/// Failed steps of one turn.
+fn failed_steps(turn: &Turn<'_>) -> usize {
+    turn.steps
+        .iter()
+        .filter(|s| {
+            matches!(
+                s,
+                Row::Tool {
+                    status: ToolStatus::Failed,
+                    ..
+                }
+            ) || matches!(s, Row::RunNotice { failed: true, .. })
+        })
+        .count()
+}
+
+/// The dock header's line for this tab: what the agent is doing now, or
+/// how its last turn went. `(text, tone)`.
+pub(super) fn status(s: &State) -> (String, super::Tone) {
+    use super::Tone;
+    let waiting = waiting(s);
+    if waiting > 0 {
+        return (format!("Needs you · {waiting}"), Tone::Warn);
+    }
+    let rows = bridge::rows(s);
+    let turns = turns(rows);
+    let steps = |n: usize| {
+        if n == 1 {
+            "1 step".to_string()
+        } else {
+            format!("{n} steps")
+        }
+    };
+    if bridge::running(s) {
+        let n = turns.first().map_or(0, |t| t.steps.len());
+        return (format!("Working · {}", steps(n)), Tone::Live);
+    }
+    match turns.first() {
+        None => ("Idle".into(), Tone::Quiet),
+        Some(turn) => match failed_steps(turn) {
+            0 => (
+                format!("Last turn · {}", steps(turn.steps.len())),
+                Tone::Good,
+            ),
+            f => (
+                format!("Last turn · {} · {f} failed", steps(turn.steps.len())),
+                Tone::Bad,
+            ),
+        },
+    }
+}
+
 pub(super) fn view(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let rows = bridge::rows(s);
@@ -124,9 +176,12 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     }
 
     if turns.is_empty() && !running {
-        let empty = ui::empty(
+        let empty = ui::empty_card(
             s,
-            "No steps yet. Tool calls, approvals and failures of this conversation show up here as they happen.",
+            &icons::ACTIVITY,
+            "No activity yet",
+            "Tool calls, approvals, and run notices appear here live as the agent works.",
+            None,
         );
         return ui::scroll("activity-list", list.child(empty));
     }
@@ -134,19 +189,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let shown = TURNS_PAGE + side(s).map_or(0, |x| x.activity.more);
     let total = turns.len();
     for (ix, turn) in turns.into_iter().take(shown).enumerate() {
-        let failed = turn
-            .steps
-            .iter()
-            .filter(|s| {
-                matches!(
-                    s,
-                    Row::Tool {
-                        status: ToolStatus::Failed,
-                        ..
-                    }
-                ) || matches!(s, Row::RunNotice { failed: true, .. })
-            })
-            .count();
+        let failed = failed_steps(&turn);
         let prompt = if turn.prompt.is_empty() {
             "Earlier".to_string()
         } else {

@@ -697,33 +697,40 @@ pub(super) async fn assemble_runtime(
     // CLI where it builds the runtime input; this composition root consumes
     // the typed config and never reads the environment itself.
     //
-    // Hook-only projection containment: third-party `[[hooks]]` are discovered
-    // and projected into a `HookProjectionRegistry` that carries ONLY hook
-    // metadata (no `ExtensionRegistry`, no `ExtensionPackage`) and reaches ONLY
-    // this hook factory, not the capability catalog or surface resolver.
+    // Hook-only projection containment: trusted `[[hooks]]` are projected
+    // into a `HookProjectionRegistry` that carries ONLY hook metadata (no
+    // `ExtensionRegistry`, no `ExtensionPackage`) and reaches ONLY this hook
+    // factory, not the capability catalog or surface resolver. Third-party
+    // hooks come only from the live installer (active, consented, pinned).
     // Kept for the Settings hook inventory (built below, once memory upkeep
     // wiring is known).
     let mut hook_projection_registry = None;
+    let mut hook_live_sources = None;
     let hook_dispatcher_builder_factory = if let Some(local_runtime) = local_runtime {
-        let extension_filesystem = local_runtime.extension_filesystem.as_ref();
-        let third_party_input = crate::observability::hooks::ThirdPartyDiscoveryInput {
-            filesystem: extension_filesystem,
-            tenant_id: &validated_identity.tenant_id,
-        };
         let projection_registry = crate::observability::hooks::build_hook_projection_registry(
             builtin_extension_registry()?,
-            Some(third_party_input),
             hooks_config,
         )
         .await
         .map_err(|error| RebornRuntimeError::InvalidArgument {
             reason: format!("hook projection registry assembly failed: {error}"),
         })?;
+        let live_sources = crate::observability::hooks::live::LiveHookSources {
+            active: Arc::clone(&local_runtime.shared_extension_registry),
+            filesystem: Arc::clone(&local_runtime.extension_filesystem)
+                as Arc<dyn ironclaw_filesystem::RootFilesystem>,
+            settings: Arc::clone(&local_runtime.extension_settings)
+                as Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsReader>,
+            owners: local_runtime.extension_management.clone(),
+            quarantines: Default::default(),
+        };
+        hook_live_sources = Some(live_sources.clone());
         let factory =
             crate::observability::hooks::build_hook_dispatcher_builder_factory_for_tenant(
                 hooks_config,
                 &projection_registry,
                 &validated_identity.tenant_id,
+                Some(live_sources.clone()),
             )
             .map_err(|error| RebornRuntimeError::InvalidArgument {
                 reason: format!("hook framework activation failed: {error}"),
@@ -1012,13 +1019,15 @@ pub(super) async fn assemble_runtime(
                     as Arc<dyn ironclaw_product_contracts::memory_page::MemoryDocumentsSource>
             }),
         supermemory: Arc::clone(&supermemory),
-        hooks: Arc::new(crate::memory_page_parts::StaticHookCatalog(
-            crate::observability::hooks::catalog::hook_catalog(
+        hooks: Arc::new(crate::observability::hooks::catalog::CallerHookCatalog {
+            base: crate::observability::hooks::catalog::hook_catalog(
                 hooks_config,
                 hook_projection_registry.as_ref(),
                 memory_upkeep_hook_wired,
             ),
-        )),
+            config: hooks_config,
+            live: hook_live_sources,
+        }),
     };
     let crate::memory_provider_factory::MemoryLifecycleConsumers {
         memory_context_service: wired_memory_context_service,
@@ -1961,6 +1970,7 @@ pub(super) async fn assemble_runtime(
         auto_approve_settings: services.auto_approve_settings.clone(),
         extension_registry: services.extension_registry.clone(),
         shared_extension_registry: services.shared_extension_registry.clone(),
+        extension_settings: Arc::clone(&services.extension_settings),
         skill_auto_activate_learned: Arc::clone(&services.skill_auto_activate_learned),
         extension_management: services.extension_management.clone(),
         runtime_http_egress: services.runtime_http_egress.as_ref().map(Arc::clone),

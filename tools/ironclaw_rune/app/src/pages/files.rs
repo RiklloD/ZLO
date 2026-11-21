@@ -9,7 +9,6 @@ use zlo_client::workspace_views::{FsMount, ProjectFsEntry, ProjectFsEntryKind, R
 use super::common::{
     SM, XL, XS, choice, empty_state, error_line, font, glyph, label, refresh_button,
 };
-use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -247,7 +246,7 @@ fn render_list(s: &State) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .wheel_glide("file-list")
+        .key("file-list")
         .child(list.children(rows))
 }
 
@@ -314,7 +313,7 @@ fn render_preview(s: &State, k: &Kit) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .wheel_glide(format!("file-preview-{path}"))
+        .key(format!("file-preview-{path}"))
         .child(
             col()
                 .w_full()

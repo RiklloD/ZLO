@@ -1,4 +1,5 @@
-//! Extensions page rendering (GPUI `ExtensionsView`'s `render_*` methods).
+//! Settings → Plugins rendering (GPUI `ExtensionsView`'s `render_*`
+//! methods); a plugin's own page and the consent sheet are `plugin_view.rs`.
 
 use crate::pages::common::controls::{
     Look, Size, button_sized, header_with, icon_button_sized, input, open_url, outlined_tag,
@@ -8,7 +9,7 @@ use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs, xs_medium};
 use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
 use rune::{Cx, El, TextStyle, col, el, row, text};
 use rune_kit::Kit;
-use zlo_client::extension_state::LifecyclePublicState;
+use zlo_client::plugins::PluginState;
 use zlo_client::product_wire::{RebornExtensionCredentialSetup, RebornExtensionRegistryEntry};
 use zlo_client::wire::InstalledExtension;
 
@@ -17,9 +18,13 @@ use crate::icons;
 use crate::jobs;
 use crate::state::State;
 
-pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
+pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let ext = &s.pages.extensions;
+    super::plugin_view::consent_sheet(s, k, layer);
+    if let Some(d) = &ext.detail {
+        return super::plugin_view::detail_page(s, k, d);
+    }
     let actions = vec![
         button_sized("MCP server", Look::Outline, Size::Small)
             .icon(&icons::PLUS)
@@ -52,7 +57,7 @@ pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         .enumerate()
         .map(|(ix, e)| render_catalog(s, k, ix, e))
         .collect();
-    let mut body = col().w_full().child(header_with(p, "Extensions", actions));
+    let mut body = col().w_full().child(header_with(p, "Plugins", actions));
     if let Some(e) = &ext.error {
         body = body.child(error_line(p, e));
     }
@@ -64,7 +69,7 @@ pub fn page(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     }
     body = body.child(section_title(p, "Installed", 0.));
     if ext.loaded && installed.is_empty() {
-        body = body.child(empty_state(p, "No extensions installed yet."));
+        body = body.child(empty_state(p, "No plugins installed yet."));
     }
     body = body
         .child(col().w_full().gap(12.).children(installed))
@@ -341,12 +346,11 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
     let confirming = ext.confirm_remove.as_deref() == Some(id.as_str());
     let setup = ext.setup.as_ref().filter(|x| x.id == id);
     let pairing = ext.pairing.as_ref().filter(|x| x.id == id);
-    let channel = e.is_channel() && matches!(e.installation_state, LifecyclePublicState::Active);
-    let state_tag = match e.installation_state {
-        LifecyclePublicState::Active => outlined_tag(p, Tone::Success, "Active"),
-        LifecyclePublicState::SetupNeeded => outlined_tag(p, Tone::Warning, "Needs setup"),
-        LifecyclePublicState::Uninstalled => outlined_tag(p, Tone::Secondary, "Removed"),
-    };
+    let state = e.installation_state;
+    let channel = e.is_channel() && state == PluginState::Active;
+    // Consent comes before setup: nothing of it runs until it is allowed.
+    let held = matches!(state, PluginState::ConsentRequired | PluginState::Tampered);
+    let state_tag = super::plugin_view::state_tag(p, state);
     let remove_button = if confirming {
         let id = id.clone();
         button_sized("Remove?", Look::Danger, Size::Small)
@@ -402,8 +406,8 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
         );
     }
     let setup_id = id.clone();
-    head = head
-        .child(
+    if !held {
+        head = head.child(
             button_sized(
                 if setup.is_some() { "Close" } else { "Set up" },
                 Look::Outline,
@@ -413,6 +417,16 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
             .on_press(move |s: &mut State| super::open_setup(s, setup_id.clone()))
             .build(k)
             .key(format!("setup-{ix}")),
+        );
+    }
+    let open_id = id.clone();
+    head = head
+        .child(
+            icon_button_sized(&icons::CHEVRON_RIGHT, "Plugin settings", Size::Small)
+                .disabled(busy)
+                .on_press(move |s: &mut State| super::plugin::open_detail(s, open_id.clone()))
+                .build(k)
+                .key(format!("open-{ix}")),
         )
         .child(remove_button);
     let mut c = card(p).key(format!("ext-{id}")).child(head).child(
@@ -428,6 +442,9 @@ fn render_installed(s: &State, k: &Kit, ix: usize, e: &InstalledExtension) -> El
         .font(xs())
         .color(p.text_muted),
     );
+    if let Some(note) = super::plugin_view::held_note(s, k, ix, e) {
+        c = c.child(note);
+    }
     if let Some(err) = &e.activation_error {
         c = c.child(error_line(p, err));
     }

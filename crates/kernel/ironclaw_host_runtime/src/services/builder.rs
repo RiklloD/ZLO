@@ -73,6 +73,7 @@ where
             turn_run_wake_notifier,
             extension_tool_resolver,
             post_edit_check,
+            extension_settings,
             mut component_types,
         } = self;
         component_types.filesystem = ProductionComponentType::of::<T>();
@@ -117,6 +118,7 @@ where
             turn_run_wake_notifier,
             extension_tool_resolver,
             post_edit_check,
+            extension_settings,
             component_types,
         }
     }
@@ -173,6 +175,7 @@ where
             turn_run_wake_notifier,
             extension_tool_resolver,
             post_edit_check,
+            extension_settings,
             mut component_types,
         } = self;
         let lifecycle_governor: Arc<dyn ResourceGovernor> = governor.clone();
@@ -219,6 +222,7 @@ where
             turn_run_wake_notifier,
             extension_tool_resolver,
             post_edit_check,
+            extension_settings,
             component_types,
         }
     }
@@ -835,6 +839,18 @@ where
         self
     }
 
+    /// Supply the per-user package settings reader the WASM lane uses to
+    /// attach a package's current settings to each invocation context. Call
+    /// before [`Self::try_with_wasm_runtime`]. Without it every package sees
+    /// its declared defaults.
+    pub fn with_extension_settings(
+        mut self,
+        settings: Arc<dyn ironclaw_extension_registry::settings::ExtensionSettingsReader>,
+    ) -> Self {
+        self.extension_settings = settings;
+        self
+    }
+
     fn with_wasm_runtime(mut self, runtime: Arc<WasmRuntimeAdapter>) -> Self {
         self.component_types
             .wasm_runtime_credential_provider_captured = self.wasm_credential_provider.is_some();
@@ -875,6 +891,7 @@ where
             Arc::clone(&self.runtime_http_egress),
             self.wasm_credential_provider.clone(),
             Arc::clone(&self.secret_injection_store),
+            Arc::clone(&self.extension_settings),
         )?);
         Ok(self.with_wasm_runtime(adapter))
     }

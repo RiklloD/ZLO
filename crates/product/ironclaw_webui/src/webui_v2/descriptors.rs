@@ -73,6 +73,7 @@ pub const WEBUI_V2_ROUTE_REGISTER_HOSTED_MCP_EXTENSION: &str =
     "webui.v2.register_hosted_mcp_extension";
 pub const WEBUI_V2_ROUTE_IMPORT_EXTENSION: &str = "webui.v2.import_extension";
 pub const WEBUI_V2_ROUTE_REMOVE_EXTENSION: &str = "webui.v2.remove_extension";
+pub const WEBUI_V2_ROUTE_GRANT_EXTENSION_CONSENT: &str = "webui.v2.grant_extension_consent";
 pub const WEBUI_V2_ROUTE_GET_EXTENSION_SETUP: &str = "webui.v2.get_extension_setup";
 pub const WEBUI_V2_ROUTE_SETUP_EXTENSION: &str = "webui.v2.setup_extension";
 pub const WEBUI_V2_ROUTE_LIST_SKILLS: &str = "webui.v2.list_skills";
@@ -261,6 +262,8 @@ pub const WEBUI_V2_ROUTE_SUPERMEMORY_DELETE_DOCUMENT: &str =
     "webui.v2.memory.supermemory.delete_document";
 pub const WEBUI_V2_ROUTE_SUPERMEMORY_FORGET: &str = "webui.v2.memory.supermemory.forget";
 pub const WEBUI_V2_ROUTE_HOOKS_CATALOG: &str = "webui.v2.hooks.catalog";
+pub const WEBUI_V2_ROUTE_EXTENSION_SETTINGS_LIST: &str = "webui.v2.extensions.settings.list";
+pub const WEBUI_V2_ROUTE_EXTENSION_SETTING_SET: &str = "webui.v2.extensions.settings.set";
 pub const WEBUI_V2_PATTERN_MEMORY_DOCUMENTS: &str = "/api/webchat/v2/memory/documents";
 pub const WEBUI_V2_PATTERN_MEMORY_DOCUMENT: &str = "/api/webchat/v2/memory/documents/content";
 pub const WEBUI_V2_PATTERN_MEMORY_ARCHIVE: &str = "/api/webchat/v2/memory/documents/archive";
@@ -274,6 +277,19 @@ pub const WEBUI_V2_PATTERN_SUPERMEMORY_DELETE_DOCUMENT: &str =
 pub const WEBUI_V2_PATTERN_SUPERMEMORY_FORGET: &str =
     "/api/webchat/v2/memory/supermemory/memories/forget";
 pub const WEBUI_V2_PATTERN_HOOKS: &str = "/api/webchat/v2/hooks";
+pub const WEBUI_V2_PATTERN_EXTENSION_SETTINGS: &str =
+    "/api/webchat/v2/extensions/{extension_id}/settings";
+pub const WEBUI_V2_PATTERN_EXTENSION_SETTING: &str =
+    "/api/webchat/v2/extensions/{extension_id}/settings/{setting_id}";
+
+// Plugin UI slot routes (`reborn.plugin_ui.v1` trees rendered by an
+// extension's own side-effect-free render tool).
+pub const WEBUI_V2_ROUTE_PLUGIN_UI_SLOTS: &str = "webui.v2.plugin_ui.slots";
+pub const WEBUI_V2_ROUTE_PLUGIN_UI_RENDER: &str = "webui.v2.plugin_ui.render";
+pub const WEBUI_V2_ROUTE_PLUGIN_UI_EVENT: &str = "webui.v2.plugin_ui.event";
+pub const WEBUI_V2_PATTERN_PLUGIN_UI_SLOTS: &str = "/api/webchat/v2/plugin-ui/slots";
+pub const WEBUI_V2_PATTERN_PLUGIN_UI_RENDER: &str = "/api/webchat/v2/plugin-ui/render";
+pub const WEBUI_V2_PATTERN_PLUGIN_UI_EVENT: &str = "/api/webchat/v2/plugin-ui/event";
 
 // Computer-use routes (a thread's session + latest frame; Stop / take over).
 pub const WEBUI_V2_ROUTE_COMPUTER_USE_SESSION: &str = "webui.v2.computer_use.session";
@@ -384,6 +400,8 @@ pub const WEBUI_V2_PATTERN_REGISTER_HOSTED_MCP_EXTENSION: &str =
 pub const WEBUI_V2_PATTERN_IMPORT_EXTENSION: &str = "/api/webchat/v2/extensions/import";
 pub const WEBUI_V2_PATTERN_REMOVE_EXTENSION: &str =
     "/api/webchat/v2/extensions/{package_id}/remove";
+pub const WEBUI_V2_PATTERN_GRANT_EXTENSION_CONSENT: &str =
+    "/api/webchat/v2/extensions/{package_id}/consent";
 pub const WEBUI_V2_PATTERN_SETUP_EXTENSION: &str = "/api/webchat/v2/extensions/{package_id}/setup";
 pub const WEBUI_V2_PATTERN_LIST_SKILLS: &str = "/api/webchat/v2/skills";
 pub const WEBUI_V2_PATTERN_SEARCH_SKILLS: &str = "/api/webchat/v2/skills/search";
@@ -639,6 +657,31 @@ pub fn webui_v2_routes_with_artifact_flags(
             NetworkMethod::Get,
             WEBUI_V2_PATTERN_HOOKS,
         ),
+        read_route(
+            WEBUI_V2_ROUTE_PLUGIN_UI_SLOTS,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_PLUGIN_UI_SLOTS,
+        ),
+        plugin_ui_render_descriptor(
+            WEBUI_V2_ROUTE_PLUGIN_UI_RENDER,
+            WEBUI_V2_PATTERN_PLUGIN_UI_RENDER,
+        ),
+        plugin_ui_render_descriptor(
+            WEBUI_V2_ROUTE_PLUGIN_UI_EVENT,
+            WEBUI_V2_PATTERN_PLUGIN_UI_EVENT,
+        ),
+        // Package settings share the memory page's user-action policy: a
+        // scoped read and a small bounded mutation.
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_EXTENSION_SETTINGS_LIST,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_EXTENSION_SETTINGS,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_EXTENSION_SETTING_SET,
+            NetworkMethod::Put,
+            WEBUI_V2_PATTERN_EXTENSION_SETTING,
+        ),
         computer_use_session_descriptor(),
         computer_use_control_descriptor(),
         computer_use_live_descriptor(
@@ -732,6 +775,7 @@ pub fn webui_v2_routes_with_artifact_flags(
         register_hosted_mcp_extension_descriptor(),
         import_extension_descriptor(),
         remove_extension_descriptor(),
+        grant_extension_consent_descriptor(),
         get_extension_setup_descriptor(),
         setup_extension_descriptor(),
         list_skills_descriptor(),
@@ -1689,6 +1733,27 @@ fn memory_route_descriptor(
     descriptor(route_id, method, pattern, policy)
 }
 
+/// Render/event carry a small JSON body (an event payload is capped at
+/// 16 KiB behind the surface) but are reads: a render tool is side-effect-free
+/// by manifest rule. They keep the read rate budget because one screen renders
+/// several slots at once.
+fn plugin_ui_render_descriptor(
+    route_id: &'static str,
+    pattern: &'static str,
+) -> IngressRouteDescriptor {
+    descriptor(
+        route_id,
+        NetworkMethod::Post,
+        pattern,
+        mutation_policy(
+            body_limit_kib(32),
+            read_rate_limit(),
+            AuditTraceClass::UserAction,
+            AllowedEffectPath::ProductSurface,
+        ),
+    )
+}
+
 fn notification_setup_status_descriptor() -> IngressRouteDescriptor {
     read_route(
         WEBUI_V2_ROUTE_NOTIFICATION_SETUP_STATUS,
@@ -1782,6 +1847,15 @@ fn remove_extension_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_ROUTE_REMOVE_EXTENSION,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_REMOVE_EXTENSION,
+        4,
+    )
+}
+
+fn grant_extension_consent_descriptor() -> IngressRouteDescriptor {
+    mutation_route(
+        WEBUI_V2_ROUTE_GRANT_EXTENSION_CONSENT,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_GRANT_EXTENSION_CONSENT,
         4,
     )
 }

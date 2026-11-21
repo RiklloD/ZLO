@@ -1,3 +1,4 @@
+use crate::provider_instance_readiness::ProviderInstanceReadinessPort;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -45,10 +46,15 @@ pub struct FirstPartyRegistrarContext {
     pub credential_account_service: Arc<dyn CredentialAccountService>,
     pub credential_account_record_source: Arc<dyn CredentialAccountRecordSource>,
     pub product_auth_runtime_ports: ProductAuthProviderRuntimePorts,
-    /// Whether the registrar's required OAuth backend was registered at build
-    /// time. Gates a pre-dispatch "not configured" tool result for handlers
-    /// that need product-auth mediated accounts.
-    pub oauth_backend_configured: bool,
+    /// Resolves whether a vendor's host-level OAuth client exists at all.
+    /// Gates a pre-dispatch "not configured" tool result for handlers that
+    /// need product-auth mediated accounts.
+    ///
+    /// A port rather than a build-time boolean because an operator can supply
+    /// those client credentials through administrator configuration while the
+    /// process runs; a boolean captured at composition would keep answering
+    /// "not configured" for the rest of the process's life.
+    pub provider_instance_readiness: Arc<dyn ProviderInstanceReadinessPort>,
 }
 
 /// Host-bundled capability handler installer.

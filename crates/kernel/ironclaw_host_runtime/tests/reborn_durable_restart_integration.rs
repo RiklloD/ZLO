@@ -1,6 +1,7 @@
 #![deny(clippy::let_underscore_must_use)]
 mod support;
 
+use ironclaw_extension_registry::test_support::UnverifiedContentsForTest as _;
 use support::legacy_capability_fixture_to_v2;
 
 use std::{path::Path, sync::Arc, time::Duration};
@@ -915,7 +916,9 @@ impl ScriptBackend for EchoScriptBackend {
 fn registry_with_manifest(manifest: &str) -> ExtensionRegistry {
     let manifest = parse_manifest(manifest);
     let root = VirtualPath::new(format!("/system/extensions/{}", manifest.id.as_str())).unwrap();
-    let package = ExtensionPackage::from_manifest(manifest, root).unwrap();
+    let package = ExtensionPackage::from_manifest(manifest, root)
+        .unwrap()
+        .with_unverified_contents_for_test();
     let mut registry = ExtensionRegistry::new();
     registry.insert(package).unwrap();
     registry

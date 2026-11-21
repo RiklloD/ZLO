@@ -60,6 +60,8 @@ fn base(s: &mut State, side: Option<Tab>, work: Option<Tab>, edit: impl FnOnce(&
     s.prefs.work_tab = work.map(|t| t.id().to_string()).unwrap_or_default();
     s.prefs.work_width = 0.;
     s.prefs.last_project = Some(PathBuf::from("/Users/you/code/zlo"));
+    // Scenes must not show the real Mac's folders from saved prefs.
+    s.prefs.project_folders.clear();
 }
 
 /// A small repository with a merge, a modified and a new file, made once in
@@ -182,20 +184,20 @@ pub fn files(s: &mut State) {
 }
 
 pub fn history(s: &mut State) {
-    base(s, Some(Tab::History), None, |x| {
+    base(s, None, Some(Tab::History), |x| {
         with_repo(x);
         history::fixture_load(x);
     });
 }
 
 pub fn no_folder(s: &mut State) {
-    base(s, Some(Tab::Console), Some(Tab::Files), |_| {});
+    base(s, None, Some(Tab::Console), |_| {});
 }
 
-/// The backend on another computer: Files lists its workspace, Console
-/// says where it runs.
+/// The backend on another computer: Console says where it runs, Machines
+/// shows the computer in use.
 pub fn remote(s: &mut State) {
-    base(s, Some(Tab::Console), Some(Tab::Files), |x| {
+    base(s, Some(Tab::Machines), Some(Tab::Console), |x| {
         project::fixture_remote(
             x,
             &[("src", true), ("README.md", false), ("Cargo.toml", false)],
@@ -205,7 +207,7 @@ pub fn remote(s: &mut State) {
 }
 
 pub fn console(s: &mut State) {
-    base(s, Some(Tab::Console), None, |x| {
+    base(s, None, Some(Tab::Console), |x| {
         x.folder = Some(PathBuf::from("/Users/you/code/zlo"));
         x.console.lines = vec![
             (console::Kind::Command, "git log --oneline -3".into()),
@@ -359,6 +361,72 @@ pub fn routines(s: &mut State) {
             automation.into_iter().collect(),
         );
     });
+}
+
+/// Both docks open: Work on Changes (with quick-connect folders) and Side on
+/// Browser (with thread links and local dev server launchpad).
+pub fn browser(s: &mut State) {
+    set_data(FixtureData {
+        rows: vec![
+            user("u1", "Check the preview docs and Notion archive"),
+            Row::Assistant {
+                key: "a1".into(),
+                text: "Open the archive at https://app.notion.com/p/events-trips-archive or test locally on http://localhost:3000/dashboard."
+                    .into(),
+                streaming: false,
+            },
+        ],
+        tasks: Vec::new(),
+    });
+    base(s, Some(Tab::Browser), Some(Tab::Changes), |_| {});
+    s.prefs
+        .project_folders
+        .insert("t2".into(), PathBuf::from("/Users/you/Dev/verpin"));
+}
+
+/// Side on Machines: This Mac in use with two threads running, three saved
+/// computers (online, asleep, refused) and one linked environment.
+pub fn machines(s: &mut State) {
+    use zlo_client::inbox::{InboxState, InboxStatus};
+    base(s, Some(Tab::Machines), None, |_| {});
+    crate::pages::computers::fixtures::base(s);
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut a = crate::workspace::fixtures::row(
+        "m1",
+        "Port the frontend to Rune",
+        "default",
+        InboxState::Working,
+        1,
+    );
+    a.status = Some(InboxStatus::Working);
+    a.working_since = Some(now - 7 * 60_000);
+    let mut b = crate::workspace::fixtures::row(
+        "m2",
+        "Verpin peer-link smoke test",
+        "verpin",
+        InboxState::Working,
+        3,
+    );
+    b.status = Some(InboxStatus::NeedsInput);
+    b.working_since = Some(now - 42 * 60_000);
+    let c = crate::workspace::fixtures::row(
+        "m3",
+        "Friendly conversation opener",
+        "default",
+        InboxState::Inbox,
+        90,
+    );
+    s.workspace.inbox.list.rows = vec![a, b, c];
+    s.remote.linked.links = Some(Ok(vec![zlo_client::peer::PeerLinkSummary {
+        environment_id: "verpin-cloud".into(),
+        label: "Verpin cloud".into(),
+        urls: vec!["https://verpin-cloud.tail9915dd.ts.net".into()],
+        access: zlo_client::environment_access::PeerLinkAccess::Full,
+        linked_at: chrono::Utc::now(),
+        expires_at: chrono::Utc::now() + chrono::Duration::days(30),
+        preference: zlo_client::peer::BalancePreference::Normal,
+        revoked: false,
+    }]));
 }
 
 pub fn outputs(s: &mut State) {

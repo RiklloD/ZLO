@@ -14,7 +14,6 @@ use crate::design::kit::compact::{
     ICON_SM, ICON_XS, SM, XS, ghost_icon, ico, panel_surface, spacer, spinner, txt, txt_medium,
 };
 use crate::design::kit::shortcut_badge;
-use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::State;
@@ -402,7 +401,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                 .scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 })
-                .wheel_glide("model-list")
+                .key("model-list")
                 .child(rows),
         );
     if let Some(bar) = thinking_row(s, m, slot) {
@@ -451,7 +450,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                     .scroll(rune::ScrollSpec {
                         stick_bottom: false,
                     })
-                    .wheel_glide("model-rail")
+                    .key("model-rail")
                     .child(rail),
             )
             .child(el().w(1.).h_full().fill(p.border))

@@ -13,6 +13,7 @@
 
 mod alerts;
 mod backdrop;
+mod bench;
 mod chat;
 mod design;
 mod drafts;
@@ -26,6 +27,7 @@ mod onboarding;
 mod pages;
 mod permissions;
 mod persist;
+mod plugins;
 mod remote;
 mod run_clock;
 mod scenes;
@@ -63,12 +65,16 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= polled(C::PollQuick, workspace::quick::poll(s));
     // The chat counts its own sources (pacer, clock, copy check, computer).
     changed |= chat::poll(s, tx);
+    // A thread under a resting pointer warms; it never changes the view.
+    chat::prewarm::poll(s, tx);
     // A closed dock's column stays drawn until its clip has slid shut.
     changed |= polled(C::PollSide, chat::side::poll(s, clock, tx));
     changed |= polled(C::PollVoice, voice::poll(s, tx));
     changed |= polled(C::PollSnapshot, snapshot::poll(s, tx));
     // Show, place and hide the native previews (QuickLook, WebKit).
     changed |= polled(C::PollNativeView, native_view::poll(s, tx));
+    // Bench scenes' feeds (`bench.rs`); nothing outside them.
+    changed |= bench::poll(s, clock, tx);
     changed
 }
 

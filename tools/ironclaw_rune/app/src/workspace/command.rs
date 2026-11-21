@@ -10,7 +10,6 @@ use zlo_client::profiles::DEFAULT_PROFILE_ID;
 
 use super::ui::{self, XS, t};
 use super::{message_search, row_title};
-use crate::design::smooth_scroll::WheelGlide;
 use crate::icons;
 use crate::state::{Page, State};
 
@@ -298,12 +297,13 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .wheel_glide("cmdk-list")
+        .key("cmdk-list")
         .child(
             col()
                 .key("cmdk-rows")
                 .w_full()
                 .growth(rune::GrowthSpec::default())
+                .whole_rows()
                 .virtual_rows(
                     count,
                     ROW_H,

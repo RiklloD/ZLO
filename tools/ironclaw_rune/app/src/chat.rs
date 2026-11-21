@@ -37,6 +37,7 @@ mod outline;
 mod pace;
 mod pending;
 pub mod plan_strip;
+pub mod prewarm;
 mod question_form;
 pub(crate) mod reject_feedback;
 mod rows;
@@ -46,7 +47,10 @@ pub(crate) mod steer;
 mod view;
 mod visual;
 
+#[cfg(test)]
+mod burst_tests;
 pub mod fixtures;
+mod stream_inbox;
 #[cfg(test)]
 mod stream_tests;
 #[cfg(test)]
@@ -107,7 +111,11 @@ pub struct ChatState {
     pub rows: Rc<Vec<Row>>,
     /// Bumped with `rows`; with the other fold inputs it tells `sync_items`
     /// when there is nothing to redo.
-    rows_gen: u64,
+    pub(crate) rows_gen: u64,
+    /// The transcript moved since `rows` was built (since then): the next
+    /// poll rebuilds them, once per frame however many stream bursts landed
+    /// before it.
+    rows_stale: Option<Instant>,
     folded: Option<(u64, bool, bool, bool, bool)>,
     /// What the list shows: `rows` folded, plus the pending and reserve rows.
     pub items: Rc<Vec<Item>>,
@@ -117,9 +125,13 @@ pub struct ChatState {
     pub(crate) reject: Option<reject_feedback::RejectEditor>,
     /// When the live run began, for the pending row's seconds.
     pub(crate) run_started: Option<Instant>,
-    /// The whole second the working line last showed, so the poll asks
-    /// for a new view once a second, not on every frame of the run.
+    /// The whole second the working line last showed, so the poll sets
+    /// [`Self::clock_text`] once a second, not on every frame of the run.
     clock_secs: Option<u64>,
+    /// The working line's seconds, painted in place: a tick repaints the
+    /// label without building the view again (`pending::clock_view` says
+    /// when the line itself changes and does need a new view).
+    pub(crate) clock_text: rune::LiveText,
     pub(crate) reserve: Option<Reserve>,
     /// The transcript viewport's height, for the reserve.
     pub(crate) list_height: f32,
@@ -210,12 +222,14 @@ impl ChatState {
             transcript: Transcript::default(),
             rows: Rc::new(Vec::new()),
             rows_gen: 0,
+            rows_stale: None,
             folded: None,
             items: Rc::new(Vec::new()),
             toggles: HashMap::new(),
             reject: None,
             run_started: None,
             clock_secs: None,
+            clock_text: rune::LiveText::new(""),
             reserve: None,
             list_height: 0.,
             turn_heights: HashMap::new(),
@@ -340,7 +354,9 @@ pub fn open(s: &mut State, thread_id: String) {
     if s.chat.as_ref().is_some_and(|c| c.thread_id == thread_id) {
         return;
     }
-    let chat = build(s, thread_id.clone(), false);
+    let mut chat = build(s, thread_id.clone(), false);
+    // Rows fetched while the pointer rested on its row show at once.
+    prewarm::adopt(s, &mut chat);
     s.chat = Some(chat);
     start(s, &thread_id);
 }
@@ -423,20 +439,28 @@ pub(crate) fn open_stream(s: &mut State, id: &str) {
     c.stream = None;
     let (stream, mut rx) = backend.subscribe(&thread);
     c.stream = Some(stream);
+    let inbox = std::sync::Arc::new(stream_inbox::StreamInbox::default());
     backend.spawn(move |_| async move {
         while let Some(first) = rx.recv().await {
-            // Drain whatever else is queued so a burst renders once.
+            // Drain whatever else is queued so a burst lands at once.
             let mut batch = vec![first];
             while let Ok(next) = rx.try_recv() {
                 batch.push(next);
             }
+            // One update waits per stream at most: bursts that arrive
+            // before it runs join it instead of queueing their own.
+            if !inbox.push(batch) {
+                continue;
+            }
             let thread = thread.clone();
+            let inbox = inbox.clone();
             // Only a burst that changes what shows rebuilds the view: one
-            // the pacer folds in at its next step, or that changed nothing,
-            // costs no frame.
+            // the next frame's poll folds in, or that changed nothing,
+            // costs no frame here.
             handle.update_if(move |s, tx| {
                 crate::energy::hit(crate::energy::C::UpdateStream);
-                !s.fixture && on_stream(s, &thread, generation, batch, tx)
+                let batch = inbox.take();
+                !s.fixture && !batch.is_empty() && on_stream(s, &thread, generation, batch, tx)
             });
         }
     });
@@ -527,10 +551,7 @@ fn on_stream(
     }
     // The CLI agent's turn diff and review, to tell the Changes tab (area
     // S) when either moves.
-    let cli_before = (
-        c.transcript.cli_turn_diff().cloned(),
-        c.transcript.cli_review().cloned(),
-    );
+    let cli_before = c.transcript.cli_report_rev();
     let mut changed = false;
     let mut visible = false;
     let mut ended = None;
@@ -568,12 +589,18 @@ fn on_stream(
         visible = true;
     }
     if changed {
-        visible |= !refresh_rows(s, id, tx);
+        if ended.is_some() {
+            // The run's end reads the settled rows (voice, alerts) now.
+            visible |= !refresh_rows(s, id, tx);
+        } else if let Some(c) = chat_for(s, id) {
+            // Rows are rebuilt from the whole transcript: leave that to the
+            // next frame's poll, so a burst of deltas costs one rebuild per
+            // frame, not one per burst that landed before it.
+            c.rows_stale.get_or_insert_with(Instant::now);
+            tx.wake_after(Duration::ZERO);
+        }
     }
-    let cli_moved = chat_ref(s, id).is_some_and(|c| {
-        (c.transcript.cli_turn_diff(), c.transcript.cli_review())
-            != (cli_before.0.as_ref(), cli_before.1.as_ref())
-    });
+    let cli_moved = chat_ref(s, id).is_some_and(|c| c.transcript.cli_report_rev() != cli_before);
     if cli_moved && is_main(s, id) {
         side::on_cli_report(s);
         visible = true;
@@ -613,6 +640,7 @@ pub(crate) fn refresh_rows(s: &mut State, id: &str, tx: &mut Tx) -> bool {
         return false;
     };
     crate::energy::hit(crate::energy::C::RowsRebuilt);
+    c.rows_stale = None;
     c.rows = Rc::new(c.transcript.rows());
     c.rows_gen += 1;
     question_form::sync_drafts(c);
@@ -781,18 +809,52 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
 }
 
 fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
+    poll_chat(s, id, tx.input_waiting(), tx)
+}
+
+/// How long the stream's fold and the pacer's step may wait behind the
+/// user's input: about one pacer step, so a reply keeps growing (if a
+/// little coarser) under a continuous scroll or drag.
+const INPUT_YIELD_MAX: Duration = Duration::from_millis(34);
+
+/// Whether work owed since `since` waits a frame for the input queued for
+/// this one (`Tx::input_waiting`): the input's frame comes first, the work
+/// in the frame after, unless it already waited [`INPUT_YIELD_MAX`].
+fn yields_to_input(input_waiting: bool, since: Instant, now: Instant) -> bool {
+    input_waiting && now.saturating_duration_since(since) < INPUT_YIELD_MAX
+}
+
+/// [`poll_one`] with the frame's `input_waiting` passed in (tests set it;
+/// a headless runtime's input carries no timestamp, so it never reads true).
+fn poll_chat(s: &mut State, id: &str, input_waiting: bool, tx: &mut Tx) -> bool {
     let front = crate::workspace::window_active(s);
     let Some(c) = chat_for(s, id) else {
         return false;
     };
     let mut changed = false;
+    let now = Instant::now();
+    // Both of these rebuild from the whole thread: keys, clicks and the
+    // wheel go first (they run after this poll, in this frame), and the
+    // fold comes on the next frame.
+    if let Some(since) = c.rows_stale {
+        if yields_to_input(input_waiting, since, now) {
+            tx.wake_after(Duration::ZERO);
+        } else {
+            // Stream bursts since the last frame, folded in once.
+            let deferred = refresh_rows(s, id, tx);
+            changed = crate::energy::polled(crate::energy::C::PollChatStream, !deferred);
+        }
+    }
+    let Some(c) = chat_for(s, id) else {
+        return changed;
+    };
     if c.pacing {
         // The pacer reveals more on each step, once a step is due.
-        match c
-            .pace_due
-            .map(|due| due.saturating_duration_since(Instant::now()))
-        {
-            Some(left) if !left.is_zero() => tx.wake_after(left),
+        match c.pace_due {
+            Some(due) if due > now => tx.wake_after(due - now),
+            Some(due) if yields_to_input(input_waiting, due, now) => {
+                tx.wake_after(Duration::ZERO);
+            }
             _ => {
                 sync_items(s, id, tx);
                 changed = crate::energy::polled(crate::energy::C::PollChatPace, true);
@@ -813,16 +875,23 @@ fn poll_one(s: &mut State, id: &str, tx: &mut Tx) -> bool {
             tx.wake_after(left);
         }
     }
-    // The working line counts seconds while a run is live: a new view only
-    // when the shown second turns (the poll also runs on every frame of any
-    // animation, which must not rebuild the view each time), and one wake
-    // at the next turn while the window is in front.
+    // The working line counts seconds while a run is live: the label is
+    // repainted in place when the shown second turns (the poll also runs on
+    // every frame of any animation), a new view only when the line itself
+    // changes (its word rolls), and one wake at the next turn while the
+    // window is in front.
     match c.run_started {
         Some(at) => {
             let elapsed = at.elapsed();
             let secs = elapsed.as_secs();
-            if c.clock_secs.replace(secs) != Some(secs) {
-                changed = crate::energy::polled(crate::energy::C::PollChatClock, true);
+            let was = c.clock_secs.replace(secs);
+            if was != Some(secs) {
+                c.clock_text.set(pending::format_elapsed(secs));
+                // A run's first second builds the line; later ones only
+                // when it changes.
+                let rebuilt =
+                    was.is_none_or(|w| pending::clock_view(w) != pending::clock_view(secs));
+                changed |= crate::energy::polled(crate::energy::C::PollChatClock, rebuilt);
             }
             // Nobody watches the seconds of a window in the back; focus
             // asks for a poll (`workspace::window_focus`), which resumes.

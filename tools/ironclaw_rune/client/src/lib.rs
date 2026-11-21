@@ -23,6 +23,8 @@ pub mod operator;
 pub mod orchestration;
 mod pages;
 pub mod pairing;
+pub mod plugin_ui;
+pub mod plugins;
 mod profile_calls;
 pub mod repo_calls;
 pub mod review;

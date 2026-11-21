@@ -173,6 +173,11 @@ pub fn saw_chat(s: &mut State, id: &str, r: [f32; 4], tx: &mut Tx) {
     }
 }
 
+/// Where `id`'s chat column was last drawn ([x, y, w, h]).
+pub fn chat_rect(s: &State, id: &str) -> Option<[f32; 4]> {
+    s.workspace.thread_drag.chats.get(id).copied()
+}
+
 /// The new-thread composer card was drawn at `r`.
 pub fn saw_draft(s: &mut State, r: [f32; 4], tx: &mut Tx) {
     if s.workspace.thread_drag.draft.replace(r) == Some(r) {

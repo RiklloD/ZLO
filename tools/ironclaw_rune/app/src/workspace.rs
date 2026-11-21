@@ -83,6 +83,11 @@ pub struct Timers {
 }
 
 pub struct WorkspaceState {
+    /// The composers' shared-element flight id generation
+    /// (`chat::composer::dock_matched`): bumped when one docked composer
+    /// replaces another, so a thread switch never flies the composer onto
+    /// itself; the new-thread composer and the dock keep one id and fly.
+    pub dock_flight: u64,
     pub connect_attempt: usize,
     /// Bumped per connect: a stale connect answer or retry timer is dropped.
     pub connect_gen: jobs::Generation,
@@ -135,6 +140,7 @@ pub struct WorkspaceState {
 impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
+            dock_flight: 0,
             connect_attempt: 0,
             connect_gen: Default::default(),
             inbox: inbox::Inbox::new(),
@@ -270,8 +276,10 @@ pub(crate) fn connected(
     crate::onboarding::decide(s);
     start_polling(s);
     status::start(s);
+    // Plugins' slots: read once per connection, again on lifecycle changes.
+    crate::plugins::refresh_slots(s);
     let reopen = reopen.filter(|id| s.workspace.inbox.row(id).is_some());
-    match reopen.or_else(|| s.workspace.inbox.first_open()) {
+    match reopen.or_else(|| inbox::first_open(s)) {
         Some(first) => open_thread(s, first),
         // Nothing open: a fresh draft in the default profile.
         None => start_in_profile(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into()),
@@ -377,12 +385,19 @@ fn friendly_unreachable(message: &str, runs_local: bool) -> String {
 
 /// Open a thread in the main column. Other areas call this.
 pub fn open_thread(s: &mut State, thread_id: String) {
+    // A docked composer is in the tree (shown, or kept under a settings page).
+    let docked = s.chat.is_some() && s.page != Page::Draft;
     s.page = Page::Chat;
     s.workspace.context.close();
     inbox::visit(s, &thread_id);
     if active_id(s) == Some(thread_id.as_str()) {
         crate::chat::focus_composer(s);
         return;
+    }
+    // One docked composer replaces another: a new flight id, so neither is
+    // matched to the other.
+    if docked {
+        s.workspace.dock_flight += 1;
     }
     // Replacing the chat drops the old one, which closes its stream and
     // frees one of the gateway's per-user stream slots.
@@ -500,7 +515,7 @@ pub fn settings_groups(s: &State) -> Vec<(&'static str, Vec<NavItem>)> {
                 (Page::Profiles, &i::USER, "Profiles"),
                 (Page::Memory, &i::FILE_TEXT, "Memory"),
                 (Page::Skills, &i::BOOK_OPEN, "Skills"),
-                (Page::Extensions, &i::FRAME, "Extensions"),
+                (Page::Extensions, &i::PUZZLE, "Plugins"),
                 (Page::Permissions, &i::CIRCLE_CHECK, "Permissions"),
                 (Page::Hooks, &i::REPLACE, "Hooks"),
             ],
@@ -562,7 +577,7 @@ pub fn delete_thread(s: &mut State, thread_id: String) {
                 .retain(|t| t.thread_id != thread_id);
             if active_id(s) == Some(thread_id.as_str()) {
                 s.chat = None;
-                match s.workspace.inbox.first_open() {
+                match inbox::first_open(s) {
                     Some(next) => open_thread(s, next),
                     None => draft::open(s),
                 }
@@ -853,6 +868,27 @@ mod tests {
     fn an_unreachable_mac_says_what_to_do() {
         assert!(friendly_unreachable("down", true).contains("zlo service install"));
         assert!(friendly_unreachable("down", false).contains("Run IronClaw on this Mac"));
+    }
+
+    /// A thread switch gives the new dock its own flight id, so the
+    /// composer never flies onto itself; the new-thread composer and the
+    /// dock it hands off to share one, so the send still flies.
+    #[test]
+    fn only_the_hand_off_flies_the_composer() {
+        let mut s = crate::chat::fixtures::test_state();
+        s.fixture = true;
+        s.conn = Conn::Ready;
+        s.page = Page::Draft;
+        open_thread(&mut s, "a".into());
+        assert_eq!(s.workspace.dock_flight, 0, "new thread → dock flies");
+        open_thread(&mut s, "b".into());
+        assert_eq!(s.workspace.dock_flight, 1, "dock → dock: a new id");
+        s.page = Page::Settings;
+        open_thread(&mut s, "a".into());
+        assert_eq!(
+            s.workspace.dock_flight, 2,
+            "the kept dock under settings too"
+        );
     }
 
     /// While the battery saver holds, a status refresh is skipped: the

@@ -77,3 +77,13 @@ pub async fn open_standalone_approval_settings_stores_for_test(
 > {
     crate::factory::open_standalone_approval_settings_stores_for_test(storage_root).await
 }
+
+/// Test-only handle on a runtime's production lifecycle manager, so
+/// whole-runtime tests can drive install / consent / activation / projection
+/// as any user through the real authority checks.
+pub fn extension_management_for_test(
+    runtime: &crate::RebornRuntime,
+) -> std::sync::Arc<ironclaw_extension_host::extension_lifecycle::RebornLocalExtensionManagementPort>
+{
+    std::sync::Arc::clone(&runtime.extension_management)
+}

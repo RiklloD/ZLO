@@ -295,11 +295,14 @@ pub(crate) fn view(
 /// vscode-background do), while a matched flight draws above the whole
 /// window, so the flying card would sit on top of the picture, unwashed and
 /// dark, then snap back under it as it landed. There it swaps in place.
+/// A thread switch gives the new dock a new id (`WorkspaceState::dock_flight`):
+/// two docked composers sit at the same rect, and a flight between them
+/// would only keep frames coming with nothing moving.
 pub fn dock_matched(s: &State, card: El) -> El {
     if design::wallpaper::covers_composer(&s.prefs) {
         card
     } else {
-        card.matched(design::motion::COMPOSER_MATCH)
+        card.matched(design::motion::composer_match(s.workspace.dock_flight))
     }
 }
 

@@ -43,7 +43,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use rune::{Cx, El, FileDialogOptions, Tx};
+use rune::{Cx, El, FileDialogOptions, Tx, el};
 use rune_kit::Kit;
 use zlo_client::orchestration::WorktreeView;
 
@@ -59,6 +59,7 @@ mod console;
 mod dock;
 pub mod git;
 mod history;
+mod machines;
 mod outputs;
 mod preview;
 mod project;
@@ -76,7 +77,7 @@ pub use session::new_side_chat;
 
 pub(crate) const WIDTH_MIN: f32 = 260.;
 pub(crate) const WIDTH_MAX: f32 = 900.;
-pub(crate) const WIDTH_DEFAULT: f32 = 360.;
+pub(crate) const WIDTH_DEFAULT: f32 = 380.;
 /// The expanded column, as a share of the window (MonoCode's "maximize").
 pub(crate) const WIDE_SHARE: f32 = 0.62;
 /// Room the conversation and the sidebar keep when the docks are sized.
@@ -128,20 +129,39 @@ pub enum Tab {
     Changes,
     History,
     Console,
+    /// The computers ZLO works on and the threads running on them.
+    Machines,
     /// The side chat open on this thread (only listed while one is).
     SideChat,
+    /// A plugin's `panel.tab` slot; which one is in `prefs.side_tab`
+    /// (`plugin:{extension}/{slot}`, see [`plugin_tab`]).
+    Plugin,
 }
 
 impl Tab {
-    const WORK: [Tab; 3] = [Tab::Changes, Tab::Files, Tab::Outputs];
-    const SIDE: [Tab; 7] = [
+    /// The project tools beside the conversation.
+    const WORK: [Tab; 5] = [
+        Tab::Changes,
+        Tab::Files,
+        Tab::Outputs,
+        Tab::History,
+        Tab::Console,
+    ];
+    /// The right pane's tools, after the side chat when one is open.
+    const SIDE_TOOLS: [Tab; 5] = [
+        Tab::Activity,
+        Tab::Browser,
+        Tab::Agents,
+        Tab::Routines,
+        Tab::Machines,
+    ];
+    const SIDE: [Tab; 6] = [
         Tab::SideChat,
         Tab::Activity,
         Tab::Browser,
         Tab::Agents,
         Tab::Routines,
-        Tab::History,
-        Tab::Console,
+        Tab::Machines,
     ];
 
     fn id(self) -> &'static str {
@@ -155,7 +175,9 @@ impl Tab {
             Tab::Changes => "changes",
             Tab::History => "history",
             Tab::Console => "console",
+            Tab::Machines => "machines",
             Tab::SideChat => "side-chat",
+            Tab::Plugin => "plugin",
         }
     }
 
@@ -170,7 +192,9 @@ impl Tab {
             Tab::Changes => "Changes",
             Tab::History => "History",
             Tab::Console => "Console",
+            Tab::Machines => "Machines",
             Tab::SideChat => "Side chat",
+            Tab::Plugin => "Plugin",
         }
     }
 
@@ -178,21 +202,23 @@ impl Tab {
         use crate::icons;
         match self {
             Tab::Activity => &icons::ACTIVITY,
-            Tab::Outputs => &icons::FOLDER_OPEN,
+            Tab::Outputs => &icons::FILE_TEXT,
             Tab::Browser => &icons::GLOBE,
             Tab::Agents => &icons::BOT,
             Tab::Routines => &icons::CALENDAR,
-            Tab::Files => &icons::FOLDER_GIT,
+            Tab::Files => &icons::FOLDER_TREE,
             Tab::Changes => &icons::FILE_DIFF,
             Tab::History => &icons::GIT_COMMIT_HORIZONTAL,
             Tab::Console => &icons::SQUARE_TERMINAL,
+            Tab::Machines => &icons::MONITOR,
             Tab::SideChat => &icons::MESSAGES_SQUARE,
+            Tab::Plugin => &icons::PUZZLE,
         }
     }
 
     fn dock(self) -> Dock {
         match self {
-            Tab::Changes | Tab::Files | Tab::Outputs => Dock::Work,
+            Tab::Changes | Tab::Files | Tab::Outputs | Tab::History | Tab::Console => Dock::Work,
             _ => Dock::Side,
         }
     }
@@ -361,8 +387,16 @@ pub fn dock_open(s: &State, dock: Dock) -> bool {
     }
 }
 
-/// The tab `dock` shows. Side chat falls back to Activity once closed.
+/// The tab `dock` shows. Side chat falls back to Activity once closed, a
+/// plugin's tab once its slot is gone.
 fn dock_tab(s: &State, dock: Dock) -> Tab {
+    if dock == Dock::Side && s.prefs.side_tab.starts_with(PLUGIN_TAB) {
+        return if plugin_tab(s).is_some() {
+            Tab::Plugin
+        } else {
+            Tab::Activity
+        };
+    }
     let tab = match dock {
         Dock::Work => Tab::from_id(&s.prefs.work_tab, dock),
         Dock::Side => Tab::from_id(&s.prefs.side_tab, dock),
@@ -370,6 +404,52 @@ fn dock_tab(s: &State, dock: Dock) -> Tab {
     match tab {
         Tab::SideChat if side(s).is_none_or(|x| x.chat.is_none()) => Tab::Activity,
         tab => tab,
+    }
+}
+
+/// `prefs.side_tab`'s prefix for a plugin's tab.
+const PLUGIN_TAB: &str = "plugin:";
+
+fn plugin_tab_id(slot: &zlo_client::plugins::Slot) -> String {
+    format!("{PLUGIN_TAB}{}/{}", slot.extension_id, slot.slot_id)
+}
+
+/// The plugin slot the right pane's saved tab names, while it exists.
+pub fn plugin_tab(s: &State) -> Option<&zlo_client::plugins::Slot> {
+    let (ext, slot) = s.prefs.side_tab.strip_prefix(PLUGIN_TAB)?.split_once('/')?;
+    s.plugins
+        .find(ext, slot)
+        .filter(|x| x.slot == zlo_client::plugins::SlotKind::PanelTab)
+}
+
+/// The open thread's mount of the shown plugin tab.
+fn plugin_mount(s: &State) -> Option<crate::plugins::MountKey> {
+    let slot = plugin_tab(s)?;
+    Some(crate::plugins::MountKey::new(slot, thread_id(s)))
+}
+
+/// Open the right pane on a plugin's tab and render it for this thread.
+pub fn show_plugin(s: &mut State, extension_id: &str, slot_id: &str) {
+    let Some(slot) = s.plugins.find(extension_id, slot_id).cloned() else {
+        return;
+    };
+    let was_open = dock_open(s, Dock::Side);
+    let id = plugin_tab_id(&slot);
+    s.update_prefs(|p| {
+        p.side_open = true;
+        p.side_tab = id.clone();
+    });
+    if !was_open && let Some(x) = side_mut(s) {
+        x.opened_at[Dock::Side.ix()] = Some(Instant::now());
+    }
+    load(s, Tab::Plugin);
+}
+
+/// The slot list changed (connect, a plugin installed or removed): render
+/// the plugin tab again if one is shown.
+pub fn plugin_slots_changed(s: &mut State) {
+    if s.page == Page::Chat && s.chat.is_some() && tab_shown(s, Tab::Plugin) {
+        load(s, Tab::Plugin);
     }
 }
 
@@ -491,6 +571,11 @@ fn load(s: &mut State, tab: Tab) {
     }
     match tab {
         Tab::Activity | Tab::Agents | Tab::SideChat => {}
+        Tab::Plugin => {
+            if let Some(key) = plugin_mount(s) {
+                crate::plugins::render(s, key);
+            }
+        }
         Tab::Console => console::load(s),
         Tab::Browser => browser::start(s),
         Tab::Outputs => {
@@ -499,6 +584,7 @@ fn load(s: &mut State, tab: Tab) {
             }
         }
         Tab::Routines => routines::load(s),
+        Tab::Machines => machines::load(s),
         Tab::Files => project::refresh(s),
         Tab::Changes => changes::refresh(s),
         Tab::History => history::refresh(s),
@@ -695,14 +781,24 @@ pub fn native_wanted(s: &State) -> [Option<crate::native_view::Source>; 2] {
     out
 }
 
-/// A dot on a tab that wants attention.
+/// A dot on a tab that has live activity or wants attention.
 fn badge(s: &State, tab: Tab) -> bool {
     match tab {
-        Tab::Activity => activity::waiting(s) > 0,
+        Tab::Activity => activity::waiting(s) > 0 || bridge::running(s),
         Tab::Agents => bridge::tasks(s).iter().any(|t| t.status.is_live()),
         Tab::Changes => side(s).is_some_and(|x| x.changes.has_turn()),
+        Tab::Browser => browser::page().is_some(),
+        Tab::Console => console::is_running(s),
         Tab::SideChat => bridge::side_chat_running(s),
         _ => false,
+    }
+}
+
+/// Whether `dock`'s titlebar toggle should show an attention dot.
+fn dock_badge(s: &State, dock: Dock) -> bool {
+    match dock {
+        Dock::Work => badge(s, Tab::Changes) || badge(s, Tab::Console),
+        Dock::Side => activity::waiting(s) > 0 || badge(s, Tab::Agents),
     }
 }
 
@@ -716,10 +812,10 @@ fn tab_ready(s: &State, tab: Tab) -> bool {
     }
 }
 
-/// The tab's own buttons, drawn at the right of the dock's title row before
-/// the widen button (`dock::title`), so every tab keeps its actions in one
-/// place. Tabs whose controls belong to their content (Changes' git bar,
-/// Console's prompt, Browser's address bar) keep them there.
+/// The tab's own buttons, drawn at the right of the dock's titlebar header
+/// before the widen button, so every tab keeps its actions in one place.
+/// Tabs whose controls belong to their content (Changes' git bar, Console's
+/// prompt, Browser's address bar) keep them there.
 fn tab_actions(s: &State, k: &Kit, tab: Tab) -> Vec<El> {
     if !tab_ready(s, tab) {
         return Vec::new();
@@ -730,15 +826,100 @@ fn tab_actions(s: &State, k: &Kit, tab: Tab) -> Vec<El> {
         Tab::History => history::actions(k),
         Tab::Routines => routines::actions(k),
         Tab::Agents => agents::actions(k),
+        Tab::Plugin => vec![
+            ui::ibtn(&crate::icons::REFRESH_CW, "Refresh")
+                .on_press(|s: &mut State| load(s, Tab::Plugin))
+                .build(k)
+                .key("side-plugin-refresh"),
+        ],
+        Tab::Machines => machines::actions(k),
         _ => Vec::new(),
     }
 }
 
-/// The count shown beside the tab's name in the dock's title row.
+/// How a dock header's status line reads: its dot's colour, and whether the
+/// dot breathes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Tone {
+    /// Something runs now.
+    Live,
+    /// Waits on the person.
+    Warn,
+    Bad,
+    Good,
+    /// Nothing to report.
+    Quiet,
+}
+
+/// The dock header's one-line status for `tab`: what the tab holds right
+/// now, instead of repeating the name its pill already shows. `None` for
+/// tabs whose header holds something else (folder chip, browser bar, side
+/// chat controls).
+fn tab_status(s: &State, tab: Tab) -> Option<(String, Tone)> {
+    let plural = |n: usize, one: &str, many: &str| {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {many}")
+        }
+    };
+    Some(match tab {
+        Tab::Activity => activity::status(s),
+        Tab::Agents => {
+            let tasks = bridge::tasks(s);
+            let live = tasks.iter().filter(|t| t.status.is_live()).count();
+            match (live, tasks.len()) {
+                (_, 0) => ("No subagents".into(), Tone::Quiet),
+                (0, n) => (
+                    format!("{} · all done", plural(n, "subagent", "subagents")),
+                    Tone::Good,
+                ),
+                (l, n) => (format!("{l} running · {n} total"), Tone::Live),
+            }
+        }
+        Tab::Routines => match routines::count(s) {
+            None => ("Loading…".into(), Tone::Quiet),
+            Some(0) => ("No routines".into(), Tone::Quiet),
+            Some(n) => (plural(n, "routine", "routines"), Tone::Good),
+        },
+        Tab::Machines => {
+            let n = machines::running_count(s).unwrap_or(0);
+            let label = crate::remote::computer_label(s);
+            match n {
+                0 => (format!("{label} · idle"), Tone::Good),
+                n => (format!("{label} · {n} running"), Tone::Live),
+            }
+        }
+        // A plugin's tab: its own title, since every plugin pill is told
+        // apart by it.
+        Tab::Plugin => (
+            plugin_tab(s).map_or_else(|| tab.label().into(), |x| x.title.clone()),
+            Tone::Quiet,
+        ),
+        Tab::Outputs => match side(s).and_then(|x| x.outputs.count()) {
+            None => ("Workspace files".into(), Tone::Quiet),
+            Some(0) => ("No files yet".into(), Tone::Quiet),
+            Some(n) => (plural(n, "file", "files"), Tone::Good),
+        },
+        _ => return None,
+    })
+}
+
+/// The live count shown on a tab pill (only when non-zero).
 fn tab_count(s: &State, tab: Tab) -> Option<usize> {
     match tab {
-        Tab::Agents => Some(bridge::tasks(s).len()),
-        Tab::Routines => routines::count(s),
+        Tab::Changes => side(s).map(|x| x.changes.count()).filter(|n| *n > 0),
+        Tab::Outputs => side(s).and_then(|x| x.outputs.count()).filter(|n| *n > 0),
+        Tab::Activity => {
+            let n = activity::waiting(s);
+            (n > 0).then_some(n)
+        }
+        Tab::Agents => {
+            let n = bridge::tasks(s).len();
+            (n > 0).then_some(n)
+        }
+        Tab::Routines => routines::count(s).filter(|n| *n > 0),
+        Tab::Machines => machines::running_count(s).filter(|n| *n > 0),
         _ => None,
     }
 }
@@ -763,7 +944,23 @@ fn body(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, tab: Tab) -
         Tab::Changes => changes::view(s, k),
         Tab::History => history::view(s, k),
         Tab::Console => console::view(s, k),
+        Tab::Machines => machines::view(s, k),
         Tab::SideChat => session::chat_view(s, cx, k, layer),
+        Tab::Plugin => match plugin_mount(s) {
+            Some(key) => ui::scroll(
+                format!("side-{}", key.el_key()),
+                el().w_full()
+                    .px(12.)
+                    .pt(4.)
+                    .child(crate::plugins::mount_view(
+                        s,
+                        k,
+                        &key,
+                        crate::plugins::Density::Panel,
+                    )),
+            ),
+            None => ui::empty(s, "This plugin's tab is gone."),
+        },
     }
 }
 

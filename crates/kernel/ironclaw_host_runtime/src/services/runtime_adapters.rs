@@ -43,6 +43,7 @@ use crate::{
     },
     services::wasm_secrets::StagedWasmHostSecrets,
 };
+use ironclaw_extension_registry::settings::ExtensionSettingsReader;
 
 /// Builds a provider-rejection `DispatchError` for the first-party lane.
 /// `safe_summary` rides the typed diagnostic channel like other lanes'
@@ -425,6 +426,25 @@ where
         &self,
         request: RuntimeLaneRequest<'_, F, G>,
     ) -> Result<RuntimeAdapterResult, DispatchError> {
+        // The script executor runs commands against the package's files as
+        // they are at call time; nothing binds that to an immutable verified
+        // snapshot yet, so a package whose files are bound by consent
+        // (third-party plugins) never reaches it. Host-bundled packages are
+        // unaffected.
+        if request.package.requires_verified_contents() {
+            tracing::debug!(
+                extension_id = request.package.id.as_str(),
+                "refusing a script runtime for a package that needs consent"
+            );
+            return Err(dispatch_error_for_runtime(
+                RuntimeKind::Script,
+                RuntimeDispatchErrorKind::PolicyDenied,
+                Some(format!(
+                    "extension {} declares a script runtime, which plugins cannot use yet",
+                    request.package.id.as_str()
+                )),
+            ));
+        }
         // The lane holds no budget authority: it is handed the narrow
         // reserve/reconcile/release port, not the governor (#7067).
         let budget = GovernorRuntimeBudget::new(request.governor);
@@ -486,6 +506,21 @@ where
         &self,
         request: RuntimeLaneRequest<'_, F, G>,
     ) -> Result<RuntimeAdapterResult, DispatchError> {
+        let tool_names = request.package.hosted_mcp_tool_names();
+        let tool_name = match tool_names.get(request.capability_id) {
+            Some(tool_name) => Some(tool_name.as_str()),
+            None if tool_names.is_empty() => None,
+            None => {
+                return Err(dispatch_error_for_runtime(
+                    RuntimeKind::Mcp,
+                    RuntimeDispatchErrorKind::Manifest,
+                    Some(
+                        "hosted MCP capability is missing its persisted wire-name binding"
+                            .to_string(),
+                    ),
+                ));
+            }
+        };
         // The lane holds no budget authority: it is handed the narrow
         // reserve/reconcile/release port, not the governor (#7067).
         let budget = GovernorRuntimeBudget::new(request.governor);
@@ -498,6 +533,7 @@ where
                     capabilities: &request.package.capabilities,
                     runtime: &request.package.manifest.runtime,
                     capability_id: request.capability_id,
+                    tool_name,
                     scope: request.scope,
                     estimate: request.estimate,
                     resource_reservation: request.resource_reservation,
@@ -1052,6 +1088,7 @@ pub(super) struct WasmRuntimeAdapter {
     runtime_http_egress: SharedRuntimeHttpEgress,
     credential_provider: Option<Arc<dyn WasmRuntimeCredentialProvider>>,
     secret_injections: Arc<RuntimeSecretInjectionStore>,
+    extension_settings: Arc<dyn ExtensionSettingsReader>,
     prepared: Mutex<HashMap<String, Arc<PreparedWitTool>>>,
 }
 
@@ -1063,6 +1100,7 @@ impl WasmRuntimeAdapter {
         runtime_http_egress: SharedRuntimeHttpEgress,
         credential_provider: Option<Arc<dyn WasmRuntimeCredentialProvider>>,
         secret_injections: Arc<RuntimeSecretInjectionStore>,
+        extension_settings: Arc<dyn ExtensionSettingsReader>,
     ) -> Self {
         Self {
             runtime,
@@ -1071,6 +1109,7 @@ impl WasmRuntimeAdapter {
             runtime_http_egress,
             credential_provider,
             secret_injections,
+            extension_settings,
             prepared: Mutex::new(HashMap::new()),
         }
     }
@@ -1082,6 +1121,7 @@ impl WasmRuntimeAdapter {
         runtime_http_egress: SharedRuntimeHttpEgress,
         credential_provider: Option<Arc<dyn WasmRuntimeCredentialProvider>>,
         secret_injections: Arc<RuntimeSecretInjectionStore>,
+        extension_settings: Arc<dyn ExtensionSettingsReader>,
     ) -> Result<Self, WasmError> {
         Ok(Self::new(
             WitToolRuntime::new(config)?,
@@ -1090,6 +1130,7 @@ impl WasmRuntimeAdapter {
             runtime_http_egress,
             credential_provider,
             secret_injections,
+            extension_settings,
         ))
     }
 
@@ -1188,11 +1229,26 @@ where
                 ));
             }
         };
-        let cache_key = module_path.as_str().to_string();
+        // A package bound to consented content (third-party plugins) caches
+        // its compiled module under the consented hash too, so a module
+        // prepared from other bytes is never reused for it. Resolved before
+        // the cache lookup and fail-closed: a package that needs consent but
+        // carries no pins, or whose grant does not cover the module, is
+        // refused here — never served from a module another package compiled.
+        let pinned_hash = request
+            .package
+            .required_asset_pin(&module_path)
+            .map_err(|error| tampered_wasm_package(request.package, &error))?;
+        let settings = self.invocation_settings(&request).await?;
+        let cache_key = match pinned_hash {
+            Some(hash) => format!("{}#{hash}", module_path.as_str()),
+            None => module_path.as_str().to_string(),
+        };
         let prepared = self.prepared_guard()?.get(&cache_key).cloned();
         if let Some(prepared) = prepared {
             let host = self.host_for_scope(&request.scope, request.capability_id);
-            return execute_prepared_wasm(self.runtime.clone(), prepared, host, request).await;
+            return execute_prepared_wasm(self.runtime.clone(), prepared, host, request, settings)
+                .await;
         }
 
         let wasm_bytes = request
@@ -1206,6 +1262,11 @@ where
                     Some(error.to_string()),
                 )
             })?;
+        // Consent binds the bytes that execute: verify the exact buffer about
+        // to be compiled (one read, no check-then-reread).
+        if let Err(error) = request.package.verify_asset(&module_path, &wasm_bytes) {
+            return Err(tampered_wasm_package(request.package, &error));
+        }
         let prepared = Arc::new(
             run_wasm_prepare_blocking(
                 self.runtime.clone(),
@@ -1231,7 +1292,63 @@ where
             }
         };
         let host = self.host_for_scope(&request.scope, request.capability_id);
-        execute_prepared_wasm(self.runtime.clone(), prepared, host, request).await
+        execute_prepared_wasm(self.runtime.clone(), prepared, host, request, settings).await
+    }
+}
+
+/// The refusal a lane returns for bytes the package's consent grant does not
+/// bind (no grant, an uncovered file, or changed bytes).
+fn tampered_wasm_package(
+    package: &ExtensionPackage,
+    error: &ironclaw_extension_registry::PackageContentPinError,
+) -> DispatchError {
+    tracing::debug!(
+        extension_id = package.id.as_str(),
+        %error,
+        "refusing a wasm module that is not the consented one"
+    );
+    dispatch_error_for_runtime(
+        RuntimeKind::Wasm,
+        RuntimeDispatchErrorKind::PolicyDenied,
+        Some(format!(
+            "extension {} is tampered: {error}; review it and grant consent again",
+            package.id.as_str()
+        )),
+    )
+}
+
+impl WasmRuntimeAdapter {
+    /// The invoking package's effective settings for the invocation's scope,
+    /// or `None` when the package declares none. A storage failure fails the
+    /// invocation: a tool must not silently run on defaults the user changed.
+    async fn invocation_settings<F, G>(
+        &self,
+        request: &RuntimeLaneRequest<'_, F, G>,
+    ) -> Result<Option<serde_json::Map<String, Value>>, DispatchError>
+    where
+        F: RootFilesystem,
+        G: ResourceGovernor,
+    {
+        let declared = &request.package.manifest.settings;
+        if declared.is_empty() {
+            return Ok(None);
+        }
+        let stored = self
+            .extension_settings
+            .stored_values(&request.scope, &request.package.id)
+            .await
+            .map_err(|error| {
+                dispatch_error_for_runtime(
+                    RuntimeKind::Wasm,
+                    RuntimeDispatchErrorKind::Executor,
+                    Some(format!("extension settings could not be read: {error}")),
+                )
+            })?;
+        Ok(Some(
+            ironclaw_extension_registry::settings::effective_setting_values(declared, &stored)
+                .into_iter()
+                .collect(),
+        ))
     }
 }
 

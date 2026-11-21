@@ -28,6 +28,8 @@ pub async fn restore_extension_lifecycle_state(
     legacy_tenant_owner: &UserId,
 ) -> Result<(), ProductOperationFailure> {
     let mut catalog_registered_user_extension_ids: BTreeSet<String> = BTreeSet::new();
+    let consent_store =
+        crate::extension_consent::ExtensionConsentStore::new(Arc::clone(filesystem));
     for installation in
         canonicalize_persisted_installation_rows(installation_store, legacy_tenant_owner).await?
     {
@@ -59,6 +61,34 @@ pub async fn restore_extension_lifecycle_state(
                 continue;
             }
         };
+        // Consent precedes everything else: a third-party package without a
+        // grant for its current files is registered (so a later grant can
+        // activate it in this process) but never enabled or published, and its
+        // manifest hash is not reconciled — a changed manifest is exactly the
+        // `tampered` case, which the grant itself migrates.
+        let consent_status = consent_store
+            .evaluate_for_owner(&available, installation.owner())
+            .await?
+            .status;
+        let runtime_unsupported =
+            crate::product_lifecycle::plugin_runtime_unsupported(&available.package);
+        if let Some(phase) = consent_status.blocking_phase().or_else(|| {
+            runtime_unsupported
+                .then_some(ironclaw_extension_contracts::state::InstallationState::ConsentRequired)
+        }) {
+            tracing::debug!(
+                extension_id = installation.extension_id().as_str(),
+                phase = phase.as_str(),
+                "not activating extension at boot until consent is granted"
+            );
+            lifecycle_service
+                .lock()
+                .await
+                .install(available.package.clone())
+                .await
+                .map_err(map_extension_error)?;
+            continue;
+        }
         let hash_matches_catalog = validate_restored_manifest_hash(&installation, &available);
         if let Err(hash_error) = hash_matches_catalog {
             migrate_host_bundled_manifest_hash(
@@ -106,7 +136,8 @@ pub async fn restore_extension_lifecycle_state(
             !package_visible_capability_ids(&available.package).is_empty();
         let has_activatable_surface = has_visible_capabilities
             || available.resolved_manifest.channel.is_some()
-            || !available.resolved_manifest.hooks.is_empty();
+            || !available.resolved_manifest.hooks.is_empty()
+            || !available.resolved_manifest.ui_slots.is_empty();
         {
             let mut lifecycle = lifecycle_service.lock().await;
             lifecycle
@@ -126,7 +157,14 @@ pub async fn restore_extension_lifecycle_state(
                 .await
                 .map_err(map_extension_error)?;
         }
-        active_extensions.publish(&available.package)?;
+        // Publication carries the execution pins for a third-party package
+        // (the same binding activation applies).
+        let published = crate::product_lifecycle::pin_for_publication(
+            &consent_store,
+            available.package.clone(),
+        )
+        .await?;
+        active_extensions.publish(&published)?;
     }
     restore_registered_only_definitions(
         catalog,
@@ -317,7 +355,7 @@ fn manifest_record_for_available(
     .map_err(map_extension_installation_error)
 }
 
-fn prepare_manifest_migration(
+pub(crate) fn prepare_manifest_migration(
     available: &AvailableExtensionPackage,
     existing: &ExtensionInstallation,
 ) -> Result<ExtensionInstallPlan, ProductOperationFailure> {

@@ -436,6 +436,11 @@ fn lifecycle_command_view(title: String, response: &LifecycleProductResponse) ->
             fields.push(command_result_field("Removed", yes_no(*removed)));
             lifecycle_confirmation_view(title, response, fields, Vec::new())
         }
+        Some(LifecycleProductPayload::ExtensionGrantConsent { granted }) => {
+            let mut fields = package_ref_fields(response);
+            fields.push(command_result_field("Consent granted", yes_no(*granted)));
+            lifecycle_confirmation_view(title, response, fields, Vec::new())
+        }
         Some(LifecycleProductPayload::SkillInstall { installed, name }) => {
             let fields = vec![
                 command_result_field("Skill", name.as_str()),

@@ -93,9 +93,8 @@ use ironclaw_extension_host::{
     ActiveExtensionPublisher, AdminConfigurationCatalogUse, AdminConfigurationService,
     AvailableExtensionCatalog, ChannelConfigService, ExtensionRemovalCleanupAdapter,
     ExtensionRemovalCleanupRegistry, FilesystemAdminConfigurationStore, FirstPartyRegistrarContext,
-    ProviderInstanceReadinessInput, first_party_reserved_extension_ids, hosted_http_mcp_runtime,
-    product_extension_host_api_contract_registry, provider_instance_readiness_map,
-    restore_extension_lifecycle_state,
+    ProviderInstanceReadinessPort, first_party_reserved_extension_ids, hosted_http_mcp_runtime,
+    product_extension_host_api_contract_registry, restore_extension_lifecycle_state,
 };
 use ironclaw_extension_manager::ironhub::{
     extend_builtin_first_party_package as extend_builtin_ironhub_package,
@@ -202,7 +201,8 @@ mod auth_engine_assembly;
 pub(crate) use auth_engine_assembly::auth_continuation_dispatcher;
 use auth_engine_assembly::{
     AdminConfigurationCredentialSlot, ProductAuthRuntimeCredentialResolver,
-    ProductAuthServicesCompositionInput, compose_product_auth_services, compose_provider_client,
+    ProductAuthServicesCompositionInput, ProviderClientCompositionInput,
+    compose_product_auth_services, compose_provider_client,
 };
 mod trigger_creation_assembly;
 use trigger_creation_assembly::TriggerCreatorPairingHook;
@@ -335,6 +335,11 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) skill_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     pub(crate) workspace_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     pub(crate) extension_filesystem: Arc<CompositeRootFilesystem>,
+    /// Per-user package settings values (`/extension-settings` mount): read by
+    /// the hook factory and the WASM tool lane, written by the settings
+    /// product face.
+    pub(crate) extension_settings:
+        Arc<ironclaw_extension_registry::settings::ExtensionSettingsStore<CompositeRootFilesystem>>,
     /// Single memory provider resolver (issue #3537). Both the memory tools and
     /// the standalone profile source build their `MemoryService` through this, so
     /// profile reads and tools agree on the bound provider (native, or
@@ -587,19 +592,6 @@ pub(crate) async fn build_runtime_substrate(
             build_production_shaped(input).await
         }
     }
-}
-
-/// Whether a Google OAuth backend is configured, from the composition-side
-/// signal `GsuiteFirstPartyHandler` uses to short-circuit dispatch with a
-/// "not configured" tool result instead of reaching credential resolution.
-/// Shared by `build_local_runtime` and its production-build-context
-/// counterpart so the check doesn't drift between the two call sites.
-fn google_oauth_configured(
-    oauth_provider_configs: &[crate::input::OAuthProviderBackendConfig],
-) -> bool {
-    oauth_provider_configs
-        .iter()
-        .any(|config| config.vendor == ironclaw_auth::GOOGLE_PROVIDER_ID)
 }
 
 fn production_config(

@@ -1,0 +1,29 @@
+schema_version = "reborn.extension_manifest.v3"
+id = "{{id}}"
+name = "{{name}}"
+version = "0.1.0"
+description = "{{name}}: a ZLO plugin. Describe what it does in one sentence."
+# Third-party packages always run with third-party trust; ZLO decides the
+# effective trust, this line is only a request.
+trust = "third_party"
+
+# The plugin's tools are served by an MCP server you run, reached over HTTPS
+# through ZLO's own network boundary. Point `server` at your server.
+# `effects` is the ceiling every tool the server lists must fit inside; ZLO
+# shows it to the user when asking for consent.
+[mcp]
+server = "https://mcp.example.com/{{id}}"
+namespace = "{{id}}"
+max_tools = 16
+default_permission = "ask"
+effects = ["network"]
+
+# A pinned tool is visible from the first activation, before ZLO has listed
+# the server's tools. A successful tools/list replaces the pinned set with the
+# server's live catalog. Pinned tools inherit the [mcp] effects.
+[[tools]]
+id = "{{id}}.echo"
+description = "Echo the given text back. Replace this example with your own tool."
+default_permission = "ask"
+input_schema_ref = "schemas/{{id}}/echo.input.v1.json"
+prompt_doc_ref = "prompts/{{id}}/echo.md"
