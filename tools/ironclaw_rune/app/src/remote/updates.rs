@@ -1,7 +1,7 @@
-//! Updates for every computer: a quiet background read that drives the
-//! "Update available" prompt in the status bar, "Turn on" for a computer
-//! that has updates off, and "Check for updates" / "Update all machines"
-//! (Settings → Computers):
+//! Updates for every computer: a quiet background read for the rows in
+//! Settings → Computers, "Turn on" for a computer that has updates off, and
+//! "Check for updates" / "Update all machines" there (the only place an
+//! update starts; the status bar never offers one):
 //! every saved computer, and This Mac, through its own backend's operator
 //! self-update routes (`zlo_client::update_calls`). Each machine updates
 //! itself from its local `[update]` config; ZLO only says "go" and watches.
@@ -132,7 +132,8 @@ pub fn from_poll(
     Some(from_check(Ok(status))).filter(|row| shown != Some(row))
 }
 
-/// How many computers have an update waiting (the status bar's prompt).
+/// How many computers have an update waiting.
+#[cfg(test)]
 pub fn waiting(updates: &UpdatesState) -> usize {
     updates
         .rows
