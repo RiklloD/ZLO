@@ -39,6 +39,9 @@ pub struct Prewarm {
     ran: Option<String>,
     /// Warm threads, oldest first.
     warm: VecDeque<Warm>,
+    /// The generation the next warm entry gets: a fetch lands only in the
+    /// entry it was started for, never in a later one for the same thread.
+    next_gen: u64,
 }
 
 struct Warm {
@@ -46,6 +49,7 @@ struct Warm {
     /// Its rows are in (false while the fetch is in flight).
     loaded: bool,
     asked: Instant,
+    generation: u64,
 }
 
 impl Prewarm {
@@ -125,10 +129,13 @@ fn warm(s: &mut State, id: &str, tx: &mut Tx) {
     }
     let chat = super::build(s, id.to_string(), false);
     let p = &mut s.prewarm;
+    let generation = p.next_gen;
+    p.next_gen += 1;
     p.warm.push_back(Warm {
         chat,
         loaded: false,
         asked: Instant::now(),
+        generation,
     });
     while p.warm.len() > WARM_MAX {
         p.warm.pop_front();
@@ -150,7 +157,14 @@ fn warm(s: &mut State, id: &str, tx: &mut Tx) {
         move |s, result, tx| {
             tx.live_only();
             let hovered = s.prewarm.hovered() == Some(thread.as_str());
-            let Some(w) = s.prewarm.find_mut(&thread) else {
+            // Only the entry this fetch was started for: a cancelled
+            // fetch landing after a newer one must not overwrite it.
+            let Some(w) = s
+                .prewarm
+                .warm
+                .iter_mut()
+                .find(|w| w.chat.thread_id == thread && w.generation == generation)
+            else {
                 return;
             };
             match result {
@@ -164,7 +178,9 @@ fn warm(s: &mut State, id: &str, tx: &mut Tx) {
                 }
                 Err(e) => {
                     tracing::debug!(thread_id = %thread, error = %e, "prewarm: timeline failed");
-                    s.prewarm.drop_thread(&thread);
+                    s.prewarm
+                        .warm
+                        .retain(|w| !(w.chat.thread_id == thread && w.generation == generation));
                 }
             }
         },
@@ -229,7 +245,9 @@ pub(super) fn adopt(s: &mut State, chat: &mut ChatState) -> bool {
     let Some(w) = p.warm.remove(ix) else {
         return false;
     };
-    if !w.loaded {
+    // Unfinished or stale rows are not adopted: the open's own load shows
+    // the thread instead.
+    if !w.loaded || w.asked.elapsed() >= FRESH_FOR {
         return false;
     }
     let warm = w.chat;
@@ -276,6 +294,45 @@ mod tests {
         let c = s.chat.as_ref().unwrap();
         assert_eq!(c.thread_id, "t2");
         assert!(!c.items.is_empty(), "the click shows the warm rows at once");
+        assert!(s.prewarm.warm.is_empty());
+    }
+
+    fn warm_t2(s: &mut State) {
+        hovered(s, "t2", true);
+        s.prewarm.hover.as_mut().unwrap().1 -= REST;
+        poll(s, &mut Tx::default());
+        hovered(s, "t2", false);
+        assert!(s.prewarm.find("t2").is_some_and(|w| w.loaded));
+    }
+
+    #[test]
+    fn stale_warm_rows_are_not_adopted() {
+        let mut s = switch_scene();
+        warm_t2(&mut s);
+        s.prewarm.find_mut("t2").unwrap().asked -= FRESH_FOR;
+        let mut chat = super::super::build(&s, "t2".into(), false);
+        assert!(
+            !adopt(&mut s, &mut chat),
+            "rows older than FRESH_FOR wait for the open's load"
+        );
+        assert!(chat.items.is_empty());
+    }
+
+    #[test]
+    fn each_warm_entry_gets_its_own_generation() {
+        let mut s = switch_scene();
+        warm_t2(&mut s);
+        let first = s.prewarm.find("t2").unwrap().generation;
+        s.prewarm.drop_thread("t2");
+        warm_t2(&mut s);
+        assert_ne!(s.prewarm.find("t2").unwrap().generation, first);
+    }
+
+    #[test]
+    fn switching_computers_drops_warm_threads() {
+        let mut s = switch_scene();
+        warm_t2(&mut s);
+        crate::remote::connect::reset_for_switch(&mut s);
         assert!(s.prewarm.warm.is_empty());
     }
 

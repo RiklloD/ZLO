@@ -45,12 +45,12 @@ mod steer;
 mod view;
 mod visual;
 
+#[cfg(test)]
+mod burst_tests;
 pub mod fixtures;
 mod stream_inbox;
 #[cfg(test)]
 mod stream_tests;
-#[cfg(test)]
-mod burst_tests;
 #[cfg(test)]
 mod tests;
 
@@ -453,9 +453,7 @@ pub(crate) fn open_stream(s: &mut State, id: &str) {
             handle.update_if(move |s, tx| {
                 crate::energy::hit(crate::energy::C::UpdateStream);
                 let batch = inbox.take();
-                !s.fixture
-                    && !batch.is_empty()
-                    && on_stream(s, &thread, generation, batch, tx)
+                !s.fixture && !batch.is_empty() && on_stream(s, &thread, generation, batch, tx)
             });
         }
     });
