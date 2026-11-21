@@ -21,18 +21,21 @@
 
 mod compactions;
 mod history;
+#[cfg(test)]
+mod motion_tests;
 
-use crate::pages::common::controls::{header_with, keyed_refresh, rule, styled};
+use crate::pages::common::controls::{header_with, rule, styled};
 use crate::pages::common::ts::{body_semibold, sm, xs};
-use crate::pages::common::{empty_state, error_line, page_body};
+use crate::pages::common::{empty_state, error_line, page_body, refresh_busy};
 use std::time::{Duration, Instant};
 
-use rune::{Color, Cursor, Cx, El, col, el, row};
-use rune_kit::Kit;
+use rune::{Color, Cx, El, SpringPair, Transition, col, el, row};
+use rune_kit::{Kit, RollingText};
 use zlo_client::usage::{ProviderUsage, UsageHistory, UsageReport, UsageStatus, UsageWindow};
 
+use self::history::MORPH;
 pub use self::history::Metric;
-use crate::design::{self, Palette};
+use crate::design::{self, Palette, motion};
 use crate::jobs;
 use crate::state::State;
 
@@ -100,6 +103,14 @@ pub fn peak(s: &State) -> Option<(&ProviderUsage, &UsageWindow)> {
 /// Fetch the report unless the last answer is younger than a minute
 /// (`force` skips that, for the Refresh button).
 pub fn refresh(s: &mut State, force: bool) {
+    fetch_report(s, force, false);
+}
+
+/// [`refresh`]; `shown` lands the answer animated, for a fetch the person
+/// asked for on this page (opening it, Refresh), so bars glide to their new
+/// lengths and figures roll. A status-bar poll passes `false` and lands at
+/// once.
+fn fetch_report(s: &mut State, force: bool, shown: bool) {
     let u = &mut s.pages.usage;
     let fresh = u.fetched.is_some_and(|at| at.elapsed() < MIN_REFRESH);
     if u.in_flight || (fresh && !force) {
@@ -110,7 +121,10 @@ pub fn refresh(s: &mut State, force: bool) {
         s,
         "usage",
         |c| async move { c.usage_report().await },
-        |s, result, _tx| {
+        move |s, result, tx| {
+            if shown {
+                tx.animated();
+            }
             let u = &mut s.pages.usage;
             u.in_flight = false;
             u.fetched = Some(Instant::now());
@@ -127,7 +141,10 @@ pub fn refresh(s: &mut State, force: bool) {
 
 /// Fetch `days` of token history unless that period was read within the
 /// minute (`force` skips that). A scan reads transcripts from disk, so it is
-/// never polled.
+/// never polled, and every scan answers something the person did on this
+/// page (opened it, picked a period, pressed Refresh): the answer lands
+/// animated, so the chart morphs to the new period and the first one fades
+/// in over its placeholder.
 pub fn refresh_history(s: &mut State, days: u32, force: bool) {
     let u = &mut s.pages.usage;
     let fresh = u
@@ -141,7 +158,8 @@ pub fn refresh_history(s: &mut State, days: u32, force: bool) {
         s,
         "usage",
         move |c| async move { c.usage_history(days).await },
-        move |s, result, _tx| {
+        move |s, result, tx| {
+            tx.animated();
             let u = &mut s.pages.usage;
             u.history_in_flight = false;
             u.history_fetched = Some((days, Instant::now()));
@@ -161,7 +179,7 @@ pub fn refresh_history(s: &mut State, days: u32, force: bool) {
 pub fn opened(s: &mut State) {
     let (metric, days) = (s.pages.usage.metric, s.pages.usage.days);
     match metric {
-        Metric::Limits => refresh(s, false),
+        Metric::Limits => fetch_report(s, false, true),
         _ => refresh_history(s, days, false),
     }
 }
@@ -176,90 +194,112 @@ fn set_days(s: &mut State, days: u32) {
     opened(s);
 }
 
-/// A row of pill buttons, one selected (GPUI `segmented`).
-fn segmented<T: Copy + PartialEq + 'static>(
-    p: &Palette,
-    key: &str,
-    options: &[(T, &'static str)],
-    current: T,
-    on_pick: fn(&mut State, T),
-) -> El {
-    let mut r = row()
-        .key(key.to_string())
-        .padding(2.0)
-        .gap(2.0)
-        .radius(8.0)
-        .fill(p.surface_raised);
-    for (ix, (value, name)) in options.iter().enumerate() {
-        let value = *value;
-        let on = value == current;
-        let mut pill = el()
-            .key(format!("{key}-{ix}"))
-            .role("radio")
-            .checked(on)
-            .label(*name)
-            .px(10.0)
-            .py(4.0)
-            .radius(6.0)
-            .cursor(Cursor::Pointer)
-            .child(styled(*name, xs(), if on { p.text } else { p.text_muted }))
-            .on_press(move |s: &mut State| on_pick(s, value));
-        if on {
-            pill = pill
-                .fill(p.surface_card)
-                .shadow(1.0, 2.0, Color::BLACK.alpha(0.12));
-        } else {
-            pill = pill.hover(p.hover);
-        }
-        r = r.child(pill);
-    }
-    r
+/// The period control's way in and out as the person leaves and enters
+/// Limits: it slides in from the metric switch's side and fades, leaving
+/// faster.
+fn period_slide() -> Transition {
+    Transition::opacity()
+        .combined(Transition::offset(-12.0, 0.0))
+        .springs(SpringPair::with_exit_ratio(motion::SLIDE, 0.6))
+}
+
+/// `options`' labels and the index of `current` among them, for
+/// `kit::segmented`.
+fn segments<T: PartialEq>(options: &[(T, &'static str)], current: T) -> (Vec<&'static str>, usize) {
+    let labels = options.iter().map(|(_, l)| *l).collect();
+    let ix = options.iter().position(|(v, _)| *v == current).unwrap_or(0);
+    (labels, ix)
 }
 
 pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let u = &s.pages.usage;
     let (metric, days) = (u.metric, u.days);
+    let (metric_labels, metric_ix) = segments(&METRICS, metric);
+    // The header keeps the height the old pill switch gave it (12 pt text,
+    // 4 pt padding, 2 pt inset), so the page below does not move.
     let mut actions =
         row()
+            .h(xs().line_px() + 12.0)
             .gap(8.0)
             .center_y()
-            .child(segmented(p, "usage-metric", &METRICS, metric, set_metric));
+            .child(design::kit::segmented(
+                s,
+                "usage-metric",
+                &metric_labels,
+                metric_ix,
+                false,
+                |s, ix| {
+                    if let Some((m, _)) = METRICS.get(ix) {
+                        set_metric(s, *m);
+                    }
+                },
+            ));
     if metric != Metric::Limits {
-        actions = actions.child(segmented(p, "usage-period", &PERIODS, days, set_days));
+        let (period_labels, period_ix) = segments(&PERIODS, days);
+        actions = actions.child(
+            design::kit::segmented(
+                s,
+                "usage-period",
+                &period_labels,
+                period_ix,
+                false,
+                |s, ix| {
+                    if let Some((d, _)) = PERIODS.get(ix) {
+                        set_days(s, *d);
+                    }
+                },
+            )
+            .transition(period_slide()),
+        );
     }
-    actions = actions.child(keyed_refresh(k, "usage-refresh", move |s: &mut State| {
-        let (metric, days) = (s.pages.usage.metric, s.pages.usage.days);
-        match metric {
-            Metric::Limits => refresh(s, true),
-            _ => refresh_history(s, days, true),
-        }
-    }));
+    let loading = match metric {
+        Metric::Limits => u.in_flight,
+        _ => u.history_in_flight,
+    };
+    actions = actions.child(refresh_busy(
+        k,
+        "usage-refresh",
+        loading,
+        move |s: &mut State| {
+            let (metric, days) = (s.pages.usage.metric, s.pages.usage.days);
+            match metric {
+                Metric::Limits => fetch_report(s, true, true),
+                _ => refresh_history(s, days, true),
+            }
+        },
+    ));
 
     let mut page = col().w_full().child(header_with(p, "Usage", vec![actions]));
     if metric != Metric::Limits {
         if let Some(e) = &u.history_error {
-            page = page.child(error_line(p, e));
+            page = page.child(error_line(p, e).key("usage-history-error"));
         }
+        // One identity for Cost and Tokens (and every period), so the
+        // chart's bars, shares and rows morph between them instead of the
+        // view being rebuilt; the placeholder fades out under it.
         let body = match (&u.history, &u.history_error) {
             (Some((d, history)), _) => {
-                history::view(s, history, metric, u.history_in_flight || *d != days)
+                history::view(s, k, history, metric, u.history_in_flight || *d != days)
+                    .key("usage-history")
+                    .transition(motion::fade())
             }
-            (None, Some(_)) => el(),
-            (None, None) => empty_state(p, "Reading the CLIs' transcripts…"),
+            (None, Some(_)) => el().key("usage-history-none"),
+            (None, None) => {
+                empty_state(p, "Reading the CLIs' transcripts…").key("usage-history-wait")
+            }
         };
-        return page_body(
-            "usage-page",
-            page.child(body.key(format!("usage-{metric:?}"))),
-        );
+        return page_body("usage-page", page.child(body));
     }
     if let Some(e) = &u.error {
-        page = page.child(error_line(p, e));
+        page = page.child(error_line(p, e).key("usage-error"));
     }
     let body = match (&u.report, &u.error) {
-        (None, None) => empty_state(p, "Loading usage…"),
-        (None, Some(_)) => el(),
-        (Some(report), _) if report.providers.is_empty() => empty_state(p, "No providers to show."),
+        (None, None) => empty_state(p, "Loading usage…").key("usage-limits-wait"),
+        (None, Some(_)) => el().key("usage-limits-none"),
+        (Some(report), _) if report.providers.is_empty() => {
+            empty_state(p, "No providers to show.").key("usage-limits-empty")
+        }
         (Some(report), _) => {
             // Providers with bars first; the ones without collapse to a line
             // each at the end.
@@ -268,9 +308,13 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
                 .iter()
                 .partition(|pr| !pr.windows.is_empty());
             let now = chrono::Utc::now().timestamp_millis();
-            let mut c = col().w_full().gap(16.0);
-            for (ix, pr) in live.into_iter().enumerate() {
-                c = c.child(provider_card(p, ix, pr, now));
+            let mut c = col()
+                .key("usage-limits")
+                .w_full()
+                .gap(16.0)
+                .transition(motion::fade());
+            for pr in live {
+                c = c.child(provider_card(p, k, pr, now));
             }
             if !idle.is_empty() {
                 let mut list = col()
@@ -283,14 +327,14 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
                     if ix > 0 {
                         list = list.child(rule(p).key(format!("usage-idle-rule-{ix}")));
                     }
-                    list = list.child(idle_row(p, ix, pr));
+                    list = list.child(idle_row(p, pr));
                 }
                 c = c.child(list);
             }
             c
         }
     };
-    page_body("usage-page", page.child(body.key("usage-limits")))
+    page_body("usage-page", page.child(body))
 }
 
 fn status_text(status: UsageStatus) -> Option<&'static str> {
@@ -306,7 +350,7 @@ fn status_text(status: UsageStatus) -> Option<&'static str> {
 /// A reading older than this is flagged: limits move within minutes.
 const STALE_MS: i64 = 30 * 60 * 1000;
 
-fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> El {
+fn provider_card(p: &Palette, k: &Kit, provider: &ProviderUsage, now: i64) -> El {
     let stale = provider.fetched_at.is_some_and(|at| now - at > STALE_MS);
     let mut title =
         row()
@@ -330,7 +374,7 @@ fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> 
         top = top.child(styled(st, xs(), p.warning));
     }
     let mut card = col()
-        .key(format!("usage-provider-{ix}"))
+        .key(format!("usage-provider-{}", provider.provider))
         .w_full()
         .gap(12.0)
         .padding(16.0)
@@ -341,8 +385,9 @@ fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> 
     if let Some(m) = &provider.message {
         card = card.child(styled(m.clone(), sm(), p.text_muted).wrap());
     }
-    for (wx, w) in provider.windows.iter().enumerate() {
-        card = card.child(window_row(p, w, now).key(format!("window-{wx}")));
+    for w in &provider.windows {
+        card = card
+            .child(window_row(p, k, &provider.provider, w, now).key(format!("window-{}", w.id)));
     }
     let updated = match provider.fetched_at {
         Some(at) if stale => styled(
@@ -368,14 +413,14 @@ fn provider_card(p: &Palette, ix: usize, provider: &ProviderUsage, now: i64) -> 
 }
 
 /// One line for a provider with nothing to draw: name, then why.
-fn idle_row(p: &Palette, ix: usize, provider: &ProviderUsage) -> El {
+fn idle_row(p: &Palette, provider: &ProviderUsage) -> El {
     let why = provider
         .message
         .clone()
         .or_else(|| status_text(provider.status).map(str::to_string))
         .unwrap_or_else(|| "No limits reported.".to_string());
     row()
-        .key(format!("usage-idle-{ix}"))
+        .key(format!("usage-idle-{}", provider.provider))
         .w_full()
         .px(16.0)
         .py(10.0)
@@ -392,15 +437,24 @@ fn idle_row(p: &Palette, ix: usize, provider: &ProviderUsage) -> El {
         )
 }
 
-fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
+fn window_row(p: &Palette, k: &Kit, provider: &str, window: &UsageWindow, now: i64) -> El {
     let pct = window.used_percent.clamp(0., 100.);
     let resets = window.resets_at.map(countdown);
     let elapsed = elapsed_share(window, now);
     // Only overspending earns a caption; the tick shows the rest.
     let ahead = elapsed.and_then(|e| ahead_of_pace(pct, e));
-    let mut right = row()
-        .gap(8.0)
-        .child(styled(format!("{pct:.0}%"), sm(), p.text));
+    let mut right = row().gap(8.0).child(
+        // Keyed per window: a rolling label remembers its last text by key.
+        RollingText::new(
+            format!("usage-pct-{provider}-{}", window.id),
+            format!("{pct:.0}%"),
+        )
+        .font(sm())
+        .color(p.text)
+        .value(pct.round())
+        .spring(motion::ROLL)
+        .build(k),
+    );
     if let Some(r) = resets {
         right = right.child(styled(r, sm(), p.text_faint));
     }
@@ -415,7 +469,8 @@ fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
                 .h_full()
                 .w_frac(pct as f32 / 100.)
                 .radius(3.0)
-                .fill(level_color(p, pct)),
+                .fill(level_color(p, pct))
+                .motion(MORPH),
         );
     // Where even spending would be by now.
     if let Some(e) = elapsed {
@@ -425,7 +480,7 @@ fn window_row(p: &Palette, window: &UsageWindow, now: i64) -> El {
                 .absolute(0.0, -2.0)
                 .w_full()
                 .h(10.0)
-                .child(el().w_frac(e as f32))
+                .child(el().key("lead").w_frac(e as f32).motion(MORPH))
                 .child(el().w(2.0).h(10.0).radius(1.0).fill(p.text_muted)),
         );
     }
