@@ -12,11 +12,13 @@
 
 pub(crate) mod catalog;
 pub mod fixtures;
+mod cli;
 mod view;
 
 use std::collections::HashMap;
+use std::time::Instant;
 
-use rune::{Cx, El, TextEdit};
+use rune::{Cx, El, TextEdit, Tx};
 use rune_kit::Kit;
 use zlo_client::operator_llm::{LlmConfigSnapshot, LlmProviderView, UserModelCatalog};
 use zlo_client::orchestration::{PickerPrefs, RouteProvider};
@@ -84,6 +86,18 @@ pub struct ProvidersState {
     pub titles_open: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
+    /// The CLI row whose command the person copied last, and when: its
+    /// copy glyph shows a check for `kit::COPIED_FOR`.
+    pub copied: Option<(String, Instant)>,
+}
+
+impl ProvidersState {
+    /// Whether `id`'s copy button still shows its check.
+    pub fn copied(&self, id: &str) -> bool {
+        self.copied
+            .as_ref()
+            .is_some_and(|(c, at)| c == id && crate::design::kit::copied(Some(*at)))
+    }
 }
 
 impl Default for ProvidersState {
@@ -109,6 +123,7 @@ impl Default for ProvidersState {
             titles_open: false,
             error: None,
             notice: None,
+            copied: None,
         }
     }
 }
@@ -194,9 +209,13 @@ fn set_title_model(s: &mut State, choice: Option<TaskModelChoice>) {
         s,
         "providers",
         move |c| async move { c.set_task_models(&models).await },
-        |s, result, _| match result {
-            Ok(saved) => st(s).task_models = Some(saved),
-            Err(e) => fail(s, e),
+        |s, result, tx| {
+            // The reply to the person's own press: let it move.
+            tx.animated();
+            match result {
+                Ok(saved) => st(s).task_models = Some(saved),
+                Err(e) => fail(s, e),
+            }
         },
     );
 }
@@ -270,25 +289,29 @@ fn set_active(s: &mut State, provider: String, model: Option<String>) {
             }
             Ok(llm)
         },
-        |s, result, _| match result {
-            Ok(llm) => {
-                let active = llm.active.as_ref().map(|a| {
-                    format!(
-                        "Now using {}{}",
-                        a.provider_id,
-                        a.model
-                            .as_deref()
-                            .map(|m| format!(" / {m}"))
-                            .unwrap_or_default()
-                    )
-                });
-                let p = st(s);
-                p.llm = Some(llm);
-                p.error = None;
-                p.notice = active;
-                refresh(s);
+        |s, result, tx| {
+            // The reply to the person's own press: let it move.
+            tx.animated();
+            match result {
+                Ok(llm) => {
+                    let active = llm.active.as_ref().map(|a| {
+                        format!(
+                            "Now using {}{}",
+                            a.provider_id,
+                            a.model
+                                .as_deref()
+                                .map(|m| format!(" / {m}"))
+                                .unwrap_or_default()
+                        )
+                    });
+                    let p = st(s);
+                    p.llm = Some(llm);
+                    p.error = None;
+                    p.notice = active;
+                    refresh(s);
+                }
+                Err(e) => fail(s, e),
             }
-            Err(e) => fail(s, e),
         },
     );
 }
@@ -317,13 +340,17 @@ fn toggle_pin(s: &mut State, model: String, active: Option<String>) {
         s,
         "providers",
         move |c| async move { c.set_model_policy(default, allowed).await },
-        |s, result, _| match result {
-            Ok(catalog) => {
-                let p = st(s);
-                p.catalog = Some(catalog);
-                p.error = None;
+        |s, result, tx| {
+            // The reply to the person's own press: let it move.
+            tx.animated();
+            match result {
+                Ok(catalog) => {
+                    let p = st(s);
+                    p.catalog = Some(catalog);
+                    p.error = None;
+                }
+                Err(e) => fail(s, e),
             }
-            Err(e) => fail(s, e),
         },
     );
 }
@@ -354,7 +381,10 @@ fn toggle_models(s: &mut State, provider: LlmProviderView) {
         s,
         "providers",
         move |c| async move { c.list_models(&provider).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's own press: let it move.
+            tx.animated();
+
             let models = match result {
                 Ok(r) if r.ok => Models::Loaded(r.models),
                 Ok(r) => Models::Failed(r.message),
@@ -375,7 +405,10 @@ fn test_connection(s: &mut State, provider: LlmProviderView) {
         s,
         "providers",
         move |c| async move { c.test_llm_connection(&provider).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's own press: let it move.
+            tx.animated();
+
             let outcome = match result {
                 Ok(r) => (r.ok, r.message),
                 Err(e) => (false, e.to_string()),
@@ -391,14 +424,18 @@ fn delete_provider(s: &mut State, id: String) {
         s,
         "providers",
         move |c| async move { c.delete_llm_provider(&id).await.map(|l| (id, l)) },
-        |s, result, _| match result {
-            Ok((id, llm)) => {
-                let p = st(s);
-                p.llm = Some(llm);
-                p.error = None;
-                p.notice = Some(format!("Removed {} and its stored key.", display_name(&id)));
+        |s, result, tx| {
+            // The reply to the person's own press: let it move.
+            tx.animated();
+            match result {
+                Ok((id, llm)) => {
+                    let p = st(s);
+                    p.llm = Some(llm);
+                    p.error = None;
+                    p.notice = Some(format!("Removed {} and its stored key.", display_name(&id)));
+                }
+                Err(e) => fail(s, e),
             }
-            Err(e) => fail(s, e),
         },
     );
 }
@@ -417,13 +454,32 @@ fn toggle_cli_hidden(s: &mut State, provider: String) {
         s,
         "providers",
         move |c| async move { c.set_model_picker(&thread, &prefs).await },
-        |s, result, _| {
+        |s, result, tx| {
+            // The reply to the person's own press: let it move.
+            tx.animated();
+
             if let Err(e) = result {
                 fail(s, e);
             }
             refresh(s);
         },
     );
+}
+
+/// Copy a CLI row's shell command; its glyph shows a check, then reverts
+/// on one timer (no standing loop), popping back as it popped in.
+fn copy_command(s: &mut State, tx: &mut Tx, id: String, cmd: &'static str) {
+    tx.copy(cmd);
+    let at = Instant::now();
+    st(s).copied = Some((id.clone(), at));
+    jobs::after(s, crate::design::kit::glyphs::COPIED_FOR, move |s, tx| {
+        // A later copy owns the check now.
+        if st(s).copied.as_ref().is_some_and(|(c, t)| *c == id && *t == at) {
+            st(s).copied = None;
+            // The person's own confirmation going back, not a poll.
+            tx.animated();
+        }
+    });
 }
 
 /// Show the device code, open the sign-in page, then wait for the gateway
@@ -434,19 +490,23 @@ pub(crate) fn start_codex(s: &mut State, provider_id: String) {
         s,
         "providers",
         |c| async move { c.start_codex_login().await },
-        move |s, result, tx| match result {
-            Ok(start) => {
-                crate::pages::common::controls::open_url(tx, &start.verification_uri);
-                let p = st(s);
-                p.codex = Some(CodexLogin {
-                    provider_id: provider_id.clone(),
-                    code: start.user_code,
-                    uri: start.verification_uri,
-                });
-                p.error = None;
-                wait_for_codex(s, provider_id);
+        move |s, result, tx| {
+            // The reply to the person's own press: the device code wipes in.
+            tx.animated();
+            match result {
+                Ok(start) => {
+                    crate::pages::common::controls::open_url(tx, &start.verification_uri);
+                    let p = st(s);
+                    p.codex = Some(CodexLogin {
+                        provider_id: provider_id.clone(),
+                        code: start.user_code,
+                        uri: start.verification_uri,
+                    });
+                    p.error = None;
+                    wait_for_codex(s, provider_id);
+                }
+                Err(e) => fail(s, e),
             }
-            Err(e) => fail(s, e),
         },
     );
 }
@@ -467,7 +527,10 @@ fn wait_for_codex(s: &mut State, provider_id: String) {
             }
             Ok(None)
         },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's own press: let it move.
+            tx.animated();
+
             // Cancelled or replaced while waiting: drop the result.
             if st(s).codex.as_ref().map(|l| &l.provider_id) != Some(&provider_id) {
                 return;
@@ -518,15 +581,19 @@ fn save_key(s: &mut State, provider: LlmProviderView) {
         s,
         "providers",
         move |c| async move { c.set_provider_key(&provider, &key).await },
-        |s, result, _| match result {
-            Ok(llm) => {
-                let p = st(s);
-                p.llm = Some(llm);
-                p.key_editor = None;
-                p.error = None;
-                p.notice = Some("API key saved to the encrypted secret store.".into());
+        |s, result, tx| {
+            // The reply to the person's own press: let it move.
+            tx.animated();
+            match result {
+                Ok(llm) => {
+                    let p = st(s);
+                    p.llm = Some(llm);
+                    p.key_editor = None;
+                    p.error = None;
+                    p.notice = Some("API key saved to the encrypted secret store.".into());
+                }
+                Err(e) => fail(s, e),
             }
-            Err(e) => fail(s, e),
         },
     );
 }
