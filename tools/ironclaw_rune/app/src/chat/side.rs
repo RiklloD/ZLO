@@ -74,7 +74,8 @@ pub mod fixtures;
 // Entry points for areas A and B (see the module docs).
 pub use changes::on_cli_report;
 pub(crate) use details::{
-    ITEMS as DETAILS_ITEMS, set_item as set_details_item, visibility as details_visibility,
+    ITEMS as DETAILS_ITEMS, left_closes_menu as details_left_closes_menu,
+    set_item as set_details_item, visibility as details_visibility,
 };
 pub use dock::{docks, titlebar_actions};
 pub use session::new_side_chat;
