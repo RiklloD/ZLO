@@ -136,8 +136,11 @@ fn opening_a_step_keeps_its_line() {
     run.frames(2);
     assert!(run.path("think:1-detail").is_some(), "it opened");
     assert_eq!(run.path("think:1-leaf"), Some(before.clone()), "same line");
+    // As the step's press does (`fold_now`): the glide rides only while a
+    // person's fold plays.
     run.change(|c| {
         c.toggles.insert("leaf:think:1".into(), false);
+        c.folding_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
     });
     run.frames(2);
     assert_eq!(
@@ -196,6 +199,61 @@ fn the_first_keystroke_eases_send_into_its_plate_and_later_ones_land() {
     assert_eq!(run.info("round-send").expect("send").fill, ready);
     let text = run.rt.state.chat.as_ref().map(|c| c.composer.text.clone());
     assert_eq!(text.as_deref(), Some("ab"));
+}
+
+/// Editing that changes the composer's height lands in the edit's own frame:
+/// the card and the transcript above it take their new size at once, while
+/// Send's plate (its live colours) still eases over. A multiline paste into
+/// an empty draft and a select-all delete of a multiline one both flip Send,
+/// and neither may spring the layout.
+#[test]
+fn editing_that_flips_send_lands_the_layout_at_once() {
+    let mut run = Run::new(fixtures::chat);
+    let (x, y) = run.center("composer-input");
+    run.rt.pointer_down(x, y);
+    run.rt.pointer_up(x, y);
+    run.frames(30);
+    let transcript = super::view::transcript_key("t1");
+    let rects = |run: &Run| {
+        (
+            run.info("composer:t1").expect("the composer card").rect,
+            run.info(&transcript).expect("the transcript").rect,
+        )
+    };
+    let empty = rects(&run);
+    let idle = run.info("round-send").expect("send").fill;
+
+    run.rt.paste("one\ntwo\nthree\nfour");
+    run.frames(1);
+    let pasted = rects(&run);
+    let easing = run.info("round-send").expect("send").fill;
+    run.frames(60);
+    let tall = rects(&run);
+    assert!(tall.0[3] > empty.0[3] + 20., "four lines grow the card");
+    assert_eq!(pasted, tall, "the paste's frame has the final layout");
+    let ready = run.info("round-send").expect("send").fill;
+    assert!(
+        easing != idle && easing != ready,
+        "Send's plate eases on its own ({easing:?})"
+    );
+
+    run.rt.key(KeyEvent {
+        key: Key::Command('a'),
+        mods: rune::Mods {
+            cmd: true,
+            ..Default::default()
+        },
+    });
+    run.frames(1);
+    run.rt.key(KeyEvent {
+        key: Key::Backspace,
+        mods: Default::default(),
+    });
+    run.frames(1);
+    let cleared = rects(&run);
+    run.frames(60);
+    assert_eq!(rects(&run), empty, "back to the one-line card");
+    assert_eq!(cleared, empty, "the delete's frame has the final layout");
 }
 
 #[test]
@@ -322,4 +380,40 @@ fn one_outline_card_glides_along_the_rail() {
         .iter()
         .any(|e| e.key.as_deref() == Some("tick") && e.moving);
     assert!(ticks_moving, "the lift eases back down");
+}
+
+/// The thinking row's knob is one plate that glides to the picked level
+/// (same element, between its old and new places mid-way), and the provider
+/// rail's selection is one pill that glides the same way.
+#[test]
+fn the_thinking_knob_and_rail_pill_glide_to_the_pick() {
+    let mut run = Run::new(|s| super::model_picker::scene(s, true));
+    let knob = run.path("thinking-knob").expect("the knob");
+    let from = run.info("thinking-knob").expect("knob").rect[0];
+    run.change(|c| c.model_picker.effort = None);
+    run.frames(3);
+    let mid = run.info("thinking-knob").expect("knob");
+    assert_eq!(run.path("thinking-knob"), Some(knob), "the same knob");
+    run.frames(60);
+    let to = run.info("thinking-knob").expect("knob").rect[0];
+    assert!(to < from, "Auto is the first segment ({to} vs {from})");
+    assert!(
+        mid.rect[0] < from && mid.rect[0] > to,
+        "it glides there ({from} → {} → {to})",
+        mid.rect[0]
+    );
+
+    let pill = run.path("rail-pill").expect("the rail pill");
+    let top = run.info("rail-pill").expect("pill").rect[1];
+    run.change(|c| c.model_picker.rail = super::model_picker::Rail::Favorites);
+    run.frames(3);
+    let gliding = run.info("rail-pill").expect("pill").rect[1];
+    assert_eq!(run.path("rail-pill"), Some(pill), "the same pill");
+    run.frames(60);
+    let landed = run.info("rail-pill").expect("pill").rect[1];
+    assert!(landed < top, "it moved up to Favorites");
+    assert!(
+        (gliding - top).abs() > 0.5 && (gliding - landed).abs() > 0.5,
+        "it glides ({top} → {gliding} → {landed})"
+    );
 }

@@ -339,6 +339,11 @@ fn bars(s: &State, id: &str, x: &[String], series: &Series, unit: Option<&str>) 
                 .grow(1.)
                 .h_full()
                 .justify_end()
+                // The bar under the pointer gets a faint column behind it,
+                // fading in and out, as its tooltip comes up.
+                .radius(3.)
+                .hover(p.hover)
+                .hover_motion(crate::design::motion::HOVER, crate::design::motion::HOVER)
                 .help(format!(
                     "{label} · {}: {}",
                     series.name,
@@ -468,6 +473,13 @@ fn pie(s: &State, id: &str, x: &[String], series: &Series, unit: Option<&str>) -
         legend = legend.child(
             swatch(s, color(p, i), label.clone(), note)
                 .key(format!("{id}-pie-{i}"))
+                // A wash under the legend row being read, past its edges
+                // so the dot and text don't move.
+                .px(4.)
+                .mx(-4.)
+                .radius(4.)
+                .hover(p.hover)
+                .hover_motion(crate::design::motion::HOVER, crate::design::motion::HOVER)
                 .help(format!("{label}: {}", exact(*value, unit))),
         );
     }
