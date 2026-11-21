@@ -563,6 +563,15 @@ fn rail(leaf: &Leaf, last: bool, p: &Palette) -> El {
         )
 }
 
+/// Whether a finished group of `rows` folds on its own glide. A group long
+/// enough to nest its tree as a virtual list (`timeline::NEST_AFTER`) opens
+/// at once: gliding it open leaves the nested list committing on every
+/// scroll through it afterwards, for a fold that shows only its first
+/// screen anyway.
+pub(crate) fn folds_on_glide(rows: usize) -> bool {
+    rows <= timeline::NEST_AFTER
+}
+
 /// The activity group: a summary line that opens to the tree.
 #[allow(clippy::too_many_arguments)]
 pub fn render_activity(
@@ -642,6 +651,7 @@ pub fn render_activity(
             };
             let now = c.activity_open(&toggle_key, live);
             c.toggles.insert(toggle_key.clone(), !now);
+            super::fold_now(c, tx);
             tx.keep_on_screen(head_key.clone());
         });
 
@@ -751,6 +761,7 @@ fn tree_row(
                 };
                 let on = c.toggles.get(&open_key).copied().unwrap_or(expanded);
                 c.toggles.insert(open_key.clone(), !on);
+                super::fold_now(c, tx);
                 tx.keep_on_screen(leaf_key.clone());
             });
     }

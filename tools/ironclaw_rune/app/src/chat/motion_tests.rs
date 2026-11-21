@@ -136,8 +136,11 @@ fn opening_a_step_keeps_its_line() {
     run.frames(2);
     assert!(run.path("think:1-detail").is_some(), "it opened");
     assert_eq!(run.path("think:1-leaf"), Some(before.clone()), "same line");
+    // As the step's press does (`fold_now`): the glide rides only while a
+    // person's fold plays.
     run.change(|c| {
         c.toggles.insert("leaf:think:1".into(), false);
+        c.folding_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
     });
     run.frames(2);
     assert_eq!(

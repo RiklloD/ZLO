@@ -83,6 +83,18 @@ pub use view::view;
 const TIMELINE_LIMIT: u32 = 200;
 /// How long the copy button shows its check.
 const COPIED_FOR: Duration = Duration::from_millis(1400);
+/// How long a fold's glide is carried after the click that started it:
+/// the fold spring (`motion::ROW_RESORT`, 0.26 s) and its settle.
+const FOLD_HOLD: Duration = Duration::from_millis(600);
+
+/// A person opened or shut a finished activity group (or a step in it):
+/// the groups fold on their glide until [`FOLD_HOLD`] has passed, and the
+/// poll is woken then to drop it.
+pub(crate) fn fold_now(c: &mut ChatState, tx: &mut Tx) {
+    c.folding_until = Some(Instant::now() + FOLD_HOLD);
+    tx.wake_after(FOLD_HOLD);
+}
+
 /// How long past [`COPIED_FOR`] the poll waits before clearing a copy check
 /// whose revert timer never came (`rows::mark_copied`).
 const COPIED_GRACE: Duration = Duration::from_millis(500);
@@ -206,6 +218,11 @@ pub struct ChatState {
     pub voice_send: Option<crate::voice::Submission>,
     /// The message whose copy button shows its check, and since when.
     pub(crate) copied: Option<(String, Instant)>,
+    /// Until when finished activity groups fold on their own glide: set by a
+    /// person's click on a group or step (`fold_now`), cleared by the poll
+    /// once it passes. Carried at rest, the glide cost commits on every
+    /// scroll through a long group.
+    pub(crate) folding_until: Option<Instant>,
     /// Sent files being fetched to open (by attachment id): their cards
     /// breathe meanwhile.
     pub(crate) downloading: HashSet<String>,
@@ -273,6 +290,7 @@ impl ChatState {
             stream_gen: Generation::default(),
             voice_send: None,
             copied: None,
+            folding_until: None,
             downloading: Default::default(),
             send_tint: Default::default(),
             stop_tint: Default::default(),
@@ -880,6 +898,11 @@ fn poll_chat(s: &mut State, id: &str, input_waiting: bool, tx: &mut Tx) -> bool 
     let Some(c) = chat_for(s, id) else {
         return changed;
     };
+    // A fold's glide is over: drop it from the groups (one view, no motion).
+    if c.folding_until.is_some_and(|until| now >= until) {
+        c.folding_until = None;
+        changed = true;
+    }
     // The copy check reverts on its own timer (`rows::mark_copied`), which
     // animates; this only clears one whose timer was lost, with no wake.
     if let Some((_, at)) = &c.copied
