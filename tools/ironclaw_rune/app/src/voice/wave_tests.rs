@@ -299,3 +299,89 @@ fn finishing_settles_the_bars_to_rest_and_stops_sampling() {
         "within about half a second: {heights:?}"
     );
 }
+
+/// One poll on a forced-due tick: whether it sampled and whether it asked
+/// for the next sample.
+fn tick(s: &mut State) -> (bool, bool) {
+    if let Some(e) = s.voice.engine.as_mut()
+        && e.level_next.is_some()
+    {
+        e.level_next = Some(0.);
+    }
+    let mut tx = Tx::default();
+    super::poll(s, &mut tx);
+    (s.voice.bars.is_some(), sampling(s))
+}
+
+#[test]
+fn a_composer_off_screen_samples_nothing() {
+    use crate::state::Page;
+    let app = App::new(AppSpec::new("ZLO test", (400., 300.), no_init, crate::view));
+    let mut s = State::new(crate::jobs::Rt::new(app.handle()));
+    dictating(&mut s);
+    level(&s).set(0.7);
+    assert_eq!(tick(&mut s), (true, true), "dictating in the open chat");
+
+    // Settings over the chat: the chat and its voice session are kept,
+    // but nothing is on screen to animate.
+    s.page = Page::Settings;
+    let mut tx = Tx::default();
+    super::poll(&mut s, &mut tx);
+    assert_eq!(s.voice.bars, None);
+    assert!(!sampling(&s), "no sample asked for under Settings");
+    assert!(
+        !format!("{tx:?}").contains("60ms"),
+        "and no 60 ms wake: {tx:?}"
+    );
+    assert_eq!(
+        super::status(&s),
+        super::Status::Dictating,
+        "still dictating"
+    );
+
+    // Back to the chat: sampling resumes.
+    s.page = Page::Chat;
+    assert_eq!(tick(&mut s), (true, true), "the chat is back on screen");
+
+    // The new-thread screen over the chat hides it too.
+    s.page = Page::Draft;
+    assert_eq!(tick(&mut s), (false, false));
+}
+
+#[test]
+fn a_side_chat_samples_only_while_its_pane_shows_it() {
+    let app = App::new(AppSpec::new("ZLO test", (400., 300.), no_init, crate::view));
+    let mut s = State::new(crate::jobs::Rt::new(app.handle()));
+    chat_state(&mut s);
+    crate::chat::fixtures::with_side_chat(&mut s, "t-side");
+    s.prefs.side_open = true;
+    s.prefs.side_tab = "side-chat".into();
+    with_status(
+        &mut s,
+        &["click", "words"],
+        Some(Composer::Chat("t-side".into())),
+    );
+    level(&s).set(0.7);
+    assert_eq!(tick(&mut s), (true, true), "the pane shows the side chat");
+
+    s.prefs.side_open = false;
+    assert_eq!(tick(&mut s), (false, false), "pane closed: nothing samples");
+
+    s.prefs.side_open = true;
+    s.prefs.side_tab = "activity".into();
+    assert_eq!(tick(&mut s), (false, false), "another tab: nothing samples");
+
+    s.prefs.side_tab = "side-chat".into();
+    assert_eq!(tick(&mut s), (true, true), "back on the side chat");
+}
+
+#[test]
+fn a_closed_quick_composer_samples_nothing() {
+    let app = App::new(AppSpec::new("ZLO test", (400., 300.), no_init, crate::view));
+    let mut s = State::new(crate::jobs::Rt::new(app.handle()));
+    chat_state(&mut s);
+    with_status(&mut s, &["click", "words"], Some(Composer::Quick));
+    level(&s).set(0.7);
+    assert!(!s.workspace.quick.is_open());
+    assert_eq!(tick(&mut s), (false, false));
+}

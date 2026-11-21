@@ -228,8 +228,10 @@ fn wave(s: &State) -> Wave {
         Mode::Finishing { .. } => Wave::Settling,
         _ => return Wave::Off,
     };
-    // The pill shows only on the composer voice types into.
-    let shown = e.target.as_ref().is_some_and(|t| t.alive(s));
+    // The pill shows only on the composer voice types into, and only
+    // while that composer is on screen: a chat kept under Settings or a
+    // side chat in a closed pane samples nothing.
+    let shown = e.target.as_ref().is_some_and(|t| t.shown(s));
     if !shown || s.fixture || still(s) {
         return Wave::Off;
     }

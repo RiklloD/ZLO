@@ -51,6 +51,28 @@ impl Target {
         crate::chat::voice_composer(s, &self.composer).is_some()
     }
 
+    /// The composer is drawn where the person can see it: the main window
+    /// showing its chat (not a settings page over it), the right pane open
+    /// on its side chat, the new-thread screen, or the quick composer's
+    /// window. Window focus does not matter: push-to-talk is used from
+    /// other apps. A composer kept alive under another page is not shown.
+    pub fn shown(&self, s: &State) -> bool {
+        use crate::state::Page;
+        if !self.alive(s) {
+            return false;
+        }
+        match &self.composer {
+            Composer::Chat(id) => {
+                s.page == Page::Chat
+                    && s.chat.as_ref().is_some_and(|c| {
+                        c.thread_id == *id || crate::chat::side::side_chat_shown(s)
+                    })
+            }
+            Composer::Draft => s.page == Page::Draft,
+            Composer::Quick => s.workspace.quick.is_open(),
+        }
+    }
+
     /// Edit the composer's field; `None` when it is gone. `f` may run
     /// twice (the quick composer's mirror and its window), so it is `Fn`.
     fn edit<R>(
