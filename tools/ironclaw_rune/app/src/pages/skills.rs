@@ -396,51 +396,53 @@ fn render_skill(s: &State, k: &Kit, x: &RebornSkillInfo) -> El {
             (None, false) => "loading",
             (Some(_), false) => "reading",
         };
-        c = c.child(match (content, editing) {
-            (_, true) => col()
-                .w_full()
-                .gap(8.)
-                .child(rule(p))
-                .child(
-                    mono_editor(&sk.editor_text)
-                        .rows(8, 30)
-                        .label(format!("/{} instructions", x.name))
-                        .on_edit(|s: &mut State| &mut s.pages.skills.editor_text)
-                        .build(k)
-                        .key(format!("editor-{}", x.name)),
-                )
-                .child(
-                    row()
-                        .w_full()
-                        .gap(8.)
-                        .justify_end()
-                        .child(
-                            button_sized("Cancel", Look::Ghost, Size::Small)
-                                .on_press(|s: &mut State| st(s).editor = None)
-                                .build(k)
-                                .key(format!("cancel-edit-{}", x.name))
-                                .press_scale(motion::PRESS),
-                        )
-                        .child(
-                            loading(
-                                button_sized("Save", Look::Primary, Size::Small)
-                                    .on_press(|s: &mut State| save_editor(s)),
-                                busy,
-                            )
+        c = c.child(
+            match (content, editing) {
+                (_, true) => col()
+                    .w_full()
+                    .gap(8.)
+                    .child(rule(p))
+                    .child(
+                        mono_editor(&sk.editor_text)
+                            .rows(8, 30)
+                            .label(format!("/{} instructions", x.name))
+                            .on_edit(|s: &mut State| &mut s.pages.skills.editor_text)
                             .build(k)
-                            .key(format!("save-edit-{}", x.name))
-                            .press_scale(motion::PRESS),
-                        ),
+                            .key(format!("editor-{}", x.name)),
+                    )
+                    .child(
+                        row()
+                            .w_full()
+                            .gap(8.)
+                            .justify_end()
+                            .child(
+                                button_sized("Cancel", Look::Ghost, Size::Small)
+                                    .on_press(|s: &mut State| st(s).editor = None)
+                                    .build(k)
+                                    .key(format!("cancel-edit-{}", x.name))
+                                    .press_scale(motion::PRESS),
+                            )
+                            .child(
+                                loading(
+                                    button_sized("Save", Look::Primary, Size::Small)
+                                        .on_press(|s: &mut State| save_editor(s)),
+                                    busy,
+                                )
+                                .build(k)
+                                .key(format!("save-edit-{}", x.name))
+                                .press_scale(motion::PRESS),
+                            ),
+                    ),
+                (None, false) => spinner(k),
+                (Some(body), false) => col().w_full().gap(8.).child(rule(p)).child(
+                    Markdown::new(body.clone())
+                        .build(k)
+                        .key(format!("skill-md-{}", x.name)),
                 ),
-            (None, false) => spinner(k),
-            (Some(body), false) => col().w_full().gap(8.).child(rule(p)).child(
-                Markdown::new(body.clone())
-                    .build(k)
-                    .key(format!("skill-md-{}", x.name)),
-            ),
-        }
-        .key(part)
-        .transition(motion::reveal()));
+            }
+            .key(part)
+            .transition(motion::reveal()),
+        );
     }
     c
 }
@@ -452,49 +454,47 @@ fn render_results(s: &State, k: &Kit) -> Option<El> {
     Some(match r {
         Err(e) => error_line(p, e),
         Ok(list) if list.is_empty() => empty_state(p, "No matching skills."),
-        Ok(list) => col()
-            .w_full()
-            .children(list.iter().map(|hit| {
-                let have = sk.skills.iter().any(|x| x.name == hit.name);
-                let name = hit.name.clone();
-                let busy = sk.busy.as_deref() == Some(hit.name.as_str());
-                col()
-                    .key(format!("hit-{}", hit.name))
-                    .transition(motion::reveal())
-                    .w_full()
-                    .child(
-                        row()
-                            .w_full()
-                            .gap(12.)
-                            .py(8.)
-                            .center_y()
-                            .child(
-                                col()
-                                    .grow(1.)
-                                    .min_w(0.)
-                                    .child(text(hit.name.clone()).font(sm_medium()).color(p.text))
-                                    .child(
-                                        text(hit.description.clone())
-                                            .font(xs())
-                                            .color(p.text_muted)
-                                            .wrap(),
-                                    ),
+        Ok(list) => col().w_full().children(list.iter().map(|hit| {
+            let have = sk.skills.iter().any(|x| x.name == hit.name);
+            let name = hit.name.clone();
+            let busy = sk.busy.as_deref() == Some(hit.name.as_str());
+            col()
+                .key(format!("hit-{}", hit.name))
+                .transition(motion::reveal())
+                .w_full()
+                .child(
+                    row()
+                        .w_full()
+                        .gap(12.)
+                        .py(8.)
+                        .center_y()
+                        .child(
+                            col()
+                                .grow(1.)
+                                .min_w(0.)
+                                .child(text(hit.name.clone()).font(sm_medium()).color(p.text))
+                                .child(
+                                    text(hit.description.clone())
+                                        .font(xs())
+                                        .color(p.text_muted)
+                                        .wrap(),
+                                ),
+                        )
+                        .child(if have {
+                            outlined_tag(p, Tone::Success, "Installed")
+                        } else {
+                            loading(
+                                button_sized("Install", Look::Outline, Size::Small)
+                                    .on_press(move |s: &mut State| install(s, name.clone())),
+                                busy,
                             )
-                            .child(if have {
-                                outlined_tag(p, Tone::Success, "Installed")
-                            } else {
-                                loading(
-                                    button_sized("Install", Look::Outline, Size::Small)
-                                        .on_press(move |s: &mut State| install(s, name.clone())),
-                                    busy,
-                                )
-                                .build(k)
-                                .key(format!("install-skill-{}", hit.name))
-                                .press_scale(motion::PRESS)
-                            }),
-                    )
-                    .child(rule(p))
-            })),
+                            .build(k)
+                            .key(format!("install-skill-{}", hit.name))
+                            .press_scale(motion::PRESS)
+                        }),
+                )
+                .child(rule(p))
+        })),
     })
 }
 
@@ -588,11 +588,11 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         body = body.child(empty_state(p, "No skills installed.").key("skills-none"));
     }
     body = body.child(
-        col().key("skills").w_full().gap(12.).children(
-            sk.skills
-                .iter()
-.map(|x| render_skill(s, k, x)),
-        ),
+        col()
+            .key("skills")
+            .w_full()
+            .gap(12.)
+            .children(sk.skills.iter().map(|x| render_skill(s, k, x))),
     );
     page_body("skills-page", body)
 }

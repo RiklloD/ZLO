@@ -13,11 +13,11 @@ use super::{ScheduleAction, form, schedule_act, schedule_key};
 use crate::design::{kit, motion};
 use crate::icons;
 use crate::jobs;
-use crate::pages::flash;
 use crate::pages::common::{
     BASE, Btn, Tone, XS, actions, block_fill, button, button_xs, card, font, glyph, icon_button,
     label, tag,
 };
+use crate::pages::flash;
 use crate::state::State;
 
 const MASK: &str = "••••••••••••••••";

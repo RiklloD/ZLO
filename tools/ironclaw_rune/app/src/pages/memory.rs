@@ -12,6 +12,8 @@
 //! late-reply rules for saves and archives.
 
 mod draft;
+#[cfg(test)]
+mod motion_tests;
 mod supermemory;
 
 use crate::pages::common::controls::{
@@ -448,10 +450,13 @@ fn render_local(s: &State, k: &Kit) -> El {
     // 6 pt above and below the rows were padded with.
     let row_h = line_of(sm()).max(line_of(xs())) + 12.0;
     let at = selected.and_then(|path| m.documents.iter().position(|e| e.path == path));
-    let mut list = col()
-        .key("memory-docs")
-        .w_full()
-        .children(list_pill(p, "memory-doc-pill", at.map(|ix| ix as f32 * row_h), row_h, 6.0));
+    let mut list = col().key("memory-docs").w_full().children(list_pill(
+        p,
+        "memory-doc-pill",
+        at.map(|ix| ix as f32 * row_h),
+        row_h,
+        6.0,
+    ));
     for entry in &m.documents {
         let path = entry.path.clone();
         list = list.child(
@@ -466,7 +471,7 @@ fn render_local(s: &State, k: &Kit) -> El {
                 .radius(6.0)
                 .center_y()
                 .cursor(Cursor::Pointer)
-.hover(p.hover)
+                .hover(p.hover)
                 .hover_motion(crate::design::motion::HOVER, crate::design::motion::HOVER)
                 .press_scale(crate::design::motion::PRESS_CARD)
                 .child(

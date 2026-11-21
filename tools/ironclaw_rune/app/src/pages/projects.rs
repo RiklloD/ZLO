@@ -272,7 +272,14 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     if this.loaded && rows.is_empty() {
         body = body.child(empty_state(p, "No projects yet.").key("projects-none"));
     }
-    body = body.child(col().key("projects").w_full().pt(16.).gap(12.).children(rows));
+    body = body.child(
+        col()
+            .key("projects")
+            .w_full()
+            .pt(16.)
+            .gap(12.)
+            .children(rows),
+    );
     page_body("projects-page", body)
 }
 

@@ -9,6 +9,8 @@ pub mod computers;
 pub mod extensions;
 pub mod files;
 pub mod flash;
+#[cfg(test)]
+pub(crate) mod motion_b_tests;
 pub mod hooks;
 pub mod memory;
 pub mod notifications;

@@ -625,24 +625,27 @@ fn issued_code(s: &State, k: &Kit, issued: &Issued) -> El {
                 .gap(6.)
                 .child(
                     // Says "Copied" with a check for a moment, then rolls back.
-                    super::common::button(if copied { "Copied" } else { "Copy link" }, Btn::Secondary)
-                        .icon(if copied {
-                            &crate::icons::CHECK
+                    super::common::button(
+                        if copied { "Copied" } else { "Copy link" },
+                        Btn::Secondary,
+                    )
+                    .icon(if copied {
+                        &crate::icons::CHECK
+                    } else {
+                        &crate::icons::COPY
+                    })
+                    .rolling("copy-link-label")
+                    .on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
+                        tx.copy(if link.is_empty() {
+                            code.clone()
                         } else {
-                            &crate::icons::COPY
-                        })
-                        .rolling("copy-link-label")
-                        .on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
-                            tx.copy(if link.is_empty() {
-                                code.clone()
-                            } else {
-                                link.clone()
-                            });
-                            flash::flash(s, "copy-link", tx);
-                        })
-                        .build(k)
-                        .key("copy-link")
-                        .press_scale(motion::PRESS),
+                            link.clone()
+                        });
+                        flash::flash(s, "copy-link", tx);
+                    })
+                    .build(k)
+                    .key("copy-link")
+                    .press_scale(motion::PRESS),
                 )
                 .child(press_button(
                     k,

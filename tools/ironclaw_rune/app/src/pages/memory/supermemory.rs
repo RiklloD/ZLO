@@ -257,18 +257,20 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
     );
     for (ix, (id, name)) in choices.enumerate() {
         let look = crate::pages::common::choice_look(m.profile == id);
-        profile_picker = profile_picker.child(press_button(
-            k,
-            &format!("sm-profile-{ix}"),
-            &name,
-            look,
-            None,
-            false,
-            move |s: &mut State| pick_profile(s, id.clone()),
-        )
-        // The picked plate fades across instead of jumping (the chips
-        // wrap, so a gliding pill has no fixed track to run on).
-        .motion(motion::SLIDE));
+        profile_picker = profile_picker.child(
+            press_button(
+                k,
+                &format!("sm-profile-{ix}"),
+                &name,
+                look,
+                None,
+                false,
+                move |s: &mut State| pick_profile(s, id.clone()),
+            )
+            // The picked plate fades across instead of jumping (the chips
+            // wrap, so a gliding pill has no fixed track to run on).
+            .motion(motion::SLIDE),
+        );
     }
     let primary = status.binding.as_ref().map(|b| b.primary_container.clone());
     let containers: Vec<String> = status
@@ -289,16 +291,18 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
             Look::Ghost
         };
         let t = tag.clone();
-        container_picker = container_picker.child(press_button(
-            k,
-            &format!("sm-container-{ix}"),
-            &tag,
-            look,
-            None,
-            false,
-            move |s: &mut State| pick_container(s, t.clone()),
-        )
-        .motion(motion::SLIDE));
+        container_picker = container_picker.child(
+            press_button(
+                k,
+                &format!("sm-container-{ix}"),
+                &tag,
+                look,
+                None,
+                false,
+                move |s: &mut State| pick_container(s, t.clone()),
+            )
+            .motion(motion::SLIDE),
+        );
     }
     let writable = current.is_some() && current == primary;
     let mut c = col()
@@ -341,10 +345,7 @@ fn render_hits(s: &State, k: &Kit, hits: &[SupermemoryMemoryHit], primary: Optio
     if hits.is_empty() {
         return empty_state(p, "Nothing matches.").key("sm-hits-none");
     }
-    let mut list = col()
-        .key("sm-hits")
-        .w_full()
-        .transition(motion::reveal());
+    let mut list = col().key("sm-hits").w_full().transition(motion::reveal());
     for hit in hits {
         let key = format!("memory:{}", hit.id);
         let confirming = m.confirm_remote.as_deref() == Some(key.as_str());
@@ -395,13 +396,11 @@ fn render_hits(s: &State, k: &Kit, hits: &[SupermemoryMemoryHit], primary: Optio
                 )
             });
         }
-        list = list
-            .child(r)
-            .child(
-                rule(p)
-                    .key(format!("sm-hit-rule-{}", hit.id))
-                    .transition(motion::fade()),
-            );
+        list = list.child(r).child(
+            rule(p)
+                .key(format!("sm-hit-rule-{}", hit.id))
+                .transition(motion::fade()),
+        );
     }
     list
 }
@@ -477,13 +476,11 @@ fn render_documents(s: &State, k: &Kit, page: &SupermemoryDocumentPage, writable
                 )
             });
         }
-        list = list
-            .child(r)
-            .child(
-                rule(p)
-                    .key(format!("sm-doc-rule-{}", document.id))
-                    .transition(motion::fade()),
-            );
+        list = list.child(r).child(
+            rule(p)
+                .key(format!("sm-doc-rule-{}", document.id))
+                .transition(motion::fade()),
+        );
     }
     let total = page.total_pages.unwrap_or(page.page);
     let current_page = page.page;
