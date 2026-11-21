@@ -13,6 +13,8 @@
 pub(crate) mod catalog;
 pub mod fixtures;
 mod cli;
+#[cfg(test)]
+mod motion_tests;
 mod view;
 
 use std::collections::HashMap;
