@@ -540,14 +540,11 @@ pub fn dock_slide(s: &State, tx: &mut Tx) {
 /// body and its titlebar tabs leave with the slide instead of fading out
 /// ahead of it. Runs from the app's `poll`, whatever closed the dock.
 pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
-    // A click or keystroke in the Browser's page (it woke the app): follow
-    // the page for a moment, as it may be navigating.
-    if crate::native_view::take_page_input() {
-        browser::page_input(s);
-    }
+    // The Browser's page changed (its observer woke the app).
+    let page = browser::poll(s, tx);
     let open = [dock_open(s, Dock::Work), dock_open(s, Dock::Side)];
     let Some(x) = side_mut(s) else { return false };
-    let mut changed = false;
+    let mut changed = page;
     for (ix, open) in open.into_iter().enumerate() {
         if open {
             x.shown[ix] = true;

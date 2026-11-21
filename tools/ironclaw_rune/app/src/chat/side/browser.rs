@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use rune::{Cursor, El, TextEdit, col, el, icon, row};
+use rune::{Cursor, El, TextEdit, Tx, col, el, icon, row};
 use rune_kit::{Kit, TextInput};
 use zlo_client::transcript::Row;
 
@@ -17,7 +17,7 @@ use super::{Tab, bridge, side, side_mut, side_of, side_total, tab_shown, thread_
 use crate::design::motion;
 use crate::icons;
 use crate::jobs;
-use crate::native_view::{self, Slot, Source, WebCommand, WebState};
+use crate::native_view::{self, PageChange, Slot, Source, WebCommand, WebState};
 use crate::state::State;
 
 thread_local! {
@@ -55,26 +55,12 @@ pub(super) struct BrowserState {
     input: TextEdit,
     /// The page state the toolbar last drew.
     shown: Option<WebState>,
-    polling: bool,
-    /// The running poll loop; a tick of an older loop (or of another
-    /// thread's side state) ends instead of doubling this one.
-    poll: jobs::Generation,
     /// Recently visited URLs in this thread, newest first.
     recent: Vec<String>,
     /// A load just finished: the progress bar holds full width for
     /// [`PROGRESS_HOLD`] before it goes.
     finishing: bool,
-    /// The person just acted on the page (a toolbar button, a click or a
-    /// keystroke in it): the poll follows it until then even while nothing
-    /// loads, to catch a navigation that is about to start or an in-page
-    /// address change.
-    watch_until: Option<Instant>,
 }
-
-/// How long the poll follows the page after the person acts on it.
-const WATCH_FOR: Duration = Duration::from_secs(2);
-/// The poll's pace while it runs: a load in progress, or [`WATCH_FOR`].
-const POLL_EVERY: Duration = Duration::from_millis(250);
 
 /// How long a finished load's bar shows full before it goes.
 const PROGRESS_HOLD: Duration = Duration::from_millis(200);
@@ -104,58 +90,78 @@ fn close(s: &mut State) {
     }
 }
 
-/// Follow the page while the tab shows and something can be changing it:
-/// a load in progress, or for [`WATCH_FOR`] after the person acted on it
-/// (this call). A loaded page at rest is not polled at all: what moves it
-/// next is the person, and their input on the page restarts this
-/// ([`page_input`]). The loop belongs to the thread that started it, under
-/// a fresh generation; it ends once the tab hides.
+/// Read the page into the bar now: its tab just showed (what changed
+/// while it was hidden was not read), or a page was just asked for.
 pub(super) fn start(s: &mut State) {
-    if page().is_none() {
-        return;
-    }
-    let Some(thread) = thread_id(s) else { return };
-    let Some(x) = side_mut(s) else { return };
-    x.browser.watch_until = Some(Instant::now() + WATCH_FOR);
-    if x.browser.polling {
-        return;
-    }
-    x.browser.polling = true;
-    let generation = x.browser.poll.bump();
-    tick(s, thread, generation, POLL_EVERY);
-}
-
-/// The person clicked or typed in the page (`native_view`'s event monitor):
-/// follow it for a moment, if its tab shows.
-pub(super) fn page_input(s: &mut State) {
-    if tab_shown(s, Tab::Browser) {
-        start(s);
+    if page().is_some() && tab_shown(s, Tab::Browser) {
+        apply(s, native_view::web_state());
     }
 }
 
-/// A toolbar button: drive the page and follow what it does.
-fn command(s: &mut State, cmd: WebCommand) {
-    native_view::web(cmd);
-    start(s);
+/// The app's poll: the page's observer (`native_view`) noticed a change,
+/// so read it, at most four times a second. An idle page notices nothing
+/// and costs nothing; there is no timer. Returns whether the bar changed.
+pub(super) fn poll(s: &mut State, tx: &mut Tx) -> bool {
+    poll_with(s, tx, Instant::now(), native_view::web_state)
 }
 
-/// One poll tick. Its commit lands instantly: it is a poll, not something
-/// the person did this frame, and `tx.animated()` here would animate
-/// whatever else lands in the same frame. The load bar steps with it.
-fn tick(s: &State, thread: String, generation: jobs::Generation, wait: Duration) {
-    jobs::after(s, wait, move |s, _| {
-        if let Some(wait) = step(s, &thread, generation, Instant::now()) {
-            tick(s, thread.clone(), generation, wait);
+fn poll_with(
+    s: &mut State,
+    tx: &mut Tx,
+    now: Instant,
+    read: impl FnOnce() -> Option<WebState>,
+) -> bool {
+    match native_view::take_page_change(now) {
+        PageChange::None => false,
+        // Read too recently: one timed wake brings this read.
+        PageChange::After(wait) => {
+            tx.wake_after(wait);
+            false
         }
-        let done = side_of(s, &thread).is_some_and(|x| x.browser.finishing);
-        if done {
-            jobs::after(s, PROGRESS_HOLD, move |s, _| {
-                if let Some(x) = side_of(s, &thread) {
-                    x.browser.finishing = false;
-                }
-            });
-        }
-    });
+        // Behind another tab the page is read when the tab shows.
+        PageChange::Read if page().is_some() && tab_shown(s, Tab::Browser) => apply(s, read()),
+        PageChange::Read => false,
+    }
+}
+
+/// Put page state `state` in the bar: the address (unless the person is
+/// typing in it), Back/Forward, and the load bar, which holds full for
+/// [`PROGRESS_HOLD`] once a load ends. Its commits land at once: they
+/// follow the page, not something the person did this frame, and
+/// `tx.animated()` would animate whatever else lands in the same frame.
+fn apply(s: &mut State, state: Option<WebState>) -> bool {
+    let Some(thread) = thread_id(s) else {
+        return false;
+    };
+    let Some(x) = side_mut(s) else { return false };
+    let mut changed = false;
+    if let Some(url) = state
+        .as_ref()
+        .map(|w| w.url.clone())
+        .filter(|u| !u.is_empty())
+        && !x.browser.input.focused
+        && x.browser.input.text != url
+    {
+        x.browser.input.replace_text(url);
+        changed = true;
+    }
+    if state == x.browser.shown {
+        return changed;
+    }
+    let was_loading = x.browser.shown.as_ref().is_some_and(|w| w.loading);
+    let loading_now = state.as_ref().is_some_and(|w| w.loading);
+    x.browser.shown = state;
+    if loading_now {
+        x.browser.finishing = false;
+    } else if was_loading {
+        x.browser.finishing = true;
+        jobs::after(s, PROGRESS_HOLD, move |s, _| {
+            if let Some(x) = side_of(s, &thread) {
+                x.browser.finishing = false;
+            }
+        });
+    }
+    true
 }
 
 /// The load bar's fill, 0 to 1, while it shows: the page's progress while
@@ -189,58 +195,6 @@ pub(super) fn progress_bar(s: &State, width: f32) -> Option<El> {
             .motion(crate::design::motion::PILL)
             .transition(rune::Transition::opacity()),
     )
-}
-
-/// One poll of loop `generation`, started on `thread`, at `now`: the wait
-/// before the next, or `None` once it ends (another thread is open, a
-/// newer loop runs, the tab hid, or the page is loaded and nobody has
-/// touched it for [`WATCH_FOR`]).
-fn step(
-    s: &mut State,
-    thread: &str,
-    generation: jobs::Generation,
-    now: Instant,
-) -> Option<Duration> {
-    let x = side_of(s, thread)?;
-    if x.browser.poll != generation {
-        return None;
-    }
-    if !tab_shown(s, Tab::Browser) {
-        if let Some(x) = side_of(s, thread) {
-            x.browser.polling = false;
-        }
-        return None;
-    }
-    let state = native_view::web_state();
-    let x = side_of(s, thread)?;
-    // The field follows the page unless the person is typing in it.
-    if let Some(url) = state
-        .as_ref()
-        .map(|w| w.url.clone())
-        .filter(|u| !u.is_empty())
-        && !x.browser.input.focused
-        && x.browser.input.text != url
-    {
-        x.browser.input.replace_text(url);
-    }
-    if state != x.browser.shown {
-        let was_loading = x.browser.shown.as_ref().is_some_and(|w| w.loading);
-        let loading_now = state.as_ref().is_some_and(|w| w.loading);
-        if was_loading && !loading_now {
-            x.browser.finishing = true;
-        } else if loading_now {
-            x.browser.finishing = false;
-        }
-        x.browser.shown = state;
-    }
-    let loading = x.browser.shown.as_ref().is_some_and(|w| w.loading);
-    let watched = x.browser.watch_until.is_some_and(|until| now < until);
-    if loading || watched {
-        return Some(POLL_EVERY);
-    }
-    x.browser.watch_until = None;
-    x.browser.polling = false;
-    None
 }
 
 /// Extract deduplicated `http://` / `https://` links mentioned in the
@@ -463,7 +417,7 @@ pub(super) fn bar(s: &State, k: &Kit) -> El {
     let nav = |key: &str, i: &'static rune::Icon, tip: &str, on: bool, cmd: WebCommand| {
         ui::ibtn(i, tip)
             .disabled(!on)
-            .on_press(move |s: &mut State| command(s, cmd))
+            .on_press(move |_: &mut State| native_view::web(cmd))
             .build(k)
             .no_window_drag()
             .key(key.to_string())
@@ -619,35 +573,88 @@ mod tests {
         s
     }
 
-    fn loop_of(s: &State) -> (bool, jobs::Generation) {
-        let x = side(s).expect("side state");
-        (x.browser.polling, x.browser.poll)
+    fn page_at(url: &str, loading: bool) -> Option<WebState> {
+        Some(WebState {
+            url: url.into(),
+            loading,
+            progress: 0.4,
+            back: true,
+            ..WebState::default()
+        })
     }
 
+    /// The observer's notification wakes the app once; the poll reads the
+    /// page and the bar follows it: address, Back, load bar.
     #[test]
-    fn a_poll_tick_only_runs_for_the_thread_and_loop_that_started_it() {
+    fn a_page_change_is_read_once_into_the_bar() {
         let mut s = browsing("t1");
-        start(&mut s);
-        let (polling, first) = loop_of(&s);
-        assert!(polling);
+        let t0 = Instant::now();
+        let mut tx = Tx::default();
         assert!(
-            step(&mut s, "t1", first, Instant::now()).is_some(),
-            "its own loop goes on"
+            !poll_with(&mut s, &mut tx, t0, || panic!("idle: nothing to read")),
+            "an idle page reads nothing"
         );
+        assert!(native_view::note_page_change(), "the first change wakes");
+        assert!(!native_view::note_page_change(), "the next ones do not");
+        let read = poll_with(&mut s, &mut tx, t0, || {
+            page_at("http://localhost:3000/next", true)
+        });
+        assert!(read);
+        let x = side(&s).expect("side");
+        assert_eq!(x.browser.input.text, "http://localhost:3000/next");
+        assert!(x.browser.shown.as_ref().is_some_and(|w| w.back));
+        assert_eq!(progress(&s), Some(0.4));
+        assert!(
+            !poll_with(&mut s, &mut tx, t0, || panic!("read already")),
+            "one notification, one read"
+        );
+    }
 
-        // Another thread opens and starts its own loop: the first one's
-        // tick ends and leaves the new loop alone.
-        s.chat = Some(crate::chat::ChatState::new("t2".into()));
-        start(&mut s);
-        let (_, second) = loop_of(&s);
-        assert_ne!(first, second);
-        assert!(step(&mut s, "t1", first, Instant::now()).is_none());
+    /// A page that changes itself (a redirect after a while, `pushState`
+    /// every second) is followed without any input, and never read more
+    /// than four times a second.
+    #[test]
+    fn a_page_changing_itself_is_followed_at_most_four_times_a_second() {
+        let mut s = browsing("t1");
+        let t0 = Instant::now();
+        let mut tx = Tx::default();
+        native_view::note_page_change();
+        assert!(poll_with(&mut s, &mut tx, t0, || page_at(
+            "http://a/1",
+            false
+        )));
+        native_view::note_page_change();
+        let soon = t0 + Duration::from_millis(50);
         assert!(
-            step(&mut s, "t2", first, Instant::now()).is_none(),
-            "an older loop on this thread ends too"
+            !poll_with(&mut s, &mut tx, soon, || panic!("too soon")),
+            "read 50 ms ago: wait"
         );
-        assert_eq!(loop_of(&s), (true, second), "the running loop is untouched");
-        assert!(step(&mut s, "t2", second, Instant::now()).is_some());
+        assert!(
+            format!("{tx:?}").contains("wake"),
+            "one timed wake brings the read"
+        );
+        assert!(!native_view::note_page_change(), "no wake while one is set");
+        let later = t0 + Duration::from_millis(260);
+        assert!(poll_with(&mut s, &mut tx, later, || page_at(
+            "http://a/2",
+            false
+        )));
+        assert_eq!(
+            side(&s).map(|x| x.browser.input.text.clone()).as_deref(),
+            Some("http://a/2")
+        );
+    }
+
+    /// Behind another tab the change is dropped; showing the tab reads it.
+    #[test]
+    fn a_hidden_browser_reads_nothing_until_it_shows() {
+        let mut s = browsing("t1");
+        s.prefs.side_tab = Tab::Activity.id().into();
+        native_view::note_page_change();
+        let mut tx = Tx::default();
+        assert!(!poll_with(&mut s, &mut tx, Instant::now(), || panic!(
+            "hidden"
+        )));
     }
 
     /// The load bar follows the page's progress while it loads, shows full
@@ -655,67 +662,17 @@ mod tests {
     #[test]
     fn the_load_bar_follows_progress_then_shows_full_before_it_goes() {
         let mut s = browsing("t1");
-        start(&mut s);
-        let (_, generation) = loop_of(&s);
         assert_eq!(progress(&s), None, "no load seen yet: no bar");
-        if let Some(x) = side_mut(&mut s) {
-            x.browser.shown = Some(WebState {
-                loading: true,
-                progress: 0.4,
-                ..WebState::default()
-            });
-        }
+        assert!(apply(&mut s, page_at("http://a", true)));
         assert_eq!(progress(&s), Some(0.4));
         assert!(progress_bar(&s, 300.).is_some());
-        // The next poll finds the load over (a test has no web view).
-        assert!(step(&mut s, "t1", generation, Instant::now()).is_some());
+        assert!(apply(&mut s, page_at("http://a", false)));
         assert_eq!(progress(&s), Some(1.), "done: full for a moment");
         if let Some(x) = side_mut(&mut s) {
             x.browser.finishing = false;
         }
         assert_eq!(progress(&s), None, "then it goes");
-    }
-
-    /// The energy point: a loaded page nobody touches is not polled. The
-    /// loop runs out once the watch after the last action has passed, and
-    /// asks for no further tick; input on the page starts it again.
-    #[test]
-    fn an_idle_loaded_page_is_not_polled() {
-        let mut s = browsing("t1");
-        start(&mut s);
-        let (_, generation) = loop_of(&s);
-        let later = Instant::now() + WATCH_FOR + Duration::from_millis(1);
-        assert_eq!(
-            step(&mut s, "t1", generation, later),
-            None,
-            "loaded, and the watch is over: no next tick"
-        );
-        assert!(!loop_of(&s).0, "the loop has ended");
-        // A load in progress keeps it going however long it takes.
-        page_input(&mut s);
-        let (polling, generation) = loop_of(&s);
-        assert!(polling, "a click in the page follows it again");
-        if let Some(x) = side_mut(&mut s) {
-            x.browser.shown = Some(WebState {
-                loading: true,
-                ..WebState::default()
-            });
-        }
-        // (A test has no web view, so the poll sees the load end at once:
-        // it still runs while the watch lasts.)
-        assert_eq!(
-            step(&mut s, "t1", generation, Instant::now()),
-            Some(POLL_EVERY)
-        );
-    }
-
-    /// Input on the page of a hidden Browser tab starts nothing.
-    #[test]
-    fn page_input_behind_another_tab_starts_no_poll() {
-        let mut s = browsing("t1");
-        s.prefs.side_tab = Tab::Activity.id().into();
-        page_input(&mut s);
-        assert!(!loop_of(&s).0);
+        assert!(!apply(&mut s, page_at("http://a", false)), "unchanged");
     }
 
     #[test]

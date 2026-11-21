@@ -53,6 +53,7 @@ use crate::state::State;
 
 mod appkit;
 mod input;
+mod observe;
 use appkit::{CGPoint, CGRect, CGSize, file_url, new_look_view, new_web_view, ns_string, string};
 
 /// Added to a timed wake so it lands after its deadline, never a hair
@@ -274,7 +275,7 @@ pub fn on_window(window: &rune::WindowHandle) {
 /// ask for the one wake time alone calls for; call before every frame from
 /// the app's `poll`.
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
-    input::keep_waker(&s.rt.handle);
+    observe::keep_waker(&s.rt.handle);
     reconcile(s);
     if let Some(at) = unasked_wake(s) {
         tx.wake_after(at.saturating_duration_since(Instant::now()) + WAKE_PAD);
@@ -403,11 +404,22 @@ pub fn alive() -> bool {
     SURFACES.with(|cell| cell.borrow().iter().any(Option::is_some))
 }
 
-/// Whether the person clicked or typed in the Browser's page since the
-/// last call: the page may be navigating, so the Browser tab follows it
-/// for a moment (`side::browser`). Clears the mark.
-pub fn take_page_input() -> bool {
-    input::take()
+/// What the app's poll should do about the page now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageChange {
+    /// Nothing changed.
+    None,
+    /// Read the page now.
+    Read,
+    /// Something changed, but the last read was too recent: wake after this.
+    After(Duration),
+}
+
+/// Whether the Browser's page changed since the app last read it (its
+/// observer noticed), and so whether to read it now or after a moment:
+/// reads are capped at four a second (`observe.rs`). Call from the poll.
+pub fn take_page_change(now: Instant) -> PageChange {
+    observe::take(now)
 }
 
 /// Reload `source` if it is showing (its file was rewritten).
@@ -551,6 +563,13 @@ pub(crate) fn cover_hold_ends(s: &State) -> Option<Instant> {
     s.native.hold_ends()
 }
 
+/// What the page's observer does when WebKit notifies it, minus the wake
+/// (a test has no app to wake): whether it would wake.
+#[cfg(test)]
+pub(crate) fn note_page_change() -> bool {
+    observe::note_for_tests()
+}
+
 #[cfg(test)]
 pub(crate) fn probe(s: &State) -> Probe {
     Probe {
@@ -570,6 +589,9 @@ struct Surface {
     frame: Option<CGRect>,
     /// Hidden since then, awaiting its idle end.
     hidden: Option<Instant>,
+    /// The Browser page's key-value observer (`observe.rs`), removed in
+    /// [`Surface::destroy`] before the view goes.
+    observer: Option<Retained<AnyObject>>,
 }
 
 impl Surface {
@@ -600,7 +622,11 @@ impl Surface {
             source: source.clone(),
             frame: None,
             hidden: Some(Instant::now()),
+            observer: None,
         };
+        if slot == Slot::Browser && engine == Engine::Web {
+            surface.observer = observe::attach(&surface.view);
+        }
         let resume = RESUME.with(|r| {
             r.borrow()
                 .as_ref()
@@ -729,6 +755,9 @@ impl Surface {
     }
 
     fn destroy(self) {
+        if let Some(observer) = &self.observer {
+            observe::detach(&self.view, observer);
+        }
         unsafe {
             if self.slot == Slot::Browser && self.engine == Engine::Web {
                 let page = current_url(&self.view);

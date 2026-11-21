@@ -64,12 +64,24 @@ Run these in the installed app after a change to the area they name.
   - Resize the window and drag the dock's edge: the preview follows.
   - Leave the Browser tab for over two minutes and return: the page comes
     back where it was (its view was ended meanwhile).
-  - The Browser follows the page without a standing poll: click a link in
-    the page, use Back/Forward in the bar and in the page (a mouse's side
-    button), submit a form with Return, and navigate a single-page app
-    (its address changes without a load). The address field, Back/Forward
-    and the load bar keep up each time. Then leave the loaded page alone:
-    Activity Monitor's "Idle Wake Ups" for ZLO stays near zero.
+  - The Browser follows the page without polling: it watches the web
+    view (key-value observing) and reads it at most four times a second.
+    Click a link in the page, use Back/Forward in the bar and in the page
+    (a mouse's side button), submit a form with Return, and navigate a
+    single-page app (its address changes without a load). The address
+    field, Back/Forward and the load bar keep up each time.
+  - Without touching anything, open a page that redirects after 5 s
+    (`data:text/html,<meta http-equiv=refresh content="5;url=https://example.com">`
+    saved as a file, or any delayed redirect): the address field and Back
+    update on their own when it redirects.
+  - Open a page whose script changes its address every second
+    (`setInterval(() => history.pushState({}, '', '?t=' + Date.now()), 1000)`):
+    the address field follows each change; ZLO's CPU stays low.
+  - Leave a loaded, quiet page alone: Activity Monitor's "Idle Wake Ups"
+    for ZLO stays near zero.
+  - Leave the Browser tab for over two minutes (its view ends) and quit
+    ZLO, or close the page: no crash (the observer is removed with the
+    view).
 - **Translucent window:** turn on Settings → Appearance → Translucent
   window; the row adds "Takes effect when ZLO next opens." Relaunch: the
   desktop shows blurred through the sidebar and, fainter, the panel. Turn
