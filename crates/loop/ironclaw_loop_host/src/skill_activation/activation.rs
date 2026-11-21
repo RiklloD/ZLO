@@ -19,9 +19,11 @@ use futures::{StreamExt, TryStreamExt, stream};
 use ironclaw_loop_contracts::{
     LOOP_CONTEXT_SNIPPET_MODEL_CONTENT_MAX_BYTES, LoopRunContext, SkillVisibility,
 };
+use ironclaw_skills::usage::{SkillListing, SkillUsageStore, UnmanagedSkillUsage};
 use ironclaw_skills::{
-    LoadedSkill, SkillSelectionOptions, SkillSource, SkillTrust, extract_skill_mentions,
-    parse_skill_md, prefilter_skills_with_options, skill_token_cost, validate_skill_name,
+    LoadedSkill, SkillSelectionOptions, SkillSource, SkillTrust, explicit_skill_mention_names,
+    extract_skill_mentions, parse_skill_md, prefilter_skills_with_options, skill_token_cost,
+    validate_skill_name,
 };
 use ironclaw_turns::{AcceptedMessageRef, TurnRunId, TurnScope};
 use thiserror::Error;
@@ -371,6 +373,11 @@ where
     /// a source reporting no hash is never cached.
     staged_bundles: Mutex<HashMap<String, String>>,
     activation_observer: Mutex<Option<Arc<dyn SkillActivationObserver>>>,
+    /// The per-user skill usage ledger and pins (`ironclaw_skills::usage`):
+    /// decides which listed skills keep their description, and counts every
+    /// skill whose body reaches the model. [`UnmanagedSkillUsage`] (the
+    /// default) lists every skill in full, as before.
+    skill_usage: Arc<dyn SkillUsageStore>,
     messages_by_run: Mutex<HashMap<SkillActivationMessageKey, SkillActivationMessage>>,
     activation_cache: Mutex<HashMap<ActivationCandidateCacheKey, CachedActivationCandidate>>,
     system_activation_cache:
@@ -402,6 +409,7 @@ where
             bundle_stager: None,
             staged_bundles: Mutex::new(HashMap::new()),
             activation_observer: Mutex::new(None),
+            skill_usage: Arc::new(UnmanagedSkillUsage),
             messages_by_run: Mutex::new(HashMap::new()),
             activation_cache: Mutex::new(HashMap::new()),
             system_activation_cache: Mutex::new(HashMap::new()),
@@ -416,6 +424,14 @@ where
     /// without rebuilding the runtime.
     pub fn with_auto_activate_flag(mut self, flag: Arc<AtomicBool>) -> Self {
         self.auto_activate_learned = flag;
+        self
+    }
+
+    /// Manage the listing from the per-user usage ledger: rarely used skills
+    /// are listed by name only, pinned-off skills not at all, and every
+    /// loaded skill counts as a use.
+    pub fn with_skill_usage_store(mut self, store: Arc<dyn SkillUsageStore>) -> Self {
+        self.skill_usage = store;
         self
     }
 
@@ -644,6 +660,13 @@ where
             &effective_config,
             &candidate_set.satisfied_setup_markers,
         )?;
+        // Model-selected skills always load their body.
+        super::usage::record_harness_use(
+            self.skill_usage.as_ref(),
+            run_context,
+            selection.activations.iter().map(|a| a.name.as_str()),
+        )
+        .await;
         let plan =
             self.merge_active_plan(run_context, activation_plan_for_candidates(selection))?;
         // Refresh the captured execution plan so take_activation_plan_for_run reflects
@@ -753,6 +776,12 @@ where
             let selection = self
                 .resolve_required_skill_selection(run_context, &required_names)
                 .await?;
+            super::usage::record_harness_use(
+                self.skill_usage.as_ref(),
+                run_context,
+                selection.activations.iter().map(|a| a.name.as_str()),
+            )
+            .await;
             let plan =
                 self.merge_active_plan(run_context, activation_plan_for_candidates(selection))?;
             if capture_plan {
@@ -772,6 +801,22 @@ where
         let (plan, candidates) = self
             .resolve_activation_plan_with_candidates(run_context, message)
             .await?;
+        // The skills of this message whose body reaches the model: every
+        // activation under `Full`, explicit and model-selected ones under
+        // `Listing` (criteria matches there only rank the listing).
+        super::usage::record_harness_use(
+            self.skill_usage.as_ref(),
+            run_context,
+            plan.selection
+                .activations
+                .iter()
+                .filter(|a| {
+                    self.config.injection_mode == SkillInjectionMode::Full
+                        || a.mode != SkillActivationMode::ActivationCriteria
+                })
+                .map(|a| a.name.as_str()),
+        )
+        .await;
         let plan = self.merge_active_plan(run_context, plan)?;
         if capture_plan {
             self.plans_by_run
@@ -819,7 +864,46 @@ where
         // told a skill exists and so can never activate one. Blinding the agent is a strictly
         // worse failure than showing it a listing it may not need.
         let body = self.body_context(run_context, &candidates).await;
-        Ok(listing_context_candidates(&plan, candidates, &body))
+        let (mut loaded, loaded_names, entries) = listing_context_parts(&plan, candidates, &body);
+        let entries = self
+            .managed_listing_entries(run_context, entries, &loaded_names)
+            .await;
+        if let Some(listing) = skill_listing_candidate(&entries) {
+            loaded.push(listing);
+        }
+        Ok(loaded)
+    }
+
+    /// Apply the usage policy to the listing: name-only skills lose their
+    /// description (unless this message's criteria ranked them), off skills
+    /// leave it. `loaded` (skills whose body is in context) and the entries
+    /// together are the harness catalog.
+    async fn managed_listing_entries(
+        &self,
+        run_context: &LoopRunContext,
+        entries: Vec<SkillListingEntry>,
+        loaded: &[String],
+    ) -> Vec<SkillListingEntry> {
+        let catalog = loaded
+            .iter()
+            .map(String::as_str)
+            .chain(entries.iter().map(|entry| entry.name.as_str()));
+        let Some(listed) =
+            super::usage::harness_listing(self.skill_usage.as_ref(), run_context, catalog).await
+        else {
+            return entries;
+        };
+        entries
+            .into_iter()
+            .filter_map(|mut entry| match listed.get(&entry.name) {
+                Some(SkillListing::Off) => None,
+                Some(SkillListing::NameOnly) if !entry.ranked => {
+                    entry.description = None;
+                    Some(entry)
+                }
+                _ => Some(entry),
+            })
+            .collect()
     }
 
     async fn active_plan_candidates(
@@ -870,6 +954,10 @@ where
             .load_activation_candidates(run_context, &eligible_descriptors)
             .await?;
         let body = self.body_context(run_context, &eligible_candidates).await;
+        let loaded_names: Vec<String> = eligible_candidates
+            .iter()
+            .map(|candidate| candidate.descriptor.id().name().to_string())
+            .collect();
         let mut candidates: Vec<HostSkillContextCandidate> = eligible_candidates
             .into_iter()
             .map(|candidate| candidate.into_context_candidate(&body))
@@ -880,6 +968,9 @@ where
                 .iter()
                 .filter(|descriptor| descriptor.visibility() == Some(&SkillVisibility::Visible)),
         );
+        let entries = self
+            .managed_listing_entries(run_context, entries, &loaded_names)
+            .await;
         if let Some(listing) = skill_listing_candidate(&entries) {
             candidates.push(listing);
         }
@@ -1540,13 +1631,20 @@ fn body_eligible_bundle_ids(plan: &SkillActivationPlan) -> HashSet<SkillBundleId
 #[derive(Debug, Clone)]
 struct SkillListingEntry {
     name: String,
-    description: String,
+    /// `None` lists the skill by name only (`ironclaw_skills::usage`).
+    description: Option<String>,
+    /// This message's criteria ranked it: it keeps its description.
+    ranked: bool,
 }
 
 fn listing_entry_for_descriptor(descriptor: &SkillBundleDescriptor) -> SkillListingEntry {
     SkillListingEntry {
         name: descriptor.id().name().to_string(),
-        description: single_line_truncated(descriptor.description(), MAX_LISTING_DESCRIPTION_CHARS),
+        description: Some(single_line_truncated(
+            descriptor.description(),
+            MAX_LISTING_DESCRIPTION_CHARS,
+        )),
+        ranked: false,
     }
 }
 
@@ -1585,8 +1683,10 @@ fn skill_listing_candidate(entries: &[SkillListingEntry]) -> Option<HostSkillCon
     for entry in entries.iter().take(listed) {
         listing.push_str("\n- ");
         listing.push_str(&entry.name);
-        listing.push_str(": ");
-        listing.push_str(&single_line_truncated(&entry.description, allowance));
+        if let Some(description) = &entry.description {
+            listing.push_str(": ");
+            listing.push_str(&single_line_truncated(description, allowance));
+        }
     }
     // If entries still had to be dropped, SAY so and WARN. Silence here is a correctness bug,
     // not a cosmetic one: the listing is source-then-name ordered, so a dropped tail is a
@@ -1653,12 +1753,15 @@ fn ranked_listing_entries<'a>(
     let mut ranked_entries: Vec<Option<SkillListingEntry>> = vec![None; ranked_bundles.len()];
     let mut unranked_entries = Vec::new();
     for descriptor in descriptors {
-        let entry = listing_entry_for_descriptor(descriptor);
+        let mut entry = listing_entry_for_descriptor(descriptor);
         match ranked_bundles
             .iter()
             .position(|bundle_id| bundle_id == descriptor.id())
         {
-            Some(position) => ranked_entries[position] = Some(entry),
+            Some(position) => {
+                entry.ranked = true;
+                ranked_entries[position] = Some(entry);
+            }
             None => unranked_entries.push(entry),
         }
     }
@@ -1670,21 +1773,29 @@ fn ranked_listing_entries<'a>(
 }
 
 /// [`SkillInjectionMode::Listing`] shape of the message-path context: full
-/// bodies for body-eligible activations, plus one listing candidate covering
-/// every other visible skill. Criteria-ranked skills lead the listing (the
+/// bodies for body-eligible activations, plus the listing entries for every
+/// other visible skill. Criteria-ranked skills lead the listing (the
 /// keyword-scoring pipeline stays the ranking); the rest follow in the
 /// deterministic descriptor order.
-fn listing_context_candidates(
+fn listing_context_parts(
     plan: &SkillActivationPlan,
     candidates: Vec<ActivationCandidate>,
     body: &SkillBodyContext,
-) -> Vec<HostSkillContextCandidate> {
+) -> (
+    Vec<HostSkillContextCandidate>,
+    Vec<String>,
+    Vec<SkillListingEntry>,
+) {
     let body_eligible = body_eligible_bundle_ids(plan);
     let ranked_bundles = criteria_ranked_bundle_ids(plan);
     let (eligible, listed): (Vec<_>, Vec<_>) = candidates
         .into_iter()
         .partition(|candidate| body_eligible.contains(candidate.descriptor.id()));
-    let mut loaded: Vec<HostSkillContextCandidate> = eligible
+    let loaded_names = eligible
+        .iter()
+        .map(|candidate| candidate.descriptor.id().name().to_string())
+        .collect();
+    let loaded: Vec<HostSkillContextCandidate> = eligible
         .into_iter()
         .map(|candidate| candidate.into_context_candidate(body))
         .collect();
@@ -1692,10 +1803,7 @@ fn listing_context_candidates(
         &ranked_bundles,
         listed.iter().map(|candidate| &candidate.descriptor),
     );
-    if let Some(listing) = skill_listing_candidate(&entries) {
-        loaded.push(listing);
-    }
-    loaded
+    (loaded, loaded_names, entries)
 }
 
 fn loaded_skill_from_candidate(
@@ -1751,7 +1859,7 @@ fn select_skill_activations(
     let mention_normalized_message = normalize_dollar_skill_mentions(message);
     let (explicit, rewritten_message) =
         extract_skill_mentions(&mention_normalized_message, &loaded_skills);
-    let explicit_names = extract_explicit_skill_names(message);
+    let explicit_names = explicit_skill_mention_names(message);
     validate_explicit_mentions_are_unambiguous(&explicit_names, &active_candidates)?;
 
     let mut activations = Vec::new();
@@ -2019,7 +2127,7 @@ fn setup_markers_for_explicit_mentions(
     message: &str,
     candidates: &[ActivationCandidate],
 ) -> HashSet<String> {
-    let explicit_names = extract_explicit_skill_names(message);
+    let explicit_names = explicit_skill_mention_names(message);
     if explicit_names.is_empty() {
         return HashSet::new();
     }
@@ -2119,39 +2227,6 @@ fn validate_selected_names_are_unambiguous(
         }
     }
     Ok(())
-}
-
-fn extract_explicit_skill_names(message: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let chars: Vec<(usize, char)> = message.char_indices().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        if chars[index].1 == '/' || chars[index].1 == '$' {
-            let is_boundary = index == 0 || is_skill_mention_boundary(chars[index - 1].1);
-            if is_boundary {
-                let start = index + 1;
-                let mut end = start;
-                while end < chars.len()
-                    && (chars[end].1.is_ascii_alphanumeric()
-                        || matches!(chars[end].1, '-' | '_' | '.'))
-                {
-                    end += 1;
-                }
-                if end > start {
-                    let start_byte = chars[start].0;
-                    let end_byte = chars
-                        .get(end)
-                        .map(|(byte_index, _)| *byte_index)
-                        .unwrap_or(message.len());
-                    names.push(message[start_byte..end_byte].to_string());
-                    index = end;
-                    continue;
-                }
-            }
-        }
-        index += 1;
-    }
-    names
 }
 
 fn normalize_dollar_skill_mentions(message: &str) -> String {
@@ -2275,6 +2350,12 @@ fn content_hash(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Skill listing management (`ironclaw_skills::usage`), kept beside this
+    // module so the listing fixtures below stay shared.
+    mod usage_tests {
+        include!("usage_tests.rs");
+    }
+
     use super::*;
 
     /// Assert no skill BODY reached the model, allowing the listing.
@@ -3369,16 +3450,18 @@ mod tests {
         );
 
         let entry = listing_entry_for_descriptor(&descriptor);
+        let description = entry.description.expect("a fresh entry is full");
 
-        assert_eq!(entry.description.chars().count(), 250);
-        assert!(entry.description.starts_with("line one line two "));
-        assert!(!entry.description.contains('\n'));
+        assert_eq!(description.chars().count(), 250);
+        assert!(description.starts_with("line one line two "));
+        assert!(!description.contains('\n'));
 
         // The composed listing is bounded by its character budget, not a flat entry count.
         let entries: Vec<SkillListingEntry> = (0..max_entries_at_min_description() + 5)
             .map(|index| SkillListingEntry {
                 name: format!("skill-{index:03}"),
-                description: "listed".to_string(),
+                description: Some("listed".to_string()),
+                ranked: false,
             })
             .collect();
         let candidate = skill_listing_candidate(&entries).expect("listing candidate");
@@ -4954,7 +5037,7 @@ mod tests {
     #[test]
     fn explicit_name_extraction_matches_valid_dotted_skill_names() {
         assert_eq!(
-            extract_explicit_skill_names("please use /skill.v2"),
+            explicit_skill_mention_names("please use /skill.v2"),
             vec!["skill.v2".to_string()]
         );
         assert!(ironclaw_skills::validate_skill_name("skill.v2"));

@@ -154,6 +154,8 @@ pub struct MuseRuntime {
     primed: crate::Primed,
     /// How long a `turn/steer` waits for its answer ([`STEER_TIMEOUT`]).
     steer_timeout: Duration,
+    /// How the profile's skills are listed and their reads counted.
+    skills: Arc<crate::skill_listing::CliSkills>,
     #[cfg(test)]
     prep_gate: Option<Arc<crate::slot::PrepGate>>,
 }
@@ -164,6 +166,10 @@ impl MuseRuntime {
         sink: Weak<dyn TurnEventSink>,
         bridge: Option<Arc<CliBridge>>,
     ) -> Result<Self, ironclaw_orchestrator::error::OrchestratorError> {
+        let skills = Arc::new(crate::skill_listing::CliSkills::new(
+            crate::skill_listing::CliSkillUsage::default(),
+            &config.runtime_id,
+        ));
         Ok(Self {
             id: RuntimeId::new(config.runtime_id.clone())?,
             config: Arc::new(config),
@@ -173,9 +179,20 @@ impl MuseRuntime {
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
             primed: crate::Primed::default(),
             steer_timeout: STEER_TIMEOUT,
+            skills,
             #[cfg(test)]
             prep_gate: None,
         })
+    }
+
+    /// List the profile's skills from the shared skill usage ledger (the
+    /// default lists every skill in full).
+    pub fn with_skill_usage(mut self, usage: crate::skill_listing::CliSkillUsage) -> Self {
+        self.skills = Arc::new(crate::skill_listing::CliSkills::new(
+            usage,
+            &self.config.runtime_id,
+        ));
+        self
     }
 
     /// Bound how long a steer waits for `turn/steer`'s answer (default
@@ -303,6 +320,8 @@ impl MuseRuntime {
             bridge: self.bridge.clone(),
             thread_id: thread.thread_id.clone(),
             run_id: run_id.clone(),
+            skills: Arc::clone(&self.skills),
+            skill_reads: std::sync::Mutex::new(self.skills.watch(&thread.thread_id)),
         };
         let bridge = self.bridge.clone();
         let sink = self.sink.clone();
@@ -575,6 +594,9 @@ struct Turn {
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
     run_id: String,
+    skills: Arc<crate::skill_listing::CliSkills>,
+    /// Which shown skills' SKILL.md this turn read.
+    skill_reads: std::sync::Mutex<crate::skill_listing::SkillReadWatch>,
 }
 
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
@@ -602,6 +624,12 @@ impl Turn {
         let mut settled = pipe.finish(&self.door, &mut steers, true).await;
         settled.entries.clear();
         unread.extend(settled);
+        let reads = self
+            .skill_reads
+            .lock()
+            .map(|mut w| std::mem::take(&mut *w))
+            .unwrap_or_default(); // silent-ok: a poisoned watch only follows a panic elsewhere
+        self.skills.record(reads).await;
         (outcome, telemetry, unread)
     }
 
@@ -852,6 +880,9 @@ impl Turn {
                 }
                 if method == "approval/requested" || method == "approval/updated" {
                     self.approval(client, &params, asked);
+                }
+                if let Ok(mut reads) = self.skill_reads.lock() {
+                    reads.push_muse(&method, &params);
                 }
                 let done = fold.push(&method, &params);
                 if method == "turn/started" {
@@ -1241,8 +1272,15 @@ impl TurnRuntime for MuseRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
+        let listed = self
+            .skills
+            .listed_profile(&thread.thread_id, input.profile.as_ref(), &input.text)
+            .await;
         let context = crate::prompt_context(
-            self.primed.take(&thread.thread_id, input.profile.as_ref()),
+            crate::join_notes([
+                self.primed.take(&thread.thread_id, listed.profile.as_ref()),
+                listed.requested,
+            ]),
             input.goal.as_deref(),
         );
         let run_id = self

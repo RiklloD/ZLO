@@ -23,6 +23,7 @@ pub mod muse;
 pub mod permissions;
 mod rpc;
 pub mod session_import;
+pub mod skill_listing;
 mod slot;
 mod steer_door;
 mod workspace;
@@ -184,13 +185,18 @@ impl Primed {
 
 /// Register every installed coding-agent CLI on `engine`, all with their
 /// tools behind `bridge`'s approvals, which are recorded in the engine's
-/// store. Returns how many runtimes were registered.
-pub async fn register_cli_runtimes(engine: &Arc<Engine>, bridge: &Arc<bridge::CliBridge>) -> usize {
+/// store, and their skills listed from `skills` (the shared skill usage
+/// ledger). Returns how many runtimes were registered.
+pub async fn register_cli_runtimes(
+    engine: &Arc<Engine>,
+    bridge: &Arc<bridge::CliBridge>,
+    skills: &skill_listing::CliSkillUsage,
+) -> usize {
     bridge.record_to(engine.store().clone());
-    register_claude_runtimes(engine, Some(Arc::clone(bridge)))
-        + register_antigravity_runtime(engine, Some(Arc::clone(bridge))).await
-        + register_muse_runtime(engine, Some(Arc::clone(bridge)))
-        + register_codex_runtime(engine, Some(Arc::clone(bridge)))
+    register_claude_runtimes(engine, Some(Arc::clone(bridge)), skills)
+        + register_antigravity_runtime(engine, Some(Arc::clone(bridge)), skills).await
+        + register_muse_runtime(engine, Some(Arc::clone(bridge)), skills)
+        + register_codex_runtime(engine, Some(Arc::clone(bridge)), skills)
 }
 
 /// Register the Codex CLI runtime when a `codex` binary is installed. With
@@ -200,6 +206,7 @@ pub async fn register_cli_runtimes(engine: &Arc<Engine>, bridge: &Arc<bridge::Cl
 pub fn register_codex_runtime(
     engine: &Arc<Engine>,
     bridge: Option<Arc<bridge::CliBridge>>,
+    skills: &skill_listing::CliSkillUsage,
 ) -> usize {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return 0;
@@ -211,7 +218,7 @@ pub fn register_codex_runtime(
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     match codex::CodexRuntime::new(codex::default_config(&home, &binary), sink, bridge) {
         Ok(runtime) => {
-            engine.register_runtime(Arc::new(runtime));
+            engine.register_runtime(Arc::new(runtime.with_skill_usage(skills.clone())));
             1
         }
         Err(error) => {
@@ -227,6 +234,7 @@ pub fn register_codex_runtime(
 pub fn register_claude_runtimes(
     engine: &Arc<Engine>,
     bridge: Option<Arc<bridge::CliBridge>>,
+    skills: &skill_listing::CliSkillUsage,
 ) -> usize {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return 0;
@@ -238,7 +246,7 @@ pub fn register_claude_runtimes(
     spawn_version_check(binary.clone());
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     let mut registered = 0;
-    for config in claude::default_accounts(&home, &binary) {
+    for config in claude::default_accounts(&home, &binary, skills) {
         match claude::ClaudeCliRuntime::new(config, sink.clone(), bridge.clone()) {
             Ok(runtime) => {
                 engine.register_runtime(Arc::new(runtime));
@@ -281,6 +289,7 @@ fn spawn_version_check(binary: PathBuf) {
 pub async fn register_antigravity_runtime(
     engine: &Arc<Engine>,
     bridge: Option<Arc<bridge::CliBridge>>,
+    skills: &skill_listing::CliSkillUsage,
 ) -> usize {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return 0;
@@ -294,7 +303,7 @@ pub async fn register_antigravity_runtime(
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     match antigravity::AntigravityRuntime::new(config, sink, bridge) {
         Ok(runtime) => {
-            engine.register_runtime(Arc::new(runtime));
+            engine.register_runtime(Arc::new(runtime.with_skill_usage(skills.clone())));
             1
         }
         Err(error) => {
@@ -311,6 +320,7 @@ pub async fn register_antigravity_runtime(
 pub fn register_muse_runtime(
     engine: &Arc<Engine>,
     bridge: Option<Arc<bridge::CliBridge>>,
+    skills: &skill_listing::CliSkillUsage,
 ) -> usize {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return 0;
@@ -322,7 +332,7 @@ pub fn register_muse_runtime(
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     match muse::MuseRuntime::new(muse::default_config(&home, &binary), sink, bridge) {
         Ok(runtime) => {
-            engine.register_runtime(Arc::new(runtime));
+            engine.register_runtime(Arc::new(runtime.with_skill_usage(skills.clone())));
             1
         }
         Err(error) => {

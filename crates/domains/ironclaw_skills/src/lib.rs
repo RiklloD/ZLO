@@ -19,6 +19,8 @@
 //! - [`learning`] — distilling a reusable SKILL.md out of a completed run's
 //!   transcript. Pure domain logic: inference sits behind `SkillInferencePort`,
 //!   and the result is validated with the same parser install uses.
+//! - [`usage`] — skill listing management: the per-user usage ledger and
+//!   pins, the one listing policy (full / name only / off), and its store.
 //! - [`validation`] — name validation, path-pattern checks, content escaping.
 //!
 //! # Trust model
@@ -53,6 +55,7 @@ mod parser;
 pub mod scoped_management;
 mod selector;
 pub mod types;
+pub mod usage;
 pub mod validation;
 
 // Re-export core types at crate root for convenience.
@@ -83,8 +86,9 @@ pub use scoped_management::{
     build_existing_standalone_skill_management_port, build_scoped_skill_management_port,
 };
 pub use selector::{
-    MAX_SKILL_CONTEXT_TOKENS, SelectionOutcome, SkillSelectionOptions, extract_skill_mentions,
-    prefilter_skills_with_options, skill_token_cost,
+    MAX_SKILL_CONTEXT_TOKENS, SelectionOutcome, SkillSelectionOptions,
+    explicit_skill_mention_names, extract_skill_mentions, prefilter_skills_with_options,
+    skill_token_cost,
 };
 pub use validation::{
     SafeRelativePathError, escape_skill_content, escape_xml_attr, lint_skill_routing_metadata,

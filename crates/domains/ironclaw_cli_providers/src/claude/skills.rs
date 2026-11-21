@@ -6,19 +6,29 @@
 //! (`skillOverrides` in `--settings`): a name-only skill stays callable
 //! through the `Skill` tool, it just loses its description.
 //!
-//! - **Catalog:** the `skills` of the turn's `system/init` frame, kept per
-//!   account in a ZLO state file (0600, written only when it changed).
-//! - **Ledger:** ZLO's own count of `Skill` calls per skill, merged read-only
-//!   with the account's `.claude.json` `skillUsage` (never written).
-//! - **Policy** ([`overrides`]): the profile's plugin skills, pinned skills,
-//!   and up to [`HOT_CAP`] skills scoring at least [`HOT_SCORE`] stay on;
-//!   everything else in the catalog goes name-only. Nothing goes off
-//!   unless configured (or an artifact skill while artifacts are off).
+//! - **Catalog:** the `skills` of the turn's `system/init` frame, recorded as
+//!   this runtime's catalog in the shared skill usage store
+//!   (`ironclaw_skills::usage`).
+//! - **Ledger:** every `Skill` call counts one use in that store, merged
+//!   read-only with the account's `.claude.json` `skillUsage` (never
+//!   written). The profile plugin's skills (`<plugin>:<name>`) are kept
+//!   under their bare `<name>`, the same name the harness and the other
+//!   CLIs use for them.
+//! - **Policy:** `ironclaw_skills::usage::listing`. On top of it the
+//!   profile's plugin skills stay on unless pinned otherwise, a skill the
+//!   turn's text asks for (`$name`, `/name`) is on whatever its pin, and the
+//!   artifact skills are off while the artifact tools are.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use ironclaw_skills::usage::{
+    SkillLedger, SkillListing as Listing, SkillUsageName, SkillUsageObservation, SkillUsageSource,
+    SkillUse, requested_skills,
+};
 use serde::{Deserialize, Serialize};
+
+use crate::skill_listing::{CliSkillUsage, decide, usage_name};
 
 /// The CLI's artifact and design-sync tools, off unless an account asks
 /// for them: about 12k tokens of tool schema every turn.
@@ -37,31 +47,16 @@ pub(crate) const ARTIFACT_SKILLS: [&str; 3] = [
     "artifact-capabilities",
 ];
 
-/// A skill scoring at least this is hot: one use within the past week, or
-/// more uses longer ago.
-pub(crate) const HOT_SCORE: f64 = 0.5;
-/// At most this many skills stay listed for their score alone.
-pub(crate) const HOT_CAP: usize = 12;
-
-const DAY_MS: f64 = 86_400_000.0;
-
 /// How an account's skills are listed.
 #[derive(Debug, Clone, Default)]
 pub struct SkillListing {
-    /// The account's catalog and ledger (`~/.ironclaw/claude-skills/<id>.json`);
-    /// `None` passes no skill overrides at all.
-    pub state_file: Option<PathBuf>,
-    /// Always fully listed.
-    pub pinned_on: Vec<String>,
-    /// Never listed.
-    pub off: Vec<String>,
-}
-
-/// One skill's uses.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct SkillUse {
-    pub count: u64,
-    pub last_used_ms: u64,
+    /// The shared skill usage store; the default manages nothing and passes
+    /// only the artifact overrides.
+    pub usage: CliSkillUsage,
+    /// The account's state file from before the shared store
+    /// (`~/.ironclaw/claude-skills/<id>.json`): its ledger is imported once,
+    /// then the file is renamed `<id>.json.imported` (kept, not deleted).
+    pub legacy_state_file: Option<PathBuf>,
 }
 
 /// `skillOverrides` values the CLI takes.
@@ -73,71 +68,55 @@ pub(crate) enum Listed {
     Off,
 }
 
-/// The state file: what the account offers and what ZLO saw used.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct SkillState {
-    #[serde(default)]
-    pub catalog: Vec<String>,
-    #[serde(default)]
-    pub ledger: BTreeMap<String, SkillUse>,
-}
-
-/// Claude Code's own ranking: uses, halved every week, never below a tenth.
-pub(crate) fn score(usage: SkillUse, now_ms: u64) -> f64 {
-    let days = now_ms.saturating_sub(usage.last_used_ms) as f64 / DAY_MS;
-    usage.count as f64 * 0.5_f64.powf(days / 7.0).max(0.1)
-}
-
-/// What each skill of the catalog is listed as. `plugin` is the profile's
-/// plugin name: its skills (`<plugin>:<skill>`) are always on. `forced_off`
-/// is listed off whether or not the catalog has it.
-pub(crate) fn overrides(
-    state: &SkillState,
-    plugin: Option<&str>,
-    listing: &SkillListing,
-    forced_off: &[&str],
-    now_ms: u64,
-) -> BTreeMap<String, Listed> {
-    let off: BTreeSet<&str> = listing
-        .off
-        .iter()
-        .map(String::as_str)
-        .chain(forced_off.iter().copied())
-        .collect();
-    let pinned: BTreeSet<&str> = listing.pinned_on.iter().map(String::as_str).collect();
-    let own =
-        |name: &str| plugin.is_some_and(|p| name.split_once(':').is_some_and(|(q, _)| q == p));
-    let mut scored: Vec<(&str, f64)> = state
-        .catalog
-        .iter()
-        .map(String::as_str)
-        .filter(|n| !off.contains(n) && !pinned.contains(n) && !own(n))
-        .filter_map(|n| {
-            let s = score(state.ledger.get(n).copied()?, now_ms);
-            (s >= HOT_SCORE).then_some((n, s))
-        })
-        .collect();
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(b.0)));
-    let hot: BTreeSet<&str> = scored.into_iter().take(HOT_CAP).map(|(n, _)| n).collect();
-    let mut out: BTreeMap<String, Listed> = state
-        .catalog
-        .iter()
-        .map(|name| {
-            let n = name.as_str();
-            let listed = if off.contains(n) {
-                Listed::Off
-            } else if pinned.contains(n) || own(n) || hot.contains(n) {
-                Listed::On
-            } else {
-                Listed::NameOnly
-            };
-            (name.clone(), listed)
-        })
-        .collect();
-    for name in off {
-        out.insert(name.to_string(), Listed::Off);
+impl From<Listing> for Listed {
+    fn from(listing: Listing) -> Self {
+        match listing {
+            Listing::Full => Self::On,
+            Listing::NameOnly => Self::NameOnly,
+            Listing::Off => Self::Off,
+        }
     }
-    out
+}
+
+/// How the CLI's own skill names map onto the ledger's: the profile
+/// plugin's `<plugin>:<name>` is the bare `<name>`; every other name is
+/// itself.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SkillNames {
+    plugin: Option<String>,
+    /// The profile's skills (bare names), which the plugin serves.
+    profile: BTreeSet<String>,
+}
+
+impl SkillNames {
+    pub(crate) fn new(plugin: Option<String>, profile: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            plugin,
+            profile: profile.into_iter().collect(),
+        }
+    }
+
+    /// The ledger's name for one of the CLI's.
+    fn usage(&self, native: &str) -> Option<SkillUsageName> {
+        let bare = self
+            .plugin
+            .as_deref()
+            .and_then(|p| native.strip_prefix(p)?.strip_prefix(':'))
+            .unwrap_or(native);
+        usage_name(bare)
+    }
+
+    /// The CLI's name for one of the ledger's.
+    fn native(&self, name: &SkillUsageName) -> String {
+        match &self.plugin {
+            Some(plugin) if self.profile.contains(name.as_str()) => format!("{plugin}:{name}"),
+            _ => name.to_string(),
+        }
+    }
+
+    fn is_plugin(&self, name: &SkillUsageName) -> bool {
+        self.plugin.is_some() && self.profile.contains(name.as_str())
+    }
 }
 
 /// The `--settings` JSON carrying `overrides`; `None` when there are none.
@@ -145,24 +124,9 @@ pub(crate) fn settings_json(overrides: &BTreeMap<String, Listed>) -> Option<Stri
     (!overrides.is_empty()).then(|| serde_json::json!({ "skillOverrides": overrides }).to_string())
 }
 
-/// ZLO's ledger with the account's own `skillUsage` merged in (the larger
-/// count and the later use of each), as the policy reads it.
-pub(crate) fn merged_ledger(
-    own: &BTreeMap<String, SkillUse>,
-    account: &BTreeMap<String, SkillUse>,
-) -> BTreeMap<String, SkillUse> {
-    let mut out = own.clone();
-    for (name, theirs) in account {
-        let entry = out.entry(name.clone()).or_default();
-        entry.count = entry.count.max(theirs.count);
-        entry.last_used_ms = entry.last_used_ms.max(theirs.last_used_ms);
-    }
-    out
-}
-
-/// `skillUsage` of an account's `.claude.json`; empty when absent or
-/// unreadable (the ledger is advisory).
-pub(crate) async fn account_usage(login_file: &Path) -> BTreeMap<String, SkillUse> {
+/// `skillUsage` of an account's `.claude.json`, in ledger names; empty when
+/// absent or unreadable (the ledger is advisory).
+pub(crate) async fn account_usage(login_file: &Path, names: &SkillNames) -> SkillLedger {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Entry {
@@ -181,79 +145,29 @@ pub(crate) async fn account_usage(login_file: &Path) -> BTreeMap<String, SkillUs
         Ok(text) => text,
         Err(error) => {
             tracing::debug!(%error, "claude skills: account usage not read");
-            return BTreeMap::new();
+            return SkillLedger::new();
         }
     };
     match serde_json::from_str::<Account>(&text) {
         Ok(account) => account
             .skill_usage
             .into_iter()
-            .map(|(name, e)| {
-                (
-                    name,
+            .filter_map(|(name, e)| {
+                Some((
+                    names.usage(&name)?,
                     SkillUse {
                         count: e.usage_count,
                         last_used_ms: e.last_used_at,
                     },
-                )
+                ))
             })
             .collect(),
         Err(error) => {
             tracing::debug!(%error, "claude skills: account usage unparsed");
-            BTreeMap::new()
+            SkillLedger::new()
         }
     }
 }
-
-/// The state file; empty when it does not exist yet or is unreadable.
-pub(crate) async fn load(path: &Path) -> SkillState {
-    match tokio::fs::read_to_string(path).await {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
-            tracing::debug!(%error, "claude skills: state unparsed; starting over");
-            SkillState::default()
-        }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => SkillState::default(),
-        Err(error) => {
-            tracing::debug!(%error, "claude skills: state not read");
-            SkillState::default()
-        }
-    }
-}
-
-/// Replace the state file atomically (temp file, then rename), 0600.
-pub(crate) async fn save(path: &Path, state: &SkillState) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    use tokio::io::AsyncWriteExt;
-    let body = serde_json::to_vec_pretty(state).map_err(std::io::Error::other)?;
-    if let Some(dir) = path.parent() {
-        tokio::fs::create_dir_all(dir).await?;
-    }
-    // Unique per write, created exclusively: two writers never share an inode.
-    let tmp = path.with_extension(format!("json.tmp-{}", uuid::Uuid::new_v4().simple()));
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .await?;
-    file.write_all(&body).await?;
-    file.flush().await?;
-    drop(file);
-    tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
-    let renamed = tokio::fs::rename(&tmp, path).await;
-    if renamed.is_err()
-        && let Err(error) = tokio::fs::remove_file(&tmp).await
-    {
-        tracing::debug!(%error, "claude skills: temp state file left behind");
-    }
-    renamed
-}
-
-/// Serializes every load-apply-save of a state file in this process, so
-/// overlapping turns never drop each other's updates. Only one ZLO backend
-/// runs per user; another process writing the same file could still lose
-/// one turn's usage counts, which only ages a skill's ranking (accepted).
-static RECORD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The profile plugin's name (`.claude-plugin/plugin.json`).
 pub(crate) async fn plugin_name(plugin_dir: &Path) -> Option<String> {
@@ -262,6 +176,48 @@ pub(crate) async fn plugin_name(plugin_dir: &Path) -> Option<String> {
         .ok()?; // silent-ok: without a manifest the CLI loads no plugin skills either
     let value: serde_json::Value = serde_json::from_str(&text).ok()?; // silent-ok: same
     value.get("name")?.as_str().map(str::to_string)
+}
+
+/// Import a pre-store state file's ledger once, then set the file aside
+/// (an unparsable file is set aside with nothing to import).
+async fn import_legacy(listing: &SkillListing, source: &SkillUsageSource, names: &SkillNames) {
+    #[derive(Deserialize)]
+    struct Legacy {
+        #[serde(default)]
+        ledger: BTreeMap<String, SkillUse>,
+    }
+    let Some(path) = &listing.legacy_state_file else {
+        return;
+    };
+    let text = match tokio::fs::read_to_string(path).await {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            tracing::debug!(%error, "claude skills: legacy state not read");
+            return;
+        }
+    };
+    let ledger: SkillLedger = match serde_json::from_str::<Legacy>(&text) {
+        Ok(legacy) => legacy
+            .ledger
+            .into_iter()
+            .filter_map(|(name, used)| Some((names.usage(&name)?, used)))
+            .collect(),
+        Err(error) => {
+            tracing::debug!(%error, "claude skills: legacy state unparsed; set aside");
+            SkillLedger::new()
+        }
+    };
+    // Set aside only once the store holds the ledger: a failed import is
+    // retried on the next turn.
+    if let Err(error) = listing.usage.import_ledger(source, ledger).await {
+        tracing::debug!(%error, "claude skills: legacy ledger not imported; kept for a retry");
+        return;
+    }
+    let aside = path.with_extension("json.imported");
+    if let Err(error) = tokio::fs::rename(path, &aside).await {
+        tracing::debug!(%error, "claude skills: legacy state not set aside");
+    }
 }
 
 /// What one turn's frames say about skills: the catalog the CLI offered and
@@ -307,226 +263,122 @@ impl SkillWatch {
         }
     }
 
-    /// Fold this turn into `state`; whether anything changed.
-    pub(crate) fn apply(&self, state: &mut SkillState, now_ms: u64) -> bool {
-        let mut changed = false;
-        if let Some(catalog) = &self.catalog
-            && *catalog != state.catalog
-        {
-            state.catalog = catalog.clone();
-            changed = true;
-        }
-        for name in &self.used {
-            let entry = state.ledger.entry(name.clone()).or_default();
-            entry.count += 1;
-            entry.last_used_ms = entry.last_used_ms.max(now_ms);
-            changed = true;
-        }
-        changed
-    }
-
-    /// Record the turn in the account's state file, when it changed it.
-    pub(crate) async fn record(&self, path: &Path, now_ms: u64) {
-        if self.catalog.is_none() && self.used.is_empty() {
-            return;
-        }
-        let _serialized = RECORD_LOCK.lock().await;
-        let mut state = load(path).await;
-        if !self.apply(&mut state, now_ms) {
-            return;
-        }
-        if let Err(error) = save(path, &state).await {
-            tracing::debug!(%error, "claude skills: state not saved");
+    /// The turn as the ledger takes it.
+    pub(crate) fn observation(&self, names: &SkillNames) -> SkillUsageObservation {
+        SkillUsageObservation {
+            catalog: self
+                .catalog
+                .as_ref()
+                .map(|c| c.iter().filter_map(|n| names.usage(n)).collect()),
+            used: self.used.iter().filter_map(|n| names.usage(n)).collect(),
         }
     }
 }
 
-/// The `--settings` JSON for an account's next turn.
+/// What one turn launches with: the `--settings` JSON, and the names it
+/// records the turn under.
+pub(crate) struct LaunchSkills {
+    pub settings: Option<String>,
+    pub names: SkillNames,
+    pub source: Option<SkillUsageSource>,
+}
+
+/// The `--settings` JSON for an account's next turn. A skill `text` asks
+/// for (`$name`, `/name`) is on whatever its listing or pin.
 pub(crate) async fn launch_settings(
     listing: &SkillListing,
+    runtime_id: &str,
     login_file: &Path,
-    plugin_dir: Option<&Path>,
+    profile: Option<&ironclaw_orchestrator::runtime::ProfileSkills>,
     artifacts: bool,
-    now_ms: u64,
-) -> Option<String> {
-    let mut state = match &listing.state_file {
-        Some(path) => load(path).await,
-        None => SkillState::default(),
-    };
-    if listing.state_file.is_some() {
-        state.ledger = merged_ledger(&state.ledger, &account_usage(login_file).await);
-    }
-    let plugin = match plugin_dir {
-        Some(dir) => plugin_name(dir).await,
+    text: &str,
+) -> LaunchSkills {
+    let plugin = match profile {
+        Some(skills) => plugin_name(&skills.plugin_dir).await,
         None => None,
     };
-    let forced: &[&str] = if artifacts { &[] } else { &ARTIFACT_SKILLS };
-    settings_json(&overrides(
-        &state,
-        plugin.as_deref(),
-        listing,
-        forced,
-        now_ms,
-    ))
+    let names = SkillNames::new(
+        plugin,
+        profile
+            .into_iter()
+            .flat_map(|s| s.entries.iter().map(|e| e.name.clone())),
+    );
+    let source = SkillUsageSource::cli_runtime(runtime_id)
+        .inspect_err(|error| tracing::debug!(%error, "claude skills: runtime id not a source"))
+        .ok(); // silent-ok: logged; the turn then passes only the forced overrides
+    let mut overrides = BTreeMap::new();
+    if let Some(source) = &source {
+        import_legacy(listing, source, &names).await;
+        if let Some(document) = listing.usage.document().await {
+            let catalog = document.catalog(source).to_vec();
+            let account = account_usage(login_file, &names).await;
+            let own: BTreeSet<SkillUsageName> = catalog
+                .iter()
+                .filter(|n| names.is_plugin(n))
+                .cloned()
+                .collect();
+            let requested = requested_skills(text, &catalog);
+            for (name, state) in decide(&document, &catalog, &own, Some(&account), &requested) {
+                overrides.insert(names.native(&name), Listed::from(state.listing));
+            }
+        }
+    }
+    if !artifacts {
+        for skill in ARTIFACT_SKILLS {
+            overrides.insert(skill.to_string(), Listed::Off);
+        }
+    }
+    LaunchSkills {
+        settings: settings_json(&overrides),
+        names,
+        source,
+    }
+}
+
+/// Record one turn in the shared store.
+pub(crate) async fn record_turn(
+    usage: &CliSkillUsage,
+    launch_source: Option<&SkillUsageSource>,
+    names: &SkillNames,
+    watch: &SkillWatch,
+) {
+    let Some(source) = launch_source else {
+        return; // silent-ok: logged at launch
+    };
+    usage.record(source, watch.observation(names)).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const NOW: u64 = 1_800_000_000_000;
-    const WEEK: u64 = 7 * 86_400_000;
-
-    fn used(count: u64, ago: u64) -> SkillUse {
-        SkillUse {
-            count,
-            last_used_ms: NOW - ago,
-        }
-    }
-
-    fn state(catalog: &[&str], ledger: &[(&str, SkillUse)]) -> SkillState {
-        SkillState {
-            catalog: catalog.iter().map(|s| s.to_string()).collect(),
-            ledger: ledger.iter().map(|(n, u)| (n.to_string(), *u)).collect(),
-        }
-    }
-
     #[test]
-    fn score_halves_weekly_and_floors_at_a_tenth() {
-        assert_eq!(score(used(4, 0), NOW), 4.0);
-        assert!((score(used(4, WEEK), NOW) - 2.0).abs() < 1e-9);
-        assert!((score(used(4, 52 * WEEK), NOW) - 0.4).abs() < 1e-9);
-    }
-
-    #[test]
-    fn hot_skills_stay_on_and_cold_ones_go_name_only() {
-        let s = state(
-            &["grilling", "pdf", "ironclaw:deploy", "old", "pinned"],
-            &[("grilling", used(3, 0)), ("old", used(1, 8 * WEEK))],
-        );
-        let listing = SkillListing {
-            pinned_on: vec!["pinned".into()],
-            off: vec!["pdf".into()],
-            ..SkillListing::default()
-        };
-        let got = overrides(&s, Some("ironclaw"), &listing, &[], NOW);
-        assert_eq!(got["grilling"], Listed::On);
-        assert_eq!(got["ironclaw:deploy"], Listed::On);
-        assert_eq!(got["pinned"], Listed::On);
-        assert_eq!(got["old"], Listed::NameOnly);
-        assert_eq!(got["pdf"], Listed::Off);
-        assert_eq!(got.len(), 5, "skills not in the catalog get no entry");
-    }
-
-    #[test]
-    fn the_hot_set_is_capped_by_score() {
-        let names: Vec<String> = (0..20).map(|i| format!("s{i:02}")).collect();
-        let catalog: Vec<&str> = names.iter().map(String::as_str).collect();
-        let ledger: Vec<(&str, SkillUse)> = catalog
-            .iter()
-            .enumerate()
-            .map(|(i, n)| (*n, used(i as u64 + 1, 0)))
-            .collect();
-        let got = overrides(
-            &state(&catalog, &ledger),
-            None,
-            &SkillListing::default(),
-            &[],
-            NOW,
-        );
-        let on: Vec<&str> = got
-            .iter()
-            .filter(|(_, l)| **l == Listed::On)
-            .map(|(n, _)| n.as_str())
-            .collect();
-        assert_eq!(on.len(), HOT_CAP);
-        assert!(on.contains(&"s19") && !on.contains(&"s07"));
-    }
-
-    #[test]
-    fn forced_off_applies_without_a_catalog_and_nothing_else_does() {
-        let got = overrides(
-            &SkillState::default(),
-            None,
-            &SkillListing::default(),
-            &ARTIFACT_SKILLS,
-            NOW,
-        );
-        assert_eq!(got.len(), 3);
-        assert!(got.values().all(|l| *l == Listed::Off));
-        assert_eq!(
-            settings_json(&got).unwrap(),
-            r#"{"skillOverrides":{"artifact-capabilities":"off","artifact-design":"off","artifact-diagramming":"off"}}"#
-        );
-        assert!(
-            settings_json(&overrides(
-                &SkillState::default(),
-                None,
-                &SkillListing::default(),
-                &[],
-                NOW
-            ))
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn merging_keeps_the_larger_count_and_later_use() {
-        let own = BTreeMap::from([("a".to_string(), used(5, WEEK))]);
-        let theirs = BTreeMap::from([("a".to_string(), used(2, 0)), ("b".to_string(), used(1, 0))]);
-        let got = merged_ledger(&own, &theirs);
-        assert_eq!(got["a"], used(5, 0));
-        assert_eq!(got["b"], used(1, 0));
-    }
-
-    #[test]
-    fn the_watch_records_the_catalog_and_skill_calls() {
+    fn plugin_skills_are_kept_under_their_bare_name() {
+        let names = SkillNames::new(Some("ironclaw".into()), ["deploy".to_string()]);
         let mut watch = SkillWatch::default();
-        watch.push_line(r#"{"type":"system","subtype":"init","skills":["a","b:c"],"tools":[]}"#);
-        watch.push_line(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Skill","input":{"skill":"b:c"}}]}}"#);
-        let mut s = SkillState::default();
-        assert!(watch.apply(&mut s, NOW));
-        assert_eq!(s.catalog, vec!["a", "b:c"]);
-        assert_eq!(s.ledger["b:c"], used(1, 0));
-        // The same catalog, no calls: nothing to write.
-        let mut again = SkillWatch::default();
-        again.push_line(r#"{"type":"system","subtype":"init","skills":["a","b:c"]}"#);
-        assert!(!again.apply(&mut s, NOW));
+        watch.push_line(
+            r#"{"type":"system","subtype":"init","skills":["a","ironclaw:deploy"],"tools":[]}"#,
+        );
+        watch.push_line(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Skill","input":{"skill":"/ironclaw:deploy"}}]}}"#);
+        let observation = watch.observation(&names);
+        let bare = |s: &str| usage_name(s).unwrap();
+        assert_eq!(observation.catalog, Some(vec![bare("a"), bare("deploy")]));
+        assert_eq!(observation.used, vec![bare("deploy")]);
+        assert_eq!(names.native(&bare("deploy")), "ironclaw:deploy");
+        assert_eq!(names.native(&bare("a")), "a");
     }
 
-    #[tokio::test]
-    async fn state_round_trips_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("skills").join("claude-cli.json");
-        let s = state(&["a"], &[("a", used(1, 0))]);
-        save(&path, &s).await.unwrap();
-        assert_eq!(load(&path).await, s);
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn overlapping_turns_keep_every_use() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("claude-cli.json");
-        let turns: Vec<_> = (0..32)
-            .map(|_| {
-                let path = path.clone();
-                tokio::spawn(async move {
-                    let mut watch = SkillWatch::default();
-                    watch.push_line(
-                        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"a"}}]}}"#,
-                    );
-                    watch.record(&path, NOW).await;
-                })
-            })
-            .collect();
-        for turn in turns {
-            turn.await.unwrap();
-        }
-        assert_eq!(load(&path).await.ledger["a"].count, 32);
-        let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
-        assert_eq!(leftovers, 1, "no temp files left behind");
+    #[test]
+    fn overrides_serialize_as_the_cli_takes_them() {
+        let overrides = BTreeMap::from([
+            ("a".to_string(), Listed::from(Listing::Full)),
+            ("b".to_string(), Listed::from(Listing::NameOnly)),
+            ("c".to_string(), Listed::from(Listing::Off)),
+        ]);
+        assert_eq!(
+            settings_json(&overrides).unwrap(),
+            r#"{"skillOverrides":{"a":"on","b":"name-only","c":"off"}}"#
+        );
+        assert!(settings_json(&BTreeMap::new()).is_none());
     }
 }

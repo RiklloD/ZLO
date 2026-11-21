@@ -37,6 +37,9 @@ pub use ironclaw_product_contracts::product_wire::{
     RebornAdminThreadScrapeRunArtifactRequest,
 };
 use ironclaw_product_contracts::projection::ProjectionStream;
+use ironclaw_product_contracts::skill_listing::{
+    RebornSkillListingPinRequest, RebornSkillListingResponse,
+};
 use ironclaw_product_contracts::views::{RebornViewPage, RebornViewProvider, RebornViewQuery};
 
 use async_trait::async_trait;
@@ -278,7 +281,8 @@ use runs::{describe_turn_status, map_turn_error, parse_persisted_turn_run_id, pa
 pub use skills::{
     SKILL_AUTO_ACTIVATE_LEARNED_SET_CAPABILITY, SKILL_AUTO_ACTIVATE_LEARNED_SET_CAPABILITY_ID,
     SKILL_AUTO_ACTIVATE_SET_CAPABILITY, SKILL_AUTO_ACTIVATE_SET_CAPABILITY_ID, SKILL_CONTENT_VIEW,
-    SKILL_INSTALL_CAPABILITY, SKILL_INSTALL_CAPABILITY_ID, SKILL_REMOVE_CAPABILITY,
+    SKILL_INSTALL_CAPABILITY, SKILL_INSTALL_CAPABILITY_ID, SKILL_LISTING_PIN_SET_CAPABILITY,
+    SKILL_LISTING_PIN_SET_CAPABILITY_ID, SKILL_LISTING_VIEW, SKILL_REMOVE_CAPABILITY,
     SKILL_REMOVE_CAPABILITY_ID, SKILL_SEARCH_VIEW, SKILL_UPDATE_CAPABILITY,
     SKILL_UPDATE_CAPABILITY_ID, SKILLS_VIEW, SkillsProductService, UnsupportedSkillsProductService,
 };
@@ -1104,6 +1108,11 @@ where
             id if id == SKILLS_VIEW.id => {
                 views::parse_empty_view_params(query.params)?;
                 let response = self.skills_service.list_skills(caller).await?;
+                views::view_page(response)
+            }
+            id if id == SKILL_LISTING_VIEW.id => {
+                views::parse_empty_view_params(query.params)?;
+                let response = self.skills_service.skill_listing(caller).await?;
                 views::view_page(response)
             }
             id if id == SKILL_SEARCH_VIEW.id => {

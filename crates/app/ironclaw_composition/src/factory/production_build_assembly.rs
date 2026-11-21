@@ -100,6 +100,7 @@ pub(super) async fn build_production_shaped(
         credential_account_visibility_policy,
         ironhub_manifest_url,
         workspace_filesystems: None,
+        skill_usage: None,
         standalone_storage_root: None,
         default_system_prompt_path: None,
         #[cfg(any(test, feature = "test-support"))]
@@ -295,8 +296,27 @@ async fn build_local_storage_production_shaped(
         build_filesystem(root, workspace_root, host_home_root, storage_backend_input).await?;
     let trigger_repository =
         trigger_repository_for_durable_backend(&filesystem_bundle.durable_backend).await?;
+    // One skill usage ledger for the harness, every CLI runtime and the
+    // product surface.
+    let skill_usage = crate::skill_usage_assembly::build_skill_usage_store(Arc::clone(
+        &filesystem_bundle.filesystem,
+    ));
+    // CLI agents run for the local person, in the deployment's tenant.
+    let cli_skill_usage = ironclaw_cli_providers::skill_listing::CliSkillUsage::new(
+        Arc::clone(&skill_usage),
+        ironclaw_skills::usage::SkillUsageOwner {
+            tenant_id: super::extension_lifecycle_surface_context(
+                owner_user_id.clone(),
+                context.local_runtime_identity.as_ref(),
+            )?
+            .tenant_id,
+            user_id: owner_user_id.clone(),
+        },
+    );
+    context.skill_usage = Some(skill_usage);
     let orchestrator = crate::backend_store_assembly::orchestrator_for_durable_backend(
         &filesystem_bundle.durable_backend,
+        &cli_skill_usage,
     )
     .await?;
     let refresh_lock_pool = match &filesystem_bundle.durable_backend {
@@ -443,6 +463,9 @@ pub(super) struct RebornProductionBuildContext {
         Option<Arc<dyn ironclaw_auth::RuntimeCredentialAccountVisibilityPolicy>>,
     pub(super) ironhub_manifest_url: ironclaw_extension_manager::ironhub::IronhubManifestUrl,
     pub(super) workspace_filesystems: Option<WorkspaceFilesystems>,
+    /// The skill usage ledger the CLI runtimes were given, when this build
+    /// registered them; the backend assembly builds one otherwise.
+    pub(super) skill_usage: Option<Arc<dyn ironclaw_skills::usage::SkillUsageStore>>,
     pub(super) standalone_storage_root: Option<PathBuf>,
     pub(super) default_system_prompt_path: Option<PathBuf>,
     #[cfg(any(test, feature = "test-support"))]

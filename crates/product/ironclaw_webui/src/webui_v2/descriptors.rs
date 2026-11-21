@@ -84,6 +84,8 @@ pub const WEBUI_V2_ROUTE_UPDATE_SKILL: &str = "webui.v2.update_skill";
 pub const WEBUI_V2_ROUTE_REMOVE_SKILL: &str = "webui.v2.remove_skill";
 pub const WEBUI_V2_ROUTE_SET_SKILL_AUTO_ACTIVATE: &str = "webui.v2.set_skill_auto_activate";
 pub const WEBUI_V2_ROUTE_SET_AUTO_ACTIVATE_LEARNED: &str = "webui.v2.set_auto_activate_learned";
+pub const WEBUI_V2_ROUTE_GET_SKILL_LISTING: &str = "webui.v2.get_skill_listing";
+pub const WEBUI_V2_ROUTE_SET_SKILL_LISTING_PIN: &str = "webui.v2.set_skill_listing_pin";
 pub const WEBUI_V2_ROUTE_LIST_SETTINGS_TOOLS: &str = "webui.v2.settings.list_tools";
 pub const WEBUI_V2_ROUTE_SET_SETTINGS_TOOLS_AUTO_APPROVE: &str =
     "webui.v2.settings.set_tools_auto_approve";
@@ -407,6 +409,9 @@ pub const WEBUI_V2_PATTERN_LIST_SKILLS: &str = "/api/webchat/v2/skills";
 pub const WEBUI_V2_PATTERN_SEARCH_SKILLS: &str = "/api/webchat/v2/skills/search";
 pub const WEBUI_V2_PATTERN_INSTALL_SKILL: &str = "/api/webchat/v2/skills/install";
 pub const WEBUI_V2_PATTERN_SKILL_DETAIL: &str = "/api/webchat/v2/skills/{name}";
+/// Outside `/skills/` so no skill name can shadow it.
+pub const WEBUI_V2_PATTERN_SKILL_LISTING: &str = "/api/webchat/v2/skill-listing";
+pub const WEBUI_V2_PATTERN_SKILL_LISTING_PIN: &str = "/api/webchat/v2/skill-listing/{name}/pin";
 pub const WEBUI_V2_PATTERN_SET_SKILL_AUTO_ACTIVATE: &str =
     "/api/webchat/v2/skills/{name}/auto-activate";
 pub const WEBUI_V2_PATTERN_SET_AUTO_ACTIVATE_LEARNED: &str =
@@ -786,6 +791,8 @@ pub fn webui_v2_routes_with_artifact_flags(
         remove_skill_descriptor(),
         set_skill_auto_activate_descriptor(),
         set_auto_activate_learned_descriptor(),
+        get_skill_listing_descriptor(),
+        set_skill_listing_pin_descriptor(),
         list_settings_tools_descriptor(),
         set_settings_tools_auto_approve_descriptor(),
         set_settings_tool_permission_descriptor(),
@@ -1943,6 +1950,23 @@ fn set_auto_activate_learned_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_ROUTE_SET_AUTO_ACTIVATE_LEARNED,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_SET_AUTO_ACTIVATE_LEARNED,
+        4,
+    )
+}
+
+fn get_skill_listing_descriptor() -> IngressRouteDescriptor {
+    projection_read_route(
+        WEBUI_V2_ROUTE_GET_SKILL_LISTING,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_SKILL_LISTING,
+    )
+}
+
+fn set_skill_listing_pin_descriptor() -> IngressRouteDescriptor {
+    mutation_route(
+        WEBUI_V2_ROUTE_SET_SKILL_LISTING_PIN,
+        NetworkMethod::Put,
+        WEBUI_V2_PATTERN_SKILL_LISTING_PIN,
         4,
     )
 }

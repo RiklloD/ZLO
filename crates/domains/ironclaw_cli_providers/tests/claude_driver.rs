@@ -1,3 +1,4 @@
+// arch-exempt: large_file, one fake-CLI suite for the Claude driver (turns, steering, skill listing) awaits a split by concern, plan #v3-cli-bridge
 //! The Claude driver against a fake `claude` script: arguments (fail-closed
 //! tool flags, session start then resume), stream folding into outcome,
 //! usage and telemetry, Stop killing the whole process group, and the
@@ -13,11 +14,19 @@ use std::time::Duration;
 use async_trait::async_trait;
 use ironclaw_cli_providers::bridge::{CliBridge, GateAnswer, LiveEvent, SessionGrant};
 use ironclaw_cli_providers::claude::{ClaudeCliConfig, ClaudeCliRuntime, SkillListing};
+use ironclaw_cli_providers::skill_listing::CliSkillUsage;
+use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
 use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
+use ironclaw_host_api::mount::{MountGrant, MountPermissions, MountView};
+use ironclaw_host_api::path::{MountAlias, VirtualPath};
 use ironclaw_host_api::turn::DenialFeedback;
 use ironclaw_orchestrator::model::{Millis, RuntimeId, ThreadRecord, ThreadScope};
 use ironclaw_orchestrator::runtime::*;
 use ironclaw_orchestrator::telemetry::TurnTelemetry;
+use ironclaw_skills::usage::{
+    FilesystemSkillUsageStore, SkillPin, SkillUsageName, SkillUsageObservation, SkillUsageOwner,
+    SkillUsageSource, SkillUsageStore,
+};
 
 #[derive(Default)]
 struct Recorder {
@@ -123,30 +132,24 @@ fn configured_runtime(
     bridge: Option<Arc<CliBridge>>,
     autocompact: Option<u64>,
 ) -> ClaudeCliRuntime {
-    let work_dir = dir.join("work");
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(sink) as Weak<dyn TurnEventSink>;
-    ClaudeCliRuntime::new(
-        ClaudeCliConfig {
-            runtime_id: "claude-cli".into(),
-            display_name: "Claude CLI".into(),
-            binary,
-            config_dir: None,
-            work_dir,
-            login_file: dir.join(".claude.json"),
-            projects_dir: dir.join("projects"),
-            usage_file: Some(dir.join("usage").join("claude-cli.json")),
-            autocompact,
-            artifacts: false,
-            skills: SkillListing {
-                state_file: Some(dir.join("skills").join("claude-cli.json")),
-                pinned_on: vec!["pinned".into()],
-                off: Vec::new(),
-            },
-        },
-        sink,
-        bridge,
-    )
-    .unwrap()
+    ClaudeCliRuntime::new(claude_config(dir, binary, autocompact), sink, bridge).unwrap()
+}
+
+fn claude_config(dir: &Path, binary: PathBuf, autocompact: Option<u64>) -> ClaudeCliConfig {
+    ClaudeCliConfig {
+        runtime_id: "claude-cli".into(),
+        display_name: "Claude CLI".into(),
+        binary,
+        config_dir: None,
+        work_dir: dir.join("work"),
+        login_file: dir.join(".claude.json"),
+        projects_dir: dir.join("projects"),
+        usage_file: Some(dir.join("usage").join("claude-cli.json")),
+        autocompact,
+        artifacts: false,
+        skills: SkillListing::default(),
+    }
 }
 
 async fn thread(rt: &ClaudeCliRuntime) -> ThreadRecord {
@@ -363,6 +366,7 @@ async fn profile_soul_skills_and_folder_reach_the_cli() {
         skills: Some(ProfileSkills {
             plugin_dir: plugin.clone(),
             index: String::new(),
+            entries: Vec::new(),
         }),
     };
 
@@ -1888,21 +1892,58 @@ echo '{"type":"assistant","message":{"id":"m","type":"message","role":"assistant
 echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"duration_api_ms":1,"num_turns":1,"result":"ok","session_id":"s","total_cost_usd":0,"usage":{"input_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":1}}'
 "#;
 
-/// The skill listing a turn launches with comes from the account's catalog
-/// and ledger (ZLO's own merged with `.claude.json`'s `skillUsage`, which is
-/// never written); the turn's init frame and `Skill` calls update them.
+/// The skill listing a turn launches with comes from the shared skill usage
+/// store (this runtime's catalog, every source's uses, the person's pins)
+/// merged with `.claude.json`'s `skillUsage`, which is never written; the
+/// turn's init frame and `Skill` calls update the store. A pre-store state
+/// file's ledger is imported once and set aside.
 #[tokio::test]
-async fn skill_listing_follows_the_catalog_and_the_ledger() {
+async fn skill_listing_follows_the_shared_store() {
     let dir = tempfile::tempdir().unwrap();
     let sink = Arc::new(Recorder::default());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
-    let state_file = dir.path().join("skills").join("claude-cli.json");
-    std::fs::create_dir_all(state_file.parent().unwrap()).unwrap();
+    let store = Arc::new(FilesystemSkillUsageStore::new(Arc::new(
+        ScopedFilesystem::with_fixed_view(
+            Arc::new(InMemoryBackend::new()),
+            MountView::new(vec![MountGrant::new(
+                MountAlias::new("/skill-usage").unwrap(),
+                VirtualPath::new("/engine/tenants/t/users/u/skill-usage").unwrap(),
+                MountPermissions::read_write(),
+            )])
+            .unwrap(),
+        ),
+    )));
+    let owner = SkillUsageOwner {
+        tenant_id: TenantId::new("t").unwrap(),
+        user_id: UserId::new("u").unwrap(),
+    };
+    let source = SkillUsageSource::cli_runtime("claude-cli").unwrap();
+    let name = |s: &str| SkillUsageName::new(s).unwrap();
+    // The catalog of an earlier turn, and a pin set on the Skills page.
+    store
+        .record(
+            &owner,
+            &source,
+            SkillUsageObservation {
+                catalog: Some(vec![name("hot"), name("cold"), name("pinned")]),
+                used: Vec::new(),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    store
+        .set_pin(&owner, &name("pinned"), Some(SkillPin::AlwaysFull))
+        .await
+        .unwrap();
+    // The pre-store state file: "hot" was used three times today.
+    let legacy = dir.path().join("skills").join("claude-cli.json");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
     std::fs::write(
-        &state_file,
+        &legacy,
         serde_json::json!({
             "catalog": ["hot", "cold", "pinned"],
             "ledger": {"hot": {"count": 3, "last_used_ms": now}},
@@ -1925,7 +1966,13 @@ async fn skill_listing_follows_the_catalog_and_the_ledger() {
     .unwrap();
     let args_log = dir.path().join("args.log");
     let body = SKILLS.replace("@ARGS@", args_log.to_str().unwrap());
-    let rt = runtime(dir.path(), script(dir.path(), "claude", &body), &sink);
+    let mut config = claude_config(dir.path(), script(dir.path(), "claude", &body), None);
+    config.skills = SkillListing {
+        usage: CliSkillUsage::new(store.clone(), owner.clone()),
+        legacy_state_file: Some(legacy.clone()),
+    };
+    let weak: Weak<dyn TurnEventSink> = Arc::downgrade(&sink) as Weak<dyn TurnEventSink>;
+    let rt = ClaudeCliRuntime::new(config, weak, None).unwrap();
     let thread = thread(&rt).await;
     let turn = || {
         let mut turn = input();
@@ -1933,6 +1980,11 @@ async fn skill_listing_follows_the_catalog_and_the_ledger() {
             skills: Some(ProfileSkills {
                 plugin_dir: profile_dir.clone(),
                 index: String::new(),
+                entries: vec![ProfileSkillEntry {
+                    name: "mine".into(),
+                    description: "The profile's own".into(),
+                    skill_md: profile_dir.join("skills/mine/SKILL.md"),
+                }],
             }),
             ..TurnProfile::default()
         });
@@ -1953,7 +2005,7 @@ async fn skill_listing_follows_the_catalog_and_the_ledger() {
         })
         .collect();
     let first = &settings[0]["skillOverrides"];
-    assert_eq!(first["hot"], "on");
+    assert_eq!(first["hot"], "on", "the imported ledger counts");
     assert_eq!(first["cold"], "name-only");
     assert_eq!(first["pinned"], "on");
     assert_eq!(first["artifact-design"], "off");
@@ -1961,16 +2013,215 @@ async fn skill_listing_follows_the_catalog_and_the_ledger() {
     // The init frame replaced the catalog; the `Skill` call made "fresh" hot.
     let second = &settings[1]["skillOverrides"];
     assert_eq!(second["fresh"], "on");
-    assert_eq!(second["ironclaw:mine"], "on");
+    assert_eq!(second["ironclaw:mine"], "on", "the profile plugin stays on");
     assert_eq!(second["cold"], "name-only");
     assert_eq!(second["artifact-design"], "off");
-    let state: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
-    assert_eq!(state["ledger"]["fresh"]["count"], 2);
-    assert_eq!(state["catalog"].as_array().unwrap().len(), 6);
+    let document = store.load(&owner).await.unwrap().unwrap();
+    let record = &document.sources[&source];
+    assert_eq!(record.ledger[&name("fresh")].count, 2);
+    assert_eq!(record.ledger[&name("hot")].count, 3);
+    assert!(
+        record.catalog.contains(&name("mine")),
+        "plugin skills are kept under their bare name"
+    );
+    assert_eq!(record.catalog.len(), 6);
+    assert!(
+        !legacy.exists(),
+        "the legacy file is set aside once imported"
+    );
+    assert!(legacy.with_extension("json.imported").exists());
     assert_eq!(
         std::fs::read_to_string(dir.path().join(".claude.json")).unwrap(),
         account,
         "the account's file is never written"
     );
+}
+
+fn skill_store() -> Arc<FilesystemSkillUsageStore<InMemoryBackend>> {
+    Arc::new(FilesystemSkillUsageStore::new(Arc::new(
+        ScopedFilesystem::with_fixed_view(
+            Arc::new(InMemoryBackend::new()),
+            MountView::new(vec![MountGrant::new(
+                MountAlias::new("/skill-usage").unwrap(),
+                VirtualPath::new("/engine/tenants/t/users/u/skill-usage").unwrap(),
+                MountPermissions::read_write(),
+            )])
+            .unwrap(),
+        ),
+    )))
+}
+
+fn skill_owner() -> SkillUsageOwner {
+    SkillUsageOwner {
+        tenant_id: TenantId::new("t").unwrap(),
+        user_id: UserId::new("u").unwrap(),
+    }
+}
+
+/// The `skillOverrides` of every launch the SKILLS script logged.
+fn logged_overrides(args_log: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(args_log)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let rest = line.split("--settings ").nth(1).expect(line);
+            let json: serde_json::Value =
+                serde_json::from_str(rest.split(' ').next().unwrap()).unwrap();
+            json["skillOverrides"].clone()
+        })
+        .collect()
+}
+
+fn skills_runtime(
+    dir: &Path,
+    sink: &Arc<Recorder>,
+    store: Arc<dyn SkillUsageStore>,
+    legacy: Option<PathBuf>,
+) -> (ClaudeCliRuntime, PathBuf) {
+    let args_log = dir.join("args.log");
+    let body = SKILLS.replace("@ARGS@", args_log.to_str().unwrap());
+    let mut config = claude_config(dir, script(dir, "claude", &body), None);
+    config.skills = SkillListing {
+        usage: CliSkillUsage::new(store, skill_owner()),
+        legacy_state_file: legacy,
+    };
+    let weak: Weak<dyn TurnEventSink> = Arc::downgrade(sink) as Weak<dyn TurnEventSink>;
+    (ClaudeCliRuntime::new(config, weak, None).unwrap(), args_log)
+}
+
+/// A skill the message asks for (`$name`) launches on, even pinned off; the
+/// other pinned-off skill stays off.
+#[tokio::test]
+async fn a_requested_skill_launches_on_over_an_off_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let store = skill_store();
+    let source = SkillUsageSource::cli_runtime("claude-cli").unwrap();
+    let name = |s: &str| SkillUsageName::new(s).unwrap();
+    store
+        .record(
+            &skill_owner(),
+            &source,
+            SkillUsageObservation {
+                catalog: Some(vec![name("cold"), name("gone"), name("hidden")]),
+                used: Vec::new(),
+            },
+            1,
+        )
+        .await
+        .unwrap();
+    for skill in ["gone", "hidden"] {
+        store
+            .set_pin(&skill_owner(), &name(skill), Some(SkillPin::Off))
+            .await
+            .unwrap();
+    }
+    let (rt, args_log) = skills_runtime(dir.path(), &sink, store, None);
+    let thread = thread(&rt).await;
+    let mut turn = input();
+    turn.text = "please use $gone on this".into();
+    rt.start_turn(&thread, turn).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let overrides = &logged_overrides(&args_log)[0];
+    assert_eq!(overrides["gone"], "on", "{overrides}");
+    assert_eq!(overrides["hidden"], "off", "{overrides}");
+    assert_eq!(overrides["cold"], "name-only", "{overrides}");
+}
+
+/// The shared store, except its first `import_ledger` fails.
+#[derive(Debug)]
+struct FailFirstImport {
+    inner: Arc<FilesystemSkillUsageStore<InMemoryBackend>>,
+    failed: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl SkillUsageStore for FailFirstImport {
+    async fn load(
+        &self,
+        owner: &SkillUsageOwner,
+    ) -> Result<
+        Option<ironclaw_skills::usage::SkillUsageDocument>,
+        ironclaw_skills::usage::SkillUsageError,
+    > {
+        self.inner.load(owner).await
+    }
+
+    async fn record(
+        &self,
+        owner: &SkillUsageOwner,
+        source: &SkillUsageSource,
+        observation: SkillUsageObservation,
+        now_ms: u64,
+    ) -> Result<(), ironclaw_skills::usage::SkillUsageError> {
+        self.inner.record(owner, source, observation, now_ms).await
+    }
+
+    async fn import_ledger(
+        &self,
+        owner: &SkillUsageOwner,
+        source: &SkillUsageSource,
+        ledger: ironclaw_skills::usage::SkillLedger,
+    ) -> Result<(), ironclaw_skills::usage::SkillUsageError> {
+        if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Err(ironclaw_skills::usage::SkillUsageError::Conflict);
+        }
+        self.inner.import_ledger(owner, source, ledger).await
+    }
+
+    async fn set_pin(
+        &self,
+        owner: &SkillUsageOwner,
+        name: &SkillUsageName,
+        pin: Option<SkillPin>,
+    ) -> Result<ironclaw_skills::usage::SkillUsageDocument, ironclaw_skills::usage::SkillUsageError>
+    {
+        self.inner.set_pin(owner, name, pin).await
+    }
+}
+
+/// A legacy state file whose import failed is kept, and imported (then set
+/// aside) on the next turn.
+#[tokio::test]
+async fn a_failed_legacy_import_is_retried_on_the_next_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let inner = skill_store();
+    let store = Arc::new(FailFirstImport {
+        inner: inner.clone(),
+        failed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let legacy = dir.path().join("skills").join("claude-cli.json");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(
+        &legacy,
+        serde_json::json!({"ledger": {"hot": {"count": 3, "last_used_ms": 1}}}).to_string(),
+    )
+    .unwrap();
+    let (rt, _args) = skills_runtime(dir.path(), &sink, store, Some(legacy.clone()));
+    let thread = thread(&rt).await;
+    let source = SkillUsageSource::cli_runtime("claude-cli").unwrap();
+    let hot = SkillUsageName::new("hot").unwrap();
+    let hot_count = || async {
+        inner
+            .load(&skill_owner())
+            .await
+            .unwrap()
+            .unwrap()
+            .sources
+            .get(&source)
+            .and_then(|r| r.ledger.get(&hot).map(|u| u.count))
+    };
+
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    assert!(legacy.exists(), "a failed import keeps the file");
+    assert!(!legacy.with_extension("json.imported").exists());
+    assert_eq!(hot_count().await, None);
+
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 2).await;
+    assert!(!legacy.exists(), "the retried import sets the file aside");
+    assert!(legacy.with_extension("json.imported").exists());
+    assert_eq!(hot_count().await, Some(3));
 }

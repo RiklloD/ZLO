@@ -1719,7 +1719,14 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // in `ironclaw_extension_registry`, consent policy in
         // `ironclaw_extension_host`. Count read from this test's failure
         // message.
-        ("ironclaw_product_contracts", 16_976),
+        // 16_976 -> 17_171 (2026-11-21, ZLO skill manager): the
+        // `skill_listing` wire DTOs (listing state/basis, pin, per-source
+        // entries, pin request) that the WebUI transport and the ZLO client
+        // share. The ledger, policy and store live in
+        // `ironclaw_skills::usage`; the projection in
+        // `ironclaw_assistant::skill_listing_page`. Count read from this
+        // test's failure message.
+        ("ironclaw_product_contracts", 17_171),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

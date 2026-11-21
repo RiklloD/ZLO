@@ -453,7 +453,12 @@ async fn claude_live_turn_with_tasks_and_a_steer() {
         "claude {version:?}, checked against {}",
         claude::EXPECTED_CLI_VERSION
     );
-    let mut config = claude::default_accounts(&home(), &binary).remove(0);
+    let mut config = claude::default_accounts(
+        &home(),
+        &binary,
+        &ironclaw_cli_providers::skill_listing::CliSkillUsage::default(),
+    )
+    .remove(0);
     config.work_dir = dir.path().join("work");
     config.usage_file = Some(dir.path().join("claude-cli.json"));
     let recorder = Arc::new(Recorder::default());

@@ -25,6 +25,9 @@ ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 # Approval reasons are redacted before they reach a card.
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 ironclaw_orchestrator = { path = "../ironclaw_orchestrator" }
+# The shared skill usage ledger, pins and listing policy: how each runtime
+# lists its skills (`skill_listing.rs`, `claude/skills.rs`).
+ironclaw_skills = { path = "../ironclaw_skills" }
 # Session import settings and report shapes (`session_import`).
 # Context-report categories (what ZLO injects into a CLI prompt).
 # `ThreadAction` / `ReviewTarget`: the runtime-action vocabulary the
@@ -46,6 +49,8 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "v5", "v7"] }
 
 [dev-dependencies]
+# The skill-listing driver tests run the shared usage store over memory.
+ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem" }
 # The approval-record test opens the orchestrator store over a real libSQL file.
 ironclaw_libsql_runtime = { path = "../../substrates/ironclaw_libsql_runtime" }
 libsql = { workspace = true }

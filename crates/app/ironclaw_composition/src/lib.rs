@@ -66,6 +66,7 @@ mod sandbox;
 /// Storage half of `zlo export` / `zlo import` (moving a setup to another
 /// computer); consumer: `ironclaw` binary's `export`/`import` commands.
 pub mod setup_transfer;
+mod skill_usage_assembly;
 mod standalone_bootstrap_assembly;
 mod storage_catalog;
 mod support;
@@ -509,6 +510,8 @@ const PER_USER_ALIASES: &[&str] = &[
     "/threads",
     "/conversations",
     "/suggestions",
+    // The skill listing usage ledger and pins (`ironclaw_skills::usage`).
+    "/skill-usage",
     "/turns",
     // Package-declared user settings values, one record per extension
     // (`ironclaw_extension_registry::settings::ExtensionSettingsStore`).
@@ -565,10 +568,11 @@ fn invocation_mount_view_for_segments(
     let mut grants = Vec::with_capacity(PER_USER_ALIASES.len() + 4);
     for alias in PER_USER_ALIASES {
         let target = format!("{tenant_user_prefix}{alias}");
-        let permissions = if matches!(*alias, "/notifications" | "/suggestions") {
-            // Suggestions are retained model output, and notifications expose
-            // only typed lifecycle transitions. Neither store performs raw
-            // deletion, so do not grant filesystem deletion authority.
+        let permissions = if matches!(*alias, "/notifications" | "/suggestions" | "/skill-usage") {
+            // Suggestions are retained model output, notifications expose
+            // only typed lifecycle transitions, and the skill usage ledger
+            // only ever updates its one document. None of these stores
+            // performs raw deletion, so do not grant deletion authority.
             MountPermissions::read_write()
         } else {
             MountPermissions::read_write_list_delete()

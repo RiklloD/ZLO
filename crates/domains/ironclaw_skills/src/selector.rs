@@ -467,6 +467,42 @@ pub fn extract_skill_mentions<'a>(
     (matched, rewritten)
 }
 
+/// Every explicit `/name` or `$name` mention in `message`, in order (not
+/// deduplicated, not matched against any catalog): the one mention grammar
+/// the harness and the CLI runtimes share.
+pub fn explicit_skill_mention_names(message: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let chars: Vec<(usize, char)> = message.char_indices().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index].1 == '/' || chars[index].1 == '$' {
+            let is_boundary = index == 0 || is_skill_mention_boundary(chars[index - 1].1);
+            if is_boundary {
+                let start = index + 1;
+                let mut end = start;
+                while end < chars.len()
+                    && (chars[end].1.is_ascii_alphanumeric()
+                        || matches!(chars[end].1, '-' | '_' | '.'))
+                {
+                    end += 1;
+                }
+                if end > start {
+                    let start_byte = chars[start].0;
+                    let end_byte = chars
+                        .get(end)
+                        .map(|(byte_index, _)| *byte_index)
+                        .unwrap_or(message.len());
+                    names.push(message[start_byte..end_byte].to_string());
+                    index = end;
+                    continue;
+                }
+            }
+        }
+        index += 1;
+    }
+    names
+}
+
 fn is_skill_mention_boundary(previous: char) -> bool {
     matches!(previous, ' ' | '\n' | '\t' | '"' | '(' | '[') || !previous.is_ascii()
 }

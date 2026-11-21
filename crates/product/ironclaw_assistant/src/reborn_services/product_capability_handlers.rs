@@ -440,6 +440,7 @@ pub(super) enum ProductCapabilityHandler {
     ProjectMemberUpdate,
     ProjectMemberRemove,
     ThreadDelete,
+    SkillListingPinSet,
     AutomationPause,
     AutomationRun,
     AutomationResume,
@@ -471,6 +472,7 @@ impl ProductCapabilityHandler {
             PROJECT_MEMBER_UPDATE_CAPABILITY_ID => Some(Self::ProjectMemberUpdate),
             PROJECT_MEMBER_REMOVE_CAPABILITY_ID => Some(Self::ProjectMemberRemove),
             THREAD_DELETE_CAPABILITY_ID => Some(Self::ThreadDelete),
+            SKILL_LISTING_PIN_SET_CAPABILITY_ID => Some(Self::SkillListingPinSet),
             AUTOMATION_PAUSE_CAPABILITY_ID => Some(Self::AutomationPause),
             AUTOMATION_RUN_CAPABILITY_ID => Some(Self::AutomationRun),
             AUTOMATION_RESUME_CAPABILITY_ID => Some(Self::AutomationResume),
@@ -503,6 +505,7 @@ impl ProductCapabilityHandler {
             Self::ProjectMemberUpdate => "project member updated",
             Self::ProjectMemberRemove => "project member removed",
             Self::ThreadDelete => "thread deleted",
+            Self::SkillListingPinSet => "skill listing updated",
             Self::AutomationPause => "automation paused",
             Self::AutomationRun => "automation started",
             Self::AutomationResume => "automation resumed",
@@ -619,6 +622,14 @@ impl ProductCapabilityHandler {
             Self::ThreadDelete => {
                 let request = product_command_input(input)?;
                 services.delete_thread(caller, request).await?;
+                Ok(())
+            }
+            Self::SkillListingPinSet => {
+                let request = product_command_input(input)?;
+                services
+                    .skills_service
+                    .set_skill_listing_pin(caller, request)
+                    .await?;
                 Ok(())
             }
             Self::AutomationPause => {
@@ -817,6 +828,7 @@ mod tests {
             PROJECT_MEMBER_UPDATE_CAPABILITY_ID,
             PROJECT_MEMBER_REMOVE_CAPABILITY_ID,
             THREAD_DELETE_CAPABILITY_ID,
+            SKILL_LISTING_PIN_SET_CAPABILITY_ID,
             AUTOMATION_PAUSE_CAPABILITY_ID,
             AUTOMATION_RUN_CAPABILITY_ID,
             AUTOMATION_RESUME_CAPABILITY_ID,

@@ -79,6 +79,7 @@ pub mod self_update;
 pub mod session_import;
 pub mod session_ingress;
 pub mod shared_admission;
+pub mod skill_listing;
 pub mod suggestions;
 pub mod surface;
 pub mod task_models;

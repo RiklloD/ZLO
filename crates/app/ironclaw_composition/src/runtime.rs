@@ -518,6 +518,8 @@ pub struct RebornRuntime {
         >,
     >,
     pub(crate) skill_auto_activate_learned: Arc<std::sync::atomic::AtomicBool>,
+    /// The skill listing usage ledger and pins (`ironclaw_skills::usage`).
+    pub(crate) skill_usage: Arc<dyn ironclaw_skills::usage::SkillUsageStore>,
     pub(crate) extension_management: Arc<RebornLocalExtensionManagementPort>,
     pub(crate) runtime_http_egress: Option<Arc<dyn RuntimeHttpEgress>>,
     /// Durable nonce and signed-manifest replay state shared by CLI IronHub

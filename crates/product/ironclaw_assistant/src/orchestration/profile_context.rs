@@ -5,7 +5,7 @@
 //! as a Claude Code plugin folder, rewritten only when its content changes.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -15,7 +15,7 @@ use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::error::OrchestratorError;
 use ironclaw_orchestrator::profiles::ProfileRecord;
 use ironclaw_orchestrator::runtime::{
-    ProfileContextSource, ProfileSkills, RuntimeError, TurnProfile,
+    ProfileContextSource, ProfileSkillEntry, ProfileSkills, RuntimeError, TurnProfile,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -94,9 +94,11 @@ async fn mirror(dir: &Path, skills: &[SkillFiles]) -> std::io::Result<Option<Pro
     if !matches!(&current, Ok(found) if *found == fingerprint) {
         write_plugin(dir, skills, &fingerprint).await?;
     }
+    let entries = entries(dir, skills);
     Ok(Some(ProfileSkills {
         plugin_dir: dir.to_path_buf(),
-        index: index(dir, skills),
+        index: index(&entries),
+        entries,
     }))
 }
 
@@ -168,19 +170,34 @@ struct Frontmatter {
     description: String,
 }
 
-/// One line per skill: name, description and where its SKILL.md is.
-fn index(dir: &Path, skills: &[SkillFiles]) -> String {
+/// Each mirrored skill: name, description and where its SKILL.md is.
+fn entries(dir: &Path, skills: &[SkillFiles]) -> Vec<ProfileSkillEntry> {
     skills
         .iter()
-        .map(|skill| {
-            let path: PathBuf = dir.join("skills").join(&skill.name).join("SKILL.md");
-            let description = skill
+        .map(|skill| ProfileSkillEntry {
+            name: skill.name.clone(),
+            description: skill
                 .files
                 .iter()
                 .find(|(p, _)| p == "SKILL.md")
                 .and_then(|(_, bytes)| description(&String::from_utf8_lossy(bytes)))
-                .unwrap_or_default();
-            format!("- {}: {} ({})", skill.name, description, path.display())
+                .unwrap_or_default(),
+            skill_md: dir.join("skills").join(&skill.name).join("SKILL.md"),
+        })
+        .collect()
+}
+
+/// One line per skill: name, description and where its SKILL.md is.
+fn index(entries: &[ProfileSkillEntry]) -> String {
+    entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "- {}: {} ({})",
+                entry.name,
+                entry.description,
+                entry.skill_md.display()
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")

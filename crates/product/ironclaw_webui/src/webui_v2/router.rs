@@ -70,6 +70,7 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_SET_AUTO_ACTIVATE_LEARNED, WEBUI_V2_PATTERN_SET_SKILL_AUTO_ACTIVATE,
     WEBUI_V2_PATTERN_SETTINGS_TOOL_PERMISSION, WEBUI_V2_PATTERN_SETTINGS_TOOLS,
     WEBUI_V2_PATTERN_SETUP_EXTENSION, WEBUI_V2_PATTERN_SKILL_DETAIL,
+    WEBUI_V2_PATTERN_SKILL_LISTING, WEBUI_V2_PATTERN_SKILL_LISTING_PIN,
     WEBUI_V2_PATTERN_START_CODEX_LOGIN, WEBUI_V2_PATTERN_START_NEARAI_LOGIN,
     WEBUI_V2_PATTERN_STAT_FS_PATH, WEBUI_V2_PATTERN_STAT_PROJECT_FILE,
     WEBUI_V2_PATTERN_STREAM_EVENTS, WEBUI_V2_PATTERN_SUGGESTION_DETAIL,
@@ -687,6 +688,14 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
         .route(
             WEBUI_V2_PATTERN_SET_AUTO_ACTIVATE_LEARNED,
             post(handlers::set_auto_activate_learned),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SKILL_LISTING,
+            get(handlers::get_skill_listing),
+        )
+        .route(
+            WEBUI_V2_PATTERN_SKILL_LISTING_PIN,
+            put(handlers::set_skill_listing_pin),
         )
         .route(
             WEBUI_V2_PATTERN_SETTINGS_TOOLS,

@@ -70,6 +70,35 @@ pub fn skills(s: &mut State) {
         ),
     );
     sk.confirm_remove = Some("rust-review".into());
+    let listed = |name: &str, listing: &str, basis: &str, uses: u64, sources: &[&str]| {
+        json!({
+            "name": name,
+            "uses": uses,
+            "last_used_ms": if uses > 0 { Some(1_800_000_000_000u64) } else { None },
+            "listing": listing,
+            "basis": basis,
+            "pin": if basis == "pinned" { Some(listing) } else { None },
+            "sources": sources.iter().map(|source| json!({
+                "source": source,
+                "listing": listing,
+                "basis": basis,
+                "uses": uses,
+            })).collect::<Vec<_>>(),
+        })
+    };
+    sk.listing = decode(
+        "skill listing",
+        json!({
+            "managed": true,
+            "skills": [
+                listed("commit", "full", "auto", 14, &["harness", "cli:claude-cli"]),
+                listed("release-notes", "name_only", "auto", 1, &["harness", "cli:codex"]),
+                listed("rust-review", "name_only", "pinned", 0, &["harness"]),
+                listed("anthropic-skills:pdf", "name_only", "auto", 0, &["cli:claude-cli"]),
+                listed("artifact-design", "off", "pinned", 0, &["cli:claude-cli"]),
+            ],
+        }),
+    );
 }
 
 /// The skills page with release-notes' SKILL.md open in the mono editor.

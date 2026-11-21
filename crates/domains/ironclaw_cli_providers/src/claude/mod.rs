@@ -487,15 +487,18 @@ impl ClaudeCliRuntime {
     }
 
     /// The account's skill listing for its next turn.
-    async fn skill_settings(&self, profile: Option<&TurnProfile>) -> Option<String> {
+    async fn skill_settings(
+        &self,
+        profile: Option<&TurnProfile>,
+        text: &str,
+    ) -> skills::LaunchSkills {
         skills::launch_settings(
             &self.config.skills,
+            &self.config.runtime_id,
             &self.config.login_file,
-            profile
-                .and_then(|p| p.skills.as_ref())
-                .map(|s| s.plugin_dir.as_path()),
+            profile.and_then(|p| p.skills.as_ref()),
             self.config.artifacts,
-            u64::try_from(now_ms()).unwrap_or(0), // silent-ok: a clock before 1970 only ages every use
+            text,
         )
         .await
     }
@@ -560,7 +563,7 @@ impl ClaudeCliRuntime {
             .ok_or_else(|| RuntimeError::Rejected("thread has no claude session".into()))?;
         // A new turn ends the idle period: no compaction may touch the session.
         self.compactor.preempt(&thread.thread_id).await;
-        let settings = self.skill_settings(profile).await;
+        let launch = self.skill_settings(profile, text).await;
         let plan = TurnPlan {
             dir: self
                 .session_dir(&thread.thread_id, &session_id, profile)
@@ -568,7 +571,7 @@ impl ClaudeCliRuntime {
             goal,
             effort,
             profile,
-            settings: settings.as_deref(),
+            settings: launch.settings.as_deref(),
         };
         tokio::fs::create_dir_all(&plan.dir)
             .await
@@ -688,7 +691,9 @@ impl ClaudeCliRuntime {
         let thread_id = thread.thread_id.clone();
         let provider = self.config.runtime_id.clone();
         let usage_file = self.config.usage_file.clone();
-        let skill_state = self.config.skills.state_file.clone();
+        let skill_usage = self.config.skills.usage.clone();
+        let skill_names = launch.names;
+        let skill_source = launch.source;
         let run = run_id.clone();
         let steer_ack_timeout = self.steer_ack_timeout;
         let steer_idle_timeout = self.steer_idle_timeout;
@@ -899,11 +904,13 @@ impl ClaudeCliRuntime {
                 bridge.turn_ended(&thread_id, &run, outcome.status.as_str());
             }
             end_mcp(mcp).await;
-            if let Some(path) = &skill_state {
-                skill_watch
-                    .record(path, u64::try_from(now_ms()).unwrap_or(0)) // silent-ok: a clock before 1970 only ages the use
-                    .await;
-            }
+            skills::record_turn(
+                &skill_usage,
+                skill_source.as_ref(),
+                &skill_names,
+                &skill_watch,
+            )
+            .await;
             if let (Some(path), Some(windows)) = (usage_file, fold.limit_windows()) {
                 write_limit_windows(&path, windows, now_ms()).await;
             }
@@ -1281,14 +1288,18 @@ pub fn autocompact_setting(raw: Option<&str>) -> Option<u64> {
     }
 }
 
-pub fn default_accounts(home: &Path, binary: &Path) -> Vec<ClaudeCliConfig> {
+pub fn default_accounts(
+    home: &Path,
+    binary: &Path,
+    usage: &crate::skill_listing::CliSkillUsage,
+) -> Vec<ClaudeCliConfig> {
     let autocompact = autocompact_setting(std::env::var("ZLO_CLAUDE_AUTOCOMPACT").ok().as_deref());
     let work_dir = home.join(".ironclaw").join("claude-cli");
     let usage_dir = home.join(".ironclaw").join("usage");
     let skills_dir = home.join(".ironclaw").join("claude-skills");
     let listing = |id: &str| SkillListing {
-        state_file: Some(skills_dir.join(format!("{id}.json"))),
-        ..SkillListing::default()
+        usage: usage.clone(),
+        legacy_state_file: Some(skills_dir.join(format!("{id}.json"))),
     };
     let second = home.join(".claude-account2");
     vec![

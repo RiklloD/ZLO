@@ -104,9 +104,10 @@ use ironclaw_assistant::{
     RebornTraceHoldAuthorizeResponse, RebornUpdateMemberRoleRequest, RebornUpdateProjectRequest,
     ResolveApprovalInteractionRequest, ResolveApprovalInteractionResponse,
     ResolveAuthInteractionRequest, ResolveAuthInteractionResponse, SKILL_CONTENT_VIEW,
-    SKILL_SEARCH_VIEW, SKILLS_VIEW, SkillsProductService, StaticOperatorStatusService,
-    THREAD_ARTIFACT_MAX_MESSAGES, THREAD_ARTIFACT_VIEW, THREAD_DELETE_CAPABILITY_ID, THREADS_VIEW,
-    TIMELINE_VIEW, TRACE_ACCOUNT_TRACES_VIEW, TRACE_CREDITS_VIEW, TRACE_HOLD_AUTHORIZE_COMMAND,
+    SKILL_LISTING_PIN_SET_CAPABILITY_ID, SKILL_LISTING_VIEW, SKILL_SEARCH_VIEW, SKILLS_VIEW,
+    SkillsProductService, StaticOperatorStatusService, THREAD_ARTIFACT_MAX_MESSAGES,
+    THREAD_ARTIFACT_VIEW, THREAD_DELETE_CAPABILITY_ID, THREADS_VIEW, TIMELINE_VIEW,
+    TRACE_ACCOUNT_TRACES_VIEW, TRACE_CREDITS_VIEW, TRACE_HOLD_AUTHORIZE_COMMAND,
     TriggerRunThreadScope, approval_gate_ref, automation_trigger_thread_metadata_json,
 };
 
