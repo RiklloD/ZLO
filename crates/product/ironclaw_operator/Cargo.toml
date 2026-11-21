@@ -38,7 +38,7 @@ ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 # `LlmProvider::cost_per_token` returns `Decimal`; the metrics provider
 # decorator (`src/metrics/llm.rs`) delegates the whole trait.
 rust_decimal = "1"
-nix = { version = "0.31", default-features = false, features = ["process"] }
+nix = { version = "0.32", default-features = false, features = ["process"] }
 libc = "0.2"
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
