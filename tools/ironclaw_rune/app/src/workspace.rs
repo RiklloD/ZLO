@@ -83,6 +83,11 @@ pub struct Timers {
 }
 
 pub struct WorkspaceState {
+    /// The composers' shared-element flight id generation
+    /// (`chat::composer::dock_matched`): bumped when one docked composer
+    /// replaces another, so a thread switch never flies the composer onto
+    /// itself; the new-thread composer and the dock keep one id and fly.
+    pub dock_flight: u64,
     pub connect_attempt: usize,
     /// Bumped per connect: a stale connect answer or retry timer is dropped.
     pub connect_gen: jobs::Generation,
@@ -135,6 +140,7 @@ pub struct WorkspaceState {
 impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
+            dock_flight: 0,
             connect_attempt: 0,
             connect_gen: Default::default(),
             inbox: inbox::Inbox::new(),
@@ -379,12 +385,19 @@ fn friendly_unreachable(message: &str, runs_local: bool) -> String {
 
 /// Open a thread in the main column. Other areas call this.
 pub fn open_thread(s: &mut State, thread_id: String) {
+    // A docked composer is in the tree (shown, or kept under a settings page).
+    let docked = s.chat.is_some() && s.page != Page::Draft;
     s.page = Page::Chat;
     s.workspace.context.close();
     inbox::visit(s, &thread_id);
     if active_id(s) == Some(thread_id.as_str()) {
         crate::chat::focus_composer(s);
         return;
+    }
+    // One docked composer replaces another: a new flight id, so neither is
+    // matched to the other.
+    if docked {
+        s.workspace.dock_flight += 1;
     }
     // Replacing the chat drops the old one, which closes its stream and
     // frees one of the gateway's per-user stream slots.
@@ -855,6 +868,27 @@ mod tests {
     fn an_unreachable_mac_says_what_to_do() {
         assert!(friendly_unreachable("down", true).contains("zlo service install"));
         assert!(friendly_unreachable("down", false).contains("Run IronClaw on this Mac"));
+    }
+
+    /// A thread switch gives the new dock its own flight id, so the
+    /// composer never flies onto itself; the new-thread composer and the
+    /// dock it hands off to share one, so the send still flies.
+    #[test]
+    fn only_the_hand_off_flies_the_composer() {
+        let mut s = crate::chat::fixtures::test_state();
+        s.fixture = true;
+        s.conn = Conn::Ready;
+        s.page = Page::Draft;
+        open_thread(&mut s, "a".into());
+        assert_eq!(s.workspace.dock_flight, 0, "new thread → dock flies");
+        open_thread(&mut s, "b".into());
+        assert_eq!(s.workspace.dock_flight, 1, "dock → dock: a new id");
+        s.page = Page::Settings;
+        open_thread(&mut s, "a".into());
+        assert_eq!(
+            s.workspace.dock_flight, 2,
+            "the kept dock under settings too"
+        );
     }
 
     /// While the battery saver holds, a status refresh is skipped: the

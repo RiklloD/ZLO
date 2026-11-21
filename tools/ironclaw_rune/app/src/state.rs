@@ -93,6 +93,8 @@ pub struct State {
     pub plugins: crate::plugins::PluginsState,
     /// A `bench-*` scene's feed (`crate::bench`); `None` otherwise.
     pub bench: Option<Box<crate::bench::Bench>>,
+    /// Threads made ready under a resting pointer (`chat::prewarm`).
+    pub prewarm: crate::chat::prewarm::Prewarm,
 }
 
 impl State {
@@ -122,6 +124,7 @@ impl State {
             remote: Default::default(),
             plugins: Default::default(),
             bench: None,
+            prewarm: Default::default(),
         }
     }
 

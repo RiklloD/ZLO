@@ -37,6 +37,8 @@ BUDGET_MS = 1000 / FPS
 INTERACTIONS = {
     "stream": ("bench-stream", 7.5),
     "switch": ("bench-switch", 4.3),
+    # The same switches, the pointer resting 0.3 s on each row before its tap.
+    "switch-hover": ("bench-switch", 4.6),
     "sidebar": ("bench-sidebar", 3.5),
     "scroll": ("bench-scroll", 5.5),
     "dock": ("bench-dock", 3.3),

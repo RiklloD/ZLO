@@ -35,6 +35,7 @@ mod outline;
 mod pace;
 mod pending;
 pub mod plan_strip;
+pub mod prewarm;
 mod question_form;
 pub(crate) mod reject_feedback;
 mod rows;
@@ -44,12 +45,12 @@ mod steer;
 mod view;
 mod visual;
 
+#[cfg(test)]
+mod burst_tests;
 pub mod fixtures;
 mod stream_inbox;
 #[cfg(test)]
 mod stream_tests;
-#[cfg(test)]
-mod burst_tests;
 #[cfg(test)]
 mod tests;
 
@@ -351,7 +352,9 @@ pub fn open(s: &mut State, thread_id: String) {
     if s.chat.as_ref().is_some_and(|c| c.thread_id == thread_id) {
         return;
     }
-    let chat = build(s, thread_id.clone(), false);
+    let mut chat = build(s, thread_id.clone(), false);
+    // Rows fetched while the pointer rested on its row show at once.
+    prewarm::adopt(s, &mut chat);
     s.chat = Some(chat);
     start(s, &thread_id);
 }
@@ -455,9 +458,7 @@ pub(crate) fn open_stream(s: &mut State, id: &str) {
             handle.update_if(move |s, tx| {
                 crate::energy::hit(crate::energy::C::UpdateStream);
                 let batch = inbox.take();
-                !s.fixture
-                    && !batch.is_empty()
-                    && on_stream(s, &thread, generation, batch, tx)
+                !s.fixture && !batch.is_empty() && on_stream(s, &thread, generation, batch, tx)
             });
         }
     });
