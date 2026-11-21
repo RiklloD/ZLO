@@ -196,6 +196,8 @@ const PRODUCT_SYMBOLS_WEBUI_STILL_NAMES: &[(&str, &str)] = &[
     ("SKILL_AUTO_ACTIVATE_SET_CAPABILITY", "inventory"),
     ("SKILL_CONTENT_VIEW", "inventory"),
     ("SKILL_INSTALL_CAPABILITY", "inventory"),
+    ("SKILL_LISTING_PIN_SET_CAPABILITY", "inventory"),
+    ("SKILL_LISTING_VIEW", "inventory"),
     ("SKILL_REMOVE_CAPABILITY", "inventory"),
     ("SKILL_SEARCH_VIEW", "inventory"),
     ("SKILL_UPDATE_CAPABILITY", "inventory"),
@@ -225,7 +227,11 @@ const PRODUCT_SYMBOLS_OPENAI_COMPAT_STILL_NAMES: &[(&str, &str)] = &[
 // `product_attachment_capabilities` to `ironclaw_attachments` as
 // `AttachmentCapabilities` / `attachment_capabilities` — the two symbols this
 // list called out by name as that row's to own. Shrink-only.
-const WEBUI_PRODUCT_SYMBOL_BASELINE: usize = 104;
+// 104 -> 106 (ZLO skill manager, 2026-11-21): `SKILL_LISTING_VIEW` and
+// `SKILL_LISTING_PIN_SET_CAPABILITY`, two new `inventory` constants (§6.1.3
+// keeps concrete operation constants in product), the same shape as every
+// other skills route.
+const WEBUI_PRODUCT_SYMBOL_BASELINE: usize = 106;
 const OPENAI_COMPAT_PRODUCT_SYMBOL_BASELINE: usize = 3;
 
 /// Boundary vocabulary this row moved: declared in `ironclaw_product_contracts`

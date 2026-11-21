@@ -44,6 +44,7 @@ mod execution;
 mod setup_markers;
 mod skill_activation_capability;
 mod skills;
+mod usage;
 
 pub use activation::{
     DEFAULT_MAX_ACTIVE_SKILLS, DEFAULT_MAX_SKILL_CONTEXT_TOKENS, SelectableSkillContextSource,

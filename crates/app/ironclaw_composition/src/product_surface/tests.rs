@@ -666,7 +666,11 @@ async fn skills_product_service_surfaces_shared_auto_activate_learned_flag() {
     // selector holds the same `Arc`, so a toggle here must be observable on
     // that handle (that is the whole point of the live master switch).
     let flag = Arc::new(AtomicBool::new(true));
-    let service = LocalSkillsProductService::new(skill_management, Some(Arc::clone(&flag)));
+    let service = LocalSkillsProductService::new(
+        skill_management,
+        Some(Arc::clone(&flag)),
+        Arc::new(ironclaw_skills::usage::UnmanagedSkillUsage),
+    );
     let owner = caller("runtime-owner");
 
     let listed = service.list_skills(owner.clone()).await.expect("list");
@@ -720,7 +724,11 @@ async fn skills_product_service_defaults_auto_activate_learned_when_no_selector_
         filesystem,
         Arc::new(scoped_skill_mounts),
     ));
-    let service = LocalSkillsProductService::new(skill_management, None);
+    let service = LocalSkillsProductService::new(
+        skill_management,
+        None,
+        Arc::new(ironclaw_skills::usage::UnmanagedSkillUsage),
+    );
     let owner = caller("runtime-owner");
 
     let listed = service.list_skills(owner).await.expect("list");
@@ -759,6 +767,7 @@ async fn skills_product_service_hides_owner_user_skills_from_other_callers() {
     let service = LocalSkillsProductService::new(
         Arc::clone(&skill_management),
         Some(Arc::new(AtomicBool::new(true))),
+        Arc::new(ironclaw_skills::usage::UnmanagedSkillUsage),
     );
     let owner = caller("runtime-owner");
     let bob = caller("bob");

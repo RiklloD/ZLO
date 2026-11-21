@@ -242,6 +242,7 @@ where
         workspace_filesystem: Arc<ScopedFilesystem<W>>,
         staging_filesystem: Arc<ScopedFilesystem<S>>,
         auto_activate_flag: Arc<AtomicBool>,
+        skill_usage: Arc<dyn ironclaw_skills::usage::SkillUsageStore>,
     ) -> FirstPartySelectableSkillsRuntime<F>
     where
         W: RootFilesystem + 'static,
@@ -253,7 +254,8 @@ where
             SelectableSkillContextSource::new(Arc::clone(&self.bundle_source), config)
                 .with_auto_activate_flag(auto_activate_flag)
                 .with_setup_marker_source(setup_marker_source)
-                .with_bundle_stager(stager),
+                .with_bundle_stager(stager)
+                .with_skill_usage_store(skill_usage),
         );
         let execution_adapter =
             Arc::new(SkillExecutionAdapter::new(Arc::clone(&activation_source)));
@@ -265,6 +267,7 @@ where
         config: SkillActivationSelectorConfig,
         workspace_filesystem: Arc<ScopedFilesystem<W>>,
         auto_activate_flag: Arc<AtomicBool>,
+        skill_usage: Arc<dyn ironclaw_skills::usage::SkillUsageStore>,
     ) -> FirstPartySelectableSkillsRuntime<F>
     where
         W: RootFilesystem + 'static,
@@ -273,7 +276,8 @@ where
         let activation_source = Arc::new(
             SelectableSkillContextSource::new(Arc::clone(&self.bundle_source), config)
                 .with_auto_activate_flag(auto_activate_flag)
-                .with_setup_marker_source(setup_marker_source),
+                .with_setup_marker_source(setup_marker_source)
+                .with_skill_usage_store(skill_usage),
         );
         let execution_adapter =
             Arc::new(SkillExecutionAdapter::new(Arc::clone(&activation_source)));

@@ -363,6 +363,7 @@ pub(super) async fn build_backend_production(
         credential_account_visibility_policy,
         ironhub_manifest_url,
         workspace_filesystems,
+        skill_usage,
         standalone_storage_root,
         default_system_prompt_path,
         #[cfg(any(test, feature = "test-support"))]
@@ -508,6 +509,9 @@ pub(super) async fn build_backend_production(
     );
     let outbound_stores = build_outbound_stores(Arc::clone(&stores.filesystem));
     let notification_inbox = build_notification_inbox(Arc::clone(&stores.filesystem));
+    let skill_usage = skill_usage.unwrap_or_else(|| {
+        crate::skill_usage_assembly::build_skill_usage_store(Arc::clone(&stores.filesystem))
+    });
     let outbound_delivery_targets =
         Arc::new(ironclaw_outbound::MutableOutboundDeliveryTargetRegistry::default());
     // arch-exempt: large_file, channel assembly stays co-located pending factory decomposition, plan #7477
@@ -1487,6 +1491,7 @@ pub(super) async fn build_backend_production(
         outbound_preferences: outbound_stores.outbound_preferences,
         outbound_delivery_targets: Arc::clone(&outbound_delivery_targets),
         skill_auto_activate_learned: Arc::clone(&skill_auto_activate_learned),
+        skill_usage,
         outbound_state: outbound_stores.outbound_state,
         notification_inbox,
         reply_attachment_intents: outbound_stores.reply_attachment_intents,

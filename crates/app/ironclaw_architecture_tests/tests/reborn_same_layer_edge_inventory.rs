@@ -1,3 +1,4 @@
+// arch-exempt: large_file, the same-layer inventory is one reviewed table and must stay in one file, plan #7149
 //! Same-layer dependency inventory — the guard the layer matrix cannot be
 //! (target-architecture epic #3773, CHECKLIST WS10; issue #7149).
 //!
@@ -689,6 +690,18 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
         owner: "domains/",
         decided_in: "ADR 0006 (orchestrator v2 stage 4, CLI runtimes)",
     },
+    // CLI runtimes list their skills from the one skill usage ledger and
+    // listing policy the harness uses (`ironclaw_skills::usage`): the
+    // vocabulary, the pure policy and the store port the CLI drivers consume
+    // directly, rather than a second policy or a mirror routed through the
+    // orchestrator. Composition hands them the one store instance.
+    SameLayerEdge {
+        crate_name: "ironclaw_cli_providers",
+        dependency_name: "ironclaw_skills",
+        layer: "substrates",
+        owner: "domains/",
+        decided_in: "ZLO skill manager (2026-11-21)",
+    },
     // CLI approval cards redact tool input and the model's reason with the
     // shared display sanitizer, as threads/triggers/llm already do.
     SameLayerEdge {
@@ -824,7 +837,11 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
 // 80 -> 81 (this tree): `ironclaw_llm` embeddings reach providers through
 // `ironclaw_network`'s policy egress (root AGENTS.md: external HTTP goes
 // through ironclaw_network) rather than another hardened reqwest client.
-const SAME_LAYER_EDGE_BASELINE: usize = 81;
+// 81 -> 82 (ZLO skill manager, 2026-11-21): `ironclaw_cli_providers` lists
+// its skills from `ironclaw_skills::usage` — the one ledger, pin set and
+// listing policy the harness uses — instead of keeping its own copy of the
+// policy and an ad-hoc state file off the persistence plane.
+const SAME_LAYER_EDGE_BASELINE: usize = 82;
 
 /// Sanity floors for the metadata walk. A gate that scans nothing must never
 /// read as success; these are deliberately far below the live values (✎ **65**
@@ -994,6 +1011,14 @@ const DOWNGRADE_PINS: &[DowngradePin] = &[
             // the two crates holding it stopped existing.
             "ironclaw_loop_host",
             "ironclaw_composition",
+            // ✎ ZLO skill manager, 2026-11-21: both reach only
+            // `ironclaw_skills::usage` (the skill listing ledger, pins and
+            // policy). The CLI runtimes list their skills from it (also an
+            // inventoried same-layer edge); the assistant projects it onto the
+            // Skills page's wire DTOs (`skill_listing_page.rs`). Neither
+            // touches parsing, selection or management.
+            "ironclaw_cli_providers",
+            "ironclaw_assistant",
         ],
     },
     DowngradePin {

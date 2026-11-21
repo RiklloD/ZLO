@@ -292,6 +292,8 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) outbound_delivery_targets:
         Arc<ironclaw_outbound::MutableOutboundDeliveryTargetRegistry>,
     pub(crate) skill_auto_activate_learned: Arc<AtomicBool>,
+    /// The skill listing usage ledger and pins (`ironclaw_skills::usage`).
+    pub(crate) skill_usage: Arc<dyn ironclaw_skills::usage::SkillUsageStore>,
     pub(crate) outbound_state: Arc<dyn OutboundStateStorePort>,
     pub(crate) notification_inbox: ComposedNotificationInbox,
     pub(crate) reply_attachment_intents: Arc<dyn ReplyAttachmentIntentPort>,

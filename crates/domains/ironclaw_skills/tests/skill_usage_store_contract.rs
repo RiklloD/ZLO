@@ -1,6 +1,7 @@
 //! Contract for the skill usage store at its public seam: every concurrent
 //! writer's use is counted (CAS, no process lock), a reopened store reads
 //! what was written, owners are isolated, and pins read back.
+#![deny(clippy::let_underscore_must_use)]
 #![allow(clippy::disallowed_methods)]
 
 use std::sync::Arc;

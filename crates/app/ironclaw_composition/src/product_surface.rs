@@ -24,6 +24,9 @@ use ironclaw_product_contracts::product_wire::{
     RebornOperatorStatusState,
 };
 use ironclaw_product_contracts::projection::ProjectionStream;
+use ironclaw_product_contracts::skill_listing::{
+    RebornSkillListingPinRequest, RebornSkillListingResponse,
+};
 use ironclaw_product_contracts::surface::{
     ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode,
     ProductSurfaceErrorKind,
@@ -254,6 +257,7 @@ pub(crate) fn build_product_surface_with_channel_connection(
     api = api.with_skills_product_service(Arc::new(LocalSkillsProductService::new(
         Arc::clone(&runtime.skill_management),
         auto_activate_flag,
+        Arc::clone(&runtime.skill_usage),
     )));
     api = api.with_extension_credentials(Arc::new(ProductAuthExtensionCredentialSetup::new(
         Arc::clone(&runtime.product_auth),
@@ -490,17 +494,30 @@ struct LocalSkillsProductService {
     // is intentionally not scoped per caller. A future multi-user surface would
     // need a per-tenant flag.
     auto_activate_learned: Option<Arc<AtomicBool>>,
+    /// The skill listing usage ledger and pins the harness and every CLI
+    /// runtime list skills from.
+    skill_usage: Arc<dyn ironclaw_skills::usage::SkillUsageStore>,
 }
 
 impl LocalSkillsProductService {
     fn new(
         skill_management: Arc<ScopedSkillManagementPort>,
         auto_activate_learned: Option<Arc<AtomicBool>>,
+        skill_usage: Arc<dyn ironclaw_skills::usage::SkillUsageStore>,
     ) -> Self {
         Self {
             skill_management,
             auto_activate_learned,
+            skill_usage,
         }
+    }
+}
+
+/// Whose skill listing the caller reads and pins: their own.
+fn skill_usage_owner(caller: &ProductSurfaceCaller) -> ironclaw_skills::usage::SkillUsageOwner {
+    ironclaw_skills::usage::SkillUsageOwner {
+        tenant_id: caller.tenant_id.clone(),
+        user_id: caller.user_id.clone(),
     }
 }
 
@@ -559,6 +576,30 @@ impl SkillsProductService for LocalSkillsProductService {
             name: content.name,
             content: content.content,
         })
+    }
+
+    async fn skill_listing(
+        &self,
+        caller: ProductSurfaceCaller,
+    ) -> Result<RebornSkillListingResponse, ProductSurfaceError> {
+        ironclaw_assistant::skill_listing_page::skill_listing_response(
+            self.skill_usage.as_ref(),
+            &skill_usage_owner(&caller),
+        )
+        .await
+    }
+
+    async fn set_skill_listing_pin(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: RebornSkillListingPinRequest,
+    ) -> Result<RebornSkillListingResponse, ProductSurfaceError> {
+        ironclaw_assistant::skill_listing_page::set_skill_listing_pin(
+            self.skill_usage.as_ref(),
+            &skill_usage_owner(&caller),
+            request,
+        )
+        .await
     }
 }
 

@@ -1,4 +1,4 @@
-// arch-exempt: large_file, one fake-agent suite per host (Antigravity, Muse, Codex) awaits a split, plan #v3-cli-bridge
+// arch-exempt: large_file, one fake-agent suite per host (Antigravity, Muse, Codex, and their skill listing) awaits a split, plan #v3-cli-bridge
 //! The Antigravity (ACP), Muse Code (MSP) and Codex (app-server) drivers against fake agent
 //! scripts: session create then resume, fail-closed permissions, outcome,
 //! transcript and telemetry folding, steering, and Stop ending the whole
@@ -1669,6 +1669,144 @@ async fn codex_starts_then_resumes_and_declines_without_a_bridge() {
     let history = rt.history(&thread, 10).await.unwrap();
     assert_eq!(history.len(), 4);
     assert_eq!(history[3].tool_calls, vec!["shell()".to_string()]);
+}
+
+/// A Codex turn that `cat`s a profile skill's SKILL.md.
+const CODEX_READS_A_SKILL: &str = r#"#!/bin/sh
+LOG=__LOG__
+id_of() { printf '%s' "$1" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p'; }
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+emit() { printf '{"jsonrpc":"2.0","method":"%s","params":%s}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$LOG"
+  id=$(id_of "$line")
+  case "$line" in
+    *'"method":"initialize"'*) reply "$id" '{"userAgent":"codex"}' ;;
+    *'"method":"initialized"'*) ;;
+    *'"method":"thread/start"'*|*'"method":"thread/resume"'*) reply "$id" '{"thread":{"id":"cx-1"},"model":"gpt-b"}' ;;
+    *'"method":"turn/start"'*)
+      reply "$id" '{"turn":{"id":"tu-1","status":"inProgress"}}'
+      emit item/completed '{"threadId":"cx-1","turnId":"tu-1","item":{"type":"agentMessage","id":"m0","text":"I will read skills/hot/SKILL.md"}}'
+      emit item/completed '{"threadId":"cx-1","turnId":"tu-1","item":{"type":"commandExecution","id":"c1","command":"sed -n 1,200p __SKILLS__/cold/SKILL.md"}}'
+      emit turn/completed '{"threadId":"cx-1","turn":{"id":"tu-1","status":"completed","error":null}}' ;;
+  esac
+done
+"#;
+
+/// The profile index a Codex session gets follows the shared skill usage
+/// ledger: a hot skill keeps its description, a cold one is listed by name
+/// and SKILL.md path only, a pinned-off one is left out; the session's
+/// read of a SKILL.md path counts one use of that skill (a message only
+/// naming a path does not).
+#[tokio::test]
+async fn codex_profile_index_follows_the_skill_ledger_and_counts_reads() {
+    use ironclaw_cli_providers::skill_listing::CliSkillUsage;
+    use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
+    use ironclaw_host_api::mount::{MountGrant, MountPermissions, MountView};
+    use ironclaw_host_api::path::{MountAlias, VirtualPath};
+    use ironclaw_skills::usage::{
+        FilesystemSkillUsageStore, SkillPin, SkillUsageName, SkillUsageObservation,
+        SkillUsageOwner, SkillUsageSource, SkillUsageStore,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let skills_dir = dir.path().join("profile").join("skills");
+    let body = CODEX_READS_A_SKILL.replace("__SKILLS__", &skills_dir.display().to_string());
+    let store = Arc::new(FilesystemSkillUsageStore::new(Arc::new(
+        ScopedFilesystem::with_fixed_view(
+            Arc::new(InMemoryBackend::new()),
+            MountView::new(vec![MountGrant::new(
+                MountAlias::new("/skill-usage").unwrap(),
+                VirtualPath::new("/engine/tenants/t/users/u/skill-usage").unwrap(),
+                MountPermissions::read_write(),
+            )])
+            .unwrap(),
+        ),
+    )));
+    let owner = SkillUsageOwner {
+        tenant_id: TenantId::new("t").unwrap(),
+        user_id: UserId::new("u").unwrap(),
+    };
+    let name = |s: &str| SkillUsageName::new(s).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    // "hot" was used in the harness today; "gone" is pinned off.
+    store
+        .record(
+            &owner,
+            &SkillUsageSource::Harness,
+            SkillUsageObservation {
+                catalog: None,
+                used: vec![name("hot")],
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    store
+        .set_pin(&owner, &name("gone"), Some(SkillPin::Off))
+        .await
+        .unwrap();
+    let rt = codex_with(dir.path(), &recorder, None, &body)
+        .with_skill_usage(CliSkillUsage::new(store.clone(), owner.clone()));
+    let entry = |n: &str, description: &str| ProfileSkillEntry {
+        name: n.into(),
+        description: description.into(),
+        skill_md: skills_dir.join(n).join("SKILL.md"),
+    };
+    let mut turn = input();
+    turn.profile = Some(TurnProfile {
+        skills: Some(ProfileSkills {
+            plugin_dir: dir.path().join("profile"),
+            index: "unused: the runtime renders its own".into(),
+            entries: vec![
+                entry("hot", "Used a lot"),
+                entry("cold", "Rarely used"),
+                entry("gone", "Pinned off"),
+            ],
+        }),
+        ..TurnProfile::default()
+    });
+    let thread = thread(&rt, "gpt-b").await;
+    rt.start_turn(&thread, turn).await.unwrap();
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+
+    let log = std::fs::read_to_string(dir.path().join("codex.log")).unwrap();
+    let start = log
+        .lines()
+        .find(|l| l.contains(r#""method":"turn/start""#))
+        .expect("turn/start sent");
+    let hot_path = skills_dir.join("hot").join("SKILL.md");
+    let cold_path = skills_dir.join("cold").join("SKILL.md");
+    assert!(
+        start.contains(&format!("- hot: Used a lot ({})", hot_path.display())),
+        "{start}"
+    );
+    assert!(
+        start.contains(&format!("- cold ({})", cold_path.display())),
+        "{start}"
+    );
+    assert!(
+        !start.contains("Rarely used") && !start.contains("gone"),
+        "{start}"
+    );
+
+    let document = store.load(&owner).await.unwrap().unwrap();
+    let codex = SkillUsageSource::cli_runtime("codex").unwrap();
+    let record = &document.sources[&codex];
+    assert_eq!(
+        record.catalog,
+        vec![name("hot"), name("cold"), name("gone")],
+        "the profile's skills are the runtime's catalog"
+    );
+    assert_eq!(record.ledger[&name("cold")].count, 1, "the read counts");
+    assert!(
+        !record.ledger.contains_key(&name("hot")),
+        "a message naming a path is not a read"
+    );
 }
 
 // ── Rejection feedback ("no, do X instead") on runtimes whose approval reply

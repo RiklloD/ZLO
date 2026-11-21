@@ -178,6 +178,8 @@ pub struct CodexRuntime {
     compactor: Arc<compact::IdleCompactor>,
     /// One holder per session: turns, thread actions, idle compaction.
     admission: Arc<admission::Admission>,
+    /// How the profile's skills are listed and their reads counted.
+    skills: Arc<crate::skill_listing::CliSkills>,
 }
 
 impl CodexRuntime {
@@ -186,6 +188,7 @@ impl CodexRuntime {
         sink: Weak<dyn TurnEventSink>,
         bridge: Option<Arc<CliBridge>>,
     ) -> Result<Self, ironclaw_orchestrator::error::OrchestratorError> {
+        let config_runtime_id = config.runtime_id.clone();
         Ok(Self {
             id: RuntimeId::new(config.runtime_id.clone())?,
             config: Arc::new(config),
@@ -198,7 +201,21 @@ impl CodexRuntime {
             write_timeout: rpc::WRITE_TIMEOUT,
             compactor: Arc::default(),
             admission: Arc::default(),
+            skills: Arc::new(crate::skill_listing::CliSkills::new(
+                crate::skill_listing::CliSkillUsage::default(),
+                &config_runtime_id,
+            )),
         })
+    }
+
+    /// List the profile's skills from the shared skill usage ledger (the
+    /// default lists every skill in full).
+    pub fn with_skill_usage(mut self, usage: crate::skill_listing::CliSkillUsage) -> Self {
+        self.skills = Arc::new(crate::skill_listing::CliSkills::new(
+            usage,
+            &self.config.runtime_id,
+        ));
+        self
     }
 
     /// Bound one write to the server's stdin (default 30 s); a write past it
@@ -290,6 +307,8 @@ impl CodexRuntime {
             thread_id: thread.thread_id.clone(),
             run_id: run_id.clone(),
             kind,
+            skills: Arc::clone(&self.skills),
+            skill_reads: std::sync::Mutex::new(self.skills.watch(&thread.thread_id)),
         };
         let idle = compact::IdleArm::new(self, thread);
         let bridge = self.bridge.clone();
@@ -541,6 +560,9 @@ struct Turn {
     thread_id: ThreadId,
     run_id: String,
     kind: TurnKind,
+    skills: Arc<crate::skill_listing::CliSkills>,
+    /// Which shown skills' SKILL.md this turn read.
+    skill_reads: std::sync::Mutex<crate::skill_listing::SkillReadWatch>,
 }
 
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
@@ -568,6 +590,12 @@ impl Turn {
         let mut settled = pipe.finish(&self.door, &mut steers, true).await;
         settled.entries.clear();
         unread.extend(settled);
+        let reads = self
+            .skill_reads
+            .lock()
+            .map(|mut w| std::mem::take(&mut *w))
+            .unwrap_or_default(); // silent-ok: a poisoned watch only follows a panic elsewhere
+        self.skills.record(reads).await;
         (outcome, telemetry, unread)
     }
 
@@ -621,6 +649,9 @@ impl Turn {
                     &method,
                     &params,
                 );
+                if let Ok(mut reads) = self.skill_reads.lock() {
+                    reads.push(&method, &params);
+                }
                 fold.push(&method, &params)
             }
             Inbound::Request { id, method, params } => {
@@ -1187,8 +1218,12 @@ impl TurnRuntime for CodexRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
+        let profile = self
+            .skills
+            .listed_profile(&thread.thread_id, input.profile.as_ref())
+            .await;
         let context = crate::prompt_context(
-            self.primed.take(&thread.thread_id, input.profile.as_ref()),
+            self.primed.take(&thread.thread_id, profile.as_ref()),
             input.goal.as_deref(),
         );
         let run_id = self

@@ -1,4 +1,4 @@
-// arch-exempt: large_file, the MCP grant and session notes moved to context.rs; the turn driver still awaits decomposition, plan #v3-cli-bridge
+// arch-exempt: large_file, the MCP grant and session notes moved to context.rs and skill listing to skill_listing.rs; the turn driver still awaits decomposition, plan #v3-cli-bridge
 //! The Antigravity agent as an orchestrator runtime, driven over the
 //! Agent Client Protocol: `initialize`, `authenticate` eagerly,
 //! `session/new` once, then `session/resume` instead of replaying history.
@@ -200,6 +200,9 @@ pub struct AntigravityRuntime {
     last_refresh: Arc<std::sync::atomic::AtomicI64>,
     /// How long one frame may take to go onto the agent's stdin.
     write_timeout: Duration,
+    /// How the profile's skills are listed and their reads counted. agy's
+    /// own `~/.gemini` skills are listed by agy itself and stay as they are.
+    skills: Arc<crate::skill_listing::CliSkills>,
     #[cfg(test)]
     prep_gate: Option<Arc<crate::slot::PrepGate>>,
 }
@@ -210,6 +213,10 @@ impl AntigravityRuntime {
         sink: Weak<dyn TurnEventSink>,
         bridge: Option<Arc<CliBridge>>,
     ) -> Result<Self, ironclaw_orchestrator::error::OrchestratorError> {
+        let skills = Arc::new(crate::skill_listing::CliSkills::new(
+            crate::skill_listing::CliSkillUsage::default(),
+            &config.runtime_id,
+        ));
         Ok(Self {
             id: RuntimeId::new(config.runtime_id.clone())?,
             config: Arc::new(config),
@@ -220,9 +227,20 @@ impl AntigravityRuntime {
             refreshing: Arc::new(AtomicBool::new(false)),
             last_refresh: Arc::new(std::sync::atomic::AtomicI64::new(i64::MIN)),
             write_timeout: rpc::WRITE_TIMEOUT,
+            skills,
             #[cfg(test)]
             prep_gate: None,
         })
+    }
+
+    /// List the profile's skills from the shared skill usage ledger (the
+    /// default lists every skill in full).
+    pub fn with_skill_usage(mut self, usage: crate::skill_listing::CliSkillUsage) -> Self {
+        self.skills = Arc::new(crate::skill_listing::CliSkills::new(
+            usage,
+            &self.config.runtime_id,
+        ));
+        self
     }
 
     /// Bound one write to the agent's stdin (default 30 s); a write past it
@@ -337,6 +355,8 @@ impl AntigravityRuntime {
             bridge: self.bridge.clone(),
             thread_id: thread.thread_id.clone(),
             run_id: run_id.clone(),
+            skills: Arc::clone(&self.skills),
+            skill_reads: Mutex::new(self.skills.watch(&thread.thread_id)),
         };
         let bridge = self.bridge.clone();
         let sink = self.sink.clone();
@@ -576,6 +596,9 @@ struct Turn {
     run_id: String,
     /// ZLO's MCP server for this turn; revoked when the turn is dropped.
     mcp: Option<McpToken>,
+    skills: Arc<crate::skill_listing::CliSkills>,
+    /// Which shown skills' SKILL.md this turn read.
+    skill_reads: Mutex<crate::skill_listing::SkillReadWatch>,
 }
 
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
@@ -624,6 +647,12 @@ impl Turn {
         if let Ok(mut slot) = self.session.lock() {
             *slot = None;
         }
+        let reads = self
+            .skill_reads
+            .lock()
+            .map(|mut w| std::mem::take(&mut *w))
+            .unwrap_or_default(); // silent-ok: a poisoned watch only follows a panic elsewhere
+        self.skills.record(reads).await;
         (outcome, telemetry, settlement)
     }
 
@@ -1138,6 +1167,13 @@ impl Turn {
                     return false;
                 }
                 let update = &params["update"];
+                if let Ok(mut reads) = self.skill_reads.lock() {
+                    let kind = update
+                        .get("sessionUpdate")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    reads.push(kind, update);
+                }
                 fold.push_update(update, Instant::now());
                 live::apply(
                     self.bridge.as_deref(),
@@ -1450,10 +1486,14 @@ impl TurnRuntime for AntigravityRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
+        let profile = self
+            .skills
+            .listed_profile(&thread.thread_id, input.profile.as_ref())
+            .await;
         let context = TurnContext::new(
             &self.primed,
             &thread.thread_id,
-            input.profile.as_ref(),
+            profile.as_ref(),
             input.goal.as_deref(),
         );
         let run_id = self

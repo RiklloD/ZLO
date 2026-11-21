@@ -1194,9 +1194,83 @@ async fn skill_reads_are_available_as_product_views() {
     assert_eq!(content.content, "# local-skill\n");
 }
 
+/// The listing view and the pin capability reach the skills service with
+/// the caller and the typed request; a pin request that is not the typed
+/// shape is rejected before the service sees it.
+#[tokio::test]
+async fn skill_listing_view_and_pin_capability_reach_the_skills_service() {
+    use ironclaw_product_contracts::skill_listing::{
+        RebornSkillListingPinRequest, RebornSkillListingResponse, RebornSkillPin,
+    };
+    let skills = Arc::new(RecordingSkillsService::default());
+    let services = session_services(
+        Arc::new(InMemorySessionThreadService::default()),
+        Arc::new(FakeTurnCoordinator::default()),
+    )
+    .with_skills_product_service(skills.clone());
+
+    let resolution = services
+        .invoke(
+            caller(),
+            CapabilityId::new(SKILL_LISTING_PIN_SET_CAPABILITY_ID).expect("capability id"),
+            json!({ "name": "pdf", "pin": "name_only" }),
+            ActivityId::new(),
+        )
+        .await
+        .expect("pin capability");
+    assert!(matches!(
+        resolution,
+        Resolution::Done(outcome) if outcome.verdict.is_success()
+    ));
+    assert_eq!(
+        skills.pins.lock().expect("lock").as_slice(),
+        [(
+            caller().user_id.as_str().to_string(),
+            RebornSkillListingPinRequest {
+                name: "pdf".into(),
+                pin: Some(RebornSkillPin::NameOnly),
+            }
+        )]
+    );
+    assert!(
+        services
+            .invoke(
+                caller(),
+                CapabilityId::new(SKILL_LISTING_PIN_SET_CAPABILITY_ID).expect("capability id"),
+                json!({ "name": "pdf", "pin": "sometimes" }),
+                ActivityId::new(),
+            )
+            .await
+            .is_err(),
+        "an unknown pin is rejected"
+    );
+    assert_eq!(skills.pins.lock().expect("lock").len(), 1);
+
+    let page = services
+        .query(
+            caller(),
+            RebornViewQuery {
+                view_id: SKILL_LISTING_VIEW.id.to_string(),
+                params: json!({}),
+                cursor: None,
+            },
+        )
+        .await
+        .expect("skill listing view");
+    let listing: RebornSkillListingResponse =
+        serde_json::from_value(page.payload).expect("skill listing payload");
+    assert!(listing.managed);
+}
+
 #[derive(Default)]
 struct RecordingSkillsService {
     search_queries: Mutex<Vec<String>>,
+    pins: Mutex<
+        Vec<(
+            String,
+            ironclaw_product_contracts::skill_listing::RebornSkillListingPinRequest,
+        )>,
+    >,
 }
 
 #[async_trait]
@@ -1235,5 +1309,35 @@ impl SkillsProductService for RecordingSkillsService {
             content: format!("# {name}\n"),
             name,
         })
+    }
+
+    async fn skill_listing(
+        &self,
+        _caller: ProductSurfaceCaller,
+    ) -> Result<
+        ironclaw_product_contracts::skill_listing::RebornSkillListingResponse,
+        ProductSurfaceError,
+    > {
+        Ok(
+            ironclaw_product_contracts::skill_listing::RebornSkillListingResponse {
+                managed: true,
+                skills: Vec::new(),
+            },
+        )
+    }
+
+    async fn set_skill_listing_pin(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: ironclaw_product_contracts::skill_listing::RebornSkillListingPinRequest,
+    ) -> Result<
+        ironclaw_product_contracts::skill_listing::RebornSkillListingResponse,
+        ProductSurfaceError,
+    > {
+        self.pins
+            .lock()
+            .expect("lock")
+            .push((caller.user_id.as_str().to_string(), request));
+        self.skill_listing(caller).await
     }
 }

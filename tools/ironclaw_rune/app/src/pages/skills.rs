@@ -1,8 +1,9 @@
-//! Skills: installed skills with auto-activation, their instructions (view
-//! and edit), removal, and a catalog search to install more. Port of GPUI
-//! `pages/skills.rs`.
+//! Skills: installed skills with auto-activation, how each is listed to the
+//! models (`listing`), their instructions (view and edit), removal, and a
+//! catalog search to install more. Port of GPUI `pages/skills.rs`.
 
 pub mod fixtures;
+mod listing;
 
 use crate::pages::common::controls::{
     Look, Size, button_sized, header_with, icon_button_sized, input, outlined_tag, refresh_icon,
@@ -45,6 +46,11 @@ pub struct SkillsState {
     pub loaded: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
+    /// How each skill is listed to the models; `None` until read (or from
+    /// a backend without it).
+    pub listing: Option<zlo_client::skill_listing::RebornSkillListingResponse>,
+    /// The skill whose pin is being written.
+    pub pinning: Option<String>,
 }
 
 fn st(s: &mut State) -> &mut SkillsState {
@@ -57,6 +63,7 @@ pub fn opened(s: &mut State) {
 }
 
 pub fn refresh(s: &mut State) {
+    listing::refresh(s);
     jobs::run(
         s,
         "skills",
@@ -357,6 +364,9 @@ fn render_skill(s: &State, k: &Kit, ix: usize, x: &RebornSkillInfo) -> El {
     }
 
     let mut c = card(p).key(format!("skill-{}", x.name)).child(head);
+    if let Some(line) = listing::control(s, k, &x.name) {
+        c = c.child(line);
+    }
     if let Some(content) = open {
         c = c.child(match (content, editing) {
             (_, true) => col()
@@ -543,5 +553,8 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
                 .map(|(ix, x)| render_skill(s, k, ix, x)),
         ),
     );
+    if let Some(others) = listing::others(s, k) {
+        body = body.child(col().w_full().pt(12.).child(others));
+    }
     page_body("skills-page", body)
 }

@@ -12,7 +12,7 @@
 
 ## What This Crate Owns
 
-- Skill metadata parsing (`parser`), validation (`validation`), deterministic scoring/selection (`selector`), pluggable activation-scoring strategy binding (`activation_strategy`), filesystem management and its mount-scoped port (`management`, `scoped_management`), installed-skill records (`install_metadata`), pure learning distillation/refinement logic (`learning`), requirement gating for skill activation (`gating`), and the skill type definitions (`types`).
+- Skill metadata parsing (`parser`), validation (`validation`), deterministic scoring/selection (`selector`), pluggable activation-scoring strategy binding (`activation_strategy`), filesystem management and its mount-scoped port (`management`, `scoped_management`), installed-skill records (`install_metadata`), pure learning distillation/refinement logic (`learning`), requirement gating for skill activation (`gating`), the skill type definitions (`types`), and skill listing management (`usage`: the per-user usage ledger and pins, the one full / name-only / off listing policy shared by the harness and every CLI runtime, and its `cas_update` store over `ScopedFilesystem`).
 - Crate-local public API, tests, and fixtures needed to prove that ownership.
 
 > ✎ **Corrected 2026-08-04 (WS6 domain-internal cleanups), re-corrected since.**

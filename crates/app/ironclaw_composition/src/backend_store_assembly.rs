@@ -88,6 +88,7 @@ pub(crate) async fn resolve_explicit_or_keychain_master_key(
 /// the orchestrator tools through it.
 pub(crate) async fn orchestrator_for_durable_backend(
     backend: &DurableBackend,
+    skill_usage: &ironclaw_cli_providers::skill_listing::CliSkillUsage,
 ) -> Result<
     Option<(
         Arc<ironclaw_orchestrator::engine::Engine>,
@@ -110,7 +111,7 @@ pub(crate) async fn orchestrator_for_durable_backend(
         ironclaw_cli_providers::bridge::DEFAULT_APPROVAL_TIMEOUT,
     );
     // Installed coding-agent CLIs become runtimes, tools behind approvals.
-    ironclaw_cli_providers::register_cli_runtimes(&engine, &bridge).await;
+    ironclaw_cli_providers::register_cli_runtimes(&engine, &bridge, skill_usage).await;
     // Children can get their own git worktree (`isolation='worktree'`).
     crate::worktree_host::wire_worktrees(&engine, bridge.clone());
     Ok(Some((engine, bridge)))

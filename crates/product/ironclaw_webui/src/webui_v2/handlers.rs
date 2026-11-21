@@ -104,10 +104,10 @@ use ironclaw_assistant::{
     RebornCreateThreadResponse, RebornExtensionListResponse, RebornListThreadsResponse,
     RebornTimelineResponse, SKILL_AUTO_ACTIVATE_LEARNED_SET_CAPABILITY,
     SKILL_AUTO_ACTIVATE_SET_CAPABILITY, SKILL_CONTENT_VIEW, SKILL_INSTALL_CAPABILITY,
-    SKILL_REMOVE_CAPABILITY, SKILL_SEARCH_VIEW, SKILL_UPDATE_CAPABILITY, SKILLS_VIEW,
-    SUBMIT_TURN_COMMAND, THREAD_DELETE_CAPABILITY, THREADS_VIEW, TIMELINE_VIEW,
-    TRACE_ACCOUNT_LOGIN_LINK_COMMAND, TRACE_ACCOUNT_TRACES_VIEW, TRACE_CREDITS_VIEW,
-    TRACE_HOLD_AUTHORIZE_COMMAND,
+    SKILL_LISTING_PIN_SET_CAPABILITY, SKILL_LISTING_VIEW, SKILL_REMOVE_CAPABILITY,
+    SKILL_SEARCH_VIEW, SKILL_UPDATE_CAPABILITY, SKILLS_VIEW, SUBMIT_TURN_COMMAND,
+    THREAD_DELETE_CAPABILITY, THREADS_VIEW, TIMELINE_VIEW, TRACE_ACCOUNT_LOGIN_LINK_COMMAND,
+    TRACE_ACCOUNT_TRACES_VIEW, TRACE_CREDITS_VIEW, TRACE_HOLD_AUTHORIZE_COMMAND,
 };
 use ironclaw_attachments::{AttachmentCapabilities, attachment_capabilities};
 use ironclaw_product_contracts::admin_users::{
@@ -177,6 +177,9 @@ use ironclaw_product_contracts::product_wire::{
 };
 use ironclaw_product_contracts::product_wire::{
     RebornNotificationSetupMutationRequest, RebornNotificationSetupStatusResponse,
+};
+use ironclaw_product_contracts::skill_listing::{
+    RebornSkillListingPinRequest, RebornSkillListingResponse, RebornSkillPin,
 };
 use ironclaw_product_contracts::views::{RebornViewDescriptor, RebornViewPage, RebornViewQuery};
 use ironclaw_product_contracts::workspace_views::{
@@ -2731,6 +2734,46 @@ pub async fn set_auto_activate_learned(
     }))
 }
 
+/// `GET /api/webchat/v2/skill-listing`
+pub async fn get_skill_listing(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+) -> Result<Json<RebornSkillListingResponse>, WebUiV2HttpError> {
+    let surface = state.bind_services(caller);
+    let response = SKILL_LISTING_VIEW
+        .query_on(&surface, serde_json::json!({}), None)
+        .await?;
+    Ok(Json(response))
+}
+
+/// `PUT /api/webchat/v2/skill-listing/{name}/pin` — body `{"pin": "always_full" |
+/// "name_only" | "off" | null}`; answers with the listing read back after the write.
+pub async fn set_skill_listing_pin(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Path(SkillPath { name }): Path<SkillPath>,
+    Json(body): Json<SetSkillListingPinBody>,
+) -> Result<Json<RebornSkillListingResponse>, WebUiV2HttpError> {
+    let request = RebornSkillListingPinRequest {
+        name,
+        pin: body.pin,
+    };
+    let input = serde_json::to_value(&request).map_err(ProductSurfaceError::internal_from)?;
+    let resolution = invoke_product_capability(
+        state.services(),
+        caller.clone(),
+        SKILL_LISTING_PIN_SET_CAPABILITY,
+        input,
+    )
+    .await?;
+    skill_mutation_succeeded(resolution)?;
+    let surface = state.bind_services(caller);
+    let response = SKILL_LISTING_VIEW
+        .query_on(&surface, serde_json::json!({}), None)
+        .await?;
+    Ok(Json(response))
+}
+
 fn skill_mutation_succeeded(resolution: Resolution) -> Result<(), ProductSurfaceError> {
     capability_resolution_succeeded(resolution, "skill")
 }
@@ -4487,6 +4530,13 @@ pub struct UpdateSkillBody {
 #[derive(Debug, Deserialize)]
 pub struct SetSkillAutoActivateBody {
     pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSkillListingPinBody {
+    #[serde(default)]
+    pub pin: Option<RebornSkillPin>,
 }
 
 fn extension_package_ref_for_request(

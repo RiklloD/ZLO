@@ -68,6 +68,18 @@ When parser behavior changes, update this file in the same PR
 3. **Budget** -- Select top-scoring skills within the prompt token budget (`DEFAULT_MAX_SKILL_CONTEXT_TOKENS = 4000` in `crates/loop/ironclaw_loop_host/src/skill_activation/activation.rs`, overridable via `set_max_context_tokens`; the former `SKILLS_MAX_TOKENS` env var is not read by anything)
 4. **Attenuation** -- Minimum trust across active skills determines tool ceiling; installed skills lose dangerous tools
 
+## Listing management
+
+Which skills a model sees in full, by name only (still callable), or not at
+all is one per-user policy, `ironclaw_skills::usage::listing` (uses halved
+weekly, floor 0.1; full at score >= 0.5, at most 12; pins decide first). The
+harness applies it in `ironclaw_loop_host::skill_activation` (name-only
+entries lose their description unless this message's criteria ranked them;
+off entries leave the listing) and counts a use whenever a skill body reaches
+the model; the CLI runtimes apply it in `ironclaw_cli_providers`
+(`skill_listing.rs`, `claude/skills.rs`). The Skills page sets pins through
+`builtin.skill_listing_pin_set`.
+
 ## Skill Tools
 
 - `skill_list` -- List all discovered skills with trust level and status

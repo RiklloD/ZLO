@@ -10,7 +10,8 @@
 //! - [`SkillUsageDocument`] — the per-user record: per [`SkillUsageSource`]
 //!   the skills it last offered (its catalog) and how often each was used,
 //!   plus the person's [`SkillPin`]s.
-//! - [`listing`] — the pure policy over a catalog, a ledger and the pins.
+//! - [`listing`] — the pure policy over a catalog, a ledger and the pins;
+//!   [`summarize`] — every skill across every source, for a settings page.
 //! - [`SkillUsageStore`] — the typed store port; [`FilesystemSkillUsageStore`]
 //!   keeps the document on the shared persistence plane (`cas_update`).
 //!
@@ -484,6 +485,101 @@ pub fn listing(
         .collect()
 }
 
+/// One source's view of a skill, for a summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillSourceListing {
+    pub source: SkillUsageSource,
+    pub state: SkillListingState,
+    /// Uses this source counted.
+    pub uses: u64,
+}
+
+/// One skill across every source that offered it (or pinned with none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillListingSummary {
+    pub name: SkillUsageName,
+    /// Uses across every source.
+    pub uses: u64,
+    /// The latest use; `None` when never used.
+    pub last_used_ms: Option<u64>,
+    /// The listing over every source's catalog together.
+    pub state: SkillListingState,
+    pub pin: Option<SkillPin>,
+    /// Each source that offered it, in source order.
+    pub sources: Vec<SkillSourceListing>,
+}
+
+/// Every skill of `document`: offered by some source, or pinned. The
+/// overall state decides over every catalog together with every use (the
+/// harness's own view); each source's over its own catalog. Sorted by name.
+pub fn summarize(
+    policy: &SkillListingPolicy,
+    document: &SkillUsageDocument,
+    now_ms: u64,
+) -> Vec<SkillListingSummary> {
+    let ledger = document.combined_ledger();
+    let none = BTreeSet::new();
+    let mut union: BTreeSet<SkillUsageName> = document
+        .sources
+        .values()
+        .flat_map(|record| record.catalog.iter().cloned())
+        .collect();
+    union.extend(document.pins.keys().cloned());
+    let union: Vec<SkillUsageName> = union.into_iter().collect();
+    let overall = listing(
+        policy,
+        SkillListingRequest {
+            catalog: &union,
+            ledger: &ledger,
+            pins: &document.pins,
+            always_full: &none,
+            now_ms,
+        },
+    );
+    let per_source: Vec<(&SkillUsageSource, &SkillSourceRecord, BTreeMap<_, _>)> = document
+        .sources
+        .iter()
+        .map(|(source, record)| {
+            let decided = listing(
+                policy,
+                SkillListingRequest {
+                    catalog: &record.catalog,
+                    ledger: &ledger,
+                    pins: &document.pins,
+                    always_full: &none,
+                    now_ms,
+                },
+            );
+            (source, record, decided)
+        })
+        .collect();
+    union
+        .into_iter()
+        .filter_map(|name| {
+            let state = *overall.get(&name)?;
+            let used = ledger.get(&name).copied().unwrap_or_default();
+            let sources = per_source
+                .iter()
+                .filter_map(|(source, record, decided)| {
+                    Some(SkillSourceListing {
+                        source: (*source).clone(),
+                        state: *decided.get(&name)?,
+                        uses: record.ledger.get(&name).map_or(0, |u| u.count),
+                    })
+                })
+                .collect();
+            Some(SkillListingSummary {
+                pin: document.pins.get(&name).copied(),
+                uses: used.count,
+                last_used_ms: (used.count > 0).then_some(used.last_used_ms),
+                state,
+                sources,
+                name,
+            })
+        })
+        .collect()
+}
+
 /// The typed store of [`SkillUsageDocument`]s, one per owner.
 ///
 /// Also the deployment's switch for listing management: a store that
@@ -736,6 +832,42 @@ mod tests {
         );
         assert!(serde_json::from_str::<SkillUsageSource>("\"cli:a/b\"").is_err());
         assert!(serde_json::from_str::<SkillUsageSource>("\"other\"").is_err());
+    }
+
+    #[test]
+    fn the_summary_spans_every_source_and_keeps_pinned_strays() {
+        let mut doc = SkillUsageDocument::default();
+        let claude = SkillUsageSource::cli_runtime("claude-cli").unwrap();
+        doc.apply(
+            &claude,
+            &SkillUsageObservation {
+                catalog: Some(names(&["a", "b"])),
+                used: names(&["a"]),
+            },
+            NOW,
+        )
+        .unwrap();
+        doc.apply(
+            &SkillUsageSource::Harness,
+            &SkillUsageObservation {
+                catalog: Some(names(&["b"])),
+                used: Vec::new(),
+            },
+            NOW,
+        )
+        .unwrap();
+        doc.set_pin(&name("gone"), Some(SkillPin::Off)).unwrap();
+        let summary = summarize(&SkillListingPolicy::default(), &doc, NOW);
+        let names: Vec<&str> = summary.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "gone"]);
+        assert_eq!(summary[0].state.listing, SkillListing::Full);
+        assert_eq!(summary[0].uses, 1);
+        assert_eq!(summary[0].sources.len(), 1);
+        assert_eq!(summary[1].state.listing, SkillListing::NameOnly);
+        assert_eq!(summary[1].sources.len(), 2);
+        assert_eq!(summary[1].last_used_ms, None);
+        assert_eq!(summary[2].state.basis, SkillListingBasis::Pinned);
+        assert!(summary[2].sources.is_empty());
     }
 
     #[test]

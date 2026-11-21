@@ -243,8 +243,21 @@ pub struct ProfileSkills {
     /// `skills/<name>/SKILL.md` and each skill's other files.
     pub plugin_dir: std::path::PathBuf,
     /// One line per skill (name, description, SKILL.md path), for agents
-    /// without a native skill system.
+    /// without a native skill system. Every skill in full; a runtime that
+    /// manages its listing renders its own from [`Self::entries`].
     pub index: String,
+    /// The skills the index lists, in its order.
+    pub entries: Vec<ProfileSkillEntry>,
+}
+
+/// One skill of a [`ProfileSkills`] mirror.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileSkillEntry {
+    pub name: String,
+    /// The frontmatter description; empty when it has none.
+    pub description: String,
+    /// The mirrored SKILL.md.
+    pub skill_md: std::path::PathBuf,
 }
 
 /// Builds [`TurnProfile`]s; plugged in by the host, which owns the skill

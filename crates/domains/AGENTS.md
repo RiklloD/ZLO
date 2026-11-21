@@ -3,7 +3,7 @@
 **Layer(s):** `substrates` (all 18 manifests declare it; checked by
 `reborn_workspace_crates_declare_layers_and_follow_layer_matrix`) ·
 **Crates:** 18 · **May depend on:** `contracts/`, `substrates/`, `events/`,
-plus seven inventoried in-family edges (below) · **Depended on by:** `kernel/`,
+plus the inventoried in-family edges (below) · **Depended on by:** `kernel/`,
 `loop/`, `extensions/`, `product/`, `app/` — every tier above wires against
 these contracts.
 
@@ -37,7 +37,7 @@ no other crate in the family may acquire either property.
 | [`ironclaw_outbound`](./ironclaw_outbound) | Metadata-only outbound authority: sealed reply-target bindings, at-most-once delivery-attempt reservation, delivery resolution and preferences — never a transport | Deciding *whether/where* something may be pushed, or recording a delivery attempt |
 | [`ironclaw_orchestrator`](./ironclaw_orchestrator) | Thread orchestration engine: delegation tree, durable per-thread queue, Stop propagation, forks/merge-back, restart and usage-limit recovery, the `TurnRuntime` seam; `orch_*` libSQL tables under ADR 0005 | Changing orchestration semantics or adding a turn runtime |
 | [`ironclaw_supermemory`](./ironclaw_supermemory) | Supermemory as a caller's only memory when a key is set: HTTP client over `ironclaw_network`, the `SupermemoryBindingSource` container seam, recall/capture decorators over the memory seams, and the `supermemory.search`/`supermemory.write` tool operations | Changing Supermemory recall, capture, containers, or its tools |
-| [`ironclaw_skills`](./ironclaw_skills) | Skill parsing, validation, deterministic selection scoring, scoped filesystem management, and the pure learning path | Changing skill grammar, selection, install records, or learning prompts |
+| [`ironclaw_skills`](./ironclaw_skills) | Skill parsing, validation, deterministic selection scoring, scoped filesystem management, the pure learning path, and listing management (`usage`: per-user usage ledger, pins, the full / name-only / off policy, its CAS store) | Changing skill grammar, selection, install records, or learning prompts |
 | [`ironclaw_threads`](./ironclaw_threads) | The canonical transcript service: `SessionThreadService` (filesystem + in-memory), message ordering/status/redaction, tool-result records, display projections | Reading or writing thread/message history or transcript-derived views |
 | [`ironclaw_trace_commons`](./ironclaw_trace_commons) | The Trace Commons client: envelope schema, deterministic redaction, submission queue/credits, device-key onboarding, and the autonomous capture pipeline | Contributing traces to the external Trace Commons service |
 | [`ironclaw_triggers`](./ironclaw_triggers) | Scheduled-trigger records, cron/timezone validation, deterministic fire identity, the poller tick, and sealed trusted-submission minting (prompt-scanned at the mint); SQL backends held under ADR 0003 | Trigger records/schedules, or anything on the host-trusted fire path |
@@ -112,11 +112,16 @@ crate path is given.
   pinned absence of `ironclaw_filesystem`), and armed **allowlists** for
   `ironclaw_identity` (`{host_api, filesystem, product_contracts}`) and
   `ironclaw_memory` (`{host_api, prompt_envelope}`).
-- **In-family edges are a closed, inventoried set** — exactly seven today:
+- **In-family edges are a closed, inventoried set** — among them:
   `conversations→triggers`, `attachments→extractors`, `attachments→threads`,
-  `outbound→attachments`, `trace_commons→llm`, `cli_providers→orchestrator`, `supermemory→memory`.
+  `outbound→attachments`, `trace_commons→llm`, `cli_providers→orchestrator`, `cli_providers→skills`, `supermemory→memory`.
+  (✎ 2026-11-21: this prose list is a sample, not the count — the inventory
+  in `reborn_same_layer_edge_inventory.rs` is the enforced set and also holds
+  e.g. `cli_providers→safety`, `usage→network`, `supermemory→network`.
+  `cli_providers→skills`: the CLI runtimes list skills from the shared skill
+  usage ledger and listing policy, `ironclaw_skills::usage`.)
   `reborn_every_same_layer_edge_is_inventoried_and_no_entry_is_stale` fails on
-  a seventh (and on a stale entry), and
+  an uninventoried one (and on a stale entry), and
   `reborn_same_layer_edge_inventory_ratchets_down_only` stops regrowth.
 - **Naming and single-home rules:**
   `reborn_conversations_threads_attachments.rs` —
