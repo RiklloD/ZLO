@@ -8,6 +8,8 @@ use rune_kit::Kit;
 use super::common::controls::{input, muted, press_button, styled};
 use super::common::ts::{MONO_XS, sm_medium, xs};
 use super::common::{Btn, Tone, error_line, notice_line, rows_card, tag};
+use super::flash;
+use crate::design::motion;
 use crate::remote::linked::{self, access_label, preference_label};
 use crate::state::State;
 use zlo_client::peer::{AgentRequestKind, AgentRequestView, SecretDelivery};
@@ -27,8 +29,12 @@ fn card(s: &State, k: &Kit, r: &AgentRequestView) -> El {
     let p = &s.palette;
     let id = r.request_id.clone();
     let busy = s.remote.linked.answering.as_deref() == Some(id.as_str());
+    // Keyed by request: one an agent raises lands at once (a poll); one the
+    // person answers folds away and the rest glide up.
     let mut body = col()
         .key(format!("agent-request-{id}"))
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
         .w_full()
         .padding(14.)
         .gap(8.)
@@ -119,7 +125,8 @@ fn card(s: &State, k: &Kit, r: &AgentRequestView) -> El {
                             super::common::controls::open_url(tx, &url)
                         })
                         .build(k)
-                        .key(format!("secret-url-{id}")),
+                        .key(format!("secret-url-{id}"))
+                        .press_scale(motion::PRESS),
                 );
             }
         }
@@ -228,7 +235,12 @@ fn card(s: &State, k: &Kit, r: &AgentRequestView) -> El {
         }
     }
     if let Some(e) = s.remote.linked.request_errors.get(&id) {
-        body = body.child(styled(e.clone(), xs(), p.danger).wrap());
+        body = body.child(
+            styled(e.clone(), xs(), p.danger)
+                .wrap()
+                .key("error")
+                .transition(motion::reveal()),
+        );
     }
     body.child(styled(from, xs(), p.text_muted))
 }
@@ -244,10 +256,10 @@ pub fn linked_section(s: &State, k: &Kit) -> El {
     let l = &s.remote.linked;
     let mut card = col().w_full().padding(16.).gap(10.);
     if let Some(e) = &l.error {
-        card = card.child(error_line(p, e));
+        card = card.child(error_line(p, e).key("linked-error"));
     }
     if let Some(n) = &l.notice {
-        card = card.child(notice_line(n, p.success));
+        card = card.child(notice_line(n, p.success).key("linked-notice"));
     }
     match &l.links {
         None => {
@@ -302,6 +314,7 @@ pub fn linked_section(s: &State, k: &Kit) -> El {
                 card = card.child(
                     row()
                         .key(format!("link-{env}"))
+                        .motion(motion::ROW_RESORT)
                         .w_full()
                         .gap(10.)
                         .center_y()
@@ -406,8 +419,12 @@ pub fn linked_section(s: &State, k: &Kit) -> El {
     card = card.child(make);
     if let Some(code) = &l.link_code {
         let shown = code.code.clone();
+        let copied = flash::shows(s, "copy-link-code");
+        // Wipes in when the person makes a link code.
         card = card.child(
             row()
+                .key("link-code-shown")
+                .transition(motion::reveal())
                 .gap(12.)
                 .center_y()
                 .child(
@@ -426,11 +443,21 @@ pub fn linked_section(s: &State, k: &Kit) -> El {
                     p.text_muted,
                 ))
                 .child(
-                    super::common::button("Copy", Btn::Ghost)
-                        .icon(&crate::icons::COPY)
-                        .on_press_tx(move |_: &mut State, tx: &mut rune::Tx| tx.copy(shown.clone()))
+                    // "Copied" with a check for a moment, then back.
+                    super::common::button(if copied { "Copied" } else { "Copy" }, Btn::Ghost)
+                        .icon(if copied {
+                            &crate::icons::CHECK
+                        } else {
+                            &crate::icons::COPY
+                        })
+                        .rolling("copy-link-code-label")
+                        .on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
+                            tx.copy(shown.clone());
+                            flash::flash(s, "copy-link-code", tx);
+                        })
                         .build(k)
-                        .key("copy-link-code"),
+                        .key("copy-link-code")
+                        .press_scale(motion::PRESS),
                 ),
         );
     }
