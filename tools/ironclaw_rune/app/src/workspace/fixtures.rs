@@ -144,6 +144,43 @@ fn open(s: &mut State, id: &str) {
     s.chat = Some(crate::chat::ChatState::new(id.into()));
 }
 
+/// The bench scenes' window (`crate::bench`): the shell with the bench's
+/// inbox rows, nothing open yet.
+pub(crate) fn bench_shell(s: &mut State) {
+    base(s);
+    s.workspace.inbox.list = InboxListResponse {
+        rows: crate::bench::inbox_rows(),
+        profiles: inbox().profiles,
+        last_used_profile_id: Some("default".into()),
+    };
+}
+
+/// A bench run starts or ends in `id`, as a send and the next inbox read
+/// would show it: Working claims the card for the shelf at once, and the
+/// new list lands through the same path a gateway read takes.
+pub(crate) fn bench_set_status(s: &mut State, id: &str, status: Option<InboxStatus>) {
+    if status == Some(InboxStatus::Working) {
+        super::inbox::note_sent(s, id);
+    }
+    let mut list = s.workspace.inbox.list.clone();
+    if let Some(row) = list.rows.iter_mut().find(|r| r.thread_id == id) {
+        row.status = status;
+        row.last_activity_at = Utc::now().timestamp_millis();
+        // The gateway lists a running thread on the Working shelf.
+        if status == Some(InboxStatus::Working) {
+            row.state = InboxState::Working;
+            row.working_since = Some(row.last_activity_at);
+        } else {
+            row.state = InboxState::Inbox;
+            row.working_since = None;
+        }
+    }
+    if status != Some(InboxStatus::Working) {
+        super::run_ended(s, id.to_string(), false);
+    }
+    super::inbox::apply(s, list);
+}
+
 /// A first run: no threads, the new-thread screen (setup's backdrop).
 pub fn fixture_empty(s: &mut State) {
     base(s);

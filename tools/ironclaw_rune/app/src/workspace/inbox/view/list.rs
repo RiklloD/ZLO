@@ -332,6 +332,7 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
                 .w_full()
                 .min_h(0.0)
                 .growth(GrowthSpec::default())
+                .whole_rows()
                 .on_layout_tx(|s: &mut State, r: [f32; 4], tx: &mut rune::Tx| {
                     if !ShelfGap::content(s, r[3]) {
                         tx.live_only();

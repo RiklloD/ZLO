@@ -98,24 +98,22 @@ pub(crate) async fn orchestrator_for_durable_backend(
     let DurableBackend::LibSql { runtime, .. } = backend else {
         return Ok(None);
     };
-    ironclaw_orchestrator::engine::Engine::open_libsql(
+    let engine = ironclaw_orchestrator::engine::Engine::open_libsql(
         Arc::clone(runtime),
         ironclaw_assistant::orchestration::IRONCLAW_RUNTIME_ID,
     )
     .await
-    .map(|engine| {
-        let bridge = ironclaw_cli_providers::bridge::CliBridge::new(
-            ironclaw_cli_providers::bridge::DEFAULT_APPROVAL_TIMEOUT,
-        );
-        // Installed coding-agent CLIs become runtimes, tools behind approvals.
-        ironclaw_cli_providers::register_cli_runtimes(&engine, &bridge);
-        // Children can get their own git worktree (`isolation='worktree'`).
-        crate::worktree_host::wire_worktrees(&engine, bridge.clone());
-        Some((engine, bridge))
-    })
     .map_err(|error| RebornBuildError::InvalidConfig {
         reason: format!("orchestrator store migrations failed: {error}"),
-    })
+    })?;
+    let bridge = ironclaw_cli_providers::bridge::CliBridge::new(
+        ironclaw_cli_providers::bridge::DEFAULT_APPROVAL_TIMEOUT,
+    );
+    // Installed coding-agent CLIs become runtimes, tools behind approvals.
+    ironclaw_cli_providers::register_cli_runtimes(&engine, &bridge).await;
+    // Children can get their own git worktree (`isolation='worktree'`).
+    crate::worktree_host::wire_worktrees(&engine, bridge.clone());
+    Ok(Some((engine, bridge)))
 }
 
 pub(crate) async fn trigger_repository_for_durable_backend(

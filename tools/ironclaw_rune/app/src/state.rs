@@ -88,6 +88,8 @@ pub struct State {
     pub onboarding: crate::onboarding::OnboardingState,
     /// The saved computers and the connection to the active one.
     pub remote: crate::remote::RemoteState,
+    /// A `bench-*` scene's feed (`crate::bench`); `None` otherwise.
+    pub bench: Option<Box<crate::bench::Bench>>,
 }
 
 impl State {
@@ -115,6 +117,7 @@ impl State {
             native: Default::default(),
             onboarding: Default::default(),
             remote: Default::default(),
+            bench: None,
         }
     }
 

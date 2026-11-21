@@ -9,14 +9,15 @@ use ironclaw_loop_contracts::{CompactionInitiator, LoopRunContext, PromptContext
 /// Decides whether to replace older transcript context with a host-managed summary.
 ///
 /// The strategy is pure policy: it reads durable compaction state and returns
-/// either `Skip` or the inclusive user-message boundary the executor should
-/// compact through. State mutation, transcript reads, inference, persistence,
-/// and progress events stay in the executor and host compaction port.
+/// either `Skip` or the inclusive end of the prefix the executor should
+/// compact. State mutation, transcript reads, inference, persistence, and
+/// progress events stay in the executor and host compaction port.
 ///
-/// `Trigger.drop_through_seq` normally points at a model-visible user message.
-/// Window-eviction recovery may instead use a finalized tool-result boundary
-/// after the host reports a typed eviction watermark; the host validates that
-/// special case.
+/// Normal cuts retain from a user boundary. When one turn exceeds the retained
+/// tail, the cut retains from an assistant boundary so that assistant tool
+/// calls and all following results stay together. Window eviction may compact
+/// through a finalized tool result whose complete call/result pair belongs to
+/// the replaced prefix.
 pub(crate) trait CompactionStrategy: Send + Sync {
     fn should_compact(
         &self,
@@ -50,25 +51,44 @@ pub(crate) struct DefaultCompactionStrategy {
 }
 
 impl DefaultCompactionStrategy {
-    pub(crate) const DEFAULT_PRESERVE_TAIL_TOKENS: u64 = 8_000;
-    pub(crate) const DEFAULT_DEADLINE_MS: u64 = 30_000;
+    pub(crate) const DEFAULT_PRESERVE_TAIL_TOKENS: u64 = 20_000;
+    pub(crate) const DEFAULT_DEADLINE_MS: u64 = 60_000;
 
-    pub(super) fn can_evaluate(&self, state: &LoopExecutionState) -> bool {
+    fn prompt_context_budget(&self, ctx: &LoopRunContext) -> PromptContextTokenBudget {
+        ctx.model_context_window_tokens
+            .map(|tokens| self.prompt_context_budget.with_context_limit_tokens(tokens))
+            .unwrap_or(self.prompt_context_budget)
+    }
+
+    /// The retained tail for this run: the configured tail, unless it does
+    /// not fit under the visible-transcript threshold (a 32k model under the
+    /// 20k default), where half the threshold is kept instead so compaction
+    /// still has a prefix to replace rather than turning off.
+    pub(super) fn preserve_tail_tokens_for(&self, ctx: &LoopRunContext) -> u64 {
+        let threshold = self.prompt_context_budget(ctx).visible_transcript_tokens();
+        if self.preserve_tail_tokens < threshold {
+            self.preserve_tail_tokens
+        } else {
+            threshold / 2
+        }
+    }
+
+    pub(super) fn can_evaluate(&self, state: &LoopExecutionState, ctx: &LoopRunContext) -> bool {
         if state.compaction_prompt.message_index.is_empty() {
             return false;
         }
-        let threshold = self.prompt_context_budget.visible_transcript_tokens();
-        if threshold <= self.preserve_tail_tokens {
-            return false;
-        }
         // Forced/recovery compactions (context-overflow retry, byte-cap
-        // overflow) bypass the circuit breaker: they are the loop's only
-        // mechanism for shrinking an oversized prompt before a retry, so
-        // suppressing them would silently rebuild the same prompt until the
-        // retry budget aborts. The breaker only gates automatic
+        // overflow) bypass the circuit breaker and the threshold: they are the
+        // loop's only mechanism for shrinking an oversized prompt before a
+        // retry, so suppressing them would silently rebuild the same prompt
+        // until the retry budget aborts. The breaker only gates automatic
         // threshold-triggered compaction.
         if state.compaction_state.force_compact_on_next_iteration {
             return true;
+        }
+        let threshold = self.prompt_context_budget(ctx).visible_transcript_tokens();
+        if threshold == 0 || threshold <= self.preserve_tail_tokens_for(ctx) {
+            return false;
         }
         !state.compaction_state.compaction_circuit_open
             && state.compaction_prompt.observed_prompt_tokens >= threshold
@@ -78,6 +98,7 @@ impl DefaultCompactionStrategy {
         &self,
         state: &LoopExecutionState,
         drop_through_seq: u64,
+        ctx: &LoopRunContext,
     ) -> CompactionDecision {
         let effectiveness_baseline = if state.compaction_state.force_compact_on_next_iteration {
             CompactionEffectivenessBaseline::PreCompactionPromptTokens {
@@ -85,12 +106,12 @@ impl DefaultCompactionStrategy {
             }
         } else {
             CompactionEffectivenessBaseline::TriggerThresholdTokens {
-                tokens: self.prompt_context_budget.visible_transcript_tokens(),
+                tokens: self.prompt_context_budget(ctx).visible_transcript_tokens(),
             }
         };
         CompactionDecision::Trigger {
             drop_through_seq,
-            preserve_tail_tokens: self.preserve_tail_tokens,
+            preserve_tail_tokens: self.preserve_tail_tokens_for(ctx),
             deadline_ms: self.deadline_ms,
             effectiveness_baseline,
         }
@@ -111,9 +132,9 @@ impl CompactionStrategy for DefaultCompactionStrategy {
     fn should_compact(
         &self,
         state: &LoopExecutionState,
-        _ctx: &LoopRunContext,
+        ctx: &LoopRunContext,
     ) -> CompactionDecision {
-        if !self.can_evaluate(state) {
+        if !self.can_evaluate(state, ctx) {
             return CompactionDecision::Skip;
         }
         let prompt_fingerprint = state.compaction_prompt.fingerprint();
@@ -122,22 +143,31 @@ impl CompactionStrategy for DefaultCompactionStrategy {
                 == Some(CompactionInitiator::WindowEviction)
             {
                 return eligible_window_eviction_boundary(state, prompt_fingerprint, None)
-                    .map(|sequence| self.trigger_at(state, sequence))
+                    .map(|sequence| self.trigger_at(state, sequence, ctx))
                     .unwrap_or(CompactionDecision::Skip);
             }
-            return latest_eligible_user_boundary(state, prompt_fingerprint)
-                .map(|sequence| self.trigger_at(state, sequence))
+            return tail_preserving_user_boundary(state, prompt_fingerprint, 0, 0, |_| true)
+                .or_else(|| {
+                    state
+                        .compaction_prompt
+                        .message_index
+                        .iter()
+                        .rev()
+                        .find(|entry| is_eligible_user_boundary(entry, state, prompt_fingerprint))
+                        .map(|entry| entry.sequence)
+                })
+                .map(|sequence| self.trigger_at(state, sequence, ctx))
                 .unwrap_or(CompactionDecision::Skip);
         }
 
         tail_preserving_user_boundary(
             state,
             prompt_fingerprint,
-            self.preserve_tail_tokens,
+            self.preserve_tail_tokens_for(ctx),
             0,
             |_| true,
         )
-        .map(|sequence| self.trigger_at(state, sequence))
+        .map(|sequence| self.trigger_at(state, sequence, ctx))
         .unwrap_or(CompactionDecision::Skip)
     }
 }
@@ -181,19 +211,6 @@ pub(super) fn eligible_window_eviction_boundary(
         })
 }
 
-fn latest_eligible_user_boundary(
-    state: &LoopExecutionState,
-    prompt_fingerprint: u64,
-) -> Option<u64> {
-    state
-        .compaction_prompt
-        .message_index
-        .iter()
-        .rev()
-        .find(|entry| is_eligible_user_boundary(entry, state, prompt_fingerprint))
-        .map(|entry| entry.sequence)
-}
-
 pub(super) fn tail_preserving_user_boundary(
     state: &LoopExecutionState,
     prompt_fingerprint: u64,
@@ -201,23 +218,44 @@ pub(super) fn tail_preserving_user_boundary(
     minimum_tail_messages: usize,
     boundary_guard: impl Fn(&MessageIndexEntry) -> bool,
 ) -> Option<u64> {
+    let entries = &state.compaction_prompt.message_index;
     let mut tail_tokens = 0_u64;
     let mut tail_messages = 0_usize;
-    for entry in state.compaction_prompt.message_index.iter().rev() {
-        if tail_tokens >= preserve_tail_tokens
-            && tail_messages >= minimum_tail_messages
-            && is_eligible_user_boundary(entry, state, prompt_fingerprint)
-            && boundary_guard(entry)
-        {
-            return Some(entry.sequence);
-        }
+    let mut threshold_index = None;
+    for (index, entry) in entries.iter().enumerate().rev() {
         tail_tokens = tail_tokens.saturating_add(entry.estimated_tokens);
         tail_messages = tail_messages.saturating_add(1);
+        if tail_tokens >= preserve_tail_tokens && tail_messages >= minimum_tail_messages {
+            threshold_index = Some(index);
+            break;
+        }
     }
-    None
+
+    let threshold_index = threshold_index?;
+    let first_retained_index = (threshold_index..entries.len()).find(|index| {
+        let entry = &entries[*index];
+        matches!(
+            entry.kind,
+            IndexedMessageKind::User | IndexedMessageKind::Assistant
+        ) && boundary_guard(entry)
+    })?;
+    let dropped_boundary = first_retained_index
+        .checked_sub(1)
+        .and_then(|index| entries.get(index))?;
+    is_eligible_drop_boundary(dropped_boundary, state, prompt_fingerprint)
+        .then_some(dropped_boundary.sequence)
 }
 
 pub(super) fn is_eligible_user_boundary(
+    entry: &MessageIndexEntry,
+    state: &LoopExecutionState,
+    prompt_fingerprint: u64,
+) -> bool {
+    entry.kind == IndexedMessageKind::User
+        && is_eligible_drop_boundary(entry, state, prompt_fingerprint)
+}
+
+fn is_eligible_drop_boundary(
     entry: &MessageIndexEntry,
     state: &LoopExecutionState,
     prompt_fingerprint: u64,
@@ -229,8 +267,7 @@ pub(super) fn is_eligible_user_boundary(
             watermark.through_seq == entry.sequence
                 && watermark.prompt_fingerprint == prompt_fingerprint
         });
-    entry.kind == IndexedMessageKind::User
-        && Some(entry.sequence) > state.compaction_state.last_compacted_through_seq
+    Some(entry.sequence) > state.compaction_state.last_compacted_through_seq
         && !matches_deferred_boundary
 }
 
@@ -460,8 +497,50 @@ mod tests {
         assert_eq!(
             strategy.should_compact(&state, &context),
             CompactionDecision::Trigger {
-                drop_through_seq: 1,
+                drop_through_seq: 2,
                 preserve_tail_tokens: 60,
+                deadline_ms: 7,
+                effectiveness_baseline: CompactionEffectivenessBaseline::TriggerThresholdTokens {
+                    tokens: 90,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn a_window_smaller_than_twice_the_tail_still_compacts_with_a_scaled_tail() {
+        // A 32k-class window under the 20k default tail: the configured tail
+        // exceeds the threshold, so the tail is scaled to half the threshold
+        // instead of disabling compaction.
+        let context = crate::test_support::test_run_context("compaction-strategy-small-window");
+        let mut state = LoopExecutionState::initial_for_run(&context);
+        state.compaction_state = CompactionStrategyState::default();
+        state.compaction_prompt = CompactionPromptSnapshot::from_message_index(
+            [
+                (1, IndexedMessageKind::User),
+                (2, IndexedMessageKind::Assistant),
+                (3, IndexedMessageKind::User),
+                (4, IndexedMessageKind::Assistant),
+            ]
+            .into_iter()
+            .map(|(sequence, kind)| MessageIndexEntry {
+                sequence,
+                kind,
+                estimated_tokens: 30,
+            })
+            .collect(),
+        );
+        let strategy = DefaultCompactionStrategy {
+            prompt_context_budget: PromptContextTokenBudget::new(100, 10, 0),
+            preserve_tail_tokens: 1_000,
+            deadline_ms: 7,
+        };
+
+        assert_eq!(
+            strategy.should_compact(&state, &context),
+            CompactionDecision::Trigger {
+                drop_through_seq: 2,
+                preserve_tail_tokens: 45,
                 deadline_ms: 7,
                 effectiveness_baseline: CompactionEffectivenessBaseline::TriggerThresholdTokens {
                     tokens: 90,
@@ -497,6 +576,51 @@ mod tests {
             strategy.should_compact(&state, &context),
             CompactionDecision::Trigger {
                 drop_through_seq: 1,
+                preserve_tail_tokens: 60,
+                deadline_ms: 7,
+                effectiveness_baseline: CompactionEffectivenessBaseline::TriggerThresholdTokens {
+                    tokens: 90,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn evaluate_never_retains_tool_result_without_its_assistant_call() {
+        let context = crate::test_support::test_run_context("compaction-strategy-tool-pair");
+        let mut state = LoopExecutionState::initial_for_run(&context);
+        state.compaction_prompt = CompactionPromptSnapshot::from_message_index(vec![
+            MessageIndexEntry {
+                sequence: 1,
+                kind: IndexedMessageKind::User,
+                estimated_tokens: 10,
+            },
+            MessageIndexEntry {
+                sequence: 2,
+                kind: IndexedMessageKind::Assistant,
+                estimated_tokens: 10,
+            },
+            MessageIndexEntry {
+                sequence: 3,
+                kind: IndexedMessageKind::ToolResult,
+                estimated_tokens: 100,
+            },
+            MessageIndexEntry {
+                sequence: 4,
+                kind: IndexedMessageKind::Assistant,
+                estimated_tokens: 10,
+            },
+        ]);
+        let strategy = DefaultCompactionStrategy {
+            prompt_context_budget: PromptContextTokenBudget::new(100, 10, 0),
+            preserve_tail_tokens: 60,
+            deadline_ms: 7,
+        };
+
+        assert_eq!(
+            strategy.should_compact(&state, &context),
+            CompactionDecision::Trigger {
+                drop_through_seq: 3,
                 preserve_tail_tokens: 60,
                 deadline_ms: 7,
                 effectiveness_baseline: CompactionEffectivenessBaseline::TriggerThresholdTokens {
@@ -581,7 +705,7 @@ mod tests {
         assert_eq!(
             strategy.should_compact(&state, &context),
             CompactionDecision::Trigger {
-                drop_through_seq: 1,
+                drop_through_seq: 2,
                 preserve_tail_tokens: 1,
                 deadline_ms: 7,
                 effectiveness_baseline:
@@ -630,7 +754,7 @@ mod tests {
         assert_eq!(
             strategy.should_compact(&state, &context),
             CompactionDecision::Trigger {
-                drop_through_seq: 1,
+                drop_through_seq: 2,
                 preserve_tail_tokens: 60,
                 deadline_ms: 7,
                 effectiveness_baseline: CompactionEffectivenessBaseline::TriggerThresholdTokens {
@@ -707,7 +831,7 @@ mod tests {
         assert_eq!(
             strategy.should_compact(&state, &context),
             CompactionDecision::Trigger {
-                drop_through_seq: 3,
+                drop_through_seq: 2,
                 preserve_tail_tokens: 1,
                 deadline_ms: 7,
                 effectiveness_baseline:
@@ -761,7 +885,7 @@ mod tests {
         assert_eq!(
             strategy.should_compact(&state, &context),
             CompactionDecision::Trigger {
-                drop_through_seq: 5,
+                drop_through_seq: 4,
                 preserve_tail_tokens: 1,
                 deadline_ms: 7,
                 effectiveness_baseline:
@@ -840,7 +964,7 @@ mod tests {
             |_| true,
         );
 
-        assert_eq!(boundary, Some(1));
+        assert_eq!(boundary, Some(2));
     }
 
     #[test]

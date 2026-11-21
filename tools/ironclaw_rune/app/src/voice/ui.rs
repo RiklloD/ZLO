@@ -221,7 +221,8 @@ pub fn draw<S: 'static>(
 }
 
 /// The composer's round icon button (GPUI `chat::round_button`, its
-/// non-send variant): a 28 px circle, filled with the ink while on.
+/// non-send variant): a 28 px tile with 7 px corners, filled with the ink
+/// while on.
 fn round_button(
     p: &Palette,
     key: &'static str,
@@ -243,7 +244,7 @@ fn round_button(
         .role("button")
         .label(label)
         .size(28., 28.)
-        .radius(14.)
+        .radius(7.)
         .center()
         .cursor(Cursor::Pointer)
         .fill(fill)

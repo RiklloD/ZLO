@@ -193,7 +193,7 @@ pub fn floating(k: &Kit, content: El) -> El {
 
 /// A small spinner (GPUI `Spinner::new()`).
 pub fn spinner(k: &Kit) -> El {
-    rune_kit::Spinner::new().size(16.).build(k)
+    crate::design::kit::Spinner::new().size(16.).build(k)
 }
 
 /// A spinner with a short line beside it ("Loading models").

@@ -74,20 +74,18 @@ pub fn render_pending(s: &State, stopping: bool, since: Option<Instant>, seed: u
         )
 }
 
-/// The GPUI gradient spinner's three tints, as a 2×2 grid of cells that
-/// pulse in turn.
+/// A 2×2 grid of cells that pulse in turn, in the muted ink: the motion
+/// says it is working, without three more colours on the page.
 fn working_glyph(p: &Palette) -> El {
-    const TINTS: [u32; 3] = [0xB6D3EF, 0xEDB185, 0xF888A0];
     let cell = 5.;
     let gap = cell / 2.;
     let dot = |i: usize| {
-        let c = crate::design::rgb(TINTS[i % 3]);
+        let c = p.text_muted;
         el().size(cell, cell)
             .radius(1.5)
             .fill(c)
             .cycle(breathe(1.2, i as f32 * 0.3, &BREATH_35))
     };
-    let _ = p;
     col()
         .key("working-glyph")
         .gap(gap)

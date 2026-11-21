@@ -133,6 +133,8 @@ impl IdleArm {
             // Compaction runs with the captured plan dir, never this map.
             work_dirs: Mutex::new(HashMap::new()),
             compactor: Arc::clone(&rt.compactor),
+            steer_ack_timeout: rt.steer_ack_timeout,
+            exit_grace: rt.exit_grace,
         });
         Self {
             runtime,

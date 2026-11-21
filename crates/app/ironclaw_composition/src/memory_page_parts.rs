@@ -98,8 +98,9 @@ impl NativeMemoryDocuments {
             .await
         {
             Ok(read) => read,
-            // The native read reports a missing document as an input error.
-            Err(error) if error.kind() == MemoryServiceErrorKind::Input => return Ok(None),
+            // Absence is the native read's typed `not_found` (upstream #7985);
+            // a malformed path stays an input error and maps to validation.
+            Err(error) if error.is_not_found() => return Ok(None),
             Err(error) => return Err(map_memory_error(error)),
         };
         let history = self

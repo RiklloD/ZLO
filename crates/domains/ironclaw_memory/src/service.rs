@@ -438,6 +438,28 @@ impl MemoryServiceError {
             source: None,
         }
     }
+    /// No document exists at the requested path.
+    ///
+    /// A domain failure, not a malformed request: the caller asked a
+    /// well-formed question and the answer is that the document is not there.
+    /// Classifying it as `Input` tells the model to re-encode a request that
+    /// was already correct, which is the one thing it must not do here, since
+    /// probing for a document that does not exist yet is how setup-marker
+    /// skills decide whether to run.
+    pub fn not_found() -> Self {
+        Self {
+            kind: MemoryServiceErrorKind::Operation,
+            message: NOT_FOUND_MESSAGE,
+            source: None,
+        }
+    }
+
+    /// Whether this error is [`MemoryServiceError::not_found`]: the typed
+    /// absence check for callers (the owner's Memory page) that map a missing
+    /// document to "no document" rather than to a failure.
+    pub fn is_not_found(&self) -> bool {
+        self.kind == MemoryServiceErrorKind::Operation && self.message == NOT_FOUND_MESSAGE
+    }
 
     pub fn unavailable() -> Self {
         Self {
@@ -478,7 +500,15 @@ impl MemoryServiceError {
     pub fn kind(&self) -> MemoryServiceErrorKind {
         self.kind
     }
+
+    /// The sanitized, model-safe description of the failure. Never carries the
+    /// backend cause: that lives on `source`, which stays host-side.
+    pub fn message(&self) -> &'static str {
+        self.message
+    }
 }
+
+const NOT_FOUND_MESSAGE: &str = "no memory document at that path";
 
 /// Role of a single message in an interaction exchange handed to a provider's
 /// [`MemoryService::record_interaction`]. Typed (not a raw `String`) so a caller

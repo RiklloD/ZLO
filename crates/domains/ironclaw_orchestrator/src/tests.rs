@@ -23,6 +23,8 @@ pub(crate) struct FakeRuntime {
     /// this name; `None` is the default runtime `fake`.
     name: Option<&'static str>,
     history_reads: Mutex<u32>,
+    /// The run id the next admission returns, when a test pins it.
+    pub(crate) next_run: Mutex<Option<String>>,
 }
 
 impl FakeRuntime {
@@ -99,8 +101,9 @@ impl TurnRuntime for FakeRuntime {
             .entry(t.thread_id.clone())
             .or_default()
             .push(msg(HistoryRole::User, &input.text));
+        let pinned = self.next_run.lock().unwrap().take();
         Ok(TurnAdmission::Started {
-            run_id: Some(format!("run-{}", now_ms())),
+            run_id: Some(pinned.unwrap_or_else(|| format!("run-{}", now_ms()))),
         })
     }
     async fn steer(

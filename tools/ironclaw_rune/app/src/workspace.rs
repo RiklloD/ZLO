@@ -271,7 +271,7 @@ pub(crate) fn connected(
     start_polling(s);
     status::start(s);
     let reopen = reopen.filter(|id| s.workspace.inbox.row(id).is_some());
-    match reopen.or_else(|| s.workspace.inbox.first_open()) {
+    match reopen.or_else(|| inbox::first_open(s)) {
         Some(first) => open_thread(s, first),
         // Nothing open: a fresh draft in the default profile.
         None => start_in_profile(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into()),
@@ -293,6 +293,16 @@ pub fn release_session_import(s: &mut State) {
 }
 
 /// Read the inbox again (after setup imported threads).
+/// A prompt went out in `thread_id`: its sidebar card shows Working now.
+pub fn prompt_sent(s: &mut State, thread_id: &str) {
+    inbox::note_sent(s, thread_id);
+}
+
+/// The send to `thread_id` failed: its card stops showing Working.
+pub fn send_failed(s: &mut State, thread_id: &str) {
+    inbox::forget_sent(s, thread_id);
+}
+
 pub fn refresh_inbox(s: &mut State) {
     inbox::refresh(s);
 }
@@ -432,7 +442,7 @@ pub fn in_settings(s: &State) -> bool {
     !matches!(s.page, Page::Chat | Page::Draft)
 }
 
-/// Esc closes what the user last opened: the model or thinking picker, else
+/// Esc closes what the user last opened: a model picker, else
 /// the settings pages. The command menu handles its own Esc.
 fn dismiss(s: &mut State) -> bool {
     if s.workspace.command.is_some() {
@@ -552,7 +562,7 @@ pub fn delete_thread(s: &mut State, thread_id: String) {
                 .retain(|t| t.thread_id != thread_id);
             if active_id(s) == Some(thread_id.as_str()) {
                 s.chat = None;
-                match s.workspace.inbox.first_open() {
+                match inbox::first_open(s) {
                     Some(next) => open_thread(s, next),
                     None => draft::open(s),
                 }
@@ -574,6 +584,7 @@ pub fn thread_updated(s: &mut State) {
 pub fn run_ended(s: &mut State, thread_id: String, failed: bool) {
     status::refresh_telemetry(s);
     crate::run_clock::end(s, &thread_id);
+    inbox::forget_sent(s, &thread_id);
     if !failed {
         inbox::poll_for_title(s);
     }

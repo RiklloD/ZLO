@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use claude_codes::{ClaudeOutput, RateLimitStatus};
+use claude_codes::{ClaudeOutput, RateLimitInfo, RateLimitStatus, RateLimitWindow};
 use ironclaw_orchestrator::runtime::{TurnEndStatus, TurnOutcome, TurnUsage};
 use ironclaw_orchestrator::telemetry::{TurnTelemetry, tokens_per_second};
 
@@ -26,6 +26,8 @@ pub(crate) struct TurnFold {
     generated_tokens: u64,
     rate_limit_resets_at: Option<i64>,
     rate_limited: bool,
+    /// Which limit refused the turn, as the person reads it ("5-hour").
+    limit_window: Option<&'static str>,
     /// The latest `unifiedWindows` reading (5-hour, weekly), as the CLI sent it.
     limit_windows: Option<serde_json::Value>,
     result: Option<ResultFold>,
@@ -59,6 +61,15 @@ impl TurnFold {
     fn push(&mut self, frame: ClaudeOutput, now: Instant) {
         match frame {
             ClaudeOutput::Assistant(msg) => {
+                // A refused call repeats its limit here on every retry; the
+                // CLI throttles the unchanged `rate_limit_event` (2.1.292+).
+                if let Some(info) = msg
+                    .api_error_params
+                    .as_ref()
+                    .and_then(|p| p.rate_limit_info.as_ref())
+                {
+                    self.refused_by(info, Some(now_secs()));
+                }
                 self.model = Some(msg.message.model.clone());
                 if let Some(u) = msg.message.usage {
                     self.compacted = None;
@@ -80,10 +91,7 @@ impl TurnFold {
                 if let Some(windows) = &info.unified_windows {
                     self.limit_windows = serde_json::to_value(windows).ok();
                 }
-                if matches!(info.status, RateLimitStatus::Rejected) {
-                    self.rate_limited = true;
-                    self.rate_limit_resets_at = info.resets_at.map(|s| s as i64 * 1000);
-                }
+                self.refused_by(&info, None);
             }
             ClaudeOutput::Result(r) => {
                 let usage = r.usage.as_ref().map(|u| TurnUsage {
@@ -125,6 +133,25 @@ impl TurnFold {
         }
     }
 
+    /// A rejected limit reading: the turn is limited until `resetsAt`. With
+    /// `not_before` (a blocked call's record, which is never updated) a reset
+    /// already past arms nothing.
+    fn refused_by(&mut self, info: &RateLimitInfo, not_before: Option<u64>) {
+        if !matches!(info.status, RateLimitStatus::Rejected) {
+            return;
+        }
+        self.rate_limited = true;
+        if let Some(window) = &info.rate_limit_type {
+            self.limit_window = Some(window_label(window));
+        }
+        if let Some(at) = info
+            .resets_at
+            .filter(|at| not_before.is_none_or(|now| *at > now))
+        {
+            self.rate_limit_resets_at = Some(at as i64 * 1000);
+        }
+    }
+
     fn push_stream_event(&mut self, event: &serde_json::Value, now: Instant) {
         match event.get("type").and_then(|t| t.as_str()) {
             Some("message_start") => {
@@ -161,6 +188,11 @@ impl TurnFold {
             }
             _ => {}
         }
+    }
+
+    /// A `result` frame has arrived.
+    pub(crate) fn has_result(&self) -> bool {
+        self.result.is_some()
     }
 
     /// Context from the last assistant message, max from the result's
@@ -221,7 +253,10 @@ impl TurnFold {
         let limited = self.rate_limited || resets_at.is_some() || mentions_usage_limit(text);
         // Raw CLI error text can carry paths or provider bodies; keep codes.
         let error = if limited {
-            "usage_limit: the Claude subscription limit is reached".to_string()
+            format!(
+                "usage_limit: the Claude {} limit is reached",
+                self.limit_window.unwrap_or("subscription")
+            )
         } else {
             format!("claude cli error ({})", result.subtype)
         };
@@ -230,6 +265,24 @@ impl TurnFold {
             usage_limit_resets_at: if limited { resets_at } else { None },
             ..TurnOutcome::ended(TurnEndStatus::Failed, Some(error))
         }
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) // silent-ok: a clock before 1970 treats every reset as ahead
+}
+
+fn window_label(window: &RateLimitWindow) -> &'static str {
+    match window {
+        RateLimitWindow::FiveHour => "5-hour",
+        RateLimitWindow::SevenDay | RateLimitWindow::SevenDayOverageIncluded => "weekly",
+        RateLimitWindow::SevenDayOpus => "weekly Opus",
+        RateLimitWindow::SevenDaySonnet => "weekly Sonnet",
+        RateLimitWindow::Overage => "extra-usage",
+        RateLimitWindow::Unknown(_) => "subscription",
     }
 }
 
@@ -327,6 +380,42 @@ mod tests {
         assert_eq!(outcome.status, TurnEndStatus::Failed);
         assert_eq!(outcome.usage_limit_resets_at, Some(1_792_801_800_000));
         assert!(!outcome.error.unwrap_or_default().contains("hit your"));
+    }
+
+    /// 2.1.292+ repeats a refusal on the blocked assistant frame (the
+    /// `rate_limit_event` is throttled); the error names the limit, and a
+    /// reset already in the past arms nothing.
+    #[test]
+    fn a_blocked_assistant_frame_names_the_limit_and_its_reset() {
+        let t = Instant::now();
+        let reset = now_secs() + 3_600;
+        let blocked = |at: u64| {
+            format!(
+                r#"{{"type":"assistant","message":{{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{{"type":"text","text":"You've hit your limit"}}]}},"session_id":"s","uuid":"a1","is_api_error_message":true,"api_error":"usage_limit_reached","api_error_params":{{"rate_limit_info":{{"status":"rejected","rateLimitType":"five_hour","resetsAt":{at},"isUsingOverage":false}}}}}}"#
+            )
+        };
+        let failed = r#"{"type":"result","subtype":"success","is_error":true,"duration_ms":5,"duration_api_ms":0,"num_turns":1,"result":"You've hit your limit","session_id":"s","total_cost_usd":0}"#;
+        let mut fold = TurnFold::default();
+        fold.push_line(&blocked(reset), t);
+        fold.push_line(failed, t);
+        let outcome = fold.outcome(false, Some(1));
+        assert_eq!(outcome.usage_limit_resets_at, Some(reset as i64 * 1000));
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("usage_limit: the Claude 5-hour limit is reached")
+        );
+
+        let mut stale = TurnFold::default();
+        stale.push_line(&blocked(1_000_000_000), t);
+        stale.push_line(failed, t);
+        let outcome = stale.outcome(false, Some(1));
+        assert_eq!(outcome.usage_limit_resets_at, None);
+        assert!(
+            outcome
+                .error
+                .unwrap_or_default()
+                .starts_with("usage_limit:")
+        );
     }
 
     /// A steer during a delegated child's turn ends in a second `result`.

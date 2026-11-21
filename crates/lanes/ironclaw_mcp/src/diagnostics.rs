@@ -123,12 +123,26 @@ pub(crate) enum McpInvalidToolListCause {
     MissingToolsArray,
     TooManyTools,
     InvalidToolName,
+    ToolNameCollision,
     InvalidDescription,
     MissingInputSchema,
     UnsafeInputSchema,
+    /// The input schema exceeded a host SIZE bound (depth, node count, or string
+    /// length). A resource limit, not a trust violation, so it drops the single
+    /// oversized tool instead of rejecting the whole generation.
+    OversizeInputSchema,
     InvalidAnnotations,
     InvalidCursor,
+    /// Retained for the diagnostic vocabulary, no longer raised: exhausting the page
+    /// budget now truncates, for the same reason as the tool and byte ceilings.
+    #[allow(dead_code)]
     TooManyPages,
+    /// Retained for the diagnostic vocabulary, no longer raised: an over-large catalog
+    /// now truncates rather than failing the discovery pass, because discarding every
+    /// already-collected tool left the extension indistinguishable from an unreachable
+    /// one. Kept so existing log/metric consumers keying on `catalog_too_large` do not
+    /// break, and so a future hard limit has a name ready.
+    #[allow(dead_code)]
     CatalogTooLarge,
 }
 
@@ -138,9 +152,11 @@ impl McpInvalidToolListCause {
             Self::MissingToolsArray => "missing_tools_array",
             Self::TooManyTools => "too_many_tools",
             Self::InvalidToolName => "invalid_tool_name",
+            Self::ToolNameCollision => "tool_name_collision",
             Self::InvalidDescription => "invalid_description",
             Self::MissingInputSchema => "missing_input_schema",
             Self::UnsafeInputSchema => "unsafe_input_schema",
+            Self::OversizeInputSchema => "oversize_input_schema",
             Self::InvalidAnnotations => "invalid_annotations",
             Self::InvalidCursor => "invalid_cursor",
             Self::TooManyPages => "too_many_pages",
@@ -195,6 +211,8 @@ impl McpResponseErrorCause {
 pub(crate) enum McpEgressCause {
     /// The host runtime egress future panicked.
     RuntimeEgressPanicked,
+    /// The shared host leak detector blocked response headers/body content.
+    ResponseLeakBlocked,
     /// The host runtime egress refused or failed the request, reported as one
     /// of `RuntimeHttpEgressError`'s stable, host-owned reason codes.
     RuntimeEgressFailed(&'static str),
@@ -204,6 +222,7 @@ impl McpEgressCause {
     fn into_reason(self) -> String {
         match self {
             Self::RuntimeEgressPanicked => "runtime_http_egress_panicked".to_string(),
+            Self::ResponseLeakBlocked => "response_leak_blocked".to_string(),
             // Already a closed set of `&'static str` codes owned by
             // `ironclaw_host_api`, but bounded here anyway: the cap is this
             // module's invariant, not the producer's.
@@ -280,6 +299,22 @@ mod tests {
         assert_eq!(
             provider_error_code(McpProviderRejectionCause::ToolRejected).as_str(),
             "mcp_tool_rejected"
+        );
+    }
+
+    #[test]
+    fn egress_causes_map_to_stable_reasons() {
+        assert_eq!(
+            egress_failure(McpEgressCause::RuntimeEgressPanicked),
+            "runtime_http_egress_panicked"
+        );
+        assert_eq!(
+            egress_failure(McpEgressCause::ResponseLeakBlocked),
+            "response_leak_blocked"
+        );
+        assert_eq!(
+            egress_failure(McpEgressCause::RuntimeEgressFailed("response_error")),
+            "response_error"
         );
     }
 }

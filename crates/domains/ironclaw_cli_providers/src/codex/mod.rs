@@ -26,7 +26,7 @@ mod admission;
 mod compact;
 mod fold;
 pub(crate) mod import;
-mod live;
+pub(crate) mod live;
 mod plan;
 mod session;
 mod turn_end;

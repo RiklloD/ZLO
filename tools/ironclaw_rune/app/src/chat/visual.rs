@@ -151,7 +151,7 @@ fn pending(s: &State, id: &str, k: &Kit) -> El {
         row()
             .gap(8.)
             .center_y()
-            .child(rune_kit::Spinner::new().size(12.).build(k))
+            .child(crate::design::kit::Spinner::new().size(12.).build(k))
             .child(
                 text("Drawing visual…")
                     .font(flow::type_at(s, 12., 16., 400.))

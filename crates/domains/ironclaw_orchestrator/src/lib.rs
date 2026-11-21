@@ -50,6 +50,8 @@ pub mod schedule_webhooks;
 pub mod schedules;
 pub mod segments;
 pub mod session_imports;
+#[cfg(test)]
+mod steer_tests;
 pub mod store;
 pub mod telemetry;
 mod thread_ops;

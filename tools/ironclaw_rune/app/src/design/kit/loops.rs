@@ -219,3 +219,69 @@ pub fn claw_mark(s: &State) -> El {
             .child(stroke(22., 4.)),
     )
 }
+
+/// ZLO's busy spinner: rune-kit's original 4×4 pulse grid (twelve rounded
+/// squares, corners left out, each pulsing on its own seeded period). Rune
+/// replaced kit's `Spinner` with OpenCode's 5×5 Soft Radar; ZLO keeps this
+/// one so its flat look stays put. Same builder as kit's.
+pub struct Spinner {
+    size: f32,
+    color: Option<Color>,
+}
+
+impl Default for Spinner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Spinner {
+    pub fn new() -> Self {
+        Self {
+            size: 18.0,
+            color: None,
+        }
+    }
+
+    pub fn size(mut self, size: f32) -> Self {
+        self.size = size;
+        self
+    }
+
+    pub fn color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    pub fn build(self, k: &rune_kit::Kit) -> El {
+        let ink = self.color.unwrap_or(k.c.std_text);
+        let u = self.size / 15.0;
+        let mut e = el()
+            .role("progressbar")
+            .label("Loading")
+            .size(self.size, self.size);
+        for i in 0..16usize {
+            if matches!(i, 0 | 3 | 12 | 15) {
+                continue;
+            }
+            let (x, y) = ((i % 4) as f32 * 4.0, (i / 4) as f32 * 4.0);
+            let outer = matches!(i, 1 | 2 | 4 | 7 | 8 | 11 | 13 | 14);
+            let low = if outer { 0.15 } else { 0.4 };
+            let high = if outer { 0.35 } else { 1.0 };
+            // A fixed per-cell seed: 1–2 s periods and 0–1.5 s delays, stable
+            // across replays and goldens.
+            let period = 1.0 + ((i * 37) % 101) as f64 / 100.0;
+            let delay = ((i * 53) % 101) as f64 * 0.015;
+            e = e.child(
+                el().key(format!("sq{i}"))
+                    .size(3.0 * u, 3.0 * u)
+                    .absolute(x * u, y * u)
+                    .radius(u)
+                    .fill(ink)
+                    .a11y_hidden()
+                    .looping(rune::LoopSpec::opacity(period, delay, low, high)),
+            );
+        }
+        e
+    }
+}

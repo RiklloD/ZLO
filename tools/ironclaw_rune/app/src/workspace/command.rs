@@ -304,6 +304,7 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 .key("cmdk-rows")
                 .w_full()
                 .growth(rune::GrowthSpec::default())
+                .whole_rows()
                 .virtual_rows(
                     count,
                     ROW_H,

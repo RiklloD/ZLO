@@ -1498,11 +1498,8 @@ async fn live_hooks_need_the_consent_pins_and_refuse_swapped_module_bytes() {
     let active = Arc::new(ironclaw_extension_registry::SharedExtensionRegistry::new(
         ExtensionRegistry::new(),
     ));
-    let unpinned = v3_plugin("unpinned-ext", WASM_GATE_HOOK);
-    let unpinned = ExtensionPackage {
-        content_pins: None,
-        ..unpinned
-    };
+    let mut unpinned = v3_plugin("unpinned-ext", WASM_GATE_HOOK);
+    unpinned.content_pins = None;
     active.upsert(unpinned).expect("activate");
     active
         .upsert(v3_plugin("swapped-ext", WASM_GATE_HOOK))

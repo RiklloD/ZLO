@@ -1,0 +1,10 @@
+{
+ "events": [
+  {
+   "t": 0.4,
+   "type": "type",
+   "every": 0.03,
+   "text": "Before we merge, walk the whole sidebar animation again at narrow widths and check that the transcript, the composer and the sidebar all move on the same curve, nothing drifting after it ends!! Thanks"
+  }
+ ]
+}

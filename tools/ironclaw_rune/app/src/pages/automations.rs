@@ -4,7 +4,7 @@
 //! result; clicking it opens the thread of its last run. Port of GPUI
 //! `pages/automations.rs`.
 
-mod form;
+pub(crate) mod form;
 mod schedule_rows;
 
 use std::collections::{HashMap, HashSet};

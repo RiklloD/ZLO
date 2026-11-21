@@ -1,7 +1,8 @@
 //! Read-only browser over the gateway's mounts (memory, workspace, skills).
 
+use crate::design::kit::Spinner;
 use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text};
-use rune_kit::{Kit, Markdown, Spinner};
+use rune_kit::{Kit, Markdown};
 use zlo_client::FilePreview;
 use zlo_client::workspace_views::{FsMount, ProjectFsEntry, ProjectFsEntryKind, RebornFsMountInfo};
 

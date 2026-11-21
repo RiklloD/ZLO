@@ -28,6 +28,9 @@ pub const SPACE_LG: f32 = 16.;
 
 const HEADER_HEIGHT: f32 = 26.;
 const TREE_ROW_HEIGHT: f32 = 32.;
+
+#[path = "flow/timeline.rs"]
+mod timeline;
 const GUTTER_WIDTH: f32 = 48.;
 const TRUNK_X: f32 = 12.;
 const BEND_RADIUS: f32 = 6.;
@@ -291,6 +294,7 @@ pub fn is_open(key: &str, live: bool, toggles: &HashMap<String, bool>) -> bool {
 }
 
 /// A tree row: the label (verb), its detail, an icon and whether it failed.
+#[derive(Clone)]
 struct Leaf {
     icon: &'static Icon,
     label: String,
@@ -607,7 +611,7 @@ pub fn render_activity(
             tx.keep_on_screen(head_key.clone());
         });
 
-    let mut group = col().key(format!("{key}-group")).w_full().child(header);
+    let group = col().key(format!("{key}-group")).w_full().child(header);
     if !open {
         return group;
     }
@@ -616,10 +620,11 @@ pub fn render_activity(
         .filter_map(|r| leaf(r).map(|l| (r, l)))
         .collect();
     let count = parts.len();
-    let mut tree = col()
+    let tree = col()
         .key(format!("{key}-tree"))
         .w_full()
         .transition(rise(4.));
+    let mut lines = Vec::with_capacity(count);
     for (ix, (row, mut leaf)) in parts.into_iter().enumerate() {
         let row_key = row.key();
         let open_key = format!("leaf:{row_key}");
@@ -642,11 +647,15 @@ pub fn render_activity(
             (Some(_), None) => leaf.running,
             (None, on) => leaf.body.is_some() && on.unwrap_or(false),
         };
-        let last = ix + 1 == count;
-        tree = tree.child(tree_row(s, thread, row_key, leaf, last, expanded, open_key));
+        lines.push(timeline::Line {
+            key: row_key.to_string(),
+            leaf,
+            last: ix + 1 == count,
+            expanded,
+            open_key,
+        });
     }
-    group = group.child(tree);
-    group
+    group.child(timeline::tree(s, thread, tree, lines))
 }
 
 fn tree_row(
@@ -790,9 +799,16 @@ fn output_tail(s: &State, output: &CliBody, running: bool) -> El {
 /// column, a faint wash rather than a colored bubble.
 pub fn user_pill(s: &State, key: &str, body: El, pending: bool, column: f32) -> El {
     let p = &s.palette;
-    // An opaque step off the canvas, so the bubble reads the same over a
-    // wallpaper, a solid canvas and either scheme.
-    let wash = p.bg.mix(p.text, if p.light { 0.06 } else { 0.11 });
+    // The composer's own surface and rim, so a sent message reads as the
+    // card it was typed in: opaque, one step off the canvas. A light theme
+    // whose card is the canvas's own white takes a faint ink wash instead,
+    // so the bubble still reads.
+    let (card, rim) = super::composer::composer_surface(p, false);
+    let wash = if p.light && card.to_oklab()[0] >= p.bg.to_oklab()[0] - 0.005 {
+        p.bg.mix(p.text, 0.05)
+    } else {
+        card
+    };
     row().w_full().justify_end().child(
         // `shrink` on the pill and its body: without it the row lays the
         // body out at its unwrapped width and long lines run past the pill.
@@ -800,7 +816,8 @@ pub fn user_pill(s: &State, key: &str, body: El, pending: bool, column: f32) -> 
             .shrink()
             .max_w(column * 0.8)
             .fill(wash)
-            .radius(crate::design::BUBBLE_RADIUS)
+            .border(1., rim)
+            .radius(crate::design::COMPOSER_RADIUS)
             .px(16.)
             .py(10.)
             .opacity(if pending { 0.65 } else { 1. })

@@ -205,6 +205,12 @@ The circuit breaker wraps the retry/routing/failover chain (`apply_decorator_cha
 
 **Current wiring:** The failover is set up between primary model and `NEARAI_FALLBACK_MODEL` (a different model name on the same NEAR AI backend), not across different LLM provider types. Cross-provider failover (e.g., NEAR AI → Anthropic) requires manual construction.
 
+Route-specific model metadata follows the same explicit fallback index.
+`model_metadata_for_route` selects the indexed child directly; it never infers
+the route from mutable last-used state. Every provider decorator delegates this
+method unchanged so host-side context budgeting sees the same model that the
+next completion request will dispatch.
+
 ## Retry
 
 `RetryProvider` in `retry.rs` wraps any `LlmProvider` with exponential backoff. Retries on: `RequestFailed`, `RateLimited`, `BadGateway`, `StreamInterrupted`, `SessionRenewalFailed`, plus `Http` / `Io` only with concrete transient evidence. Does **not** retry completed `InvalidResponse` / `EmptyResponse`, `AuthFailed`, `SessionExpired`, `ContextLengthExceeded`, `ModelNotAvailable`, `QuotaExceeded`, or `Json`.
@@ -230,6 +236,7 @@ pub trait LlmProvider: Send + Sync {
     async fn list_models(&self) -> Result<Vec<String>, LlmError> { Ok(vec![]) }
     async fn list_model_catalog(&self) -> Result<Vec<DiscoveredModel>, LlmError> { /* IDs with optional directional modalities */ }
     async fn model_metadata(&self) -> Result<ModelMetadata, LlmError> { /* name only */ }
+    async fn model_metadata_for_route(&self, fallback_index: u32, requested_model: Option<&str>) -> Result<ModelMetadata, LlmError> { /* selected route */ }
     fn effective_model_name(&self, requested_model: Option<&str>) -> String { /* uses active */ }
     fn active_model_name(&self) -> String { self.model_name().to_string() }
     fn set_model(&self, _model: &str) -> Result<(), LlmError> { /* Err: not supported */ }
@@ -243,6 +250,7 @@ Key notes:
 - `cost_per_token()` returns `(Decimal, Decimal)` using `rust_decimal`. Look up via `costs::model_cost()` in your constructor; fall back to `costs::default_cost()` for unknowns.
 - `RigAdapter` forwards per-request model overrides through rig-core's typed request model field. Do not put `model` in flattened `additional_params`, which would serialize a duplicate top-level JSON key.
 - `complete_with_tools()` is never cached (tool calls can have side effects) — `CachedProvider` always passes them through.
+- `model_metadata()` and `model_metadata_for_route()` must be static descriptions of the configured model: no network or credential I/O (no token refresh, no discovery call) and no lock shared with an in-flight call — the loop reapplies the selected route's window on every provider request, so any I/O there stalls or serializes behind it. Decorators (`TokenRefreshingProvider` and peers) delegate both unchanged rather than wrapping them with the pre-call work they add to the other trait methods.
 
 To add a new provider:
 1. Create `crates/domains/ironclaw_llm/src/myprovider.rs` implementing `LlmProvider` <!-- check-guidance: path-ok --> (prescriptive: the file you are about to add, not one that exists)

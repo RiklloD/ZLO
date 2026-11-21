@@ -274,6 +274,7 @@ pub(super) fn view(s: &State, k: &Kit, state: &ChangesState) -> El {
                     .key("changes-rows")
                     .w_full()
                     .growth(GrowthSpec::default())
+                    .whole_rows()
                     .virtual_rows(
                         count,
                         26.,

@@ -355,6 +355,7 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
         .w_full()
         .max_w(column + 2. * ROW_GUTTER)
         .growth(GrowthSpec::default())
+        .whole_rows()
         .virtual_rows(
             count,
             ROW_ESTIMATE,

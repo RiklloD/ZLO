@@ -284,6 +284,7 @@ pub struct TraceLlm {
     /// trace consumer was built against.
     provider_id: Option<String>,
     steps: Mutex<std::collections::VecDeque<TraceStep>>,
+    context_length: Option<u32>,
     /// Total non-error calls served, regardless of which step they returned.
     calls_served: AtomicUsize,
     /// Calls dispatched through the provider streaming method. Kept separate
@@ -522,6 +523,7 @@ impl TraceLlm {
             model_name: trace.model_name,
             provider_id: None,
             steps: Mutex::new(steps),
+            context_length: None,
             calls_served: AtomicUsize::new(0),
             streaming_calls: AtomicUsize::new(0),
             hint_mismatches: AtomicUsize::new(0),
@@ -534,6 +536,12 @@ impl TraceLlm {
     /// requests with it).
     pub fn with_provider_id(mut self, provider_id: impl Into<String>) -> Self {
         self.provider_id = Some(provider_id.into());
+        self
+    }
+
+    /// Report a deterministic model context window through the provider metadata seam.
+    pub fn with_context_length(mut self, context_length: u32) -> Self {
+        self.context_length = Some(context_length);
         self
     }
 
@@ -931,6 +939,13 @@ impl LlmProvider for TraceLlm {
 
     fn cost_per_token(&self) -> (Decimal, Decimal) {
         (Decimal::ZERO, Decimal::ZERO)
+    }
+
+    async fn model_metadata(&self) -> Result<ironclaw_llm::ModelMetadata, LlmError> {
+        Ok(ironclaw_llm::ModelMetadata {
+            id: self.model_name.clone(),
+            context_length: self.context_length,
+        })
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {

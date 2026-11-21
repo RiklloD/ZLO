@@ -394,7 +394,7 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             setting_row(
                 p,
                 "Accent color",
-                Some("Links, selection and the one loud button."),
+                Some("Focus, selection and live state; buttons stay monochrome."),
                 accent_swatches(s),
             ),
         ],
@@ -422,7 +422,7 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         Wallpaper::Scene { name } if name != "auto" => {
             "Painted in the app, sized to the window.".into()
         }
-        Wallpaper::None => "A plain panel with a soft accent glow.".into(),
+        Wallpaper::None => "A plain, flat panel.".into(),
         _ => "Sky in light mode, Dusk in dark mode.".into(),
     };
     let wallpaper_select = select(
