@@ -15,6 +15,7 @@ use zlo_client::schedules::{
 };
 
 use crate::chat::model_picker::{self, FixedSlot, ModelPickerState, PickerEvent, Slot};
+use crate::design::motion;
 use crate::jobs::{self, Generation};
 use crate::pages::common::{
     BASE, Btn, SM, XS, button, button_xs, card, choice, label, loading, para, segmented, switch,
@@ -363,10 +364,13 @@ fn save_form(s: &mut State) {
             let thread = new_home_thread(&c, &profile, pick, effort).await?;
             c.create_schedule(&thread, &write).await
         },
-        |s, result: Result<ScheduleInfo, ClientError>, _| match result {
+        |s, result: Result<ScheduleInfo, ClientError>, tx| match result {
             Ok(_) => {
+                // The person's save: the form folds away and the saved
+                // schedule arrives with motion.
+                tx.animated();
                 s.pages.automations.form = None;
-                super::refresh(s);
+                super::refresh_shown(s);
             }
             Err(e) => {
                 if let Some(form) = s.pages.automations.form.as_mut() {
@@ -674,11 +678,13 @@ pub fn render_form(
         ))
         .child(frow("Runs on", who))
         .child(frow("Trigger", kind));
+    // Rows that come and go with the trigger (Clock ↔ Webhook) and the
+    // preset wipe open and closed instead of jumping.
     if let Some(sch) = schedule {
-        c = c.child(frow("When", sch));
+        c = c.child(frow("When", sch).transition(motion::reveal()));
     }
     if let Some(z) = zone {
-        c = c.child(frow("Time zone", z));
+        c = c.child(frow("Time zone", z).transition(motion::reveal()));
     }
     if form.kind == Kind::Webhook {
         c = c.child(frow(
@@ -692,14 +698,20 @@ pub fn render_form(
                     SM,
                     muted,
                 )),
-        ));
+        ).transition(motion::reveal()));
     }
     c = c.child(frow("Results", delivery)).child(frow(
         "Enabled",
         row().child(toggle("Enabled", form.enabled, |f, on| f.enabled = on)),
     ));
     if let Some(e) = &form.errors.save {
-        c = c.child(para(e.clone(), SM, danger));
+        c = c.child(
+            col()
+                .key("form-save-error")
+                .w_full()
+                .transition(motion::reveal())
+                .child(para(e.clone(), SM, danger)),
+        );
     }
     c.child(
         row()
@@ -712,10 +724,11 @@ pub fn render_form(
                     .build(k),
             )
             .child(
-                loading(button(save_label, Btn::Primary), false)
-                    .disabled(form.saving)
+                loading(button(save_label, Btn::Primary), form.saving)
                     .on_press(save_form)
-                    .build(k),
+                    .build(k)
+                    .key("form-save")
+                    .press_scale(crate::design::motion::PRESS),
             ),
     )
 }
