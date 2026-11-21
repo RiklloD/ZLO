@@ -15,11 +15,19 @@ type Binding = (&'static str, &'static str, fn(&mut State, &mut Tx));
 
 const BINDINGS: &[Binding] = &[
     ("New Thread", "cmd+shift+o", |s, _| new_thread(s)),
-    ("Toggle Sidebar", "cmd+b", super::toggle_sidebar),
-    ("Toggle Right Pane", "alt+cmd+b", |s, _| {
+    // The column toggles slide like their titlebar buttons. A menu item runs
+    // as a queued update, which no input in the window caused, so Rune
+    // commits it at once unless the handler asks for motion.
+    ("Toggle Sidebar", "cmd+b", |s, tx| {
+        tx.animated();
+        super::toggle_sidebar(s, tx)
+    }),
+    ("Toggle Right Pane", "alt+cmd+b", |s, tx| {
+        tx.animated();
         toggle_right_pane(s)
     }),
-    ("Toggle Changes and Files", "cmd+e", |s, _| {
+    ("Toggle Changes and Files", "cmd+e", |s, tx| {
+        tx.animated();
         toggle_work_panel(s)
     }),
     ("New Side Chat", "alt+cmd+n", |s, _| new_side_chat(s)),
@@ -34,6 +42,16 @@ const BINDINGS: &[Binding] = &[
         super::toggle_scheme(s)
     }),
 ];
+
+/// The View menu action titled `title`, for tests that run it as the menu does.
+#[cfg(test)]
+pub(crate) fn action(title: &str) -> fn(&mut State, &mut Tx) {
+    BINDINGS
+        .iter()
+        .find(|(t, _, _)| *t == title)
+        .map(|(_, _, a)| *a)
+        .expect("bound")
+}
 
 /// The app menu's "Quit ZLO" and its chord.
 const QUIT: (&str, &str) = ("Quit ZLO", "cmd+q");
