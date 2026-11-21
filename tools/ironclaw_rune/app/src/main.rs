@@ -91,6 +91,9 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         workspace::quit(s, tx);
         return true;
     }
+    if ev.key == rune::Key::Left && !ev.mods.cmd && chat::side::details_left_closes_menu(s) {
+        return true;
+    }
     workspace::on_key(s, ev, tx)
 }
 

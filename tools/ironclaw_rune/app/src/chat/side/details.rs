@@ -198,6 +198,17 @@ fn toggle_dropdown(s: &mut State, which: Dropdown) {
     }
 }
 
+/// ← while a row's menu is open: close it. The menu's items hold focus in
+/// their own modal and leave ← unhandled, so it reaches the app's `on_key`;
+/// the menu hands focus back to its row as it closes.
+pub(crate) fn left_closes_menu(s: &mut State) -> bool {
+    if side(s).is_some_and(|x| x.session_open && x.details.dropdown.is_some()) {
+        close_menus(s);
+        return true;
+    }
+    false
+}
+
 /// Open row menu `which` (→ on its row).
 fn open_dropdown(s: &mut State, which: Dropdown) {
     if let Some(x) = side_mut(s) {
@@ -739,7 +750,14 @@ fn version_control(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
             }
             if let Some(hint) = hint {
                 primary = primary.help(hint);
-            } else if live {
+            }
+            if !live {
+                // Nothing to run (or it is running): the row still opens its
+                // menu, so "Commit…" stays one keypress or click away.
+                primary = pressable(s, primary)
+                    .label(running.unwrap_or(text))
+                    .on_press(|s: &mut State| open_dropdown(s, Dropdown::Git));
+            } else {
                 primary =
                     pressable(s, primary)
                         .label(text)
@@ -1887,6 +1905,60 @@ mod tests {
             }),
             Tab::Changes.id(),
             "Return opened the changes"
+        );
+    }
+
+    /// ← closes a row's open menu (its items leave ← to the app) and focus
+    /// lands back on the row.
+    #[test]
+    fn left_closes_an_open_row_menu() {
+        let mut rt = drawn((1440., 1000.), |_| {});
+        rt.on_key = Some(crate::on_key);
+        let mut t = 1.;
+        press(&mut rt, rune::Key::Right, &mut t);
+        assert_eq!(
+            read(&mut rt, |s| side(s).and_then(|x| x.details.dropdown)),
+            Some(Dropdown::Environment)
+        );
+        press(&mut rt, rune::Key::Left, &mut t);
+        assert_eq!(
+            read(&mut rt, |s| side(s).and_then(|x| x.details.dropdown)),
+            None,
+            "← closed the menu"
+        );
+        assert!(read(&mut rt, |s| side(s).is_some_and(|x| x.session_open)));
+        assert_eq!(
+            focused(&mut rt).as_deref(),
+            Some("thread-details-environment-row")
+        );
+    }
+
+    /// While the git action runs (or only hints), its row is still a stop
+    /// that opens the menu, so "Commit…" stays reachable by keyboard.
+    #[test]
+    fn a_busy_git_row_still_opens_its_menu() {
+        let mut rt = drawn((1440., 1000.), |s| {
+            if let Some(x) = side_mut(s) {
+                x.changes.busy = Some("push");
+            }
+        });
+        let mut t = 1.;
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            press(&mut rt, rune::Key::Down, &mut t);
+            seen.extend(focused(&mut rt));
+        }
+        assert!(
+            seen.iter().any(|k| k == "thread-details-git-primary"),
+            "the busy row is a stop: {seen:?}"
+        );
+        while focused(&mut rt).as_deref() != Some("thread-details-git-primary") {
+            press(&mut rt, rune::Key::Down, &mut t);
+        }
+        press(&mut rt, rune::Key::Enter, &mut t);
+        assert_eq!(
+            read(&mut rt, |s| side(s).and_then(|x| x.details.dropdown)),
+            Some(Dropdown::Git)
         );
     }
 

@@ -68,7 +68,7 @@ pub(super) struct ChangesState {
     shown: String,
     split: bool,
     wrap: bool,
-    busy: Option<&'static str>,
+    pub(super) busy: Option<&'static str>,
     note: Option<String>,
     /// The destructive button waiting for its second click.
     confirm: Option<String>,
