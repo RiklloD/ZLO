@@ -95,6 +95,8 @@ pub struct State {
     pub bench: Option<Box<crate::bench::Bench>>,
     /// Threads made ready under a resting pointer (`chat::prewarm`).
     pub prewarm: crate::chat::prewarm::Prewarm,
+    /// The launch intro (`workspace::intro`); spent unless `main` armed it.
+    pub intro: crate::workspace::intro::Intro,
 }
 
 impl State {
@@ -125,6 +127,7 @@ impl State {
             plugins: Default::default(),
             bench: None,
             prewarm: Default::default(),
+            intro: Default::default(),
         }
     }
 

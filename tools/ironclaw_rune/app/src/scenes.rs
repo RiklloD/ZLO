@@ -37,10 +37,39 @@ pub const SCENES: &[Scene] = &[
     ("chat-wallpaper-pane", |s| {
         crate::chat::fixtures::wallpaper_area(s, "pane")
     }),
-    // The launch screen while the gateway boots (the caption shows late).
+    // A reconnect's loading screen (the caption shows late).
     ("loading", |s| {
         s.fixture = true;
         s.conn = crate::state::Conn::Connecting;
+    }),
+    // The launch intro frozen at chosen seconds (`workspace::intro`).
+    ("launch-0.15", |s| launch(s, 0.15)),
+    ("launch-0.3", |s| launch(s, 0.3)),
+    ("launch-0.45", |s| launch(s, 0.45)),
+    ("launch-0.6", |s| launch(s, 0.6)),
+    ("launch-0.75", |s| launch(s, 0.75)),
+    ("launch-0.9", |s| launch(s, 0.9)),
+    ("launch-1.05", |s| launch(s, 1.05)),
+    ("launch-1.15", |s| launch(s, 1.15)),
+    ("launch-1.25", |s| launch_reveal(s, 1.25)),
+    ("launch-1.35", |s| launch_reveal(s, 1.35)),
+    ("launch-1.5", |s| launch_reveal(s, 1.5)),
+    ("launch-wait", |s| launch(s, 2.5)),
+    ("launch-0.6-light", |s| {
+        launch(s, 0.6);
+        light_theme(s);
+    }),
+    ("launch-1.15-light", |s| {
+        launch(s, 1.15);
+        light_theme(s);
+    }),
+    ("launch-1.35-light", |s| {
+        launch_reveal(s, 1.35);
+        light_theme(s);
+    }),
+    ("launch-reduced", |s| {
+        launch(s, 0.1);
+        s.intro = crate::workspace::intro::Intro::frozen(0.1, None, true);
     }),
     ("appearance", |s| {
         page_with(s, Page::Appearance, crate::pages::settings::fixture)
@@ -304,6 +333,25 @@ pub const SCENES: &[Scene] = &[
     ("voice-settings", voice_settings),
     ("voice-talk", voice_talk),
 ];
+
+/// The launch intro at `t` seconds, still connecting.
+fn launch(s: &mut State, t: f64) {
+    s.fixture = true;
+    s.prefs = Default::default();
+    s.palette = crate::design::resolve(&s.prefs, true);
+    s.conn = Conn::Connecting;
+    s.intro = crate::workspace::intro::Intro::frozen(t, None, false);
+}
+
+/// The launch intro at `t` seconds, irising open onto the shell (the
+/// connection landed before the assembly ended).
+fn launch_reveal(s: &mut State, t: f64) {
+    ws::fixture_shell(s);
+    s.prefs = Default::default();
+    s.palette = crate::design::resolve(&s.prefs, true);
+    s.intro =
+        crate::workspace::intro::Intro::frozen(t, Some(crate::workspace::intro::ASSEMBLE), false);
+}
 
 /// A page scene: the shell, then `fill` puts the page's fixture data in.
 fn page_with(s: &mut State, page: Page, fill: fn(&mut State)) {
