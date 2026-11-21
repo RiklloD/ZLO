@@ -9,12 +9,11 @@ use rune::{Cursor, El, col, row, text};
 use rune_kit::{Kit, TextInput};
 use zlo_client::wire::ToolPermission;
 
-use super::STATES;
-use crate::design::Palette;
-use crate::icons;
+use super::{STATES, roll};
+use crate::design::kit::{Turn, chevron};
+use crate::design::{Palette, motion};
 use crate::pages::common::{
-    SM, XS, block_fill, empty_state, glyph, group_header, label, rows_card, segmented, setting_row,
-    switch,
+    SM, XS, block_fill, empty_state, group_header, label, rows_card, segmented, setting_row, switch,
 };
 use crate::state::State;
 
@@ -174,23 +173,28 @@ pub fn view(s: &State, k: &Kit) -> El {
                 .pb(12.)
                 .center_y()
                 .child(col().grow(1.0).min_w(0.).child(search))
-                .child(label(
+                .child(roll(
+                    k,
+                    "tools-changed-count".into(),
                     format!("{} tools · {changed} changed", this.tools.len()),
+                    changed as f64,
                     XS,
-                    400.,
                     p.text_muted,
                 ))
                 .child(filter),
         );
     if groups.is_empty() {
-        return page.child(empty_state(
-            p,
-            if changed_only {
-                "No tool has its own setting."
-            } else {
-                "No tool matches."
-            },
-        ));
+        return page.child(
+            empty_state(
+                p,
+                if changed_only {
+                    "No tool has its own setting."
+                } else {
+                    "No tool matches."
+                },
+            )
+            .key("tools-empty"),
+        );
     }
     // Searching or filtering shows every match without extra clicks.
     let force_open = !query.is_empty() || changed_only;
@@ -228,17 +232,24 @@ fn tool_group(
         .cursor(Cursor::Pointer)
         .fill(block_fill(p))
         .hover(hover_wash(p))
-        .child(glyph(
-            if open {
-                &icons::CHEVRON_DOWN
-            } else {
-                &icons::CHEVRON_RIGHT
-            },
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
+        .child(chevron(
+            &format!("tool-group-{title}-chevron"),
+            open,
+            Turn::Disclose,
             13.,
             p.text_muted,
         ))
         .child(label(title.clone(), SM, 500., p.text).grow(1.0))
-        .child(label(count, XS, 400., p.text_muted))
+        .child(roll(
+            k,
+            format!("tool-group-{title}-count"),
+            count,
+            changed as f64,
+            XS,
+            p.text_muted,
+        ))
         .on_press(move |s: &mut State| {
             let open = &mut s.pages.settings.tool_groups_open;
             if !open.remove(&key) {
@@ -251,7 +262,14 @@ fn tool_group(
         .gap(8.)
         .child(head);
     if open {
-        let mut grid = col().w_full().gap(8.).pb(8.);
+        // Unfolding wipes the cards open under the head; folding wipes
+        // them shut.
+        let mut grid = col()
+            .key(format!("tool-grid-{title}"))
+            .w_full()
+            .gap(8.)
+            .pb(8.)
+            .transition(motion::reveal());
         // Two equal columns, as GPUI's `grid_cols(2)`.
         let mut cards = tools
             .into_iter()

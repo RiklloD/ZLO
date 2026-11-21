@@ -19,7 +19,7 @@ use zlo_client::session_import::{
 };
 
 use crate::jobs::{self, Generation};
-use crate::pages::common::{Btn, button, error_line, rows_card, setting_row, switch};
+use crate::pages::common::{Btn, button, error_line, loading, rows_card, setting_row, switch};
 use crate::state::State;
 
 const RUNNING_POLL: Duration = Duration::from_secs(1);
@@ -61,6 +61,17 @@ fn show(s: &mut State, result: Result<SessionImportStatus, ClientError>, _: &mut
     }
 }
 
+/// [`show`] for the reply to the person's own request (a switch, Import
+/// now): its rows and lines move instead of landing at once.
+fn show_animated(
+    s: &mut State,
+    result: Result<SessionImportStatus, ClientError>,
+    tx: &mut rune::Tx,
+) {
+    tx.animated();
+    show(s, result, tx);
+}
+
 fn poll_while_running(s: &mut State) {
     let generation = s.pages.settings.session_import.poll.bump();
     jobs::after(s, RUNNING_POLL, move |s, _| {
@@ -80,7 +91,7 @@ fn send(s: &mut State, request: SessionImportRequest) {
         s,
         "session import",
         move |c| async move { c.session_import(&request).await },
-        show,
+        show_animated,
     );
 }
 
@@ -121,7 +132,7 @@ pub fn view(s: &State, k: &Kit) -> El {
     let this = &s.pages.settings.session_import;
     let mut d = col().w_full();
     if let Some(e) = &this.error {
-        d = d.child(error_line(p, e));
+        d = d.child(error_line(p, e).key("import-error"));
     }
     let Some(status) = &this.status else {
         return d;
@@ -206,13 +217,16 @@ pub fn view(s: &State, k: &Kit) -> El {
             .unwrap_or_default(),
         (false, None) => "Never run".into(),
     };
-    let now = button(
-        if status.running {
-            "Importing…"
-        } else {
-            "Import now"
-        },
-        Btn::Secondary,
+    let now = loading(
+        button(
+            if status.running {
+                "Importing…"
+            } else {
+                "Import now"
+            },
+            Btn::Secondary,
+        ),
+        status.running,
     )
     .disabled(busy)
     .on_press(|s: &mut State| {
@@ -231,7 +245,12 @@ pub fn view(s: &State, k: &Kit) -> El {
             format!("{last}. Imported threads land in Settled and resume in the CLI's own session.")
         }
     };
-    rows.push(setting_row(p, "Import terminal sessions", Some(&note), now));
+    rows.push(setting_row(
+        p,
+        "Import terminal sessions",
+        Some(&note),
+        now.key("import-now"),
+    ));
     d.child(rows_card(p, rows))
 }
 

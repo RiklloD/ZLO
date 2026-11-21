@@ -46,7 +46,9 @@ fn set(s: &mut State, enabled: bool) {
         s,
         "compaction",
         move |c| async move { c.set_idle_compact(enabled).await },
-        |s, result, _| {
+        |s, result, tx| {
+            // The reply to the person's flip.
+            tx.animated();
             let this = &mut s.pages.settings.compaction;
             this.saving = false;
             // Show the value the engine stored, not the click.
@@ -74,7 +76,7 @@ pub fn view(s: &State, k: &Kit) -> El {
     );
     let mut d = col().w_full();
     if let Some(e) = &this.error {
-        d = d.child(error_line(p, e));
+        d = d.child(error_line(p, e).key("compaction-error"));
     }
     d.child(rows_card(
         p,
