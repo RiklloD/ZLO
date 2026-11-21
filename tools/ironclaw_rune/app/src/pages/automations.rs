@@ -14,8 +14,9 @@ use rune::{Cursor, Cx, El, TextEdit, col, row, text};
 use rune_kit::{Kit, TextInput};
 use zlo_client::AutomationAction;
 use zlo_client::product_wire::{
-    RebornAutomationHoldReason, RebornAutomationInfo, RebornAutomationRecentRunStatus,
-    RebornAutomationRunStatus, RebornAutomationSource, RebornAutomationState,
+    RebornAutomationHoldReason, RebornAutomationInfo, RebornAutomationRecentRunInfo,
+    RebornAutomationRecentRunStatus, RebornAutomationRunStatus, RebornAutomationSource,
+    RebornAutomationState,
 };
 use zlo_client::schedules::{ScheduleInfo, ScheduleSecret};
 
@@ -288,7 +289,8 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
         RebornAutomationHoldReason::Other => "Held",
     });
 
-    let runs = a.recent_runs.iter().map(|run| {
+    let keys = run_keys(&id, &a.recent_runs);
+    let runs = a.recent_runs.iter().zip(keys).map(|(run, key)| {
         let (icon, color) = match run.status {
             RebornAutomationRecentRunStatus::Ok => (&icons::CIRCLE_CHECK, p.success),
             RebornAutomationRecentRunStatus::Error => (&icons::CIRCLE_X, p.danger),
@@ -303,10 +305,10 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
         } else {
             glyph(icon, 12., color)
         };
-        // Keyed by when it was asked, so a new run arriving keeps the
+        // Keyed by the run (`run_keys`), so a new run arriving keeps the
         // others' chips (an index would hand each its neighbour's).
         let mut chip = row()
-            .key(format!("run-{id}-{}", run.submitted_at.timestamp_millis()))
+            .key(key)
             .role("button")
             .label(format!("Run {}", jobs::ago(run.submitted_at)))
             .gap(4.)
@@ -467,6 +469,30 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
     c
 }
 
+/// One identity per recent run of automation `id`, in order: its canonical
+/// run id once the gateway accepted it; before that, when it was asked (to
+/// the nanosecond) and the slot it fires for, plus how many runs earlier in
+/// the list share both, so two asked in the same instant stay two.
+fn run_keys(id: &str, runs: &[RebornAutomationRecentRunInfo]) -> Vec<String> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    runs.iter()
+        .map(|run| match &run.run_id {
+            Some(run_id) => format!("run-{id}-{run_id}"),
+            None => {
+                let at = run
+                    .submitted_at
+                    .timestamp_nanos_opt()
+                    .map_or_else(|| run.submitted_at.to_rfc3339(), |n| n.to_string());
+                let slot = run.fire_slot.map(|f| f.to_rfc3339()).unwrap_or_default();
+                let base = format!("run-{id}-at-{at}-{slot}");
+                let n = seen.entry(base.clone()).or_default();
+                *n += 1;
+                format!("{base}-{n}")
+            }
+        })
+        .collect()
+}
+
 fn state_tag(p: &crate::design::Palette, state: RebornAutomationState) -> El {
     match state {
         RebornAutomationState::Active | RebornAutomationState::Scheduled => {
@@ -611,5 +637,40 @@ pub fn fixture_form(s: &mut State) {
     form::open_form(s, None);
     if let Some(f) = s.pages.automations.form.as_mut() {
         f.fixture();
+    }
+}
+
+#[cfg(test)]
+mod run_key_tests {
+    use super::*;
+
+    fn run(json: serde_json::Value) -> RebornAutomationRecentRunInfo {
+        serde_json::from_value(json).expect("run")
+    }
+
+    #[test]
+    fn runs_in_the_same_millisecond_keep_their_own_identities() {
+        let at = "2026-11-21T10:00:00.123456789Z";
+        let id = "7f9c4e1e-1c35-4b8f-9d0a-2a6e8b0c1f00";
+        let runs = [
+            run(serde_json::json!({"submitted_at": at, "status": "running"})),
+            run(serde_json::json!({"submitted_at": at, "status": "running"})),
+            run(serde_json::json!({"submitted_at": "2026-11-21T10:00:00.123999Z", "status": "ok"})),
+            run(serde_json::json!({"run_id": id, "submitted_at": at, "status": "ok"})),
+        ];
+        let keys = run_keys("a1", &runs);
+        let unique: HashSet<&String> = keys.iter().collect();
+        assert_eq!(
+            unique.len(),
+            keys.len(),
+            "no two chips share a key: {keys:?}"
+        );
+        assert_eq!(
+            keys[3],
+            format!("run-a1-{id}"),
+            "an accepted run is its run id"
+        );
+        // The same list again gives the same keys (a re-read keeps identity).
+        assert_eq!(run_keys("a1", &runs), keys);
     }
 }
