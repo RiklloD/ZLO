@@ -319,7 +319,6 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .key(SCROLL)
         .on_layout_tx(|s: &mut State, r: [f32; 4], tx: &mut rune::Tx| {
             if !ShelfGap::viewport(s, r[3]) {
                 tx.live_only();

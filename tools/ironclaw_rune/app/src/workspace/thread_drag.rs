@@ -84,6 +84,10 @@ pub fn drag(s: &mut State, id: &str, title: &str, d: &Drag, tx: &mut Tx) {
             dragged.live |= d.dx.abs() > SLOP || d.dy.abs() > SLOP;
             if !was_live && !dragged.live {
                 tx.live_only();
+            } else if was_live {
+                // The ghost tracks the pointer exactly; only its first
+                // appearance (the move that lifts it) plays an entrance.
+                tx.instant();
             }
         }
         Phase::Up => {
@@ -199,6 +203,13 @@ pub fn ghost(s: &State) -> Option<El> {
     Some(
         row()
             .key("thread-drag-ghost")
+            // Lifts in a hair small and settles; shrinks away on the drop.
+            .transition(
+                rune::Transition::scale(0.95).springs(rune::SpringPair::with_exit_ratio(
+                    crate::design::styles::POP,
+                    0.6,
+                )),
+            )
             .pin(Some(x + 8.), Some(y + 8.), None, None)
             .max_w(260.)
             .px(10.)
