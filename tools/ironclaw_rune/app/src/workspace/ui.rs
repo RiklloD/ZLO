@@ -233,18 +233,42 @@ pub fn rule(p: &Palette) -> El {
 /// returned field before wrapping it with [`grow_box`].
 pub fn plain_area(edit: &rune::TextEdit, size: f32, placeholder: &str, p: &Palette) -> El {
     let size = crate::design::styles::rem(size);
-    rune::text_input(
-        edit,
-        TextStyle::new(size, REGULAR).lh((size * 1.45).round()),
-    )
-    .key("input")
-    .w_full()
-    .color(p.text)
-    .placeholder(placeholder.to_string(), p.text_faint)
-    .caret(p.text, p.accent.alpha(0.3))
+    rune::text_input(edit, TextStyle::new(size, REGULAR).lh(plain_line(size)))
+        .key("input")
+        .w_full()
+        .color(p.text)
+        .placeholder(placeholder.to_string(), p.text_faint)
+        .caret(p.text, p.accent.alpha(0.3))
 }
 
-/// The scroll box that grows `field` between `min` and `max` lines.
-pub fn grow_box(field: El, min: usize, max: usize) -> El {
-    rune::auto_grow(field, min, max)
+/// A [`plain_area`]'s line height at `size` (already in rem).
+fn plain_line(size: f32) -> f32 {
+    (size * 1.45).round()
+}
+
+/// [`grow_box`]'s `line` for a [`plain_area`] of `size` points.
+pub fn plain_area_line(size: f32) -> f32 {
+    plain_line(crate::design::styles::rem(size))
+}
+
+/// The scroll box that grows `field` (whose lines are `line` points tall)
+/// between `min` and `max` lines, then scrolls inside it (the viewport keyed
+/// `"scroll"`). It is `rune::auto_grow` without its edit animation: Rune's
+/// helper marks the field `animate_edit_layout`, which turns every edit's
+/// commit into an animated one, so a multiline paste or a select-all delete
+/// sprang the composer and everything laid out around it. Here an edit
+/// lands its layout in its own frame, as typing should. Every composer's
+/// field (chat, new-thread, quick) grows in one of these.
+pub fn grow_box(field: El, line: f32, min: usize, max: usize) -> El {
+    let (min, max) = (min.max(1), max.max(min.max(1)));
+    rune::col()
+        .key("scroll")
+        .w_full()
+        .shrink()
+        .min_h(min as f32 * line)
+        .max_h(max as f32 * line)
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
+        .child(field)
 }

@@ -61,6 +61,9 @@ pub struct DraftState {
     /// stagger in as this draft first mounts ([`hero_entrance`]); a switch
     /// back to it later shows it with the page's plain rise.
     pub(super) fresh: bool,
+    /// Send's plate colours, which ease on a keystroke without animating
+    /// its commit (`chat::composer::PlateTint`).
+    pub(crate) send_tint: crate::chat::composer::PlateTint,
 }
 
 /// Where voice dictation types (GPUI `Workspace::voice_composer`).
@@ -505,10 +508,20 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     let fresh = draft.fresh;
     // The chat composer's own controls, so the card that flies to the
     // chat's dock on send is one component.
-    let send_button = composer::round_button(s, "draft-send", &icons::ARROW_UP, ready, "Send", k)
-        .help("Send")
-        .opacity(if draft.sending { 0.35 } else { 1. })
-        .on_press(send);
+    let reduced =
+        crate::design::battery::reduced(&s.prefs, &s.look.battery, cx.system_reduced_motion());
+    let send_button = composer::round_button_tinted(
+        s,
+        "draft-send",
+        &icons::ARROW_UP,
+        ready,
+        "Send",
+        Some((&draft.send_tint, reduced)),
+        k,
+    )
+    .help("Send")
+    .opacity(if draft.sending { 0.35 } else { 1. })
+    .on_press(send);
     let attach_button = composer::round_button(
         s,
         "draft-attach",
@@ -603,49 +616,38 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         ));
     }
     let snapshots = inline_files::snapshot_keys(s, &draft.staged);
+    let field_type = crate::chat::flow::type_at(s, 14., 22.75, 400.);
     let input = ui::grow_box(
         // The chat composer's field, type and all.
-        rune::text_input(
-            &draft.input,
-            crate::chat::flow::type_at(s, 14., 22.75, 400.),
-        )
-        .key("composer-input")
-        .w_full()
-        .color(p.text)
-        .placeholder("Ask anything…", p.text_faint)
-        .caret(p.text, k.selection())
-        .label("Message")
-        .pill_colors(p.hover, Some(p.text))
-        .pill_icon(move |pill| inline_files::pill_icon_for(&snapshots, pill))
-        .on_input_key(on_key)
-        .on_input_paste(|s: &mut State, content, _tx| {
-            let Some(pasted) = inline_files::pasted(content) else {
-                return false;
-            };
-            paste(s, pasted);
-            true
-        })
-        .on_edit(|s: &mut State| {
-            &mut s
-                .workspace
-                .draft
-                .get_or_insert_with(|| empty_draft(DEFAULT_PROFILE_ID))
-                .input
-        })
-        // Typing lands at once, but the keystroke that gives the draft its
-        // first word (or takes its last) animates, so Send's fill morphs
-        // instead of snapping (as the chat's composer, `ready_flip`).
-        .on_input_change(move |s: &mut State, tx: &mut Tx| {
-            on_change(s);
-            if s.workspace
-                .draft
-                .as_ref()
-                .is_some_and(|d| send_ready(d) != ready)
-            {
-                tx.animated();
-            }
-        })
-        .on_submit(|s: &mut State, _| send(s)),
+        rune::text_input(&draft.input, field_type)
+            .key("composer-input")
+            .w_full()
+            .color(p.text)
+            .placeholder("Ask anything…", p.text_faint)
+            .caret(p.text, k.selection())
+            .label("Message")
+            .pill_colors(p.hover, Some(p.text))
+            .pill_icon(move |pill| inline_files::pill_icon_for(&snapshots, pill))
+            .on_input_key(on_key)
+            .on_input_paste(|s: &mut State, content, _tx| {
+                let Some(pasted) = inline_files::pasted(content) else {
+                    return false;
+                };
+                paste(s, pasted);
+                true
+            })
+            .on_edit(|s: &mut State| {
+                &mut s
+                    .workspace
+                    .draft
+                    .get_or_insert_with(|| empty_draft(DEFAULT_PROFILE_ID))
+                    .input
+            })
+            // Typing lands at once, layout and all (`ui::grow_box`); Send's
+            // plate eases on its live colours (`send_tint`), as the chat's.
+            .on_input_change(|s: &mut State, _tx: &mut Tx| on_change(s))
+            .on_submit(|s: &mut State, _| send(s)),
+        field_type.line_px(),
         1,
         8,
     );
@@ -784,6 +786,7 @@ pub(super) fn empty_draft(profile: &str) -> DraftState {
         worktree: false,
         generation: Generation::default(),
         fresh: true,
+        send_tint: Default::default(),
     }
 }
 

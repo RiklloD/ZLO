@@ -363,6 +363,7 @@ fn view(q: &QuickState, cx: &mut Cx<QuickState>) -> El {
         ui::plain_area(&q.input, 16., PLACEHOLDER, p)
             .on_edit(|q: &mut QuickState| &mut q.input)
             .on_submit(submit),
+        ui::plain_area_line(16.),
         1,
         4,
     );

@@ -12,9 +12,7 @@
 //! Esc ↵ while it is open; ↑ in an empty composer recalls the last message.
 //! Plain ↵ sends (`on_submit`): Settings → Follow-ups while a turn runs.
 
-use rune::{
-    Color, Cx, El, Icon, KeyEvent, Live, ScrollSpec, Tx, col, el, icon, row, text, text_input,
-};
+use rune::{Color, Cx, El, Icon, KeyEvent, Live, Tx, col, el, icon, row, text, text_input};
 use rune_kit::Kit;
 use zlo_client::GateDecision;
 use zlo_client::attachments::format_bytes;
@@ -352,7 +350,7 @@ pub(crate) fn view(
         .on_input_key(move |s: &mut State, ev: &KeyEvent, tx: &mut Tx| on_key(s, &key_id, ev, tx))
         // A keystroke's commit lands at once, height and all; Send's plate
         // follows on its live colours (`PlateTint`), never by animating
-        // the keystroke.
+        // the keystroke (`workspace::ui::grow_box`).
         .on_input_change(move |s: &mut State, _tx: &mut Tx| on_change(s, &change_id))
         .on_submit(move |s: &mut State, tx: &mut Tx| actions::send(s, &submit_id, tx))
         .on_input_paste(move |s: &mut State, content, _tx| {
@@ -362,7 +360,7 @@ pub(crate) fn view(
             actions::paste(s, &paste_id, pasted);
             true
         });
-    let input = grow_field(field, style.line_px(), 1, 8);
+    let input = crate::workspace::ui::grow_box(field, style.line_px(), 1, 8);
     let target = crate::voice::Composer::Chat(id.clone());
     let voice = crate::voice::ui::composer_controls(s, k, layer, &target, Some(&chat.thread_id));
     let controls = row()
@@ -416,28 +414,6 @@ pub fn dock_matched(s: &State, card: El) -> El {
         card.matched(design::motion::composer_match(s.workspace.dock_flight))
             .motion(design::motion::DOCK)
     }
-}
-
-/// `rune::auto_grow` without its edit animation: the field is `min_lines`
-/// tall at least, grows with each wrapped line up to `max_lines`, then
-/// scrolls inside (the viewport keyed `"scroll"`, as `auto_grow`'s). Rune's
-/// helper marks the field `animate_edit_layout`, which turns every edit's
-/// commit into an animated one: a multiline paste or a select-all delete
-/// sprang the card, the controls and the transcript above it. Here an edit
-/// lands its layout in its own frame, as typing should; Send's plate eases
-/// on its live colours (`PlateTint`) regardless.
-fn grow_field(field: El, line: f32, min_lines: usize, max_lines: usize) -> El {
-    let (min, max) = (min_lines.max(1), max_lines.max(min_lines.max(1)));
-    col()
-        .key("scroll")
-        .w_full()
-        .shrink()
-        .min_h(min as f32 * line)
-        .max_h(max as f32 * line)
-        .scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .child(field)
 }
 
 /// The composer's keys, before the field edits with them.
