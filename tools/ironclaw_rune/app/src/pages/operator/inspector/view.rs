@@ -4,7 +4,7 @@ use crate::pages::common::controls::{
     Look, Size, button_sized, muted, outlined_tag, rule, spinner,
 };
 use crate::pages::common::ts::{MONO_XS, sm, sm_medium, xs, xs_medium};
-use crate::pages::common::{Tone, card, empty_state, error_line, glyph};
+use crate::pages::common::{Tone, card, empty_state, error_line};
 use rune::{Cx, El, ScrollSpec, col, el, row, text};
 use rune_kit::{Kit, Switch};
 use zlo_client::operator::InspectorRun;
@@ -15,6 +15,8 @@ use zlo_client::operator::inspector::{
 use super::super::logs::log_row;
 use super::super::section_title;
 use super::{InspectorPanel, ToolDetail, short_id};
+use crate::design::kit::{self, Turn};
+use crate::design::motion;
 use crate::design::{CONTROL_RADIUS, Palette};
 use crate::icons;
 use crate::jobs;
@@ -22,14 +24,45 @@ use crate::state::State;
 
 const PROMPT_MAX_HEIGHT: f32 = 420.;
 
-fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
+/// The key of a thread's row in the picker.
+fn thread_key(id: &str) -> String {
+    format!("inspect-thread-{id}")
+}
+
+/// The selection pill behind the thread list: the selected row's own wash
+/// and corners, gliding (`motion::PILL`) to the row the person picks.
+/// Rows are one line each with no gap, so the selected row sits `ix` row
+/// heights down; the height is the rows' as laid out last frame. Before the
+/// first layout there is no pill and the selected row paints its own fill.
+fn thread_pill(s: &State, cx: &Cx<State>, panel: &InspectorPanel) -> Option<El> {
+    let ix = panel
+        .threads
+        .iter()
+        .position(|t| panel.thread.as_deref() == Some(t.thread_id.as_str()))?;
+    let first = panel.threads.first()?;
+    let h = cx.window_layout(&thread_key(&first.thread_id))?[3];
+    (h > 0.).then(|| {
+        el().key("inspect-thread-pill")
+            .pin(Some(0.), Some(ix as f32 * h), Some(0.), None)
+            .h(h)
+            .radius(CONTROL_RADIUS)
+            .fill(s.palette.accent_wash)
+            .a11y_hidden()
+            .motion(motion::PILL)
+            .transition(rune::Transition::opacity())
+    })
+}
+
+fn render_picker(s: &State, cx: &Cx<State>, k: &Kit, panel: &InspectorPanel) -> El {
     let p = &s.palette;
-    let threads = panel.threads.iter().enumerate().map(|(ix, t)| {
+    let pill = thread_pill(s, cx, panel);
+    let has_pill = pill.is_some();
+    let threads = panel.threads.iter().map(|t| {
         let id = t.thread_id.clone();
         let selected = panel.thread.as_deref() == Some(id.as_str());
         let title = t.display_title().to_string();
         let mut r = row()
-            .key(format!("inspect-thread-{ix}"))
+            .key(thread_key(&id))
             .role("button")
             .label(title.clone())
             .focusable(true)
@@ -49,10 +82,12 @@ fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
                     .grow(1.)
                     .min_w(0.),
             );
-        r = if selected {
-            r.fill(p.accent_wash)
+        r = if !selected {
+            r.hover(p.hover).hover_motion(motion::HOVER, motion::HOVER)
+        } else if has_pill {
+            r
         } else {
-            r.hover(p.hover)
+            r.fill(p.accent_wash)
         };
         if let Some(at) = t.updated_at {
             r = r.child(text(jobs::ago(at)).font(xs()).color(p.text_muted));
@@ -68,10 +103,11 @@ fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
                 stick_bottom: false,
             })
             .key("inspect-threads")
+            .children(pill)
             .children(threads),
     );
     if panel.thread.is_some() {
-        let runs = panel.runs.iter().enumerate().map(|(ix, r)| {
+        let runs = panel.runs.iter().map(|r| {
             let id = r.id.clone();
             let selected = panel.run.as_deref() == Some(id.as_str());
             let label = match r.at {
@@ -85,7 +121,8 @@ fn render_picker(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
             )
             .on_press(move |s: &mut State| super::select_run(s, id.clone()))
             .build(k)
-            .key(format!("inspect-run-{ix}"))
+            .key(format!("inspect-run-{}", r.id))
+            .press_scale(motion::PRESS)
         });
         let mut line = row()
             .w_full()
@@ -112,7 +149,14 @@ fn render_toolbar(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
             .key("inspector-live"),
     );
     if let Some(n) = &panel.live_note {
-        r = r.child(muted(p, n.clone()));
+        // While the stream follows the run, a green dot pulses its halo
+        // beside the note (15 fps, still under Reduce Motion); it goes when
+        // the stream stops.
+        let mut note = row().key("live-note").gap(6.).center_y();
+        if on && n == super::FOLLOWING {
+            note = note.child(kit::status_dot("live-dot", p.success, true));
+        }
+        r = r.child(note.child(muted(p, n.clone())));
     }
     r = r.child(el().grow(1.));
     if let Some(thread) = panel.thread.clone() {
@@ -121,7 +165,8 @@ fn render_toolbar(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
                 .icon(&icons::EXTERNAL_LINK)
                 .on_press(move |s: &mut State| crate::workspace::open_thread(s, thread.clone()))
                 .build(k)
-                .key("open-inspected-thread"),
+                .key("open-inspected-thread")
+                .press_scale(motion::PRESS),
         );
     }
     r
@@ -199,6 +244,7 @@ fn render_run(s: &State, k: &Kit, panel: &InspectorPanel, run: &InspectorRun) ->
             ToolExecutionStatus::Started => outlined_tag(p, Tone::Secondary, "running"),
         };
         let name = t.capability_name.content().to_string();
+        let id_key = id.clone();
         let mut head = row()
             .key(format!("inspect-tool-{ix}"))
             .role("button")
@@ -210,12 +256,10 @@ fn render_run(s: &State, k: &Kit, panel: &InspectorPanel, run: &InspectorRun) ->
             .center_y()
             .cursor(rune::Cursor::Pointer)
             .on_press(move |s: &mut State| super::toggle_tool(s, id.clone()))
-            .child(glyph(
-                if open.is_some() {
-                    &icons::CHEVRON_DOWN
-                } else {
-                    &icons::CHEVRON_RIGHT
-                },
+            .child(kit::chevron(
+                &format!("inspect-tool-{id_key}-chev"),
+                open.is_some(),
+                Turn::Disclose,
                 12.,
                 p.text,
             ))
@@ -235,7 +279,15 @@ fn render_run(s: &State, k: &Kit, panel: &InspectorPanel, run: &InspectorRun) ->
         }
         let mut c = col().w_full().child(rule(p)).child(head.child(status));
         if let Some(detail) = open {
-            c = c.child(tool_detail(p, k, detail));
+            // The detail wipes open under its row; inside, the spinner
+            // gives way to the arguments and result in place.
+            c = c.child(
+                col()
+                    .key("tool-detail")
+                    .w_full()
+                    .transition(motion::reveal())
+                    .child(tool_detail(p, k, detail)),
+            );
         }
         c
     });
@@ -413,8 +465,8 @@ fn render_prompt(s: &State, k: &Kit, panel: &InspectorPanel) -> El {
     col()
         .w_full()
         .gap(8.)
-        .child(row().child(load))
-        .children(body)
+        .child(row().child(load.press_scale(motion::PRESS)))
+        .children(body.map(|b| b.key("prompt-body").transition(motion::reveal())))
 }
 
 fn activity_label(kind: DiagnosticActivityKind) -> &'static str {
@@ -437,7 +489,7 @@ fn activity_label(kind: DiagnosticActivityKind) -> &'static str {
 
 pub fn view(
     s: &State,
-    _cx: &mut Cx<State>,
+    cx: &mut Cx<State>,
     k: &Kit,
     _layer: &mut Vec<El>,
     panel: &InspectorPanel,
@@ -451,16 +503,19 @@ pub fn view(
     if panel.threads.is_empty() {
         c = c.child(muted(p, "No conversations yet."));
     }
-    c = c.child(render_picker(s, k, panel));
+    c = c.child(render_picker(s, cx, k, panel));
     if panel.run.is_some() {
+        // The spinner, the empty note and the run crossfade in place.
         let run_view = match &panel.snapshot {
-            None => spinner(k),
+            None => spinner(k).key("run-loading"),
             Some(None) => empty_state(
                 p,
                 "No diagnostics for this run. The gateway keeps them in memory for a few recent runs only.",
-            ),
-            Some(Some(run)) => render_run(s, k, panel, run),
-        };
+            )
+            .key("run-empty"),
+            Some(Some(run)) => render_run(s, k, panel, run).key("run-view"),
+        }
+        .transition(motion::fade());
         c = c
             .child(col().w_full().pt(16.).child(render_toolbar(s, k, panel)))
             .child(run_view)

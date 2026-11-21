@@ -20,6 +20,10 @@ use crate::state::State;
 
 pub use view::view;
 
+/// The live note while the stream follows the run (the view's live dot
+/// shows beside it).
+pub(super) const FOLLOWING: &str = "Following live";
+
 const THREADS: u32 = 30;
 const TIMELINE: u32 = 200;
 const THREAD_LOGS: u32 = 50;
@@ -83,9 +87,9 @@ pub fn refresh(s: &mut State) {
         },
     );
     if let Some(thread) = st(s).and_then(|p| p.thread.clone()) {
-        load_runs(s, thread);
+        load_runs(s, thread, false);
     }
-    fetch_snapshot(s);
+    fetch_snapshot(s, false);
 }
 
 fn select_thread(s: &mut State, thread: String) {
@@ -96,19 +100,23 @@ fn select_thread(s: &mut State, thread: String) {
     p.runs.clear();
     clear_run(p);
     p.logs = None;
-    load_runs(s, thread);
+    load_runs(s, thread, true);
 }
 
-/// Runs come from the thread timeline; newest first.
-fn load_runs(s: &mut State, thread: String) {
+/// Runs come from the thread timeline; newest first. `shown` when the
+/// person asked (picked the thread): the replies move.
+fn load_runs(s: &mut State, thread: String, shown: bool) {
     let logs_thread = thread.clone();
     let want = thread.clone();
     jobs::run(
         s,
         "inspector",
         move |c| async move { c.timeline(&thread, TIMELINE).await },
-        move |s, result, _| match result {
+        move |s, result, tx| match result {
             Ok(page) => {
+                if shown {
+                    tx.animated();
+                }
                 let Some(p) = st(s).filter(|p| p.thread.as_deref() == Some(want.as_str())) else {
                     return;
                 };
@@ -120,7 +128,7 @@ fn load_runs(s: &mut State, thread: String) {
                 if p.run.is_none()
                     && let Some(first) = p.runs.first().map(|r| r.id.clone())
                 {
-                    select_run(s, first);
+                    select_run_as(s, first, shown);
                 }
             }
             Err(e) => fail(s, e),
@@ -135,8 +143,11 @@ fn load_runs(s: &mut State, thread: String) {
         s,
         "inspector",
         move |c| async move { c.thread_logs(&query).await },
-        move |s, result, _| match result {
+        move |s, result, tx| match result {
             Ok(page) => {
+                if shown {
+                    tx.animated();
+                }
                 if let Some(p) = st(s).filter(|p| p.thread.as_deref() == Some(logs_thread.as_str()))
                 {
                     p.logs = Some(page.entries);
@@ -154,15 +165,21 @@ fn clear_run(p: &mut InspectorPanel) {
 }
 
 fn select_run(s: &mut State, run: String) {
+    select_run_as(s, run, true);
+}
+
+fn select_run_as(s: &mut State, run: String, shown: bool) {
     let Some(p) = st(s) else { return };
     stop_live(p);
     p.run = Some(run);
     clear_run(p);
-    fetch_snapshot(s);
+    fetch_snapshot(s, shown);
 }
 
 /// One snapshot read at a time; updates during a read mark it dirty.
-fn fetch_snapshot(s: &mut State) {
+/// `shown` when the person asked for it (picked a run): its reply moves;
+/// refreshes and live updates land at once.
+fn fetch_snapshot(s: &mut State, shown: bool) {
     let Some(p) = st(s) else { return };
     let (Some(thread), Some(run)) = (p.thread.clone(), p.run.clone()) else {
         return;
@@ -177,7 +194,10 @@ fn fetch_snapshot(s: &mut State) {
         s,
         "inspector",
         move |c| async move { c.inspector_snapshot(&thread, &run).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            if shown {
+                tx.animated();
+            }
             let Some(p) = st(s) else { return };
             p.fetching = false;
             // Drop a late answer for a run that is no longer selected.
@@ -193,7 +213,7 @@ fn fetch_snapshot(s: &mut State) {
                 }
             }
             if std::mem::take(&mut p.dirty) {
-                fetch_snapshot(s);
+                fetch_snapshot(s, false);
             }
         },
     );
@@ -209,7 +229,9 @@ fn load_prompt(s: &mut State) {
         s,
         "inspector",
         move |c| async move { c.inspector_prompt(&thread, &run).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's Show prompt: the viewer wipes open.
+            tx.animated();
             if let Some(p) = st(s).filter(|p| p.run.as_deref() == Some(want_run.as_str())) {
                 p.prompt = Some(result.map_err(|e| e.to_string()));
             }
@@ -232,7 +254,9 @@ fn toggle_tool(s: &mut State, activity_id: String) {
         s,
         "inspector",
         move |c| async move { c.inspector_tool(&thread, &run, &id).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person opening the tool: its detail moves in.
+            tx.animated();
             let detail = match result {
                 Ok(Some(tool)) => ToolDetail::Loaded(Box::new(tool)),
                 Ok(None) => ToolDetail::Missing,
@@ -284,8 +308,9 @@ fn on_signal(s: &mut State, generation: Generation, signal: InspectorSignal) {
         return;
     };
     match signal {
-        InspectorSignal::Live => p.live_note = Some("Following live".into()),
-        InspectorSignal::Changed => fetch_snapshot(s),
+        InspectorSignal::Live => p.live_note = Some(FOLLOWING.into()),
+        // A stream update: it lands at once.
+        InspectorSignal::Changed => fetch_snapshot(s, false),
         InspectorSignal::Closed(reason) => {
             p.live = None;
             p.live_note = (!reason.is_empty()).then(|| format!("Live updates stopped: {reason}"));

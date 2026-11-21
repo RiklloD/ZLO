@@ -16,6 +16,7 @@ use zlo_client::product_wire::{
 };
 
 use super::{confirm_row, diagnostic_row, notice_line, section_title};
+use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -61,7 +62,9 @@ fn run_diagnostics(s: &mut State) {
         s,
         "operator",
         |c| async move { c.operator_diagnostics().await },
-        |s, result, _| {
+        |s, result, tx| {
+            // The reply to the person's Run diagnostics: results wipe in.
+            tx.animated();
             let p = st(s);
             p.running_diagnostics = false;
             match result {
@@ -83,7 +86,12 @@ fn service_action(s: &mut State, action: RebornOperatorServiceLifecycleAction) {
         s,
         "operator",
         move |c| async move { c.operator_service(action).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // A stop answers the person's confirm; status reads are
+            // background and land at once.
+            if stop {
+                tx.animated();
+            }
             let p = st(s);
             p.stopping = false;
             match result {
@@ -168,9 +176,10 @@ fn render_service(s: &State, k: &Kit) -> El {
                         service_action(s, RebornOperatorServiceLifecycleAction::Status)
                     })
                     .build(k)
-                    .key("service-status"),
+                    .key("service-status")
+                    .press_scale(motion::PRESS),
             )
-            .child(stop.build(k).key("stop-service")),
+            .child(stop.build(k).key("stop-service").press_scale(motion::PRESS)),
     );
     if let Some(svc) = &panel.service {
         let mut reported = col().w_full().gap(2.).child(muted(
@@ -240,10 +249,18 @@ fn render_diagnostics(s: &State, k: &Kit) -> El {
                         "Checks setup and readiness and explains what to fix.",
                     )),
             )
-            .child(run.build(k).key("run-diagnostics")),
+            .child(
+                run.build(k)
+                    .key("run-diagnostics")
+                    .press_scale(motion::PRESS),
+            ),
     );
     if let Some(d) = &panel.diagnostics {
-        let mut result = col().w_full().child(muted(p, d.message.clone()));
+        let mut result = col()
+            .key("doctor-result")
+            .transition(motion::reveal())
+            .w_full()
+            .child(muted(p, d.message.clone()));
         if d.diagnostics.is_empty() {
             result = result.child(muted(p, "No findings."));
         }
