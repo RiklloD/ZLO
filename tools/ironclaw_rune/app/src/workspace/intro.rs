@@ -43,6 +43,9 @@ use crate::state::{Conn, State};
 pub const ASSEMBLE: f64 = 1.15;
 /// The iris and the flight to the title.
 pub const REVEAL: f64 = 0.42;
+// The whole intro stays under 1.8 s.
+const _: () = assert!(ASSEMBLE + REVEAL <= 1.8);
+
 /// Reduced motion: the settled mark fades in…
 pub const FADE_IN: f64 = 0.2;
 /// …and the stage fades out.
@@ -693,10 +696,6 @@ mod tests {
         assert_eq!(i.reveal_at, Some(ASSEMBLE));
         let (i, _) = run(Intro::launch(), 0.1, ASSEMBLE + REVEAL + 0.02);
         assert!(i.done, "and hands off once the reveal ends");
-        assert!(
-            ASSEMBLE + REVEAL <= 1.8,
-            "the whole intro stays under 1.8 s"
-        );
     }
 
     #[test]
