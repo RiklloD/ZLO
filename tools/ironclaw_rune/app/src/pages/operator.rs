@@ -12,6 +12,8 @@ mod extensions;
 pub mod fixtures;
 mod inspector;
 mod logs;
+#[cfg(test)]
+mod motion_tests;
 mod setup;
 mod status;
 
