@@ -11,8 +11,8 @@
 //! here, the rendering in `providers/view.rs`.
 
 pub(crate) mod catalog;
-pub mod fixtures;
 mod cli;
+pub mod fixtures;
 #[cfg(test)]
 pub(crate) mod motion_tests;
 mod view;
@@ -476,7 +476,11 @@ fn copy_command(s: &mut State, tx: &mut Tx, id: String, cmd: &'static str) {
     st(s).copied = Some((id.clone(), at));
     jobs::after(s, crate::design::kit::glyphs::COPIED_FOR, move |s, tx| {
         // A later copy owns the check now.
-        if st(s).copied.as_ref().is_some_and(|(c, t)| *c == id && *t == at) {
+        if st(s)
+            .copied
+            .as_ref()
+            .is_some_and(|(c, t)| *c == id && *t == at)
+        {
             st(s).copied = None;
             // The person's own confirmation going back, not a poll.
             tx.animated();
