@@ -783,7 +783,9 @@ pub fn fixture(thread_id: &str) -> ComputerState {
                 from: (0.42, 0.36),
                 to: (0.42, 0.36),
                 // Already landed: the scene rests.
-                started: Instant::now().checked_sub(GLIDE).unwrap_or_else(Instant::now),
+                started: Instant::now()
+                    .checked_sub(GLIDE)
+                    .unwrap_or_else(Instant::now),
             });
             // A grey test picture, so the scene shows image placement.
             let (w, h) = (16u32, 10u32);

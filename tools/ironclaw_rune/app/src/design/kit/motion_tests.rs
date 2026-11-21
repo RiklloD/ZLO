@@ -67,7 +67,10 @@ fn old_cell_view(_: &State, _: &mut Cx<State>) -> El {
 #[test]
 fn the_spinner_draws_at_15_fps_and_rests_under_reduced_motion() {
     let mut rt = runtime(spinner_view);
-    assert!(!rt.frame(1. / 120.), "the spinner never asks for display-rate frames");
+    assert!(
+        !rt.frame(1. / 120.),
+        "the spinner never asks for display-rate frames"
+    );
     let frames = frames_over(&mut rt, 2.);
     eprintln!("spinner frames over 2 s: {frames}");
     // Twelve `LoopSpec::opacity` cells drew 240 frames in these 2 s on a
@@ -80,7 +83,10 @@ fn the_spinner_draws_at_15_fps_and_rests_under_reduced_motion() {
     // The measure tells the two apart: one cell of the old spinner.
     let mut old = runtime(old_cell_view);
     let old_frames = frames_over(&mut old, 2.);
-    assert!(old_frames >= 200, "a LoopSpec::opacity cell drew {old_frames}");
+    assert!(
+        old_frames >= 200,
+        "a LoopSpec::opacity cell drew {old_frames}"
+    );
 
     REDUCED.set(true);
     let mut rt = runtime(spinner_view);
@@ -154,7 +160,10 @@ fn a_chevron_turns_open_on_a_spring() {
     rt.frame(1. / 60.);
     let turn = |rt: &Runtime<State>| rt.presented_pose("chev").map(|p| p.rotation());
     let shut = turn(&rt).expect("pose");
-    assert!((shut + std::f32::consts::FRAC_PI_2).abs() < 1e-3, "points right");
+    assert!(
+        (shut + std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+        "points right"
+    );
 
     rt.update(|_, tx| {
         tx.animated();

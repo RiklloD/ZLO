@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use rune::{TextEdit, Tx};
+use zlo_client::ClientError;
 use zlo_client::inbox::{
     InboxAction, InboxEngine, InboxListResponse, InboxProfile, InboxRow, InboxState, InboxStatus,
 };
-use zlo_client::ClientError;
 use zlo_client::profiles::DEFAULT_PROFILE_ID;
 
 use super::{active_id, draft};
@@ -503,13 +503,7 @@ pub fn mark_quietly(s: &mut State, thread_id: String, action: InboxAction) {
     mark_as(s, thread_id, action, None, false);
 }
 
-fn mark_as(
-    s: &mut State,
-    thread_id: String,
-    action: InboxAction,
-    until: Option<i64>,
-    shown: bool,
-) {
+fn mark_as(s: &mut State, thread_id: String, action: InboxAction, until: Option<i64>, shown: bool) {
     s.workspace.inbox.snooze_menu = None;
     jobs::run(
         s,
@@ -520,12 +514,7 @@ fn mark_as(
 }
 
 /// A mark answered.
-fn marked(
-    s: &mut State,
-    result: Result<InboxListResponse, ClientError>,
-    shown: bool,
-    tx: &mut Tx,
-) {
+fn marked(s: &mut State, result: Result<InboxListResponse, ClientError>, shown: bool, tx: &mut Tx) {
     match result {
         Ok(list) => {
             if shown {

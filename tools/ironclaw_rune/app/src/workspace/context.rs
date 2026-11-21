@@ -386,13 +386,17 @@ fn popover(s: &State) -> El {
         .radius(4.)
         .clip_rounded(4.)
         .fill(p.hover)
-        .children(segments(report, BAR_WIDTH).into_iter().map(|(category, w)| {
-            el().key(format!("context-segment-{category:?}"))
-                .h_full()
-                .w(w)
-                .fill(category_color(category))
-                .motion(slide)
-        }));
+        .children(
+            segments(report, BAR_WIDTH)
+                .into_iter()
+                .map(|(category, w)| {
+                    el().key(format!("context-segment-{category:?}"))
+                        .h_full()
+                        .w(w)
+                        .fill(category_color(category))
+                        .motion(slide)
+                }),
+        );
     let rows = report.categories.iter().map(|c| {
         row()
             .px(8.)

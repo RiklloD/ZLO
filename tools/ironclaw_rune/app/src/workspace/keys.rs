@@ -200,7 +200,10 @@ mod tests {
         let mut s = crate::chat::fixtures::test_state();
         let mut tx = Tx::default();
         action("Toggle Light and Dark")(&mut s, &mut tx);
-        assert!(crate::workspace::asked_color_motion(&tx), "the palette morphs");
+        assert!(
+            crate::workspace::asked_color_motion(&tx),
+            "the palette morphs"
+        );
     }
 
     #[test]
