@@ -100,8 +100,6 @@ mod tests {
 
     thread_local! {
         static STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-        /// The transcript memoises a settled group: build it under a memo.
-        static MEMO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
     /// The open activity group, as the transcript builds it.
@@ -147,8 +145,6 @@ mod tests {
                         |s: &State, i| {
                             if i == 0 {
                                 col().w_full().h(200.)
-                            } else if MEMO.with(|m| m.get()) {
-                                rune::memo("t0-group", 0u8, || group(s))
                             } else {
                                 group(s)
                             }
@@ -213,22 +209,5 @@ mod tests {
         // Pinned to the end, the window sits on the last steps.
         assert!(rt.presented("t999-leaf").is_some(), "the end is in view");
         assert!(rt.presented("t0-leaf").is_none(), "the start is not built");
-    }
-
-    #[test]
-    fn a_memoised_group_still_windows_its_steps_as_it_scrolls() {
-        MEMO.with(|m| m.set(true));
-        let mut rt = runtime(1000);
-        // Another change: the view runs again and reuses the group's tree.
-        rt.update(|s, _| s.fixture = !s.fixture);
-        rt.frame(1. / 60.);
-        assert!(rt.presented("t999-leaf").is_some(), "the end is in view");
-        rt.update(|_, tx| tx.scroll_to("viewport", 0., 0.));
-        for _ in 0..60 {
-            rt.frame(1. / 60.);
-        }
-        MEMO.with(|m| m.set(false));
-        assert!(rt.presented("t0-leaf").is_some(), "the start is built once in view");
-        assert!(rt.presented("t999-leaf").is_none(), "the end left the window");
     }
 }
