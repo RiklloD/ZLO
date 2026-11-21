@@ -402,6 +402,12 @@ pub fn dock_open(s: &State, dock: Dock) -> bool {
     }
 }
 
+/// The right pane is open on its side chat (voice asks whether the side
+/// chat's composer is on screen). Read-only.
+pub fn side_chat_shown(s: &State) -> bool {
+    dock_open(s, Dock::Side) && dock_tab(s, Dock::Side) == Tab::SideChat
+}
+
 /// The tab `dock` shows. Side chat falls back to Activity once closed, a
 /// plugin's tab once its slot is gone.
 fn dock_tab(s: &State, dock: Dock) -> Tab {
