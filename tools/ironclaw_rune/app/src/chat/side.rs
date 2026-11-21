@@ -32,7 +32,7 @@
 //! For the workspace:
 //! - `side::titlebar_actions(s, cx, k, layer) -> El`: the thread's end of the
 //!   window titlebar.
-//! - `side::toggle_right_pane(s)` (⌥⌘B), `side::toggle_work_panel(s)` (⌘E),
+//! - `side::toggle_right_pane(s)` (⌥⌘B), `side::toggle_work_panel(s)` (⌘J),
 //!   `side::new_side_chat(s)` (⌥⌘N). Off the chat page the toggles only flip
 //!   the preference. Call `side::dock_slide(s, tx)` first so the docks
 //!   slide on `panels::REVEAL`.
@@ -78,7 +78,8 @@ pub mod fixtures;
 // Entry points for areas A and B (see the module docs).
 pub use changes::on_cli_report;
 pub(crate) use details::{
-    ITEMS as DETAILS_ITEMS, set_item as set_details_item, visibility as details_visibility,
+    ITEMS as DETAILS_ITEMS, left_closes_menu as details_left_closes_menu,
+    set_item as set_details_item, visibility as details_visibility,
 };
 pub use dock::{docks, titlebar_actions};
 pub use session::new_side_chat;
@@ -505,7 +506,7 @@ pub fn toggle_right_pane(s: &mut State) {
     toggle_dock(s, Dock::Side);
 }
 
-/// ⌘E. Off the chat page it only flips the preference.
+/// ⌘J (or ⌘E). Off the chat page it only flips the preference.
 pub fn toggle_work_panel(s: &mut State) {
     toggle_dock(s, Dock::Work);
 }
@@ -533,7 +534,7 @@ fn toggle_dock(s: &mut State, dock: Dock) {
 /// the transcript's end ride its edge, and the follow-ups land the
 /// conversation's rewrapped rows once the slide has started
 /// (`workspace::settle_sidebar_slide`). Callers outside the chat's own
-/// buttons (⌥⌘B, ⌘E) call it before [`toggle_right_pane`] /
+/// buttons (⌥⌘B, ⌘J) call it before [`toggle_right_pane`] /
 /// [`toggle_work_panel`].
 pub fn dock_slide(s: &State, tx: &mut Tx) {
     tx.animated();

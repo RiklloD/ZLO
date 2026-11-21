@@ -61,9 +61,9 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         s,
         "side-work-toggle",
         if work_open {
-            "Hide workspace (⌘E)"
+            "Hide workspace (⌘J)"
         } else {
-            "Workspace · Changes, Files, Outputs (⌘E)"
+            "Workspace · Changes, Files, Outputs (⌘J)"
         },
         panels::work_glyph(
             "side-work-toggle-glyph",

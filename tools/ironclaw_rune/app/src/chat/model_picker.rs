@@ -9,19 +9,23 @@
 //! catalog is read through any existing thread; the catalog is per user, so
 //! every thread returns the same list.
 //!
-//! Like t3code, the user can star models (the star tab lists them) and hide
-//! models or whole providers (hover icons on a row or a group title;
-//! double- or right-click a rail icon). Hidden ones stay out of the picker
-//! until the footer's "Show hidden" brings them back dimmed, to restore.
-//! The preferences live in the backend settings, written through the same
-//! route. Dragging a rail icon reorders the providers (a local pref).
+//! Like t3code, the user can star models (the star tab lists them).
+//! Which models the picker offers is set in Settings → Providers, not
+//! here: each connected provider lists its models with a switch, and a
+//! removed provider (a CLI agent taken out of ZLO) is gone from the picker
+//! altogether. The picker only reads those preferences, re-reading them each
+//! time it opens so a change made in Settings shows at once. They live in
+//! the backend settings, written through the same route, always re-read
+//! before a write (`Client::edit_model_picker`). Dragging a rail icon
+//! reorders the providers (a local pref).
 //!
 //! There is no "Default" row: IronClaw lists its profile model first, and a
 //! new thread preselects the last pick (or that profile model) by name.
 //!
 //! The one pill reads "model · thinking" and its popover holds both: the
-//! models above, and a thinking row below them when the current model has
-//! reasoning levels (t3code's "Reasoning" option). The levels come from the
+//! models above, and the thinking slider below them when the current model
+//! has reasoning levels (t3code's "Reasoning" option): drag or click along
+//! it, or Tab / Shift+Tab from the search field. The levels come from the
 //! catalog per model, and the pick rides the same route, per thread.
 //!
 //! # Entry points
@@ -44,7 +48,6 @@
 //!   `pending()`, `pending_effort()`, `set_profile(..)` read and steer it.
 
 mod slot;
-mod thinking;
 mod view;
 
 use rune::TextEdit;
@@ -94,8 +97,13 @@ pub struct ModelPickerState {
     /// name in a tooltip, and the popovers keep inside the window.
     pub compact: bool,
     pub(crate) rail: Rail,
-    /// Show hidden providers and models (dimmed) so they can be restored.
-    pub(crate) show_hidden: bool,
+    /// The thinking slider's handle while it is dragged, as a fraction of
+    /// the track; the level is picked when the drag ends.
+    pub(crate) thinking_drag: Option<f32>,
+    /// Bumped by every preference read and edit: only the latest one's
+    /// answer may replace `prefs`, so a slow read never brings back a model
+    /// hidden since.
+    prefs_seq: u64,
     /// The reasoning effort; `None`: the provider's default.
     pub(crate) effort: Option<String>,
     /// Bumped by every effort or model pick: a failed effort write only
@@ -260,11 +268,6 @@ impl ModelPickerState {
             .or_else(|| Some((NATIVE.into(), self.profile_model()?.to_string())))
     }
 
-    /// Hidden providers plus hidden models, for the "Show hidden" toggle.
-    pub(crate) fn hidden_count(&self) -> usize {
-        self.prefs.hidden_providers.len() + self.prefs.hidden_models.len()
-    }
-
     pub(crate) fn label(&self) -> (String, Option<String>) {
         let provider = self.current.as_ref().map_or(NATIVE, |(p, _)| p.as_str());
         let name = match self.current_model() {
@@ -286,7 +289,7 @@ impl ModelPickerState {
         tabs.extend(
             self.ordered_providers(order)
                 .into_iter()
-                .filter(|p| self.show_hidden || !self.prefs.provider_hidden(&p.provider))
+                .filter(|p| !self.prefs.provider_hidden(&p.provider))
                 .map(|p| Rail::Provider(p.provider.clone())),
         );
         tabs
@@ -316,7 +319,8 @@ impl ModelPickerState {
                 .iter()
                 .filter_map(|f| {
                     let provider = self.providers().iter().find(|p| p.provider == f.provider)?;
-                    let shown = self.show_hidden || !self.prefs.provider_hidden(&f.provider);
+                    let shown = !self.prefs.provider_hidden(&f.provider)
+                        && !self.prefs.model_hidden(&f.provider, &f.model);
                     (shown && matches(provider, &f.model)).then(|| (provider, f.model.clone()))
                 })
                 .collect();
@@ -341,14 +345,14 @@ impl ModelPickerState {
             {
                 continue;
             }
-            if self.prefs.provider_hidden(&provider.provider) && !self.show_hidden {
+            if self.prefs.provider_hidden(&provider.provider) {
                 continue;
             }
             let picks = provider
                 .models
                 .iter()
                 .filter(|m| matches(provider, m))
-                .filter(|m| self.show_hidden || !self.prefs.model_hidden(&provider.provider, m))
+                .filter(|m| !self.prefs.model_hidden(&provider.provider, m))
                 .map(|m| (provider, m.clone()))
                 .collect();
             groups.push((provider.name.clone(), Some(provider), picks));
@@ -390,7 +394,56 @@ pub fn open(s: &mut State) {
         && (p.route.as_ref().is_some_and(|r| !r.providers.is_empty()) || p.current.is_some())
     {
         p.toggle();
+        if p.open {
+            refresh_catalog(s, slot);
+        }
     }
+}
+
+/// The popover opened: re-read the catalog and the preferences, so a model
+/// or provider hidden or removed in Settings since the chat started is gone
+/// (and one added back is offered). Leaves the pick, the effort and any
+/// pick in flight alone.
+pub(crate) fn refresh_catalog(s: &mut State, slot: Slot) {
+    let Some(p) = slot.get_mut(s) else { return };
+    let thread = p.thread_id.clone();
+    let generation = p.generation;
+    p.prefs_seq += 1;
+    let seq = p.prefs_seq;
+    jobs::run(
+        s,
+        "model picker",
+        move |c| async move {
+            match thread {
+                Some(id) => c.thread_route(&id).await.map(|r| (r.providers, r.picker)),
+                None => c.providers().await.map(|c| (c.providers, c.picker)),
+            }
+        },
+        move |s, result, _| {
+            // silent-ok: the copy read when the chat started stays.
+            let Ok((providers, prefs)) = result else {
+                return;
+            };
+            let Some(p) = slot
+                .get_mut(s)
+                .filter(|p| p.generation == generation && p.prefs_seq == seq)
+            else {
+                return;
+            };
+            if let Some(route) = p.route.as_mut() {
+                route.providers = providers;
+            }
+            p.prefs = prefs;
+            if let Rail::Provider(id) = &p.rail
+                && p.prefs.provider_hidden(id)
+            {
+                p.rail = Rail::All;
+            }
+            if p.prefs.favorites.is_empty() && p.rail == Rail::Favorites {
+                p.rail = Rail::All;
+            }
+        },
+    );
 }
 
 /// Read the route (catalog, preferences, the thread's pick): a chat's
@@ -560,36 +613,38 @@ pub(crate) fn pick(s: &mut State, slot: Slot, provider: String, model: String) {
     );
 }
 
-/// Apply a preference change locally, then save the whole document.
-pub(crate) fn edit_prefs(s: &mut State, slot: Slot, edit: impl FnOnce(&mut PickerPrefs)) {
+/// Apply a preference change locally, then save it onto the gateway's
+/// current preferences (re-read first, so Settings' changes survive).
+/// `edit` must give the same result applied twice (`PickerPrefs::set_*`).
+pub(crate) fn edit_prefs(
+    s: &mut State,
+    slot: Slot,
+    edit: impl Fn(&mut PickerPrefs) + Send + 'static,
+) {
     let Some(p) = slot.get_mut(s) else { return };
     edit(&mut p.prefs);
+    p.prefs_seq += 1;
+    let seq = p.prefs_seq;
     if p.prefs.favorites.is_empty() && p.rail == Rail::Favorites {
         p.rail = Rail::All;
     }
     let Some(thread_id) = p.catalog_thread.clone() else {
         return;
     };
-    let prefs = p.prefs.clone();
     jobs::run(
         s,
         "model picker",
-        move |c| async move { c.set_model_picker(&thread_id, &prefs).await },
-        move |s, result, _| {
-            if let Err(e) = result {
-                slot.event(s, PickerEvent::Failed(e.to_string()));
+        move |c| async move { c.edit_model_picker(&thread_id, edit).await },
+        move |s, result, _| match result {
+            // A later edit or read owns `prefs` now; this answer is older.
+            Ok(prefs) => {
+                if let Some(p) = slot.get_mut(s).filter(|p| p.prefs_seq == seq) {
+                    p.prefs = prefs;
+                }
             }
+            Err(e) => slot.event(s, PickerEvent::Failed(e.to_string())),
         },
     );
-}
-
-pub(crate) fn toggle_provider(s: &mut State, slot: Slot, key: String) {
-    if let Some(p) = slot.get_mut(s)
-        && p.rail == Rail::Provider(key.clone())
-    {
-        p.rail = Rail::All;
-    }
-    edit_prefs(s, slot, |prefs| prefs.toggle_provider(&key));
 }
 
 /// Move `dragged` into `target`'s place in the rail and the list.
@@ -636,34 +691,10 @@ fn route_pick(route: &ThreadRoute) -> Option<(String, String)> {
     ))
 }
 
-/// The footer's restore toggle: "Show hidden (2 providers, 25 models)".
-pub(crate) fn hidden_summary(providers: usize, models: usize) -> String {
-    let count = |n: usize, what: &str| match n {
-        0 => None,
-        1 => Some(format!("1 {what}")),
-        n => Some(format!("{n} {what}s")),
-    };
-    let parts: Vec<String> = [count(providers, "provider"), count(models, "model")]
-        .into_iter()
-        .flatten()
-        .collect();
-    format!("Show hidden ({})", parts.join(", "))
-}
-
 /// "xhigh" -> "Extra High", as t3code names the levels.
 pub(crate) fn effort_label(effort: &str) -> String {
     match effort {
         "xhigh" => "Extra High".into(),
-        other => pretty_model(other),
-    }
-}
-
-/// A thinking level as one short word, for the popover's segmented row.
-pub(crate) fn effort_short(effort: &str) -> String {
-    match effort {
-        "xhigh" => "XHigh".into(),
-        "medium" => "Med".into(),
-        "minimal" => "Min".into(),
         other => pretty_model(other),
     }
 }
@@ -815,7 +846,7 @@ pub fn pending_effort(picker: &ModelPickerState) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{effort_label, hidden_summary, pretty_model};
+    use super::{effort_label, pretty_model};
 
     /// In a thread the panel opens above the composer and clears the whole
     /// card: hung off the pill alone, it covered the text being typed.
@@ -872,13 +903,43 @@ mod tests {
         }
     }
 
+    /// A removed provider and a hidden model are out of the picker with no
+    /// way back from it: no rail tab, no group, no row (they return from
+    /// Settings → Providers).
     #[test]
-    fn the_hidden_footer_counts_both_kinds() {
-        assert_eq!(
-            hidden_summary(3, 25),
-            "Show hidden (3 providers, 25 models)"
+    fn hidden_and_removed_stay_out_of_the_picker() {
+        use super::{Rail, fixture};
+        let mut p = fixture();
+        p.prefs.hidden_providers.push("openrouter".into());
+        let rows: Vec<(String, String)> = p
+            .groups(&[], &[])
+            .into_iter()
+            .flat_map(|(_, _, picks)| picks)
+            .map(|(pv, m)| (pv.provider.clone(), m))
+            .collect();
+        assert!(
+            !rows.iter().any(|(pv, _)| pv == "openrouter"),
+            "removed provider listed"
         );
-        assert_eq!(hidden_summary(1, 0), "Show hidden (1 provider)");
+        assert!(
+            !rows
+                .iter()
+                .any(|(pv, m)| pv == "codex" && m == "gpt-6.1-mini"),
+            "hidden model listed"
+        );
+        assert!(
+            rows.iter()
+                .any(|(pv, m)| pv == "codex" && m == "gpt-6.1-sol")
+        );
+        assert!(
+            !p.rail_tabs(&[])
+                .contains(&Rail::Provider("openrouter".into()))
+        );
+        // A favorite of a removed provider is not offered either.
+        p.prefs
+            .set_favorite("openrouter", "deepseek/deepseek-v4", true);
+        p.rail = Rail::Favorites;
+        assert!(p.groups(&[], &[])[0].2.is_empty());
     }
 
     #[test]

@@ -33,7 +33,9 @@ const BINDINGS: &[Binding] = &[
         crate::chat::side::dock_slide(s, tx);
         toggle_right_pane(s)
     }),
-    ("Toggle Changes and Files", "cmd+e", |s, tx| {
+    // ⌘J opens and closes the middle column (the work panel) with the
+    // same slide as its titlebar button; ⌘E stays an alias (`ALIASES`).
+    ("Toggle Workspace Panel", "cmd+j", |s, tx| {
         crate::chat::side::dock_slide(s, tx);
         toggle_work_panel(s)
     }),
@@ -57,6 +59,10 @@ const BINDINGS: &[Binding] = &[
         super::toggle_scheme(s, tx)
     }),
 ];
+
+/// Extra chords for a View menu action, matched by `on_key` only (a menu
+/// item carries one key equivalent): the action's title, then the chord.
+const ALIASES: &[(&str, &str)] = &[("Toggle Workspace Panel", "cmd+e")];
 
 /// The View menu action titled `title`, for tests that run it as the menu does.
 #[cfg(test)]
@@ -128,7 +134,7 @@ fn toggle_right_pane(s: &mut State) {
     }
 }
 
-/// ⌘E: the changes and files panel, likewise.
+/// ⌘J (and ⌘E): the workspace panel (changes, files, outputs), likewise.
 fn toggle_work_panel(s: &mut State) {
     if s.page == crate::state::Page::Chat && s.chat.is_some() {
         crate::chat::side::toggle_work_panel(s);
@@ -159,7 +165,12 @@ pub(super) fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if ev.key == Key::Escape {
         return super::dismiss(s);
     }
-    for (_, chord, action) in BINDINGS {
+    let aliased = ALIASES.iter().filter_map(|(title, chord)| {
+        let (_, _, action) = BINDINGS.iter().find(|(t, _, _)| t == title)?;
+        Some((*chord, *action))
+    });
+    let chords = BINDINGS.iter().map(|(_, c, a)| (*c, *a)).chain(aliased);
+    for (chord, action) in chords {
         if Chord::parse(chord).is_ok_and(|c| c.matches_tx(ev, tx)) {
             action(s, tx);
             return true;
@@ -208,7 +219,12 @@ mod tests {
 
     #[test]
     fn every_binding_parses_as_a_chord_and_a_shortcut() {
-        for (title, chord) in BINDINGS.iter().map(|(t, c, _)| (*t, *c)).chain([QUIT]) {
+        for (title, chord) in BINDINGS
+            .iter()
+            .map(|(t, c, _)| (*t, *c))
+            .chain([QUIT])
+            .chain(ALIASES.iter().copied())
+        {
             assert!(Chord::parse(chord).is_ok(), "{title}: {chord}");
             assert!(chord.parse::<Shortcut>().is_ok(), "{title}: {chord}");
         }
@@ -240,5 +256,75 @@ mod tests {
         );
         assert!(on_key(&mut s, &press(false), &mut tx), "released: rebuild");
         assert!(!s.workspace.inbox.cmd_held);
+    }
+
+    fn cmd(c: char) -> KeyEvent {
+        KeyEvent {
+            key: Key::Command(c),
+            mods: rune::Mods {
+                cmd: true,
+                logo: true,
+                ..rune::Mods::default()
+            },
+        }
+    }
+
+    /// ⌘J toggles the middle column (the workspace panel) both ways, and
+    /// ⌘E still does.
+    #[test]
+    fn command_j_and_e_toggle_the_workspace_panel() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::chat::fixtures::chat(&mut s);
+        let mut tx = Tx::default();
+        let open = |s: &State| crate::chat::side::dock_open(s, crate::chat::side::Dock::Work);
+        let before = open(&s);
+        assert!(on_key(&mut s, &cmd('j'), &mut tx), "⌘J is taken");
+        assert_ne!(open(&s), before, "⌘J flips the panel");
+        assert!(on_key(&mut s, &cmd('j'), &mut tx));
+        assert_eq!(open(&s), before, "⌘J again flips it back");
+        assert!(on_key(&mut s, &cmd('e'), &mut tx), "⌘E is an alias");
+        assert_ne!(open(&s), before);
+    }
+
+    /// ⌘J slides the workspace panel open and shut through several frames
+    /// (the menu's queued update asks for motion), like its titlebar button.
+    #[test]
+    fn command_j_slides_the_workspace_panel() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::chat::fixtures::chat(&mut s);
+        s.update_prefs(|p| p.work_open = false);
+        let mut rt = rune::Runtime::new(s, crate::view, (1400., 860.), rune::Env::new(true, 1.));
+        rt.poll = Some(crate::poll);
+        rt.frame(0.);
+        for _ in 0..30 {
+            rt.frame(1. / 60.);
+        }
+        let width = |rt: &rune::Runtime<State>| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some("side-work-dock"))
+                .map_or(0., |e| e.rect[2])
+        };
+        let shut = width(&rt);
+        let slide = |rt: &mut rune::Runtime<State>| {
+            rt.update(action("Toggle Workspace Panel"));
+            let mut seen = Vec::new();
+            for _ in 0..40 {
+                rt.frame(1. / 60.);
+                seen.push(width(rt));
+            }
+            seen
+        };
+        let opening = slide(&mut rt);
+        let open = *opening.last().expect("frames");
+        assert!(open > shut + 100., "the panel opened: {shut} → {open}");
+        let between = |seen: &[f32]| {
+            seen.iter()
+                .filter(|w| **w > shut + 1. && **w < open - 1.)
+                .count()
+        };
+        assert!(between(&opening) >= 3, "it slides open: {opening:?}");
+        let closing = slide(&mut rt);
+        assert!(between(&closing) >= 3, "it slides shut: {closing:?}");
     }
 }

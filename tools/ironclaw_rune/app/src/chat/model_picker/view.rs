@@ -1,14 +1,16 @@
 //! The model picker's one pill ("model · thinking") and its popover (GPUI
 //! `ModelPicker::render`, `render_popover`, `group_header`, `model_row`),
-//! with the thinking levels as a segmented row under the models.
+//! with the thinking level as a slider under the models.
 
-use rune::{Color, Cx, El, Key, Modifier, Phase, TextEdit, col, el, row};
-use rune_kit::{Kit, Placement, TextInput, scrim};
+use rune::{
+    Color, Cx, Cycle, El, Key, Modifier, MotionIntent, Phase, Spring, TextEdit, col, el, row,
+};
+use rune_kit::{Kit, Placement, RollingText, TextInput, scrim};
 use zlo_client::orchestration::RouteProvider;
 
 use super::{
-    ModelPickerState, NATIVE, Rail, Slot, cycle_rail, edit_prefs, effort_label, hidden_summary,
-    pick, pretty_model, reorder, toggle_provider,
+    ModelPickerState, NATIVE, Rail, Slot, cycle_rail, edit_prefs, effort_label, pick, pick_effort,
+    pretty_model, refresh_catalog, reorder,
 };
 use crate::design::kit::compact::{
     ICON_SM, ICON_XS, SM, XS, ghost_icon, ico, panel_surface, spacer, spinner, txt, txt_medium,
@@ -120,6 +122,9 @@ pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut
         .on_press(move |s: &mut State| {
             if let Some(m) = toggle.get_mut(s) {
                 m.toggle();
+                if m.open {
+                    refresh_catalog(s, toggle.clone());
+                }
             }
         })
         .press_scale(design::motion::PRESS);
@@ -147,8 +152,8 @@ fn rolling(k: &Kit, key: String, label: String, color: Color) -> El {
 /// The popover hung off its pill, as `rune_kit::popover::anchored` hangs a
 /// surface (fitted to the window, flipping when it doesn't fit), but without
 /// landing every change inside it: the panel pops in and out on its own
-/// transition (`panel_surface`), and the rail's pill and the thinking knob
-/// glide. The model list lands its changes (its `instant_changes`), so switching tabs
+/// transition (`panel_surface`), and the rail's pill and the thinking
+/// slider's knob glide. The model list lands its changes (its `instant_changes`), so switching tabs
 /// or searching swaps it at once.
 fn anchor(k: &Kit, content: El, anchor_key: &str, placement: Placement, gap: f32) -> El {
     let side = match placement {
@@ -217,7 +222,7 @@ fn search_key(s: &mut State, slot: &Slot, ev: &rune::KeyEvent) -> bool {
             true
         }
         Key::Tab if !ev.mods.cmd && !ev.mods.alt => {
-            super::thinking::step(s, slot, !ev.mods.shift);
+            step_thinking(s, slot, !ev.mods.shift);
             true
         }
         Key::Command(c) if !ev.mods.ctrl && !ev.mods.alt && !ev.mods.shift => {
@@ -257,6 +262,24 @@ fn search_key(s: &mut State, slot: &Slot, ev: &rune::KeyEvent) -> bool {
     }
 }
 
+/// Move the thinking level one step along the row (Auto, then the model's
+/// levels), wrapping; nothing when the model has no levels.
+fn step_thinking(s: &mut State, slot: &Slot, forward: bool) {
+    let Some(m) = slot.get(s) else { return };
+    let choices = thinking_choices(m);
+    if choices.len() < 2 {
+        return;
+    }
+    let at = choices.iter().position(|c| *c == m.effort).unwrap_or(0);
+    let n = choices.len();
+    let next = if forward {
+        (at + 1) % n
+    } else {
+        (at + n - 1) % n
+    };
+    pick_effort(s, slot.clone(), choices[next].clone());
+}
+
 fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
     let p = &s.palette;
     let order = &s.prefs.provider_order;
@@ -288,10 +311,10 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
         )
     };
     // The selected item's slot in the rail (Favorites, All, then each
-    // shown provider), and whether it is a hidden provider shown dimmed.
+    // shown provider).
     let mut selected = match &m.rail {
-        Rail::Favorites => Some((0, false)),
-        Rail::All => Some((1, false)),
+        Rail::Favorites => Some(0),
+        Rail::All => Some(1),
         Rail::Provider(_) => None,
     };
     let mut slots = 2;
@@ -300,17 +323,12 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
         tab("rail-all", &icons::LAYOUT_GRID, Rail::All, "All providers"),
     ];
     for provider in m.ordered_providers(order) {
-        let hidden = m.prefs.provider_hidden(&provider.provider);
-        if hidden && !m.show_hidden {
+        if m.prefs.provider_hidden(&provider.provider) {
             continue;
         }
         let key = provider.provider.clone();
         let on = m.rail == Rail::Provider(key.clone());
-        let tip = format!(
-            "{} (drag to reorder, double-click to {})",
-            provider.name,
-            if hidden { "show" } else { "hide" }
-        );
+        let tip = format!("{} (drag to reorder)", provider.name);
         let mark = provider_mark(
             s,
             provider.brand.as_deref(),
@@ -319,13 +337,10 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
             18.,
         );
         if on {
-            selected = Some((slots, hidden));
+            selected = Some(slots);
         }
         slots += 1;
         let mut item = rail_item(format!("rail-{key}"), mark, on, tip);
-        if hidden {
-            item = item.opacity(0.4);
-        }
         if let Some((dragged, dy)) = &m.rail_drag
             && *dragged == key
         {
@@ -335,17 +350,13 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                 Color::BLACK.alpha(0.3),
             );
         }
-        let (k1, k2, k3, k4) = (key.clone(), key.clone(), key.clone(), key);
-        let (s1, s2, s3, s4) = (slot.clone(), slot.clone(), slot.clone(), slot.clone());
+        let (k1, k4) = (key.clone(), key);
+        let (s1, s4) = (slot.clone(), slot.clone());
         items.push(
             item.on_press(move |s: &mut State| {
                 if let Some(m) = s1.get_mut(s) {
                     m.rail = Rail::Provider(k1.clone());
                 }
-            })
-            .on_double_press(move |s: &mut State| toggle_provider(s, s2.clone(), k2.clone()))
-            .on_secondary_press(move |s: &mut State, _, _| {
-                toggle_provider(s, s3.clone(), k3.clone())
             })
             .on_drag(move |s: &mut State, d, _| rail_drag(s, &s4, &k4, d)),
         );
@@ -356,7 +367,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
         .key("model-rail-items")
         .padding(RAIL_PAD)
         .gap(RAIL_STEP - RAIL_ITEM)
-        .children(selected.map(|(ix, dim)| rail_pill(p, ix, dim)))
+        .children(selected.map(|ix| rail_pill(p, ix)))
         .children(items);
 
     // Holding ⌘ numbers the first nine rows; ⌘N picks row N.
@@ -372,9 +383,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
             || format!("model-group-{title}"),
             |pv| format!("model-group-{}", pv.provider),
         );
-        let mut group = col()
-            .key(group_key)
-            .child(group_header(p, m, slot, k, title, provider));
+        let mut group = col().key(group_key).child(group_header(p, title, provider));
         for (provider, model) in picks {
             let badge = (m.cmd_held && shown < 9).then_some(shown);
             shown += 1;
@@ -392,10 +401,7 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
         };
         rows = rows.child(el().padding(12.).child(txt(msg, SM, p.text_faint).wrap()));
     }
-    let hidden_providers = m.prefs.hidden_providers.len();
-    let hidden = m.hidden_count();
-
-    let (edit_slot, key_slot, hidden_slot) = (slot.clone(), slot.clone(), slot.clone());
+    let (edit_slot, key_slot) = (slot.clone(), slot.clone());
     let search = TextInput::new(&m.search)
         .placeholder("Search models")
         .width(None)
@@ -430,29 +436,8 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
                 .scroll_edge_fade(16.)
                 .child(rows),
         );
-    if let Some(bar) = super::thinking::row(s, m, slot) {
+    if let Some(bar) = thinking_row(s, m, slot, k) {
         main = main.child(el().h(1.).w_full().fill(p.border)).child(bar);
-    }
-    if hidden > 0 {
-        let label = if m.show_hidden {
-            "Done showing hidden".to_string()
-        } else {
-            hidden_summary(hidden_providers, hidden - hidden_providers)
-        };
-        main = main.child(el().h(1.).w_full().fill(p.border)).child(
-            row()
-                .key("model-show-hidden")
-                .px(12.)
-                .py(6.)
-                .role("button")
-                .cursor(rune::Cursor::Pointer)
-                .child(txt(label, XS, p.text_faint))
-                .on_press(move |s: &mut State| {
-                    if let Some(m) = hidden_slot.get_mut(s) {
-                        m.show_hidden = !m.show_hidden;
-                    }
-                }),
-        );
     }
 
     panel_surface(
@@ -487,14 +472,13 @@ fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
 /// The rail's selection: one keyed plate behind the icon in slot `ix`,
 /// gliding to the next pick (a click, or Ctrl+Tab) on the pill spring. It
 /// sits where the selected item's own fill did, out of flow and under the
-/// icons; `dim` matches a hidden provider's 40 % opacity.
-fn rail_pill(p: &Palette, ix: usize, dim: bool) -> El {
+/// icons.
+fn rail_pill(p: &Palette, ix: usize) -> El {
     el().key("rail-pill")
         .absolute(RAIL_PAD, RAIL_PAD + ix as f32 * RAIL_STEP)
         .size(RAIL_ITEM, RAIL_ITEM)
         .radius(design::CONTROL_RADIUS)
         .fill(p.active)
-        .opacity(if dim { 0.4 } else { 1. })
         .a11y_hidden()
         .inert()
         .motion(design::motion::PILL)
@@ -528,7 +512,7 @@ fn rail_drag(s: &mut State, slot: &Slot, key: &str, d: &mut rune::Drag) {
             let visible: Vec<String> = m
                 .ordered_providers(&order)
                 .into_iter()
-                .filter(|p| m.show_hidden || !m.prefs.provider_hidden(&p.provider))
+                .filter(|p| !m.prefs.provider_hidden(&p.provider))
                 .map(|p| p.provider.clone())
                 .collect();
             let Some(from) = visible.iter().position(|p| p == key) else {
@@ -545,53 +529,24 @@ fn rail_drag(s: &mut State, slot: &Slot, key: &str, d: &mut rune::Drag) {
     }
 }
 
-/// A provider group's title; hovering shows a button that hides (or, while
-/// hidden ones are shown, restores) the whole provider.
-fn group_header(
-    p: &Palette,
-    m: &ModelPickerState,
-    slot: &Slot,
-    k: &Kit,
-    title: String,
-    provider: Option<&RouteProvider>,
-) -> El {
+/// A group's title. Hiding a provider or a model is done in Settings →
+/// Providers, so the header is only a label.
+fn group_header(p: &Palette, title: String, provider: Option<&RouteProvider>) -> El {
     let key = provider.map_or_else(
         || format!("group-{title}"),
         |pv| format!("group-{}", pv.provider),
     );
-    let header = row()
+    row()
         .key(key)
         .px(8.)
         .pt(8.)
         .pb(4.)
-        .gap(4.)
+        .h(30.)
         .center_y()
-        .child(txt_medium(title, XS, p.text_faint).truncate().grow(1.));
-    let Some(provider) = provider else {
-        return header;
-    };
-    let pk = provider.provider.clone();
-    let slot = slot.clone();
-    let hidden = m.prefs.provider_hidden(&pk);
-    let tip = if hidden {
-        "Show this provider"
-    } else {
-        "Hide this provider"
-    };
-    let button = ghost_icon(
-        k,
-        format!("hide-provider-{pk}"),
-        if hidden { &icons::EYE } else { &icons::EYE_OFF },
-        tip,
-        move |s: &mut State| toggle_provider(s, slot.clone(), pk.clone()),
-    );
-    header.hover_group().h(30.).child(
-        el().group_opacity(if hidden { 1. } else { 0. }, 1.)
-            .child(button),
-    )
+        .child(txt_medium(title, XS, p.text_faint).truncate().grow(1.))
 }
 
-/// One pickable model, with hover actions to star and hide it.
+/// One pickable model, with a hover action to star it.
 fn model_row(
     s: &State,
     m: &ModelPickerState,
@@ -604,7 +559,6 @@ fn model_row(
     let p = &s.palette;
     let on = m.current_provider() == provider.provider && m.current_model() == Some(model.as_str());
     let favorite = m.prefs.favorite(&provider.provider, &model);
-    let hidden = m.prefs.model_hidden(&provider.provider, &model);
     let title = pretty_model(&model);
     let id = format!("{}-{model}", provider.provider);
     // Inside a provider's own tab its name is already the header; only a
@@ -625,9 +579,8 @@ fn model_row(
         text_col = text_col.child(txt(line, XS, p.text_faint).truncate());
     }
     let (fav_p, fav_m) = (provider.provider.clone(), model.clone());
-    let (hide_p, hide_m) = (provider.provider.clone(), model.clone());
     let (pv, md) = (provider.provider.clone(), model);
-    let (fav_slot, hide_slot, pick_slot) = (slot.clone(), slot.clone(), slot.clone());
+    let (fav_slot, pick_slot) = (slot.clone(), slot.clone());
     // The list lands its changes (`instant_changes`), so the star swaps; a pop
     // here would never play.
     let star = ghost_icon(
@@ -641,17 +594,9 @@ fn model_row(
         if favorite { "Unstar" } else { "Star" },
         move |s: &mut State| {
             let (p, m) = (fav_p.clone(), fav_m.clone());
-            edit_prefs(s, fav_slot.clone(), |prefs| prefs.toggle_favorite(&p, &m));
-        },
-    );
-    let hide = ghost_icon(
-        k,
-        format!("hide-{id}"),
-        if hidden { &icons::EYE } else { &icons::EYE_OFF },
-        if hidden { "Show" } else { "Hide" },
-        move |s: &mut State| {
-            let (p, m) = (hide_p.clone(), hide_m.clone());
-            edit_prefs(s, hide_slot.clone(), |prefs| prefs.toggle_model(&p, &m));
+            edit_prefs(s, fav_slot.clone(), move |prefs| {
+                prefs.set_favorite(&p, &m, !favorite)
+            });
         },
     );
     let mut r = row()
@@ -676,20 +621,12 @@ fn model_row(
             16.,
         ))
         .child(text_col);
-    if hidden {
-        r = r.opacity(0.45);
-    }
     if let Some(ix) = badge {
         r = r.child(shortcut_badge(s, ix));
     }
     r.child(
-        row()
-            .gap(2.)
-            .child(
-                el().group_opacity(if favorite { 1. } else { 0. }, 1.)
-                    .child(star),
-            )
-            .child(el().group_opacity(0., 1.).child(hide)),
+        el().group_opacity(if favorite { 1. } else { 0. }, 1.)
+            .child(star),
     )
     // A fixed check column, so picking never shifts the labels.
     .child(
@@ -701,6 +638,239 @@ fn model_row(
         .w(16.),
     )
     .on_press(move |s: &mut State| pick(s, pick_slot.clone(), pv.clone(), md.clone()))
+}
+
+/// The thinking slider's track height; its ends are round, so the first and
+/// last stops sit half a height in from the edges.
+const TRACK_H: f32 = 24.;
+const TRACK_R: f32 = TRACK_H / 2.;
+const KNOB_H: f32 = 16.;
+const KNOB_W: f32 = 16.;
+/// The knob stretches while it is held.
+const KNOB_W_HELD: f32 = 24.;
+/// The knob settling on a level: quick, with a small overshoot.
+const SETTLE: Spring = Spring::new(0.34, 0.18);
+/// The knob following the pointer: near-instant, so it never trails.
+const FOLLOW: Spring = Spring::new(0.06, 0.);
+/// The bars inside the filled part of the track, one every `BAR_PITCH`
+/// points; enough for the widest track.
+const BARS: usize = 64;
+const BAR_PITCH: f32 = 5.;
+/// The bars' heights, repeating, so the fill reads as a level meter.
+const BAR_HEIGHTS: [f32; 7] = [6., 10., 8., 12., 7., 11., 9.];
+/// A bright pulse travelling along the bars: each bar lights for a fifth of
+/// the period, one after the other.
+static WAVE: [(f32, f32); 4] = [(0., 0.2), (0.12, 0.85), (0.3, 0.2), (1., 0.2)];
+
+/// The popover's thinking slider: Auto (the provider's default) and the
+/// current model's levels as stops along one track. Drag the knob, or press
+/// anywhere on the track, and it snaps to the nearest stop when let go; the
+/// level's name rolls over in the header as it changes. The filled part
+/// fills with bars whose pulse runs faster, and whose fill grows stronger,
+/// the more the model thinks. Picking a level keeps the popover open;
+/// Tab / Shift+Tab in the search field step it from the keyboard. `None`
+/// when the model has no levels.
+fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option<El> {
+    let choices = thinking_choices(m);
+    if choices.len() < 2 {
+        return None;
+    }
+    let p = &s.palette;
+    let last = (choices.len() - 1) as f32;
+    let at = choices.iter().position(|c| *c == m.effort).unwrap_or(0);
+    let held = m.thinking_drag.is_some();
+    let frac = m.thinking_drag.unwrap_or(at as f32 / last).clamp(0., 1.);
+    // While dragging, the header and the stops show the level a release
+    // would pick.
+    let shown = if held {
+        (frac * last).round() as usize
+    } else {
+        at
+    };
+    let intensity = shown as f32 / last;
+    let name = choices[shown]
+        .as_deref()
+        .map_or_else(|| "Auto".to_string(), effort_label);
+    let ink = p.accent.alpha(0.22 + 0.5 * intensity);
+    let spring = if held { FOLLOW } else { SETTLE };
+
+    // A pulse running left to right across the bars, quicker as it rises.
+    let period = 1.6 - 0.9 * intensity;
+    let bars = row()
+        .pin(Some(0.), Some(0.), Some(0.), Some(0.))
+        .clip_rounded(0.)
+        .gap(BAR_PITCH - 1.5)
+        .pl(2.)
+        .center_y()
+        .children((0..BARS).map(|i| {
+            el().w(1.5)
+                .h(BAR_HEIGHTS[i % BAR_HEIGHTS.len()])
+                .radius(1.)
+                .fill(p.text)
+                .cycle(Cycle {
+                    period,
+                    phase: -(i as f32) * 0.035,
+                    stops: &WAVE,
+                    still: 0.35,
+                    fps: 30.,
+                })
+        }));
+    let fill = el()
+        .key("thinking-fill")
+        .pin(Some(0.), Some(0.), None, Some(0.))
+        .w_frac(frac)
+        .fill(ink)
+        .motion(spring)
+        .motion_intent(MotionIntent::OVERSHOOT)
+        .child(bars);
+    // The track's round start, filled at every level so Auto still shows
+    // where the fill begins.
+    let cap = el()
+        .pin(Some(-TRACK_R + 1.), Some(0.), None, Some(0.))
+        .w(TRACK_R)
+        .corners([TRACK_R - 1., 0., 0., TRACK_R - 1.])
+        .fill(ink)
+        .motion(spring);
+    let stops = row()
+        .pin(Some(0.), Some(0.), Some(0.), Some(0.))
+        .justify_between()
+        .center_y()
+        .children(choices.iter().enumerate().map(|(i, value)| {
+            let key = value.clone().unwrap_or_else(|| "auto".into());
+            let full = value
+                .as_deref()
+                .map_or_else(|| "Auto".to_string(), effort_label);
+            let passed = i <= shown;
+            let (pick_slot, level) = (slot.clone(), value.clone());
+            // Zero wide, so the pointer lands on the track; this press is
+            // the stop's accessibility action.
+            el().key(format!("thinking-{key}"))
+                .role("radio")
+                .label(full)
+                .checked(i == at)
+                .on_press(move |s: &mut State| pick_effort(s, pick_slot.clone(), level.clone()))
+                .w(0.)
+                .h_full()
+                .center()
+                .child(
+                    el().size(4., 4.)
+                        .radius(2.)
+                        .fill(if passed {
+                            p.text.alpha(0.55)
+                        } else {
+                            p.text_faint.alpha(0.6)
+                        })
+                        .motion(SETTLE),
+                )
+        }));
+    let knob_w = if held { KNOB_W_HELD } else { KNOB_W };
+    let knob = el()
+        .key("thinking-knob")
+        .pin(
+            None,
+            Some((TRACK_H - 2. - KNOB_H) / 2.),
+            Some(-knob_w / 2.),
+            None,
+        )
+        .size(knob_w, KNOB_H)
+        .radius(KNOB_H / 2.)
+        .fill(p.text)
+        .shadow(1., 4., Color::BLACK.alpha(0.35))
+        .motion(SETTLE)
+        .motion_intent(MotionIntent::OVERSHOOT);
+    // An invisible bar as wide as the fill: the knob rides its end, above
+    // the stops.
+    let rider = el()
+        .key("thinking-rider")
+        .pin(Some(0.), Some(0.), None, Some(0.))
+        .w_frac(frac)
+        .motion(spring)
+        .motion_intent(MotionIntent::OVERSHOOT)
+        .child(knob);
+    let drag_slot = slot.clone();
+    let track = el()
+        .key("thinking-track")
+        .role("radiogroup")
+        .label("Thinking")
+        .w_full()
+        .h(TRACK_H)
+        .px(TRACK_R)
+        .radius(TRACK_R)
+        .fill(p.bg)
+        .border(1., p.border)
+        .cursor(rune::Cursor::Pointer)
+        .on_drag(move |s: &mut State, d, _| thinking_drag(s, &drag_slot, d))
+        .child(
+            el().w_full()
+                .h_full()
+                .child(cap)
+                .child(fill)
+                .child(stops)
+                .child(rider),
+        );
+    Some(
+        col()
+            .key("model-thinking")
+            .px(12.)
+            .pt(8.)
+            .pb(10.)
+            .gap(8.)
+            .child(
+                row()
+                    .center_y()
+                    .child(txt_medium("Thinking", XS, p.text_faint).grow(1.))
+                    .child(
+                        RollingText::new("thinking-level", name)
+                            .value(shown as f64)
+                            .font(rune::TextStyle::new(crate::design::styles::rem(XS), 500.))
+                            .color(p.text)
+                            .trailing()
+                            .build(k),
+                    ),
+            )
+            .child(track),
+    )
+}
+
+/// Auto, then the current model's levels: the slider's stops.
+fn thinking_choices(m: &ModelPickerState) -> Vec<Option<String>> {
+    let model = m.current_model().unwrap_or("default");
+    std::iter::once(None)
+        .chain(
+            m.efforts_of(m.current_provider(), model)
+                .iter()
+                .cloned()
+                .map(Some),
+        )
+        .collect()
+}
+
+/// A press or drag on the thinking track: the knob follows the pointer,
+/// and letting go picks the nearest stop. Escape (a cancelled drag) puts
+/// it back.
+fn thinking_drag(s: &mut State, slot: &Slot, d: &mut rune::Drag) {
+    let Some(m) = slot.get_mut(s) else { return };
+    // The stops span the track less its round ends (and its 1 pt rim).
+    let span = (d.w - 2. * TRACK_R - 2.).max(1.);
+    let frac = ((d.x - TRACK_R - 1.) / span).clamp(0., 1.);
+    match d.phase {
+        Phase::Down | Phase::Move => m.thinking_drag = Some(frac),
+        Phase::Up => {
+            m.thinking_drag = None;
+            if d.cancelled() {
+                return;
+            }
+            let choices = thinking_choices(m);
+            if choices.len() < 2 {
+                return;
+            }
+            let ix = (frac * (choices.len() - 1) as f32).round() as usize;
+            let level = choices[ix].clone();
+            if level != m.effort {
+                pick_effort(s, slot.clone(), level);
+            }
+        }
+    }
 }
 
 /// A provider's logo; `brand` (the vendor behind a runtime row) wins, then
@@ -718,4 +888,81 @@ pub fn provider_mark(
         .filter(|id| !id.is_empty())
         .collect();
     crate::design::brands::provider_logo(s, &ids, size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::step_thinking;
+    use crate::chat::model_picker::{Slot, scene};
+
+    /// Tab and Shift+Tab in the search field step the thinking level along
+    /// the row, wrapping past Auto.
+    #[test]
+    fn tab_steps_the_thinking_level() {
+        let mut s = crate::chat::fixtures::test_state();
+        scene(&mut s, true);
+        let slot = Slot::chat("t1");
+        let effort = |s: &crate::state::State| slot.get(s).and_then(|m| m.effort.clone());
+        assert_eq!(effort(&s).as_deref(), Some("high"));
+        step_thinking(&mut s, &slot, true);
+        assert_eq!(effort(&s).as_deref(), Some("xhigh"));
+        step_thinking(&mut s, &slot, true);
+        assert_eq!(effort(&s), None, "wraps to Auto");
+        step_thinking(&mut s, &slot, false);
+        assert_eq!(effort(&s).as_deref(), Some("xhigh"));
+    }
+
+    /// Dragging the knob along the track follows the pointer and shows the
+    /// level a release would pick; letting go picks the nearest stop, and a
+    /// press on the track jumps there.
+    #[test]
+    fn the_thinking_slider_drags_and_snaps() {
+        use rune::{Env, Runtime};
+        let mut s = crate::chat::fixtures::test_state();
+        scene(&mut s, true);
+        let mut rt = Runtime::new(s, crate::view, (1440., 900.), Env::new(true, 1.));
+        let mut t = 0.;
+        let mut step = |rt: &mut Runtime<crate::state::State>| {
+            for _ in 0..30 {
+                t += 1. / 60.;
+                rt.frame(t);
+            }
+        };
+        step(&mut rt);
+        let slot = Slot::chat("t1");
+        let picker = |rt: &Runtime<crate::state::State>| {
+            let m = slot.get(&rt.state).expect("picker");
+            (m.effort.clone(), m.thinking_drag)
+        };
+        let (track, _) = rt.presented("thinking-track").expect("track drawn");
+        let y = track[1] + track[3] / 2.;
+        // Stops: Auto, Low, Medium, High (picked), Extra High.
+        let stop = |i: f32| track[0] + 13. + (track[2] - 26.) * i / 4.;
+        rt.pointer_move(stop(3.), y);
+        rt.pointer_down(stop(3.), y);
+        step(&mut rt);
+        rt.pointer_move(stop(1.) + 3., y);
+        step(&mut rt);
+        let (effort, held) = picker(&rt);
+        assert_eq!(effort.as_deref(), Some("high"), "nothing picked mid-drag");
+        assert!(
+            held.is_some_and(|f| (f - 0.25).abs() < 0.05),
+            "knob follows: {held:?}"
+        );
+        rt.pointer_up(stop(1.) + 3., y);
+        step(&mut rt);
+        let (effort, held) = picker(&rt);
+        assert_eq!(
+            effort.as_deref(),
+            Some("low"),
+            "snapped to the nearest stop"
+        );
+        assert!(held.is_none());
+        // A press at the far end picks the top level.
+        rt.pointer_move(stop(4.), y);
+        rt.pointer_down(stop(4.), y);
+        rt.pointer_up(stop(4.), y);
+        step(&mut rt);
+        assert_eq!(picker(&rt).0.as_deref(), Some("xhigh"));
+    }
 }

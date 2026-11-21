@@ -30,6 +30,7 @@ mod context;
 mod draft;
 pub mod fixtures;
 mod inbox;
+pub mod intro;
 mod keys;
 mod message_search;
 #[cfg(test)]

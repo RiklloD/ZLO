@@ -112,3 +112,73 @@ fn a_toggle_from_an_update_slides_the_pane() {
         "the pane slides through {between} frames: {seen:?}"
     );
 }
+
+/// The launch intro: a connection that lands mid-assembly mounts nothing
+/// under the stage (no workspace showing through, nothing to press), and
+/// the workspace mounts once the reveal starts.
+#[test]
+fn the_intro_stage_hides_the_workspace_until_its_reveal() {
+    use crate::workspace::intro::Intro;
+    fn assembling(s: &mut State) {
+        crate::workspace::fixtures::fixture_shell(s);
+        s.intro = Intro::frozen(0.6, None, false);
+    }
+    fn revealing(s: &mut State) {
+        crate::workspace::fixtures::fixture_shell(s);
+        s.intro = Intro::frozen(1.3, Some(1.15), false);
+    }
+    let shown = |fill: fn(&mut State)| {
+        let mut rt = runtime(fill);
+        frames(&mut rt, 3);
+        assert!(matches!(rt.state.conn, crate::state::Conn::Ready));
+        (
+            rt.presented("intro").is_some(),
+            rt.presented("sidebar-column").is_some(),
+        )
+    };
+    assert_eq!(
+        shown(assembling),
+        (true, false),
+        "assembling: only the stage"
+    );
+    assert_eq!(
+        shown(revealing),
+        (true, true),
+        "revealing: the workspace is behind the iris"
+    );
+    assert_eq!(
+        shown(crate::workspace::fixtures::fixture_shell),
+        (false, true),
+        "spent: no stage"
+    );
+}
+
+/// Shortcuts don't reach the hidden workspace while the stage covers it.
+#[test]
+fn the_intro_stage_swallows_shortcuts_until_its_reveal() {
+    use crate::workspace::intro::Intro;
+    let toggle_bar = rune::KeyEvent {
+        key: rune::Key::Command('s'),
+        mods: rune::Mods {
+            cmd: true,
+            logo: true,
+            shift: true,
+            ..rune::Mods::default()
+        },
+    };
+    let mut s = crate::chat::fixtures::test_state();
+    let mut tx = rune::Tx::default();
+    let before = s.prefs.status_bar_hidden;
+    s.intro = Intro::frozen(0.6, None, false);
+    assert!(crate::on_key(&mut s, &toggle_bar, &mut tx), "taken");
+    assert_eq!(
+        s.prefs.status_bar_hidden, before,
+        "nothing ran under the stage"
+    );
+    s.intro = Intro::frozen(1.3, Some(1.15), false);
+    assert!(crate::on_key(&mut s, &toggle_bar, &mut tx));
+    assert_ne!(
+        s.prefs.status_bar_hidden, before,
+        "once it opens, keys work"
+    );
+}

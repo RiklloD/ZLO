@@ -71,7 +71,7 @@ pub(super) struct ChangesState {
     shown: String,
     split: bool,
     wrap: bool,
-    busy: Option<&'static str>,
+    pub(super) busy: Option<&'static str>,
     note: Option<String>,
     /// When `note` landed: it goes on its own after [`NOTE_FOR`].
     note_at: Option<Instant>,

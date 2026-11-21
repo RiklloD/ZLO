@@ -27,6 +27,8 @@ struct CliRow {
     status: El,
     command: Option<(&'static str, &'static str)>,
     remove: Option<(String, bool)>,
+    /// The agent's models in the picker, while it is ready.
+    models: Option<El>,
 }
 
 fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
@@ -60,16 +62,18 @@ fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
         let b = if hidden {
             pressable(
                 button_sized("Add back", Look::Outline, Size::XSmall)
-                    .on_press(move |s: &mut State| super::toggle_cli_hidden(s, provider.clone()))
+                    .on_press(move |s: &mut State| {
+                        super::set_cli_removed(s, provider.clone(), false)
+                    })
                     .build(k),
             )
         } else {
             icon_button_sized(
                 &icons::CLOSE,
-                "Remove from ZLO (the CLI stays installed)",
+                "Remove from ZLO and its model picker (the CLI stays installed)",
                 Size::XSmall,
             )
-            .on_press(move |s: &mut State| super::toggle_cli_hidden(s, provider.clone()))
+            .on_press(move |s: &mut State| super::set_cli_removed(s, provider.clone(), true))
             .build(k)
             .press_scale(motion::PRESS)
         };
@@ -77,11 +81,15 @@ fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
     }
     // Removing a CLI dims its row, and adding it back lights it, on the
     // slide spring rather than in one frame.
-    card(p)
+    let mut c = card(p)
         .key(format!("cli-{}", r.id))
         .opacity_motion(motion::SLIDE)
         .opacity(if hidden { 0.6 } else { 1. })
-        .child(line)
+        .child(line);
+    if let Some(models) = r.models {
+        c = c.child(models);
+    }
+    c
 }
 
 /// A CLI row's copy button: the copy glyph turns into a check for
@@ -135,6 +143,7 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                     status,
                     command: known.install.map(|c| ("Install", c)),
                     remove: None,
+                    models: None,
                 },
             ));
             continue;
@@ -170,6 +179,8 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                     status,
                     command,
                     remove: ps.picker.is_some().then(|| (r.provider.clone(), hidden)),
+                    models: (!hidden && r.authenticated && !r.models.is_empty())
+                        .then(|| super::view::render_picker_models(s, k, r)),
                 },
             ));
         }

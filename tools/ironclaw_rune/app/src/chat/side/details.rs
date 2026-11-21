@@ -17,27 +17,36 @@
 //! The data comes from the sibling tabs (Changes, Routines, Agents, the
 //! session's side chats) and the status bar's usage and telemetry; the card
 //! only asks them to refresh when it opens ([`opened`]).
+//!
+//! Look and keys: one opaque floating plane (`rows::surface`) that grows out
+//! of the toggle's corner; the workspace header names the folder over its
+//! path, with a copy button (⌘C anywhere in the card); quiet section labels
+//! over rows that share one icon column and right-aligned tabular meta
+//! (`rows.rs`). The rows are one focus group: ↑/↓ move, Return or Space
+//! acts, → / ← open and close a split row's menu or fold "Previous agents",
+//! Escape or a press outside closes. Actions that take you elsewhere close
+//! the card; push and pull keep it open to show their progress.
 
 mod items;
 mod open_in;
+mod rows;
 mod servers;
 
 pub(crate) use items::{ITEMS, resolve as visibility, set as set_item};
 
-use rune::tok::TextStyle;
 use rune::{Align, Color, Cursor, El, PointerPress, ScrollSpec, Side, col, el, icon, row};
 use rune_kit::{Kit, Menu, MenuItem, Placement};
 use zlo_client::inbox::InboxStatus;
 use zlo_client::orchestration::{TaskStatus, TaskView};
 
 use self::items::{Density, Item, Visibility};
+use self::rows::{base, glyph, label, meta, pressable};
 use super::ui::{self, sm_med, xs, xs_med};
 use super::{
     SideState, Tab, agents, bridge, changes, git, pick_project_folder, remote_repo, routines,
     session, short_path, side, side_mut, side_of, thread_id,
 };
 use crate::design::kit::{self, Turn};
-use crate::design::motion;
 use crate::icons;
 use crate::jobs;
 use crate::state::{Page, State};
@@ -46,7 +55,14 @@ use crate::state::{Page, State};
 const WIDTH: f32 = 280.;
 /// t3code's `THREAD_DETAILS_CARD_GAP`: room kept below the card.
 const GAP: f32 = 12.;
-const ROW_H: f32 = 32.;
+const ROW_H: f32 = 30.;
+/// The workspace header: the folder's name over its path.
+const HEADER_H: f32 = 44.;
+/// A section's top and bottom padding, and its label row.
+const SECTION_PAD: f32 = 6.;
+const HEADING_H: f32 = 26.;
+/// How long "Copied" shows on the header's copy button.
+const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1400);
 /// Usage and context rows are shorter (t3code's `h-6`).
 const METER_H: f32 = 24.;
 /// Lists taller than this scroll inside the card (t3code's 13.5rem).
@@ -71,10 +87,12 @@ pub(super) struct DetailsState {
     stopping: Option<u32>,
     pr: Option<git::PullRequest>,
     initializing: bool,
+    /// The folder's path was just copied: the copy button shows a check.
+    copied: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Dropdown {
+pub(super) enum Dropdown {
     Environment,
     OpenIn,
     Git,
@@ -178,7 +196,7 @@ pub(super) fn close(s: &mut State) {
     }
 }
 
-fn close_menus(s: &mut State) {
+pub(super) fn close_menus(s: &mut State) {
     if let Some(x) = side_mut(s) {
         x.details.menu_at = None;
         x.details.dropdown = None;
@@ -190,6 +208,54 @@ fn toggle_dropdown(s: &mut State, which: Dropdown) {
         x.details.menu_at = None;
         x.details.dropdown = (x.details.dropdown != Some(which)).then_some(which);
     }
+}
+
+/// ← while a row's menu is open: close it. The menu's items hold focus in
+/// their own modal and leave ← unhandled, so it reaches the app's `on_key`;
+/// the menu hands focus back to its row as it closes.
+pub(crate) fn left_closes_menu(s: &mut State) -> bool {
+    if side(s).is_some_and(|x| x.session_open && x.details.dropdown.is_some()) {
+        close_menus(s);
+        return true;
+    }
+    false
+}
+
+/// Open row menu `which` (→ on its row).
+fn open_dropdown(s: &mut State, which: Dropdown) {
+    if let Some(x) = side_mut(s) {
+        x.details.menu_at = None;
+        x.details.dropdown = Some(which);
+    }
+}
+
+/// The folder the card's header names, as a path to copy.
+fn folder_path(s: &State) -> Option<String> {
+    if crate::remote::backend_is_remote(s) {
+        return None;
+    }
+    let x = side(s)?;
+    match &x.worktree {
+        Some(wt) => Some(wt.path.clone()),
+        None => x.folder.as_ref().map(|f| f.display().to_string()),
+    }
+}
+
+/// Copy the header folder's path (the copy button, or ⌘C in the card).
+fn copy_path(s: &mut State, tx: &mut rune::Tx) -> bool {
+    let Some(path) = folder_path(s) else {
+        return false;
+    };
+    tx.copy(path);
+    if let Some(x) = side_mut(s) {
+        x.details.copied = true;
+    }
+    jobs::after(s, COPIED_FOR, |s, _| {
+        if let Some(x) = side_mut(s) {
+            x.details.copied = false;
+        }
+    });
+    true
 }
 
 /// The threads the lineage rows name, for the title cache.
@@ -209,70 +275,8 @@ fn related_threads(s: &State) -> Vec<String> {
 
 // ---------------------------------------------------------------- rows
 
-fn base(key: impl Into<String>) -> El {
-    row()
-        .key(key)
-        .w_full()
-        .h(ROW_H)
-        .px(10.)
-        .gap(10.)
-        .items_center()
-        .radius(8.)
-}
-
-fn glyph(s: &State, g: &'static rune::Icon) -> El {
-    icon(g, 16.).color(s.palette.text_muted)
-}
-
-fn label(s: &State, content: impl Into<String>, live: bool) -> El {
-    let p = &s.palette;
-    ui::line(content, sm_med(), if live { p.text } else { p.text_faint })
-        .grow(1.)
-        .min_w(0.)
-}
-
-fn meta(s: &State, content: impl Into<String>) -> El {
-    ui::line(content, xs(), s.palette.text_faint)
-}
-
-fn pressable(s: &State, e: El) -> El {
-    e.role("button")
-        .cursor(Cursor::Pointer)
-        .hover(s.palette.hover)
-        .hover_motion(motion::HOVER, motion::HOVER)
-        .press_scale(motion::PRESS_CARD)
-}
-
-/// A row split into its action and a chevron that opens its menu.
-fn split(key: &str, primary: El, chevron: El) -> El {
-    row()
-        .key(key.to_string())
-        .w_full()
-        .h(ROW_H)
-        .items_center()
-        .child(primary)
-        .child(chevron)
-}
-
-fn chevron(s: &State, key: &str, which: Dropdown) -> El {
-    let open = side(s).is_some_and(|x| x.details.dropdown == Some(which));
-    pressable(
-        s,
-        el().key(format!("{key}-chevron"))
-            .w(32.)
-            .h(ROW_H)
-            .center()
-            .radius(8.)
-            .child(kit::chevron(
-                "glyph",
-                open,
-                Turn::Flip,
-                16.,
-                s.palette.text_muted,
-            )),
-    )
-    .label("More options")
-    .on_press(move |s: &mut State| toggle_dropdown(s, which))
+fn chevron_menu_open(x: &SideState, which: Dropdown) -> bool {
+    x.details.dropdown == Some(which)
 }
 
 fn dropdown(key: &str, trigger: El, open: bool) -> Menu {
@@ -314,29 +318,34 @@ impl Section {
 
     /// A row that counts toward the card's height.
     fn row(&mut self, e: El) {
+        self.row_h(e, ROW_H);
+    }
+
+    fn row_h(&mut self, e: El, h: f32) {
         self.rows.push(e);
-        self.fit += ROW_H;
+        self.fit += h;
     }
 
     fn height(&self) -> f32 {
-        18. + if self.heading { 36. } else { 0. } + self.fit
+        2. * SECTION_PAD + if self.heading { HEADING_H } else { 0. } + self.fit
     }
 
     fn render(self, s: &State) -> El {
         let p = &s.palette;
-        let mut out = col().key(self.key).w_full().px(8.).pt(8.).pb(10.);
+        let mut out = col().key(self.key).w_full().px(SECTION_PAD).py(SECTION_PAD);
         if self.heading {
+            // A quiet label: the rows under it are the content.
             out = out.child(
                 row()
                     .key("heading")
                     .w_full()
-                    .h(ROW_H)
-                    .px(10.)
-                    .mb(4.)
+                    .h(HEADING_H)
+                    .pl(rows::PAD)
+                    .pr(2.)
                     .gap(4.)
                     .items_center()
                     .child(
-                        ui::line(self.title, TextStyle::new(rem(11.), 500.), p.text_muted)
+                        ui::line(self.title, xs_med(), p.text_faint)
                             .grow(1.)
                             .min_w(0.),
                     )
@@ -345,10 +354,6 @@ impl Section {
         }
         out.children(self.rows)
     }
-}
-
-fn rem(px: f32) -> f32 {
-    crate::design::styles::rem(px)
 }
 
 /// A list that scrolls once it is taller than [`LIST_MAX`].
@@ -417,7 +422,7 @@ fn workspace(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
     sec.separated = false;
     let remote = crate::remote::backend_is_remote(s);
     if c.density == Density::Full && c.v.get(Item::Environment) {
-        sec.row(environment_row(c, remote, menus));
+        sec.row_h(environment_row(c, remote, menus), HEADER_H);
     }
     // The folder the coding tabs read (the worktree, when it has one).
     let folder = x.folder.clone();
@@ -434,11 +439,20 @@ fn workspace(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
                 .child(glyph(s, &icons::CODE))
                 .child(label(s, format!("Open in {}", editor.label), true)),
         )
-        .on_press(move |_: &mut State| open_in::open(editor, &folder));
-        let open = x.details.dropdown == Some(Dropdown::OpenIn);
+        .on_press(move |s: &mut State| {
+            close(s);
+            open_in::open(editor, &folder);
+        });
+        let open = chevron_menu_open(x, Dropdown::OpenIn);
         let mut menu = dropdown(
             "thread-details-open-in",
-            chevron(s, "thread-details-open-in", Dropdown::OpenIn),
+            rows::split(
+                s,
+                "thread-details-open-in-row",
+                primary,
+                Dropdown::OpenIn,
+                open,
+            ),
             open,
         );
         for e in open_in::editors() {
@@ -450,43 +464,93 @@ fn workspace(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
                 },
             ));
         }
-        let chevron = menu.build(c.k, menus);
-        sec.row(split("thread-details-open-in-row", primary, chevron));
+        sec.row(menu.build(c.k, menus));
     }
     Some(sec)
 }
 
 fn environment_row(c: &Ctx, remote: bool, menus: &mut Vec<El>) -> El {
     let (s, x) = (c.s, c.x);
+    let p = &s.palette;
     let computer = crate::remote::computer_label(s);
-    let (lead, text, path): (&'static rune::Icon, String, Option<String>) = if remote {
-        (&icons::MONITOR, computer.clone(), None)
+    let name_of = |path: &std::path::Path| {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| short_path(path))
+    };
+    // The folder's name leads; where it lives (or the computer) follows.
+    let (lead, text, sub, path): (&'static rune::Icon, String, String, Option<String>) = if remote {
+        (
+            &icons::MONITOR,
+            computer.clone(),
+            "Remote computer".into(),
+            None,
+        )
     } else if let Some(wt) = &x.worktree {
+        let at = std::path::Path::new(&wt.path);
         (
             &icons::FOLDER_GIT_2,
-            "Worktree".into(),
+            name_of(at),
+            format!("Worktree · {}", short_path(at)),
             Some(wt.path.clone()),
         )
     } else if let Some(folder) = &x.folder {
         (
             &icons::FOLDER,
+            name_of(folder),
             short_path(folder),
             Some(folder.display().to_string()),
         )
     } else {
-        (&icons::FOLDER, "No project".into(), None)
+        (&icons::FOLDER, "No project".into(), computer.clone(), None)
     };
     let mut trigger = base("thread-details-environment-row")
+        .h(HEADER_H)
         .child(glyph(s, lead))
-        .child(label(s, text.clone(), true));
-    if remote {
+        .child(
+            rune::col()
+                .grow(1.)
+                .min_w(0.)
+                .gap(1.)
+                .child(rows::title(s, text.clone()))
+                .child(ui::line(sub, xs(), p.text_faint)),
+        );
+    if path.is_some() {
+        let copied = x.details.copied;
+        let st = crate::design::styles::Style::of(&s.prefs);
+        trigger =
+            trigger.child(
+                el().key("thread-details-copy-path")
+                    .role("button")
+                    .label(if copied { "Path copied" } else { "Copy path" })
+                    .help("Copy path · ⌘C")
+                    .size(26., 26.)
+                    .center()
+                    .radius(7.)
+                    .cursor(Cursor::Pointer)
+                    .hover(p.hover)
+                    .press(p.active)
+                    .hover_motion(st.hover, st.hover)
+                    .focusable(false)
+                    .on_press_tx(|s: &mut State, tx| {
+                        copy_path(s, tx);
+                    })
+                    .child(
+                        icon(if copied { &icons::CHECK } else { &icons::COPY }, 14.)
+                            .color(if copied { p.text } else { p.text_faint }),
+                    ),
+            );
+    } else if remote {
         // The workspace icon trails, so every row's label starts on one edge.
-        trigger = trigger.child(icon(&icons::FOLDER, 14.).color(s.palette.text_faint));
+        trigger = trigger.child(icon(&icons::FOLDER, 14.).color(p.text_faint));
     }
-    let trigger = pressable(s, trigger)
-        .label(format!("Run context: {computer}, {text}"))
-        .help(path.unwrap_or_else(|| text.clone()))
-        .on_press(|s: &mut State| toggle_dropdown(s, Dropdown::Environment));
+    let trigger = rows::arrow_keys(
+        pressable(s, trigger)
+            .label(format!("Run context: {computer}, {text}"))
+            .help(path.unwrap_or_else(|| text.clone()))
+            .on_press(|s: &mut State| toggle_dropdown(s, Dropdown::Environment)),
+        Dropdown::Environment,
+    );
     let open = x.details.dropdown == Some(Dropdown::Environment);
     let mut menu = dropdown("thread-details-environment", trigger, open)
         .group_label("Run on")
@@ -579,10 +643,8 @@ fn open_changes(s: &mut State) {
 
 fn version_control(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
     let (s, x) = (c.s, c.x);
-    let p = &s.palette;
     let mut sec = Section::new("thread-details-version-control", "Version Control");
     sec.heading = false;
-    sec.separated = c.density == Density::Full;
     let remote = crate::remote::backend_is_remote(s);
     let summary = changes::summary(x).filter(|_| x.repo.is_some());
     if c.v.get(Item::Branch) {
@@ -592,6 +654,7 @@ fn version_control(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
                 .child(glyph(s, &icons::GIT_BRANCH))
                 .child(label(s, b.name.clone(), true));
             let sync = match (b.ahead, b.behind) {
+                (0, 0) if b.upstream.is_none() => Some("Not pushed".to_string()),
                 (0, 0) => None,
                 (a, 0) => Some(format!("↑{a}")),
                 (0, d) => Some(format!("↓{d}")),
@@ -615,11 +678,24 @@ fn version_control(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
                     s,
                     base("thread-details-pr")
                         .child(glyph(s, &icons::GIT_PULL_REQUEST))
-                        .child(label(s, format!("#{} {}", pr.number, pr.title), true))
-                        .child(meta(s, pr.state_label())),
+                        .child(label(s, pr.title.clone(), true))
+                        .child(meta(
+                            s,
+                            match pr.state_label() {
+                                "Open" => format!("#{}", pr.number),
+                                state => format!("#{} · {state}", pr.number),
+                            },
+                        )),
                 )
                 .label(format!("Open pull request #{}", pr.number))
-                .on_press_tx(move |_: &mut State, tx| {
+                .help(format!(
+                    "#{} {} · {}",
+                    pr.number,
+                    pr.title,
+                    pr.state_label()
+                ))
+                .on_press_tx(move |s: &mut State, tx| {
+                    close(s);
                     if let Err(e) = tx.open_url(&url) {
                         tracing::warn!(error = ?e, "could not open the pull request");
                     }
@@ -686,7 +762,14 @@ fn version_control(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
             }
             if let Some(hint) = hint {
                 primary = primary.help(hint);
-            } else if live {
+            }
+            if !live {
+                // Nothing to run (or it is running): the row still opens its
+                // menu, so "Commit…" stays one keypress or click away.
+                primary = pressable(s, primary)
+                    .label(running.unwrap_or(text))
+                    .on_press(|s: &mut State| open_dropdown(s, Dropdown::Git));
+            } else {
                 primary =
                     pressable(s, primary)
                         .label(text)
@@ -697,11 +780,11 @@ fn version_control(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
                             QuickKind::Hint(_) => {}
                         });
             }
-            let open = x.details.dropdown == Some(Dropdown::Git);
+            let open = chevron_menu_open(x, Dropdown::Git);
             let can_sync = !remote && running.is_none();
-            let chevron = dropdown(
+            let row = dropdown(
                 "thread-details-git",
-                chevron(s, "thread-details-git", Dropdown::Git).label("Git action options"),
+                rows::split(s, "thread-details-git-row", primary, Dropdown::Git, open),
                 open,
             )
             .item(
@@ -728,25 +811,17 @@ fn version_control(c: &Ctx, menus: &mut Vec<El>) -> Option<Section> {
                     }),
             )
             .build(c.k, menus);
-            sec.row(split("thread-details-git-row", primary, chevron));
+            sec.row(row);
         }
     }
     if let Some(sum) = summary.as_ref().filter(|_| c.v.get(Item::Changes)) {
-        let count = |n: usize, sign: &str, color: Color| {
-            ui::line(
-                format!("{sign}{n}"),
-                ui::MONO_XS,
-                if n > 0 { color } else { p.text_faint },
-            )
-        };
         sec.row(
             pressable(
                 s,
                 base("thread-details-changes")
                     .child(glyph(s, &icons::FILE_DIFF))
                     .child(label(s, "Changes", true))
-                    .child(count(sum.additions, "+", p.success))
-                    .child(count(sum.deletions, "-", p.danger)),
+                    .child(rows::counts(s, sum.additions, sum.deletions)),
             )
             .label("Open changes")
             .on_press(open_changes),
@@ -920,7 +995,7 @@ fn automations(c: &Ctx) -> Option<Section> {
                 .key(format!("thread-details-automation-{id}"))
                 .w_full()
                 .py(6.)
-                .px(10.)
+                .px(rows::PAD)
                 .gap(10.)
                 .items_center()
                 .radius(8.)
@@ -1002,7 +1077,7 @@ fn rel_row(c: &Ctx, r: Rel) -> El {
     if let Some(status) = r.status {
         e = e.child(ui::line(
             status,
-            xs(),
+            rows::digits(),
             if r.failed { p.danger } else { p.text_faint },
         ));
     }
@@ -1143,12 +1218,23 @@ fn lineage(c: &Ctx) -> Option<Section> {
             16.,
             p.text_muted,
         ));
-        rows.push(pressable(s, head).expanded(open).on_press(|s: &mut State| {
-            if let Some(x) = side_mut(s) {
-                x.details.previous_open = !x.details.previous_open;
-                x.details.previous_shown = 0;
-            }
-        }));
+        rows.push(
+            pressable(s, head)
+                .expanded(open)
+                .on_press(|s: &mut State| set_previous_open(s, None))
+                // → unfolds, ← folds, as a disclosure row.
+                .on_key(|s: &mut State, ev, _| match ev.key {
+                    rune::Key::Right if !ev.mods.cmd => {
+                        set_previous_open(s, Some(true));
+                        true
+                    }
+                    rune::Key::Left if !ev.mods.cmd => {
+                        set_previous_open(s, Some(false));
+                        true
+                    }
+                    _ => false,
+                }),
+        );
         if open {
             let shown = (LINEAGE_FIRST + c.x.details.previous_shown).min(previous.len());
             rows.extend(
@@ -1180,6 +1266,17 @@ fn lineage(c: &Ctx) -> Option<Section> {
     }
     sec.rows.push(list("thread-details-lineage-list", rows));
     Some(sec)
+}
+
+/// Fold or unfold "Previous agents" (`None` flips it).
+fn set_previous_open(s: &mut State, open: Option<bool>) {
+    if let Some(x) = side_mut(s) {
+        let open = open.unwrap_or(!x.details.previous_open);
+        if open != x.details.previous_open {
+            x.details.previous_open = open;
+            x.details.previous_shown = 0;
+        }
+    }
 }
 
 /// A side chat runs: the one open in the pane, or any the inbox says works.
@@ -1269,8 +1366,11 @@ fn side_chats(c: &Ctx) -> Section {
     }
     sec.row(fork);
     if !can_fork {
-        sec.rows
-            .push(el().px(10.).pb(4.).child(meta(s, "Send a message first.")));
+        sec.rows.push(
+            el().px(rows::PAD)
+                .pb(4.)
+                .child(meta(s, "Send a message first.")),
+        );
         sec.fit += 20.;
     }
     sec
@@ -1324,7 +1424,7 @@ fn meter(s: &State, key: String, name: &str, fill: Option<f64>, tone: Color, val
         .key(key)
         .w_full()
         .h(METER_H)
-        .px(10.)
+        .px(rows::PAD)
         .gap(12.)
         .items_center()
         .radius(8.)
@@ -1526,9 +1626,16 @@ pub(super) fn card(s: &State, k: &Kit, layer: &mut Vec<El>, anchor: &str, window
     let density = items::density(available, fit(Density::Full), fit(Density::Compact));
     let mut menus = Vec::new();
     let secs = sections(&ctx(density), &mut menus);
+    // One focus group over every row that acts: ↑/↓ move between them
+    // (wrapping, as a menu), Return or Space presses, → and ← open and
+    // close a row's menu (`rows::split`), Escape and a press outside close
+    // the card (its modal).
     let mut body = col()
         .key(format!("thread-details-{}", density_key(density)))
-        .w_full();
+        .w_full()
+        .role("menu")
+        .label("Thread details")
+        .focus_group();
     let empty = secs.is_empty();
     for (ix, sec) in secs.into_iter().enumerate() {
         // Keyed by the section below it, so a section arriving above does
@@ -1568,23 +1675,11 @@ pub(super) fn card(s: &State, k: &Kit, layer: &mut Vec<El>, anchor: &str, window
         // The trigger it returns is a stand-in: the press point anchors it.
         let _ = menu.build(k, &mut menus);
     }
-    let card = col()
-        .key("side-session-card")
-        .w(WIDTH)
-        .max_h(available)
-        .radius(16.)
-        .fill(p.surface_overlay)
-        .border(1., p.border)
-        .shadow(
-            8.,
-            24.,
-            Color::BLACK.alpha(if p.light { 0.12 } else { 0.35 }),
-        )
+    let card = col().key("side-session-card").w(WIDTH).max_h(available);
+    let card = rows::surface(s, card)
         .anchored(anchor, Side::Bottom, Align::End, 6.)
-        // Drops a few points from the toggle as it fades in, as the app's
-        // popovers do.
-        .transition(crate::design::motion::pop(-6.))
         .modal(true, close)
+        .on_key(|s: &mut State, ev, tx| ev.is_command('c') && !ev.mods.shift && copy_path(s, tx))
         .on_secondary_press(|s: &mut State, at, _| {
             if let Some(x) = side_mut(s) {
                 x.details.dropdown = None;
@@ -1596,6 +1691,7 @@ pub(super) fn card(s: &State, k: &Kit, layer: &mut Vec<El>, anchor: &str, window
                 .key("thread-details-scroll")
                 .w_full()
                 .min_h(0.)
+                .shrink()
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
@@ -1757,6 +1853,224 @@ mod tests {
             }
         });
         assert!(rt.presented("thread-details-choose").is_some());
+    }
+
+    fn press(rt: &mut rune::Runtime<State>, key: rune::Key, t: &mut f64) {
+        rt.key(rune::KeyEvent {
+            key,
+            mods: rune::Mods::default(),
+        });
+        for _ in 0..20 {
+            *t += 1. / 60.;
+            rt.frame(*t);
+        }
+    }
+
+    fn focused(rt: &mut rune::Runtime<State>) -> Option<String> {
+        let mut out = None;
+        rt.update(|_, tx| out = tx.focused().map(str::to_string));
+        out
+    }
+
+    fn read<T>(rt: &mut rune::Runtime<State>, f: impl FnOnce(&State) -> T) -> T {
+        let mut out = None;
+        rt.update(|s, _| out = Some(f(s)));
+        out.expect("update ran")
+    }
+
+    /// The card is a menu for the keyboard: it opens focused on its first
+    /// row, ↓ walks the rows, → opens a row's menu and Escape closes it
+    /// back onto the row, Return acts and closes the card.
+    #[test]
+    fn the_keyboard_walks_the_card() {
+        let mut rt = drawn((1440., 1000.), |_| {});
+        let mut t = 1.;
+        assert_eq!(
+            focused(&mut rt).as_deref(),
+            Some("thread-details-environment-row")
+        );
+        press(&mut rt, rune::Key::Right, &mut t);
+        assert_eq!(
+            read(&mut rt, |s| side(s).and_then(|x| x.details.dropdown)),
+            Some(Dropdown::Environment),
+            "→ opens the header's menu"
+        );
+        press(&mut rt, rune::Key::Escape, &mut t);
+        assert_eq!(
+            read(&mut rt, |s| side(s).and_then(|x| x.details.dropdown)),
+            None
+        );
+        assert!(
+            read(&mut rt, |s| side(s).is_some_and(|x| x.session_open)),
+            "Escape closed only the menu"
+        );
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            press(&mut rt, rune::Key::Down, &mut t);
+            seen.extend(focused(&mut rt));
+        }
+        // Rows that only inform (the branch) are not stops.
+        assert_eq!(
+            seen,
+            [
+                "thread-details-open-in-primary",
+                "thread-details-pr",
+                "thread-details-git-primary",
+                "thread-details-changes",
+            ]
+            .map(String::from)
+            .into_iter()
+            .filter(|k| k != "thread-details-open-in-primary" || !open_in::editors().is_empty())
+            .collect::<Vec<_>>()
+        );
+        press(&mut rt, rune::Key::Up, &mut t);
+        press(&mut rt, rune::Key::Right, &mut t);
+        assert_eq!(
+            read(&mut rt, |s| side(s).and_then(|x| x.details.dropdown)),
+            Some(Dropdown::Git),
+            "→ on a split row opens its chevron's menu"
+        );
+        press(&mut rt, rune::Key::Escape, &mut t);
+        press(&mut rt, rune::Key::Down, &mut t);
+        assert_eq!(
+            focused(&mut rt).as_deref(),
+            Some("thread-details-changes"),
+            "focus came back to the row"
+        );
+        press(&mut rt, rune::Key::Enter, &mut t);
+        assert!(!read(&mut rt, |s| side(s).is_some_and(|x| x.session_open)));
+        assert_eq!(
+            read(&mut rt, |s| match Tab::Changes.dock() {
+                crate::chat::side::Dock::Work => s.prefs.work_tab.clone(),
+                crate::chat::side::Dock::Side => s.prefs.side_tab.clone(),
+            }),
+            Tab::Changes.id(),
+            "Return opened the changes"
+        );
+    }
+
+    /// ← closes a row's open menu (its items leave ← to the app) and focus
+    /// lands back on the row.
+    #[test]
+    fn left_closes_an_open_row_menu() {
+        let mut rt = drawn((1440., 1000.), |_| {});
+        rt.on_key = Some(crate::on_key);
+        let mut t = 1.;
+        press(&mut rt, rune::Key::Right, &mut t);
+        assert_eq!(
+            read(&mut rt, |s| side(s).and_then(|x| x.details.dropdown)),
+            Some(Dropdown::Environment)
+        );
+        press(&mut rt, rune::Key::Left, &mut t);
+        assert_eq!(
+            read(&mut rt, |s| side(s).and_then(|x| x.details.dropdown)),
+            None,
+            "← closed the menu"
+        );
+        assert!(read(&mut rt, |s| side(s).is_some_and(|x| x.session_open)));
+        assert_eq!(
+            focused(&mut rt).as_deref(),
+            Some("thread-details-environment-row")
+        );
+    }
+
+    /// While the git action runs (or only hints), its row is still a stop
+    /// that opens the menu, so "Commit…" stays reachable by keyboard.
+    #[test]
+    fn a_busy_git_row_still_opens_its_menu() {
+        let mut rt = drawn((1440., 1000.), |s| {
+            if let Some(x) = side_mut(s) {
+                x.changes.busy = Some("push");
+            }
+        });
+        let mut t = 1.;
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            press(&mut rt, rune::Key::Down, &mut t);
+            seen.extend(focused(&mut rt));
+        }
+        assert!(
+            seen.iter().any(|k| k == "thread-details-git-primary"),
+            "the busy row is a stop: {seen:?}"
+        );
+        while focused(&mut rt).as_deref() != Some("thread-details-git-primary") {
+            press(&mut rt, rune::Key::Down, &mut t);
+        }
+        press(&mut rt, rune::Key::Enter, &mut t);
+        assert_eq!(
+            read(&mut rt, |s| side(s).and_then(|x| x.details.dropdown)),
+            Some(Dropdown::Git)
+        );
+    }
+
+    /// Escape closes the card; ⌘C copies the folder's path and marks the
+    /// copy button.
+    #[test]
+    fn escape_closes_and_command_c_copies_the_path() {
+        let mut rt = drawn((1440., 1000.), |_| {});
+        let mut t = 1.;
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Command('c'),
+            mods: rune::Mods {
+                cmd: true,
+                ..rune::Mods::default()
+            },
+        });
+        t += 0.5;
+        rt.frame(t);
+        assert!(read(&mut rt, |s| side(s).is_some_and(|x| x.details.copied)));
+        press(&mut rt, rune::Key::Escape, &mut t);
+        assert!(!read(&mut rt, |s| side(s).is_some_and(|x| x.session_open)));
+    }
+
+    /// Opened with the pointer, the card shows no keyboard highlight; the
+    /// first ↓ shows it.
+    #[test]
+    fn a_click_opens_the_card_without_a_keyboard_highlight() {
+        let mut rt = drawn((1440., 1000.), |s| {
+            if let Some(x) = side_mut(s) {
+                x.session_open = false;
+            }
+        });
+        let mut t = 1.;
+        let (r, _) = rt.presented("side-session-toggle").expect("toggle drawn");
+        let (x, y) = (r[0] + r[2] / 2., r[1] + r[3] / 2.);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        for _ in 0..30 {
+            t += 1. / 60.;
+            rt.frame(t);
+        }
+        assert!(rt.presented("side-session-card").is_some());
+        let visible = |rt: &mut rune::Runtime<State>| {
+            let mut v = true;
+            rt.update(|_, tx| v = tx.focus_visible());
+            v
+        };
+        assert!(!visible(&mut rt), "no highlight after a click");
+        press(&mut rt, rune::Key::Down, &mut t);
+        assert!(visible(&mut rt), "arrows show it");
+    }
+
+    /// "Previous agents" folds like a disclosure row: → unfolds, ← folds.
+    #[test]
+    fn arrows_fold_previous_agents() {
+        let mut rt = drawn((1440., 1000.), |_| {});
+        let mut t = 1.;
+        for _ in 0..20 {
+            if focused(&mut rt).as_deref() == Some("thread-details-previous-agents") {
+                break;
+            }
+            press(&mut rt, rune::Key::Down, &mut t);
+        }
+        press(&mut rt, rune::Key::Right, &mut t);
+        assert!(read(&mut rt, |s| side(s)
+            .is_some_and(|x| x.details.previous_open)));
+        assert!(rt.presented("thread-details-agent-a2").is_some());
+        press(&mut rt, rune::Key::Left, &mut t);
+        assert!(!read(&mut rt, |s| side(s)
+            .is_some_and(|x| x.details.previous_open)));
     }
 
     #[test]

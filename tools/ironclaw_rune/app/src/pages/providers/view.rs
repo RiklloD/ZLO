@@ -4,11 +4,12 @@ use crate::pages::common::controls::{
     Look, Size, button_sized, header_with, icon_button_sized, input, muted, open_url, outlined_tag,
     refresh_icon, rule, section_title, spinner, spinner_line,
 };
-use crate::pages::common::ts::{body_semibold, sm, sm_medium, xs, xs_medium};
+use crate::pages::common::ts::{MONO_XS, body_semibold, sm, sm_medium, xs, xs_medium};
 use crate::pages::common::{Tone, card, empty_state, error_line, loading, notice_line, page_body};
 use rune::{Cx, El, col, el, row, text};
 use rune_kit::Kit;
 use zlo_client::operator_llm::{LlmConfigSnapshot, LlmProviderView};
+use zlo_client::orchestration::RouteProvider;
 use zlo_client::task_models::TaskModelChoice;
 
 use super::catalog::{Kind, display_name, kind_of};
@@ -473,6 +474,9 @@ fn render_provider(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
     if pv.active {
         card = card.child(render_quick_switch(s, k, pv));
     }
+    if let Some(route) = catalog_row(ps, pv) {
+        card = card.child(render_picker_models(s, k, route));
+    }
     if editing {
         let provider = pv.clone();
         card = card.child(
@@ -510,6 +514,139 @@ fn render_provider(s: &State, k: &Kit, pv: &LlmProviderView) -> El {
         );
     }
     card
+}
+
+/// A connected provider's row in the model picker's catalog: the active
+/// provider runs as IronClaw's own loop (the `ironclaw` row), the others
+/// under their own id.
+fn catalog_row<'a>(ps: &'a ProvidersState, pv: &LlmProviderView) -> Option<&'a RouteProvider> {
+    let id = if pv.active {
+        crate::chat::model_picker::NATIVE
+    } else {
+        pv.id.as_str()
+    };
+    ps.runtimes
+        .as_ref()?
+        .iter()
+        .find(|r| r.provider == id && !r.models.is_empty())
+}
+
+/// Which of a provider's models the chat's model picker offers: a folded
+/// line ("Models in the picker · 7 of 12"), open, one switch per model and
+/// a show-all / hide-all pair. Needs the picker preferences.
+pub(super) fn render_picker_models(s: &State, k: &Kit, route: &RouteProvider) -> El {
+    let p = &s.palette;
+    let ps = &s.pages.providers;
+    let Some(prefs) = ps.picker.as_ref() else {
+        return el();
+    };
+    let id = route.provider.clone();
+    let shown = route
+        .models
+        .iter()
+        .filter(|m| !prefs.model_hidden(&id, m))
+        .count();
+    let open = ps.picker_open.contains(&id);
+    let toggle = id.clone();
+    let head = row()
+        .key(format!("picker-models-{id}"))
+        .w_full()
+        .gap(8.)
+        .center_y()
+        .role("button")
+        .label("Models in the picker")
+        .expanded(open)
+        .cursor(rune::Cursor::Pointer)
+        .on_press(move |s: &mut State| super::toggle_picker_list(s, toggle.clone()))
+        .child(text("Models in the picker").font(xs_medium()).color(p.text))
+        .child(
+            text(format!("{shown} of {}", route.models.len()))
+                .font(xs())
+                .color(p.text_muted)
+                .grow(1.),
+        )
+        .child(kit::chevron(
+            &format!("picker-models-{id}-chev"),
+            open,
+            Turn::Flip,
+            12.,
+            p.text_muted,
+        ));
+    let c = col().w_full().gap(6.).child(rule(p)).child(head);
+    if !open {
+        return c;
+    }
+    let (all_on, all_off) = (
+        (id.clone(), route.models.clone()),
+        (id.clone(), route.models.clone()),
+    );
+    // The open list wipes in under its line and back out.
+    let mut body = col()
+        .key(format!("picker-models-{id}-list"))
+        .w_full()
+        .gap(6.)
+        .transition(motion::reveal());
+    body = body.child(
+        row()
+            .gap(4.)
+            .child(
+                button_sized("Show all", Look::Ghost, Size::XSmall)
+                    .disabled(shown == route.models.len())
+                    .on_press(move |s: &mut State| {
+                        super::set_all_shown(s, all_on.0.clone(), all_on.1.clone(), true)
+                    })
+                    .build(k)
+                    .key(format!("picker-all-{id}")),
+            )
+            .child(
+                button_sized("Hide all", Look::Ghost, Size::XSmall)
+                    .disabled(shown == 0)
+                    .on_press(move |s: &mut State| {
+                        super::set_all_shown(s, all_off.0.clone(), all_off.1.clone(), false)
+                    })
+                    .build(k)
+                    .key(format!("picker-none-{id}")),
+            ),
+    );
+    let mut list = col().w_full();
+    for model in &route.models {
+        let on = !prefs.model_hidden(&id, model);
+        let name = crate::chat::model_picker::pretty_model(model);
+        let (pv, md) = (id.clone(), model.clone());
+        list = list.child(
+            row()
+                .key(format!("picker-model-{id}-{model}"))
+                .w_full()
+                .gap(12.)
+                .py(4.)
+                .center_y()
+                .child(
+                    col()
+                        .grow(1.)
+                        .min_w(0.)
+                        .child(
+                            text(name.clone())
+                                .font(sm())
+                                .color(if on { p.text } else { p.text_muted })
+                                .truncate(),
+                        )
+                        .child(
+                            text(model.clone())
+                                .font(MONO_XS)
+                                .color(p.text_faint)
+                                .truncate(),
+                        ),
+                )
+                .child(crate::pages::common::switch(
+                    k,
+                    on,
+                    false,
+                    &format!("Show {name} in the model picker"),
+                    move |s: &mut State| super::set_model_shown(s, pv.clone(), md.clone(), !on),
+                )),
+        );
+    }
+    c.child(body.child(list))
 }
 
 /// Models the chat's switcher offers. The gateway binds the list to the
