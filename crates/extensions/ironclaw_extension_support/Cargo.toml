@@ -34,7 +34,7 @@ chrono = { version = "0.4", features = ["serde"] }
 encoding_rs = "0.8"
 futures-util = "0.3"
 glob = "0.3"
-htmd = "0.5.5"
+htmd = "0.6.0"
 ironclaw_auth = { path = "../../domains/ironclaw_auth" }
 ironclaw_common = { path = "../../contracts/ironclaw_common" }
 ironclaw_extractors = { path = "../../domains/ironclaw_extractors" }
@@ -56,7 +56,7 @@ unicode-normalization = "0.1"
 url = "2"
 # ZIP skill bundles fetched by `builtin.skill_install` from an HTTPS/GitHub
 # source are extracted here (WS3, moved from `ironclaw_host_runtime`).
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features = ["test-support"] }
