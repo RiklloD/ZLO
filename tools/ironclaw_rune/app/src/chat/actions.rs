@@ -65,7 +65,7 @@ pub fn attach_thread(s: &mut State, id: &str, other_id: String, title: String) {
         s,
         "chat",
         move |c| async move { c.thread_attachment(&other_id, &title, &limits).await },
-        move |s, result, _| {
+        move |s, result, tx| {
             let Some(c) = chat_for(s, &thread) else {
                 return;
             };
@@ -77,7 +77,11 @@ pub fn attach_thread(s: &mut State, id: &str, other_id: String, title: String) {
                     c.error = None;
                     place(s, &thread, vec![file]);
                 }
-                Err(problem) => c.error = Some(problem),
+                Err(problem) => {
+                    // The person's attachment was refused: the error wipes in.
+                    tx.animated();
+                    c.error = Some(problem);
+                }
             }
         },
     );
@@ -127,7 +131,7 @@ pub fn attach(s: &mut State, id: &str, paths: Vec<PathBuf>) {
             }
             Ok::<_, ClientError>(out)
         },
-        move |s, results, _| {
+        move |s, results, tx| {
             let Ok(results) = results else { return };
             let Some(c) = chat_for(s, &thread) else {
                 return;
@@ -145,6 +149,10 @@ pub fn attach(s: &mut State, id: &str, paths: Vec<PathBuf>) {
                     Err(problem) => problems.push(problem),
                 }
             }
+            if !problems.is_empty() {
+                // A file the person picked was refused: the error wipes in.
+                tx.animated();
+            }
             c.error = (!problems.is_empty()).then(|| problems.join(" "));
             place(s, &thread, files);
         },
@@ -160,10 +168,23 @@ pub(crate) fn open_attachment(s: &mut State, id: &str, chip: AttachmentChip) {
     // The ids come from the gateway: hashed, never joined as a path.
     let dir = super::downloads::dir_for("attachment", &[id, &message_id, &chip.id]);
     let attachment = chip.id.clone();
-    open_fetched(s, id, dir, &chip.filename, move |c| async move {
-        c.attachment_bytes(&thread_id, &message_id, &attachment)
-            .await
-    });
+    // Its card breathes until the file is on disk (or the fetch failed).
+    if let Some(c) = chat_for(s, id)
+        && !c.downloading.insert(chip.id.clone())
+    {
+        return;
+    }
+    open_fetched(
+        s,
+        id,
+        dir,
+        &chip.filename,
+        Some(chip.id.clone()),
+        move |c| async move {
+            c.attachment_bytes(&thread_id, &message_id, &attachment)
+                .await
+        },
+    );
 }
 
 /// Fetch bytes, write them under the app's temp folder and hand the file
@@ -173,6 +194,7 @@ pub(crate) fn open_fetched<Fut>(
     id: &str,
     dir: PathBuf,
     name: &str,
+    busy: Option<String>,
     fetch: impl FnOnce(Client) -> Fut + Send + 'static,
 ) where
     Fut: std::future::Future<Output = Result<Vec<u8>, ClientError>> + Send + 'static,
@@ -192,9 +214,16 @@ pub(crate) fn open_fetched<Fut>(
                     .map_err(|e| ClientError::Decode(format!("Couldn't save the file: {e}")))
             }
         },
-        move |s, result, _| match result {
-            Ok(path) => open_with_system(&path),
-            Err(e) => set_error(s, &thread, e.to_string()),
+        move |s, result, tx| {
+            // The person's click: the card stops breathing with motion.
+            tx.animated();
+            if let (Some(file), Some(c)) = (&busy, chat_for(s, &thread)) {
+                c.downloading.remove(file);
+            }
+            match result {
+                Ok(path) => open_with_system(&path),
+                Err(e) => set_error(s, &thread, e.to_string()),
+            }
         },
     );
 }
@@ -279,6 +308,8 @@ fn run_command(s: &mut State, id: &str, text: String) {
             let Some(c) = chat_for(s, &thread_id) else {
                 return;
             };
+            // The answer to the person's command arrives with motion.
+            tx.animated();
             let effect = result.as_ref().ok().and_then(|o| o.effect.clone());
             c.transcript
                 .push_command(&text, result.map_err(|e| e.to_string()));
@@ -516,6 +547,9 @@ pub fn stop(s: &mut State, id: &str, tx: &mut Tx) {
             if let Err(e) = result
                 && let Some(c) = chat_for(s, &thread_id)
             {
+                // The person's click failed: the card comes back and the
+                // error wipes in (a reply lands at once otherwise).
+                tx.animated();
                 c.transcript.clear_stop_requested();
                 super::refresh_rows(s, &thread_id, tx);
                 set_error(s, &thread_id, e.to_string());
@@ -560,6 +594,9 @@ pub(crate) fn resolve_gate(
             if let Err(e) = result
                 && let Some(c) = chat_for(s, &thread_id)
             {
+                // The person's click failed: the card comes back and the
+                // error wipes in (a reply lands at once otherwise).
+                tx.animated();
                 c.transcript.clear_gate_resolving(&gate_ref);
                 set_error(s, &thread_id, e.to_string());
                 super::refresh_rows(s, &thread_id, tx);
@@ -575,8 +612,10 @@ where
     Fut: std::future::Future<Output = Result<serde_json::Value, ClientError>> + Send + 'static,
 {
     let thread = id.to_string();
-    jobs::run(s, "chat", f, move |s, result, _| {
+    jobs::run(s, "chat", f, move |s, result, tx| {
         if let Err(e) = result {
+            // The person's action failed: the error wipes in.
+            tx.animated();
             set_error(s, &thread, e.to_string());
         }
     });

@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use rune::{
-    Color, El, Icon, LineCap, Path, Shape, TextStyle, Transition, canvas, col, el, icon, row, text,
+    Color, El, Icon, LineCap, Path, Shape, TextStyle, Transition, canvas, col, el, row, text,
 };
 use rune_kit::{Kit, RollingText};
 use zlo_client::GateDecision;
@@ -57,9 +57,6 @@ pub fn ui(s: &State, px_at_16: f32) -> f32 {
 pub fn type_at(s: &State, size: f32, line: f32, weight: f32) -> TextStyle {
     TextStyle::new(ui(s, size), weight).lh(ui(s, line))
 }
-
-/// A disclosure chevron's quarter turn (the side dock's tab pill spring).
-const CHEVRON_TURN: rune::Spring = crate::design::motion::PILL;
 
 /// An entering row's motion: it rises `y` points while it fades in.
 pub fn rise(y: f32) -> Transition {
@@ -556,9 +553,12 @@ fn rail(leaf: &Leaf, last: bool, p: &Palette) -> El {
                 .size(GUTTER_WIDTH, TREE_ROW_HEIGHT)
                 .absolute(0., 0.),
         )
+        // A running step's glyph breathes on the loaders' 15 fps clock
+        // (still under reduced motion and the battery saver). Its finish
+        // lands with the stream, which Rune commits at once, so the glyph
+        // just stops breathing there.
         .child(
-            icon(leaf.icon, ICON_SIZE)
-                .color(tint)
+            crate::design::kit::busy_glyph("leaf-glyph", leaf.icon, leaf.running, ICON_SIZE, tint)
                 .absolute(ICON_LEFT, mid - ICON_SIZE / 2.),
         )
 }
@@ -610,17 +610,15 @@ pub fn render_activity(
             .color(p.text_muted)
             .build(k)
     };
-    // Keyed so its turn springs between closed and open instead of
-    // snapping a quarter turn.
-    let chevron = icon(&icons::CHEVRON_DOWN, 13.)
-        .key("chevron")
-        .color(p.text_muted)
-        .rotate(if open {
-            0.
-        } else {
-            -std::f32::consts::FRAC_PI_2
-        })
-        .rotate_motion(CHEVRON_TURN);
+    // The shared disclosure chevron: its turn springs between closed and
+    // open instead of snapping a quarter turn.
+    let chevron = crate::design::kit::chevron(
+        "chevron",
+        open,
+        crate::design::kit::Turn::Disclose,
+        13.,
+        p.text_muted,
+    );
     let header = row()
         .key(format!("{key}-head"))
         .role("button")

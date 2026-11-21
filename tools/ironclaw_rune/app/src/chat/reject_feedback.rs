@@ -81,6 +81,8 @@ fn submit_reject(s: &mut State, thread: &str, tx: &mut Tx) {
             if let Err(e) = result
                 && let Some(c) = chat_for(s, &thread_id)
             {
+                // The person's reject failed: the card comes back with motion.
+                tx.animated();
                 c.transcript.clear_gate_resolving(&gate_ref);
                 set_error(s, &thread_id, e.to_string());
                 super::refresh_rows(s, &thread_id, tx);

@@ -386,7 +386,9 @@ pub(crate) fn queue_action(s: &mut State, id: &str, action: QueueAction) {
         s,
         "orchestration",
         move |c| async move { c.mutate_queue(&thread_id, &action).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The person's own action: its result moves (a reply lands at once otherwise).
+            tx.animated();
             // A closed (or closed and reopened) chat's reply is dropped.
             let Some(o) = slot_of(s, &asked, instance) else {
                 return;
@@ -410,7 +412,9 @@ pub fn cancel_task(s: &mut State, id: &str, task_id: String) {
         s,
         "orchestration",
         move |c| async move { c.cancel_task(&task_id).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The person's own action: its result moves (a reply lands at once otherwise).
+            tx.animated();
             let Some(o) = slot_of(s, &thread_id, instance) else {
                 return;
             };
@@ -478,7 +482,9 @@ pub(crate) fn merge_back(s: &mut State, id: &str) {
         s,
         "orchestration",
         move |c| async move { c.merge_back(&thread_id, None).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The person's own action: its result moves (a reply lands at once otherwise).
+            tx.animated();
             let target = result
                 .as_ref()
                 .ok()

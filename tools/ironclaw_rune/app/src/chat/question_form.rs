@@ -216,12 +216,22 @@ fn send_question(
             if let Err(e) = result
                 && let Some(c) = chat_for(s, &thread_id)
             {
+                // The person's answer failed: the buttons come back with
+                // motion (a reply lands at once otherwise).
+                tx.animated();
                 c.transcript.clear_question_sending(&gate);
                 set_error(s, &thread_id, e.to_string());
                 super::refresh_rows(s, &thread_id, tx);
             }
         },
     );
+}
+
+/// An option chip: picking it fills it on the slide spring instead of the
+/// plate cutting in, and it sinks a little while pressed.
+fn option_chip(s: &State, chip: El) -> El {
+    chip.motion(crate::design::styles::Style::of(&s.prefs).slide)
+        .press_scale(crate::design::motion::PRESS)
 }
 
 fn small_button(label: &str, variant: ButtonVariant) -> Button {
@@ -302,8 +312,10 @@ pub(crate) fn render_question(
     if let Some(error) = draft.and_then(|d| d.error.clone()) {
         card = card.child(
             text(error)
+                .key(format!("{key}-error"))
                 .font(flow::type_at(s, 12., 16., 400.))
-                .color(p.danger),
+                .color(p.danger)
+                .transition(crate::design::motion::reveal()),
         );
     }
     let thread = chat.thread_id.clone();
@@ -446,7 +458,7 @@ fn render_field(
                 {
                     chip = chip.help(description.clone());
                 }
-                chips = chips.child(chip.build(k).key(format!("{key}-f{ix}-o{o}")));
+                chips = chips.child(option_chip(s, chip.build(k)).key(format!("{key}-f{ix}-o{o}")));
             }
             column = column.child(chips);
             if *multi {
@@ -462,17 +474,20 @@ fn render_field(
                 let (gate, id, thread) = (gate_ref.to_string(), field.id.clone(), thread.clone());
                 let chosen = value == Some(choice);
                 choices = choices.child(
-                    small_button(
-                        label,
-                        if chosen {
-                            ButtonVariant::Neutral
-                        } else {
-                            ButtonVariant::GhostMuted
-                        },
+                    option_chip(
+                        s,
+                        small_button(
+                            label,
+                            if chosen {
+                                ButtonVariant::Neutral
+                            } else {
+                                ButtonVariant::GhostMuted
+                            },
+                        )
+                        .disabled(!open)
+                        .on_press(move |s: &mut State| set_bool(s, &thread, &gate, &id, choice))
+                        .build(k),
                     )
-                    .disabled(!open)
-                    .on_press(move |s: &mut State| set_bool(s, &thread, &gate, &id, choice))
-                    .build(k)
                     .key(format!("{key}-f{ix}-{label}")),
                 );
             }
