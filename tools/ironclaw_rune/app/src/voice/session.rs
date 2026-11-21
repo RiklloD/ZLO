@@ -463,7 +463,10 @@ fn authorize_then_open(s: &mut State) {
         let handle = s.rt.handle.clone();
         std::thread::spawn(move || {
             let result = futures::executor::block_on(super::apple::authorize());
-            handle.update(move |s, _| {
+            handle.update(move |s, tx| {
+                // The answer to the person's Allow click: Allowed fades in
+                // and a refusal's notice pops, as the click's reply.
+                tx.animated();
                 s.voice.authorized = super::authorized();
                 let Some(e) = engine(s) else { return };
                 let waiting = e.mic.authorized();

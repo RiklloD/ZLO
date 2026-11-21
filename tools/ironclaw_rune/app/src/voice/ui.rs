@@ -358,8 +358,9 @@ fn waveform(status: Status, bars: Option<[u8; BARS]>, ink: Color) -> El {
             .radius(BAR_W / 2.)
             .fill(ink);
         bar = match status {
-            Status::Thinking => bar.cycle(breathe(1.6, 0., &BREATH_45)),
-            Status::Speaking => bar.cycle(breathe(1.0, i as f32 * 0.12, &BREATH_35)),
+            // Half a period in: the loops start lit, as their still pose is.
+            Status::Thinking => bar.cycle(breathe(1.6, 0.8, &BREATH_45)),
+            Status::Speaking => bar.cycle(breathe(1.0, 0.5 + i as f32 * 0.12, &BREATH_35)),
             _ => bar,
         };
         wave = wave.child(bar);
