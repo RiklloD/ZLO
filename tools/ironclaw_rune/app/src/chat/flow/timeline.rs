@@ -112,6 +112,7 @@ mod tests {
             "t0",
             &rows,
             false,
+            None,
             true,
             &HashMap::new(),
             &HashMap::new(),

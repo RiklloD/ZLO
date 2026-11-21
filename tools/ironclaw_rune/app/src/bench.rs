@@ -167,6 +167,7 @@ fn user(key: &str, text: &str) -> Row {
         text: text.into(),
         pending: false,
         attachments: Vec::new(),
+        steer: None,
     }
 }
 
