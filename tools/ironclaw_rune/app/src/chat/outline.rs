@@ -30,6 +30,15 @@ const MIN_PROMPTS: usize = 2;
 /// Narrower transcripts keep the reading column clear.
 const MIN_WIDTH: f32 = 900.;
 const CARD_WIDTH: f32 = 288.;
+/// The stack's padding above the first tick.
+const BAR_PAD: f32 = 8.;
+/// The card's top against its tick's row (it sat 24 pt above the row).
+const CARD_LIFT: f32 = -24.;
+/// A tick's lift and ink: quick and critically damped, so the ripple
+/// follows the pointer without trailing it.
+const TICK_SPRING: rune::Spring = rune::Spring::new(0.18, 0.);
+/// The preview card gliding between ticks, and the rail's own entrance.
+const CARD_SPRING: rune::Spring = rune::Spring::new(0.2, 0.);
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct Prompt {
@@ -42,7 +51,7 @@ pub(crate) struct Prompt {
 #[derive(Default)]
 pub(crate) struct OutlineState {
     prompts: Vec<Prompt>,
-    hovered: Option<usize>,
+    pub(super) hovered: Option<usize>,
     /// The prompt at the top of the viewport.
     active: Option<usize>,
     /// Where each prompt row was laid out last (window y), by key.
@@ -194,7 +203,7 @@ pub(crate) fn view(s: &State, chat: &ChatState) -> Option<El> {
         .role("toolbar")
         .label("Your messages")
         .w(BAR_WIDTH_LIFTED)
-        .py(8.);
+        .py(BAR_PAD);
     for ix in start..end {
         let prompt = &o.prompts[ix];
         let lift = bar_lift(ix, hover);
@@ -205,8 +214,11 @@ pub(crate) fn view(s: &State, chat: &ChatState) -> Option<El> {
         let thread = chat.thread_id.clone();
         let hover_thread = chat.thread_id.clone();
         let target = super::view::row_key(&prompt.key);
-        let mut bar = row()
-            .key(format!("outline-bar-{ix}"))
+        // Keyed by the prompt, so a window sliding over a long thread keeps
+        // each tick's identity; the tick's width and ink spring on
+        // `TICK_SPRING`, so the lift ripples out around the pointer.
+        let bar = row()
+            .key(format!("outline-bar:{}", prompt.key))
             .role("button")
             .label(prompt.label.clone())
             .w_full()
@@ -215,14 +227,16 @@ pub(crate) fn view(s: &State, chat: &ChatState) -> Option<El> {
             .justify_end()
             .cursor(rune::Cursor::Pointer)
             .child(
-                el().h(BAR_HEIGHT)
+                el().key("tick")
+                    .h(BAR_HEIGHT)
                     .w(BAR_WIDTH + (BAR_WIDTH_LIFTED - BAR_WIDTH) * lift)
                     .radius(1.)
                     .fill(ink(if lit {
                         BAR_OPACITY_LIT
                     } else {
                         BAR_OPACITY_IDLE
-                    })),
+                    }))
+                    .motion(TICK_SPRING),
             )
             .on_hover_change(move |s: &mut State, on: bool, _tx: &mut Tx| {
                 if let Some(c) = super::chat_for(s, &hover_thread) {
@@ -239,42 +253,61 @@ pub(crate) fn view(s: &State, chat: &ChatState) -> Option<El> {
                 }
                 tx.scroll_into_view(target.clone());
             });
-        if hover == Some(ix) {
-            let mut card = col()
-                .key("outline-card")
-                .w(CARD_WIDTH)
-                .gap(6.)
-                .padding(12.)
-                .radius(12.)
-                .border(1., p.border)
-                .fill(p.surface_overlay)
-                .shadow(8., 24., rune::Color::BLACK.alpha(0.25))
-                .transition(rune::Transition::opacity())
-                .child(
-                    text(prompt.label.clone())
-                        .font(flow::type_at(s, 13., 18., 400.))
-                        .color(p.text)
-                        .wrap()
-                        .max_lines(2),
-                );
-            if let Some(reply) = &prompt.reply {
-                card = card.child(
-                    text(reply.clone())
-                        .font(flow::type_at(s, 13., 18., 400.))
-                        .color(p.text_muted)
-                        .wrap()
-                        .max_lines(2),
-                );
-            }
-            bar = bar.child(card.pin(None, Some(-24.), Some(BAR_WIDTH_LIFTED + 10.), None));
-        }
         bars = bars.child(bar);
+    }
+    // One preview card for the whole rail, beside the hovered tick: moving
+    // down the rail glides it from tick to tick (and swaps its words)
+    // instead of building a new card under each bar.
+    if let Some(h) = hover {
+        let prompt = &o.prompts[h];
+        let top = BAR_PAD + (h - start) as f32 * (BAR_HEIGHT + gap) + CARD_LIFT;
+        let mut card = col()
+            .key("outline-card")
+            .w(CARD_WIDTH)
+            .gap(6.)
+            .padding(12.)
+            .radius(12.)
+            .border(1., p.border)
+            .fill(p.surface_overlay)
+            .shadow(8., 24., rune::Color::BLACK.alpha(0.25))
+            // A preview, not a target: the pointer passes through to the
+            // transcript under it.
+            .inert()
+            .motion(CARD_SPRING)
+            .transition(
+                rune::Transition::offset(6., 0.)
+                    .combined(rune::Transition::opacity())
+                    .springs(rune::SpringPair::with_exit_ratio(CARD_SPRING, 0.6)),
+            )
+            .child(
+                text(prompt.label.clone())
+                    .font(flow::type_at(s, 13., 18., 400.))
+                    .color(p.text)
+                    .wrap()
+                    .max_lines(2),
+            );
+        if let Some(reply) = &prompt.reply {
+            card = card.child(
+                text(reply.clone())
+                    .key("reply")
+                    .font(flow::type_at(s, 13., 18., 400.))
+                    .color(p.text_muted)
+                    .wrap()
+                    .max_lines(2),
+            );
+        }
+        bars = bars.child(card.pin(None, Some(top), Some(BAR_WIDTH_LIFTED + 10.), None));
     }
     Some(
         col()
             .key("outline-rail")
             .pin(None, Some(44.), Some(14.), Some(150.))
             .justify_center()
+            .transition(
+                rune::Transition::opacity()
+                    .combined(rune::Transition::offset(10., 0.))
+                    .springs(rune::SpringPair::with_exit_ratio(CARD_SPRING, 0.6)),
+            )
             .child(bars),
     )
 }
