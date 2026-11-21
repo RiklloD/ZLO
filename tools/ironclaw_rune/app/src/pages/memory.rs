@@ -12,6 +12,8 @@
 //! late-reply rules for saves and archives.
 
 mod draft;
+#[cfg(test)]
+mod motion_tests;
 mod supermemory;
 
 use crate::pages::common::controls::{
@@ -169,11 +171,14 @@ fn open_document(s: &mut State, path: String) {
         s,
         "memory",
         move |c| async move { c.memory_document(&path).await },
-        move |s, result, _tx| {
+        move |s, result, tx| {
             let m = &mut s.pages.memory;
             if m.next_generation != request {
                 return;
             }
+            // The person's click: the selection glides to the document and
+            // its card opens with motion.
+            tx.animated();
             match result {
                 Ok(document) => {
                     let generation = m.bump_generation();
@@ -250,7 +255,9 @@ fn save(s: &mut State) {
         s,
         "memory",
         move |c| async move { c.memory_write(&path, &content, expected.as_deref()).await },
-        move |s, result, _tx| {
+        move |s, result, tx| {
+            // The person's Save: the editor gives way and the notice wipes in.
+            tx.animated();
             let m = &mut s.pages.memory;
             m.busy = false;
             let reply = match result {
@@ -309,7 +316,8 @@ fn archive(s: &mut State) {
         s,
         "memory",
         move |c| async move { c.memory_archive(&path, &hash).await },
-        move |s, result, _tx| {
+        move |s, result, tx| {
+            tx.animated();
             let m = &mut s.pages.memory;
             m.busy = false;
             match result {
@@ -341,7 +349,9 @@ fn run_search(s: &mut State) {
         s,
         "memory",
         move |c| async move { c.memory_search(&query, 20).await },
-        |s, result, _tx| {
+        |s, result, tx| {
+            // The person's search: the hits wipe in.
+            tx.animated();
             let m = &mut s.pages.memory;
             match result {
                 Ok(found) => m.hits = Some(found.hits),
@@ -375,6 +385,44 @@ fn tabs(s: &State, k: &Kit) -> El {
     .pb(12.0)
 }
 
+/// The height a line of `style` takes (Rune's default leading is 1.25 ×
+/// the size), so a list can give its rows the height their text gave them
+/// and a pill can know where each row sits.
+pub(super) fn line_of(style: rune::TextStyle) -> f32 {
+    if style.line_height > 0.0 {
+        style.line_height
+    } else {
+        style.size * 1.25
+    }
+}
+
+/// The pill behind a list's selected row: the rows' own selected fill and
+/// corners, gliding between rows on the selection spring
+/// (`motion::PILL`) instead of jumping, and fading out where it was when
+/// nothing is selected. `top` is the selected row's offset in its column;
+/// the rows over it draw no selected fill of their own.
+/// (`kit::slide_pill_sized` draws the sidebars' lighter wash and 8 pt
+/// corners; these lists keep their own look.)
+pub(super) fn list_pill(
+    p: &crate::design::Palette,
+    key: &str,
+    top: Option<f32>,
+    height: f32,
+    radius: f32,
+) -> Option<El> {
+    let top = top?;
+    Some(
+        el().key(key.to_string())
+            .pin(Some(0.), Some(top), Some(0.), None)
+            .h(height)
+            .radius(radius)
+            .fill(p.active)
+            .a11y_hidden()
+            .motion(crate::design::motion::PILL)
+            .transition(rune::Transition::opacity()),
+    )
+}
+
 /// A text field with a trailing button, GPUI's `h_flex(Input, Button)`.
 pub(super) fn field_row(field: El, action: El) -> El {
     row()
@@ -396,28 +444,36 @@ fn render_local(s: &State, k: &Kit) -> El {
         );
     }
     let selected = m.open.as_ref().map(|o| o.document.path.as_str());
-    let mut list = col().key("memory-docs").w_full();
+    // The selection is one pill behind the rows that glides from the last
+    // document to the next instead of jumping (`list_pill`).
+    // The 14 pt path sets the line (the kind beside it is smaller), plus the
+    // 6 pt above and below the rows were padded with.
+    let row_h = line_of(sm()).max(line_of(xs())) + 12.0;
+    let at = selected.and_then(|path| m.documents.iter().position(|e| e.path == path));
+    let mut list = col().key("memory-docs").w_full().children(list_pill(
+        p,
+        "memory-doc-pill",
+        at.map(|ix| ix as f32 * row_h),
+        row_h,
+        6.0,
+    ));
     for entry in &m.documents {
         let path = entry.path.clone();
-        let active = selected == Some(entry.path.as_str());
         list = list.child(
             row()
                 .key(format!("memory-doc-{}", entry.path))
                 .role("button")
                 .label(entry.path.clone())
                 .w_full()
+                .h(row_h)
                 .gap(12.0)
-                .py(6.0)
                 .px(8.0)
                 .radius(6.0)
                 .center_y()
                 .cursor(Cursor::Pointer)
-                .fill(if active {
-                    p.active
-                } else {
-                    rune::Color::TRANSPARENT
-                })
                 .hover(p.hover)
+                .hover_motion(crate::design::motion::HOVER, crate::design::motion::HOVER)
+                .press_scale(crate::design::motion::PRESS_CARD)
                 .child(
                     styled(entry.path.clone(), sm(), p.text)
                         .truncate()
@@ -448,14 +504,21 @@ fn render_local(s: &State, k: &Kit) -> El {
     let mut c = col().w_full().gap(12.0).child(search);
     if let Some(hits) = &m.hits {
         if hits.is_empty() {
-            c = c.child(empty_state(p, "Nothing matches.").key("memory-hits"));
+            c = c.child(empty_state(p, "Nothing matches.").key("memory-hits-none"));
         } else {
-            let mut h = col().key("memory-hits").w_full().pb(16.0);
+            let mut h = col()
+                .key("memory-hits")
+                .w_full()
+                .pb(16.0)
+                .transition(crate::design::motion::reveal());
             for (ix, hit) in hits.iter().enumerate() {
                 let path = hit.path.clone();
+                // Keyed by document and place: a new search that finds the
+                // same document keeps its line.
                 h = h.child(
                     col()
-                        .key(format!("memory-hit-{ix}"))
+                        .key(format!("memory-hit-{}-{ix}", hit.path))
+                        .transition(crate::design::motion::reveal())
                         .role("button")
                         .w_full()
                         .py(6.0)
@@ -472,7 +535,9 @@ fn render_local(s: &State, k: &Kit) -> El {
                         .on_press(move |s: &mut State| open_document(s, path.clone())),
                 );
                 h = h.child(
-                    crate::pages::common::controls::rule(p).key(format!("memory-hit-rule-{ix}")),
+                    crate::pages::common::controls::rule(p)
+                        .key(format!("memory-hit-rule-{}-{ix}", hit.path))
+                        .transition(crate::design::motion::fade()),
                 );
             }
             c = c.child(h);
@@ -498,7 +563,7 @@ fn render_local(s: &State, k: &Kit) -> El {
         ),
     ));
     if m.loaded && m.documents.is_empty() {
-        c = c.child(empty_state(p, "No memory documents yet."));
+        c = c.child(empty_state(p, "No memory documents yet.").key("memory-none"));
     }
     c = c.child(list);
     if let Some(open) = render_open(s, k) {
@@ -607,8 +672,12 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
             .build(k)
             .key(format!("memory:{}", doc.path)),
     };
+    // Opens under the list with a wipe, and its height springs as the
+    // editor takes the reader's place (and back).
     let mut card = col()
         .key("memory-open")
+        .transition(crate::design::motion::reveal())
+        .motion(crate::design::motion::SLIDE)
         .w_full()
         .gap(8.0)
         .mt(16.0)
@@ -638,7 +707,9 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
                 sm(),
                 p.danger,
             )
-            .wrap(),
+            .wrap()
+            .key("memory-conflict")
+            .transition(crate::design::motion::reveal()),
         );
     }
     Some(card.child(body))
@@ -657,10 +728,15 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         .child(header_with(p, "Memory", vec![actions]))
         .child(tabs(s, k));
     if let Some(e) = &m.error {
-        body = body.child(error_line(p, e));
+        body = body.child(error_line(p, e).key("memory-error"));
     }
     if let Some(n) = &m.notice {
-        body = body.child(el().pb(12.0).child(styled(n.clone(), sm(), p.text_muted)));
+        body = body.child(
+            el().key("memory-notice")
+                .transition(crate::design::motion::reveal())
+                .pb(12.0)
+                .child(styled(n.clone(), sm(), p.text_muted)),
+        );
     }
     page_body("memory-page", body.child(content))
 }

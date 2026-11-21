@@ -23,6 +23,7 @@ use super::common::{
     Btn, Tone, XS, actions, button, button_xs, card, empty_state, error_line, glyph, header,
     icon_button, label, notice_line, page_body, refresh_button, tag,
 };
+use crate::design::{kit, motion};
 use crate::icons;
 use crate::jobs;
 use crate::state::State;
@@ -92,12 +93,26 @@ pub fn opened(s: &mut State) {
 }
 
 pub fn refresh(s: &mut State) {
+    load(s, false);
+}
+
+/// [`refresh`] after something the person did here (a save, a run, a
+/// pause, a delete): the re-read list lands with motion, so a new card
+/// wipes in, a removed one folds away and the rest glide to their places.
+pub(super) fn refresh_shown(s: &mut State) {
+    load(s, true);
+}
+
+fn load(s: &mut State, shown: bool) {
     s.pages.automations.revealed.clear();
     jobs::run(
         s,
         "automations",
         |c| async move { c.list_schedules().await },
-        |s, result, _| {
+        move |s, result, tx| {
+            if shown {
+                tx.animated();
+            }
             let this = &mut s.pages.automations;
             match result {
                 Ok(list) => this.schedules = list,
@@ -111,7 +126,10 @@ pub fn refresh(s: &mut State) {
         s,
         "automations",
         |c| async move { c.list_automations().await },
-        |s, result, _| {
+        move |s, result, tx| {
+            if shown {
+                tx.animated();
+            }
             let this = &mut s.pages.automations;
             match result {
                 Ok(page) => {
@@ -136,7 +154,9 @@ fn act(s: &mut State, id: String, action: AutomationAction) {
         s,
         "automations",
         move |c| async move { c.automation_action(&job_id, action).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's press: its row settles with motion.
+            tx.animated();
             let this = &mut s.pages.automations;
             this.busy.remove(&id);
             match result {
@@ -147,7 +167,7 @@ fn act(s: &mut State, id: String, action: AutomationAction) {
                     {
                         *row = updated;
                     }
-                    refresh(s);
+                    refresh_shown(s);
                 }
                 Err(e) => this.error = Some(e.to_string()),
             }
@@ -175,13 +195,14 @@ fn schedule_act(s: &mut State, id: String, action: ScheduleAction) {
                 ScheduleAction::RotateSecret => c.rotate_schedule_secret(&id).await.map(|_| ()),
             }
         },
-        move |s, result, _| {
+        move |s, result, tx| {
+            tx.animated();
             let this = &mut s.pages.automations;
             this.busy.remove(&key);
             match result {
                 Ok(()) => {
                     this.error = None;
-                    refresh(s);
+                    refresh_shown(s);
                 }
                 Err(e) => this.error = Some(e.to_string()),
             }
@@ -215,7 +236,8 @@ fn save_rename(s: &mut State) {
         s,
         "automations",
         move |c| async move { c.rename_automation(&job_id, &name).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            tx.animated();
             let this = &mut s.pages.automations;
             this.busy.remove(&id);
             match result {
@@ -266,15 +288,25 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
         RebornAutomationHoldReason::Other => "Held",
     });
 
-    let runs = a.recent_runs.iter().enumerate().map(|(rix, run)| {
+    let runs = a.recent_runs.iter().map(|run| {
         let (icon, color) = match run.status {
             RebornAutomationRecentRunStatus::Ok => (&icons::CIRCLE_CHECK, p.success),
             RebornAutomationRecentRunStatus::Error => (&icons::CIRCLE_X, p.danger),
             RebornAutomationRecentRunStatus::Running => (&icons::LOADER_CIRCLE, p.text_muted),
             RebornAutomationRecentRunStatus::Unknown => (&icons::DASH, p.text_muted),
         };
+        // A running run's glyph breathes (15 fps, only while it runs and is
+        // on screen, still under Reduce Motion); the rest stand still.
+        let running = matches!(run.status, RebornAutomationRecentRunStatus::Running);
+        let mark = if running {
+            kit::busy_glyph("run-glyph", icon, true, 12., color)
+        } else {
+            glyph(icon, 12., color)
+        };
+        // Keyed by when it was asked, so a new run arriving keeps the
+        // others' chips (an index would hand each its neighbour's).
         let mut chip = row()
-            .key(format!("run-{id}-{rix}"))
+            .key(format!("run-{id}-{}", run.submitted_at.timestamp_millis()))
             .role("button")
             .label(format!("Run {}", jobs::ago(run.submitted_at)))
             .gap(4.)
@@ -282,12 +314,14 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
             .py(2.)
             .radius(crate::design::CONTROL_RADIUS)
             .center_y()
-            .child(glyph(icon, 12., color))
+            .child(mark)
             .child(label(jobs::ago(run.submitted_at), XS, 400., p.text_muted));
         if let Some(thread) = run.thread_id.as_ref().map(|t| t.as_str().to_string()) {
             chip = chip
                 .cursor(Cursor::Pointer)
                 .hover(p.hover)
+                .hover_motion(motion::HOVER, motion::HOVER)
+                .press_scale(motion::PRESS)
                 .on_press(open_thread(thread));
         }
         chip
@@ -300,7 +334,9 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
                 let id = id.clone();
                 move |s: &mut State| act(s, id.clone(), AutomationAction::RunNow)
             })
-            .build(k),
+            .build(k)
+            .key("run-now")
+            .press_scale(motion::PRESS),
     ];
     if !finished {
         let id = id.clone();
@@ -310,11 +346,15 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
                 .disabled(busy)
                 .on_press(move |s: &mut State| act(s, id.clone(), AutomationAction::Resume))
                 .build(k)
+                .key("resume")
+                .press_scale(motion::PRESS)
         } else {
             icon_button(&icons::PAUSE, "Pause schedule")
                 .disabled(busy)
                 .on_press(move |s: &mut State| act(s, id.clone(), AutomationAction::Pause))
                 .build(k)
+                .key("pause")
+                .press_scale(motion::PRESS)
         });
     }
     buttons.push({
@@ -324,6 +364,8 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
                 .disabled(busy)
                 .on_press(move |s: &mut State| act(s, id.clone(), AutomationAction::Delete))
                 .build(k)
+                .key("delete-confirm")
+                .press_scale(motion::PRESS)
         } else {
             icon_button(&icons::DELETE, "Delete automation")
                 .disabled(busy)
@@ -331,6 +373,8 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
                     s.pages.automations.confirm_delete = Some(id.clone())
                 })
                 .build(k)
+                .key("delete")
+                .press_scale(motion::PRESS)
         }
     });
 
@@ -391,8 +435,12 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
             .on_press(open_thread(thread));
     }
 
+    // A card the person adds, removes or reorders arrives, leaves and
+    // glides (`refresh_shown`); a background re-read lands at once.
     let mut c = card(p)
         .key(format!("automation-{id}"))
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
         .child(
             row()
                 .gap(8.)
@@ -405,6 +453,8 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
     if let Some(hold) = hold {
         c = c.child(
             row()
+                .key("hold")
+                .transition(motion::reveal())
                 .gap(6.)
                 .center_y()
                 .child(glyph(&icons::TRIANGLE_ALERT, 12., p.warning))
@@ -412,7 +462,7 @@ fn render_row(s: &State, k: &Kit, a: &RebornAutomationInfo) -> El {
         );
     }
     if !a.recent_runs.is_empty() {
-        c = c.child(row().flex_wrap().gap(4.).children(runs));
+        c = c.child(row().key("runs").flex_wrap().gap(4.).children(runs));
     }
     c
 }
@@ -450,7 +500,9 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
             .icon(&icons::PLUS)
             .disabled(this.form.is_some())
             .on_press(|s: &mut State| form::open_form(s, None))
-            .build(k),
+            .build(k)
+            .key("new-automation")
+            .press_scale(motion::PRESS),
         refresh_button(k, refresh),
     ]);
     let rows: Vec<El> = this.items.iter().map(|a| render_row(s, k, a)).collect();
@@ -465,37 +517,47 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
 
     let mut body = col().w_full().child(header(p, "Automations", head_actions));
     if let Some(e) = &this.error {
-        body = body.child(error_line(p, e));
+        body = body.child(error_line(p, e).key("automations-error"));
     }
     if !this.scheduler_enabled {
-        body = body.child(notice_line(
-            "Scheduling is off on this gateway, so schedules will not fire. Run now still works.",
-            p.warning,
-        ));
+        body = body.child(
+            notice_line(
+                "Scheduling is off on this gateway, so schedules will not fire. Run now still works.",
+                p.warning,
+            )
+            .key("scheduler-off"),
+        );
     }
+    // The create/edit form wipes open under the header and folds away on
+    // Cancel or a save.
     if let Some(f) = &this.form {
         body = body.child(
             col()
+                .key("automation-form-box")
+                .transition(motion::reveal())
                 .w_full()
                 .pb(12.)
                 .child(form::render_form(s, cx, k, f, layer)),
         );
     }
     if nothing {
-        body = body.child(empty_state(
-            p,
-            "No automations yet. Make one with New automation, or ask IronClaw in a conversation, for example: \"Every weekday at 9:00, summarize my inbox.\"",
-        ));
+        body = body.child(
+            empty_state(
+                p,
+                "No automations yet. Make one with New automation, or ask IronClaw in a conversation, for example: \"Every weekday at 9:00, summarize my inbox.\"",
+            )
+            .key("automations-empty"),
+        );
     }
     if !schedules.is_empty() {
         body = body
-            .child(section("Schedules and webhooks"))
-            .child(col().w_full().gap(12.).children(schedules));
+            .child(section("Schedules and webhooks").key("schedules-title"))
+            .child(col().key("schedules").w_full().gap(12.).children(schedules));
     }
     if !rows.is_empty() {
         body = body
-            .child(section("Routines (made in a chat)"))
-            .child(col().w_full().gap(12.).children(rows));
+            .child(section("Routines (made in a chat)").key("routines-title"))
+            .child(col().key("routines").w_full().gap(12.).children(rows));
     }
     page_body("automations-page", body)
 }

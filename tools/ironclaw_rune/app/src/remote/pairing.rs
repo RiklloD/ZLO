@@ -51,6 +51,9 @@ pub struct PageState {
     pub pair_target: Option<(String, String)>,
     pub discovery: Option<Discovery>,
     pub discovering: bool,
+    /// The running scan is one the person asked for (Refresh): what it
+    /// finds arrives with motion. A scan on its own lands at once.
+    pub scan_shown: bool,
     /// `false` when Tailscale is missing or stopped (discovery hidden).
     pub tailscale: Option<bool>,
     discovery_gen: Generation,
@@ -106,10 +109,13 @@ pub fn discover(s: &mut State) {
             Some(peers) => Some(tailnet::probe(peers).await),
             None => None,
         };
-        handle.update(move |s, _| {
+        handle.update(move |s, tx| {
             let page = &mut s.remote.page;
             if page.discovery_gen != generation {
                 return;
+            }
+            if std::mem::take(&mut page.scan_shown) {
+                tx.animated();
             }
             page.discovering = false;
             page.tailscale = Some(discovery.is_some());
@@ -515,7 +521,9 @@ fn issue_code_with(s: &mut State, request: zlo_client::environment_access::Pairi
         s,
         "pairing code",
         move |c| async move { c.issue_scoped_code(&request).await },
-        |s, result, _| {
+        |s, result, tx| {
+            // The person's Make a code: the code wipes in.
+            tx.animated();
             let origin = link_origin(s);
             let page = &mut s.remote.page;
             page.issuing = false;

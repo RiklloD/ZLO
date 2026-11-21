@@ -195,7 +195,9 @@ pub fn issue_link_code(s: &mut State) {
         s,
         "link code",
         move |c| async move { c.issue_scoped_code(&request).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The person's Make a link code: the code wipes in.
+            tx.animated();
             let l = &mut s.remote.linked;
             l.issuing = false;
             match result {
@@ -335,7 +337,9 @@ fn answer(s: &mut State, id: String, answer: AgentRequestAnswer) {
         s,
         "answer request",
         move |c| async move { c.answer_agent_request(&request_id, &answer).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The person's answer: the card folds away (or its error wipes in).
+            tx.animated();
             let l = &mut s.remote.linked;
             l.answering = None;
             match result {
