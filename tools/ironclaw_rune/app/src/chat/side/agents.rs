@@ -144,8 +144,12 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                     .key(format!("agent-open-{}", task.task_id)),
             );
         }
+        // Live-sorted (live first, newest first): a resort glides, an
+        // arrival wipes in, in commits that animate.
         let mut card = col()
             .key(format!("agent-{id}"))
+            .motion(crate::design::motion::ROW_RESORT)
+            .transition(rune::Transition::reveal(rune::Edge::Top))
             .mx(8.)
             .px(8.)
             .py(8.)

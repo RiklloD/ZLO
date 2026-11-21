@@ -236,6 +236,9 @@ fn schedule_rows(s: &State, k: &Kit, state: &RoutinesState) -> Vec<El> {
                             p.text_muted,
                         ))
                         .child(icon(&icons::ARROW_RIGHT, 12.).color(p.text_muted))
+                        .radius(5.)
+                        .hover(p.hover)
+                        .hover_motion(hover_curve(s), hover_curve(s))
                         .cursor(rune::Cursor::Pointer)
                         .on_press(move |s: &mut State| {
                             crate::workspace::open_thread(s, thread.clone())
@@ -399,10 +402,16 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .pl(22.)
                 .gap(4.)
                 .items_center()
-                .child(ui::dot(last_color, 6.))
+                .child(running_dot(
+                    last_color,
+                    last.status == RebornAutomationRecentRunStatus::Running,
+                ))
                 .child(ui::line(format!("{label} {when}"), xs(), p.text_muted));
             if let Some(thread) = run_thread {
                 line = line
+                    .radius(5.)
+                    .hover(p.hover)
+                    .hover_motion(hover_curve(s), hover_curve(s))
                     .cursor(rune::Cursor::Pointer)
                     .child(icon(&icons::ARROW_RIGHT, 12.).color(p.text_muted))
                     .on_press(move |s: &mut State| {
@@ -416,6 +425,21 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     ui::scroll("routines-list", out)
 }
 
+/// A last run's dot: it breathes while the run is going, on the small
+/// loaders' capped clock (still under reduced motion).
+fn running_dot(color: rune::Color, running: bool) -> El {
+    let d = ui::dot(color, 6.);
+    if running {
+        d.cycle(crate::design::kit::loops::breathe(
+            1.2,
+            0.,
+            &crate::design::kit::loops::BREATH_45,
+        ))
+    } else {
+        d
+    }
+}
+
 /// Fixture lists for scenes.
 pub(super) fn fixture(
     x: &mut super::SideState,
@@ -424,4 +448,9 @@ pub(super) fn fixture(
 ) {
     x.routines.schedules = schedules;
     x.routines.list = Some(Ok(list));
+}
+
+/// The app's hover fade.
+fn hover_curve(s: &State) -> rune::Curve {
+    crate::design::styles::Style::of(&s.prefs).hover
 }

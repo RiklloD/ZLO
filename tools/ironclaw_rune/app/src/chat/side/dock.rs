@@ -186,12 +186,19 @@ fn dock(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, dock: Dock)
         // The pane's own parts never fade: they leave with the clip that
         // shuts over them, not inside it after it is already closed.
         .child(switcher(s, dock, w).transition(Transition::none()))
-        .child(
-            el().w_full()
+        .child({
+            let rule = el()
+                .w_full()
                 .h(1.)
                 .fill(p.border)
-                .transition(Transition::none()),
-        )
+                .transition(Transition::none());
+            // The Browser's load bar rides this rule, above the page (a
+            // native view would hide it anywhere over the page itself).
+            match browser::progress_bar(s, w).filter(|_| tab == Tab::Browser) {
+                Some(bar) => rule.child(bar),
+                None => rule,
+            }
+        })
         .child(
             ui::fill_col().transition(Transition::none()).child(
                 // Keyed by tab, so a switch fades the new tab's body in

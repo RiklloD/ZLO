@@ -12,7 +12,7 @@
 
 use rune::{El, TextEdit, Tx, col, el, icon, row};
 use rune_kit::diff::{Annotation, DiffMode, DiffState, DiffView, LineRange, LineRef, Side};
-use rune_kit::{ButtonVariant, Kit, TextInput};
+use rune_kit::{ButtonVariant, Kit, RollingText, TextInput};
 
 use super::ui::{self, xs, xs_med};
 use super::{
@@ -355,7 +355,10 @@ fn git_action(
     jobs::blocking(
         s,
         move || f(&repo),
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The answer to the person's own click: its note, error and
+            // reshuffled rows move rather than snap.
+            tx.animated();
             let Some(x) = side_of(s, &thread) else { return };
             x.changes.busy = None;
             match result {
@@ -666,11 +669,18 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     if bridge::thread_runtime(s) == Some("codex") {
         col = col.child(codex::card(s, k));
     }
+    // Keyed, so they fade in and out without shifting their neighbours'
+    // identities.
     if let Some(note) = state.note.clone() {
-        col = col.child(ui::line(note, xs(), p.success).px(12.).pt(4.));
+        col = col.child(
+            ui::line(note, xs(), p.success)
+                .px(12.)
+                .pt(4.)
+                .key("changes-note"),
+        );
     }
     if let Some(e) = state.error.clone() {
-        col = col.child(ui::error_line(s, e));
+        col = col.child(ui::error_line(s, e).key("changes-error"));
     }
     if remote {
         col = col.child(
@@ -825,8 +835,21 @@ fn turn_card(s: &State, k: &Kit, state: &ChangesState, files: usize, add: usize,
                     )
                     .grow(1.),
                 )
-                .child(ui::line(format!("+{add}"), xs(), p.success))
-                .child(ui::line(format!("−{del}"), xs(), p.danger)),
+                // The counts roll as a new turn or a refresh changes them.
+                .child(
+                    RollingText::new("changes-turn-add", format!("+{add}"))
+                        .value(add as f64)
+                        .font(xs())
+                        .color(p.success)
+                        .build(k),
+                )
+                .child(
+                    RollingText::new("changes-turn-del", format!("−{del}"))
+                        .value(del as f64)
+                        .font(xs())
+                        .color(p.danger)
+                        .build(k),
+                ),
         )
         .child(
             row()
@@ -1075,7 +1098,9 @@ fn remote_change(s: &mut State, label: &'static str, action: ThreadGitAction) {
         s,
         "changes",
         move |c| async move { c.thread_git_change(&asked, &action).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // As `git_action`: the person's own change lands with motion.
+            tx.animated();
             let Some(x) = side_of(s, &thread) else { return };
             x.changes.busy = None;
             match result {

@@ -486,6 +486,8 @@ pub struct WebState {
     pub title: String,
     pub url: String,
     pub loading: bool,
+    /// WebKit's `estimatedProgress` of the load, 0 to 1.
+    pub progress: f64,
     pub back: bool,
     pub forward: bool,
 }
@@ -501,6 +503,7 @@ pub fn web_state() -> Option<WebState> {
                 title: string(title),
                 url: current_url(v),
                 loading: msg_send![v, isLoading],
+                progress: msg_send![v, estimatedProgress],
                 back: msg_send![v, canGoBack],
                 forward: msg_send![v, canGoForward],
             })

@@ -233,6 +233,9 @@ fn forward(s: &State, thread: String, rx: mpsc::Receiver<Msg>) {
                     match msg {
                         Msg::Line(kind, text) => push(state, kind, text),
                         Msg::Exit(code) => {
+                            // The command ended: Stop turns back into Run
+                            // with motion, though no input caused it.
+                            tx.animated();
                             let secs = state
                                 .running
                                 .take()
@@ -424,7 +427,17 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                     .key("console-input"),
             ),
         )
-        .child(action)
+        // One slot for Run and Stop: its width springs between the two, so
+        // the field beside it eases instead of jumping as a command starts
+        // or ends, and the buttons crossfade inside it.
+        .child(
+            row()
+                .key("console-action")
+                .items_center()
+                .justify_end()
+                .motion(crate::design::styles::Style::of(&s.prefs).slide)
+                .child(action),
+        )
         .child(
             ui::ibtn(&icons::DELETE, "Clear")
                 .label("Clear output")
@@ -521,10 +534,15 @@ fn poll(s: &mut State, wait: bool) {
             c.thread_console(&asked, after).await
         },
         move |s, result, tx| {
-            if let Some(x) = side_of(s, &thread) {
+            let was = side_of(s, &thread).is_some_and(|x| {
                 x.console.remote.polling = false;
-            }
+                x.console.remote.running
+            });
             let more = landed(s, &thread, result);
+            // As a local command's end: Run and Stop swap with motion.
+            if side_of(s, &thread).is_some_and(|x| x.console.remote.running != was) {
+                tx.animated();
+            }
             tx.scroll_to_bottom(OUT_KEY);
             if more {
                 poll(s, true);

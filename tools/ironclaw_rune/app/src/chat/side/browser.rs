@@ -60,7 +60,13 @@ pub(super) struct BrowserState {
     poll: jobs::Generation,
     /// Recently visited URLs in this thread, newest first.
     recent: Vec<String>,
+    /// A load just finished: the progress bar holds full width for
+    /// [`PROGRESS_HOLD`] before it fades out.
+    finishing: bool,
 }
+
+/// How long a finished load's bar shows full before it fades.
+const PROGRESS_HOLD: Duration = Duration::from_millis(200);
 
 /// Show `url` in the Browser tab.
 pub(super) fn go(s: &mut State, url: String) {
@@ -105,11 +111,59 @@ pub(super) fn start(s: &mut State) {
 }
 
 fn tick(s: &State, thread: String, generation: jobs::Generation, wait: Duration) {
-    jobs::after(s, wait, move |s, _| {
+    jobs::after(s, wait, move |s, tx| {
+        let before = progress(s);
         if let Some(wait) = step(s, &thread, generation) {
-            tick(s, thread, generation, wait);
+            tick(s, thread.clone(), generation, wait);
+        }
+        // The load bar moves on the page's own progress: a poll would land
+        // it at once (no input caused it), so ask for the motion.
+        if progress(s) != before {
+            tx.animated();
+        }
+        let done = side_of(s, &thread).is_some_and(|x| x.browser.finishing);
+        if done {
+            jobs::after(s, PROGRESS_HOLD, move |s, tx| {
+                if let Some(x) = side_of(s, &thread)
+                    && x.browser.finishing
+                {
+                    x.browser.finishing = false;
+                    tx.animated();
+                }
+            });
         }
     });
+}
+
+/// The load bar's fill, 0 to 1, while it shows: the page's progress while
+/// it loads, full for a moment once done.
+pub(super) fn progress(s: &State) -> Option<f64> {
+    let x = side(s)?;
+    page()?;
+    if x.browser.finishing {
+        return Some(1.);
+    }
+    x.browser
+        .shown
+        .as_ref()
+        .filter(|w| w.loading)
+        .map(|w| w.progress.clamp(0.05, 1.))
+}
+
+/// The 2 pt load bar along the top of the Browser's page, under the tab
+/// switcher: it grows on the page's progress and fades out once the load
+/// is done. `width` is the dock's.
+pub(super) fn progress_bar(s: &State, width: f32) -> Option<El> {
+    let fill = progress(s)? as f32;
+    Some(
+        el().key("web-progress")
+            .absolute(0., -1.)
+            .h(2.)
+            .w(width * fill)
+            .fill(s.palette.accent)
+            .motion(crate::design::motion::PILL)
+            .transition(rune::Transition::opacity()),
+    )
 }
 
 /// One poll of loop `generation`, started on `thread`: the wait before the
@@ -140,6 +194,13 @@ fn step(s: &mut State, thread: &str, generation: jobs::Generation) -> Option<Dur
         x.browser.input.replace_text(url);
     }
     if state != x.browser.shown {
+        let was_loading = x.browser.shown.as_ref().is_some_and(|w| w.loading);
+        let loading_now = state.as_ref().is_some_and(|w| w.loading);
+        if was_loading && !loading_now {
+            x.browser.finishing = true;
+        } else if loading_now {
+            x.browser.finishing = false;
+        }
         x.browser.shown = state;
     }
     Some(Duration::from_millis(if loading { 250 } else { 1000 }))
@@ -460,8 +521,14 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         return ui::loading(k);
     };
     match page() {
-        Some(_) => ui::fill_col().child(native_view::surface(Slot::Browser)),
-        None => ui::fill_col().child(launchpad(s, &x.browser.recent)),
+        // Keyed apart, so opening or closing a page crossfades the
+        // launchpad with the page (which fades in natively).
+        Some(_) => ui::fill_col()
+            .key("web-page")
+            .child(native_view::surface(Slot::Browser)),
+        None => ui::fill_col()
+            .key("web-launchpad")
+            .child(launchpad(s, &x.browser.recent)),
     }
 }
 
@@ -537,6 +604,32 @@ mod tests {
         );
         assert_eq!(loop_of(&s), (true, second), "the running loop is untouched");
         assert!(step(&mut s, "t2", second).is_some());
+    }
+
+    /// The load bar follows the page's progress while it loads, shows full
+    /// once the load ends, and goes when the hold clears.
+    #[test]
+    fn the_load_bar_follows_progress_then_shows_full_before_it_goes() {
+        let mut s = browsing("t1");
+        start(&mut s);
+        let (_, generation) = loop_of(&s);
+        assert_eq!(progress(&s), None, "no load seen yet: no bar");
+        if let Some(x) = side_mut(&mut s) {
+            x.browser.shown = Some(WebState {
+                loading: true,
+                progress: 0.4,
+                ..WebState::default()
+            });
+        }
+        assert_eq!(progress(&s), Some(0.4));
+        assert!(progress_bar(&s, 300.).is_some());
+        // The next poll finds the load over (a test has no web view).
+        assert!(step(&mut s, "t1", generation).is_some());
+        assert_eq!(progress(&s), Some(1.), "done: full for a moment");
+        if let Some(x) = side_mut(&mut s) {
+            x.browser.finishing = false;
+        }
+        assert_eq!(progress(&s), None, "then it goes");
     }
 
     #[test]
