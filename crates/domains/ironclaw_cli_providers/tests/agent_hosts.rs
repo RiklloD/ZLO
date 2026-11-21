@@ -1,3 +1,4 @@
+// arch-exempt: large_file, one fake-agent suite per host (Antigravity, Muse, Codex) awaits a split, plan #v3-cli-bridge
 //! The Antigravity (ACP), Muse Code (MSP) and Codex (app-server) drivers against fake agent
 //! scripts: session create then resume, fail-closed permissions, outcome,
 //! transcript and telemetry folding, steering, and Stop ending the whole
@@ -899,6 +900,142 @@ async fn antigravity_concurrent_starts_admit_one_turn() {
         TurnAdmission::Started { .. }
     ));
     rt.cancel(&thread, "stop").await.unwrap();
+}
+
+/// The frames of the agent log that carry `method`, parsed.
+fn frames(log: &str, method: &str) -> Vec<serde_json::Value> {
+    let needle = format!(r#""method":"{method}""#);
+    log.lines()
+        .filter(|l| l.contains(&needle))
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// The always-on notes every Antigravity session gets, with or without a
+/// profile: how to delegate (T3 tools, never the agent's own subagents)
+/// and how to draw visuals.
+fn assert_has_zlo_notes(text: &str) {
+    let delegation = ironclaw_orchestrator::tools::DELEGATION_PROMPT.trim();
+    let visuals = ironclaw_host_api::reply_visuals::REPLY_VISUALS_PROMPT.trim();
+    assert!(text.contains(delegation), "no delegation note: {text}");
+    assert!(text.contains(visuals), "no visuals note: {text}");
+    assert!(
+        text.contains("mcp_ironclaw_t3_delegate") && text.contains("invoke_subagent"),
+        "no Antigravity tool note: {text}"
+    );
+}
+
+/// `agy acp` gets ZLO's orchestrator tools as an HTTP MCP server on both
+/// `session/new` and `session/resume`, with a bearer token minted for that
+/// turn alone and revoked when it ends; and its system-prompt append
+/// carries the delegation and visuals notes even without a profile, on
+/// resume as well (each turn is a new agent process that keeps none of it).
+#[tokio::test]
+async fn antigravity_cli_gets_the_zlo_mcp_server_and_notes_without_a_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    bridge.set_mcp_url("http://127.0.0.1:9/api/cli-bridge/mcp".into());
+    let rt = antigravity_cli(dir.path(), "pong", &recorder, Some(Arc::clone(&bridge)));
+    let thread = thread(&rt, "default").await;
+    let mut first = input();
+    first.goal = Some("ship the release".into());
+    rt.start_turn(&thread, first).await.unwrap();
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| recorder.finished.lock().unwrap().len() == 2).await;
+
+    let log = agy_log(dir.path());
+    let opened: Vec<serde_json::Value> = frames(&log, "session/new")
+        .into_iter()
+        .chain(frames(&log, "session/resume"))
+        .collect();
+    assert_eq!(opened.len(), 2, "{log}");
+    let mut tokens = Vec::new();
+    for frame in &opened {
+        let servers = frame["params"]["mcpServers"].as_array().unwrap();
+        assert_eq!(servers.len(), 1, "{frame}");
+        let server = &servers[0];
+        assert_eq!(server["type"], "http", "{frame}");
+        assert_eq!(server["name"], "ironclaw", "{frame}");
+        assert_eq!(server["url"], "http://127.0.0.1:9/api/cli-bridge/mcp");
+        let headers = server["headers"].as_array().unwrap();
+        assert_eq!(headers.len(), 1, "{frame}");
+        assert_eq!(headers[0]["name"], "Authorization");
+        let token = headers[0]["value"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("Bearer ")
+            .unwrap()
+            .to_string();
+        assert!(
+            bridge.resolve_token(&token).is_none(),
+            "revoked at turn end"
+        );
+        tokens.push(token);
+
+        let append = frame["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no system append: {frame}"));
+        assert_has_zlo_notes(append);
+    }
+    assert_ne!(tokens[0], tokens[1], "one token per turn");
+    assert!(
+        opened[0]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+            .as_str()
+            .unwrap()
+            .contains("ship the release"),
+        "the goal rides along"
+    );
+    // The prompt itself stays the user's text verbatim.
+    for prompt in frames(&log, "session/prompt") {
+        assert_eq!(prompt["params"]["prompt"][0]["text"], "hi", "{prompt}");
+    }
+}
+
+/// Without a bridge there is nobody to approve a call, so no MCP server is
+/// offered at all.
+#[tokio::test]
+async fn antigravity_cli_offers_no_mcp_server_without_a_bridge() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli(dir.path(), "pong", &recorder, None);
+    let thread = thread(&rt, "default").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+    let log = agy_log(dir.path());
+    let new = &frames(&log, "session/new")[0];
+    assert_eq!(new["params"]["mcpServers"], serde_json::json!([]), "{new}");
+    assert_has_zlo_notes(
+        new["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+            .as_str()
+            .unwrap(),
+    );
+}
+
+/// An agent that cannot append to its system prompt gets the same notes
+/// ahead of the first prompt this process sends for the thread, with or
+/// without a profile, and not again on the next turn.
+#[tokio::test]
+async fn antigravity_inline_context_carries_the_notes_once_without_a_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity(dir.path(), None, &recorder);
+    let thread = thread(&rt, "default").await;
+    for n in 1..=2 {
+        rt.start_turn(&thread, input()).await.unwrap();
+        wait_for(|| recorder.finished.lock().unwrap().len() == n).await;
+    }
+    let log = std::fs::read_to_string(dir.path().join("agy.log")).unwrap();
+    let prompts = frames(&log, "session/prompt");
+    assert_eq!(prompts.len(), 2, "{log}");
+    let first = prompts[0]["params"]["prompt"][0]["text"].as_str().unwrap();
+    assert_has_zlo_notes(first);
+    assert!(first.ends_with("hi"), "{first}");
+    assert_eq!(prompts[1]["params"]["prompt"][0]["text"], "hi", "sent once");
+    for frame in frames(&log, "session/new") {
+        assert!(frame["params"].get("_meta").is_none(), "{frame}");
+    }
 }
 
 /// A session the agent lost is replaced by a fresh one that gets the

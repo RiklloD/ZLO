@@ -136,6 +136,204 @@ async fn antigravity_live_turn() {
     one_turn(&rt, &recorder).await;
 }
 
+/// A minimal HTTP/1.1 loop in front of the real loopback MCP handler
+/// ([`ironclaw_cli_providers::bridge::serve_mcp`]); records every
+/// JSON-RPC method it served.
+async fn serve_mcp_on(
+    listener: tokio::net::TcpListener,
+    bridge: Arc<CliBridge>,
+    engine: Arc<ironclaw_orchestrator::engine::Engine>,
+    seen: Arc<Mutex<Vec<String>>>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    loop {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let (bridge, engine, seen) = (Arc::clone(&bridge), Arc::clone(&engine), Arc::clone(&seen));
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            loop {
+                let head_end = loop {
+                    if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break at + 4;
+                    }
+                    let mut chunk = [0u8; 4096];
+                    match socket.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                };
+                let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+                let header = |name: &str| {
+                    head.lines().find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.trim()
+                            .eq_ignore_ascii_case(name)
+                            .then(|| v.trim().to_string())
+                    })
+                };
+                let len: usize = header("content-length")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                while buf.len() < head_end + len {
+                    let mut chunk = [0u8; 4096];
+                    match socket.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                let body: Vec<u8> = buf[head_end..head_end + len].to_vec();
+                buf.drain(..head_end + len);
+                let (status, reply) = if head.starts_with("POST ") {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) {
+                        let auth = header("authorization").map(|a| {
+                            if a.starts_with("Bearer ") {
+                                "bearer"
+                            } else {
+                                "other"
+                            }
+                        });
+                        seen.lock().unwrap().push(format!(
+                            "{} auth={auth:?}",
+                            v["method"].as_str().unwrap_or("?")
+                        ));
+                    }
+                    let auth = header("authorization");
+                    match ironclaw_cli_providers::bridge::serve_mcp(
+                        &bridge,
+                        &engine,
+                        true,
+                        auth.as_deref(),
+                        &body,
+                    )
+                    .await
+                    {
+                        Ok(Some(v)) => (200, v.to_string()),
+                        Ok(None) => (202, String::new()),
+                        Err(code) => (code, String::new()),
+                    }
+                } else {
+                    (404, String::new())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}",
+                    reply.len()
+                );
+                if socket.write_all(response.as_bytes()).await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+}
+
+/// The real `agy acp` sees ZLO's orchestrator tools over the loopback MCP
+/// route with the turn's token, and its call to one waits as an IronClaw
+/// approval (approved here) before it reaches the route.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "calls the real Antigravity agent"]
+async fn antigravity_live_sees_the_zlo_mcp_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = antigravity::default_config(&home())
+        .await
+        .expect("antigravity agent");
+    config.state_dir = dir.path().join("state");
+    config.work_dir = dir.path().join("work");
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("orch.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+    let engine = ironclaw_orchestrator::engine::Engine::open_libsql(runtime, "antigravity")
+        .await
+        .unwrap();
+    let bridge = CliBridge::new(ironclaw_cli_providers::bridge::DEFAULT_APPROVAL_TIMEOUT);
+    bridge.record_to(engine.store().clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    bridge.set_mcp_url(format!("http://{addr}/api/cli-bridge/mcp"));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    tokio::spawn(serve_mcp_on(
+        listener,
+        Arc::clone(&bridge),
+        Arc::clone(&engine),
+        Arc::clone(&seen),
+    ));
+
+    let recorder = Arc::new(Recorder::default());
+    let sink: Weak<dyn TurnEventSink> = Arc::downgrade(&recorder) as Weak<dyn TurnEventSink>;
+    let rt = antigravity::AntigravityRuntime::new(config, sink, Some(Arc::clone(&bridge))).unwrap();
+    let created = rt
+        .create_thread(CreateThread {
+            scope: scope(),
+            title: None,
+            provider: None,
+            model: None,
+            idempotency_key: "smoke-mcp".into(),
+        })
+        .await
+        .unwrap();
+    let mut thread = ThreadRecord::new(created.thread_id, scope(), rt.id());
+    thread.native_session_id = created.native_session_id;
+    rt.start_turn(
+        &thread,
+        TurnInput {
+            text: "List the exact names of every tool you have from the MCP server named \
+                   ironclaw, one per line. Then call its t3_capabilities tool once and say \
+                   how many providers it lists."
+                .into(),
+            origin: TurnOrigin::UserPrompt,
+            model: None,
+            goal: None,
+            effort: None,
+            profile: None,
+            files: Vec::new(),
+            work_dir: None,
+        },
+    )
+    .await
+    .unwrap();
+    let started = std::time::Instant::now();
+    let mut gates = Vec::new();
+    while recorder.finished.lock().unwrap().is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_secs(400),
+            "turn timed out"
+        );
+        if let Some(gate) = bridge
+            .snapshot(&thread.thread_id)
+            .and_then(|s| s.gates.first().cloned())
+        {
+            eprintln!("gate: {} {:?}", gate.tool_name, gate.body);
+            gates.push(gate.tool_name.clone());
+            assert!(bridge.resolve_gate(&thread.thread_id, &gate.gate_ref, GateAnswer::Approve));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let outcome = recorder.finished.lock().unwrap()[0].clone();
+    eprintln!("mcp requests: {:?}", seen.lock().unwrap());
+    eprintln!("gates: {gates:?}");
+    eprintln!("reply: {:?}", outcome.final_text);
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    let seen = seen.lock().unwrap().clone();
+    assert!(
+        seen.iter().any(|m| m == "tools/list auth=Some(\"bearer\")"),
+        "{seen:?}"
+    );
+    assert!(seen.iter().any(|m| m.starts_with("tools/call")), "{seen:?}");
+    assert!(
+        gates.iter().any(|g| g.contains("t3_capabilities")),
+        "{gates:?}"
+    );
+    // The call itself answers "thread not found": this engine never
+    // created the thread. Reaching the route after the gate is the point.
+    let reply = outcome.final_text.unwrap_or_default();
+    assert!(reply.contains("t3_delegate"), "{reply}");
+}
+
 /// The native `agy acp` takes a message mid-turn as a steer: the turn
 /// carries on under it and finishes once, with the steered answer.
 #[tokio::test(flavor = "multi_thread")]
