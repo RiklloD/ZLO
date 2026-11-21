@@ -21,6 +21,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::future::Future;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use ironclaw_host_api::ids::{TenantId, UserId};
@@ -44,6 +46,10 @@ pub const SKILL_USAGE_LEDGER_MAX: usize = 2048;
 pub const SKILL_USAGE_SOURCES_MAX: usize = 32;
 /// Most pins one document keeps.
 pub const SKILL_USAGE_PINS_MAX: usize = 1024;
+
+/// How long a turn waits on any one advisory store call (a load before
+/// the listing, a record inline after it) before going on without it.
+pub const SKILL_USAGE_ADVISORY_TIMEOUT: Duration = Duration::from_secs(2);
 
 const DAY_MS: f64 = 86_400_000.0;
 
@@ -485,6 +491,58 @@ pub fn listing(
         .collect()
 }
 
+/// The catalog skills `message` explicitly asks for (`$name` or `/name`,
+/// the harness's mention grammar, matched case-insensitively). A request
+/// always wins over the listing: see [`force_requested`].
+pub fn requested_skills(message: &str, catalog: &[SkillUsageName]) -> BTreeSet<SkillUsageName> {
+    let mentioned: BTreeSet<String> = crate::explicit_skill_mention_names(message)
+        .into_iter()
+        .map(|name| name.to_lowercase())
+        .collect();
+    if mentioned.is_empty() {
+        return BTreeSet::new();
+    }
+    catalog
+        .iter()
+        .filter(|name| mentioned.contains(&name.as_str().to_lowercase()))
+        .cloned()
+        .collect()
+}
+
+/// List every `requested` skill in full for this turn, over any pin: a
+/// skill the person asks for by name (or the run requires) must reach the
+/// model even when pinned off. The basis is [`SkillListingBasis::Source`]
+/// (the turn keeps it this way regardless).
+pub fn force_requested(
+    decided: &mut BTreeMap<SkillUsageName, SkillListingState>,
+    requested: &BTreeSet<SkillUsageName>,
+) {
+    for name in requested {
+        decided.insert(
+            name.clone(),
+            SkillListingState {
+                listing: SkillListing::Full,
+                basis: SkillListingBasis::Source,
+            },
+        );
+    }
+}
+
+/// One advisory store call, bounded by `limit`: a call that has not
+/// finished by then is abandoned as a [`SkillUsageError::Backend`] failure,
+/// which every caller treats as "list as before".
+pub async fn bounded<T>(
+    limit: Duration,
+    call: impl Future<Output = Result<T, SkillUsageError>>,
+) -> Result<T, SkillUsageError> {
+    match tokio::time::timeout(limit, call).await {
+        Ok(result) => result,
+        Err(elapsed) => Err(SkillUsageError::Backend {
+            reason: format!("skill usage store call timed out after {limit:?} ({elapsed})"),
+        }),
+    }
+}
+
 /// One source's view of a skill, for a summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillSourceListing {
@@ -877,5 +935,31 @@ mod tests {
         assert!(!doc.set_pin(&name("a"), Some(SkillPin::Off)).unwrap());
         assert!(doc.set_pin(&name("a"), None).unwrap());
         assert!(doc.pins.is_empty());
+    }
+
+    #[test]
+    fn a_requested_skill_is_full_over_an_off_pin() {
+        let catalog = names(&["sheet", "gone", "other"]);
+        let pins = BTreeMap::from([(name("gone"), SkillPin::Off)]);
+        let mut got = decide(&catalog, &SkillLedger::new(), &pins, &BTreeSet::new());
+        assert_eq!(got[&name("gone")].listing, SkillListing::Off);
+        let requested = requested_skills("use $GONE then /sheet, not skills/other", &catalog);
+        assert_eq!(requested, BTreeSet::from([name("gone"), name("sheet")]));
+        force_requested(&mut got, &requested);
+        assert_eq!(got[&name("gone")].listing, SkillListing::Full);
+        assert_eq!(got[&name("sheet")].listing, SkillListing::Full);
+        assert_eq!(got[&name("other")].listing, SkillListing::NameOnly);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_call_is_abandoned_as_a_backend_failure() {
+        let stalled = bounded(
+            Duration::from_millis(20),
+            std::future::pending::<Result<(), SkillUsageError>>(),
+        )
+        .await;
+        assert!(matches!(stalled, Err(SkillUsageError::Backend { .. })));
+        let quick = bounded(Duration::from_secs(5), async { Ok(7) }).await;
+        assert_eq!(quick, Ok(7));
     }
 }

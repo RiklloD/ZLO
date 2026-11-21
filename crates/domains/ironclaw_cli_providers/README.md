@@ -200,13 +200,23 @@ CLI has its tools and every call waits for a person:
   other CLIs use. The next turn passes `--settings {"skillOverrides":…}`:
   pins (set on the Skills page) decide first, profile plugin skills stay
   `on`, up to 12 skills scoring at least 0.5 (uses halved weekly, floor 0.1)
-  stay `on`, the rest go `name-only` (still callable). The pre-store state
-  file (`~/.ironclaw/claude-skills/<runtime>.json`) is imported once and
-  renamed `<runtime>.json.imported`.
+  stay `on`, the rest go `name-only` (still callable). A skill the turn's
+  text asks for (`$name` or `/name`, the harness's mention grammar) is `on`
+  whatever its pin. The pre-store state file
+  (`~/.ironclaw/claude-skills/<runtime>.json`) is imported once and renamed
+  `<runtime>.json.imported` only after the store took it (a failed import is
+  retried next turn).
 - Antigravity, Codex and Muse read the profile's skills index in their
   session notes (`src/skill_listing.rs`): name-only skills are listed by name
-  and SKILL.md path, off ones are left out, and a turn whose stream names a
-  listed `skills/<name>/SKILL.md` (a read, a `cat`) counts one use. Their own
+  and SKILL.md path, off ones are left out; a skill the turn's text asks for
+  is listed in full and also named in that turn's context (the index reaches
+  a session only once). A successful read of a listed SKILL.md counts one
+  use: a typed read (ACP `read` call, Muse `read_file`), Codex's `read`
+  command action, or a completed shell command that only reads the file
+  (`cat`, `sed`, `head`, …, possibly inside `sh -c`); an `echo`, a failed
+  read, or output naming the path does not. Every store call on the turn
+  path is bounded (`SKILL_USAGE_ADVISORY_TIMEOUT`, 2 s); a stalled or failed
+  store lists every skill in full and records nothing. Their own
   native skills (agy's `~/.gemini` skills, Codex's) are listed by the agent
   itself; ZLO has no knob for them.
 - No allow rules are passed, "always allow" is not offered, prompts are

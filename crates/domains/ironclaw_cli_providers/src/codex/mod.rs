@@ -650,7 +650,7 @@ impl Turn {
                     &params,
                 );
                 if let Ok(mut reads) = self.skill_reads.lock() {
-                    reads.push(&method, &params);
+                    reads.push_codex(&method, &params);
                 }
                 fold.push(&method, &params)
             }
@@ -1218,12 +1218,15 @@ impl TurnRuntime for CodexRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
-        let profile = self
+        let listed = self
             .skills
-            .listed_profile(&thread.thread_id, input.profile.as_ref())
+            .listed_profile(&thread.thread_id, input.profile.as_ref(), &input.text)
             .await;
         let context = crate::prompt_context(
-            self.primed.take(&thread.thread_id, profile.as_ref()),
+            crate::join_notes([
+                self.primed.take(&thread.thread_id, listed.profile.as_ref()),
+                listed.requested,
+            ]),
             input.goal.as_deref(),
         );
         let run_id = self

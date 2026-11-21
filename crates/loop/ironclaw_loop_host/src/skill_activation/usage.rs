@@ -3,17 +3,24 @@
 //! usage policy decides how each is listed, and every skill whose body
 //! reaches the model is counted as a use.
 //!
-//! Advisory throughout: a store failure leaves the listing as it was
-//! (every skill full) and never fails the prompt build.
+//! Advisory throughout: every store call is bounded
+//! ([`SKILL_USAGE_ADVISORY_TIMEOUT`]), and a failed or stalled
+//! one leaves the listing as it was (every skill full, nothing recorded)
+//! and never fails or holds up the prompt build.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ironclaw_loop_contracts::LoopRunContext;
 use ironclaw_skills::usage::{
     SkillListing, SkillListingPolicy, SkillListingRequest, SkillUsageName, SkillUsageObservation,
-    SkillUsageOwner, SkillUsageSource, SkillUsageStore, listing,
+    SkillUsageOwner, SkillUsageSource, SkillUsageStore, bounded, listing,
 };
+
+use ironclaw_skills::usage::SKILL_USAGE_ADVISORY_TIMEOUT;
+
+/// The bound on every advisory store call of a prompt build.
+const LIMIT: Duration = SKILL_USAGE_ADVISORY_TIMEOUT;
 
 /// Whose document the run reads and writes: the run's acting user (its
 /// actor, else its explicit thread owner). A run with neither is a host run
@@ -55,7 +62,7 @@ pub(super) async fn harness_listing<'a>(
     catalog: impl IntoIterator<Item = &'a str>,
 ) -> Option<BTreeMap<String, SkillListing>> {
     let owner = owner(run_context)?;
-    let document = match store.load(&owner).await {
+    let document = match bounded(LIMIT, store.load(&owner)).await {
         Ok(document) => document?,
         Err(error) => {
             tracing::debug!(%error, "skill usage: harness listing not read; listing all skills");
@@ -69,7 +76,9 @@ pub(super) async fn harness_listing<'a>(
             catalog: Some(catalog.clone()),
             used: Vec::new(),
         };
-        if let Err(error) = store.record(&owner, &source, observation, now_ms()).await {
+        if let Err(error) =
+            bounded(LIMIT, store.record(&owner, &source, observation, now_ms())).await
+        {
             tracing::debug!(%error, "skill usage: harness catalog not recorded");
         }
     }
@@ -109,9 +118,11 @@ pub(super) async fn record_harness_use<'a>(
         catalog: None,
         used,
     };
-    if let Err(error) = store
-        .record(&owner, &SkillUsageSource::Harness, observation, now_ms())
-        .await
+    if let Err(error) = bounded(
+        LIMIT,
+        store.record(&owner, &SkillUsageSource::Harness, observation, now_ms()),
+    )
+    .await
     {
         tracing::debug!(%error, "skill usage: harness use not recorded");
     }

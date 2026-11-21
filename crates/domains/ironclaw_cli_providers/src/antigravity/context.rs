@@ -75,11 +75,13 @@ pub(super) struct TurnContext {
 impl TurnContext {
     /// The session notes are the profile's preamble (SOUL.md, skills) when
     /// there is a profile, the delegation and visuals notes always, and the
-    /// Antigravity tool note.
+    /// Antigravity tool note; `requested` (the skills this message asks
+    /// for) joins them for this turn only.
     pub(super) fn new(
         primed: &Arc<InlinePrimed>,
         thread: &ThreadId,
         profile: Option<&TurnProfile>,
+        requested: Option<&str>,
         goal: Option<&str>,
     ) -> Self {
         let notes = crate::join_notes([
@@ -94,9 +96,12 @@ impl TurnContext {
             })
         });
         let inline_notes = ticket.as_ref().and(notes.clone());
+        // The skills this message asks for ride every turn that asks, beside
+        // (not inside) the stamped session notes.
+        let requested = requested.map(str::to_string);
         Self {
-            system: crate::prompt_context(notes, goal),
-            inline: crate::prompt_context(inline_notes, goal),
+            system: crate::prompt_context(crate::join_notes([notes, requested.clone()]), goal),
+            inline: crate::prompt_context(crate::join_notes([inline_notes, requested]), goal),
             ticket,
         }
     }
@@ -175,13 +180,13 @@ mod tests {
     #[test]
     fn inline_notes_repeat_until_a_prompt_carried_them() {
         let primed = Arc::new(InlinePrimed::default());
-        let first = TurnContext::new(&primed, &thread(), None, None);
+        let first = TurnContext::new(&primed, &thread(), None, None, None);
         assert!(first.inline.is_some());
         // The launch failed before the prompt went out: the retry carries them.
-        let retry = TurnContext::new(&primed, &thread(), None, None);
+        let retry = TurnContext::new(&primed, &thread(), None, None, None);
         assert_eq!(retry.inline, first.inline);
         retry.inline_delivered();
-        let next = TurnContext::new(&primed, &thread(), None, Some("ship it"));
+        let next = TurnContext::new(&primed, &thread(), None, None, Some("ship it"));
         assert_eq!(
             next.inline.as_deref().map(|i| i.contains("ship it")),
             Some(true)
@@ -198,12 +203,12 @@ mod tests {
     #[test]
     fn a_profile_picked_later_still_reaches_the_agent() {
         let primed = Arc::new(InlinePrimed::default());
-        TurnContext::new(&primed, &thread(), None, None).inline_delivered();
+        TurnContext::new(&primed, &thread(), None, None, None).inline_delivered();
         let profile = TurnProfile {
             soul: "You are the release captain.".into(),
             ..TurnProfile::default()
         };
-        let with_profile = TurnContext::new(&primed, &thread(), Some(&profile), None);
+        let with_profile = TurnContext::new(&primed, &thread(), Some(&profile), None, None);
         assert!(
             with_profile
                 .inline

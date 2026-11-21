@@ -167,3 +167,117 @@ async fn without_a_store_every_skill_keeps_its_description() {
     );
     assert!(listing.contains("- spreadsheet: spreadsheet description"));
 }
+
+/// A store whose every call never finishes (a stalled backend).
+#[derive(Debug)]
+struct StalledStore;
+
+#[async_trait::async_trait]
+impl ironclaw_skills::usage::SkillUsageStore for StalledStore {
+    async fn load(
+        &self,
+        _owner: &SkillUsageOwner,
+    ) -> Result<Option<ironclaw_skills::usage::SkillUsageDocument>, ironclaw_skills::usage::SkillUsageError>
+    {
+        std::future::pending().await
+    }
+
+    async fn record(
+        &self,
+        _owner: &SkillUsageOwner,
+        _source: &SkillUsageSource,
+        _observation: SkillUsageObservation,
+        _now_ms: u64,
+    ) -> Result<(), ironclaw_skills::usage::SkillUsageError> {
+        std::future::pending().await
+    }
+
+    async fn import_ledger(
+        &self,
+        _owner: &SkillUsageOwner,
+        _source: &SkillUsageSource,
+        _ledger: ironclaw_skills::usage::SkillLedger,
+    ) -> Result<(), ironclaw_skills::usage::SkillUsageError> {
+        std::future::pending().await
+    }
+
+    async fn set_pin(
+        &self,
+        _owner: &SkillUsageOwner,
+        _name: &SkillUsageName,
+        _pin: Option<SkillPin>,
+    ) -> Result<ironclaw_skills::usage::SkillUsageDocument, ironclaw_skills::usage::SkillUsageError>
+    {
+        std::future::pending().await
+    }
+}
+
+/// Well past the advisory bound: a build that has not finished by then hung.
+const HUNG: std::time::Duration = std::time::Duration::from_secs(20);
+
+#[tokio::test]
+async fn a_stalled_store_never_holds_the_prompt_build() {
+    let selectable = SelectableSkillContextSource::new(two_skill_source(), listing_config())
+        .with_skill_usage_store(Arc::new(StalledStore));
+    let context = run_context().await;
+    selectable
+        .record_user_message(
+            context.scope.clone(),
+            accepted_message_ref(&context),
+            "use $spreadsheet for this",
+        )
+        .unwrap();
+    let selected = tokio::time::timeout(HUNG, selectable.load_skill_context_candidates(&context))
+        .await
+        .expect("the listing does not wait on a stalled store")
+        .unwrap();
+    assert!(
+        selected
+            .iter()
+            .filter_map(HostSkillContextCandidate::loaded_skill_md)
+            .any(|md| md.contains("SHEET_SENTINEL")),
+        "the requested skill still loads"
+    );
+    assert!(
+        listing_text(&selected).contains("- code-review: code-review description"),
+        "an unread ledger lists every skill in full"
+    );
+    tokio::time::timeout(
+        HUNG,
+        selectable.activate_skills_for_run(&context, &["code-review".to_string()]),
+    )
+    .await
+    .expect("recording a use does not wait on a stalled store")
+    .unwrap();
+}
+
+#[tokio::test]
+async fn an_explicit_request_loads_a_skill_pinned_off() {
+    let store = usage_store();
+    store
+        .set_pin(&owner(), &name("spreadsheet"), Some(SkillPin::Off))
+        .await
+        .unwrap();
+    let selectable = SelectableSkillContextSource::new(two_skill_source(), listing_config())
+        .with_skill_usage_store(store.clone());
+    let context = run_context().await;
+    selectable
+        .record_user_message(
+            context.scope.clone(),
+            accepted_message_ref(&context),
+            "use $spreadsheet for this",
+        )
+        .unwrap();
+    let selected = selectable
+        .load_skill_context_candidates(&context)
+        .await
+        .unwrap();
+    assert!(
+        selected
+            .iter()
+            .filter_map(HostSkillContextCandidate::loaded_skill_md)
+            .any(|md| md.contains("SHEET_SENTINEL")),
+        "a request wins over an off pin"
+    );
+    assert_eq!(harness_count(&store, "spreadsheet").await, 1);
+}

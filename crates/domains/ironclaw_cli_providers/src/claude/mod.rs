@@ -487,13 +487,18 @@ impl ClaudeCliRuntime {
     }
 
     /// The account's skill listing for its next turn.
-    async fn skill_settings(&self, profile: Option<&TurnProfile>) -> skills::LaunchSkills {
+    async fn skill_settings(
+        &self,
+        profile: Option<&TurnProfile>,
+        text: &str,
+    ) -> skills::LaunchSkills {
         skills::launch_settings(
             &self.config.skills,
             &self.config.runtime_id,
             &self.config.login_file,
             profile.and_then(|p| p.skills.as_ref()),
             self.config.artifacts,
+            text,
         )
         .await
     }
@@ -558,7 +563,7 @@ impl ClaudeCliRuntime {
             .ok_or_else(|| RuntimeError::Rejected("thread has no claude session".into()))?;
         // A new turn ends the idle period: no compaction may touch the session.
         self.compactor.preempt(&thread.thread_id).await;
-        let launch = self.skill_settings(profile).await;
+        let launch = self.skill_settings(profile, text).await;
         let plan = TurnPlan {
             dir: self
                 .session_dir(&thread.thread_id, &session_id, profile)

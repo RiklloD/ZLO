@@ -1168,11 +1168,7 @@ impl Turn {
                 }
                 let update = &params["update"];
                 if let Ok(mut reads) = self.skill_reads.lock() {
-                    let kind = update
-                        .get("sessionUpdate")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    reads.push(kind, update);
+                    reads.push_acp(update);
                 }
                 fold.push_update(update, Instant::now());
                 live::apply(
@@ -1486,14 +1482,15 @@ impl TurnRuntime for AntigravityRuntime {
         if input.model.is_some() {
             thread.model = input.model;
         }
-        let profile = self
+        let listed = self
             .skills
-            .listed_profile(&thread.thread_id, input.profile.as_ref())
+            .listed_profile(&thread.thread_id, input.profile.as_ref(), &input.text)
             .await;
         let context = TurnContext::new(
             &self.primed,
             &thread.thread_id,
-            profile.as_ref(),
+            listed.profile.as_ref(),
+            listed.requested.as_deref(),
             input.goal.as_deref(),
         );
         let run_id = self
@@ -1544,7 +1541,7 @@ impl TurnRuntime for AntigravityRuntime {
             return Ok(SteerOutcome::Rejected);
         };
         // The restarted turn is a new agent process: it needs the notes too.
-        let context = TurnContext::new(&self.primed, &thread.thread_id, None, None);
+        let context = TurnContext::new(&self.primed, &thread.thread_id, None, None, None);
         self.spawn_turn(claim, thread, text, None, context).await?;
         Ok(SteerOutcome::Restarted)
     }

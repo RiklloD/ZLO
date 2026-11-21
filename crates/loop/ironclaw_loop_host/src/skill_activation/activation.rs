@@ -21,8 +21,9 @@ use ironclaw_loop_contracts::{
 };
 use ironclaw_skills::usage::{SkillListing, SkillUsageStore, UnmanagedSkillUsage};
 use ironclaw_skills::{
-    LoadedSkill, SkillSelectionOptions, SkillSource, SkillTrust, extract_skill_mentions,
-    parse_skill_md, prefilter_skills_with_options, skill_token_cost, validate_skill_name,
+    LoadedSkill, SkillSelectionOptions, SkillSource, SkillTrust, explicit_skill_mention_names,
+    extract_skill_mentions, parse_skill_md, prefilter_skills_with_options, skill_token_cost,
+    validate_skill_name,
 };
 use ironclaw_turns::{AcceptedMessageRef, TurnRunId, TurnScope};
 use thiserror::Error;
@@ -1858,7 +1859,7 @@ fn select_skill_activations(
     let mention_normalized_message = normalize_dollar_skill_mentions(message);
     let (explicit, rewritten_message) =
         extract_skill_mentions(&mention_normalized_message, &loaded_skills);
-    let explicit_names = extract_explicit_skill_names(message);
+    let explicit_names = explicit_skill_mention_names(message);
     validate_explicit_mentions_are_unambiguous(&explicit_names, &active_candidates)?;
 
     let mut activations = Vec::new();
@@ -2126,7 +2127,7 @@ fn setup_markers_for_explicit_mentions(
     message: &str,
     candidates: &[ActivationCandidate],
 ) -> HashSet<String> {
-    let explicit_names = extract_explicit_skill_names(message);
+    let explicit_names = explicit_skill_mention_names(message);
     if explicit_names.is_empty() {
         return HashSet::new();
     }
@@ -2226,39 +2227,6 @@ fn validate_selected_names_are_unambiguous(
         }
     }
     Ok(())
-}
-
-fn extract_explicit_skill_names(message: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let chars: Vec<(usize, char)> = message.char_indices().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        if chars[index].1 == '/' || chars[index].1 == '$' {
-            let is_boundary = index == 0 || is_skill_mention_boundary(chars[index - 1].1);
-            if is_boundary {
-                let start = index + 1;
-                let mut end = start;
-                while end < chars.len()
-                    && (chars[end].1.is_ascii_alphanumeric()
-                        || matches!(chars[end].1, '-' | '_' | '.'))
-                {
-                    end += 1;
-                }
-                if end > start {
-                    let start_byte = chars[start].0;
-                    let end_byte = chars
-                        .get(end)
-                        .map(|(byte_index, _)| *byte_index)
-                        .unwrap_or(message.len());
-                    names.push(message[start_byte..end_byte].to_string());
-                    index = end;
-                    continue;
-                }
-            }
-        }
-        index += 1;
-    }
-    names
 }
 
 fn normalize_dollar_skill_mentions(message: &str) -> String {
@@ -5069,7 +5037,7 @@ mod tests {
     #[test]
     fn explicit_name_extraction_matches_valid_dotted_skill_names() {
         assert_eq!(
-            extract_explicit_skill_names("please use /skill.v2"),
+            explicit_skill_mention_names("please use /skill.v2"),
             vec!["skill.v2".to_string()]
         );
         assert!(ironclaw_skills::validate_skill_name("skill.v2"));

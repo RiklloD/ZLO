@@ -15,7 +15,8 @@
 //!   under their bare `<name>`, the same name the harness and the other
 //!   CLIs use for them.
 //! - **Policy:** `ironclaw_skills::usage::listing`. On top of it the
-//!   profile's plugin skills stay on unless pinned otherwise, and the
+//!   profile's plugin skills stay on unless pinned otherwise, a skill the
+//!   turn's text asks for (`$name`, `/name`) is on whatever its pin, and the
 //!   artifact skills are off while the artifact tools are.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use ironclaw_skills::usage::{
     SkillLedger, SkillListing as Listing, SkillUsageName, SkillUsageObservation, SkillUsageSource,
-    SkillUse,
+    SkillUse, requested_skills,
 };
 use serde::{Deserialize, Serialize};
 
@@ -177,7 +178,8 @@ pub(crate) async fn plugin_name(plugin_dir: &Path) -> Option<String> {
     value.get("name")?.as_str().map(str::to_string)
 }
 
-/// Import a pre-store state file's ledger once, then set the file aside.
+/// Import a pre-store state file's ledger once, then set the file aside
+/// (an unparsable file is set aside with nothing to import).
 async fn import_legacy(listing: &SkillListing, source: &SkillUsageSource, names: &SkillNames) {
     #[derive(Deserialize)]
     struct Legacy {
@@ -206,7 +208,12 @@ async fn import_legacy(listing: &SkillListing, source: &SkillUsageSource, names:
             SkillLedger::new()
         }
     };
-    listing.usage.import_ledger(source, ledger).await;
+    // Set aside only once the store holds the ledger: a failed import is
+    // retried on the next turn.
+    if let Err(error) = listing.usage.import_ledger(source, ledger).await {
+        tracing::debug!(%error, "claude skills: legacy ledger not imported; kept for a retry");
+        return;
+    }
     let aside = path.with_extension("json.imported");
     if let Err(error) = tokio::fs::rename(path, &aside).await {
         tracing::debug!(%error, "claude skills: legacy state not set aside");
@@ -276,13 +283,15 @@ pub(crate) struct LaunchSkills {
     pub source: Option<SkillUsageSource>,
 }
 
-/// The `--settings` JSON for an account's next turn.
+/// The `--settings` JSON for an account's next turn. A skill `text` asks
+/// for (`$name`, `/name`) is on whatever its listing or pin.
 pub(crate) async fn launch_settings(
     listing: &SkillListing,
     runtime_id: &str,
     login_file: &Path,
     profile: Option<&ironclaw_orchestrator::runtime::ProfileSkills>,
     artifacts: bool,
+    text: &str,
 ) -> LaunchSkills {
     let plugin = match profile {
         Some(skills) => plugin_name(&skills.plugin_dir).await,
@@ -308,7 +317,8 @@ pub(crate) async fn launch_settings(
                 .filter(|n| names.is_plugin(n))
                 .cloned()
                 .collect();
-            for (name, state) in decide(&document, &catalog, &own, Some(&account)) {
+            let requested = requested_skills(text, &catalog);
+            for (name, state) in decide(&document, &catalog, &own, Some(&account), &requested) {
                 overrides.insert(names.native(&name), Listed::from(state.listing));
             }
         }
