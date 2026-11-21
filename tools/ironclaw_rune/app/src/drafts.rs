@@ -354,11 +354,18 @@ pub fn record(s: &mut State, key: &str, draft: Draft) {
     store.dirty.insert(key.to_string());
     store.generation += 1;
     let generation = store.generation;
-    jobs::after(s, SAVE_DELAY, move |s, _| {
-        if s.workspace.drafts.generation == generation {
-            save(s, false);
-        }
-    });
+    jobs::after_if(s, SAVE_DELAY, move |s, _| save_due(s, generation));
+}
+
+/// The debounced save, once typing pauses: only the newest edit's timer
+/// saves. Saving hands files to the writer and drains `dirty`, which no view
+/// reads, so it reports no change and the window isn't built again (a
+/// rebuild 300 ms after every keystroke that drew nothing new).
+fn save_due(s: &mut State, generation: u64) -> bool {
+    if s.workspace.drafts.generation == generation {
+        save(s, false);
+    }
+    false
 }
 
 pub fn remove(s: &mut State, key: &str) {
@@ -456,6 +463,22 @@ mod tests {
             serde_json::from_slice(&std::fs::read(file_for(&dir, "t2")).unwrap()).unwrap();
         assert_eq!(kept.text, "kept");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_debounced_save_writes_without_a_new_view() {
+        let mut s = crate::chat::fixtures::test_state();
+        s.workspace.drafts.dir = Some(std::env::temp_dir().join("zlo-drafts-due"));
+        record(&mut s, "t1", Draft::text("first"));
+        let stale = s.workspace.drafts.generation;
+        record(&mut s, "t1", Draft::text("second"));
+        // An earlier keystroke's timer leaves the save to the newest one.
+        assert!(!save_due(&mut s, stale), "a save asked for a new view");
+        assert!(s.workspace.drafts.dirty.contains("t1"));
+        let newest = s.workspace.drafts.generation;
+        assert!(!save_due(&mut s, newest), "a save asked for a new view");
+        // Handed to the writer (a discarding one under test).
+        assert!(s.workspace.drafts.dirty.is_empty(), "the due save saved");
     }
 
     #[test]

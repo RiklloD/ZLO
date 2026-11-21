@@ -8,7 +8,6 @@ use rune::tok::TextStyle;
 use rune::{Color, El, GrowthSpec, Icon, ScrollSpec, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 
-use crate::design::smooth_scroll::WheelGlide;
 use crate::state::State;
 
 /// gpui-kit's `text_size(10)`, `text_xs`, `text_sm`, scaled to Appearance →
@@ -93,7 +92,7 @@ pub fn scroll(key: impl Into<String>, content: El) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .wheel_glide(key)
+        .key(key)
         .child(col().w_full().pb(12.).child(content))
 }
 
@@ -117,7 +116,7 @@ pub fn virtual_scroll(
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .wheel_glide(scroll_key)
+        .key(scroll_key)
         .child(
             col()
                 .key("rows")

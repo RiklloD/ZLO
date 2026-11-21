@@ -15,7 +15,6 @@ use zlo_client::orchestration::RouteProvider;
 use zlo_client::profiles::{ApprovalMode, ProfileInfo, ProfileSettings, ProfileSupermemory};
 
 use super::ProfilesState;
-use crate::design::smooth_scroll::WheelGlide;
 use crate::design::{self, Palette};
 use crate::icons;
 use crate::state::State;
@@ -286,7 +285,7 @@ fn capped(key: &str, max: f32, rows: El) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .wheel_glide(key)
+        .key(key)
         .child(rows)
 }
 

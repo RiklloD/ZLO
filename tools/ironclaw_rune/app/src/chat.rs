@@ -122,9 +122,13 @@ pub struct ChatState {
     pub(crate) reject: Option<reject_feedback::RejectEditor>,
     /// When the live run began, for the pending row's seconds.
     pub(crate) run_started: Option<Instant>,
-    /// The whole second the working line last showed, so the poll asks
-    /// for a new view once a second, not on every frame of the run.
+    /// The whole second the working line last showed, so the poll sets
+    /// [`Self::clock_text`] once a second, not on every frame of the run.
     clock_secs: Option<u64>,
+    /// The working line's seconds, painted in place: a tick repaints the
+    /// label without building the view again (`pending::clock_view` says
+    /// when the line itself changes and does need a new view).
+    pub(crate) clock_text: rune::LiveText,
     pub(crate) reserve: Option<Reserve>,
     /// The transcript viewport's height, for the reserve.
     pub(crate) list_height: f32,
@@ -222,6 +226,7 @@ impl ChatState {
             reject: None,
             run_started: None,
             clock_secs: None,
+            clock_text: rune::LiveText::new(""),
             reserve: None,
             list_height: 0.,
             turn_heights: HashMap::new(),
@@ -867,16 +872,22 @@ fn poll_chat(s: &mut State, id: &str, input_waiting: bool, tx: &mut Tx) -> bool 
             tx.wake_after(left);
         }
     }
-    // The working line counts seconds while a run is live: a new view only
-    // when the shown second turns (the poll also runs on every frame of any
-    // animation, which must not rebuild the view each time), and one wake
-    // at the next turn while the window is in front.
+    // The working line counts seconds while a run is live: the label is
+    // repainted in place when the shown second turns (the poll also runs on
+    // every frame of any animation), a new view only when the line itself
+    // changes (its word rolls), and one wake at the next turn while the
+    // window is in front.
     match c.run_started {
         Some(at) => {
             let elapsed = at.elapsed();
             let secs = elapsed.as_secs();
-            if c.clock_secs.replace(secs) != Some(secs) {
-                changed = crate::energy::polled(crate::energy::C::PollChatClock, true);
+            let was = c.clock_secs.replace(secs);
+            if was != Some(secs) {
+                c.clock_text.set(pending::format_elapsed(secs));
+                // A run's first second builds the line; later ones only
+                // when it changes.
+                let rebuilt = was.is_none_or(|w| pending::clock_view(w) != pending::clock_view(secs));
+                changed |= crate::energy::polled(crate::energy::C::PollChatClock, rebuilt);
             }
             // Nobody watches the seconds of a window in the back; focus
             // asks for a poll (`workspace::window_focus`), which resumes.
