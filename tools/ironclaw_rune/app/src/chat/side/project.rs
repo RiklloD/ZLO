@@ -265,11 +265,11 @@ pub(super) fn open(s: &mut State, path: PathBuf) {
     jobs::blocking(
         s,
         move || preview::read(&path),
-        move |s, read, _| {
+        move |s, read, tx| {
             if let Some(x) = side_of(s, &thread).filter(|x| x.project.open_gen == generation)
                 && let Some(opened) = x.project.opened.as_mut()
             {
-                opened.preview = read;
+                preview::land(opened, read, tx);
             }
         },
     );
@@ -295,7 +295,7 @@ fn open_remote(s: &mut State, thread: String, title: String, path: PathBuf) {
                 .map_err(|e| ClientError::Decode(format!("Couldn't save the file: {e}")))?;
             Ok::<_, ClientError>(tokio::task::spawn_blocking(move || preview::read(&local)).await)
         },
-        move |s, result, _| {
+        move |s, result, tx| {
             let read = match result {
                 Ok(Ok(read)) => read,
                 Ok(Err(e)) => preview::Preview::Failed(e.to_string()),
@@ -304,7 +304,7 @@ fn open_remote(s: &mut State, thread: String, title: String, path: PathBuf) {
             if let Some(x) = side_of(s, &thread).filter(|x| x.project.open_gen == generation)
                 && let Some(opened) = x.project.opened.as_mut()
             {
-                opened.preview = read;
+                preview::land(opened, read, tx);
             }
         },
     );

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use rune::{Env, Runtime};
 
 use super::{Dock, NATIVE_SETTLE, Tab, browser, side_mut};
-use crate::native_view::probe;
+use crate::native_view::{cover_hold_ends, end_cover_hold, probe};
 use crate::state::{Page, State};
 
 const FRAME: f64 = 1. / 60.;
@@ -75,7 +75,24 @@ fn an_overlay_hides_the_page_in_the_same_frame_and_closing_it_shows_it_again() {
     });
     assert!(!shown(&rt), "a dialog covers the window: the page hides");
     one_frame(&mut rt, |s| s.workspace.confirm_delete = None);
-    assert!(shown(&rt), "the dialog closed: the page is back");
+    assert!(
+        !shown(&rt),
+        "the dialog closed but still fades out where the page would draw over it"
+    );
+    // The hold ends on the wall clock: one wake, for that moment.
+    rt.frame(FRAME);
+    let end = cover_hold_ends(&rt.state).expect("held while the dialog leaves");
+    let p = probe(&rt.state);
+    assert_eq!(p.next_change, Some(end));
+    assert_eq!(p.wake_asked, Some(end), "one wake, for the hold's end");
+    end_cover_hold(&rt.state);
+    rt.frame(FRAME);
+    assert!(shown(&rt), "the dialog has gone: the page is back");
+    assert_eq!(
+        probe(&rt.state).next_change,
+        None,
+        "and nothing more to wake for"
+    );
 }
 
 #[test]

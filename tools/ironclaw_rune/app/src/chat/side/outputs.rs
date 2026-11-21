@@ -112,13 +112,14 @@ pub(super) fn open(s: &mut State, path: String) {
                 .await
                 .map_err(|e| ClientError::Decode(format!("Couldn't save the file: {e}")))
         },
-        move |s, result, _| match result {
+        move |s, result, tx| match result {
             Ok(local) => read_into(s, thread, generation, local, true),
             Err(e) => land(
                 s,
                 &thread,
                 generation,
                 preview::Preview::Failed(e.to_string()),
+                tx,
             ),
         },
     );
@@ -144,21 +145,27 @@ fn read_into(s: &State, thread: String, generation: Generation, local: PathBuf, 
             let read = preview::read(&local);
             (read, local)
         },
-        move |s, (read, local), _| {
+        move |s, (read, local), tx| {
             // A copy already on screen was just rewritten.
             if fetched && matches!(read, preview::Preview::Native) {
                 crate::native_view::refresh(&crate::native_view::Source::File(local));
             }
-            land(s, &thread, generation, read);
+            land(s, &thread, generation, read, tx);
         },
     );
 }
 
-fn land(s: &mut State, thread: &str, generation: Generation, read: preview::Preview) {
+fn land(
+    s: &mut State,
+    thread: &str,
+    generation: Generation,
+    read: preview::Preview,
+    tx: &mut rune::Tx,
+) {
     if let Some(x) = side_of(s, thread).filter(|x| x.outputs.open_gen == generation)
         && let Some(opened) = x.outputs.opened.as_mut()
     {
-        opened.preview = read;
+        preview::land(opened, read, tx);
     }
 }
 
@@ -206,7 +213,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         ),
         (Some(entries), None) => {
             let mut list = col().w_full().px(8.);
-            for (ix, entry) in entries.iter().enumerate() {
+            for entry in entries.iter() {
                 let dir = matches!(entry.kind, ProjectFsEntryKind::Directory);
                 let path = entry.path.clone();
                 let ext = std::path::Path::new(&entry.name)
@@ -221,7 +228,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 } else {
                     &icons::FILE
                 };
-                let mut line = ui::hover_row(s, format!("output-{ix}"))
+                let mut line = ui::hover_row(s, format!("output-{}", entry.path))
                     .label(entry.name.clone())
                     .child(icon(glyph, 12.).color(p.text_muted))
                     .child(

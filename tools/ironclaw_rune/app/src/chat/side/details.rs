@@ -114,8 +114,13 @@ pub(super) fn opened(s: &mut State) {
         jobs::blocking(
             s,
             move || git::pull_request(&repo),
-            move |s, pr, _| {
+            move |s, pr, tx| {
                 if let Some(x) = side_of(s, &asked).filter(|x| x.folder_gen == generation) {
+                    // A section arriving under the open card fades in and
+                    // eases the rows below aside instead of snapping.
+                    if x.session_open && x.details.pr.is_none() && pr.is_some() {
+                        tx.animated();
+                    }
                     x.details.pr = pr;
                 }
             },
@@ -144,12 +149,18 @@ fn refresh_servers(
     jobs::blocking(
         s,
         move || servers::discover(&folder),
-        move |s, found, _| {
+        move |s, found, tx| {
             let Some(x) = side_of(s, &thread).filter(|x| x.folder_gen == generation) else {
                 return;
             };
             match found {
-                Ok(list) => x.details.servers = list,
+                Ok(list) => {
+                    // As the PR row: the section arrives with motion.
+                    if x.session_open && x.details.servers.is_empty() && !list.is_empty() {
+                        tx.animated();
+                    }
+                    x.details.servers = list;
+                }
                 Err(e) => tracing::debug!(error = %e, "server discovery failed"),
             }
         },
@@ -813,7 +824,10 @@ fn servers_section(c: &Ctx) -> Option<Section> {
             pressable(
                 s,
                 base("thread-details-servers-more")
-                    .child(icon(&icons::PLUS, 16.).color(s.palette.text_faint))
+                    .child(
+                        icon(if more { &icons::MINUS } else { &icons::PLUS }, 16.)
+                            .color(s.palette.text_faint),
+                    )
                     .child(label(s, text, false)),
             )
             .on_press(|s: &mut State| {
@@ -1180,12 +1194,11 @@ fn side_chats(c: &Ctx) -> Section {
     let open_id = x.chat.as_ref().map(|c| c.thread_id.clone());
     let rows: Vec<El> = chats
         .into_iter()
-        .enumerate()
-        .map(|(ix, id)| {
+        .map(|id| {
             let shown = open_id.as_deref() == Some(id.as_str());
             let live = side_chat_running(s, &id);
             let name = bridge::title(s, &id).unwrap_or_else(|| "Side chat".into());
-            let mut item = base(format!("session-side-chat-{ix}"))
+            let mut item = base(format!("session-side-chat-{id}"))
                 .child(glyph(s, &icons::MESSAGES_SQUARE))
                 .child(label(s, name.clone(), true));
             if live {
@@ -1301,13 +1314,19 @@ fn meter(s: &State, key: String, name: &str, fill: Option<f64>, tone: Color, val
                     .radius(2.)
                     .fill(p.border)
                     .child(
-                        el().grow(f.max(0.01))
+                        el().key("fill")
+                            .grow(f.max(0.01))
                             .min_w(if f > 0. { 6. } else { 0. })
+                            .motion(crate::design::motion::PILL)
                             .h(4.)
                             .radius(2.)
                             .fill(if f > 0. { tone } else { Color::TRANSPARENT }),
                     )
-                    .child(el().grow((100. - f).max(0.01))),
+                    .child(
+                        el().key("rest")
+                            .grow((100. - f).max(0.01))
+                            .motion(crate::design::motion::PILL),
+                    ),
             );
         }
         None => r = r.child(ui::grow()),
@@ -1487,8 +1506,15 @@ pub(super) fn card(s: &State, k: &Kit, layer: &mut Vec<El>, anchor: &str, window
         .w_full();
     let empty = secs.is_empty();
     for (ix, sec) in secs.into_iter().enumerate() {
+        // Keyed by the section below it, so a section arriving above does
+        // not hand its rule to another.
         if ix > 0 && sec.separated {
-            body = body.child(el().key(format!("rule-{ix}")).w_full().h(1.).fill(p.border));
+            body = body.child(
+                el().key(format!("rule-{}", sec.key))
+                    .w_full()
+                    .h(1.)
+                    .fill(p.border),
+            );
         }
         body = body.child(sec.render(s));
     }
@@ -1530,7 +1556,9 @@ pub(super) fn card(s: &State, k: &Kit, layer: &mut Vec<El>, anchor: &str, window
             Color::BLACK.alpha(if p.light { 0.12 } else { 0.35 }),
         )
         .anchored(anchor, Side::Bottom, Align::End, 6.)
-        .transition(rune::Transition::opacity())
+        // Drops a few points from the toggle as it fades in, as the app's
+        // popovers do.
+        .transition(crate::design::motion::pop(-6.))
         .modal(true, close)
         .on_secondary_press(|s: &mut State, at, _| {
             if let Some(x) = side_mut(s) {
@@ -1657,7 +1685,7 @@ mod tests {
             "thread-details-forked-from",
             "thread-details-agent-a1",
             "thread-details-previous-agents",
-            "session-side-chat-0",
+            "session-side-chat-sc1",
             "session-new-side-chat",
             "session-fork",
             "thread-details-usage-5h",

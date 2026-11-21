@@ -38,6 +38,9 @@ impl ActivityState {
 
 /// One turn: its prompt and the steps under it.
 struct Turn<'a> {
+    /// The prompt row's key ("" for steps before any prompt): the turn's
+    /// identity, which a newer turn on top never shifts.
+    key: &'a str,
     prompt: &'a str,
     steps: Vec<&'a Row>,
 }
@@ -46,13 +49,15 @@ fn turns(rows: &[Row]) -> Vec<Turn<'_>> {
     let mut out: Vec<Turn> = Vec::new();
     for row in rows {
         match row {
-            Row::User { text, .. } => out.push(Turn {
+            Row::User { key, text, .. } => out.push(Turn {
+                key,
                 prompt: text,
                 steps: Vec::new(),
             }),
             Row::Tool { .. } | Row::Gate { .. } | Row::RunNotice { .. } | Row::Skills { .. } => {
                 if out.is_empty() {
                     out.push(Turn {
+                        key: "",
                         prompt: "",
                         steps: Vec::new(),
                     });
@@ -199,6 +204,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             0 => format!("{} steps", turn.steps.len()),
             n => format!("{} steps · {n} failed", turn.steps.len()),
         };
+        let key = if turn.key.is_empty() {
+            "activity-turn-earlier".to_string()
+        } else {
+            format!("activity-turn-{}", turn.key)
+        };
         let mut group = col().px(12.).pt(12.).gap(2.).child(
             row()
                 .gap(8.)
@@ -217,7 +227,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         for step in turn.steps {
             group = group.child(step_row(s, step));
         }
-        list = list.child(group.key(format!("activity-turn-{ix}")));
+        list = list.child(group.key(key));
     }
     if total > shown {
         list = list.child(

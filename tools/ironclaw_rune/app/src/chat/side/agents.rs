@@ -144,8 +144,12 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                     .key(format!("agent-open-{}", task.task_id)),
             );
         }
+        // Live-sorted (live first, newest first): a resort glides, an
+        // arrival wipes in, in commits that animate.
         let mut card = col()
             .key(format!("agent-{id}"))
+            .motion(crate::design::motion::ROW_RESORT)
+            .transition(rune::Transition::reveal(rune::Edge::Top))
             .mx(8.)
             .px(8.)
             .py(8.)
@@ -178,10 +182,10 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     }
     if !related.is_empty() {
         list = list.child(ui::heading(s, "Forks"));
-        for (ix, (label, thread)) in related.into_iter().enumerate() {
+        for (label, thread) in related {
             let title = bridge::title(s, &thread).unwrap_or_else(|| "Conversation".into());
             list = list.child(
-                ui::hover_row(s, format!("agent-fork-{ix}"))
+                ui::hover_row(s, format!("agent-fork-{thread}"))
                     .mx(8.)
                     .child(icon(&icons::GIT_FORK, 12.).color(p.text_faint))
                     .child(ui::line(label, xs(), p.text_faint))
