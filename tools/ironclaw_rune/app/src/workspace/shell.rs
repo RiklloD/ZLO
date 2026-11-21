@@ -37,7 +37,13 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     note_field_focus(s, cx);
     let k = design::kit(&p);
     let mut layer: Vec<El> = Vec::new();
+    let intro = s.intro.playing();
+    if intro {
+        s.intro.reduced.set(cx.is_reduced_motion());
+    }
     let body = match &s.conn {
+        // The intro draws the launch screen itself, over the shell.
+        Conn::Connecting if intro => el(),
         Conn::Connecting => loading(s, &p),
         Conn::Failed { message, retry_in } => failed(s, &p, &k, message, *retry_in),
         Conn::Ready => ready(s, &p, cx, &k, &mut layer),
@@ -45,13 +51,20 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     // The shell: the surface at the style's shell alpha. Translucent, the
     // desktop shows through it, blurred by the WindowServer (`backdrop`).
     let st = design::styles::Style::of(&s.prefs);
-    let mut root = col()
-        .key("window")
-        .w_full()
-        .h_full()
-        .fill(p.surface.alpha(st.shell_alpha))
-        .child(el().w_full().grow(1.0).min_h(0.0).child(body));
-    if !s.prefs.status_bar_hidden {
+    let shell = p.surface.alpha(st.shell_alpha);
+    let mut root =
+        col()
+            .key("window")
+            .w_full()
+            .h_full()
+            .fill(shell)
+            .child(super::intro::settle_body(
+                s,
+                el().w_full().grow(1.0).min_h(0.0).child(body),
+            ));
+    // The intro's stage is the whole window: no bar under it until it opens.
+    let staging = intro && matches!(s.conn, Conn::Connecting);
+    if !s.prefs.status_bar_hidden && !staging {
         // Connected, on the panel's fill, so the bar is the same plane as
         // the panel above it rather than a darker strip of the shell; while
         // connecting or failed there is no panel, and it stays on the shell.
@@ -77,6 +90,10 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
     // First-run setup over the home screen, whatever the connection does
     // (it switches computers itself).
     crate::onboarding::view(s, &k, &mut layer);
+    // The launch intro above everything, until it has irised open.
+    if intro {
+        layer.push(super::intro::stage(s, &p, shell));
+    }
     // Native previews draw above Rune's view: while anything floats in the
     // overlay layer (⌘K, a menu or popover, a dialog) they hide.
     crate::native_view::cover(s, !layer.is_empty());
@@ -105,28 +122,23 @@ const CAPTION_IN: &[rune::Beat] = &[
     rune::Beat::new(1.0),
 ];
 
-/// Launch screen while the gateway boots: the claw mark breathing on the
-/// shell, its caption fading in late so a fast start shows no text at all.
+/// Connecting again later in the session (the launch has its intro): the
+/// wordmark still in the middle, its caption fading in late so a quick
+/// reconnect shows no text at all.
 fn loading(s: &State, p: &Palette) -> El {
-    col()
-        .key("loading")
+    el().key("loading")
         .w_full()
         .h_full()
-        .center()
-        .gap(16.)
-        .child(crate::design::kit::claw_mark(s).cycle(rune::Cycle {
-            period: 1.4,
-            phase: 0.,
-            stops: &[(0.0, 0.55), (0.5, 1.0), (1.0, 0.55)],
-            still: 1.0,
-            fps: 15.0, // small pulses read the same at 15 fps, at half the frames
-        }))
-        // Nothing for 700 ms, then a 300 ms fade, so
-        // a fast connect never shows the line.
+        .child(super::intro::still_mark(p, s.intro.size))
         .child(
-            t("Starting IronClaw", SM, p.text_muted)
-                .key("loading-caption")
-                .sequence(rune::Sequence::new(CAPTION_IN)),
+            row()
+                .pin(Some(0.), Some(s.intro.size[1] / 2. + 56.), Some(0.), None)
+                .justify_center()
+                .child(
+                    t("Connecting to ZLO", SM, p.text_muted)
+                        .key("loading-caption")
+                        .sequence(rune::Sequence::new(CAPTION_IN)),
+                ),
         )
 }
 

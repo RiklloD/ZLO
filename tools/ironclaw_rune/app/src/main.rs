@@ -60,6 +60,8 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     // The battery saver first: the pollers below read it, and resume in
     // this same poll when it lets go.
     let mut changed = polled(C::PollLook, design::look::poll(s, tx));
+    // The launch intro steps from the frame clock while it plays.
+    changed |= workspace::intro::poll(s, clock, tx);
     changed |= polled(C::PollWorkspace, workspace::poll(s, tx));
     // The quick composer's voice controls live in its own window.
     changed |= polled(C::PollQuick, workspace::quick::poll(s));
@@ -162,6 +164,10 @@ fn main() {
     let handle = app.handle();
     let app = app.init(move || {
         let mut s = State::new(jobs::Rt::new(handle));
+        // The launch intro plays once, here; reconnects never replay it.
+        if !rune::is_headless() {
+            s.intro = workspace::intro::Intro::launch();
+        }
         if let Some(launch) = launch {
             s.remote.launched(launch);
         }
