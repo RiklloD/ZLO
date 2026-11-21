@@ -672,10 +672,14 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option
                 .as_deref()
                 .map_or_else(|| "Auto".to_string(), effort_label);
             let passed = i <= shown;
+            let (pick_slot, level) = (slot.clone(), value.clone());
+            // Zero wide, so the pointer lands on the track; this press is
+            // the stop's accessibility action.
             el().key(format!("thinking-{key}"))
                 .role("radio")
                 .label(full)
                 .checked(i == at)
+                .on_press(move |s: &mut State| pick_effort(s, pick_slot.clone(), level.clone()))
                 .w(0.)
                 .h_full()
                 .center()

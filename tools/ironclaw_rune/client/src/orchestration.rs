@@ -953,11 +953,16 @@ impl Client {
     /// chat's picker and Settings each hold a copy; saving a copy read
     /// before the other view changed it would undo that change (a removed
     /// provider coming back), so every edit starts from the gateway's.
+    /// Edits from this app run one at a time: two read before either saved
+    /// would each write back a document missing the other's change. (The
+    /// gateway takes the whole document, with no version to check.)
     pub async fn edit_model_picker(
         &self,
         thread_id: &str,
         edit: impl FnOnce(&mut PickerPrefs),
     ) -> Result<PickerPrefs, ClientError> {
+        static EDITS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _one_at_a_time = EDITS.lock().await;
         let mut prefs = self.providers().await?.picker;
         edit(&mut prefs);
         self.set_model_picker(thread_id, &prefs).await?;

@@ -100,6 +100,10 @@ pub struct ModelPickerState {
     /// The thinking slider's handle while it is dragged, as a fraction of
     /// the track; the level is picked when the drag ends.
     pub(crate) thinking_drag: Option<f32>,
+    /// Bumped by every preference read and edit: only the latest one's
+    /// answer may replace `prefs`, so a slow read never brings back a model
+    /// hidden since.
+    prefs_seq: u64,
     /// The reasoning effort; `None`: the provider's default.
     pub(crate) effort: Option<String>,
     /// Bumped by every effort or model pick: a failed effort write only
@@ -401,9 +405,11 @@ pub fn open(s: &mut State) {
 /// (and one added back is offered). Leaves the pick, the effort and any
 /// pick in flight alone.
 pub(crate) fn refresh_catalog(s: &mut State, slot: Slot) {
-    let Some(p) = slot.get(s) else { return };
+    let Some(p) = slot.get_mut(s) else { return };
     let thread = p.thread_id.clone();
     let generation = p.generation;
+    p.prefs_seq += 1;
+    let seq = p.prefs_seq;
     jobs::run(
         s,
         "model picker",
@@ -418,7 +424,10 @@ pub(crate) fn refresh_catalog(s: &mut State, slot: Slot) {
             let Ok((providers, prefs)) = result else {
                 return;
             };
-            let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else {
+            let Some(p) = slot
+                .get_mut(s)
+                .filter(|p| p.generation == generation && p.prefs_seq == seq)
+            else {
                 return;
             };
             if let Some(route) = p.route.as_mut() {
@@ -609,6 +618,8 @@ pub(crate) fn edit_prefs(
 ) {
     let Some(p) = slot.get_mut(s) else { return };
     edit(&mut p.prefs);
+    p.prefs_seq += 1;
+    let seq = p.prefs_seq;
     if p.prefs.favorites.is_empty() && p.rail == Rail::Favorites {
         p.rail = Rail::All;
     }
@@ -620,8 +631,9 @@ pub(crate) fn edit_prefs(
         "model picker",
         move |c| async move { c.edit_model_picker(&thread_id, edit).await },
         move |s, result, _| match result {
+            // A later edit or read owns `prefs` now; this answer is older.
             Ok(prefs) => {
-                if let Some(p) = slot.get_mut(s) {
+                if let Some(p) = slot.get_mut(s).filter(|p| p.prefs_seq == seq) {
                     p.prefs = prefs;
                 }
             }

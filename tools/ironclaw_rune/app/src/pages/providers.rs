@@ -69,6 +69,9 @@ pub struct ProvidersState {
     pub picker: Option<PickerPrefs>,
     /// Catalog providers whose model list is open.
     pub picker_open: std::collections::HashSet<String>,
+    /// Bumped by every catalog read and picker edit: only the latest one's
+    /// answer may replace `picker`.
+    pub picker_seq: u64,
     pub catalog_thread: Option<String>,
     /// The quick switcher's "Add model" field is open.
     pub pin_open: bool,
@@ -101,6 +104,7 @@ impl Default for ProvidersState {
             runtimes: None,
             picker: None,
             picker_open: Default::default(),
+            picker_seq: 0,
             catalog_thread: None,
             pin_open: false,
             pin_input: TextEdit::new(""),
@@ -172,14 +176,23 @@ pub fn refresh(s: &mut State) {
         // silent-ok: an older gateway has no task models; the section hides.
         |s, result, _| st(s).task_models = result.ok(),
     );
+    st(s).picker_seq += 1;
+    let seq = st(s).picker_seq;
     jobs::run(
         s,
         "providers",
         |c| async move { c.providers().await },
-        |s, result, _| {
+        move |s, result, _| {
             // silent-ok: without the catalog the CLI tab says it cannot tell.
             let catalog = result.ok();
             let p = st(s);
+            if p.picker_seq != seq {
+                // An edit since owns the preferences; keep its copy.
+                if let Some(c) = catalog {
+                    p.runtimes = Some(c.providers);
+                }
+                return;
+            }
             p.picker = catalog.as_ref().map(|c| c.picker.clone());
             p.runtimes = catalog.map(|c| c.providers);
         },
@@ -199,12 +212,19 @@ fn edit_picker(s: &mut State, edit: impl Fn(&mut PickerPrefs) + Send + 'static) 
         return;
     };
     edit(prefs);
+    p.picker_seq += 1;
+    let seq = p.picker_seq;
     jobs::run(
         s,
         "providers",
         move |c| async move { c.edit_model_picker(&thread, edit).await },
-        |s, result, _| match result {
-            Ok(prefs) => st(s).picker = Some(prefs),
+        move |s, result, _| match result {
+            Ok(prefs) => {
+                // A later edit or read owns the preferences; this is older.
+                if st(s).picker_seq == seq {
+                    st(s).picker = Some(prefs);
+                }
+            }
             Err(e) => {
                 fail(s, e);
                 refresh(s);
