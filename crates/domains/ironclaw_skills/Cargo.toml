@@ -30,6 +30,8 @@ tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 
 [dev-dependencies]
+# The usage-store contract reopens a real libSQL root filesystem.
+libsql = { workspace = true }
 # FaultInjecting decorator: test store fault paths through the real store.
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features = ["test-support"] }
 tempfile = "3"

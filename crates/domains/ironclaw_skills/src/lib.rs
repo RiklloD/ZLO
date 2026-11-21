@@ -19,6 +19,8 @@
 //! - [`learning`] — distilling a reusable SKILL.md out of a completed run's
 //!   transcript. Pure domain logic: inference sits behind `SkillInferencePort`,
 //!   and the result is validated with the same parser install uses.
+//! - [`usage`] — skill listing management: the per-user usage ledger and
+//!   pins, the one listing policy (full / name only / off), and its store.
 //! - [`validation`] — name validation, path-pattern checks, content escaping.
 //!
 //! # Trust model
@@ -53,6 +55,7 @@ mod parser;
 pub mod scoped_management;
 mod selector;
 pub mod types;
+pub mod usage;
 pub mod validation;
 
 // Re-export core types at crate root for convenience.
