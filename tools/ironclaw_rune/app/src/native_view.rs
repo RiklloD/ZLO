@@ -47,22 +47,48 @@ use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use raw_window_handle::RawWindowHandle;
-use rune::{El, Tx, el};
+use rune::{El, Spring, Tx, el};
 
 use crate::state::State;
 
 mod appkit;
+mod input;
 use appkit::{CGPoint, CGRect, CGSize, file_url, new_look_view, new_web_view, ns_string, string};
 
 /// Added to a timed wake so it lands after its deadline, never a hair
 /// before (the poll it runs would find nothing due and ask for no other).
 const WAKE_PAD: Duration = Duration::from_millis(20);
 
+/// The exits of the overlays that can close over a native view, slowest
+/// first. Rune does not tell the app when a removed element's exit has
+/// finished, so the hold is derived from these springs:
+/// - rune-kit's anchored popover (model picker, profile pickers, menus
+///   built on it) fades out on a 0.25 s removal spring
+///   (`rune-kit/src/overlays/popover.rs`);
+/// - a plain `Transition::opacity()` (the ⌘K scrim, kit scrims and
+///   dialogs) leaves on Rune's default 0.15 s;
+/// - the app's own popovers and cards (`design::motion::pop`) leave on the
+///   pop spring at 60 %.
+const OVERLAY_EXITS: [Spring; 3] = [
+    Spring::new(0.25, 0.0),
+    Spring::new(0.15, 0.0),
+    Spring::new(0.22 * 0.6, 0.03),
+];
+
+/// An exiting overlay at or under this opacity no longer reads as drawn.
+const EXIT_GONE: f32 = 0.02;
+
 /// How long the views stay hidden after the overlay layer empties. A
 /// closing overlay is gone from the layer at once but still plays its exit
-/// (a menu's pop back, a dialog and its scrim fading, about 0.15 s) where
-/// the views would draw over it, since they sit above Rune's view.
-const COVER_HOLD: Duration = Duration::from_millis(180);
+/// where the views would draw over it, since they sit above Rune's view:
+/// the slowest of [`OVERLAY_EXITS`] to fade to [`EXIT_GONE`], plus a frame.
+fn cover_hold() -> Duration {
+    let slowest = OVERLAY_EXITS
+        .iter()
+        .map(|s| s.settling_duration(EXIT_GONE))
+        .fold(0f32, f32::max);
+    Duration::from_secs_f32(slowest) + Duration::from_millis(17)
+}
 
 /// A view coming into sight fades in over this, on Core Animation's clock:
 /// Rune draws no frames for it. Hiding stays instant, so nothing Rune
@@ -129,7 +155,7 @@ pub struct NativeViews {
     /// the views hide in that same view run.
     covered: Cell<bool>,
     /// When the overlay layer last emptied: the views stay hidden for
-    /// [`COVER_HOLD`] after, while the overlay plays its exit.
+    /// [`cover_hold`] after, while the overlay plays its exit.
     uncovered: Cell<Option<Instant>>,
 }
 
@@ -143,7 +169,7 @@ impl NativeViews {
     fn hold_ends(&self) -> Option<Instant> {
         self.uncovered
             .get()
-            .map(|at| at + COVER_HOLD)
+            .map(|at| at + cover_hold())
             .filter(|end| *end > Instant::now())
     }
 }
@@ -237,7 +263,7 @@ pub fn on_window(window: &rune::WindowHandle) {
                 close_view(slot);
             }
             HOST.with(|h| *h.borrow_mut() = Some(view));
-            install_click_monitor();
+            input::install_monitor();
         }
         Ok(None) => {}
         Err(e) => tracing::debug!(error = %e, "no native window handle for previews"),
@@ -248,6 +274,7 @@ pub fn on_window(window: &rune::WindowHandle) {
 /// ask for the one wake time alone calls for; call before every frame from
 /// the app's `poll`.
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
+    input::keep_waker(&s.rt.handle);
     reconcile(s);
     if let Some(at) = unasked_wake(s) {
         tx.wake_after(at.saturating_duration_since(Instant::now()) + WAKE_PAD);
@@ -376,86 +403,11 @@ pub fn alive() -> bool {
     SURFACES.with(|cell| cell.borrow().iter().any(Option::is_some))
 }
 
-/// A mouse-down anywhere in the window takes the keyboard back from a
-/// clicked page. Rune has no window-wide press hook, so an AppKit local
-/// event monitor does it: a left or right
-/// click that lands on Rune's view, not on a preview, hands the keyboard
-/// back. Installed once for the app's life; every event passes unchanged.
-fn install_click_monitor() {
-    thread_local! {
-        static INSTALLED: Cell<bool> = const { Cell::new(false) };
-    }
-    if INSTALLED.with(|i| i.replace(true)) {
-        return;
-    }
-    let Some(cls) = AnyClass::get(c"NSEvent") else {
-        return;
-    };
-    let block = block2::RcBlock::new(|event: *mut AnyObject| -> *mut AnyObject {
-        if !event.is_null() && alive() && click_on_rune(event) {
-            reclaim_focus();
-        }
-        event
-    });
-    // NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown.
-    const MASK: u64 = (1 << 1) | (1 << 3);
-    // SAFETY: the block matches `NSEvent *(^)(NSEvent *)`; AppKit copies it
-    // and keeps the monitor until it is removed (never, here).
-    unsafe {
-        let _monitor: *mut AnyObject =
-            msg_send![cls, addLocalMonitorForEventsMatchingMask: MASK, handler: &*block];
-    }
-}
-
-/// Whether a mouse-down `event` hit Rune's own view in its window (not a
-/// QuickLook or WebKit preview lying above it).
-fn click_on_rune(event: *mut AnyObject) -> bool {
-    let Some(view) = HOST.with(|h| h.borrow().clone()) else {
-        return false;
-    };
-    // SAFETY: plain AppKit queries on live objects, on the main thread (local
-    // monitors run there); every returned pointer is null-checked.
-    unsafe {
-        let win: *mut AnyObject = msg_send![&*view, window];
-        let event_win: *mut AnyObject = msg_send![event, window];
-        if win.is_null() || !std::ptr::eq(win, event_win) {
-            return false;
-        }
-        let parent: *mut AnyObject = msg_send![&*view, superview];
-        if parent.is_null() {
-            return false;
-        }
-        let at: CGPoint = msg_send![event, locationInWindow];
-        let at: CGPoint =
-            msg_send![parent, convertPoint: at, fromView: std::ptr::null::<AnyObject>()];
-        let hit: *mut AnyObject = msg_send![parent, hitTest: at];
-        if hit.is_null() {
-            return false;
-        }
-        let inside: bool = msg_send![hit, isDescendantOf: &*view];
-        inside
-    }
-}
-
-/// A click on Rune's view takes the keyboard back from a page clicked
-/// earlier (from the click monitor above).
-fn reclaim_focus() {
-    if !alive() {
-        return;
-    }
-    let Some(view) = HOST.with(|h| h.borrow().clone()) else {
-        return;
-    };
-    unsafe {
-        let win: *mut AnyObject = msg_send![&*view, window];
-        if win.is_null() {
-            return;
-        }
-        let first: *mut AnyObject = msg_send![win, firstResponder];
-        if !std::ptr::eq(first, Retained::as_ptr(&view)) {
-            let _: bool = msg_send![win, makeFirstResponder: &*view];
-        }
-    }
+/// Whether the person clicked or typed in the Browser's page since the
+/// last call: the page may be navigating, so the Browser tab follows it
+/// for a moment (`side::browser`). Clears the mark.
+pub fn take_page_input() -> bool {
+    input::take()
 }
 
 /// Reload `source` if it is showing (its file was rewritten).
@@ -584,12 +536,12 @@ pub(crate) struct Probe {
     pub wake_asked: Option<Instant>,
 }
 
-/// Let the hold after a closed overlay run out, as if [`COVER_HOLD`] had
+/// Let the hold after a closed overlay run out, as if [`cover_hold`] had
 /// passed on the wall clock.
 #[cfg(test)]
 pub(crate) fn end_cover_hold(s: &State) {
     if let Some(at) = s.native.uncovered.get() {
-        s.native.uncovered.set(Some(at - COVER_HOLD));
+        s.native.uncovered.set(Some(at - cover_hold()));
     }
 }
 
@@ -850,6 +802,17 @@ mod tests {
         assert!(Source::Url("http://localhost:3000".into()).engine() == Engine::Web);
         assert!(shows_natively(Path::new("memo.docx")));
         assert!(!shows_natively(Path::new("main.rs")));
+    }
+
+    /// The anchored popover (the model picker) fades on a 0.25 s spring:
+    /// still plainly drawn at the old 180 ms hold, gone by the hold's end.
+    #[test]
+    fn the_cover_hold_outlasts_the_popover_fade() {
+        let popover = Spring::new(0.25, 0.0);
+        let opacity = |t: Duration| popover.sample(1., 0., 0., t.as_secs_f32()).0;
+        assert!(opacity(Duration::from_millis(180)) > 0.05);
+        assert!(opacity(cover_hold()) <= EXIT_GONE);
+        assert!(cover_hold() < Duration::from_millis(400), "still brief");
     }
 
     #[test]
