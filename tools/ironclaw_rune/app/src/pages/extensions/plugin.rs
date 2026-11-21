@@ -136,7 +136,10 @@ pub fn grant(s: &mut State) {
         s,
         "plugin consent",
         move |c| async move { c.grant_consent(&job_id, &digest).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's own action: let it move.
+            tx.animated();
+
             let ext = st(s);
             let Some(sheet) = ext.consent.as_mut().filter(|x| x.id == id) else {
                 return;
@@ -181,7 +184,10 @@ pub fn open_detail(s: &mut State, id: String) {
         s,
         "plugin settings",
         move |c| async move { c.plugin_settings(&job_id).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's own action: let it move.
+            tx.animated();
+
             let Some(d) = st(s).detail.as_mut().filter(|d| d.asked == asked) else {
                 return;
             };
@@ -305,7 +311,10 @@ fn put(
         s,
         "plugin setting",
         move |c| async move { c.put_plugin_setting(&plugin, &job_setting, &value).await },
-        move |s, result, _| {
+        move |s, result, tx| {
+            // The reply to the person's own action: let it move.
+            tx.animated();
+
             let Some(d) = st(s).detail.as_mut().filter(|d| d.asked == asked) else {
                 return;
             };
