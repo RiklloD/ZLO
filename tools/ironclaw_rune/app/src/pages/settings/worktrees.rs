@@ -40,8 +40,9 @@ pub fn view(s: &State, k: &Kit) -> El {
                 p,
                 "Clean up",
                 Some(
-                    "Removes thread worktrees and branches with no changes and no commits. \
-                     Deleting a thread does this for its worktree; ones with work are kept.",
+                    "Removes thread worktrees and branches with no changes, ignored files or \
+                     commits. Deleting a thread does this for its worktree; ones with work, or \
+                     shared with a subagent, are kept.",
                 ),
                 clean,
             ),

@@ -379,28 +379,39 @@ impl Engine {
 
 impl Engine {
     /// Remove `thread`'s worktree and its branch when it holds no work: no
-    /// uncommitted changes, HEAD still on its branch, no commits since its
-    /// base. Anything else (or a thread busy in it) keeps it. Returns
-    /// `{"cleaned": bool, "reason"?}`; no active worktree is a no-op.
+    /// uncommitted or ignored files, HEAD still on its branch, no commits
+    /// since its base, no shared child working in it. Anything else (or a
+    /// thread busy in it) keeps it. Returns `{"cleaned": bool, "reason"?}`;
+    /// no active worktree is a no-op.
     pub async fn clean_worktree(&self, thread: &ThreadRecord) -> Result<Value> {
         let kept = |reason: &str| Ok(json!({"cleaned": false, "reason": reason}));
+        // Reserved before the binding is read, so no other step replaces it
+        // between the read and the state change.
+        let _op = match self.reserve_worktree(&thread.thread_id).await {
+            Ok(op) => op,
+            Err(error) if error.code() == "thread_busy" => return kept("thread busy"),
+            Err(error) => return Err(error),
+        };
         let Some(binding) = self.store.worktree(&thread.thread_id).await? else {
             return kept("no worktree");
         };
         if binding.state != WorktreeState::Active {
             return kept("no active worktree");
         }
-        let _op = match self.reserve_worktree(&thread.thread_id).await {
-            Ok(op) => op,
-            Err(error) if error.code() == "thread_busy" => return kept("thread busy"),
-            Err(error) => return Err(error),
-        };
+        // An idle shared child keeps working there and has no folder to
+        // fall back to.
+        if !self.store.worktree_sharers(binding.id).await?.is_empty() {
+            return kept("shared with a child thread");
+        }
         let host = self.worktree_host()?;
         let git = Git::new(host.runner.as_ref());
         let exists = folder_exists(&binding.path).await;
         if exists {
             if !git.dirty_files(&binding.path).await?.is_empty() {
                 return kept("uncommitted changes");
+            }
+            if !git.ignored_files(&binding.path).await?.is_empty() {
+                return kept("ignored files");
             }
             if !on_branch(&git, &binding).await? {
                 return kept("HEAD left its branch");
