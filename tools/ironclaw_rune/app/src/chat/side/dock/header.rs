@@ -77,7 +77,7 @@ fn worktree_chip(s: &State, dock: Dock, wt: &zlo_client::orchestration::Worktree
 fn header_content(s: &State, k: &Kit, dock: Dock) -> El {
     let p = &s.palette;
     let tab = dock_tab(s, dock);
-    let wide = side(s).is_some_and(|x| x.wide[dock.ix()]);
+    let wide = super::expanded(s) == Some(dock);
 
     let widen = ui::ibtn(
         if wide {
@@ -85,12 +85,19 @@ fn header_content(s: &State, k: &Kit, dock: Dock) -> El {
         } else {
             &icons::MAXIMIZE
         },
-        if wide { "Narrow pane" } else { "Widen pane" },
+        if wide {
+            "Restore pane"
+        } else {
+            "Expand pane over the conversation"
+        },
     )
     .on_press_tx(move |s: &mut State, tx| {
         super::super::dock_slide(s, tx);
         if let Some(x) = side_mut(s) {
-            x.wide[dock.ix()] = !x.wide[dock.ix()];
+            // One dock expands at a time; the other keeps its width.
+            let on = !wide;
+            x.wide = [false; 2];
+            x.wide[dock.ix()] = on;
             // Its native view waits out the resize instead of chasing it.
             x.opened_at[dock.ix()] = Some(std::time::Instant::now());
         }

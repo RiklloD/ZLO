@@ -176,6 +176,13 @@ fn breadcrumb(s: &State, p: &Palette, cx: &mut Cx<State>, k: &Kit, layer: &mut V
                     .truncate(),
             ),
         );
+    // A dock expanded over the conversation takes its titlebar too: the
+    // crumbs fold away and leave the band to the dock's strip.
+    let crumbs = if s.page == Page::Chat && crate::chat::side::expanded(s).is_some() {
+        crumbs.w(0.).clip_rounded(0.)
+    } else {
+        crumbs
+    };
     let mut bar = Toolbar::new().leading(crumbs);
     let actions = match s.page {
         Page::Chat if s.chat.is_some() => crate::chat::titlebar_actions(s, cx, k, layer),

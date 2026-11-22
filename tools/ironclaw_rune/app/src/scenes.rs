@@ -284,7 +284,15 @@ pub const SCENES: &[Scene] = &[
     ("side-agents", crate::chat::side::fixtures::agents),
     ("side-browser", crate::chat::side::fixtures::browser),
     ("side-changes", crate::chat::side::fixtures::changes),
+    (
+        "side-changes-clean",
+        crate::chat::side::fixtures::changes_clean,
+    ),
     ("side-console", crate::chat::side::fixtures::console),
+    (
+        "side-console-empty",
+        crate::chat::side::fixtures::console_empty,
+    ),
     ("side-details", crate::chat::side::fixtures::details),
     ("side-details-light", |s| {
         crate::chat::side::fixtures::details(s);
@@ -301,6 +309,7 @@ pub const SCENES: &[Scene] = &[
         s.prefs.wallpaper_opacity = 0.35;
         crate::design::look::fixture_wallpaper(s, (1280, 820));
     }),
+    ("side-expanded", crate::chat::side::fixtures::side_expanded),
     ("side-files", crate::chat::side::fixtures::files),
     ("side-machines", crate::chat::side::fixtures::machines),
     ("side-history", crate::chat::side::fixtures::history),
@@ -309,6 +318,10 @@ pub const SCENES: &[Scene] = &[
     ("side-remote", crate::chat::side::fixtures::remote),
     ("side-routines", crate::chat::side::fixtures::routines),
     ("side-session", crate::chat::side::fixtures::session),
+    (
+        "side-work-expanded",
+        crate::chat::side::fixtures::work_expanded,
+    ),
     (
         "side-session-picker",
         crate::chat::side::fixtures::session_picker,

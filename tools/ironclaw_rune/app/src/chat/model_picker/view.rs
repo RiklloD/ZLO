@@ -799,7 +799,7 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option
         .fill(p.bg)
         .border(1., p.border)
         .cursor(rune::Cursor::Pointer)
-        .on_drag(move |s: &mut State, d, _| thinking_drag(s, &drag_slot, d))
+        .on_drag(move |s: &mut State, d, tx| thinking_drag(s, &drag_slot, d, tx))
         .child(
             el().w_full()
                 .h_full()
@@ -848,7 +848,7 @@ fn thinking_choices(m: &ModelPickerState) -> Vec<Option<String>> {
 /// A press or drag on the thinking track: the knob follows the pointer,
 /// and letting go picks the nearest stop. Escape (a cancelled drag) puts
 /// it back.
-fn thinking_drag(s: &mut State, slot: &Slot, d: &mut rune::Drag) {
+fn thinking_drag(s: &mut State, slot: &Slot, d: &mut rune::Drag, tx: &mut rune::Tx) {
     let Some(m) = slot.get_mut(s) else { return };
     // The stops span the track less its round ends (and its 1 pt rim).
     let span = (d.w - 2. * TRACK_R - 2.).max(1.);
@@ -856,19 +856,17 @@ fn thinking_drag(s: &mut State, slot: &Slot, d: &mut rune::Drag) {
     match d.phase {
         Phase::Down | Phase::Move => m.thinking_drag = Some(frac),
         Phase::Up => {
-            m.thinking_drag = None;
-            if d.cancelled() {
-                return;
-            }
             let choices = thinking_choices(m);
-            if choices.len() < 2 {
+            if d.cancelled() || choices.len() < 2 {
+                m.thinking_drag = None;
                 return;
             }
+            // Picked next frame (`model_picker::poll`): this frame may
+            // hold the drag's last move, which lands it all at once. The
+            // knob holds where it was let go until then.
             let ix = (frac * (choices.len() - 1) as f32).round() as usize;
-            let level = choices[ix].clone();
-            if level != m.effort {
-                pick_effort(s, slot.clone(), level);
-            }
+            m.thinking_release = Some(choices[ix].clone());
+            tx.wake_after(std::time::Duration::ZERO);
         }
     }
 }
@@ -941,7 +939,7 @@ mod tests {
         rt.pointer_move(stop(3.), y);
         rt.pointer_down(stop(3.), y);
         step(&mut rt);
-        rt.pointer_move(stop(1.) + 3., y);
+        rt.pointer_move(stop(1.) + 8., y);
         step(&mut rt);
         let (effort, held) = picker(&rt);
         assert_eq!(effort.as_deref(), Some("high"), "nothing picked mid-drag");
@@ -949,8 +947,32 @@ mod tests {
             held.is_some_and(|f| (f - 0.25).abs() < 0.05),
             "knob follows: {held:?}"
         );
+        // A real pointer's last move and its release land in one frame.
+        // The composer pill's level rolls from High to Low on the release:
+        // a drag's commits land at once unless the release asks for motion.
+        let label = slot.key("model-thinking-label");
+        let width = |rt: &Runtime<crate::state::State>| {
+            rt.presented(&label).expect("pill level drawn").0[2]
+        };
+        let before = width(&rt);
+        rt.pointer_move(stop(1.) + 3., y);
         rt.pointer_up(stop(1.) + 3., y);
+        rt.frame(1. / 60.);
+        // The app's poll before the next frame picks the level let go on.
+        // A wake's commit lands at once unless the poll asks for motion.
+        rt.update(|s, tx| {
+            tx.instant();
+            crate::chat::model_picker::poll(s, tx);
+        });
+        rt.frame(1. / 60.);
+        rt.frame(1. / 60.);
+        let mid = width(&rt);
         step(&mut rt);
+        let after = width(&rt);
+        assert!(
+            (before - after).abs() > 2. && (mid - after).abs() > 0.5,
+            "the pill's level eases, not snaps: {before} -> {mid} -> {after}"
+        );
         let (effort, held) = picker(&rt);
         assert_eq!(
             effort.as_deref(),
@@ -962,6 +984,10 @@ mod tests {
         rt.pointer_move(stop(4.), y);
         rt.pointer_down(stop(4.), y);
         rt.pointer_up(stop(4.), y);
+        rt.frame(1. / 60.);
+        rt.update(|s, tx| {
+            crate::chat::model_picker::poll(s, tx);
+        });
         step(&mut rt);
         assert_eq!(picker(&rt).0.as_deref(), Some("xhigh"));
     }

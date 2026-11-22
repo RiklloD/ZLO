@@ -20,8 +20,8 @@ use rune_kit::Kit;
 
 use super::ui::{self};
 use super::{
-    Dock, KEEP, Tab, WIDE_SHARE, WIDTH_DEFAULT, WIDTH_MAX, WIDTH_MIN, browser, dock_drawn,
-    dock_open, dock_tab, side, side_mut,
+    Dock, KEEP, Tab, WIDTH_DEFAULT, WIDTH_MAX, WIDTH_MIN, browser, dock_drawn, dock_open, dock_tab,
+    side, side_mut,
 };
 use crate::design::{panels, styles::Style};
 use crate::state::State;
@@ -43,15 +43,18 @@ const SIDE_MIN: f32 = 300.;
 /// Width above which a dock's five tool tabs flow onto a single row.
 const WIDE_TABS_MIN: f32 = 560.;
 
+/// The widest column a window gives: an expanded dock on a 2560 pt screen.
+pub(super) const WIDEST: f32 = 2560.;
+
 /// How long a closed dock's column stays drawn: until its clip is within
 /// half a point of shut. The clip rides [`panels::REVEAL`] whoever closes
 /// it: the shell's split view sets that spring on the whole main column
 /// (`workspace/shell/frame.rs`), and the chat's own buttons name it too
 /// (`side::dock_slide`). Measured for the widest column a window gives
-/// ([`WIDE_SHARE`] of a 2560 pt screen). Holding longer only draws frames
-/// nobody can see; less would drop the column while its clip still shows.
+/// (an expanded dock across a 2560 pt screen). Holding longer only draws
+/// frames nobody can see; less would drop the column while its clip still
+/// shows.
 pub(super) fn close_hold() -> f64 {
-    const WIDEST: f32 = 2560. * WIDE_SHARE;
     f64::from(panels::REVEAL.settling_duration(0.5 / WIDEST))
 }
 
@@ -69,13 +72,51 @@ fn viewport(cx: &Cx<State>) -> f32 {
     cx.window_layout("window").map_or(1280., |r| r[2])
 }
 
-/// `dock`'s width at rest: saved or default, or widened, leaving the
-/// conversation its room (beside the right pane, for the work panel).
-fn rest_width(s: &State, dock: Dock, viewport: f32) -> f32 {
+/// The width the conversation and both docks share: the `chat-root` row's
+/// last layout (the window less the sidebar). The first frame has none and
+/// assumes the sidebar's default width.
+fn chat_room(cx: &Cx<State>, viewport: f32) -> f32 {
+    cx.window_layout("chat-root")
+        .map_or(viewport - 240., |r| r[2])
+}
+
+/// The dock expanded over the conversation, if any. Only one is: the work
+/// panel wins a stale pair.
+pub fn expanded(s: &State) -> Option<Dock> {
+    let x = side(s)?;
+    [Dock::Work, Dock::Side]
+        .into_iter()
+        .find(|d| x.wide[d.ix()] && dock_open(s, *d))
+}
+
+/// `dock`'s width at rest: saved or default, leaving the conversation its
+/// room (beside the right pane, for the work panel); or, expanded, all of
+/// `chat` (the conversation's and both docks' row) the other dock leaves.
+fn rest_width(s: &State, dock: Dock, viewport: f32, chat: f32) -> f32 {
+    if expanded(s) != Some(dock) {
+        return normal_width(s, dock, viewport);
+    }
+    let other = match dock {
+        Dock::Work => Dock::Side,
+        Dock::Side => Dock::Work,
+    };
+    let taken = if dock_open(s, other) {
+        dragged_or(s, other, || normal_width(s, other, viewport))
+    } else {
+        0.
+    };
+    (chat - taken).max(WIDTH_MIN)
+}
+
+/// `dock`'s width when not expanded: saved or default, leaving the
+/// conversation its room (beside the right pane's own normal width, for
+/// the work panel). Never reads an expanded width, so an expanded dock
+/// can size itself from its neighbour's.
+fn normal_width(s: &State, dock: Dock, viewport: f32) -> f32 {
     let room = match dock {
         Dock::Work => {
             let side = if dock_open(s, Dock::Side) {
-                width(s, Dock::Side, viewport)
+                dragged_or(s, Dock::Side, || normal_width(s, Dock::Side, viewport))
             } else {
                 0.
             };
@@ -97,29 +138,28 @@ fn rest_width(s: &State, dock: Dock, viewport: f32) -> f32 {
     };
     let normal = if saved > 0. { saved } else { WIDTH_DEFAULT };
     let min = min_width(dock, room);
-    let normal = normal.clamp(min, WIDTH_MAX.min(room.max(min)));
-    let wide = (viewport * WIDE_SHARE).clamp(min, room.max(min));
-    if side(s).is_some_and(|x| x.wide[dock.ix()]) {
-        wide
-    } else {
-        normal
+    normal.clamp(min, WIDTH_MAX.min(room.max(min)))
+}
+
+/// The dragged width while `dock`'s edge is dragged, else `rest`.
+fn dragged_or(s: &State, dock: Dock, rest: impl FnOnce() -> f32) -> f32 {
+    match side(s).and_then(|x| x.drag) {
+        Some((d, w)) if d == dock => w,
+        _ => rest(),
     }
 }
 
 /// A dock's laid-out width: the dragged width while its edge is dragged.
-fn width(s: &State, dock: Dock, viewport: f32) -> f32 {
-    match side(s).and_then(|x| x.drag) {
-        Some((d, w)) if d == dock => w,
-        _ => rest_width(s, dock, viewport),
-    }
+fn width(s: &State, dock: Dock, viewport: f32, chat: f32) -> f32 {
+    dragged_or(s, dock, || rest_width(s, dock, viewport, chat))
 }
 
 /// The right pane's and the work panel's widths, 0 when closed, for the
 /// wallpaper's conversation area.
-pub fn dock_widths(s: &State, viewport: f32) -> (f32, f32) {
+pub fn dock_widths(s: &State, viewport: f32, chat: f32) -> (f32, f32) {
     let w = |dock| {
         if dock_open(s, dock) {
-            width(s, dock, viewport)
+            width(s, dock, viewport, chat)
         } else {
             0.
         }
@@ -152,9 +192,10 @@ pub fn work_view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) ->
 
 fn dock(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, dock: Dock) -> El {
     let viewport = viewport(cx);
+    let chat = chat_room(cx, viewport);
     let open = dock_open(s, dock) && side(s).is_some();
     let drawn = dock_drawn(s, dock) && side(s).is_some();
-    let w = width(s, dock, viewport);
+    let w = width(s, dock, viewport, chat);
     // The column keeps its full width inside a clip that opens and shuts
     // around it, so it slides in without rewrapping.
     let clip = el()
@@ -209,7 +250,7 @@ fn dock(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>, dock: Dock)
                 .fill(p.border)
                 .transition(Transition::none()),
         )
-        .child(edge(s, dock, w, dragging, viewport));
+        .child(edge(s, dock, w, dragging, viewport, chat));
     clip.child(pane)
 }
 
@@ -222,11 +263,11 @@ fn body_fade() -> Transition {
 
 /// The resize strip along the dock's left border. A double click resets
 /// the saved width.
-fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32) -> El {
+fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32, chat: f32) -> El {
     let p = &s.palette;
     // The work panel's right edge is the right pane's left one.
     let right = match dock {
-        Dock::Work if dock_open(s, Dock::Side) => viewport - width(s, Dock::Side, viewport),
+        Dock::Work if dock_open(s, Dock::Side) => viewport - width(s, Dock::Side, viewport, chat),
         _ => viewport,
     };
     let st = Style::of(&s.prefs);
@@ -268,7 +309,10 @@ fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32) -> El {
             match d.phase {
                 Phase::Down => {
                     if let Some(x) = side_mut(s) {
-                        x.wide[dock.ix()] = false;
+                        // Resizing leaves expanded mode, either dock's: an
+                        // expanded neighbour leaves no conversation to
+                        // resize against.
+                        x.wide = [false; 2];
                         x.drag = Some((dock, w));
                     }
                 }

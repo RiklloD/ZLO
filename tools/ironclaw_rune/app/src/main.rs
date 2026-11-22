@@ -67,6 +67,8 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= polled(C::PollQuick, workspace::quick::poll(s));
     // The chat counts its own sources (pacer, clock, copy check, computer).
     changed |= chat::poll(s, tx);
+    // A thinking level let go on last frame is picked in its own commit.
+    changed |= chat::model_picker::poll(s, tx);
     // A thread under a resting pointer warms; it never changes the view.
     chat::prewarm::poll(s, tx);
     // A closed dock's column stays drawn until its clip has slid shut.

@@ -6,7 +6,9 @@ use std::process::Command;
 
 use zlo_client::transcript::{GateState, Row, ToolStatus};
 
-use super::{SideChat, SideState, Tab, changes, console, git, history, outputs, project, routines};
+use super::{
+    Dock, SideChat, SideState, Tab, changes, console, git, history, outputs, project, routines,
+};
 use crate::state::{Conn, Page, State};
 
 /// The scene's conversation rows and orchestrator tasks, set before
@@ -173,6 +175,38 @@ pub fn changes(s: &mut State) {
             2,
             "Name this `total`; `sum` shadows the iterator method.",
         );
+    });
+}
+
+/// A clean working tree: nothing to commit, two commits to push.
+pub fn changes_clean(s: &mut State) {
+    base(s, None, Some(Tab::Changes), |x| {
+        with_repo(x);
+        changes::fixture(x, "feat/spawn-fleet", Vec::new(), "", None);
+    });
+}
+
+/// The work panel expanded over the conversation, the right pane open
+/// beside it.
+pub fn work_expanded(s: &mut State) {
+    base(s, Some(Tab::Agents), Some(Tab::Changes), |x| {
+        with_repo(x);
+        changes::fixture(x, "feat/spawn-fleet", Vec::new(), "", None);
+        x.wide[Dock::Work.ix()] = true;
+    });
+}
+
+/// The right pane expanded over the conversation, the work panel shut.
+pub fn side_expanded(s: &mut State) {
+    base(s, Some(Tab::Agents), None, |x| {
+        x.wide[Dock::Side.ix()] = true;
+    });
+}
+
+/// The console before any command: the quick-command card.
+pub fn console_empty(s: &mut State) {
+    base(s, None, Some(Tab::Console), |x| {
+        x.folder = Some(PathBuf::from("/Users/you/Dev/verpin"));
     });
 }
 
