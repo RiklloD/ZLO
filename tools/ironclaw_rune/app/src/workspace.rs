@@ -588,12 +588,21 @@ pub fn open_in_browser(s: &State, tx: &mut Tx) {
 }
 
 /// Delete a thread; it leaves the list only after the gateway confirmed.
+/// Its worktree goes first when it holds no work (a worktree with changes
+/// or commits stays, and the git bar of another thread never sees it).
 pub fn delete_thread(s: &mut State, thread_id: String) {
     let id = thread_id.clone();
     jobs::run(
         s,
         "delete thread",
-        move |c| async move { c.delete_thread(&id).await },
+        move |c| async move {
+            // Best effort: an older gateway, or a worktree that holds work,
+            // never blocks the delete.
+            if let Err(e) = c.clean_thread_worktree(&id).await {
+                tracing::debug!(error = %e, "worktree not cleaned before delete");
+            }
+            c.delete_thread(&id).await
+        },
         move |s, result, tx| {
             // Remove only after the gateway confirmed the delete.
             if result.is_err() {

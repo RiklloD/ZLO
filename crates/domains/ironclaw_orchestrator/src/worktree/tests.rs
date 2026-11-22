@@ -1010,6 +1010,81 @@ async fn a_user_thread_worktree_starts_from_the_default_branch() {
     assert_eq!(sh(&r.repo, "git branch --show-current"), "feat/side");
 }
 
+/// Cleaning a thread's worktree removes it with its branch only while it
+/// holds no work; uncommitted changes or commits keep it.
+#[tokio::test]
+async fn cleaning_removes_only_an_empty_worktree() {
+    let r = repo(true).await;
+    let parent = ThreadId::new("parent").unwrap();
+    let thread = r.engine.store().thread(&parent).await.unwrap().unwrap();
+    let view = r.engine.start_worktree(&thread, None).await.unwrap();
+    let path = PathBuf::from(view["path"].as_str().unwrap());
+
+    std::fs::write(path.join("draft.txt"), "wip\n").unwrap();
+    let kept = r.engine.clean_worktree(&thread).await.unwrap();
+    assert_eq!(kept["cleaned"], false);
+    assert!(path.exists(), "uncommitted work keeps the worktree");
+
+    commit_all(&path, "work");
+    let kept = r.engine.clean_worktree(&thread).await.unwrap();
+    assert_eq!(kept["cleaned"], false);
+    assert!(path.exists(), "commits keep the worktree");
+
+    sh(&path, "git reset -q --hard HEAD~1");
+    // Ignored files are work too (`git worktree remove` would delete them).
+    std::fs::write(path.join(".git-ignored-note"), "keep\n").unwrap();
+    std::fs::write(
+        PathBuf::from(sh(&path, "git rev-parse --git-common-dir")).join("info/exclude"),
+        ".git-ignored-note\n",
+    )
+    .unwrap();
+    assert!(sh(&path, "git status --porcelain").is_empty());
+    let kept = r.engine.clean_worktree(&thread).await.unwrap();
+    assert_eq!(kept["cleaned"], false);
+    assert!(
+        path.join(".git-ignored-note").exists(),
+        "ignored files keep it"
+    );
+    std::fs::remove_file(path.join(".git-ignored-note")).unwrap();
+
+    // An idle shared child still works in it: kept.
+    let shared = child_of(&r.delegate_from("parent", json!({"task": "help"})).await);
+    r.finish(&shared).await;
+    let kept = r.engine.clean_worktree(&thread).await.unwrap();
+    assert_eq!(kept["cleaned"], false, "{kept}");
+    assert!(path.exists(), "a shared child keeps the worktree");
+}
+
+/// [`cleaning_removes_only_an_empty_worktree`] without a sharer: removed.
+#[tokio::test]
+async fn cleaning_removes_an_empty_unshared_worktree() {
+    let r = repo(true).await;
+    let parent = ThreadId::new("parent").unwrap();
+    let thread = r.engine.store().thread(&parent).await.unwrap().unwrap();
+    let view = r.engine.start_worktree(&thread, None).await.unwrap();
+    let path = PathBuf::from(view["path"].as_str().unwrap());
+    let branch = view["branch"].as_str().unwrap().to_string();
+    let cleaned = r.engine.clean_worktree(&thread).await.unwrap();
+    assert_eq!(cleaned["cleaned"], true);
+    assert!(!path.exists());
+    assert!(sh(&r.repo, &format!("git branch --list '{branch}'")).is_empty());
+    assert_eq!(
+        r.engine
+            .store()
+            .worktree(&parent)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        WorktreeState::Removed
+    );
+    // Nothing left: cleaning again is a no-op, not an error.
+    assert_eq!(
+        r.engine.clean_worktree(&thread).await.unwrap()["cleaned"],
+        false
+    );
+}
+
 /// Orchestration git never reaches the network: a blobless clone whose
 /// promisor remote would run a transport program (here a repo-local
 /// `core.sshCommand` leaving a marker) fails closed on the missing objects.

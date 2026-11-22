@@ -366,6 +366,27 @@ impl<'a> Git<'a> {
         Ok(porcelain_paths(&out))
     }
 
+    /// Files git ignores in the checkout `dir` (build output, local env
+    /// files): not dirty, yet `git worktree remove` deletes them.
+    pub(crate) async fn ignored_files(&self, dir: &Path) -> Result<Vec<String>> {
+        let out = self
+            .run(
+                dir,
+                &[
+                    "status",
+                    "--porcelain=v1",
+                    "--ignored=traditional",
+                    "--untracked-files=all",
+                ],
+            )
+            .await?;
+        Ok(out
+            .lines()
+            .filter_map(|line| line.strip_prefix("!! "))
+            .map(str::to_string)
+            .collect())
+    }
+
     /// Commits reachable from `to` but not from `from`.
     pub(crate) async fn count(&self, dir: &Path, from: &str, to: &str) -> Result<u64> {
         let range = format!("{from}..{to}");

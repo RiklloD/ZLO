@@ -112,6 +112,10 @@ pub struct Prefs {
     /// The app the thread details card's "Open in" row uses, by name;
     /// empty picks the first one installed.
     pub open_in_editor: String,
+    /// New threads of a profile whose folder is a git checkout start in
+    /// their own worktree and branch, made from `main` (Settings → General
+    /// → Worktrees). Off: they work in the profile's folder.
+    pub thread_worktrees: bool,
 }
 
 impl Default for Prefs {
@@ -149,6 +153,7 @@ impl Default for Prefs {
             follow_ups: FollowUps::Steer,
             thread_details_items: Default::default(),
             open_in_editor: String::new(),
+            thread_worktrees: false,
         }
     }
 }

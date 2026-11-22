@@ -53,9 +53,8 @@ pub struct DraftState {
     pub sending: bool,
     pub error: Option<String>,
     /// The Local / New worktree switch as the person set it; `None` follows
-    /// the profile ([`in_worktree`]): a profile whose folder is a git
-    /// checkout starts each thread in its own worktree and branch, made
-    /// from `main`, so no thread inherits another's branch.
+    /// the default ([`in_worktree`]): Local, unless Settings → Worktrees
+    /// starts git-folder profiles' threads in their own worktree.
     pub worktree: Option<bool>,
     /// Bumped when the draft is replaced, so a late attach lands nowhere.
     pub generation: Generation,
@@ -781,14 +780,15 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
 }
 
 /// Whether `draft` starts its thread in a new worktree: as switched, else
-/// when its profile's folder is a git checkout (the profile reports a
-/// branch).
+/// when the Worktrees setting is on and its profile's folder is a git
+/// checkout (the profile reports a branch).
 pub(super) fn in_worktree(s: &State, draft: &DraftState) -> bool {
     draft.worktree.unwrap_or_else(|| {
-        s.workspace
-            .inbox
-            .profile(&draft.profile)
-            .is_some_and(|p| p.git_branch.is_some())
+        s.prefs.thread_worktrees
+            && s.workspace
+                .inbox
+                .profile(&draft.profile)
+                .is_some_and(|p| p.git_branch.is_some())
     })
 }
 
@@ -833,13 +833,17 @@ const HERO_STAGGER: f32 = 0.04;
 mod tests {
     use super::*;
 
-    /// A git profile starts each new thread in its own worktree (from
-    /// `main`) unless switched to Local; a profile without a git folder
-    /// works in place; switching profile follows the new one again.
+    /// New threads work in place by default. With the Worktrees setting
+    /// on, a git profile starts each one in its own worktree (from `main`)
+    /// unless switched to Local; a profile without a git folder works in
+    /// place; switching profile follows the new one again.
     #[test]
     fn a_git_profile_starts_new_threads_in_their_own_worktree() {
         let mut s = crate::chat::fixtures::test_state();
         crate::workspace::fixtures::fixture_inbox(&mut s);
+        assert!(!s.prefs.thread_worktrees, "off by default");
+        assert!(!in_worktree(&s, &empty_draft("work")), "Local by default");
+        s.prefs.thread_worktrees = true;
         let mut draft = empty_draft("work");
         assert!(
             in_worktree(&s, &draft),

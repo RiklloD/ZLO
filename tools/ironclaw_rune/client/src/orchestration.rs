@@ -578,6 +578,18 @@ impl Client {
         }
     }
 
+    /// Remove the thread's worktree and branch only while they hold no
+    /// work (no uncommitted changes, no commits). Whether it was removed.
+    pub async fn clean_thread_worktree(&self, thread_id: &str) -> Result<bool, ClientError> {
+        let view: serde_json::Value = self
+            .orch_post(
+                format!("{V2}/threads/{}/worktree", seg(thread_id)),
+                json!({"action": "clean"}),
+            )
+            .await?;
+        Ok(view["cleaned"].as_bool().unwrap_or(false))
+    }
+
     /// Start the thread in a new git worktree made from `source_dir`
     /// (default: the thread's working folder). Only committed work is in it.
     pub async fn start_thread_worktree(
