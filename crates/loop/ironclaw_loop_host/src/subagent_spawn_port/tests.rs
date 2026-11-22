@@ -32,6 +32,8 @@ use crate::capability_port::CapabilityWriteResult;
 
 use super::*;
 
+mod fanout;
+
 struct StaticInputResolver {
     value: Result<serde_json::Value, AgentLoopHostError>,
 }

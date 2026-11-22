@@ -11,15 +11,22 @@ const DEFAULT_AUTH_VERSION: &str = "auth:default";
 
 /// Internal Reborn model purpose. Users choose provider/model routes; drivers
 /// request purpose slots instead of raw provider identifiers.
+///
+/// `Cheap` is the lightweight-role slot (explorer/planner subagents,
+/// compaction, other side work). It is opt-in by configuration: when no cheap
+/// route is configured, [`StaticModelRouteResolver`] serves it with the
+/// `Default` route (see [`ModelRouteSource::DefaultSlotFallback`]), so an
+/// unset `LLM_CHEAP_MODEL` changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelSlot {
     Default,
     Mission,
+    Cheap,
 }
 
 impl ModelSlot {
-    const ALL: [Self; 2] = [Self::Default, Self::Mission];
+    const ALL: [Self; 3] = [Self::Default, Self::Mission, Self::Cheap];
 
     pub fn all() -> &'static [Self] {
         &Self::ALL
@@ -29,6 +36,7 @@ impl ModelSlot {
         match self {
             Self::Default => "default",
             Self::Mission => "mission",
+            Self::Cheap => "cheap",
         }
     }
 
@@ -36,7 +44,19 @@ impl ModelSlot {
         match model_profile_id.as_str() {
             "default" | "default_model" | "interactive_model" => Some(Self::Default),
             "mission_model" | "long_running_mission_model" => Some(Self::Mission),
+            "cheap_model" | "fast_model" | "explorer_model" | "planner_model"
+            | "compaction_model" => Some(Self::Cheap),
             _ => None,
+        }
+    }
+
+    /// The slot whose configured route serves this slot when it has none of
+    /// its own. Only `Cheap` degrades (to `Default`); `Default` and `Mission`
+    /// stay strict so an unconfigured mission route still fails closed.
+    fn fallback(self) -> Option<Self> {
+        match self {
+            Self::Cheap => Some(Self::Default),
+            Self::Default | Self::Mission => None,
         }
     }
 }
@@ -113,6 +133,24 @@ impl ActiveModelRouteSettings {
 
     pub fn from_llm_config(config: &ironclaw_llm::LlmConfig) -> Result<Self, ModelRouteError> {
         Self::new(config.active_provider_id(), config.active_model_name())
+    }
+
+    /// Route settings for [`ModelSlot::Cheap`], from the configured cheap
+    /// model (`LLM_CHEAP_MODEL`, or `NEARAI_CHEAP_MODEL` on NEAR AI) on the
+    /// active provider. `Ok(None)` when no cheap model is configured — the
+    /// caller then leaves the cheap slot unrouted and it falls back to the
+    /// default route. A configured but invalid model id fails loud.
+    pub fn cheap_from_llm_config(
+        config: &ironclaw_llm::LlmConfig,
+    ) -> Result<Option<Self>, ModelRouteError> {
+        match config
+            .cheap_model_name()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            Some(model) => Self::new(config.active_provider_id(), model).map(Some),
+            None => Ok(None),
+        }
     }
 }
 
@@ -206,6 +244,9 @@ impl ModelRouteProviderKey {
 #[serde(rename_all = "snake_case")]
 pub enum ModelRouteSource {
     ConfiguredDefault,
+    /// The requested slot had no route of its own and is served by its
+    /// fallback slot's route (today: `Cheap` → `Default`).
+    DefaultSlotFallback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +301,11 @@ impl ResolvedModelRouteSnapshot {
 
     pub fn source(&self) -> ModelRouteSource {
         self.source
+    }
+
+    fn with_source(mut self, source: ModelRouteSource) -> Self {
+        self.source = source;
+        self
     }
 
     pub fn to_loop_model_route_snapshot(&self) -> Result<LoopModelRouteSnapshot, String> {
@@ -322,23 +368,45 @@ impl StaticModelRouteResolver {
     }
 }
 
+impl StaticModelRouteResolver {
+    /// The slot whose configured route actually serves `slot`, plus whether
+    /// that is a fallback. `None` when neither the slot nor its fallback has
+    /// a route.
+    fn serving_slot(&self, slot: ModelSlot) -> Option<(ModelSlot, ModelRouteSource)> {
+        if self.routes.contains_key(&slot) {
+            return Some((slot, ModelRouteSource::ConfiguredDefault));
+        }
+        let fallback = slot.fallback()?;
+        self.routes
+            .contains_key(&fallback)
+            .then_some((fallback, ModelRouteSource::DefaultSlotFallback))
+    }
+}
+
 impl ModelRouteResolver for StaticModelRouteResolver {
     fn resolve_model_route(
         &self,
         slot: ModelSlot,
     ) -> Result<ResolvedModelRouteSnapshot, ModelRouteError> {
+        let (serving_slot, source) = self
+            .serving_slot(slot)
+            .ok_or_else(|| ModelRouteError::new(ModelRouteErrorKind::RouteUnavailable))?;
         let provider_key = self
             .routes
-            .get(&slot)
+            .get(&serving_slot)
             .ok_or_else(|| ModelRouteError::new(ModelRouteErrorKind::RouteUnavailable))?;
         if !self.policy.permits(&provider_key.route) {
             return Err(ModelRouteError::new(ModelRouteErrorKind::RouteNotApproved));
         }
+        // The snapshot records the *requested* slot (telemetry and replay
+        // validate against it) and says, via `source`, when it was served by
+        // the fallback slot's route.
         Ok(ResolvedModelRouteSnapshot::with_provider_key(
             slot,
             provider_key.clone(),
             self.policy.mode(),
-        ))
+        )
+        .with_source(source))
     }
 
     fn validate_model_route(
@@ -346,9 +414,12 @@ impl ModelRouteResolver for StaticModelRouteResolver {
         slot: ModelSlot,
         route: &ModelRoute,
     ) -> Result<ModelSelectionMode, ModelRouteError> {
-        if !self.routes.contains_key(&slot) {
+        let Some((serving_slot, _)) = self.serving_slot(slot) else {
             return Err(ModelRouteError::new(ModelRouteErrorKind::RouteUnavailable));
-        }
+        };
+        // A fallback slot replays exactly as the slot serving it: it inherits
+        // that slot's policy and exclusivity and can never widen them.
+        let slot = serving_slot;
         if !self.policy.permits(route) {
             return Err(ModelRouteError::new(ModelRouteErrorKind::RouteNotApproved));
         }

@@ -114,6 +114,30 @@ impl SubagentPromptComposer {
         }
     }
 
+    /// Adds the subagent direction, goal framing, and goal to `request`, and
+    /// narrows its capability view to the flavor allowlist.
+    ///
+    /// ## Prompt-cache layout
+    ///
+    /// The material rides `inline_messages` with `Leading*` roles. Splicing at
+    /// index `0` orders it only *within the inline list*: it does **not** put
+    /// the direction ahead of the shared base prompt.
+    /// `InstructionBundleBuilder::build` partitions leading inline messages out
+    /// and renders them after the shared identity (`SYSTEM.md`), instruction,
+    /// safety, and visible-surface sections, and before the persisted thread.
+    /// Those shared leading bytes are therefore identical to a parent run
+    /// built from the same context. Siblings of one flavor also share the
+    /// direction, so only the goal differs between them. The
+    /// `subagent_material_follows_the_shared_base_prefix` test pins this.
+    ///
+    /// ## Capability narrowing and cache sharing
+    ///
+    /// `intersect_model_capability_view` can only narrow: the child sees the
+    /// flavor allowlist intersected with the parent's view, never more. A
+    /// narrowed surface renders different visible-surface bytes and different
+    /// provider tool definitions, so a child whose flavor drops tools shares
+    /// the parent's cached prefix only up to the instruction section. That
+    /// cache loss is accepted. Never widen the view to recover cache hits.
     pub async fn compose(
         &self,
         run_context: &LoopRunContext,
@@ -247,6 +271,146 @@ mod tests {
 
     fn cap(value: &str) -> CapabilityId {
         CapabilityId::new(value).expect("valid test capability")
+    }
+
+    struct StaticMaterialSource(SubagentPromptMaterial);
+
+    #[async_trait]
+    impl SubagentPromptMaterialSource for StaticMaterialSource {
+        async fn material_for_run(
+            &self,
+            _run_context: &LoopRunContext,
+        ) -> Result<SubagentPromptMaterial, AgentLoopHostError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn prompt_test_context() -> LoopRunContext {
+        use ironclaw_host_api::ids::{AgentId, TenantId, ThreadId};
+        use ironclaw_host_api::turn::{RunProfileId, RunProfileVersion, TurnId, TurnScope};
+        LoopRunContext::new(
+            TurnScope::new(
+                TenantId::new("tenant-subagent-prompt").unwrap(),
+                Some(AgentId::new("agent-subagent-prompt").unwrap()),
+                None,
+                ThreadId::new("thread-subagent-prompt").unwrap(),
+            ),
+            TurnId::new(),
+            TurnRunId::new(),
+            ironclaw_loop_contracts::ResolvedRunProfile::legacy_compatibility(
+                RunProfileId::interactive_default(),
+                RunProfileVersion::new(1),
+                true,
+            ),
+        )
+    }
+
+    fn shared_context_bundle() -> ironclaw_loop_contracts::LoopContextBundle {
+        let message = |role: &str, body: &str| ironclaw_loop_contracts::LoopContextMessage {
+            message_ref: None,
+            role: role.to_string(),
+            safe_summary: body.to_string(),
+            compaction: None,
+        };
+        ironclaw_loop_contracts::LoopContextBundle {
+            identity_messages: vec![message("system", "shared base system prompt")],
+            instruction_snippets: vec![ironclaw_loop_contracts::LoopContextSnippet {
+                snippet_ref: "instruction:shared-protocol".to_string(),
+                model_content: "shared protocol appendix".to_string(),
+                safe_summary: "shared protocol appendix".to_string(),
+                metadata: None,
+            }],
+            messages: vec![message("user", "persisted thread message")],
+            ..ironclaw_loop_contracts::LoopContextBundle::default()
+        }
+    }
+
+    fn rendered(
+        context: &LoopRunContext,
+        inline_messages: Vec<LoopInlineMessage>,
+    ) -> Vec<(String, String)> {
+        ironclaw_loop_contracts::InstructionBundleBuilder::new(context.clone())
+            .build(ironclaw_loop_contracts::InstructionBundleRequest {
+                context_bundle: shared_context_bundle(),
+                visible_surface: None,
+                safety_context: None,
+                runtime_context: None,
+                inline_messages,
+            })
+            .expect("instruction bundle builds")
+            .materialized_messages
+            .into_iter()
+            .map(|message| (message.role, message.model_content))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn subagent_material_follows_the_shared_base_prefix() {
+        let context = prompt_test_context();
+        let composer =
+            SubagentPromptComposer::new(Arc::new(StaticMaterialSource(SubagentPromptMaterial {
+                direction_markdown: "Explorer direction.".to_string(),
+                goal: SubagentPromptGoal {
+                    task: "Map the crate".to_string(),
+                    handoff: None,
+                },
+                allowed_capabilities: BTreeSet::from([cap("demo.read")]),
+            })));
+        let loop_control = LoopInlineMessage {
+            role: LoopInlineMessageRole::System,
+            safe_body: LoopInlineMessageBody::new("loop control").unwrap(),
+        };
+        let request = LoopPromptBundleRequest {
+            mode: ironclaw_loop_contracts::PromptMode::CodeAct,
+            context_cursor: None,
+            surface_version: None,
+            capability_view: None,
+            checkpoint_state_ref: None,
+            max_messages: None,
+            inline_messages: vec![loop_control.clone()],
+        };
+
+        let composed = composer
+            .compose(&context, request)
+            .await
+            .expect("subagent prompt composes");
+        let parent = rendered(&context, vec![loop_control]);
+        let child = rendered(&context, composed.inline_messages);
+
+        // The shared leading prefix (identity + instructions) is byte-identical
+        // to the parent's: subagent material never displaces or precedes it.
+        let shared_prefix_len = 2;
+        assert_eq!(
+            child[..shared_prefix_len],
+            parent[..shared_prefix_len],
+            "subagent prompt must keep the parent's leading prefix intact"
+        );
+        assert_eq!(
+            child[0],
+            (
+                "system".to_string(),
+                "shared base system prompt".to_string()
+            )
+        );
+        let position = |body: &str| {
+            child
+                .iter()
+                .position(|(_, content)| content.contains(body))
+                .unwrap_or_else(|| panic!("{body} is rendered"))
+        };
+        let direction = position("Explorer direction.");
+        assert_eq!(child[direction].0, "system");
+        assert_eq!(
+            direction, shared_prefix_len,
+            "direction is the first message after the shared prefix"
+        );
+        assert!(position("Subagent task:\nMap the crate") > direction);
+        assert!(position("persisted thread message") > position("Subagent task:"));
+        assert_eq!(
+            child.last().map(|(_, body)| body.as_str()),
+            Some("loop control"),
+            "per-iteration loop control stays on the tail"
+        );
     }
 
     #[test]
