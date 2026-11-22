@@ -504,6 +504,14 @@ impl MockHost {
         self
     }
 
+    pub(super) fn with_before_model_checkpoint_interval(mut self, interval: u32) -> Self {
+        self.context
+            .resolved_run_profile
+            .checkpoint_policy
+            .before_model_checkpoint_interval = interval;
+        self
+    }
+
     pub(super) fn with_require_final_checkpoint(mut self, require_final_checkpoint: bool) -> Self {
         self.context
             .resolved_run_profile

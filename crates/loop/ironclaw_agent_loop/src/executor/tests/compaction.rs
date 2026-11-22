@@ -940,8 +940,8 @@ async fn second_model_context_overflow_aborts_without_another_compaction() {
 /// PostCapabilityStage must survive the iteration boundary and appear in the
 /// `CompactionStarted` event emitted by `PromptCompactionStep` on iteration 2.
 ///
-/// Iteration 1: model → capability call returns 33 001 bytes →
-///   PostCapabilityStage trips ByteCapStrategy → sets
+/// Iteration 1: model → capability call returns 300 000 bytes →
+///   PostCapabilityStage trips BudgetFractionStrategy → sets
 ///   `force_compact_on_next_iteration`, `skip_model_this_iteration`, and
 ///   `force_compact_initiator = CapabilityResultOverflow`, clears byte map.
 ///
@@ -972,7 +972,7 @@ async fn executor_emits_compaction_started_with_capability_result_overflow_initi
                 "big result for F12".to_string(),
                 ironclaw_loop_contracts::CapabilityProgress::MadeProgress,
                 false,
-                33_001,
+                300_000,
                 None,
                 None,
             )],
@@ -1083,7 +1083,7 @@ async fn executor_continues_after_forced_compaction_rejection_from_tool_result_o
             "large search result".to_string(),
             ironclaw_loop_contracts::CapabilityProgress::MadeProgress,
             false,
-            33_001,
+            300_000,
             None,
             None,
         )],

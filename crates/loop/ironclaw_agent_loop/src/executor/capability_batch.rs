@@ -9,8 +9,7 @@ use super::capabilities::CapabilityStage;
 use super::capability_failure::recoverable_port_error_resolution;
 use super::mapping::capability_port_error_is_terminal;
 use super::pipeline::StageContext;
-
-const MAX_PARALLEL_CAPABILITY_INVOCATIONS: usize = 4;
+use super::read_only_batch::BatchEffectClass;
 
 pub(super) enum InvokedCapabilityOutcome {
     Resolution(Resolution),
@@ -60,6 +59,7 @@ impl CapabilityStage {
         &self,
         ctx: StageContext<'_>,
         policy: BatchPolicyKind,
+        effect_class: BatchEffectClass,
         invocations: Vec<LoopRequest>,
     ) -> Result<InvokedCapabilityBatch, InvokedCapabilityBatchError> {
         let ordered = invocations.len() >= 2
@@ -88,7 +88,7 @@ impl CapabilityStage {
         };
         let mut pending = FuturesUnordered::new();
         let mut launched = 0_usize;
-        for _ in 0..MAX_PARALLEL_CAPABILITY_INVOCATIONS {
+        for _ in 0..effect_class.max_parallel_invocations() {
             let Some(indexed_invocation) = indexed_invocations.next() else {
                 break;
             };

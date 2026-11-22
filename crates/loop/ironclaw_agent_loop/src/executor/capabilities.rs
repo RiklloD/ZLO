@@ -24,6 +24,7 @@ use super::capability_records::{
     capability_result_from_outcome, child_result_from_outcome, dependent_run_result_message,
 };
 use super::gates::{gate_outcome_kind, gate_outcome_writes_before_block};
+use super::read_only_batch::BatchEffectClass;
 use super::{
     AgentLoopExecutorError, BatchStep, CancelCheck, CapabilitySurfaceIndex, CheckpointStage,
     ExecutorStage, GateInput, GateStage, StageContext, TurnCompletedStep, capability_batch_counts,
@@ -106,13 +107,32 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
             CancelCheck::Exit(exit) => return Ok(TurnCompletedStep::Exit(exit)),
         }
 
-        state = CheckpointStage
-            .write(ctx, state, CheckpointKind::BeforeSideEffect)
-            .await?
-            .state;
-        match CheckpointStage.cancel_if_requested(ctx, state).await? {
-            CancelCheck::Continue(next) => state = *next,
-            CancelCheck::Exit(exit) => return Ok(TurnCompletedStep::Exit(exit)),
+        // Classified once, before any dispatch, from the calls that can
+        // actually reach the host. Locally denied calls never dispatch, so
+        // they cannot add an effect; any pending gate resume or unprovable
+        // call keeps the batch `SideEffecting` (see `read_only_batch`).
+        let effect_class = BatchEffectClass::classify(&state, &visible_calls);
+        // A provably read-only batch skips `BeforeSideEffect`: re-running a
+        // pure read after a crash cannot duplicate an effect, so the newest
+        // durable checkpoint stays the resumable `BeforeModel` (lease-expiry
+        // recovery requeues instead of failing closed) and the next
+        // iteration's `BeforeModel` may batch. Every other batch keeps the
+        // marker that tells recovery an effect may have landed.
+        if effect_class.requires_before_side_effect_checkpoint() {
+            state = CheckpointStage
+                .write(ctx, state, CheckpointKind::BeforeSideEffect)
+                .await?
+                .state;
+            match CheckpointStage.cancel_if_requested(ctx, state).await? {
+                CancelCheck::Continue(next) => state = *next,
+                CancelCheck::Exit(exit) => return Ok(TurnCompletedStep::Exit(exit)),
+            }
+        } else {
+            tracing::debug!(
+                iteration = state.iteration,
+                call_count = visible_calls.len(),
+                "skipping BeforeSideEffect checkpoint for read-only capability batch"
+            );
         }
 
         let mut signatures = HashSet::new();
@@ -404,7 +424,7 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
         // invocation (dispatch reservations release, host processes are
         // killed by their group guard), so Stop ends a long tool at once.
         let batch_result = {
-            let batch = self.invoke_batch(ctx, policy, invocations);
+            let batch = self.invoke_batch(ctx, policy, effect_class, invocations);
             tokio::pin!(batch);
             let cancellation = ctx.host.cancellation_requested();
             tokio::pin!(cancellation);

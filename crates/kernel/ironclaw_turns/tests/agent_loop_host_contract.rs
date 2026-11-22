@@ -2684,7 +2684,7 @@ async fn loop_prompt_port_clamps_default_and_requested_message_limits() {
         })
         .await
         .unwrap();
-    assert_eq!(high_default_host.context_request_limits(), vec![128]);
+    assert_eq!(high_default_host.context_request_limits(), vec![1024]);
 
     let high_request_host = Arc::new(RecordingAgentLoopHost::new(claimed_run_context().await));
     let high_request_port = HostManagedLoopPromptPort::new(
@@ -2705,7 +2705,38 @@ async fn loop_prompt_port_clamps_default_and_requested_message_limits() {
         })
         .await
         .unwrap();
-    assert_eq!(high_request_host.context_request_limits(), vec![128]);
+    assert_eq!(high_request_host.context_request_limits(), vec![1024]);
+
+    // Regression: the former 128-message ceiling clamped the loop's request,
+    // so a long tool session hit recent-window truncation (and forced
+    // window-eviction compaction) at ~60 tool turns regardless of how much of
+    // the token budget was free. A request below the ceiling passes through.
+    let long_session_host = Arc::new(RecordingAgentLoopHost::new(claimed_run_context().await));
+    let long_session_port = HostManagedLoopPromptPort::new(
+        long_session_host.context.clone(),
+        long_session_host.clone(),
+        long_session_host.milestone_sink.clone(),
+    )
+    .with_default_message_limit(512);
+
+    for max_messages in [Some(129), Some(512), None] {
+        long_session_port
+            .build_prompt_bundle(LoopPromptBundleRequest {
+                mode: PromptMode::TextOnly,
+                context_cursor: None,
+                surface_version: None,
+                checkpoint_state_ref: None,
+                max_messages,
+                inline_messages: Vec::new(),
+                capability_view: None,
+            })
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        long_session_host.context_request_limits(),
+        vec![129, 512, 512]
+    );
 }
 
 #[test]

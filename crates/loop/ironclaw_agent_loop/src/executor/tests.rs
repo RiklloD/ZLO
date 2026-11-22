@@ -79,6 +79,7 @@ mod model_recovery;
 mod parallel_batch;
 mod prompt_stage;
 mod provider_replay;
+mod read_only_batch;
 mod reply_input;
 
 fn diagnostic_failure_detail(text: &str) -> CapabilityFailureDetail {
