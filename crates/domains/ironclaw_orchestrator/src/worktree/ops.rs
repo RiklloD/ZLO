@@ -342,8 +342,10 @@ impl Engine {
         Ok(view)
     }
 
-    /// Start a user thread in a new worktree made from `source` (default:
-    /// the thread's working folder). The thread must not have one yet.
+    /// Start a user thread in a new worktree of `source` (default: the
+    /// thread's working folder), branched from the repository's default
+    /// branch (`main`) rather than the checkout's current one, so every
+    /// thread's branch is its own. The thread must not have one yet.
     pub async fn start_worktree(
         &self,
         thread: &ThreadRecord,
@@ -359,7 +361,14 @@ impl Engine {
             ));
         }
         let runtime = self.runtime(&thread.runtime_id)?;
-        let plan = self.worktree_preflight(thread, source, &runtime).await?;
+        let mut plan = self.worktree_preflight(thread, source, &runtime).await?;
+        // A user thread starts clean on the default branch, whatever branch
+        // the shared checkout is on; a delegated child (not here) keeps its
+        // parent's HEAD so it sees the parent's commits.
+        let git = Git::new(self.worktree_host()?.runner.as_ref());
+        if let Some((_, commit)) = git.default_branch(&plan.repo_root).await? {
+            plan.base = commit;
+        }
         let label = thread.title.as_deref().unwrap_or("thread");
         let binding = self
             .create_worktree(&thread.thread_id, &plan, label, None, None)

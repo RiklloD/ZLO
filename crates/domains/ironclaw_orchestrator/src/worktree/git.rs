@@ -196,6 +196,39 @@ impl<'a> Git<'a> {
         ))
     }
 
+    /// The repository's default branch and its commit: the local branch
+    /// `origin/HEAD` names, else `main`, else `master`. `None` when the
+    /// repository has none of them (callers then keep `HEAD`).
+    pub(crate) async fn default_branch(&self, dir: &Path) -> Result<Option<(String, CommitId)>> {
+        let origin = self
+            .raw(
+                dir,
+                &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"],
+            )
+            .await?;
+        let named = origin
+            .success()
+            .then(|| {
+                last_line(&origin.output)
+                    .strip_prefix("origin/")
+                    .map(str::to_string)
+            })
+            .flatten();
+        let candidates = named
+            .into_iter()
+            .chain(["main".to_string(), "master".to_string()]);
+        for name in candidates {
+            let rev = format!("refs/heads/{name}^{{commit}}");
+            let out = self
+                .raw(dir, &["rev-parse", "-q", "--verify", &rev])
+                .await?;
+            if out.success() {
+                return Ok(Some((name, CommitId::new(last_line(&out.output))?)));
+            }
+        }
+        Ok(None)
+    }
+
     /// The ref `HEAD` points at (`refs/heads/<name>`), `None` when detached.
     pub(crate) async fn symbolic_head(&self, dir: &Path) -> Result<Option<String>> {
         let out = self.raw(dir, &["symbolic-ref", "-q", "HEAD"]).await?;

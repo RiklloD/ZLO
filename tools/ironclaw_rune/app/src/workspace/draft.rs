@@ -52,9 +52,11 @@ pub struct DraftState {
     pub menu: ComposerMenu,
     pub sending: bool,
     pub error: Option<String>,
-    /// Start the thread in a new git worktree of the last project folder
-    /// (the Local / New worktree switch) instead of working in place.
-    pub worktree: bool,
+    /// The Local / New worktree switch as the person set it; `None` follows
+    /// the profile ([`in_worktree`]): a profile whose folder is a git
+    /// checkout starts each thread in its own worktree and branch, made
+    /// from `main`, so no thread inherits another's branch.
+    pub worktree: Option<bool>,
     /// Bumped when the draft is replaced, so a late attach lands nowhere.
     pub generation: Generation,
     /// Not drawn yet: the hero's greeting, profile switch and composer
@@ -296,6 +298,8 @@ pub fn start_in_profile(s: &mut State, profile: String) {
     if let Some(draft) = s.workspace.draft.as_mut() {
         draft.profile = profile;
         draft.menu_open = false;
+        // The switch follows the new profile's folder again.
+        draft.worktree = None;
     }
     record(s);
 }
@@ -532,7 +536,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     )
     .help("Attach files")
     .on_press_tx(pick_files);
-    let in_worktree = draft.worktree;
+    let worktree_on = in_worktree(s, draft);
     let place = row()
         .key("draft-worktree")
         .role("button")
@@ -544,27 +548,30 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         .hover(p.hover)
         .cursor(rune::Cursor::Pointer)
         .hover_group()
-        .help(if in_worktree {
-            "Runs in its own git worktree and branch of the last project folder (committed work only)"
+        .help(if worktree_on {
+            "Runs in its own git worktree, on a new branch made from main (committed work only)"
         } else {
-            "Works in the project folder itself"
+            "Works in the project folder itself, on whatever branch it has checked out"
         })
         .child(ui::glyph(
             &icons::GIT_BRANCH,
             12.,
-            if in_worktree { p.text } else { p.text_faint },
+            if worktree_on { p.text } else { p.text_faint },
         ))
         .child(
             t(
-                if in_worktree { "New worktree" } else { "Local" },
+                if worktree_on { "New worktree" } else { "Local" },
                 XS,
-                if in_worktree { p.text } else { p.text_faint },
+                if worktree_on { p.text } else { p.text_faint },
             )
             .group_color(p.text),
         )
         .on_press(|s: &mut State| {
+            let Some(on) = s.workspace.draft.as_ref().map(|d| in_worktree(s, d)) else {
+                return;
+            };
             if let Some(d) = s.workspace.draft.as_mut() {
-                d.worktree = !d.worktree;
+                d.worktree = Some(!on);
             }
         });
     // Under the heading, no resting underline (T3's pass): a chevron says
@@ -773,6 +780,18 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     root.child(body)
 }
 
+/// Whether `draft` starts its thread in a new worktree: as switched, else
+/// when its profile's folder is a git checkout (the profile reports a
+/// branch).
+pub(super) fn in_worktree(s: &State, draft: &DraftState) -> bool {
+    draft.worktree.unwrap_or_else(|| {
+        s.workspace
+            .inbox
+            .profile(&draft.profile)
+            .is_some_and(|p| p.git_branch.is_some())
+    })
+}
+
 pub(super) fn empty_draft(profile: &str) -> DraftState {
     DraftState {
         profile: profile.into(),
@@ -783,7 +802,7 @@ pub(super) fn empty_draft(profile: &str) -> DraftState {
         menu: ComposerMenu::default(),
         sending: false,
         error: None,
-        worktree: false,
+        worktree: None,
         generation: Generation::default(),
         fresh: true,
         send_tint: Default::default(),
@@ -813,6 +832,28 @@ const HERO_STAGGER: f32 = 0.04;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A git profile starts each new thread in its own worktree (from
+    /// `main`) unless switched to Local; a profile without a git folder
+    /// works in place; switching profile follows the new one again.
+    #[test]
+    fn a_git_profile_starts_new_threads_in_their_own_worktree() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::workspace::fixtures::fixture_inbox(&mut s);
+        let mut draft = empty_draft("work");
+        assert!(
+            in_worktree(&s, &draft),
+            "IronClaw's folder is a git checkout"
+        );
+        draft.worktree = Some(false);
+        assert!(!in_worktree(&s, &draft), "switched to Local");
+        let plain = empty_draft("default");
+        assert!(!in_worktree(&s, &plain), "no git folder, nothing to branch");
+        s.workspace.draft = Some(draft);
+        start_in_profile(&mut s, "work".into());
+        let draft = s.workspace.draft.as_ref().unwrap();
+        assert!(in_worktree(&s, draft), "a new profile resets the switch");
+    }
 
     #[test]
     fn voice_picks_the_open_quick_composer_first() {
