@@ -270,7 +270,7 @@ fn test_convert_tools() {
             }
         }),
     }];
-    let rig_tools = convert_tools(&tools);
+    let rig_tools = convert_tools(&tools, ToolSchemaPolicy::StrictOpenAi);
     assert_eq!(rig_tools.len(), 1);
     assert_eq!(rig_tools[0].name, "search");
     assert_eq!(rig_tools[0].description, "Search the web");

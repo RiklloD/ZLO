@@ -210,15 +210,22 @@ pub fn build_llm_config_from_resolved_provider(
                 nearai = nearai_config_from_dedicated(&dedicated, &chain)?;
             }
             ProviderProtocol::Bedrock => {
-                bedrock = Some(
-                    BedrockConfig::build(
-                        nonempty_env("BEDROCK_REGION"),
-                        Some(dedicated.model.clone()),
-                        nonempty_env("BEDROCK_CROSS_REGION"),
-                        nonempty_env("AWS_PROFILE"),
-                    )
-                    .map_err(config_error_to_llm_error("bedrock"))?,
-                );
+                let mut config = BedrockConfig::build(
+                    nonempty_env("BEDROCK_REGION"),
+                    Some(dedicated.model.clone()),
+                    nonempty_env("BEDROCK_CROSS_REGION"),
+                    nonempty_env("AWS_PROFILE"),
+                )
+                .map_err(config_error_to_llm_error("bedrock"))?;
+                if let Some(value) = nonempty_env("BEDROCK_CACHE_RETENTION") {
+                    config.cache_retention = value.parse::<CacheRetention>().map_err(|reason| {
+                        LlmError::RequestFailed {
+                            provider: "bedrock".to_string(),
+                            reason: format!("invalid BEDROCK_CACHE_RETENTION: {reason}"),
+                        }
+                    })?;
+                }
+                bedrock = Some(config);
             }
             ProviderProtocol::GeminiOauth => {
                 gemini_oauth = Some(GeminiOauthConfig::build(
@@ -419,25 +426,37 @@ fn resolve_codex_cli_auth_provider(
     Ok(ResolvedProviderConfig::Registry(registry_config))
 }
 
-fn apply_registry_provider_env(config: &mut RegistryProviderConfig) -> Result<(), LlmError> {
-    if config.protocol == ProviderProtocol::Anthropic {
-        config.cache_retention = nonempty_env("ANTHROPIC_CACHE_RETENTION")
-            .map(|value| {
-                value
-                    .parse::<CacheRetention>()
-                    .map_err(|reason| LlmError::RequestFailed {
-                        provider: config.provider_id.clone(),
-                        reason: format!("invalid ANTHROPIC_CACHE_RETENTION: {reason}"),
-                    })
-            })
-            .transpose()?
-            .unwrap_or_default();
+/// `ANTHROPIC_CACHE_RETENTION` (`none` / `short` / `long`), defaulting to
+/// `short` when unset.
+fn anthropic_cache_retention_env(provider_id: &str) -> Result<CacheRetention, LlmError> {
+    Ok(nonempty_env("ANTHROPIC_CACHE_RETENTION")
+        .map(|value| {
+            value
+                .parse::<CacheRetention>()
+                .map_err(|reason| LlmError::RequestFailed {
+                    provider: provider_id.to_string(),
+                    reason: format!("invalid ANTHROPIC_CACHE_RETENTION: {reason}"),
+                })
+        })
+        .transpose()?
+        .unwrap_or_default())
+}
 
-        if let Some(token) = nonempty_env("ANTHROPIC_OAUTH_TOKEN") {
-            config.oauth_token = Some(SecretString::from(token));
-            if config.api_key.is_none() {
-                config.api_key = Some(SecretString::from(OAUTH_PLACEHOLDER.to_string()));
-            }
+fn apply_registry_provider_env(config: &mut RegistryProviderConfig) -> Result<(), LlmError> {
+    // Anthropic prompt-cache retention also governs Claude models reached
+    // through OpenRouter (`anthropic/*`), which take the same TTLs.
+    if matches!(
+        config.protocol,
+        ProviderProtocol::Anthropic | ProviderProtocol::OpenRouter
+    ) {
+        config.cache_retention = anthropic_cache_retention_env(&config.provider_id)?;
+    }
+    if config.protocol == ProviderProtocol::Anthropic
+        && let Some(token) = nonempty_env("ANTHROPIC_OAUTH_TOKEN")
+    {
+        config.oauth_token = Some(SecretString::from(token));
+        if config.api_key.is_none() {
+            config.api_key = Some(SecretString::from(OAUTH_PLACEHOLDER.to_string()));
         }
     }
     Ok(())

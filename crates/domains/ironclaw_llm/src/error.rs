@@ -138,23 +138,29 @@ pub fn is_transient_io_error(error: &std::io::Error) -> bool {
 pub(crate) enum ProductionModelAdapter {
     Rig,
     NearAiChat,
+    /// Anthropic Messages API with a Console API key.
+    Anthropic,
     AnthropicOauth,
     GeminiOauth,
     GithubCopilot,
     Bedrock,
+    /// OpenAI Responses API with a platform API key.
+    OpenAiResponses,
     OpenAiCodex,
     CodexChatGpt,
 }
 
 impl ProductionModelAdapter {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Rig,
         Self::NearAiChat,
+        Self::Anthropic,
         Self::AnthropicOauth,
         Self::GeminiOauth,
         Self::GithubCopilot,
         Self::Bedrock,
+        Self::OpenAiResponses,
         Self::OpenAiCodex,
         Self::CodexChatGpt,
     ];
@@ -163,10 +169,12 @@ impl ProductionModelAdapter {
         match self {
             Self::Rig => "rig",
             Self::NearAiChat => "nearai_chat",
+            Self::Anthropic => "anthropic",
             Self::AnthropicOauth => "anthropic_oauth",
             Self::GeminiOauth => "gemini_oauth",
             Self::GithubCopilot => "github_copilot",
             Self::Bedrock => "bedrock",
+            Self::OpenAiResponses => "openai",
             Self::OpenAiCodex => "openai_codex",
             Self::CodexChatGpt => "codex_chatgpt",
         }

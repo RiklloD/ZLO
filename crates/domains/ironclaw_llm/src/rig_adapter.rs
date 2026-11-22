@@ -109,6 +109,18 @@ pub struct RigAdapter<M: CompletionModel> {
     /// How this protocol carries a routed reasoning effort; `None`: it has
     /// no effort knob and the metadata is ignored.
     effort_style: Option<crate::reasoning_effort::EffortStyle>,
+    /// How tool parameter schemas are shaped for this protocol. Defaults to
+    /// `StrictOpenAi` (OpenAI-compatible Chat Completions); factories for
+    /// providers whose tool APIs take plain JSON Schema (Gemini, Ollama,
+    /// non-OpenAI models behind OpenRouter) select `FlattenOnly` so optional
+    /// fields stay optional instead of becoming required-nullable.
+    tool_schema_policy: ToolSchemaPolicy,
+    /// Top-level automatic prompt caching (`{"cache_control": …}` only, no
+    /// explicit block markers) for OpenAI-shaped requests an aggregator
+    /// routes to Anthropic — OpenRouter `anthropic/*` models. Kept apart from
+    /// `cache_retention`, whose explicit markers use Anthropic-native tool
+    /// shapes an OpenAI-shaped request cannot carry. Drives cache pricing.
+    automatic_cache_retention: CacheRetention,
 }
 
 impl<M: CompletionModel> RigAdapter<M> {
@@ -133,7 +145,45 @@ impl<M: CompletionModel> RigAdapter<M> {
             prompt_cache_key_supported: false,
             models_endpoint: None,
             effort_style: None,
+            tool_schema_policy: ToolSchemaPolicy::StrictOpenAi,
+            automatic_cache_retention: CacheRetention::None,
         }
+    }
+
+    /// Enable Anthropic **automatic** prompt caching through an aggregator's
+    /// OpenAI-shaped API: a top-level `cache_control` marker (`ttl: "1h"` for
+    /// `Long`) on every request, which the upstream places on the last
+    /// cacheable block and advances as the conversation grows. Downgraded to
+    /// `None` for models without prompt-cache support.
+    pub(crate) fn with_automatic_prompt_cache(mut self, retention: CacheRetention) -> Self {
+        let retention = effective_cache_retention(retention, &self.model_name);
+        if let Some(marker) = retention.cache_control_json() {
+            let mut params = self
+                .default_additional_params
+                .take()
+                .filter(serde_json::Value::is_object)
+                .unwrap_or_else(|| serde_json::json!({}));
+            params["cache_control"] = marker;
+            self.default_additional_params = Some(params);
+        }
+        self.automatic_cache_retention = retention;
+        self
+    }
+
+    /// The retention that prices cache writes/reads for this adapter.
+    fn priced_cache_retention(&self) -> CacheRetention {
+        if self.cache_retention != CacheRetention::None {
+            self.cache_retention
+        } else {
+            self.automatic_cache_retention
+        }
+    }
+
+    /// Select how tool parameter schemas are shaped for this protocol. See
+    /// the `tool_schema_policy` field.
+    pub(crate) fn with_tool_schema_policy(mut self, policy: ToolSchemaPolicy) -> Self {
+        self.tool_schema_policy = policy;
+        self
     }
 
     /// Send a routed reasoning effort the way this protocol spells it.
@@ -261,7 +311,12 @@ impl<M: CompletionModel> RigAdapter<M> {
     }
 
     /// Set a provider-required fallback for requests that omit `max_tokens`.
-    pub(crate) fn with_default_max_tokens(mut self, max_tokens: u32) -> Self {
+    ///
+    /// Anthropic's Messages API requires the field on every request. The
+    /// crate's own Anthropic factory no longer goes through rig (it uses the
+    /// native `anthropic_oauth::AnthropicProvider`), but a caller wrapping
+    /// rig-core's Anthropic client in this adapter must still set it.
+    pub fn with_default_max_tokens(mut self, max_tokens: u32) -> Self {
         self.default_max_tokens = Some(max_tokens);
         self
     }

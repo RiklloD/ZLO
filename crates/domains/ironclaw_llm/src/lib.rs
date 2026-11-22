@@ -58,6 +58,12 @@ pub mod testing;
 #[cfg(test)]
 mod codex_test_helpers;
 
+#[cfg(test)]
+mod sse_test_server;
+
+#[cfg(test)]
+mod factory_tests;
+
 pub mod models;
 pub mod reasoning_models;
 pub mod vision_models;
@@ -312,12 +318,9 @@ fn provider_http_client(
     )
 }
 
-fn create_openai_compat_from_registry(
-    config: &RegistryProviderConfig,
-    request_timeout_secs: u64,
-) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    use rig::providers::openai;
-
+/// Parse operator-configured extra headers, skipping (and logging) any
+/// invalid name or value rather than failing provider construction.
+fn configured_extra_headers(config: &RegistryProviderConfig) -> reqwest::header::HeaderMap {
     let mut extra_headers = reqwest::header::HeaderMap::new();
     for (key, value) in &config.extra_headers {
         let name = match reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
@@ -346,6 +349,76 @@ fn create_openai_compat_from_registry(
         };
         extra_headers.insert(name, val);
     }
+    extra_headers
+}
+
+/// The public OpenAI API base, the one endpoint whose `OPENAI_API_KEY`
+/// traffic goes to the Responses API.
+const OPENAI_PUBLIC_API_BASE: &str = "https://api.openai.com/v1";
+
+/// The Responses API base for an `openai` registry config on the standard
+/// OpenAI endpoint, or `None` to keep Chat Completions.
+///
+/// The Responses API is gated to the real OpenAI platform: a custom
+/// `base_url` (a proxy, Azure-style gateway, or self-hosted OpenAI-compatible
+/// server) — or any other provider id reusing the OpenAI protocol — keeps
+/// rig-core's Chat Completions path, which every OpenAI-compatible server
+/// speaks.
+fn openai_responses_api_base(config: &RegistryProviderConfig) -> Option<&'static str> {
+    if config.provider_id != "openai" {
+        return None;
+    }
+    let base = config.base_url.trim();
+    if base.is_empty() {
+        return Some(OPENAI_PUBLIC_API_BASE);
+    }
+    normalize_openai_base_url(base)
+        .eq_ignore_ascii_case(OPENAI_PUBLIC_API_BASE)
+        .then_some(OPENAI_PUBLIC_API_BASE)
+}
+
+/// `OPENAI_API_KEY` on the standard endpoint: the native Responses API
+/// engine shared with the Codex routes (SSE streaming with exact finish
+/// reasons, encrypted reasoning-item round-trips, `prompt_cache_key`), with
+/// Bearer API-key auth and per-token billing.
+fn create_openai_responses_from_registry(
+    config: &RegistryProviderConfig,
+    api_base: &str,
+    request_timeout_secs: u64,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    let api_key = config
+        .api_key
+        .as_ref()
+        .ok_or_else(|| LlmError::AuthFailed {
+            provider: config.provider_id.clone(),
+        })?;
+    tracing::debug!(
+        provider = %config.provider_id,
+        model = %config.model,
+        "Using OpenAI Responses API (native streaming)"
+    );
+    let provider = OpenAiCodexProvider::new_api_key(
+        &config.model,
+        api_base,
+        api_key.expose_secret(),
+        request_timeout_secs,
+    )?
+    .with_extra_headers(configured_extra_headers(config))
+    .with_unsupported_params(config.unsupported_params.clone());
+    Ok(Arc::new(provider))
+}
+
+fn create_openai_compat_from_registry(
+    config: &RegistryProviderConfig,
+    request_timeout_secs: u64,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    use rig::providers::openai;
+
+    if let Some(api_base) = openai_responses_api_base(config) {
+        return create_openai_responses_from_registry(config, api_base, request_timeout_secs);
+    }
+
+    let extra_headers = configured_extra_headers(config);
 
     let api_key = config
         .api_key
@@ -424,121 +497,29 @@ fn create_anthropic_from_registry(
     config: &RegistryProviderConfig,
     request_timeout_secs: u64,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    const DEFAULT_MAX_TOKENS: u32 = 8192;
-
-    // Route to OAuth provider when an OAuth token is present and no real API
-    // key was provided. When both are set, the API key takes priority (standard
-    // x-api-key auth via rig-core).
+    // Both Anthropic credentials use the direct Messages API provider, which
+    // streams natively with exact stop reasons, explicit `cache_control`
+    // breakpoints (including the 1h `Long` TTL), and signed-thinking replay.
+    // Route to OAuth when an OAuth token is present and no real API key was
+    // provided. When both are set, the API key takes priority.
     let api_key_is_placeholder = config
         .api_key
         .as_ref()
         .is_some_and(|k| k.expose_secret() == crate::config::OAUTH_PLACEHOLDER);
-    if config.oauth_token.is_some() && (config.api_key.is_none() || api_key_is_placeholder) {
-        tracing::debug!(
-            provider = %config.provider_id,
-            model = %config.model,
-            base_url = if config.base_url.is_empty() { "default" } else { &config.base_url },
-            "Using Anthropic OAuth API"
-        );
-        let provider = anthropic_oauth::AnthropicOAuthProvider::new(config)?;
-        return Ok(Arc::new(provider));
-    }
-
-    use crate::config::CacheRetention;
-    use rig::providers::anthropic;
-
-    let api_key = config
-        .api_key
-        .as_ref()
-        .map(|k| k.expose_secret().to_string())
-        .ok_or_else(|| LlmError::AuthFailed {
-            provider: config.provider_id.clone(),
-        })?;
-
-    // Build with the proxy-aware client (same as the OpenAI-compatible path) so
-    // a localhost/self-hosted Anthropic-compatible endpoint bypasses the system
-    // proxy for live chat too — not just model discovery. Remote hosts keep
-    // default proxy behavior.
-    let mut builder =
-        anthropic::Client::builder()
-            .api_key(&api_key)
-            .http_client(provider_http_client(
-                &config.provider_id,
-                &config.base_url,
-                request_timeout_secs,
-            )?);
-    if !config.base_url.is_empty() {
-        builder = builder.base_url(&config.base_url);
-    }
-    let client: anthropic::Client = builder.build().map_err(|e| LlmError::RequestFailed {
-        provider: config.provider_id.clone(),
-        reason: format!("Failed to create Anthropic client: {e}"),
-    })?;
-
-    // Downgrade retention up front for models without prompt-cache support so
-    // the rig `prompt_caching` flag below agrees with the adapter's own
-    // `with_cache_retention` validation.
-    let cache_retention =
-        rig_adapter::effective_cache_retention(config.cache_retention, &config.model);
-
-    let mut model = client.completion_model(&config.model);
-
-    // Short retention: rig's typed breakpoints (system prompt + last message
-    // block, plain 5m ephemeral) complement the request-level automatic
-    // marker and the last-tool marker added in `build_rig_request`. Long
-    // retention must NOT set this — rig's markers cannot carry a TTL, and a
-    // 5m block marker alongside a 1h automatic marker is an API error
-    // (TTL conflict on the last block). See issue #6984.
-    model.prompt_caching = cache_retention == CacheRetention::Short;
-
-    if cache_retention != CacheRetention::None {
-        tracing::debug!(
-            model = %config.model,
-            retention = %cache_retention,
-            "Anthropic prompt caching enabled (explicit breakpoints + automatic marker)"
-        );
-    }
-
+    let provider =
+        if config.oauth_token.is_some() && (config.api_key.is_none() || api_key_is_placeholder) {
+            anthropic_oauth::AnthropicProvider::new_oauth(config, request_timeout_secs)?
+        } else {
+            anthropic_oauth::AnthropicProvider::new_api_key(config, request_timeout_secs)?
+        };
     tracing::debug!(
         provider = %config.provider_id,
         model = %config.model,
         base_url = if config.base_url.is_empty() { "default" } else { &config.base_url },
-        "Using Anthropic provider"
+        retention = %config.cache_retention,
+        "Using Anthropic Messages API provider (native streaming)"
     );
-
-    // Anthropic model discovery: `GET {base}/v1/models` with `x-api-key` +
-    // `anthropic-version` (the SDK appends `/v1` itself for completions, so we
-    // add it explicitly here only for the discovery URL).
-    let anthropic_base = if config.base_url.is_empty() {
-        "https://api.anthropic.com".to_string()
-    } else {
-        config.base_url.trim_end_matches('/').to_string()
-    };
-    let discovery_base = if anthropic_base.ends_with("/v1") || anthropic_base.contains("/v1/") {
-        anthropic_base
-    } else {
-        format!("{anthropic_base}/v1")
-    };
-    let models_endpoint = rig_adapter::ModelsEndpoint {
-        provider_id: config.provider_id.clone(),
-        url: format!("{discovery_base}/models"),
-        auth: rig_adapter::ModelsAuth::AnthropicKey {
-            api_key,
-            version: "2023-06-01".to_string(),
-        },
-        shape: rig_adapter::ModelsShape::OpenAiData,
-        extra_headers: reqwest::header::HeaderMap::new(),
-    };
-
-    Ok(Arc::new(
-        RigAdapter::new(model, &config.model)
-            .with_provider_id(config.provider_id.clone())
-            .with_cache_retention(cache_retention)
-            .with_default_max_tokens(DEFAULT_MAX_TOKENS)
-            .with_unsupported_params(config.unsupported_params.clone())
-            .with_model_listing(models_endpoint)
-            .with_effort_style(crate::reasoning_effort::EffortStyle::Anthropic),
-    ))
+    Ok(Arc::new(provider))
 }
 
 fn create_ollama_from_registry(
@@ -588,7 +569,10 @@ fn create_ollama_from_registry(
     let mut adapter = RigAdapter::new(model, &config.model)
         .with_provider_id(config.provider_id.clone())
         .with_unsupported_params(config.unsupported_params.clone())
-        .with_model_listing(models_endpoint);
+        .with_model_listing(models_endpoint)
+        // Ollama's `/api/chat` takes plain JSON Schema; OpenAI strict-mode
+        // required-nullable rewriting only bloats local-model prompts.
+        .with_tool_schema_policy(crate::tool_schema::ToolSchemaPolicy::FlattenOnly);
     // Ollama's /api/chat enables extended reasoning via `think: true`, but
     // rejects that parameter with HTTP 400 ("does not support thinking") for
     // models that have no thinking capability (e.g. llama3). Only send it for
@@ -687,34 +671,7 @@ fn create_openrouter_from_registry(
     // user-configured extras must follow the request through. The `http` crate
     // normalizes header names to lowercase internally, so configuring
     // `HTTP-Referer` or `X-Title` (canonical OpenRouter spelling) parses fine.
-    let mut extra_headers = reqwest::header::HeaderMap::new();
-    for (key, value) in &config.extra_headers {
-        let name = match reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::warn!(
-                    provider = %config.provider_id,
-                    header = %key,
-                    error = %e,
-                    "Skipping extra header: invalid name",
-                );
-                continue;
-            }
-        };
-        let val = match reqwest::header::HeaderValue::from_str(value) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    provider = %config.provider_id,
-                    header = %key,
-                    error = %e,
-                    "Skipping extra header: invalid value",
-                );
-                continue;
-            }
-        };
-        extra_headers.insert(name, val);
-    }
+    let extra_headers = configured_extra_headers(config);
 
     let mut builder =
         openrouter::Client::builder()
@@ -754,7 +711,9 @@ fn create_openrouter_from_registry(
             .with_structured_output_support(false)
             .with_prompt_cache_key_support(true)
             .with_unsupported_params(config.unsupported_params.clone())
-            .with_effort_style(crate::reasoning_effort::EffortStyle::OpenRouter),
+            .with_effort_style(crate::reasoning_effort::EffortStyle::OpenRouter)
+            .with_tool_schema_policy(openrouter_tool_schema_policy(&config.model))
+            .with_automatic_prompt_cache(openrouter_cache_retention(config)),
     ))
 }
 
@@ -839,8 +798,42 @@ fn create_gemini_from_registry(
             .with_provider_id(config.provider_id.clone())
             .with_unsupported_params(config.unsupported_params.clone())
             .with_model_listing(models_endpoint)
-            .with_effort_style(crate::reasoning_effort::EffortStyle::Gemini),
+            .with_effort_style(crate::reasoning_effort::EffortStyle::Gemini)
+            // Gemini function declarations take an OpenAPI-style schema with
+            // native optional fields; required-nullable strict rewriting is
+            // an OpenAI-only contract.
+            .with_tool_schema_policy(crate::tool_schema::ToolSchemaPolicy::FlattenOnly),
     ))
+}
+
+/// Anthropic prompt caching for OpenRouter: only `anthropic/*` models take
+/// `cache_control`, as OpenRouter's top-level automatic-caching marker
+/// (`ttl: "1h"` under `Long`). Every other upstream either caches
+/// automatically or rejects the field, so it gets `None`.
+fn openrouter_cache_retention(config: &RegistryProviderConfig) -> crate::config::CacheRetention {
+    if config
+        .model
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("anthropic/")
+    {
+        config.cache_retention
+    } else {
+        crate::config::CacheRetention::None
+    }
+}
+
+/// OpenRouter forwards tool schemas to whichever upstream serves the model.
+/// Only OpenAI models (`openai/*`) get OpenAI strict-mode required-nullable
+/// rewriting; every other upstream (Anthropic, Google, Meta, …) receives the
+/// flatten-only schema so optional fields stay optional and the model does not
+/// spend output tokens emitting `"optional_field": null` placeholders.
+fn openrouter_tool_schema_policy(model: &str) -> crate::tool_schema::ToolSchemaPolicy {
+    if model.trim().to_ascii_lowercase().starts_with("openai/") {
+        crate::tool_schema::ToolSchemaPolicy::StrictOpenAi
+    } else {
+        crate::tool_schema::ToolSchemaPolicy::FlattenOnly
+    }
 }
 
 /// Discard pre-3225 OpenAI-shim Gemini URLs (`…/v1beta/openai`).
@@ -1986,9 +1979,12 @@ mod tests {
 
     #[tokio::test]
     async fn rig_registry_factories_keep_streaming_on_the_buffered_fallback() {
+        // A custom (non-OpenAI) base URL keeps the Chat Completions rig path,
+        // whose rig-core 0.36 stream cannot tell truncation from completion.
+        // Anthropic API keys stream natively now (see `factory_tests`).
         for (protocol, provider_id) in [
             (ProviderProtocol::OpenAiCompletions, "openai"),
-            (ProviderProtocol::Anthropic, "anthropic"),
+            (ProviderProtocol::OpenAiCompletions, "groq"),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await

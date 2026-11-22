@@ -338,3 +338,32 @@ fn env_still_wins_when_no_explicit_selection_override() {
     assert_eq!(dedicated.model, "Qwen/Qwen3.5-122B-A10B");
     assert_eq!(dedicated.base_url, "https://private.near.ai");
 }
+
+/// `ANTHROPIC_CACHE_RETENTION` governs Claude models behind OpenRouter as
+/// well as the direct Anthropic protocol (default `short`), and other
+/// protocols never pick it up.
+#[test]
+fn anthropic_cache_retention_env_applies_to_openrouter() {
+    let _env_lock = ironclaw_common::env_helpers::lock_env();
+    let env = EnvGuard::clear(&["ANTHROPIC_CACHE_RETENTION", "ANTHROPIC_OAUTH_TOKEN"]);
+    let resolve = |protocol: ProviderProtocol| {
+        let mut config = RegistryProviderConfig::generic(
+            protocol,
+            "probe",
+            None,
+            "",
+            "anthropic/claude-sonnet-4-6",
+        );
+        apply_registry_provider_env(&mut config).expect("env applies");
+        config.cache_retention
+    };
+
+    assert_eq!(resolve(ProviderProtocol::OpenRouter), CacheRetention::Short);
+    env.set("ANTHROPIC_CACHE_RETENTION", "long");
+    assert_eq!(resolve(ProviderProtocol::OpenRouter), CacheRetention::Long);
+    assert_eq!(resolve(ProviderProtocol::Anthropic), CacheRetention::Long);
+    assert_eq!(
+        resolve(ProviderProtocol::OpenAiCompletions),
+        CacheRetention::None
+    );
+}

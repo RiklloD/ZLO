@@ -30,7 +30,7 @@ fn host_reminder_merges_into_the_trailing_tool_result_message() {
         ChatMessage::host_reminder("Current date/time at loop start: 10:00"),
     ];
 
-    let (system, converted) = convert_messages(messages);
+    let (system, converted) = convert_messages(messages, false);
 
     assert_eq!(system.as_deref(), Some("cached prefix"));
     for pair in converted.windows(2) {
@@ -65,7 +65,7 @@ fn host_reminder_merges_into_a_trailing_text_user_message() {
         ChatMessage::host_reminder("Current date/time at loop start: 10:00"),
     ];
 
-    let (_, converted) = convert_messages(messages);
+    let (_, converted) = convert_messages(messages, false);
 
     assert_eq!(converted.len(), 1, "expected one merged user message");
     let AnthropicContent::Text(text) = &converted[0].content else {
@@ -114,7 +114,9 @@ async fn complete_preserves_missing_retry_after_on_headerless_502() {
         "claude-test",
     );
     config.oauth_token = Some(SecretString::from("test-token".to_string()));
-    let provider = AnthropicOAuthProvider::new(&config).expect("provider");
+    let provider =
+        AnthropicProvider::new_oauth(&config, crate::config::DEFAULT_REQUEST_TIMEOUT_SECS)
+            .expect("provider");
     let error = provider
         .complete(CompletionRequest::new(vec![ChatMessage::user("hello")]))
         .await
@@ -190,7 +192,7 @@ async fn capture_one_request() -> (String, tokio::sync::oneshot::Receiver<String
     (base_url, rx)
 }
 
-fn provider_with_retention(base_url: &str, retention: CacheRetention) -> AnthropicOAuthProvider {
+fn provider_with_retention(base_url: &str, retention: CacheRetention) -> AnthropicProvider {
     let mut config = RegistryProviderConfig::generic(
         crate::registry::ProviderProtocol::Anthropic,
         "anthropic_oauth",
@@ -200,7 +202,8 @@ fn provider_with_retention(base_url: &str, retention: CacheRetention) -> Anthrop
     );
     config.oauth_token = Some(SecretString::from("test-token".to_string()));
     config.cache_retention = retention;
-    AnthropicOAuthProvider::new(&config).expect("provider")
+    AnthropicProvider::new_oauth(&config, crate::config::DEFAULT_REQUEST_TIMEOUT_SECS)
+        .expect("provider")
 }
 
 async fn captured_json(rx: tokio::sync::oneshot::Receiver<String>) -> serde_json::Value {
@@ -330,7 +333,9 @@ async fn oauth_unsupported_model_downgrades_to_no_caching() {
     );
     config.oauth_token = Some(SecretString::from("test-token".to_string()));
     config.cache_retention = CacheRetention::Short;
-    let provider = AnthropicOAuthProvider::new(&config).expect("provider");
+    let provider =
+        AnthropicProvider::new_oauth(&config, crate::config::DEFAULT_REQUEST_TIMEOUT_SECS)
+            .expect("provider");
 
     #[expect(
         clippy::let_underscore_must_use,
@@ -356,6 +361,11 @@ async fn oauth_unsupported_model_downgrades_to_no_caching() {
 // so this one stays inside the file-size budget:
 // `src/anthropic_oauth/tests/prompt_cache_tests.rs`.
 mod prompt_cache_tests;
+
+// Console API-key credential: native streaming, cache breakpoints on the
+// streamed path, the semantic-progress idle deadline, and signed-thinking
+// replay.
+mod api_key_tests;
 
 fn request_with_messages(messages: Vec<AnthropicMessage>) -> AnthropicRequest {
     AnthropicRequest {
@@ -385,7 +395,8 @@ fn native_json_schema_output_config_serializes() {
     );
     let format = crate::provider::CompletionResponseFormat::JsonSchema(schema.clone());
     let request = AnthropicRequest {
-        output_config: anthropic_output_config(Some(&format)).expect("schema output config"),
+        output_config: anthropic_output_config(Some(&format), "anthropic_oauth")
+            .expect("schema output config"),
         ..request_with_messages(vec![AnthropicMessage {
             role: "user".to_string(),
             content: AnthropicContent::Text("answer".to_string()),
@@ -617,7 +628,7 @@ fn test_convert_messages_extracts_system() {
         ChatMessage::system("You are helpful."),
         ChatMessage::user("Hello"),
     ];
-    let (system, msgs) = convert_messages(messages);
+    let (system, msgs) = convert_messages(messages, false);
     assert_eq!(system, Some("You are helpful.".to_string()));
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].role, "user");
@@ -630,7 +641,7 @@ fn test_convert_messages_multiple_systems() {
         ChatMessage::system("System 2"),
         ChatMessage::user("Hello"),
     ];
-    let (system, msgs) = convert_messages(messages);
+    let (system, msgs) = convert_messages(messages, false);
     assert_eq!(system, Some("System 1\n\nSystem 2".to_string()));
     assert_eq!(msgs.len(), 1);
 }
@@ -646,7 +657,7 @@ fn test_convert_messages_user_image_becomes_base64_image_block() {
             },
         }],
     )];
-    let (_system, msgs) = convert_messages(messages);
+    let (_system, msgs) = convert_messages(messages, false);
     assert_eq!(msgs.len(), 1);
     // Text rides as the first block, the image as a base64 `image` block.
     let value = serde_json::to_value(&msgs[0]).expect("serialize");
@@ -663,7 +674,7 @@ fn test_convert_messages_user_image_becomes_base64_image_block() {
 #[test]
 fn test_convert_messages_text_only_user_stays_a_string() {
     let messages = vec![ChatMessage::user("just text")];
-    let (_system, msgs) = convert_messages(messages);
+    let (_system, msgs) = convert_messages(messages, false);
     let value = serde_json::to_value(&msgs[0]).expect("serialize");
     // No inline images → compact string content, not a blocks array.
     assert_eq!(value["content"], "just text");
@@ -684,7 +695,7 @@ fn test_convert_messages_tool_calls() {
         ChatMessage::assistant_with_tool_calls(Some("Let me search.".to_string()), tool_calls),
         ChatMessage::tool_result("call_1", "search", "found it"),
     ];
-    let (system, msgs) = convert_messages(messages);
+    let (system, msgs) = convert_messages(messages, false);
     assert!(system.is_none());
     assert_eq!(msgs.len(), 3);
     assert_eq!(msgs[0].role, "user");
@@ -746,7 +757,7 @@ fn test_extract_response_preserves_thinking_as_reasoning() {
             AnthropicResponseBlock::Thinking {
                 thinking: Some("Raw thinking".to_string()),
                 summary: Some("Summarized thinking".to_string()),
-                _signature: Some("sig".to_string()),
+                signature: Some("sig".to_string()),
             },
             AnthropicResponseBlock::Text {
                 text: "Done.".to_string(),
@@ -772,7 +783,7 @@ fn test_extract_response_uses_thinking_when_summary_absent() {
             AnthropicResponseBlock::Thinking {
                 thinking: Some("Raw thinking fallback".to_string()),
                 summary: None,
-                _signature: Some("sig".to_string()),
+                signature: Some("sig".to_string()),
             },
             AnthropicResponseBlock::Text {
                 text: "Done.".to_string(),
@@ -796,22 +807,38 @@ fn test_extract_response_uses_thinking_when_summary_absent() {
     );
 }
 
-/// Regression test for #1136: token field must be mutable via RwLock
-/// so that a refreshed token persists across subsequent requests.
+/// Regression test for #1136: a refreshed OAuth token persists on the
+/// provider so subsequent requests stop re-hitting 401. An API-key credential
+/// is never rotated in place.
+/// The credential the provider would send next.
+fn current_token(provider: &AnthropicProvider) -> String {
+    match provider.current_credential() {
+        AttemptCredential::OAuth(token) | AttemptCredential::ApiKey(token) => {
+            token.expose_secret().to_string()
+        }
+    }
+}
+
 #[test]
 fn test_token_update_persists() {
-    let original = SecretString::from("old_token".to_string());
-    let token = std::sync::RwLock::new(original);
+    let provider = provider_with_retention("http://127.0.0.1:9", CacheRetention::None);
+    assert_eq!(current_token(&provider), "test-token");
+    provider.update_token(SecretString::from("new_token".to_string()));
+    assert_eq!(current_token(&provider), "new_token");
 
-    // Read the original
-    assert_eq!(token.read().unwrap().expose_secret(), "old_token");
-
-    // Simulate a successful refresh
-    let refreshed = SecretString::from("new_token".to_string());
-    *token.write().unwrap() = refreshed;
-
-    // Subsequent reads see the updated token
-    assert_eq!(token.read().unwrap().expose_secret(), "new_token");
+    let mut config = RegistryProviderConfig::generic(
+        crate::registry::ProviderProtocol::Anthropic,
+        "anthropic",
+        Some(SecretString::from("sk-ant-api-key".to_string())),
+        "http://127.0.0.1:9",
+        "claude-opus-4-6",
+    );
+    config.cache_retention = CacheRetention::None;
+    let api_key =
+        AnthropicProvider::new_api_key(&config, crate::config::DEFAULT_REQUEST_TIMEOUT_SECS)
+            .expect("api-key provider");
+    api_key.update_token(SecretString::from("rotated".to_string()));
+    assert_eq!(current_token(&api_key), "sk-ant-api-key");
 }
 
 #[derive(Default)]
@@ -830,7 +857,7 @@ impl CompletionStreamSink for RecordingSink {
 #[tokio::test]
 async fn anthropic_stream_emits_text_and_preserves_terminal_tools_and_usage() {
     let sink = RecordingSink::default();
-    let mut response = AnthropicStreamingResponse::default();
+    let mut response = AnthropicStreamingResponse::for_provider("anthropic_oauth");
     ingest_anthropic_event(
             &mut response,
             "message_start",
@@ -901,7 +928,7 @@ async fn anthropic_stream_emits_text_and_preserves_terminal_tools_and_usage() {
 #[test]
 fn anthropic_stream_rejects_tool_state_missing_id_or_name() {
     for (id, name) in [("", "weather"), ("call-1", "")] {
-        let mut response = AnthropicStreamingResponse::default();
+        let mut response = AnthropicStreamingResponse::for_provider("anthropic_oauth");
         response.tool_call_parts.insert(
             0,
             AnthropicStreamingToolCall {
@@ -922,7 +949,7 @@ fn anthropic_stream_rejects_tool_state_missing_id_or_name() {
 
 #[test]
 fn anthropic_stream_rejects_malformed_accumulated_tool_arguments() {
-    let mut response = AnthropicStreamingResponse::default();
+    let mut response = AnthropicStreamingResponse::for_provider("anthropic_oauth");
     response.tool_call_parts.insert(
         0,
         AnthropicStreamingToolCall {
@@ -982,7 +1009,9 @@ async fn complete_streaming_rejects_eof_without_terminal_event() {
         "claude-test",
     );
     config.oauth_token = Some(SecretString::from("test-token".to_string()));
-    let provider = AnthropicOAuthProvider::new(&config).expect("provider");
+    let provider =
+        AnthropicProvider::new_oauth(&config, crate::config::DEFAULT_REQUEST_TIMEOUT_SECS)
+            .expect("provider");
     let sink = Arc::new(RecordingSink::default());
     let error = provider
         .complete_streaming(

@@ -17,7 +17,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `nearai_tool_message_flattening.rs` | NEAR AI compatibility rewrite for tool-call history |
 | `codex_auth.rs` | Reads Codex CLI `auth.json`, extracts tokens, refreshes ChatGPT OAuth access tokens |
 | `codex_chatgpt.rs` | Custom Responses API provider for Codex ChatGPT backend (`/backend-api/codex`) |
-| `openai_codex_provider.rs` | OpenAI Codex Responses API client (SSE streaming, JWT auth, subscription billing) |
+| `openai_codex_provider.rs` | OpenAI Responses API engine (native SSE streaming) for three routes: Codex ChatGPT backend (JWT + account header), Sign in with ChatGPT plan (subscription billing), and the `OPENAI_API_KEY` platform route (Bearer key, per-token billing); API-key wire tests in `openai_codex_provider/api_key_tests.rs` |
 | `openai_codex_session.rs` | OAuth 2.0 session manager for OpenAI Codex (device code flow, token persistence) |
 | `chatgpt_plan.rs` | Sign in with ChatGPT plan usage: browser PKCE registration (`dynamic_agent_client`), loopback callback, ID-token claims check, plan-scope refresh |
 | `token_refreshing.rs` | Token-refreshing `LlmProvider` decorator for OpenAI Codex (pre-emptive refresh, zero-cost billing) |
@@ -28,11 +28,11 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `failover.rs` | `FailoverProvider` — tries providers in order with per-provider cooldown |
 | `response_cache.rs` | In-memory LLM response cache with TTL and LRU eviction (keyed by SHA-256) |
 | (cost table moved) | The per-model cost table + usage pricing now lives in `ironclaw_common::llm_costs` (shared by every surface that reports cost). Providers import it as `use ironclaw_common::llm_costs as costs;`. |
-| `rig_adapter.rs` + `rig_adapter/` | Adapter bridging rig-core `CompletionModel` → `LlmProvider`; used by OpenAI, Anthropic, Ollama, Tinfoil. Root holds `RigAdapter` and its builder; `convert.rs` (message/tool/reasoning conversion), `request.rs` (rig request building, prompt caching, finish reasons), `provider_impl.rs` (the `LlmProvider` impl), `models_endpoint.rs` (model discovery), `errors.rs` (rig error mapping); unit tests under `tests.rs` + `tests/` |
+| `rig_adapter.rs` + `rig_adapter/` | Adapter bridging rig-core `CompletionModel` → `LlmProvider`; used by OpenAI-compatible Chat Completions endpoints (including `openai` with a custom base URL), Ollama, DeepSeek, OpenRouter, and native Gemini. Root holds `RigAdapter` and its builder; `convert.rs` (message/tool/reasoning conversion), `request.rs` (rig request building, prompt caching, finish reasons), `provider_impl.rs` (the `LlmProvider` impl), `models_endpoint.rs` (model discovery), `errors.rs` (rig error mapping); unit tests under `tests.rs` + `tests/` |
 | `smart_routing.rs` | `SmartRoutingProvider` — 13-dimension complexity scorer routes cheap vs primary model |
 | `recording.rs` | `RecordingLlm` — trace capture for E2E replay testing (`IRONCLAW_RECORD_TRACE`) |
-| `bedrock.rs` | AWS Bedrock provider via native Converse API (feature-gated: `--features bedrock`) |
-| `anthropic_oauth.rs` | Anthropic OAuth provider (Claude.ai subscription / OAuth tokens, fallback when no API key) |
+| `bedrock.rs` + `bedrock/prompt_cache.rs` | AWS Bedrock provider via native Converse API (feature-gated: `--features bedrock`); `prompt_cache.rs` places Converse `cachePoint` blocks |
+| `anthropic_oauth.rs` + `anthropic_oauth/stream.rs` | Anthropic Messages API provider (`AnthropicProvider`) for **both** credentials — `ANTHROPIC_API_KEY` (`x-api-key`) and `claude login` OAuth tokens (Bearer + beta, used when no real API key is set); native SSE streaming (`stream.rs` accumulates events, reports semantic progress, captures signed thinking) |
 | `gemini_oauth.rs` | Gemini OAuth provider (Cloud OAuth credentials → `generativelanguage.googleapis.com`) |
 | `github_copilot.rs` | GitHub Copilot Chat provider (uses dedicated reqwest client, not `RigAdapter`) |
 | `github_copilot_auth.rs` | Copilot session-token exchange and refresh (`CopilotTokenManager`) |
@@ -41,7 +41,7 @@ Multi-provider LLM integration with circuit breaker, retry, failover, and respon
 | `registry.rs` | Provider registry (`ProviderDefinition`, `ProviderProtocol`); resolves backend strings to clients |
 | `resolution.rs` | Full `LlmConfig` resolution for composition roots that select from `providers.json` and need dedicated providers plus the shared provider chain |
 | `tool_args.rs` | Shared sub-step primitives for provider tool-call parsing: fail-loud and silent-fallback JSON arg parsing (Layer 2 of RC3/M9 framework) |
-| `tool_schema.rs` | Tool schema normalization policies (`FlattenOnly` for NearAI, strict OpenAI for `RigAdapter` / Codex) |
+| `tool_schema.rs` | Tool schema normalization policies: `StrictOpenAi` for OpenAI strict-mode targets (OpenAI-compatible Chat Completions, OpenRouter `openai/*`, Responses API), `FlattenOnly` for NEAR AI, Anthropic, Gemini, Ollama, and non-OpenAI OpenRouter models |
 | `transcription/{mod,openai,chat_completions}.rs` | Audio transcription pipeline (Whisper / chat-completions back-ends) |
 | `speech/{mod,openai,elevenlabs}.rs` | Text-to-speech: the `SpeechSynthesisProvider` trait with OpenAI and ElevenLabs back-ends; nothing in the gateway wires it yet |
 | `vision_models.rs` | Vision-capable model registry for attachment routing |
@@ -68,7 +68,7 @@ owner, and a deleted one fails until its entry goes.
 | Sub-owner | Owns | Never contains | Files |
 |---|---|---|---|
 | `core-contract` | The `LlmProvider` trait, the request/response vocabulary, the error taxonomy, the config types, shared HTTP hardening, and the factory that assembles everything | A vendor protocol, or reliability behavior | `lib.rs`, `provider.rs`, `agent_message.rs`, `error.rs`, `config.rs`, `url_check.rs` |
-| `providers` | One concrete `LlmProvider` per vendor and the protocol shims used by that vendor alone | Cross-provider normalization (that is `normalization`), or credential lifecycle (that is `auth-sessions`) | `nearai_chat.rs`, `rig_adapter.rs`, `rig_adapter/convert.rs`, `rig_adapter/errors.rs`, `rig_adapter/models_endpoint.rs`, `rig_adapter/provider_impl.rs`, `rig_adapter/request.rs`, `gemini_oauth.rs`, `codex_chatgpt.rs`, `bedrock.rs`, `openai_codex_provider.rs`, `anthropic_oauth.rs`, `github_copilot.rs`, `github_copilot/tests.rs`, `nearai_tool_message_flattening.rs`, `responses_reasoning.rs`, `anthropic_thinking.rs` |
+| `providers` | One concrete `LlmProvider` per vendor and the protocol shims used by that vendor alone | Cross-provider normalization (that is `normalization`), or credential lifecycle (that is `auth-sessions`) | `nearai_chat.rs`, `rig_adapter.rs`, `rig_adapter/convert.rs`, `rig_adapter/errors.rs`, `rig_adapter/models_endpoint.rs`, `rig_adapter/provider_impl.rs`, `rig_adapter/request.rs`, `gemini_oauth.rs`, `codex_chatgpt.rs`, `bedrock.rs`, `openai_codex_provider.rs`, `anthropic_oauth.rs`, `anthropic_oauth/stream.rs`, `bedrock/prompt_cache.rs`, `github_copilot.rs`, `github_copilot/tests.rs`, `nearai_tool_message_flattening.rs`, `responses_reasoning.rs`, `anthropic_thinking.rs` |
 | `auth-sessions` | Acquiring, persisting, refreshing and revoking provider credentials | Request/response shaping | `auth.rs`, `session.rs`, `openai_codex_session.rs`, `chatgpt_plan.rs`, `github_copilot_auth.rs`, `codex_auth.rs`, `token_refreshing.rs` |
 | `registry` | The **provider** catalog: definitions, protocols, base-URL and api-key resolution | Model facts (that is `model-catalog`) | `registry.rs`, `resolution.rs`, `resolution/tests.rs` |
 | `decorators` | Anything that wraps `dyn LlmProvider` and is not credential work: retry, breaker, failover, cache, hot-reload, cost routing | Vendor protocol | `retry.rs`, `circuit_breaker.rs`, `failover.rs`, `response_cache.rs`, `runtime.rs`, `smart_routing.rs`, `provider_routing.rs` |
@@ -77,7 +77,7 @@ owner, and a deleted one fails until its entry goes.
 | `recording` | Trace capture and replay, and binding recorded tool arguments to earlier results | Live provider behavior | `recording.rs`, `trace_binding.rs` |
 | `embeddings` | Text embeddings: the `EmbeddingProvider` trait (a **different trait** from `LlmProvider`), its request/response/limits/config vocabulary, registry resolution, and the OpenAI-compatible implementation over `ironclaw_network`'s policy egress | Chat vocabulary, a raw `reqwest` client, or credential lookup (the caller passes the key) | `embeddings/mod.rs`, `embeddings/openai_compatible.rs` |
 | `transcription` | Speech in and out: the `TranscriptionProvider` (speech-to-text) and `SpeechSynthesisProvider` (text-to-speech) traits and their implementations — **different traits** from `LlmProvider`, sharing only transports | Anything implementing `LlmProvider` | `transcription/mod.rs`, `transcription/chat_completions.rs`, `transcription/openai.rs`, `speech/mod.rs`, `speech/openai.rs`, `speech/elevenlabs.rs` |
-| `test-support` | Fixtures and fault injection, including the published `test-support` feature downstream harnesses consume | Production behavior | `testing/mod.rs`, `testing/fault_injection.rs`, `testing/embeddings.rs`, `codex_test_helpers.rs`, `rig_adapter/tests.rs`, `rig_adapter/tests/convert_tests.rs`, `rig_adapter/tests/error_tests.rs`, `rig_adapter/tests/models_endpoint_tests.rs`, `rig_adapter/tests/provider_tests.rs`, `rig_adapter/tests/request_tests.rs`, `rig_adapter/tests/schema_tests.rs`, `rig_adapter/tests/wire_tests.rs`, `rig_adapter/tests/finish_reason_tests.rs`, `anthropic_oauth/tests.rs`, `anthropic_oauth/tests/prompt_cache_tests.rs` |
+| `test-support` | Fixtures and fault injection, including the published `test-support` feature downstream harnesses consume | Production behavior | `testing/mod.rs`, `testing/fault_injection.rs`, `testing/embeddings.rs`, `codex_test_helpers.rs`, `rig_adapter/tests.rs`, `rig_adapter/tests/convert_tests.rs`, `rig_adapter/tests/error_tests.rs`, `rig_adapter/tests/models_endpoint_tests.rs`, `rig_adapter/tests/provider_tests.rs`, `rig_adapter/tests/request_tests.rs`, `rig_adapter/tests/schema_tests.rs`, `rig_adapter/tests/wire_tests.rs`, `rig_adapter/tests/finish_reason_tests.rs`, `anthropic_oauth/tests.rs`, `anthropic_oauth/tests/prompt_cache_tests.rs`, `anthropic_oauth/tests/api_key_tests.rs`, `openai_codex_provider/api_key_tests.rs`, `factory_tests.rs`, `sse_test_server.rs` |
 
 Four placement calls worth stating, because each is a file whose *shape*
 suggests one owner and whose *purpose* is another:
@@ -108,13 +108,13 @@ Set via `LLM_BACKEND` env var:
 | Value | Provider | Key env vars |
 |-------|----------|-------------|
 | `nearai` (default) | NEAR AI Chat Completions | `NEARAI_SESSION_TOKEN` or `NEARAI_API_KEY` |
-| `openai` | OpenAI | `OPENAI_API_KEY` |
-| `anthropic` | Anthropic | `ANTHROPIC_API_KEY` |
+| `openai` | OpenAI (Responses API on the standard endpoint; Chat Completions for a custom `base_url`) | `OPENAI_API_KEY` |
+| `anthropic` | Anthropic Messages API (native streaming) | `ANTHROPIC_API_KEY`, `ANTHROPIC_CACHE_RETENTION` |
 | `github_copilot` | GitHub Copilot Chat API | `GITHUB_COPILOT_TOKEN`, `GITHUB_COPILOT_MODEL` |
 | `ollama` | Ollama local | `OLLAMA_BASE_URL` |
 | `openai_compatible` | Any OpenAI-compatible endpoint | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` |
 | `tinfoil` | Tinfoil TEE inference | `TINFOIL_API_KEY`, `TINFOIL_MODEL` |
-| `bedrock` | AWS Bedrock (requires `--features bedrock`) | `BEDROCK_REGION`, `BEDROCK_MODEL`, `AWS_PROFILE` |
+| `bedrock` | AWS Bedrock (requires `--features bedrock`) | `BEDROCK_REGION`, `BEDROCK_MODEL`, `AWS_PROFILE`, `BEDROCK_CACHE_RETENTION` |
 | `openai_codex` | OpenAI Codex (ChatGPT subscription) | `OPENAI_CODEX_MODEL`, `OPENAI_CODEX_CLIENT_ID` |
 
 Codex auth reuse:
@@ -134,6 +134,9 @@ Uses the native Converse API via `aws-sdk-bedrockruntime` (`bedrock.rs`). Requir
 - `BEDROCK_REGION` — AWS region (default: `us-east-1`)
 - `BEDROCK_MODEL` — Required model ID (e.g., `anthropic.claude-opus-4-6-v1`)
 - `BEDROCK_CROSS_REGION` — Optional cross-region inference prefix (`us`, `eu`, `apac`, `global`)
+- `BEDROCK_CACHE_RETENTION` — Converse prompt caching: `none`, `short` (default, 5m), or `long` (1h TTL)
+
+**Prompt caching** (`bedrock/prompt_cache.rs`): on cache-capable models (Claude 3.5 Haiku, 3.7 Sonnet, Claude 4+ — a denylist of the older families — and Amazon Nova micro/lite/pro/premier) every Converse request carries three `cachePoint` blocks sharing one TTL: after the system prompt, after the last tool definition, and at the end of the last message. Any other model receives none (a `cachePoint` on an unsupported model is a validation error). Usage reports `cacheReadInputTokens` / `cacheWriteInputTokens`.
 
 ## GitHub Copilot Provider Notes
 
@@ -166,7 +169,7 @@ ID, migrate to it immediately. Advanced users can override headers via
 
 **Tool message flattening:** Current NEAR AI cloud-api deployments support standard Chat Completions tool history, including assistant `tool_calls` followed by `role: "tool"` results. `nearai_chat.rs` therefore defaults `flatten_tool_messages = false`. The legacy compatibility rewrite remains opt-in via `NearAiChatProvider::new_with_options(..., true, ...)` for old OpenAI-compatible deployments that reject tool-role messages. That rewrite drops assistant messages that only carry provider tool-call protocol and turns tool results into user-side observations using the shared `ironclaw_common::provider_transcript` grammar (`Tool result from <name>: <content>`), which should not be used on compliant endpoints.
 
-**Tool schema normalization:** `nearai_chat.rs` uses the provider-safe `FlattenOnly` policy from `tool_schema.rs`: it still flattens top-level `oneOf`/`anyOf`/`allOf`/`enum`/`not` schemas that OpenAI-compatible tool APIs reject, but it does not rewrite optional object fields into required-nullable strict mode. `RigAdapter::convert_tools` and `openai_codex_provider.rs` continue to use the stricter OpenAI policy.
+**Tool schema normalization:** `nearai_chat.rs` uses the provider-safe `FlattenOnly` policy from `tool_schema.rs`: it still flattens top-level `oneOf`/`anyOf`/`allOf`/`enum`/`not` schemas that OpenAI-compatible tool APIs reject, but it does not rewrite optional object fields into required-nullable strict mode. `openai_codex_provider.rs` uses the stricter OpenAI policy; `RigAdapter::convert_tools` applies the adapter's per-factory `ToolSchemaPolicy` (strict for OpenAI-compatible Chat Completions and OpenRouter `openai/*`, flatten-only for Gemini, Ollama, and other OpenRouter upstreams), and the Anthropic provider sends flatten-only `input_schema`s.
 
 **Pricing auto-fetch:** On startup, `NearAiChatProvider` fires a background task to fetch per-model pricing from `/v1/model/list`. If the fetch fails, it silently falls back to `costs::model_cost()` / `costs::default_cost()`. Pricing is stored in-memory only.
 
@@ -176,7 +179,7 @@ ID, migrate to it immediately. Advanced users can override headers via
 
 **Stream visibility:** Retry, failover, and token-refresh decorators must suppress a second attempt after partial text becomes visible unless the sink supports safe replacement. A sink used only to select streaming transport may declare its text invisible; decorators propagate that declaration so discarded partial deltas do not suppress configured retries or fallback.
 
-**Streamed reasoning:** Providers that parse thinking or reasoning-summary deltas (Anthropic OAuth, rig-backed providers, NEAR AI, both Codex routes) also pass each fragment to `CompletionStreamSink::reasoning_delta` as it arrives. Reasoning is display-only and append-only: it never counts as visible text for retry/failover suppression, and the completed response still carries the full reasoning. Decorators forward it unchanged; the default implementation drops it.
+**Streamed reasoning:** Providers that parse thinking or reasoning-summary deltas (Anthropic, rig-backed providers, NEAR AI, both Codex routes) also pass each fragment to `CompletionStreamSink::reasoning_delta` as it arrives. Reasoning is display-only and append-only: it never counts as visible text for retry/failover suppression, and the completed response still carries the full reasoning. Decorators forward it unchanged; the default implementation drops it.
 
 **Shared client timeout hygiene:** Every production reqwest client in this crate starts from the shared hardened builders in `config.rs`, the single source of truth for connect-timeout (`CONNECT_TIMEOUT_SECS` = 10 s), TCP keepalive (`TCP_KEEPALIVE_SECS` = 30 s), and idle-pool bound (`POOL_IDLE_TIMEOUT_SECS` = 90 s). One-shot requests additionally use `hardened_client_builder(request_timeout_secs)` for a total timeout; streaming responses use `hardened_streaming_client_builder()` and apply the headers-to-first-content and semantic-progress idle bounds while consuming the stream. Callers chain site-specific options (`.redirect`, `.resolve_to_addrs`, `.default_headers`) onto the returned builder. Do not re-apply these settings inline — change them only in `config.rs`. Exception: the few infallible constructors that cannot return an error (`SessionManager::new_async`, the transcription providers in `transcription/openai.rs` and `transcription/chat_completions.rs`) build via the hardened builder but log a `tracing::error!` and degrade to a bare `Client::new()` on the rare `.build()` failure (e.g. TLS-backend init) rather than failing construction; making the hardened client the only constructable path in these sites is tracked as durable enforcement in issue #5214.
 
@@ -357,7 +360,7 @@ Default (plan mode): OpenAI's documented Sign in with ChatGPT route for open-sou
 **Key differences from other providers:**
 - Uses Responses API (not Chat Completions) — SSE streaming with different event types
 - System messages are sent as `instructions` field, not in `input` array
-- Tool schemas are shaped by `tool_schema.rs`: `NearAiChatProvider` uses `FlattenOnly` so top-level combinators still get flattened for OpenAI-compatible chat-completions requests, while `RigAdapter::convert_tools` and `OpenAiCodexProvider` use the strict OpenAI policy that also rewrites optional object fields into required-nullable strict mode
+- Tool schemas are shaped by `tool_schema.rs`: `NearAiChatProvider` uses `FlattenOnly` so top-level combinators still get flattened for OpenAI-compatible chat-completions requests, while `OpenAiCodexProvider` uses the strict OpenAI policy that also rewrites optional object fields into required-nullable strict mode (`RigAdapter` picks per factory — see `rig_adapter.rs Details`)
 - `cost_per_token()` returns `(0, 0)` — subscription-based billing
 - `set_model()` returns error — model is fixed at construction time
 - Image attachments are silently dropped with a warning log
@@ -416,21 +419,24 @@ Providers in this crate import it as `use ironclaw_common::llm_costs as costs;`
 
 ## Anthropic Prompt Caching
 
-Both Anthropic transports emit explicit `cache_control` breakpoints when
-`cache_retention` (env: `ANTHROPIC_CACHE_RETENTION`) is not `none` (#6984):
+Both Anthropic credentials go through one transport, `anthropic_oauth.rs`
+(`AnthropicProvider::build_request`), which emits explicit `cache_control`
+breakpoints when `cache_retention` (env: `ANTHROPIC_CACHE_RETENTION`, default
+`short`) is not `none` (#6984): system prompt block, last tool definition, and
+the last content block of the last message, all carrying the retention TTL
+(`{"type":"ephemeral"}` for short, `+ "ttl":"1h"` for long). Every entry point
+— buffered and streamed, with and without tools — builds its request there, so
+streamed calls carry the same breakpoints as buffered ones (before the shared
+builder, the OAuth streamed paths sent none, and API keys went through rig's
+Anthropic client). The rig Anthropic marker logic in `rig_adapter/request.rs`
+(`build_rig_request`, automatic marker + last-tool marker) remains for callers
+that wrap rig-core's Anthropic client in `RigAdapter` themselves; no factory in
+this crate does.
 
-- **OAuth transport** (`anthropic_oauth.rs`, `apply_cache_breakpoints`): system
-  prompt block, last tool definition, and the last content block of the last
-  message, all carrying the retention TTL (`{"type":"ephemeral"}` for short,
-  `+ "ttl":"1h"` for long).
-- **API-key transport** (`rig_adapter/request.rs`, `build_rig_request` +
-  `create_anthropic_from_registry`): the top-level automatic-caching marker,
-  an explicit marker on the last tool (moved into rig's raw
-  `additional_params.tools`, which rig appends after typed tools), and — for
-  `short` only — rig's typed system/last-message breakpoints
-  (`CompletionModel::prompt_caching`). `long` must not enable the typed
-  breakpoints: rig's markers cannot carry a TTL, and a 5m block marker with a
-  1h automatic marker is an API error (TTL conflict on the last block).
+Claude models behind other APIs: OpenRouter `anthropic/*` models get
+OpenRouter's top-level automatic `cache_control` marker under the same env
+(`openrouter_cache_retention` in `lib.rs`); Bedrock uses Converse `cachePoint`
+blocks under `BEDROCK_CACHE_RETENTION` (see AWS Bedrock Provider).
 
 All markers within a request share one TTL, satisfying Anthropic's
 longer-TTL-first ordering rule. `supports_prompt_cache` is a **denylist**:
@@ -496,18 +502,25 @@ backend.
 
 ## rig_adapter.rs Details
 
-`RigAdapter<M>` bridges any rig-core `CompletionModel` to `LlmProvider`. It is actively used in production for all non-NEAR AI providers (OpenAI, Anthropic, Ollama, Tinfoil, OpenAI-compatible). Key behaviors:
+`RigAdapter<M>` bridges any rig-core `CompletionModel` to `LlmProvider`. It is used in production for the OpenAI-compatible Chat Completions providers (Tinfoil, Groq, … and `openai` with a custom `base_url`), Ollama, DeepSeek, OpenRouter, and native Gemini; Anthropic (both credentials) and `openai` on the standard endpoint use native providers instead. Key behaviors:
 - **Per-request model overrides** are forwarded through rig-core's typed request model field, preserving one serialized top-level `model` key.
-- **OpenAI strict-mode schema normalization** is applied to all tool definitions: `additionalProperties: false`, all properties added to `required`, optional fields made nullable via `"type": ["T", "null"]`. This happens transparently at the provider boundary.
+- **Provider-native tool schema policy** (`with_tool_schema_policy`, default `StrictOpenAi`): OpenAI strict-mode targets get `additionalProperties: false`, every property in `required`, and optional fields nullable via `"type": ["T", "null"]`; Gemini, Ollama, and non-`openai/*` OpenRouter models get `FlattenOnly` (top-level combinators flattened, optional fields left optional) so they neither receive bloated schemas nor spend output tokens on `"optional_field": null`. Unset-optional `null` placeholders are still stripped from returned calls.
+- **OpenRouter Anthropic caching** (`with_automatic_prompt_cache`): `anthropic/*` models routed via OpenRouter carry OpenRouter's top-level automatic `cache_control` marker (`ANTHROPIC_CACHE_RETENTION`; `ttl: "1h"` under `long`) and are priced with the matching write multiplier / read discount. No explicit block markers: rig's Anthropic-native last-tool marker cannot ride an OpenAI-shaped request.
 - **System messages** are extracted into the rig-core `preamble` field (concatenated with newlines if multiple).
 - **Tool call IDs** are generated (`generated_tool_call_{seed}`) if the provider returns empty/whitespace IDs.
 - **Tool name normalization**: strips `proxy_` prefix if it matches a known tool (handles some proxy implementations).
 - **OpenAI-compatible reasoning-only responses**: rig-core 0.36 `reasoning_content` is preserved separately from assistant text by both plain and tool-capable non-streaming completions.
-- **OpenAI uses Chat Completions API** (`completions_api()`), not the newer Responses API — the Responses API path panics when tool results are sent back (rig-core doesn't thread `call_id` through `ToolCall`).
+- **Rig's OpenAI client uses Chat Completions** (`completions_api()`), never rig's Responses path — that path panics when tool results are sent back (rig-core doesn't thread `call_id` through `ToolCall`). `openai` on the standard endpoint uses the crate's own Responses engine instead (`openai_codex_provider.rs`, API-key route), gated by `openai_responses_api_base` in `lib.rs`: only provider id `openai` with an empty base URL or `https://api.openai.com[/v1]` qualifies, so proxies and self-hosted OpenAI-compatible servers keep Chat Completions. The API-key route sends `max_output_tokens`, `temperature` (non-reasoning models only), and native JSON-object mode, strips `reasoning` / `text.verbosity` for non-reasoning models, and has no stop-sequence field (the Responses API does not take one, so `stop_sequences` is not sent).
 
 ## Streaming Support
 
-`LlmProvider` exposes `complete_streaming()` and `complete_with_tools_streaming()` for provider text deltas. Native streaming is enabled only where IronClaw can observe an authoritative terminal event: NEAR AI, Anthropic OAuth, and Codex Responses. Rig-backed OpenAI Chat Completions and Anthropic API-key providers retain the buffered trait fallback because rig-core 0.36 synthesizes its final response after EOF, so IronClaw cannot distinguish completion from truncation. Other unvalidated providers also remain buffered, including custom OpenAI-compatible endpoints, Gemini OAuth, GitHub Copilot, Bedrock, and Rig-backed Ollama, DeepSeek, OpenRouter, and native Gemini.
+`LlmProvider` exposes `complete_streaming()` and `complete_with_tools_streaming()` for provider text deltas. Native streaming is enabled only where IronClaw observes an authoritative terminal event and the provider's exact finish reason: NEAR AI, Anthropic (API key **and** OAuth — `message_stop` / `stop_reason`, mapped through `map_provider_finish_token`, so `max_tokens` → `Length`, `refusal` → `ContentFilter`), and the OpenAI Responses engine (Codex routes and the `OPENAI_API_KEY` route — `response.completed` / `response.incomplete` with `incomplete_details.reason`, refusals → `ContentFilter`; a `Length`/`ContentFilter` stop is never promoted to `ToolUse`).
+
+**Rig-backed providers stay buffered** (audited for rig-core 0.36; pinned by `factory_tests::rig_backed_factories_stay_buffered_until_their_streams_are_lossless`): the shared OpenAI-compatible stream driver (OpenAI-compatible endpoints, OpenRouter, DeepSeek) and native Gemini yield a usage-only terminal frame after EOF and drop the provider finish reason, so truncation is indistinguishable from completion; Ollama's stream detects its `done` frame and keeps `done_reason`, but parses NDJSON by splitting each raw network chunk on `\n` (a line split across chunks is a hard mid-answer JSON error) and discards HTTP error bodies (losing context-overflow / missing-model classification). Gemini OAuth, GitHub Copilot, and Bedrock also remain buffered.
+
+**Streaming timeouts** (Anthropic, OpenAI Responses, NEAR AI): no total wall-clock cap. The shared streaming client (`hardened_streaming_client_builder`) bounds connect (10 s) and keepalive; `request_timeout_secs` (default 60 s, `LLM_REQUEST_TIMEOUT_SECS`) bounds response headers and then the gap between progress. Anthropic re-arms its idle deadline only on semantic progress (text, thinking, signature, tool-call id/name/argument fragments, the stop reason) — `ping`, `message_start`, and usage-only frames do not keep a stalled stream alive. The Responses engine re-arms on every SSE event (the API sends no keepalive frames). Buffered calls keep the total request timeout.
+
+**Anthropic thinking replay**: streamed and buffered Anthropic responses return signed `thinking` / `redacted_thinking` blocks as `reasoning_details`. A routed reasoning effort (`REASONING_EFFORT_METADATA`) sends `output_config.effort` and, where the request shape allows, adaptive thinking; on tool requests thinking is enabled only when the in-progress tool loop's last assistant message carries a signed block (`thinking_replay_safe`), which is then replayed verbatim ahead of its `tool_use`. Without a routed effort, tool requests keep thinking off (unchanged).
 
 Text deltas are advisory UI progress; the returned response remains authoritative for text, tool calls, finish reason, reasoning artifacts, and usage. Provider decorators must forward both streaming methods. Retry or failover must not append a replacement after visible partial text unless the sink advertises atomic text-replacement support. The response cache bypasses lookup for streaming calls because a stored response cannot reproduce provider deltas honestly.
 
