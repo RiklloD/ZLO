@@ -83,8 +83,9 @@ pub struct OrchestratorForkRequest {
 /// worktree made from `source_dir`, default the thread's working folder;
 /// only committed work is in it), `merge` (bring its branch into the
 /// checkout it came from; `strategy` merge | squash | cherry_pick,
-/// `on_conflict` abort | leave) or `remove` (remove the folder; unmerged
-/// commits keep their branch). Nothing is ever forced.
+/// `on_conflict` abort | leave), `remove` (remove the folder; unmerged
+/// commits keep their branch) or `clean` (remove folder and branch only
+/// while they hold no work). Nothing is ever forced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrchestratorWorktreeRequest {

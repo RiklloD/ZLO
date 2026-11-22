@@ -746,6 +746,8 @@ impl OrchestratedProductSurface {
                                     .await
                             }
                             "remove" => engine.remove_worktree(&thread).await,
+                            // Remove it only when it holds no work.
+                            "clean" => engine.clean_worktree(&thread).await,
                             other => Err(OrchestratorError::invalid(format!(
                                 "unknown worktree action {other}"
                             ))),

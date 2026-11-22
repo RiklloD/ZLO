@@ -1010,6 +1010,49 @@ async fn a_user_thread_worktree_starts_from_the_default_branch() {
     assert_eq!(sh(&r.repo, "git branch --show-current"), "feat/side");
 }
 
+/// Cleaning a thread's worktree removes it with its branch only while it
+/// holds no work; uncommitted changes or commits keep it.
+#[tokio::test]
+async fn cleaning_removes_only_an_empty_worktree() {
+    let r = repo(true).await;
+    let parent = ThreadId::new("parent").unwrap();
+    let thread = r.engine.store().thread(&parent).await.unwrap().unwrap();
+    let view = r.engine.start_worktree(&thread, None).await.unwrap();
+    let path = PathBuf::from(view["path"].as_str().unwrap());
+    let branch = view["branch"].as_str().unwrap().to_string();
+
+    std::fs::write(path.join("draft.txt"), "wip\n").unwrap();
+    let kept = r.engine.clean_worktree(&thread).await.unwrap();
+    assert_eq!(kept["cleaned"], false);
+    assert!(path.exists(), "uncommitted work keeps the worktree");
+
+    commit_all(&path, "work");
+    let kept = r.engine.clean_worktree(&thread).await.unwrap();
+    assert_eq!(kept["cleaned"], false);
+    assert!(path.exists(), "commits keep the worktree");
+
+    sh(&path, "git reset -q --hard HEAD~1");
+    let cleaned = r.engine.clean_worktree(&thread).await.unwrap();
+    assert_eq!(cleaned["cleaned"], true);
+    assert!(!path.exists());
+    assert!(sh(&r.repo, &format!("git branch --list '{branch}'")).is_empty());
+    assert_eq!(
+        r.engine
+            .store()
+            .worktree(&parent)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        WorktreeState::Removed
+    );
+    // Nothing left: cleaning again is a no-op, not an error.
+    assert_eq!(
+        r.engine.clean_worktree(&thread).await.unwrap()["cleaned"],
+        false
+    );
+}
+
 /// Orchestration git never reaches the network: a blobless clone whose
 /// promisor remote would run a transport program (here a repo-local
 /// `core.sshCommand` leaving a marker) fails closed on the missing objects.

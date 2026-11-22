@@ -352,7 +352,7 @@ pub struct OrchestratorWorktreeBody {
 
 /// `POST /api/webchat/v2/threads/{thread_id}/worktree` — the thread's git
 /// worktree: `status`, `create` (start it in a new worktree), `merge`,
-/// `remove`.
+/// `remove`, `clean` (remove it only while it holds no work).
 pub async fn orchestrator_thread_worktree(
     State(state): State<WebUiV2State>,
     Extension(caller): Extension<ProductSurfaceCaller>,

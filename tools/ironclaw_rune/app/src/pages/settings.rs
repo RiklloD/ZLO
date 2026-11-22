@@ -12,6 +12,7 @@ pub mod session_import;
 mod snapshots;
 mod tools;
 mod traces;
+mod worktrees;
 
 use std::collections::HashSet;
 
@@ -73,6 +74,8 @@ pub struct SettingsState {
     pub session_import: session_import::SessionImportState,
     pub error: Option<String>,
     pub notice: Option<String>,
+    /// Settings → Worktrees' clean-up is running.
+    pub cleaning_worktrees: bool,
     /// The Appearance select whose menu is open.
     pub appearance_menu: Option<&'static str>,
 }
@@ -310,6 +313,7 @@ pub fn view(s: &State, page: Page, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec
             .child(group_header(p, "Conversations", None))
             .child(render_follow_ups(s, k))
             .child(compaction::view(s, k))
+            .child(worktrees::view(s, k))
             .child(group_header(
                 p,
                 "Thread details",
