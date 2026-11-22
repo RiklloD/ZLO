@@ -311,6 +311,65 @@ async fn dispatches_direct_gateway_request_without_prompt_materialization() {
     );
 }
 
+/// Cache-forked compaction (`compaction_task/cache_fork.rs`) hands the live
+/// conversation's warm prefix as `context_messages`. The gateway request must
+/// replay that prefix in order, put the summarization instruction last, and
+/// carry the thread id the gateway hashes into the thread's prompt-cache key.
+#[tokio::test]
+async fn cache_forked_compaction_replays_the_warm_prefix_before_the_tail_instruction() {
+    let context = test_run_context("system-inference-cache-fork").await;
+    let gateway = Arc::new(RecordingGateway::new(
+        crate::HostManagedModelResponse::assistant_reply("summary"),
+    ));
+    let port = ModelGatewayBackedSystemInferencePort::new(gateway.clone(), context.clone());
+
+    port.call_system_inference(SystemInferenceRequest {
+        context_messages: vec![
+            SystemInferenceContextMessage {
+                role: SystemInferenceContextRole::User,
+                content: "refactor the parser".to_string(),
+            },
+            SystemInferenceContextMessage {
+                role: SystemInferenceContextRole::Assistant,
+                content: "split the tokenizer out".to_string(),
+            },
+        ],
+        identity: SystemInferenceIdentity {
+            system_prompt: "live system prompt".to_string(),
+            ..system_request("").identity
+        },
+        input_text: "write the checkpoint now".to_string(),
+        max_input_tokens: 10_000,
+        ..system_request("")
+    })
+    .await
+    .expect("system inference succeeds");
+
+    let request = gateway.request();
+    assert_eq!(request.thread_id, Some(context.thread_id.clone()));
+    assert!(request.surface_version.is_none(), "no capability surface");
+    let shape = request
+        .messages
+        .iter()
+        .map(|message| (message.role, message.content.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        shape,
+        vec![
+            (HostManagedModelMessageRole::System, "live system prompt"),
+            (HostManagedModelMessageRole::User, "refactor the parser"),
+            (
+                HostManagedModelMessageRole::Assistant,
+                "split the tokenizer out"
+            ),
+            (
+                HostManagedModelMessageRole::User,
+                "write the checkpoint now"
+            ),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn structured_finalization_uses_native_schema_without_tools() {
     let context = test_run_context("system-inference-structured").await;
