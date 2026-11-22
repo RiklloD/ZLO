@@ -650,6 +650,10 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(ui::grow())
         .child(
             ui::busy(ui::btn("Pull"), busy == Some("pull"))
+                .help(match &b.upstream {
+                    Some(up) => format!("Pull: bring in new commits from {up}"),
+                    None => "Pull: this branch has no upstream to pull from yet".into(),
+                })
                 .disabled(busy.is_some() || b.upstream.is_none() || remote)
                 .on_press(pull)
                 .build(k)
@@ -657,6 +661,10 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         )
         .child(
             ui::busy(ui::btn("Push").icon(&icons::UPLOAD), busy == Some("push"))
+                .help(match &b.upstream {
+                    Some(up) => format!("Push: send your commits to {up}"),
+                    None => "Push: publish this branch to the remote".into(),
+                })
                 .disabled(busy.is_some() || remote)
                 .on_press(push)
                 .build(k)
@@ -664,7 +672,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         )
         .child(ui::selected(
             s,
-            ui::ibtn(&icons::GIT_COMPARE, "Side by side")
+            ui::ibtn(&icons::GIT_COMPARE, "Side-by-side diff")
                 .on_press(|s: &mut State| {
                     if let Some(x) = side_mut(s) {
                         x.changes.split = !x.changes.split;
@@ -701,7 +709,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(super::busy::refresh(
             k,
             "changes-refresh",
-            "Refresh changes",
+            "Refresh: re-read the working tree",
             state.loading,
             refresh,
         ));
@@ -753,6 +761,19 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         );
     }
 
+    // A clean working tree has nothing to commit or diff: one card says so
+    // and where the branch stands, instead of an idle commit box over an
+    // empty pane.
+    let diff_empty = state.diff.as_ref().is_none_or(|d| d.files().is_empty());
+    if scope == Scope::Working
+        && state.changes.is_empty()
+        && state.diff.is_some()
+        && diff_empty
+        && state.comments.is_empty()
+    {
+        return col.child(clean_card(s, b));
+    }
+
     // Commit box and file list (working tree only).
     if scope == Scope::Working {
         let staged = state.changes.iter().any(git::Change::staged);
@@ -800,7 +821,6 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     }
 
     // The diff.
-    let diff_empty = state.diff.as_ref().is_none_or(|d| d.files().is_empty());
     let body = match &state.diff {
         Some(_) if diff_empty => ui::empty(
             s,
@@ -828,6 +848,32 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         );
     }
     col
+}
+
+/// The clean working tree's card: nothing to commit, and how the branch
+/// stands against its upstream.
+fn clean_card(s: &State, b: &git::Branch) -> El {
+    let plural = |n: u32| if n == 1 { "" } else { "s" };
+    let why = match (&b.upstream, b.ahead, b.behind) {
+        (None, _, _) => format!(
+            "Nothing to commit. {} has no upstream yet; Push publishes it.",
+            b.name
+        ),
+        (Some(up), 0, 0) => format!("Nothing to commit. {} is up to date with {up}.", b.name),
+        (Some(up), a, 0) => format!(
+            "Nothing to commit. {a} commit{} waiting to push to {up}.",
+            plural(a)
+        ),
+        (Some(up), 0, d) => format!(
+            "Nothing to commit. {d} new commit{} to pull from {up}.",
+            plural(d)
+        ),
+        (Some(up), a, d) => format!(
+            "Nothing to commit. {a} commit{} to push and {d} to pull from {up}.",
+            plural(a)
+        ),
+    };
+    ui::empty_card(s, &icons::CHECK, "Working tree clean", why, None).key("changes-clean")
 }
 
 /// The bar of comments waiting to be sent: how many, Clear, Add to message.

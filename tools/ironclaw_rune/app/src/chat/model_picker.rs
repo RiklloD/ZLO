@@ -100,6 +100,9 @@ pub struct ModelPickerState {
     /// The thinking slider's handle while it is dragged, as a fraction of
     /// the track; the level is picked when the drag ends.
     pub(crate) thinking_drag: Option<f32>,
+    /// The level a thinking drag let go on, picked by [`poll`] in the next
+    /// frame (`Some(None)`: Auto).
+    pub(crate) thinking_release: Option<Option<String>>,
     /// Bumped by every preference read and edit: only the latest one's
     /// answer may replace `prefs`, so a slow read never brings back a model
     /// hidden since.
@@ -521,6 +524,39 @@ pub fn set_profile(s: &mut State, slot: Slot, profile_id: String) {
             }
         },
     );
+}
+
+/// Picks the level a thinking drag let go on, a frame after the release.
+/// Rune lands a whole frame at once when any of its input was a drag's
+/// move, and a pointer's last move and its release usually share a frame:
+/// picked there, the composer pill's level would cut instead of rolling
+/// (as a model pick's name does). Its own commit, which asks for motion,
+/// lets the label roll and the knob settle. True when anything changed.
+pub fn poll(s: &mut State, tx: &mut rune::Tx) -> bool {
+    let mut slots: Vec<Slot> = s.chat.iter().map(|c| Slot::chat(&c.thread_id)).collect();
+    slots.extend(
+        crate::chat::side::side_chat_ids(s)
+            .iter()
+            .map(|id| Slot::chat(id)),
+    );
+    slots.push(DRAFT);
+    slots.push(crate::pages::automations::form::FORM_PICKER);
+    let mut changed = false;
+    for slot in slots {
+        let Some(level) = slot.get_mut(s).and_then(|m| m.thinking_release.take()) else {
+            continue;
+        };
+        tx.animated();
+        changed = true;
+        if let Some(m) = slot.get_mut(s) {
+            m.thinking_drag = None;
+            if level == m.effort {
+                continue;
+            }
+        }
+        pick_effort(s, slot, level);
+    }
+    changed
 }
 
 pub(crate) fn pick_effort(s: &mut State, slot: Slot, effort: Option<String>) {

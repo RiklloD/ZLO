@@ -72,6 +72,11 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
         .h_full()
         .min_h(0.)
         .child(main);
+    // An expanded dock takes the conversation's room: the column shrinks to
+    // nothing under a clip, so nothing squeezed spills out beside it.
+    if super::side::expanded(s).is_some() {
+        conversation = conversation.clip_rounded(0.);
+    }
     if let Some(over) = crate::design::look::wallpaper_layer(s, "conversation") {
         conversation = conversation.child(up_to_panel_top(over));
     }

@@ -364,7 +364,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             format!("Commands run in {folder} with your login shell.")
         };
         let presets = ["git status", "git log --oneline -5", "ls -la"];
-        let mut chips = row().w_full().wrap().gap(6.);
+        let mut chips = row().w_full().flex_wrap().gap(6.);
         for (ix, cmd) in presets.into_iter().enumerate() {
             chips = chips.child(
                 row()

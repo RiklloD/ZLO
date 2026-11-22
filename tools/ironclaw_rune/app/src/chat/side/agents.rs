@@ -70,32 +70,14 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     tasks.sort_by_key(|t| (!t.status.is_live(), -t.created_at));
     let mut list = col().w_full().pt(4.);
     if tasks.is_empty() {
-        let can_fork = !bridge::rows(s).is_empty();
-        let quick = can_fork.then(|| {
-            row()
-                .w_full()
-                .gap(8.)
-                .child(
-                    ui::outline("New side chat")
-                        .icon(&icons::MESSAGES_SQUARE)
-                        .on_press(super::session::new_side_chat)
-                        .build(k)
-                        .key("agents-empty-side-chat"),
-                )
-                .child(
-                    ui::btn("Fork thread")
-                        .icon(&icons::GIT_FORK)
-                        .on_press(bridge::fork)
-                        .build(k)
-                        .key("agents-empty-fork"),
-                )
-        });
         list = list.child(ui::empty_card(
             s,
             &icons::BOT,
             "No subagents yet",
+            // Forking lives on the dock's title row (`actions`); side chats
+            // open from their own place, not here.
             "Delegated agents and conversation forks show up here with live status and summaries.",
-            quick,
+            None,
         ));
     }
     for task in tasks {

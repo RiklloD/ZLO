@@ -36,7 +36,8 @@
 //!   `side::new_side_chat(s)` (⌥⌘N). Off the chat page the toggles only flip
 //!   the preference. Call `side::dock_slide(s, tx)` first so the docks
 //!   slide on `panels::REVEAL`.
-//! - `side::dock_widths(s, viewport)` for the wallpaper's conversation area.
+//! - `side::dock_widths(s, viewport, chat)` for the wallpaper's conversation area.
+//! - `side::expanded(s)`: the dock expanded over the conversation, if any.
 //! - `main.rs`: `native_view::poll` in `poll`, `native_view::on_window` on
 //!   the `App`; the root view calls `native_view::cover` on every run (see
 //!   `native_view.rs` for when the previews are reconciled).
@@ -81,14 +82,12 @@ pub(crate) use details::{
     ITEMS as DETAILS_ITEMS, left_closes_menu as details_left_closes_menu,
     set_item as set_details_item, visibility as details_visibility,
 };
-pub use dock::{docks, titlebar_actions};
+pub use dock::{docks, expanded, titlebar_actions};
 pub use session::new_side_chat;
 
 pub(crate) const WIDTH_MIN: f32 = 260.;
 pub(crate) const WIDTH_MAX: f32 = 900.;
 pub(crate) const WIDTH_DEFAULT: f32 = 380.;
-/// The expanded column, as a share of the window (MonoCode's "maximize").
-pub(crate) const WIDE_SHARE: f32 = 0.62;
 /// Room the conversation and the sidebar keep when the docks are sized.
 pub(crate) const KEEP: f32 = 360. + 240.;
 /// Native views wait this long after their dock opens, so they don't float
@@ -330,7 +329,8 @@ pub struct SideState {
     folder_gen: Generation,
     /// The dock whose inner edge is dragged, and its live width.
     drag: Option<(Dock, f32)>,
-    /// Each dock widened to [`WIDE_SHARE`], by [`Dock::ix`].
+    /// Each dock expanded over the conversation (`dock::expanded`), by
+    /// [`Dock::ix`]. Expanding one clears the other.
     wide: [bool; 2],
     /// When each dock last opened, slid or resized (not by a drag), for
     /// native views to wait out the motion ([`NATIVE_SETTLE`]).

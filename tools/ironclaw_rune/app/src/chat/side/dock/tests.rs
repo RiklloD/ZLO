@@ -297,7 +297,7 @@ fn a_dock_slides_on_the_reveal_spring() {
         rt.state.workspace.sidebar_slid.get(),
         "follow-ups wait for the view"
     );
-    let full = super::width(&rt.state, Dock::Side, 1440.);
+    let full = super::width(&rt.state, Dock::Side, 1440., 1440. - 240.);
     let mut seen = Vec::new();
     for _ in 0..12 {
         rt.frame(1. / 60.);
@@ -330,7 +330,7 @@ fn a_dock_slides_on_the_reveal_spring() {
 fn the_close_hold_covers_the_reveal_slide() {
     let hold = super::close_hold();
     assert!((0.2..0.5).contains(&hold), "{hold}");
-    let widest = 2560. * super::WIDE_SHARE;
+    let widest = super::WIDEST;
     let left = widest * (1. - panels::REVEAL.sample(0., 0., 1., hold as f32).0);
     assert!(left.abs() <= 0.5, "within half a point of shut: {left}");
 }
@@ -418,4 +418,64 @@ fn a_closed_dock_is_drawn_until_its_clip_has_shut() {
         dock_drawn(&rt.state, Dock::Side),
         "a reopen restarts the hold"
     );
+}
+
+/// The widen button expands its dock over the whole conversation, composer
+/// included: beside the open right pane it takes everything else, alone it
+/// takes the right pane's room too, and the toggles stay in the window.
+/// Pressing it again restores the saved width.
+#[test]
+fn an_expanded_dock_covers_the_conversation() {
+    let mut s = crate::chat::fixtures::test_state();
+    crate::scenes::chat(&mut s);
+    s.prefs.work_open = true;
+    s.prefs.side_open = true;
+    let mut rt = Runtime::new(s, crate::view, (1440., 900.), Env::new(true, 1.));
+    let mut t = 0.;
+    let mut run = |rt: &mut Runtime<State>, frames: usize| {
+        for _ in 0..frames {
+            t += 1. / 60.;
+            rt.frame(1. / 60.);
+            rt.update(|s, tx| {
+                poll(s, t, tx);
+            });
+        }
+    };
+    let press = |rt: &mut Runtime<State>, key: &str| {
+        let (r, _) = rt.presented(key).expect(key);
+        let (x, y) = (r[0] + r[2] / 2., r[1] + r[3] / 2.);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+    };
+    let w = |rt: &Runtime<State>, key: &str| rt.presented(key).expect(key).0[2];
+    run(&mut rt, 90);
+    let normal = w(&rt, "side-work-dock");
+    let root = w(&rt, "chat-root");
+
+    press(&mut rt, "side-work-wide");
+    run(&mut rt, 90);
+    let side = w(&rt, "side-side-dock");
+    assert!(
+        (w(&rt, "side-work-dock") - (root - side)).abs() <= 1.,
+        "the work panel takes all but the right pane"
+    );
+    assert!(w(&rt, "conversation") <= 1., "the conversation is covered");
+    let (capsule, _) = rt.presented("side-titlebar").expect("toggles");
+    assert!(
+        capsule[0] + capsule[2] <= 1440.5,
+        "toggles inside: {capsule:?}"
+    );
+
+    rt.update(|s, _| toggle_right_pane(s));
+    run(&mut rt, 90);
+    assert!(
+        (w(&rt, "side-work-dock") - root).abs() <= 1.,
+        "with the right pane shut it takes that room too"
+    );
+
+    press(&mut rt, "side-work-wide");
+    run(&mut rt, 90);
+    assert!((w(&rt, "side-work-dock") - normal).abs() <= 1., "restored");
+    assert!(w(&rt, "conversation") > 300., "the conversation is back");
 }

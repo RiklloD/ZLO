@@ -11,6 +11,9 @@ use crate::design::{panels, styles::Style};
 use crate::icons;
 use crate::state::State;
 
+/// The toolbar's two slot gaps (leading, spacer, trailing: `rune_kit::Toolbar`).
+const TOOLBAR_GAPS: f32 = 16.;
+
 /// The thread's end of the window titlebar. Its three toggles (the session
 /// card, the work panel, the right pane) sit inside one framed glass capsule at
 /// the window's top right and never move: opening or closing a column leaves
@@ -20,9 +23,24 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
     let p = &s.palette;
     let viewport = viewport(cx);
     let window_h = cx.window_layout("window").map_or(820., |r| r[3]);
-    let (sw, ww) = dock_widths(s, viewport);
+    let chat = chat_room(cx, viewport);
+    let (sw, ww) = dock_widths(s, viewport, chat);
     // The block spans both columns, and always has room for the toggles.
-    let block = (ww + sw).max(CLUSTER);
+    let mut block = (ww + sw).max(CLUSTER);
+    // Expanded, the columns span the conversation's whole titlebar, but the
+    // toolbar's leading padding and its slots' gaps stay: the block fits what
+    // is left right of the (folded) breadcrumb, so the toggles stay inside.
+    if expanded(s).is_some()
+        && let (Some(band), Some(crumbs)) =
+            (cx.window_layout("toolbar"), cx.window_layout("breadcrumb"))
+    {
+        // The thread's own buttons (screen share) sit left of the block.
+        let thread = cx
+            .window_layout("side-titlebar-thread")
+            .map_or(4., |r| r[2]);
+        let room = band[0] + band[2] - crumbs[0] - TOOLBAR_GAPS - thread;
+        block = block.min(room.max(CLUSTER));
+    }
     let mut thread = row()
         .key("side-titlebar-thread")
         .gap(TAB_GAP)
@@ -132,8 +150,8 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         );
 
     // The headers' widths open, for the strips still drawn while they shut.
-    let sw_open = width(s, Dock::Side, viewport);
-    let ww_open = width(s, Dock::Work, viewport);
+    let sw_open = width(s, Dock::Side, viewport, chat);
+    let ww_open = width(s, Dock::Work, viewport, chat);
     // The work panel's strip ends at the right pane, or at the toggles when
     // it is the column at the window's edge.
     let (work_right, work_room) = if sw > 0. {
@@ -141,6 +159,10 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
     } else {
         (CLUSTER, CLUSTER)
     };
+    // What the cap above took off the columns comes off the leftmost
+    // strip, so its context starts inside the block, not under its clip.
+    let cut = (ww + sw - block).max(0.);
+    let (work_cut, side_cut) = if ww > 0. { (cut, 0.) } else { (0., cut) };
     let strip = el()
         .key("side-titlebar-block")
         .h_full()
@@ -153,16 +175,16 @@ pub fn titlebar_actions(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
             k,
             Dock::Work,
             work_right,
-            (ww - work_room).max(0.),
-            (ww_open - work_room).max(0.),
+            (ww - work_room - work_cut).max(0.),
+            (ww_open - work_room - work_cut).max(0.),
         ))
         .child(super::header::header(
             s,
             k,
             Dock::Side,
             CLUSTER,
-            (sw - CLUSTER).max(0.),
-            (sw_open - CLUSTER).max(0.),
+            (sw - CLUSTER - side_cut).max(0.),
+            (sw_open - CLUSTER - side_cut).max(0.),
         ))
         .child(toggles);
     row()

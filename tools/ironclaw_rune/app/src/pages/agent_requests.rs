@@ -157,7 +157,7 @@ fn card(s: &State, k: &Kit, r: &AgentRequestView) -> El {
                 ).wrap());
             // Already-linked computers: one click.
             if let Some(Ok(links)) = &s.remote.linked.links {
-                let mut picks = row().gap(6.).wrap();
+                let mut picks = row().gap(6.).flex_wrap();
                 for l in links.iter().filter(|l| !l.revoked) {
                     let (rid, env) = (id.clone(), l.environment_id.clone());
                     let preselected = environment_id.as_deref() == Some(l.environment_id.as_str())
