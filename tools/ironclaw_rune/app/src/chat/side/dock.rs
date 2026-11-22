@@ -309,7 +309,10 @@ fn edge(s: &State, dock: Dock, w: f32, dragging: bool, viewport: f32, chat: f32)
             match d.phase {
                 Phase::Down => {
                     if let Some(x) = side_mut(s) {
-                        x.wide[dock.ix()] = false;
+                        // Resizing leaves expanded mode, either dock's: an
+                        // expanded neighbour leaves no conversation to
+                        // resize against.
+                        x.wide = [false; 2];
                         x.drag = Some((dock, w));
                     }
                 }

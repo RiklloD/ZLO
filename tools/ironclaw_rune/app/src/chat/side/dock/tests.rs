@@ -478,4 +478,31 @@ fn an_expanded_dock_covers_the_conversation() {
     run(&mut rt, 90);
     assert!((w(&rt, "side-work-dock") - normal).abs() <= 1., "restored");
     assert!(w(&rt, "conversation") > 300., "the conversation is back");
+
+    // With the right pane expanded beside it, dragging the work panel's
+    // edge leaves expanded mode and resizes from the normal layout,
+    // instead of pinning the panel at its minimum.
+    rt.update(|s, _| toggle_right_pane(s));
+    run(&mut rt, 90);
+    press(&mut rt, "side-side-wide");
+    run(&mut rt, 90);
+    assert!(w(&rt, "conversation") <= 1., "the right pane is expanded");
+    let (edge, _) = rt.presented("side-work-edge").expect("edge");
+    let (x, y) = (edge[0] + edge[2] / 2., edge[1] + edge[3] / 2.);
+    rt.pointer_move(x, y);
+    rt.pointer_down(x, y);
+    run(&mut rt, 1);
+    rt.pointer_move(x - 60., y);
+    run(&mut rt, 1);
+    rt.pointer_up(x - 60., y);
+    run(&mut rt, 90);
+    assert!(
+        super::super::expanded(&rt.state).is_none(),
+        "the drag restores"
+    );
+    assert!(
+        w(&rt, "side-work-dock") > normal + 30.,
+        "the work panel grows with the drag: {} vs {normal}",
+        w(&rt, "side-work-dock")
+    );
 }
