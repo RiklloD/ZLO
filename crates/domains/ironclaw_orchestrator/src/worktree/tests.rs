@@ -990,6 +990,26 @@ async fn a_user_thread_can_start_in_a_new_worktree() {
     );
 }
 
+/// A user thread's new worktree starts from the repository's default
+/// branch, not from whatever branch the shared checkout is on: each thread
+/// picks its own branch, and a new one starts clean on `main`.
+#[tokio::test]
+async fn a_user_thread_worktree_starts_from_the_default_branch() {
+    let r = repo(true).await;
+    let main = sh(&r.repo, "git rev-parse main");
+    sh(&r.repo, "git checkout -q -b feat/side");
+    std::fs::write(r.repo.join("side.txt"), "side\n").unwrap();
+    commit_all(&r.repo, "side work");
+    let parent = ThreadId::new("parent").unwrap();
+    let thread = r.engine.store().thread(&parent).await.unwrap().unwrap();
+    let view = r.engine.start_worktree(&thread, None).await.unwrap();
+    let path = PathBuf::from(view["path"].as_str().unwrap());
+    assert_eq!(sh(&path, "git rev-parse HEAD"), main);
+    assert!(!path.join("side.txt").exists());
+    // The shared checkout keeps its own branch.
+    assert_eq!(sh(&r.repo, "git branch --show-current"), "feat/side");
+}
+
 /// Orchestration git never reaches the network: a blobless clone whose
 /// promisor remote would run a transport program (here a repo-local
 /// `core.sshCommand` leaving a marker) fails closed on the missing objects.

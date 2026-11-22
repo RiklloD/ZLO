@@ -43,11 +43,21 @@ impl Submission {
         files: Vec<StagedFile>,
         origin: Origin,
     ) -> Self {
-        let worktree_dir = s
-            .prefs
-            .last_project
-            .clone()
-            .map(|p| p.to_string_lossy().into_owned());
+        // A profile with its own git folder branches from that folder (the
+        // backend's default); others from the last project folder used.
+        let profile_is_git = s
+            .workspace
+            .inbox
+            .profile(&draft.profile)
+            .is_some_and(|p| p.git_branch.is_some());
+        let worktree_dir = if profile_is_git {
+            None
+        } else {
+            s.prefs
+                .last_project
+                .clone()
+                .map(|p| p.to_string_lossy().into_owned())
+        };
         Self {
             origin,
             content,
@@ -56,7 +66,7 @@ impl Submission {
             profile: draft.profile.clone(),
             pick: crate::chat::model_picker::pending(&draft.picker),
             effort: crate::chat::model_picker::pending_effort(&draft.picker),
-            worktree: draft.worktree.then_some(worktree_dir),
+            worktree: super::in_worktree(s, draft).then_some(worktree_dir),
         }
     }
 

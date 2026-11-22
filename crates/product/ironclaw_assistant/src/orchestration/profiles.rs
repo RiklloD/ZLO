@@ -85,9 +85,25 @@ impl ProfileHome {
     }
 }
 
-/// Current branch of a git checkout (short sha when detached).
+/// Current branch of the git checkout `folder` is in (short sha when
+/// detached): the nearest `.git` at or above it, either a directory or a
+/// linked worktree's `gitdir:` file.
 fn git_branch(folder: &Path) -> Option<String> {
-    let head = std::fs::read_to_string(folder.join(".git/HEAD")).ok()?; // silent-ok: not a git repo is the common case
+    let dot_git = folder
+        .ancestors()
+        .map(|dir| dir.join(".git"))
+        .find(|candidate| candidate.exists())?; // silent-ok: not a git repo is the common case
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let pointer = std::fs::read_to_string(&dot_git).ok()?; // silent-ok: an unreadable `.git` file reads as no branch
+        let target = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
+        match dot_git.parent() {
+            Some(base) if target.is_relative() => base.join(target),
+            _ => target,
+        }
+    };
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?; // silent-ok: not a git repo is the common case
     let head = head.trim();
     match head.strip_prefix("ref: refs/heads/") {
         Some(branch) => Some(branch.to_string()),
@@ -666,6 +682,37 @@ impl ironclaw_supermemory::SupermemoryBindingSource for ProfileSupermemoryBindin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A profile folder inside a git checkout reports its branch whether it
+    /// is the checkout's root, a subfolder of it, or a linked worktree
+    /// (whose `.git` is a file naming its git dir).
+    #[test]
+    fn git_branch_reads_subfolders_and_linked_worktrees() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/feat/x\n").unwrap();
+        assert_eq!(git_branch(&repo).as_deref(), Some("feat/x"));
+        let sub = repo.join("app/src");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(git_branch(&sub).as_deref(), Some("feat/x"));
+        let linked_git = repo.join(".git/worktrees/wt");
+        std::fs::create_dir_all(&linked_git).unwrap();
+        std::fs::write(linked_git.join("HEAD"), "ref: refs/heads/zlo/wt\n").unwrap();
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}\n", linked_git.display()),
+        )
+        .unwrap();
+        assert_eq!(git_branch(&wt).as_deref(), Some("zlo/wt"));
+        let plain = dir.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        // `dir` itself is not a checkout, so a folder outside `repo` has none
+        // (unless the temp dir sits inside one, which it does not).
+        assert_eq!(git_branch(&plain), None);
+    }
 
     struct NoIdentityFiles;
 
