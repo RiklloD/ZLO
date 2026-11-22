@@ -618,7 +618,7 @@ async fn instruction_bundle_builder_orders_sections_and_rebuilds_deterministical
         first.messages[7]
             .content_ref
             .as_str()
-            .starts_with("msg:surface.surface-v1.")
+            .starts_with("msg:surface.capability-policy.")
     );
     assert_eq!(first.messages[8].content_ref.as_str(), "msg:user-message");
     // Turn-dependent recalled memory follows the persisted transcript. Its
@@ -700,10 +700,13 @@ fn prompt_capability_descriptor(
     }
 }
 
-/// Regression for the production Attio incident: signature-verified catalog
-/// descriptions may document auth vocabulary without being redacted or dropped.
+/// Regression for the production Attio incident: a signature-verified catalog
+/// description documenting auth vocabulary must not deny prompt construction.
+/// The description reaches the model through native tool definitions only —
+/// the leading system run carries the static capability policy, never a
+/// duplicate (cache-busting) per-capability description dump.
 #[tokio::test]
-async fn instruction_bundle_preserves_verified_catalog_description_intact() {
+async fn instruction_bundle_accepts_verified_catalog_description_without_duplicating_it() {
     let description = concat!(
         "Authenticated with an Attio workspace API key presented as a Bearer header ",
         "against api.attio.com."
@@ -719,16 +722,18 @@ async fn instruction_bundle_preserves_verified_catalog_description_intact() {
     let prompt = bundle
         .materialized_messages
         .iter()
-        .find(|message| message.model_content.contains("Capabilities:"))
-        .expect("capability surface reaches the model");
-    assert!(prompt.model_content.contains(description));
-    assert!(prompt.model_content.contains("Bearer"));
+        .find(|message| message.model_content.starts_with("Capability policy:"))
+        .expect("capability policy reaches the model");
+    assert!(!prompt.model_content.contains(description));
+    assert!(!prompt.model_content.contains("attio.invoke"));
 }
 
-/// Credential content does not remove an otherwise valid capability. The final
-/// provider-bound pass owns secret redaction independent of description trust.
+/// Credential content in a description does not deny prompt construction or
+/// emit rejection logs, and never lands in the system prompt: descriptions
+/// travel only in native tool definitions, where the final provider-bound pass
+/// owns secret redaction independent of description trust.
 #[tokio::test]
-async fn instruction_bundle_preserves_untrusted_description_for_final_redaction() {
+async fn instruction_bundle_keeps_untrusted_descriptions_out_of_the_system_prompt() {
     let credential_description = "API key: sk-live-value-123456";
     let context = claimed_run_context().await;
     let logs = SharedLogWriter::default();
@@ -757,16 +762,27 @@ async fn instruction_bundle_preserves_untrusted_description_for_final_redaction(
     let prompt = bundle
         .materialized_messages
         .iter()
-        .find(|message| message.model_content.contains("Capabilities:"))
-        .expect("capability surface reaches the model");
-    assert!(prompt.model_content.contains("healthy.invoke"));
+        .find(|message| message.model_content.starts_with("Capability policy:"))
+        .expect("capability policy reaches the model");
+    for leaked in [
+        "healthy.invoke",
+        "Healthy capability remains available",
+        "unsafe.invoke",
+        credential_description,
+    ] {
+        assert!(
+            bundle
+                .materialized_messages
+                .iter()
+                .all(|message| !message.model_content.contains(leaked)),
+            "descriptor data {leaked:?} must not be duplicated into prompt text"
+        );
+    }
     assert!(
         prompt
             .model_content
-            .contains("Healthy capability remains available")
+            .contains("Use only visible capabilities.")
     );
-    assert!(prompt.model_content.contains("unsafe.invoke"));
-    assert!(prompt.model_content.contains(credential_description));
 
     let logs = logs.contents();
     assert!(
@@ -1948,12 +1964,15 @@ async fn loop_prompt_port_filters_visible_surface_by_capability_view() {
             store
                 .get_materialized_message(&host.context, &message.content_ref)
                 .unwrap()
-                .filter(|materialized| materialized.model_content.starts_with("surface "))
+                .filter(|materialized| materialized.model_content.starts_with("Capability policy:"))
         })
-        .expect("surface instruction materialized");
+        .expect("capability policy materialized for a non-empty visible surface");
 
-    assert!(surface_message.model_content.contains("demo.echo"));
+    // The surface version and descriptors ride native tool definitions; the
+    // policy text names neither visible nor filtered capabilities.
+    assert!(!surface_message.model_content.contains("demo.echo"));
     assert!(!surface_message.model_content.contains("demo.hidden"));
+    assert!(!surface_message.model_content.contains("surface-v1"));
 }
 
 #[tokio::test]
@@ -2544,7 +2563,7 @@ async fn loop_prompt_port_materializes_memory_surface_and_safety_as_host_owned_r
         message
             .content_ref
             .as_str()
-            .starts_with("msg:surface.surface-v1.")
+            .starts_with("msg:surface.capability-policy.")
     }));
     let surface_message = bundle
         .messages
@@ -2553,7 +2572,7 @@ async fn loop_prompt_port_materializes_memory_surface_and_safety_as_host_owned_r
             message
                 .content_ref
                 .as_str()
-                .starts_with("msg:surface.surface-v1.")
+                .starts_with("msg:surface.capability-policy.")
         })
         .expect("surface message should be present");
     let surface_materialized = materialization_store
@@ -2563,14 +2582,14 @@ async fn loop_prompt_port_materializes_memory_surface_and_safety_as_host_owned_r
     assert!(
         surface_materialized
             .model_content
-            .contains("\nPolicy:\nUse only visible capabilities."),
+            .starts_with("Capability policy:\nUse only visible capabilities."),
         "surface prompt must render the capability policy separately: {:?}",
         surface_materialized.model_content
     );
     assert!(
         surface_materialized
             .model_content
-            .contains("not listed under Capabilities"),
+            .contains("neither defined nor found by `tool_search`"),
         "surface prompt must tell the model to refuse unavailable named capabilities: {:?}",
         surface_materialized.model_content
     );
@@ -2588,27 +2607,18 @@ async fn loop_prompt_port_materializes_memory_surface_and_safety_as_host_owned_r
         "surface prompt must distinguish startup context from live provider evidence: {:?}",
         surface_materialized.model_content
     );
-    assert!(
-        surface_materialized
-            .model_content
-            .contains("\nCapabilities:\n- id: demo.echo"),
-        "surface prompt must render capability descriptors under a stable header: {:?}",
-        surface_materialized.model_content
-    );
-    assert!(
-        surface_materialized
-            .model_content
-            .contains("\n  name: Echo"),
-        "surface prompt must render capability names as labeled fields: {:?}",
-        surface_materialized.model_content
-    );
-    assert!(
-        surface_materialized
-            .model_content
-            .contains("\n  description: Echo safe input"),
-        "surface prompt must render capability descriptions as labeled fields: {:?}",
-        surface_materialized.model_content
-    );
+    for duplicated in [
+        "surface-v1",
+        "Capabilities:",
+        "demo.echo",
+        "Echo safe input",
+    ] {
+        assert!(
+            !surface_materialized.model_content.contains(duplicated),
+            "the capability policy must not duplicate surface data {duplicated:?}: {:?}",
+            surface_materialized.model_content
+        );
+    }
     assert!(bundle.instruction_fingerprint.is_some());
     assert_eq!(host.effects(), vec!["context"]);
     assert_eq!(host.milestone_kind_names(), vec!["prompt_bundle_built"]);

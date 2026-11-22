@@ -9,40 +9,16 @@ pub(super) enum PromptTextSurface {
     SafeSummary,
     GenericModelContent,
     TrustedSkillInstruction,
-    VerifiedCatalogDescription,
 }
 
 impl PromptTextSurface {
     const fn max_bytes(self) -> usize {
         match self {
-            Self::SafeSummary | Self::VerifiedCatalogDescription => MODEL_SAFE_SUMMARY_MAX_BYTES,
+            Self::SafeSummary => MODEL_SAFE_SUMMARY_MAX_BYTES,
             Self::GenericModelContent | Self::TrustedSkillInstruction => {
                 LOOP_CONTEXT_SNIPPET_MODEL_CONTENT_MAX_BYTES
             }
         }
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct PromptTextValidationError {
-    host_error: Box<AgentLoopHostError>,
-}
-
-impl PromptTextValidationError {
-    pub(super) fn host_error(&self) -> &AgentLoopHostError {
-        &self.host_error
-    }
-
-    fn structural(host_error: AgentLoopHostError) -> Self {
-        Self {
-            host_error: Box::new(host_error),
-        }
-    }
-}
-
-impl From<PromptTextValidationError> for AgentLoopHostError {
-    fn from(error: PromptTextValidationError) -> Self {
-        *error.host_error
     }
 }
 
@@ -58,35 +34,23 @@ pub(super) fn validate_prompt_text(
     label: &'static str,
     surface: PromptTextSurface,
 ) -> Result<String, AgentLoopHostError> {
-    validate_prompt_text_with_diagnostics(value, label, surface).map_err(Into::into)
-}
-
-pub(super) fn validate_prompt_text_with_diagnostics(
-    value: String,
-    label: &'static str,
-    surface: PromptTextSurface,
-) -> Result<String, PromptTextValidationError> {
     // Structural and framing limits apply on every surface, even trusted skill
     // content: empty/oversize content and control characters (NUL/ESC/BEL,
     // which can corrupt prompt/log/terminal framing) are not the false-positive
     // class #5169 relaxes, so they are always rejected.
     if value.is_empty() || value.len() > surface.max_bytes() {
-        return Err(PromptTextValidationError::structural(
-            AgentLoopHostError::new(
-                AgentLoopHostErrorKind::PolicyDenied,
-                format!("{label} is not model-safe"),
-            ),
+        return Err(AgentLoopHostError::new(
+            AgentLoopHostErrorKind::PolicyDenied,
+            format!("{label} is not model-safe"),
         ));
     }
     if value
         .chars()
         .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
     {
-        return Err(PromptTextValidationError::structural(
-            AgentLoopHostError::new(
-                AgentLoopHostErrorKind::PolicyDenied,
-                format!("{label} contains control characters"),
-            ),
+        return Err(AgentLoopHostError::new(
+            AgentLoopHostErrorKind::PolicyDenied,
+            format!("{label} contains control characters"),
         ));
     }
     Ok(value)
@@ -108,21 +72,12 @@ mod tests {
         "The upstream service returned invalid API key.",
     ];
 
-    #[test]
-    fn prompt_text_validation_error_stays_below_large_error_threshold() {
-        assert!(
-            std::mem::size_of::<PromptTextValidationError>() <= 128,
-            "prompt validation errors are returned by value and must stay below Clippy's large-error threshold"
-        );
-    }
-
     /// Credential handling belongs to the final model-input redaction boundary;
     /// prompt contracts enforce framing and size without rejecting the turn.
     #[test]
     fn every_surface_allows_credential_values_for_later_redaction() {
         for surface in [
             PromptTextSurface::TrustedSkillInstruction,
-            PromptTextSurface::VerifiedCatalogDescription,
             PromptTextSurface::GenericModelContent,
             PromptTextSurface::SafeSummary,
         ] {
@@ -160,7 +115,6 @@ mod tests {
     fn control_characters_are_rejected_on_all_surfaces() {
         for surface in [
             PromptTextSurface::TrustedSkillInstruction,
-            PromptTextSurface::VerifiedCatalogDescription,
             PromptTextSurface::GenericModelContent,
             PromptTextSurface::SafeSummary,
         ] {
@@ -177,12 +131,11 @@ mod tests {
     }
 
     /// Structural limits (empty, byte budget) apply to every surface, including
-    /// trusted skill and verified catalog content.
+    /// trusted skill content.
     #[test]
     fn structural_limits_apply_on_every_surface() {
         for surface in [
             PromptTextSurface::TrustedSkillInstruction,
-            PromptTextSurface::VerifiedCatalogDescription,
             PromptTextSurface::GenericModelContent,
             PromptTextSurface::SafeSummary,
         ] {
