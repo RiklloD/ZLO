@@ -59,8 +59,11 @@ use ironclaw_turns::HostManagedLoopPromptPort;
 use ironclaw_turns::{ModelInvalidOutputDetailReason as InvalidOutputReason, TurnId, TurnRunId};
 use tracing::debug;
 
+mod observation_masking;
 mod prompt_cache_activity;
 mod redaction;
+
+use observation_masking::{ObservationMaskingConfig, mask_old_tool_observations};
 
 use prompt_cache_activity::{
     ModelCallCacheUsage, PromptCacheActivityLog, PromptCacheCallScope,
@@ -407,6 +410,7 @@ where
     provider_turn_sequence: Arc<AtomicU64>,
     prompt_cache_activity: Arc<PromptCacheActivityLog>,
     model_context_window_cache: ModelContextWindowCache,
+    observation_masking: ObservationMaskingConfig,
 }
 
 impl<P> LlmProviderModelGateway<P>
@@ -430,11 +434,19 @@ where
             provider_turn_sequence: Arc::new(AtomicU64::new(1)),
             prompt_cache_activity: Arc::new(PromptCacheActivityLog::default()),
             model_context_window_cache: Arc::new(Mutex::new(HashMap::new())),
+            observation_masking: ObservationMaskingConfig::from_env(),
         }
     }
 
     fn prompt_cache_scope(&self, run_id: TurnRunId) -> PromptCacheCallScope {
         PromptCacheCallScope::new(Arc::clone(&self.prompt_cache_activity), run_id)
+    }
+
+    fn observation_masking_inputs(&self) -> ObservationMaskingInputs<'_> {
+        ObservationMaskingInputs {
+            config: &self.observation_masking,
+            context_window_cache: &self.model_context_window_cache,
+        }
     }
 }
 
@@ -519,7 +531,9 @@ where
                 &model_override,
                 request.fallback_index,
                 request.messages,
-            )?;
+                self.observation_masking_inputs(),
+            )
+            .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -577,7 +591,9 @@ where
                 &model_override,
                 request.fallback_index,
                 request.messages,
-            )?;
+                self.observation_masking_inputs(),
+            )
+            .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -635,7 +651,9 @@ where
                 &model_override,
                 request.fallback_index,
                 request.messages,
-            )?;
+                self.observation_masking_inputs(),
+            )
+            .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -698,7 +716,9 @@ where
                 &model_override,
                 request.fallback_index,
                 request.messages,
-            )?;
+                self.observation_masking_inputs(),
+            )
+            .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -838,6 +858,7 @@ where
     provider_turn_sequence: Arc<AtomicU64>,
     prompt_cache_activity: Arc<PromptCacheActivityLog>,
     model_context_window_cache: ModelContextWindowCache,
+    observation_masking: ObservationMaskingConfig,
 }
 
 impl<P> RoutedLlmProviderModelGateway<P>
@@ -851,11 +872,19 @@ where
             provider_turn_sequence: Arc::new(AtomicU64::new(1)),
             prompt_cache_activity: Arc::new(PromptCacheActivityLog::default()),
             model_context_window_cache: Arc::new(Mutex::new(HashMap::new())),
+            observation_masking: ObservationMaskingConfig::from_env(),
         }
     }
 
     fn prompt_cache_scope(&self, run_id: TurnRunId) -> PromptCacheCallScope {
         PromptCacheCallScope::new(Arc::clone(&self.prompt_cache_activity), run_id)
+    }
+
+    fn observation_masking_inputs(&self) -> ObservationMaskingInputs<'_> {
+        ObservationMaskingInputs {
+            config: &self.observation_masking,
+            context_window_cache: &self.model_context_window_cache,
+        }
     }
 }
 
@@ -920,7 +949,9 @@ where
                 snapshot.route().model_id(),
                 request.fallback_index,
                 request.messages,
-            )?;
+                self.observation_masking_inputs(),
+            )
+            .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -971,7 +1002,9 @@ where
                 snapshot.route().model_id(),
                 request.fallback_index,
                 request.messages,
-            )?;
+                self.observation_masking_inputs(),
+            )
+            .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -1022,7 +1055,9 @@ where
                 snapshot.route().model_id(),
                 request.fallback_index,
                 request.messages,
-            )?;
+                self.observation_masking_inputs(),
+            )
+            .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -1078,7 +1113,9 @@ where
                 snapshot.route().model_id(),
                 request.fallback_index,
                 request.messages,
-            )?;
+                self.observation_masking_inputs(),
+            )
+            .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -1294,12 +1331,21 @@ fn map_fallback_route_error(error: LlmError, fallback_index: u32) -> HostManaged
     map_provider_error(error)
 }
 
-fn prepare_fallback_completion<P>(
+/// Inputs for the tier-1 observation-masking pass (see
+/// `model_gateway/observation_masking.rs`) applied to every provider-bound
+/// conversation after conversion.
+struct ObservationMaskingInputs<'a> {
+    config: &'a ObservationMaskingConfig,
+    context_window_cache: &'a ModelContextWindowCache,
+}
+
+async fn prepare_fallback_completion<P>(
     provider: &P,
     provider_id: &str,
     requested_model: &str,
     fallback_index: u32,
     messages: Vec<HostManagedModelMessage>,
+    masking: ObservationMaskingInputs<'_>,
 ) -> Result<(CompletionRequest, ProviderReplayIdentity, u32, Option<u32>), HostManagedModelError>
 where
     P: LlmProvider + ?Sized,
@@ -1329,11 +1375,41 @@ where
     });
     let replay_identity = ProviderReplayIdentity::new(provider_id, &route.model)?;
     let native_tool_images = accepts_tool_result_images(&provider.provider_id());
-    let mut completion = CompletionRequest::new(convert_messages(
-        messages,
-        &replay_identity,
-        native_tool_images,
-    )?);
+    let result_refs = if masking.config.enabled {
+        observation_masking::tool_result_refs_by_call_id(&messages)
+    } else {
+        HashMap::new()
+    };
+    let mut converted = convert_messages(messages, &replay_identity, native_tool_images)?;
+    if masking.config.enabled {
+        // Prompt projection only: the durable transcript is never touched.
+        let context_window_tokens = cached_provider_context_window_tokens(
+            provider,
+            provider_id,
+            fallback_index,
+            requested_model,
+            &route.model,
+            masking.context_window_cache,
+        )
+        .await;
+        let report = mask_old_tool_observations(
+            &mut converted,
+            &result_refs,
+            context_window_tokens,
+            masking.config,
+        );
+        if report.masked_results > 0 {
+            debug!(
+                estimated_prompt_tokens = report.estimated_prompt_tokens,
+                watermark_tokens = report.watermark_tokens,
+                masked_tool_turns = report.masked_tool_turns,
+                masked_results = report.masked_results,
+                bytes_saved = report.bytes_saved,
+                "reborn model gateway masked old tool observations in the provider-bound prompt"
+            );
+        }
+    }
+    let mut completion = CompletionRequest::new(converted);
     completion.model = Some(route.model);
     completion.set_fallback_index(route.fallback_index);
     Ok((
@@ -4258,6 +4334,223 @@ mod tests {
             "detail": {"kind": "generic_failure", "failure_kind": "invalid_input"},
             "trust": "untrusted_tool_output",
         })
+    }
+
+    #[derive(Default)]
+    struct ContextWindowRecordingProvider {
+        context_length: u32,
+        requests: Mutex<Vec<CompletionRequest>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for ContextWindowRecordingProvider {
+        fn model_name(&self) -> &str {
+            "masking-recording-model"
+        }
+
+        fn cost_per_token(&self) -> (rust_decimal::Decimal, rust_decimal::Decimal) {
+            Default::default()
+        }
+
+        async fn model_metadata(&self) -> Result<ironclaw_llm::ModelMetadata, LlmError> {
+            Ok(ironclaw_llm::ModelMetadata {
+                id: self.model_name().to_string(),
+                context_length: Some(self.context_length),
+            })
+        }
+
+        async fn complete(
+            &self,
+            request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            self.requests
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(request);
+            Ok(CompletionResponse {
+                content: "done".to_string(),
+                input_tokens: 1,
+                output_tokens: 1,
+                finish_reason: FinishReason::Stop,
+                reasoning: None,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
+            })
+        }
+
+        async fn complete_with_tools(
+            &self,
+            _request: ToolCompletionRequest,
+        ) -> Result<ToolCompletionResponse, LlmError> {
+            unreachable!("the masking caller test has no tool surface")
+        }
+    }
+
+    const MASKING_PROVIDER_ID: &str = "masking-provider";
+
+    fn text_message(role: HostManagedModelMessageRole, content: &str) -> HostManagedModelMessage {
+        HostManagedModelMessage {
+            role,
+            content: content.to_string(),
+            content_ref: ironclaw_turns::LoopMessageRef::new(
+                "msg:11111111-1111-1111-1111-111111111111",
+            )
+            .expect("valid message ref"),
+            tool_result_provider_call: None,
+            tool_result_content: None,
+            image_parts: Vec::new(),
+        }
+    }
+
+    fn bulky_tool_result_message(turn: usize, preview: &str) -> HostManagedModelMessage {
+        let result_ref = format!("result:tool-output_{turn}.1");
+        let observation = serde_json::json!({
+            "schema_version": 1,
+            "status": "success",
+            "summary": "Tool completed; preview contains the full result.",
+            "detail": {
+                "kind": "result_reference",
+                "result_ref": result_ref,
+                "byte_len": preview.len(),
+                "preview": preview
+            },
+            "trust": "untrusted_tool_output"
+        });
+        let envelope = ironclaw_threads::ToolResultReferenceEnvelope::with_model_observation(
+            result_ref,
+            ironclaw_threads::ToolResultSafeSummary::new("read done").expect("safe summary"),
+            observation,
+        )
+        .expect("valid observation envelope");
+        let call: ironclaw_threads::ProviderToolCallReferenceEnvelope =
+            serde_json::from_value(serde_json::json!({
+                "provider_id": MASKING_PROVIDER_ID,
+                "provider_model_id": "masking-recording-model",
+                "provider_turn_id": format!("turn-{turn}"),
+                "provider_call_id": format!("call-{turn}"),
+                "provider_tool_name": "builtin__read_file",
+                "capability_id": "builtin.read_file",
+                "arguments": {"path": format!("src/file_{turn}.rs")}
+            }))
+            .expect("provider call");
+        HostManagedModelMessage {
+            tool_result_provider_call: Some(call),
+            tool_result_content: Some(HostManagedToolResultContent::Reference { envelope }),
+            ..text_message(HostManagedModelMessageRole::ToolResult, "read done")
+        }
+    }
+
+    fn masking_request(tool_turns: usize, preview: &str) -> HostManagedModelRequest {
+        let mut messages = vec![
+            text_message(HostManagedModelMessageRole::System, "system instructions"),
+            text_message(HostManagedModelMessageRole::User, "inspect the files"),
+        ];
+        messages.extend((0..tool_turns).map(|turn| bulky_tool_result_message(turn, preview)));
+        HostManagedModelRequest {
+            model_profile_id: ModelProfileId::new("interactive_model").expect("profile id"),
+            fallback_index: 0,
+            messages,
+            surface_version: None,
+            resolved_model_route: None,
+            run_id: TurnRunId::new(),
+            turn_id: TurnId::new(),
+            thread_id: None,
+            tool_choice: None,
+            response_format: None,
+        }
+    }
+
+    async fn provider_bound_messages(
+        context_length: u32,
+        request: HostManagedModelRequest,
+    ) -> Vec<ChatMessage> {
+        let provider = Arc::new(ContextWindowRecordingProvider {
+            context_length,
+            requests: Mutex::new(Vec::new()),
+        });
+        let policy = LlmModelProfilePolicy::new().allow_model_profile(
+            ModelProfileId::new("interactive_model").expect("profile id"),
+            None,
+        );
+        let mut gateway = LlmProviderModelGateway::with_provider_identity(
+            MASKING_PROVIDER_ID,
+            Arc::clone(&provider),
+            policy,
+        );
+        gateway.observation_masking = ObservationMaskingConfig::default();
+        gateway.stream_model(request).await.expect("model call");
+        let mut requests = provider
+            .requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(requests.len(), 1);
+        requests.remove(0).messages
+    }
+
+    #[tokio::test]
+    async fn gateway_masks_old_bulky_tool_results_only_in_the_provider_bound_prompt() {
+        let preview = "fn body() {}\n".repeat(220);
+        let request = masking_request(10, &preview);
+        let durable_messages = request.messages.clone();
+
+        // A 2k-token window puts ten ~800-token results far over 55%.
+        let sent = provider_bound_messages(2_000, request.clone()).await;
+
+        let tool_results = sent
+            .iter()
+            .filter(|message| message.role == Role::Tool)
+            .collect::<Vec<_>>();
+        assert_eq!(tool_results.len(), 10, "every call keeps its result");
+        // 10 tool turns, keep 4 → 6 eligible, quantized to 4 masked turns.
+        for (turn, message) in tool_results.iter().enumerate() {
+            assert_eq!(
+                message.tool_call_id.as_deref(),
+                Some(format!("call-{turn}").as_str())
+            );
+            if turn < 4 {
+                assert!(
+                    message.content.starts_with("[Cleared old tool output (")
+                        && message.content.contains("tool=\"builtin__read_file\"")
+                        && message.content.ends_with(&format!(
+                            "call result_read(result_ref=\"result:tool-output_{turn}.1\") to inspect]"
+                        )),
+                    "turn {turn} was not masked: {}",
+                    message.content
+                );
+                assert!(!message.content.contains("fn body"));
+            } else {
+                assert!(
+                    message.content.contains("fn body() {}"),
+                    "turn {turn} must stay verbatim"
+                );
+            }
+        }
+        // Each masked result still answers its own assistant tool call.
+        for (index, message) in sent.iter().enumerate() {
+            if message.role == Role::Tool {
+                let call = sent[..index]
+                    .iter()
+                    .rev()
+                    .find_map(|previous| previous.tool_calls.as_ref())
+                    .expect("preceding assistant tool call");
+                assert!(
+                    call.iter()
+                        .any(|call| Some(&call.id) == message.tool_call_id.as_ref())
+                );
+            }
+        }
+        // The durable transcript the caller holds is never rewritten.
+        assert_eq!(request.messages, durable_messages);
+
+        // Same history under a large window: nothing is masked.
+        let roomy = provider_bound_messages(1_000_000, request).await;
+        assert!(
+            roomy
+                .iter()
+                .filter(|message| message.role == Role::Tool)
+                .all(|message| message.content.contains("fn body() {}"))
+        );
     }
 
     #[test]
