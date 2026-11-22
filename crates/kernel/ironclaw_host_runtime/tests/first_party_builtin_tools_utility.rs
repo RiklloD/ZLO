@@ -131,6 +131,37 @@ async fn builtin_echo_preserves_null_string_in_required_field() {
 }
 
 #[tokio::test]
+async fn builtin_json_preserves_null_payloads_in_untyped_data() {
+    // `data` declares no type: `null` and the JSON text "null" are payloads,
+    // not optional-field sentinels, even though the flat json schema no longer
+    // lists `data` in any `required` set.
+    let parsed = invoke(
+        JSON_CAPABILITY_ID,
+        json!({"operation": "parse", "data": "null"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(parsed, Value::Null);
+    let stringified = invoke(
+        JSON_CAPABILITY_ID,
+        json!({"operation": "stringify", "data": null}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stringified, json!("null"));
+    // Typed optional sentinels are still dropped: `path` is a typed field, so
+    // a "null" placeholder on parse is treated as absent rather than tripping
+    // the inline-only field check.
+    let tolerated = invoke(
+        JSON_CAPABILITY_ID,
+        json!({"operation": "parse", "data": "[1]", "path": "null", "file_path": null}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(tolerated, json!([1]));
+}
+
+#[tokio::test]
 async fn builtin_coding_tools_tolerate_null_sentinels_in_optional_fields() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join("qa-builtins.md"), "Alpha\nBeta\nGamma\n").unwrap();

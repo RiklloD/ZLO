@@ -25,6 +25,16 @@ pub(super) fn resolve_required_path(
     resolve_path(request, required_str(request.input, field)?, operation)
 }
 
+/// Resolve an already-extracted path string (one entry of a batch read)
+/// through the same mount resolution and confinement as a `path` field.
+pub(super) fn resolve_path_str(
+    request: &CodingCapabilityRequest<'_>,
+    path: &str,
+    operation: FilesystemOperation,
+) -> Result<ResolvedPath, CodingCapabilityError> {
+    resolve_path(request, path, operation)
+}
+
 pub(super) fn resolve_optional_path(
     request: &CodingCapabilityRequest<'_>,
     operation: FilesystemOperation,

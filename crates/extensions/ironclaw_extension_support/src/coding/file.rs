@@ -3,6 +3,7 @@
 //! The v1 `Tool`/`JobContext`/local-filesystem boundary is replaced here with
 //! `CodingCapabilityRequest`, scoped mounts, and `RootFilesystem`.
 
+use futures_util::StreamExt;
 use ironclaw_filesystem::{FileType, FilesystemOperation};
 use ironclaw_host_api::dispatch::RuntimeDispatchErrorKind;
 use serde_json::{Value, json};
@@ -15,14 +16,15 @@ use super::{
         MAX_VISITED_ENTRIES, MAX_WRITE_SIZE,
     },
     diff_preview::{file_diff_preview, will_use_large_diff_path},
+    hashline::{LineHash, apply_anchored_edits},
     input_error,
     inputs::{optional_usize, required_str},
     operation_error_with_summary,
-    patch::{parse_apply_patch_input, replacement_error},
+    patch::{PatchEdits, anchored_edit_error, parse_apply_patch_input, replacement_error},
     paths::{
         create_parent_dir_unless_sensitive, filesystem_error, filesystem_error_with_summary,
         is_excluded_name, is_sensitive_scoped_path, is_workspace_path,
-        list_dir_empty_if_missing_root, operation_allowed, resolve_optional_path,
+        list_dir_empty_if_missing_root, operation_allowed, resolve_optional_path, resolve_path_str,
         resolve_required_path, safe_summary_path, scoped_child_path, stat_optional,
         virtual_to_relative,
     },
@@ -31,20 +33,149 @@ use super::{
         content_fingerprint, read_scope_key,
     },
     text::{
-        TextEdit, decode_text, decode_text_lossy, encode_text, previous_char_boundary,
-        reject_binary_probe, reject_binary_probe_lenient, replace_content,
+        ReplaceContentOutcome, TextEdit, decode_text, decode_text_lossy, encode_text,
+        previous_char_boundary, reject_binary_probe, reject_binary_probe_lenient, replace_content,
     },
     types::{ListEntry, MatchMethod, ResolvedPath},
 };
+
+/// Most files one batch `read_file` call may name.
+const MAX_BATCH_READ_PATHS: usize = 16;
+/// Output budget shared by every file of one batch read. Each file gets an
+/// equal share (capped at the single-read budget) fixed before any read
+/// starts, so concurrent reads cannot race for the budget and the total is
+/// bounded regardless of completion order.
+const BATCH_READ_TOTAL_MAX_BYTES: usize = 2 * DEFAULT_READ_MAX_BYTES;
+/// Batch reads in flight at once.
+const MAX_CONCURRENT_BATCH_READS: usize = 4;
+
+/// How one file's text is rendered into a `read_file` result.
+#[derive(Debug, Clone, Copy)]
+struct ReadRender {
+    offset: usize,
+    limit: Option<usize>,
+    hashline: bool,
+    max_bytes: usize,
+}
+
+impl ReadRender {
+    fn has_explicit_range(self) -> bool {
+        self.offset > 0 || self.limit.is_some()
+    }
+}
 
 pub(super) async fn read_file(
     request: &CodingCapabilityRequest<'_>,
     read_states: &SharedCodingReadStates,
 ) -> Result<Value, CodingCapabilityError> {
-    let resolved = resolve_required_path(request, "path", FilesystemOperation::ReadFile)?;
     let offset = optional_usize(request.input, "offset")?.unwrap_or(0);
     let limit = optional_usize(request.input, "limit")?;
-    let has_explicit_range = offset > 0 || limit.is_some();
+    let hashline = match request.input.get("hashline") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err(input_error()),
+    };
+    let render = ReadRender {
+        offset,
+        limit,
+        hashline,
+        max_bytes: DEFAULT_READ_MAX_BYTES,
+    };
+    match request.input.get("paths") {
+        None | Some(Value::Null) => {
+            let path = required_str(request.input, "path")?;
+            read_one_file(request, read_states, path, render).await
+        }
+        Some(paths) => read_many_files(request, read_states, paths, render).await,
+    }
+}
+
+/// Batch read: every path is resolved and confined exactly like a single
+/// read (same mount resolution, sensitivity, size, and read-before-edit
+/// recording), and the reads run concurrently. One file's failure is reported
+/// in its own entry instead of failing its siblings; when every file fails, the
+/// first failure is returned as the call's error so a batch never turns a
+/// denial into a success.
+async fn read_many_files(
+    request: &CodingCapabilityRequest<'_>,
+    read_states: &SharedCodingReadStates,
+    paths: &Value,
+    render: ReadRender,
+) -> Result<Value, CodingCapabilityError> {
+    if request
+        .input
+        .get("path")
+        .is_some_and(|path| !path.is_null())
+    {
+        return Err(CodingCapabilityError::with_safe_summary(
+            RuntimeDispatchErrorKind::InputEncode,
+            "read_file input rejected: pass either path or paths, not both",
+        ));
+    }
+    let paths = paths
+        .as_array()
+        .and_then(|paths| paths.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
+        .filter(|paths| !paths.is_empty() && paths.len() <= MAX_BATCH_READ_PATHS)
+        .ok_or_else(|| {
+            CodingCapabilityError::with_safe_summary(
+                RuntimeDispatchErrorKind::InputEncode,
+                format!(
+                    "read_file input rejected: paths must be 1 to {MAX_BATCH_READ_PATHS} path strings"
+                ),
+            )
+        })?;
+    let per_file = ReadRender {
+        max_bytes: (BATCH_READ_TOTAL_MAX_BYTES / paths.len()).min(DEFAULT_READ_MAX_BYTES),
+        ..render
+    };
+    // `buffered` keeps result order while capping how many whole files
+    // (each up to `MAX_READ_SIZE`) are held in memory at once.
+    // The futures are collected before streaming so no borrowing closure is
+    // part of the stream's type (that trips the `Send` check of the host's
+    // `async_trait` dispatch future).
+    let reads = paths
+        .iter()
+        .map(|path| read_one_file(request, read_states, path, per_file))
+        .collect::<Vec<_>>();
+    let results: Vec<Result<Value, CodingCapabilityError>> = futures_util::stream::iter(reads)
+        .buffered(MAX_CONCURRENT_BATCH_READS)
+        .collect()
+        .await;
+    if results.iter().all(Result::is_err) {
+        return results
+            .into_iter()
+            .find_map(Result::err)
+            .map_or_else(|| Err(input_error()), Err);
+    }
+    let failed = results.iter().filter(|result| result.is_err()).count();
+    let files = paths
+        .iter()
+        .zip(results)
+        .map(|(path, result)| match result {
+            Ok(output) => output,
+            Err(error) => json!({
+                "path": path,
+                "error": error.safe_summary().unwrap_or("read_file failed for this path"),
+                "error_kind": error.kind().as_str(),
+            }),
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "files": files,
+        "files_read": paths.len() - failed,
+        "files_failed": failed,
+        "per_file_max_bytes": per_file.max_bytes,
+    }))
+}
+
+async fn read_one_file(
+    request: &CodingCapabilityRequest<'_>,
+    read_states: &SharedCodingReadStates,
+    path: &str,
+    render: ReadRender,
+) -> Result<Value, CodingCapabilityError> {
+    let resolved = resolve_path_str(request, path, FilesystemOperation::ReadFile)?;
+    let has_explicit_range = render.has_explicit_range();
     let stat = request
         .filesystem
         .stat(&resolved.virtual_path)
@@ -103,13 +234,7 @@ pub(super) async fn read_file(
                 ),
             )
         })?;
-        let output = read_file_text_output(
-            &rendered,
-            resolved.scoped_path.as_str(),
-            offset,
-            limit,
-            has_explicit_range,
-        );
+        let output = read_file_text_output(&rendered, resolved.scoped_path.as_str(), render);
         if read_output_truncated(&output) {
             return Err(operation_error_with_summary(format!(
                 "read_file failed for {}: the structured document view exceeds the response limit and cannot be edited safely",
@@ -148,13 +273,7 @@ pub(super) async fn read_file(
             }
         };
 
-    let output = read_file_text_output(
-        &content,
-        resolved.scoped_path.as_str(),
-        offset,
-        limit,
-        has_explicit_range,
-    );
+    let output = read_file_text_output(&content, resolved.scoped_path.as_str(), render);
 
     // Only a complete read proves the model has seen the whole file, which is
     // what unlocks write_file/apply_patch on it: no offset/limit window AND no
@@ -265,13 +384,17 @@ fn read_file_continuation_suffix(
     )
 }
 
-fn read_file_text_output(
-    content: &str,
-    scoped_path: &str,
-    offset: usize,
-    limit: Option<usize>,
-    has_explicit_range: bool,
-) -> Value {
+fn read_file_text_output(content: &str, scoped_path: &str, render: ReadRender) -> Value {
+    let ReadRender {
+        offset,
+        limit,
+        hashline,
+        max_bytes,
+    } = render;
+    let has_explicit_range = render.has_explicit_range();
+    // `lines()` over the `\n`-normalized decode is exactly the line model
+    // `apply_patch` anchors against (`hashline::LineSpans`), so a rendered
+    // `LINE:HASH` names the same line the patch path re-hashes.
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     let start_line = offset.saturating_sub(1).min(total_lines);
@@ -291,7 +414,16 @@ fn read_file_text_output(
     let mut emitted_bytes = 0usize;
     let mut truncated_by_bytes = false;
     for (index, line) in lines[start_line..line_end].iter().enumerate() {
-        let formatted = format!("{:>6}│ {}", start_line + index + 1, line);
+        let formatted = if hashline {
+            format!(
+                "{:>6}:{}│ {}",
+                start_line + index + 1,
+                LineHash::of(line),
+                line
+            )
+        } else {
+            format!("{:>6}│ {}", start_line + index + 1, line)
+        };
         let candidate_lines_shown = rendered.len() + 1;
         let candidate_last_line_shown = start_line + candidate_lines_shown;
         let candidate_has_more = candidate_last_line_shown < total_lines;
@@ -317,13 +449,13 @@ fn read_file_text_output(
             .saturating_add(cost)
             .saturating_add(candidate_notice_suffix.len());
 
-        if candidate_total > DEFAULT_READ_MAX_BYTES {
+        if candidate_total > max_bytes {
             truncated_by_bytes = true;
             if rendered.is_empty() {
                 // Return one clamped line instead of an empty body, while still
                 // reserving room for the truncation marker and continuation note.
                 let marker = " …[line truncated]";
-                let clamp_budget = DEFAULT_READ_MAX_BYTES
+                let clamp_budget = max_bytes
                     .saturating_sub(marker.len())
                     .saturating_sub(candidate_notice_suffix.len());
                 let clamp_to = previous_char_boundary(&formatted, clamp_budget);
@@ -808,22 +940,26 @@ pub(super) async fn apply_patch(
     .await?;
     reject_binary_probe(&bytes)?;
     let (content, encoding, line_ending) = decode_text(&bytes)?;
-    let text_edits = patch_input
-        .edits
-        .iter()
-        .map(|edit| TextEdit {
-            old_string: edit.old_string.as_str(),
-            new_string: edit.new_string.as_str(),
-        })
-        .collect::<Vec<_>>();
-    let replacement =
-        replace_content(&content, &text_edits, patch_input.replace_all).map_err(|error| {
-            replacement_error(
-                error,
-                safe_summary_path(resolved.scoped_path.as_str()),
-                patch_input.edits.len(),
-            )
-        })?;
+    let safe_path = safe_summary_path(resolved.scoped_path.as_str());
+    let replacement = match &patch_input.edits {
+        PatchEdits::Text(edits) => {
+            let text_edits = edits
+                .iter()
+                .map(|edit| TextEdit {
+                    old_string: edit.old_string.as_str(),
+                    new_string: edit.new_string.as_str(),
+                })
+                .collect::<Vec<_>>();
+            replace_content(&content, &text_edits, patch_input.replace_all)
+                .map_err(|error| replacement_error(error, safe_path, edits.len()))?
+        }
+        PatchEdits::Anchored(edits) => ReplaceContentOutcome {
+            content: apply_anchored_edits(&content, edits)
+                .map_err(|error| anchored_edit_error(error, &content, safe_path))?,
+            replacements: edits.len(),
+            match_method: MatchMethod::LineAnchor,
+        },
+    };
     let output = encode_text(&replacement.content, encoding, line_ending);
     request
         .filesystem

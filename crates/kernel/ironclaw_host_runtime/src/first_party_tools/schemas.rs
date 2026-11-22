@@ -63,9 +63,9 @@ pub(crate) fn resolve_builtin_input_schema_ref(reference: &str) -> Option<Value>
                     "operation": {
                         "type": "string",
                         "enum": ["parse", "stringify", "query", "validate", "length", "last", "slice", "aggregate"],
-                        "description": "JSON operation to perform"
+                        "description": "JSON operation. parse/validate: data (JSON text). stringify: data. query/length/last: path plus data or file_path. slice: also start and end. aggregate: also function."
                     },
-                    "data": { "description": "JSON string or JSON value to process" },
+                    "data": { "description": "Inline JSON text or value; mutually exclusive with file_path" },
                     "file_path": {
                         "type": "string",
                         "maxLength": 4096,
@@ -81,92 +81,7 @@ pub(crate) fn resolve_builtin_input_schema_ref(reference: &str) -> Option<Value>
                     "function": { "type": "string", "enum": ["sum", "average", "min", "max"], "description": "Bounded numeric aggregate: integer-only input computes exactly (sum, min, max) and average rounds its exact sum once; input mixing integers and decimals computes in floating point" },
                     "value_index": { "type": "integer", "minimum": 0, "description": "Optional numeric index to select from each array row before aggregation" }
                 },
-                "oneOf": [
-                    {
-                        "title": "parse inline JSON text",
-                        "properties": {
-                            "operation": { "const": "parse" },
-                            "data": { "type": "string" }
-                        },
-                        "required": ["operation", "data"],
-                        "not": { "anyOf": [{ "required": ["file_path"] }, { "required": ["path"] }] }
-                    },
-                    {
-                        "title": "stringify inline JSON",
-                        "properties": { "operation": { "const": "stringify" } },
-                        "required": ["operation", "data"],
-                        "not": { "anyOf": [{ "required": ["file_path"] }, { "required": ["path"] }] }
-                    },
-                    {
-                        "title": "query inline JSON",
-                        "properties": { "operation": { "const": "query" } },
-                        "required": ["operation", "data", "path"],
-                        "not": { "required": ["file_path"] }
-                    },
-                    {
-                        "title": "query a scoped workspace JSON file",
-                        "properties": { "operation": { "const": "query" } },
-                        "required": ["operation", "file_path", "path"],
-                        "not": { "required": ["data"] }
-                    },
-                    {
-                        "title": "get inline JSON collection length",
-                        "properties": { "operation": { "const": "length" } },
-                        "required": ["operation", "data", "path"],
-                        "not": { "required": ["file_path"] }
-                    },
-                    {
-                        "title": "get workspace JSON collection length",
-                        "properties": { "operation": { "const": "length" } },
-                        "required": ["operation", "file_path", "path"],
-                        "not": { "required": ["data"] }
-                    },
-                    {
-                        "title": "get last inline JSON array item",
-                        "properties": { "operation": { "const": "last" } },
-                        "required": ["operation", "data", "path"],
-                        "not": { "required": ["file_path"] }
-                    },
-                    {
-                        "title": "get last workspace JSON array item",
-                        "properties": { "operation": { "const": "last" } },
-                        "required": ["operation", "file_path", "path"],
-                        "not": { "required": ["data"] }
-                    },
-                    {
-                        "title": "slice an inline JSON array",
-                        "properties": { "operation": { "const": "slice" } },
-                        "required": ["operation", "data", "path", "start", "end"],
-                        "not": { "required": ["file_path"] }
-                    },
-                    {
-                        "title": "slice a workspace JSON array",
-                        "properties": { "operation": { "const": "slice" } },
-                        "required": ["operation", "file_path", "path", "start", "end"],
-                        "not": { "required": ["data"] }
-                    },
-                    {
-                        "title": "aggregate an inline JSON numeric array",
-                        "properties": { "operation": { "const": "aggregate" } },
-                        "required": ["operation", "data", "path", "function"],
-                        "not": { "required": ["file_path"] }
-                    },
-                    {
-                        "title": "aggregate a workspace JSON numeric array",
-                        "properties": { "operation": { "const": "aggregate" } },
-                        "required": ["operation", "file_path", "path", "function"],
-                        "not": { "required": ["data"] }
-                    },
-                    {
-                        "title": "validate inline JSON text",
-                        "properties": {
-                            "operation": { "const": "validate" },
-                            "data": { "type": "string" }
-                        },
-                        "required": ["operation", "data"],
-                        "not": { "anyOf": [{ "required": ["file_path"] }, { "required": ["path"] }] }
-                    }
-                ],
+                "required": ["operation"],
                 "additionalProperties": false
             })
         }),
@@ -428,10 +343,17 @@ pub(crate) fn resolve_builtin_input_schema_ref(reference: &str) -> Option<Value>
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Scoped path to read. DOCX, XLSX, and PPTX return structured, addressable views for document_edit; formats such as PDF return extracted text." },
+                    "paths": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "items": { "type": "string" },
+                        "description": "Read up to 16 files in one call instead of path. offset/limit/hashline apply to each; results come back per file in files[] and share one output budget."
+                    },
                     "offset": { "type": "integer", "minimum": 0, "description": "1-based starting line; 0 starts at the beginning" },
-                    "limit": { "type": "integer", "minimum": 0, "description": "Maximum lines to return" }
+                    "limit": { "type": "integer", "minimum": 0, "description": "Maximum lines to return" },
+                    "hashline": { "type": "boolean", "description": "Prefix each line with a LINE:HASH anchor (e.g. 42:a3f0) usable by apply_patch anchored edits" }
                 },
-                "required": ["path"],
                 "additionalProperties": false
             })
         }),
@@ -543,8 +465,8 @@ pub(crate) fn resolve_builtin_input_schema_ref(reference: &str) -> Option<Value>
                     },
                     "new_string": { "type": ["string", "null"], "description": "Replacement text for a single targeted edit" },
                     "edits": {
-                        "description": "One or more targeted replacements matched against the original file. Prefer this for multiple disjoint edits.",
-                        "oneOf": [
+                        "description": "Several disjoint edits against the original file, instead of old_string/new_string. Each edit is either {old_string, new_string} or a line-anchored {anchor, end_anchor?, new_string} using LINE:HASH anchors from read_file with hashline=true; do not mix the two kinds.",
+                        "anyOf": [
                             {
                                 "type": "array",
                                 "minItems": 1,
@@ -553,72 +475,20 @@ pub(crate) fn resolve_builtin_input_schema_ref(reference: &str) -> Option<Value>
                                     "type": "object",
                                     "properties": {
                                         "old_string": { "type": "string", "description": "Text to replace" },
-                                        "new_string": { "type": "string", "description": "Replacement text" }
+                                        "new_string": { "type": "string", "description": "Replacement text; for an anchored edit, the lines that replace the anchored range (empty deletes them)" },
+                                        "anchor": { "type": "string", "description": "LINE:HASH of the first line to replace, e.g. 42:a3f0" },
+                                        "end_anchor": { "type": "string", "description": "LINE:HASH of the last line to replace; defaults to anchor" }
                                     },
-                                    "required": ["old_string", "new_string"],
+                                    "required": ["new_string"],
                                     "additionalProperties": false
                                 }
                             },
-                            { "type": "null" },
-                            { "const": "null" }
+                            { "enum": [null, "null"] }
                         ]
                     },
                     "replace_all": { "type": "boolean", "description": "Replace every match instead of exactly one. Only valid with a single targeted edit." }
                 },
                 "required": ["path"],
-                "oneOf": [
-                    {
-                        "properties": {
-                            "old_string": {
-                                "type": "string",
-                                "not": { "const": "null" }
-                            },
-                            "new_string": {
-                                "type": "string",
-                                "not": { "const": "null" }
-                            }
-                        },
-                        "required": ["old_string", "new_string"],
-                        "not": {
-                            "properties": {
-                                "edits": { "type": "array" }
-                            },
-                            "required": ["edits"]
-                        }
-                    },
-                    {
-                        "properties": {
-                            "edits": { "type": "array" },
-                            "old_string": { "enum": ["null", null] },
-                            "new_string": { "enum": ["null", null] }
-                        },
-                        "required": ["edits"]
-                    }
-                ],
-                "allOf": [
-                    {
-                        "if": {
-                            "properties": {
-                                "replace_all": { "const": true }
-                            },
-                            "required": ["replace_all"]
-                        },
-                        "then": {
-                            "properties": {
-                                "edits": {
-                                    "oneOf": [
-                                        {
-                                            "type": "array",
-                                            "maxItems": 1
-                                        },
-                                        { "type": "null" },
-                                        { "const": "null" }
-                                    ]
-                                }
-                            }
-                        }
-                    }
-                ],
                 "additionalProperties": false
             })
         }),
@@ -1314,11 +1184,14 @@ mod tests {
     use super::resolve_builtin_input_schema_ref;
 
     #[test]
-    fn json_schema_discloses_exact_operation_inputs() {
+    fn json_schema_is_flat_and_discloses_operation_inputs_in_descriptions() {
         let schema = resolve_builtin_input_schema_ref("schemas/builtin/json.input.v1.json")
             .expect("JSON schema is registered");
-        let branches = schema["oneOf"].as_array().expect("operation alternatives");
-        assert_eq!(branches.len(), 13);
+        // The per-operation contract is enforced at dispatch
+        // (`json::reject_fields_outside_operation` + `query_input`), so the
+        // model-facing schema carries no top-level combinator.
+        assert_flat_top_level(&schema);
+        assert_eq!(schema["required"], serde_json::json!(["operation"]));
         assert_eq!(
             schema["properties"]["operation"]["enum"],
             serde_json::json!([
@@ -1332,16 +1205,24 @@ mod tests {
                 "aggregate"
             ])
         );
-        assert!(branches.iter().any(|branch| {
-            branch["properties"]["operation"]["const"] == "query"
-                && branch["required"] == serde_json::json!(["operation", "data", "path"])
-                && branch["not"]["required"] == serde_json::json!(["file_path"])
-        }));
-        assert!(branches.iter().any(|branch| {
-            branch["properties"]["operation"]["const"] == "query"
-                && branch["required"] == serde_json::json!(["operation", "file_path", "path"])
-                && branch["not"]["required"] == serde_json::json!(["data"])
-        }));
+        let operation_description = schema["properties"]["operation"]["description"]
+            .as_str()
+            .expect("operation description");
+        for disclosure in [
+            "parse/validate: data",
+            "data or file_path",
+            "start and end",
+            "function",
+        ] {
+            assert!(
+                operation_description.contains(disclosure),
+                "operation description must disclose {disclosure:?}: {operation_description}"
+            );
+        }
+        assert!(
+            schema["properties"]["data"].get("type").is_none(),
+            "data stays untyped so null payloads are never treated as sentinels"
+        );
         assert_eq!(schema["properties"]["file_path"]["maxLength"], 4096);
         assert!(
             schema["properties"]["file_path"]["description"]
@@ -1361,16 +1242,46 @@ mod tests {
             schema["properties"]["function"]["enum"],
             serde_json::json!(["sum", "average", "min", "max"])
         );
-        assert!(branches.iter().any(|branch| {
-            branch["properties"]["operation"]["const"] == "slice"
-                && branch["required"]
-                    == serde_json::json!(["operation", "file_path", "path", "start", "end"])
-        }));
-        assert!(branches.iter().any(|branch| {
-            branch["properties"]["operation"]["const"] == "aggregate"
-                && branch["required"]
-                    == serde_json::json!(["operation", "data", "path", "function"])
-        }));
+    }
+
+    #[test]
+    fn apply_patch_and_read_file_schemas_are_flat() {
+        let apply_patch =
+            resolve_builtin_input_schema_ref("schemas/builtin/apply_patch.input.v1.json")
+                .expect("apply_patch schema is registered");
+        assert_flat_top_level(&apply_patch);
+        assert_eq!(apply_patch["required"], serde_json::json!(["path"]));
+        let edit_item = &apply_patch["properties"]["edits"]["anyOf"][0]["items"];
+        assert_eq!(edit_item["required"], serde_json::json!(["new_string"]));
+        for field in ["old_string", "new_string", "anchor", "end_anchor"] {
+            assert!(
+                edit_item["properties"].get(field).is_some(),
+                "edits item declares {field}"
+            );
+        }
+
+        let read_file = resolve_builtin_input_schema_ref("schemas/builtin/read_file.input.v1.json")
+            .expect("read_file schema is registered");
+        assert_flat_top_level(&read_file);
+        assert!(
+            read_file.get("required").is_none(),
+            "path or paths: neither is individually required"
+        );
+        assert_eq!(read_file["properties"]["paths"]["maxItems"], 16);
+        assert_eq!(read_file["properties"]["hashline"]["type"], "boolean");
+    }
+
+    /// Top-level combinators are what providers reject (strict tool schemas)
+    /// and what triggers a verbose flattening hint in the tool description.
+    fn assert_flat_top_level(schema: &serde_json::Value) {
+        for keyword in ["oneOf", "anyOf", "allOf", "not", "if", "then", "else"] {
+            assert!(
+                schema.get(keyword).is_none(),
+                "schema must not carry a top-level {keyword}"
+            );
+        }
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["additionalProperties"], false);
     }
 
     #[test]

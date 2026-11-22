@@ -10,6 +10,7 @@ mod document;
 mod file;
 mod glob_tool;
 mod grep_tool;
+mod hashline;
 mod inputs;
 mod patch;
 mod paths;

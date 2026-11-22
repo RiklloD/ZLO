@@ -859,14 +859,24 @@ fn assert_json_schema_disclosure(h: &RebornIntegrationHarness) {
             .is_some_and(|description| description.contains("not supported")),
         "model-visible schema must distinguish traversal paths from full JSONPath"
     );
+    // The schema is flat (no top-level oneOf; dispatch enforces the
+    // per-operation fields), so the file-backed alternative is disclosed in
+    // the operation and file_path descriptions instead.
     assert!(
-        definition.parameters["oneOf"]
-            .as_array()
-            .is_some_and(|branches| branches.iter().any(|branch| {
-                branch["required"] == json!(["operation", "file_path", "path"])
-                    && branch["not"]["required"] == json!(["data"])
-            })),
+        definition.parameters.get("oneOf").is_none(),
+        "model-visible json schema must stay flat at the top level"
+    );
+    assert!(
+        definition.parameters["properties"]["operation"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("path plus data or file_path")),
         "model-visible schema must disclose the file-backed query alternative unambiguously"
+    );
+    assert!(
+        definition.parameters["properties"]["file_path"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("mutually exclusive with data")),
+        "model-visible schema must state that file_path and data are exclusive"
     );
 }
 
