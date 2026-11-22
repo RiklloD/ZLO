@@ -81,7 +81,9 @@ struct FrozenPathCount {
 // `prep_gate` — the slot test seam that parks a turn between admission and its
 // host launch, so the Stop-during-preparation race tests can force that
 // schedule. Two new paths, one field each.
-const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 76;
+// 76 -> 75 (2026-11-22): `tool_disclosure.rs` left the inventory when the
+// promoted set (and its test-only `len`) was deleted with tools[] promotion.
+const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 75;
 // 269 -> 268 (2026-08-31/09-01): the delivery-coordinator handle on
 // `RebornRuntime` became an ungated production field (shutdown reads it);
 // its accessor stays test-support (integration harnesses wiring their own
@@ -92,7 +94,8 @@ const WS0_PRODUCTION_STRUCT_DEBT_PATH_BASELINE: usize = 76;
 // `reborn_integration_unattended_surface` drive mutating synthetic tools on
 // every admission path through the production runtime. No new path.
 // 259 -> 261 (2026-11-20): the two `prep_gate` fields above.
-const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 261;
+// 261 -> 260 (2026-11-22): `PromotedSet::len` deleted with tools[] promotion.
+const WS0_PRODUCTION_STRUCT_DEBT_MEMBER_BASELINE: usize = 260;
 
 const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
     FrozenPathCount {
@@ -533,12 +536,6 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         item_kind: "method",
         path: "crates/ironclaw_turn_runner/src/loop_exit_applier.rs",
         count: 7,
-    },
-    FrozenPathCount {
-        category: "test-support",
-        item_kind: "method",
-        path: "crates/ironclaw_loop_host/src/tool_disclosure.rs",
-        count: 1,
     },
     FrozenPathCount {
         category: "test-support",

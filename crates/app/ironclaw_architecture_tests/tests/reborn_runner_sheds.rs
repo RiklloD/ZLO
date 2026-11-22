@@ -58,9 +58,11 @@ const HOOKS: &str = "ironclaw_hooks";
 /// functions and one-off helpers are not named here, because pinning them would
 /// turn every internal refactor of the gateway into a gate edit.
 ///
-/// It does include five `pub(crate)` types from the tool-disclosure cluster
-/// (`CapabilityCatalog`, `PromotedSet`, `DisclosureCaps`, `ActiveSet`,
-/// `ToolTier`). They are not module-private helpers: they are the cluster's
+/// It does include four `pub(crate)` types from the tool-disclosure cluster
+/// (`CapabilityCatalog`, `DisclosureCaps`, `ActiveSet`, `ToolTier`; the fifth,
+/// `PromotedSet`, was deleted 2026-11-22 when discovered tools stopped being
+/// promoted into the advertised `tools[]` to keep the prompt-cache prefix
+/// frozen). They are not module-private helpers: they are the cluster's
 /// load-bearing vocabulary, the cluster moved as a unit, and a half-move that
 /// left one of them behind in the runner would compile — which is exactly the
 /// failure this gate exists to catch. Visibility is not the criterion; being
@@ -99,7 +101,6 @@ const MOVED_ITEMS: &[(&str, &str)] = &[
     ("struct ", "ToolDisclosureCapabilityDecorator"),
     ("enum ", "ToolDisclosureMode"),
     ("struct ", "CapabilityCatalog"),
-    ("struct ", "PromotedSet"),
     ("struct ", "DisclosureCaps"),
     ("struct ", "ActiveSet"),
     ("enum ", "ToolTier"),

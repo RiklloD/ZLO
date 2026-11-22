@@ -98,24 +98,26 @@ async fn prompt_description_auth_vocabulary_survives_at_the_real_turn_seam() {
         )
         .await
         .expect("verified catalog description reaches the model intact, including Bearer");
+    // Descriptions reach the model once, through native tool definitions; the
+    // system prompt never duplicates them (that dump busted the prompt cache).
     harness
-        .assert_system_prompt_contains(AUTH_VOCABULARY_DESCRIPTION)
+        .assert_system_prompt_excludes(AUTH_VOCABULARY_DESCRIPTION)
         .await
-        .expect("verified catalog description survives instruction-bundle validation");
+        .expect("verified catalog description is not duplicated into the system prompt");
     harness
         .assert_model_tools_contains("localprompt__healthy")
         .await
         .expect("safe sibling from the same local package remains advertised");
     harness
-        .assert_system_prompt_contains("localprompt.healthy")
+        .assert_system_prompt_excludes("localprompt.healthy")
         .await
-        .expect("safe local sibling remains in the validated prompt surface");
+        .expect("capability ids are not dumped into the system prompt");
     harness
         .assert_model_tool_description_contains("localprompt__unsafe", AUTH_VOCABULARY_DESCRIPTION)
         .await
         .expect("ordinary auth vocabulary in a local description reaches the model intact");
     harness
-        .assert_system_prompt_contains("localprompt.unsafe")
+        .assert_model_tools_contains("localprompt__unsafe")
         .await
-        .expect("the local prompt entry is preserved instead of being denied as a false positive");
+        .expect("the local tool is preserved instead of being denied as a false positive");
 }

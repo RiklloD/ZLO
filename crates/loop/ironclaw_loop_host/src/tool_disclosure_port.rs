@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use futures::future::join_all;
 use ironclaw_host_api::{
     capability_surface::CapabilitySurfacePolicy,
-    ids::{AgentId, CapabilityId, InvocationId, ProjectId, ProviderToolName, TenantId, ThreadId},
+    ids::{CapabilityId, InvocationId, ProviderToolName},
     resolution::{Resolution, ResolutionBatch},
 };
 use ironclaw_loop_contracts::{
@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use tracing::debug;
 
 use crate::tool_disclosure::{
-    ActiveSet, CapabilityCatalog, CatalogSearchResult, DisclosureCaps, PromotedSet, TOOL_CALL_NAME,
+    ActiveSet, CapabilityCatalog, CatalogSearchResult, DisclosureCaps, TOOL_CALL_NAME,
     TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME, bridge_tool_definitions, canonicalize_json,
     definition_matches_provider_name, is_bridge_capability_id, is_bridge_name,
     select_active_set_for_mode,
@@ -45,6 +45,17 @@ const MAX_SEARCH_RESPONSE_BYTES: usize = 24 * 1024;
 /// `tool_describe`; this prevents one result from consuming the whole budget.
 const MAX_SEARCH_SIGNATURE_BYTES_PER_RESULT: usize = 8 * 1024;
 
+/// Tail-delivered usage guidance carried in every `tool_search` result.
+///
+/// Discovered tools are never appended to the advertised `tools[]` (that would
+/// rewrite the provider's cached prompt prefix), so the result itself tells
+/// the model how to reach them.
+const SEARCH_RESULT_USAGE: &str = "Results are callable now but are not added to your tool list. Invoke one with tool_call(name=\"<name>\", arguments=\"<JSON object as a string>\") or call it directly by its exact name; use tool_describe first when schema_complete is not true.";
+
+fn search_envelope(query: &str, results: Vec<Value>) -> Value {
+    json!({"query": query, "usage": SEARCH_RESULT_USAGE, "results": results})
+}
+
 /// Internal bridge name for an auto-loaded schema (describe-first) response.
 ///
 /// NOT a real provider tool name, so it can never collide with a catalog tool or
@@ -58,13 +69,14 @@ const DESCRIBE_FIRST_BRIDGE_NAME: &str = "tool_disclosure:auto_schema";
 /// Provider tool name of the loop's `capability_info` inspector (mirrors
 /// `crate::capability_info::TOOL_NAME`). Inspecting a deferred
 /// tool via `capability_info` is treated as intent to use it: the target is
-/// disclosed + promoted so it becomes directly callable — the `tool_search` →
-/// `capability_info` → direct-call discovery path.
+/// disclosed for the turn (its schema is now in context), so a direct call
+/// dispatches without a describe-first round trip — the `tool_search` →
+/// `capability_info` → direct-call discovery path. It is never appended to
+/// the advertised `tools[]` (see `select_active_set_for_mode`).
 const CAPABILITY_INFO_NAME: &str = "capability_info";
 
 pub struct ToolDisclosureCapabilityDecorator {
     result_writer: Arc<dyn LoopCapabilityResultWriter>,
-    promoted_by_scope: Arc<Mutex<HashMap<PromotionScopeKey, PromotedSet>>>,
     caps: DisclosureCaps,
     mode: crate::ToolDisclosureMode,
     mentions: Arc<TurnToolMentions>,
@@ -78,7 +90,6 @@ impl ToolDisclosureCapabilityDecorator {
     ) -> Self {
         Self {
             result_writer,
-            promoted_by_scope: Arc::new(Mutex::new(HashMap::new())),
             caps: DisclosureCaps::default(),
             mode,
             mentions,
@@ -99,7 +110,6 @@ impl ToolDisclosureCapabilityDecorator {
             inner,
             run_context: run_context.clone(),
             result_writer: Arc::clone(&self.result_writer),
-            promoted_by_scope: Arc::clone(&self.promoted_by_scope),
             caps: self.caps,
             mode: self.mode,
             policy,
@@ -116,7 +126,6 @@ struct ToolDisclosureCapabilityPort {
     inner: Arc<dyn LoopCapabilityPort>,
     run_context: LoopRunContext,
     result_writer: Arc<dyn LoopCapabilityResultWriter>,
-    promoted_by_scope: Arc<Mutex<HashMap<PromotionScopeKey, PromotedSet>>>,
     caps: DisclosureCaps,
     mode: crate::ToolDisclosureMode,
     /// #5712/#5659-w6: the caller's effective policy, resolved once in
@@ -239,7 +248,7 @@ fn bounded_search_output(
             let mut candidate_results = output_results.clone();
             candidate_results.push(complete.clone());
             if serialized_len_within(
-                &json!({"query": query, "results": candidate_results}),
+                &search_envelope(query, candidate_results),
                 total_response_bytes,
             )
             .is_some()
@@ -251,7 +260,7 @@ fn bounded_search_output(
         let mut candidate_results = output_results.clone();
         candidate_results.push(output.clone());
         if serialized_len_within(
-            &json!({"query": query, "results": candidate_results}),
+            &search_envelope(query, candidate_results),
             total_response_bytes,
         )
         .is_none()
@@ -260,7 +269,7 @@ fn bounded_search_output(
         }
         output_results.push(output);
     }
-    json!({"query": query, "results": output_results})
+    search_envelope(query, output_results)
 }
 
 fn compact_search_results(results: Vec<CatalogSearchResult>) -> Vec<Value> {
@@ -295,26 +304,6 @@ impl BridgeKind {
 struct ResolvedToolTarget {
     definition: ProviderToolDefinition,
     target_call: ProviderToolCall,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct PromotionScopeKey {
-    tenant_id: TenantId,
-    agent_id: Option<AgentId>,
-    project_id: Option<ProjectId>,
-    thread_id: ThreadId,
-}
-
-impl PromotionScopeKey {
-    fn from_run_context(run_context: &LoopRunContext) -> Self {
-        let scope = &run_context.scope;
-        Self {
-            tenant_id: scope.tenant_id.clone(),
-            agent_id: scope.agent_id.clone(),
-            project_id: scope.project_id.clone(),
-            thread_id: scope.thread_id.clone(),
-        }
-    }
 }
 
 #[async_trait]
@@ -462,10 +451,10 @@ impl LoopCapabilityPort for ToolDisclosureCapabilityPort {
             tool_call,
             activity_id,
         } = request;
-        // Inspecting a deferred tool via `capability_info` promotes it for direct
-        // use next turn (search → capability_info → direct call). Runs before
-        // dispatch so the promotion lands even though the call itself delegates
-        // to the inner port below.
+        // Inspecting a deferred tool via `capability_info` discloses it for the
+        // turn (search → capability_info → direct call). Runs before dispatch so
+        // the disclosure lands even though the call itself delegates to the
+        // inner port below.
         self.note_capability_info_target(&tool_call)?;
         if !is_bridge_name(tool_call.name.as_str()) {
             if let Some(target) = self.direct_deferred_target(&tool_call)? {
@@ -507,7 +496,7 @@ impl LoopCapabilityPort for ToolDisclosureCapabilityPort {
                     .register_provider_tool_call(register_request(target.target_call, activity_id))
                     .await?;
                 candidate.provider_replay = Some(provider_replay_for(&tool_call, replay_tool_name));
-                self.record_promotable_input(
+                self.record_deferred_target_input(
                     candidate.input_ref.as_str(),
                     candidate.capability_id.clone(),
                 )?;
@@ -546,7 +535,7 @@ impl LoopCapabilityPort for ToolDisclosureCapabilityPort {
                 Ok(mut candidate) => {
                     candidate.provider_replay =
                         Some(provider_replay_for(&tool_call, bridge_provider_tool_name));
-                    self.record_promotable_input(
+                    self.record_deferred_target_input(
                         candidate.input_ref.as_str(),
                         candidate.capability_id.clone(),
                     )?;
@@ -652,7 +641,7 @@ impl LoopCapabilityPort for ToolDisclosureCapabilityPort {
             // decorator chain never compiles into a single oversized poll
             // frame (see reborn_integration_model_recovery stack-overflow).
             let resolution = Box::pin(self.inner.invoke_capability(request)).await?;
-            self.promote_target_after_resolution(target_capability_id, &resolution)?;
+            self.observe_deferred_selection(target_capability_id, &resolution)?;
             return Ok(resolution);
         }
         // Chain-boxing: each port delegation is boxed so the stacked
@@ -694,7 +683,7 @@ impl LoopCapabilityPort for ToolDisclosureCapabilityPort {
             // Chain-boxing: each port delegation is boxed so the stacked
             // decorator chain never compiles into a single oversized poll
             // frame (see reborn_integration_model_recovery stack-overflow).
-            return Box::pin(self.invoke_inner_batch_preserving_promotions(request)).await;
+            return Box::pin(self.invoke_inner_batch_observing_selections(request)).await;
         }
 
         let mut resolutions = Vec::with_capacity(request.invocations.len());
@@ -732,34 +721,31 @@ impl ToolDisclosureCapabilityPort {
             .map(|targets| targets.get(input_ref).cloned())
     }
 
-    fn promote_target_after_resolution(
+    /// Record selection telemetry for a deferred target the model dispatched.
+    ///
+    /// Only a completed dispatch or a gate/park counts as a selection; a hard
+    /// failure may be abandoned. This is observation only: a dispatched target
+    /// is never promoted into the advertised `tools[]`, which stay frozen for
+    /// the run so the provider prompt-cache prefix survives discovery. A
+    /// resumed gate re-dispatches through the same forgiving resolution
+    /// (`direct_deferred_target` / `allowed_tool_call_target`) and the
+    /// visible-surface filter admits it through `callable_capability_ids`,
+    /// which carries the whole authorized catalog.
+    fn observe_deferred_selection(
         &self,
         target_capability_id: Option<CapabilityId>,
         resolution: &Resolution,
     ) -> Result<(), AgentLoopHostError> {
-        // Promote on a completed dispatch OR a gate/park (approval/auth/
-        // resource or parked work). A tool the model dispatched that paused for
-        // a user action is just as "earned" as a completed one, and it MUST
-        // stay visible across the Blocked/Suspended resume: otherwise the
-        // per-turn disclosed set resets, the tool drops off the model-visible
-        // surface, and the model's retry is hard-rejected by the visible-surface
-        // filter ("outside the model-visible capability view") — discarding the
-        // whole response and borking the run. A hard *failure* (a Done with a
-        // recoverable-failure verdict) still does NOT promote (the model may
-        // abandon it), so this does not drift toward advertising every
-        // discovered tool — only ones the model actually invoked. `parks()` is
-        // the gate+suspension predicate (the loop enum's old `is_suspension()`
-        // also lumped gates in).
         if (matches!(resolution, Resolution::Done(outcome) if outcome.verdict.is_success())
             || resolution.parks())
             && let Some(capability_id) = target_capability_id
         {
-            self.promote_target(&capability_id)?;
+            self.observe_selection(&capability_id)?;
         }
         Ok(())
     }
 
-    async fn invoke_inner_batch_preserving_promotions(
+    async fn invoke_inner_batch_observing_selections(
         &self,
         request: LoopRequestBatch,
     ) -> Result<ResolutionBatch, AgentLoopHostError> {
@@ -777,7 +763,7 @@ impl ToolDisclosureCapabilityPort {
         for (resolution, target_capability_id) in
             batch.resolutions.iter().zip(target_capability_ids)
         {
-            self.promote_target_after_resolution(target_capability_id, resolution)?;
+            self.observe_deferred_selection(target_capability_id, resolution)?;
         }
         Ok(batch)
     }
@@ -870,9 +856,9 @@ impl ToolDisclosureCapabilityPort {
                 metadata_fingerprint = fingerprint,
                 "rebuilt authorized deferred-tool search index"
             );
-            let promoted = self.promoted_for_scope()?;
-            let active =
-                select_active_set_for_mode(&catalog, &promoted, self.caps, &self.policy, self.mode);
+            // Discovery progress never feeds selection: `tools[]` depends only
+            // on the authorized catalog, its pins, and policy.
+            let active = select_active_set_for_mode(&catalog, self.caps, &self.policy, self.mode);
             // Preserve disclosure progress across a same-turn refresh (a tool the
             // model already described stays disclosed); a genuine turn change
             // starts fresh.
@@ -907,35 +893,15 @@ impl ToolDisclosureCapabilityPort {
         })
     }
 
-    fn promoted_for_scope(&self) -> Result<PromotedSet, AgentLoopHostError> {
-        let key = PromotionScopeKey::from_run_context(&self.run_context);
-        let guard = self.promoted_by_scope.lock().map_err(|e| {
-            AgentLoopHostError::new(
-                AgentLoopHostErrorKind::Internal,
-                format!("tool disclosure promoted set lock is poisoned: {e}"),
-            )
-        })?;
-        Ok(guard.get(&key).cloned().unwrap_or_default())
-    }
-
-    fn promote_target(&self, capability_id: &CapabilityId) -> Result<(), AgentLoopHostError> {
-        let target = {
-            let guard = self.turn_state()?;
-            let Some(state) = guard.as_ref() else {
-                return Ok(());
-            };
-            state
-                .catalog
-                .definition_by_capability_id(capability_id)
-                .map(|definition| {
-                    let name = definition.name.to_string();
-                    let selected_rank = state.search_ranks.get(&name).copied();
-                    (name, selected_rank)
-                })
-        };
-        let Some((name, selected_rank)) = target else {
+    fn observe_selection(&self, capability_id: &CapabilityId) -> Result<(), AgentLoopHostError> {
+        let guard = self.turn_state()?;
+        let Some(state) = guard.as_ref() else {
             return Ok(());
         };
+        let selected_rank = state
+            .catalog
+            .definition_by_capability_id(capability_id)
+            .and_then(|definition| state.search_ranks.get(definition.name.as_str()).copied());
         if let Some(selected_rank) = selected_rank {
             debug!(
                 target: "ironclaw::reborn::tool_search",
@@ -944,23 +910,14 @@ impl ToolDisclosureCapabilityPort {
                 "observed deferred-tool selection without logging tool or query metadata"
             );
         }
-        let key = PromotionScopeKey::from_run_context(&self.run_context);
-        let mut guard = self.promoted_by_scope.lock().map_err(|e| {
-            AgentLoopHostError::new(
-                AgentLoopHostErrorKind::Internal,
-                format!("tool disclosure promoted set lock is poisoned: {e}"),
-            )
-        })?;
-        guard.entry(key).or_default().push(name);
         Ok(())
     }
 
     /// When the model inspects a deferred tool via `capability_info`, treat it as
-    /// intent to use that tool: disclose it this turn and promote it for the scope
-    /// so it becomes advertised with its full schema and directly callable next
-    /// turn — the `tool_search` → `capability_info` → direct-call flow. This is the
-    /// same disclose+promote a `tool_describe` / successful `tool_call` already
-    /// does, wired onto the `capability_info` path so that path can stand alone.
+    /// intent to use that tool: disclose it this turn so a direct call dispatches
+    /// without describe-first — the `tool_search` → `capability_info` →
+    /// direct-call flow, the same disclosure a `tool_describe` already records.
+    /// The tool stays deferred: `tools[]` never grows mid-run.
     /// No-op for a non-`capability_info` call or a target not in the catalog.
     fn note_capability_info_target(
         &self,
@@ -1016,12 +973,12 @@ impl ToolDisclosureCapabilityPort {
         debug!(
             tool = target_name,
             capability_id = capability_id.as_str(),
-            "capability_info inspected a deferred tool; disclosing + promoting it for direct use"
+            "capability_info inspected a deferred tool; disclosing it for direct use this turn"
         );
-        self.promote_target(&capability_id)
+        Ok(())
     }
 
-    fn record_promotable_input(
+    fn record_deferred_target_input(
         &self,
         input_ref: &str,
         capability_id: CapabilityId,
@@ -1274,10 +1231,7 @@ impl ToolDisclosureCapabilityPort {
                     MAX_SEARCH_SIGNATURE_BYTES_PER_RESULT,
                 )
             } else {
-                json!({
-                    "query": query,
-                    "results": compact_search_results(ranked_results),
-                })
+                search_envelope(query, compact_search_results(ranked_results))
             };
             if let Some(results) = output.get("results").and_then(Value::as_array) {
                 for result in results {
@@ -1459,8 +1413,8 @@ impl ToolDisclosureCapabilityPort {
         // `tool_describe` got a generic "invalid_input" with no recovery hint and
         // looped until the run died. Resolving forgivingly lets the call dispatch
         // and surface the tool's *real* schema error (with repairs) — which the
-        // model can act on — and earns promotion on success via the register
-        // path's `record_promotable_input`. Safety/approval/auth gates still run
+        // model can act on — with selection telemetry recorded via the register
+        // path's `record_deferred_target_input`. Safety/approval/auth gates still run
         // at dispatch, so this is a token-economy boundary, not a security one.
         let Some(definition) = self.catalog_target(state, name) else {
             return Ok(None);
@@ -1968,7 +1922,6 @@ mod tests {
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
 
         port.visible_capabilities(VisibleCapabilityRequest)
@@ -2056,7 +2009,6 @@ mod tests {
         let port = disclosure_port(
             inner as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
 
         port.visible_capabilities(VisibleCapabilityRequest)
@@ -2209,7 +2161,6 @@ mod tests {
         let port = disclosure_port_with_writer(
             inner as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
             Arc::new(BarrierWriter {
                 barrier: Arc::new(tokio::sync::Barrier::new(2)),
             }),
@@ -2265,7 +2216,6 @@ mod tests {
         let port = disclosure_port(
             inner.clone() as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
         let surface_version =
             CapabilitySurfaceVersion::new("surface:ordered-disclosure").expect("surface version");
@@ -2332,7 +2282,6 @@ mod tests {
         let port = disclosure_port(
             inner as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
 
         let surface = port
@@ -2352,7 +2301,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_discloses_tool_call_dispatches_target_and_promotes_next_turn() {
+    async fn search_then_tool_call_dispatches_target_with_byte_stable_tools() {
         let definitions = vec![
             provider_definition("fixture.read_file", "read_file", "Read a file"),
             provider_definition(
@@ -2372,13 +2321,11 @@ mod tests {
             registered_calls: Mutex::new(Vec::new()),
             invocations: Mutex::new(Vec::new()),
         });
-        let promoted_by_scope = Arc::new(Mutex::new(HashMap::new()));
         let first_run_context = run_context(TurnId::new()).await;
         let writer = Arc::new(CapturingWriter::default());
         let port = disclosure_port_with_writer(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             first_run_context,
-            Arc::clone(&promoted_by_scope),
             Arc::clone(&writer) as Arc<dyn LoopCapabilityResultWriter>,
         );
 
@@ -2410,7 +2357,9 @@ mod tests {
 
         // Forgiving `tool_call` resolution of an undisclosed catalog tool is
         // covered by `tool_call_resolves_undisclosed_catalog_target_forgivingly`.
-        // This test focuses on the search -> disclose -> dispatch -> promote flow.
+        // This test pins the search -> disclose -> dispatch flow and the
+        // prompt-cache invariant: the provider `tools[]` bytes never change.
+        let baseline_tools = serde_json::to_vec(&advertised).expect("tools serialize");
 
         let search = port
             .register_provider_tool_call(RegisterProviderToolCallRequest::new(provider_call(
@@ -2446,6 +2395,12 @@ mod tests {
                 .expect("hidden result");
             assert_eq!(hidden_result["schema_complete"], true);
             assert_eq!(hidden_result["parameters"]["required"], json!(["path"]));
+            assert!(
+                outputs[0]["usage"]
+                    .as_str()
+                    .is_some_and(|usage| usage.contains("tool_call(name=")),
+                "the tail result must say how to invoke a tool that is not in tools[]"
+            );
         }
 
         let disclosed_surface = port
@@ -2517,21 +2472,61 @@ mod tests {
             "fixture.hidden"
         );
 
+        port.visible_capabilities(VisibleCapabilityRequest)
+            .await
+            .expect("visible surface after dispatch");
+        assert_eq!(
+            serde_json::to_vec(
+                &port
+                    .tool_definitions()
+                    .expect("tool definitions after call")
+            )
+            .expect("tools serialize"),
+            baseline_tools,
+            "tool_search + tool_call must leave the advertised tools[] byte-identical"
+        );
+
+        // Next turn: the dispatched target is NOT promoted into tools[] (that
+        // would shift the provider cache breakpoint), yet stays callable
+        // through `tool_call` without a fresh search.
         let next_turn = disclosure_port(
-            inner as Arc<dyn LoopCapabilityPort>,
+            Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            promoted_by_scope,
         );
         next_turn
             .visible_capabilities(VisibleCapabilityRequest)
             .await
             .expect("next visible surface");
         let next_advertised = next_turn.tool_definitions().expect("next tool definitions");
-        assert!(
-            next_advertised
-                .iter()
-                .any(|definition| definition.name.as_str() == "hidden_tool"),
-            "successful deferred tool_call should promote the target on the next turn"
+        assert_eq!(
+            serde_json::to_vec(&next_advertised).expect("tools serialize"),
+            baseline_tools,
+            "a discovered tool must never be promoted into the next turn's tools[]"
+        );
+        let next_target = next_turn
+            .register_provider_tool_call(RegisterProviderToolCallRequest::new(provider_call(
+                TOOL_CALL_NAME,
+                json!({"name": "hidden_tool", "arguments": r#"{"path":"again"}"#}),
+            )))
+            .await
+            .expect("tool_call still resolves the deferred target next turn");
+        assert_eq!(next_target.capability_id.as_str(), "fixture.hidden");
+        let next_outcome = next_turn
+            .invoke_capability(LoopRequest {
+                activity_id: next_target.activity_id,
+                surface_version: next_target.surface_version,
+                capability_id: next_target.capability_id,
+                input_ref: next_target.input_ref,
+                approval_resume: None,
+                auth_resume: None,
+            })
+            .await
+            .expect("deferred target dispatches next turn");
+        assert!(matches!(next_outcome, Resolution::Done(ref o) if o.verdict.is_success()));
+        assert_eq!(
+            serde_json::to_vec(&next_turn.tool_definitions().expect("tools after next call"))
+                .expect("tools serialize"),
+            baseline_tools
         );
     }
 
@@ -2569,7 +2564,6 @@ mod tests {
         let port = disclosure_port_with_writer(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
             Arc::clone(&writer) as Arc<dyn LoopCapabilityResultWriter>,
         );
         port.visible_capabilities(VisibleCapabilityRequest)
@@ -2636,7 +2630,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_deferred_catalog_tool_dispatches_target_and_promotes_next_turn() {
+    async fn direct_deferred_catalog_tool_dispatches_target_without_promotion() {
         let definitions = vec![
             provider_definition("fixture.read_file", "read_file", "Read a file"),
             provider_definition(
@@ -2656,12 +2650,10 @@ mod tests {
             registered_calls: Mutex::new(Vec::new()),
             invocations: Mutex::new(Vec::new()),
         });
-        let promoted_by_scope = Arc::new(Mutex::new(HashMap::new()));
         let first_run_context = run_context(TurnId::new()).await;
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             first_run_context,
-            Arc::clone(&promoted_by_scope),
         );
 
         port.visible_capabilities(VisibleCapabilityRequest)
@@ -2737,7 +2729,6 @@ mod tests {
         let next_turn = disclosure_port(
             inner as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            promoted_by_scope,
         );
         next_turn
             .visible_capabilities(VisibleCapabilityRequest)
@@ -2745,20 +2736,20 @@ mod tests {
             .expect("next visible surface");
         let next_advertised = next_turn.tool_definitions().expect("next tool definitions");
         assert!(
-            next_advertised
+            !next_advertised
                 .iter()
                 .any(|definition| definition.name.as_str() == "hidden_tool"),
-            "successful direct deferred call should promote the target on the next turn"
+            "a dispatched deferred tool is never promoted into tools[]; it stays callable by name"
         );
     }
 
     #[tokio::test]
-    async fn capability_info_on_deferred_tool_promotes_it_for_direct_use_next_turn() {
-        // Firat's discovery flow: tool_search (names) -> capability_info (loads +
-        // promotes) -> direct call. Inspecting a deferred tool via capability_info
-        // must disclose it this turn and promote it for the next, so it becomes
-        // directly callable — without this the model inspects a tool it can never
-        // reach and loops.
+    async fn capability_info_on_deferred_tool_discloses_it_without_growing_tools() {
+        // Firat's discovery flow: tool_search (names) -> capability_info (loads)
+        // -> direct call. Inspecting a deferred tool via capability_info must
+        // disclose it this turn so the direct call is authorized — without this
+        // the model inspects a tool it can never reach and loops. It must NOT
+        // grow tools[] on a later turn: that would bust the prompt cache.
         let definitions = vec![
             provider_definition("fixture.read_file", "read_file", "Read a file"),
             provider_definition("fixture.hidden", "hidden_tool", "Hidden operation"),
@@ -2774,11 +2765,9 @@ mod tests {
             registered_calls: Mutex::new(Vec::new()),
             invocations: Mutex::new(Vec::new()),
         });
-        let promoted_by_scope = Arc::new(Mutex::new(HashMap::new()));
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::clone(&promoted_by_scope),
         );
 
         port.visible_capabilities(VisibleCapabilityRequest)
@@ -2796,7 +2785,7 @@ mod tests {
         // The model inspects the deferred tool by its canonical capability id.
         let inspect = provider_call("capability_info", json!({"name": "fixture.hidden"}));
         port.note_capability_info_target(&inspect)
-            .expect("capability_info promotes the inspected target");
+            .expect("capability_info discloses the inspected target");
 
         // This turn the inspected tool is disclosed onto the callable surface
         // (visible_capabilities descriptors), so a call to it is authorized.
@@ -2815,19 +2804,18 @@ mod tests {
         let next_turn = disclosure_port(
             inner as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            promoted_by_scope,
         );
         next_turn
             .visible_capabilities(VisibleCapabilityRequest)
             .await
             .expect("next visible surface");
         assert!(
-            next_turn
+            !next_turn
                 .tool_definitions()
                 .expect("next tool definitions")
                 .iter()
                 .any(|definition| definition.name.as_str() == "hidden_tool"),
-            "capability_info promotes the inspected tool for the next turn"
+            "capability_info discloses for the turn but never promotes into tools[]"
         );
     }
 
@@ -2870,12 +2858,7 @@ mod tests {
                 .map(|definition| definition.capability_id.as_str().to_string())
                 .collect()
         };
-        let promoted_by_scope = Arc::new(Mutex::new(HashMap::new()));
-        let mut port = disclosure_port(
-            Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
-            context,
-            Arc::clone(&promoted_by_scope),
-        );
+        let mut port = disclosure_port(Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>, context);
         port.mentions = Arc::clone(&mentions);
         port.visible_capabilities(VisibleCapabilityRequest)
             .await
@@ -2898,7 +2881,6 @@ mod tests {
         let mut next_turn = disclosure_port(
             inner as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            promoted_by_scope,
         );
         next_turn.mentions = mentions;
         next_turn
@@ -2938,7 +2920,6 @@ mod tests {
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
         port.visible_capabilities(VisibleCapabilityRequest)
             .await
@@ -3012,7 +2993,6 @@ mod tests {
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
         port.visible_capabilities(VisibleCapabilityRequest)
             .await
@@ -3069,7 +3049,6 @@ mod tests {
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
         port.visible_capabilities(VisibleCapabilityRequest)
             .await
@@ -3155,11 +3134,9 @@ mod tests {
             registered_calls: Mutex::new(Vec::new()),
             invocations: Mutex::new(Vec::new()),
         });
-        let promoted_by_scope = Arc::new(Mutex::new(HashMap::new()));
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::clone(&promoted_by_scope),
         );
 
         port.visible_capabilities(VisibleCapabilityRequest)
@@ -3197,15 +3174,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gate_suspended_target_is_promoted_so_it_survives_the_resume() {
+    async fn gate_suspended_target_stays_callable_across_the_resume_without_promotion() {
         // Regression: a tool the model dispatched that paused on an approval/auth
-        // gate must stay model-visible across the resume, exactly like a completed
-        // dispatch. Otherwise the per-turn disclosed set resets on resume, the tool
-        // drops off the surface, and the model's retry is hard-rejected by the
-        // visible-surface filter ("outside the model-visible capability view") —
-        // discarding the response and borking the run. Only *invoked* tools promote
-        // (completed or gate-suspended), so a mere search/describe still does not,
-        // and the advertised surface does not balloon toward "all tools".
+        // gate must stay callable across the resume. Otherwise the per-turn
+        // disclosed set resets on resume and the model's retry is hard-rejected
+        // by the visible-surface filter ("outside the model-visible capability
+        // view") — discarding the response and borking the run. This used to be
+        // solved by promoting the tool into tools[]; it is now solved by the
+        // callable view carrying the whole authorized catalog, so tools[] stays
+        // frozen and the prompt-cache prefix survives the gate.
         let definitions = vec![
             provider_definition("fixture.read_file", "read_file", "Read a file"),
             provider_definition("fixture.suspends", "suspends_tool", "Needs approval"),
@@ -3221,11 +3198,9 @@ mod tests {
             registered_calls: Mutex::new(Vec::new()),
             invocations: Mutex::new(Vec::new()),
         });
-        let promoted_by_scope = Arc::new(Mutex::new(HashMap::new()));
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::clone(&promoted_by_scope),
         );
 
         port.visible_capabilities(VisibleCapabilityRequest)
@@ -3264,25 +3239,42 @@ mod tests {
             "the gate must park the call (a re-entrant Blocked gate), not complete it"
         );
 
-        // The resume is a fresh decorator instance (new turn state) sharing the
-        // promoted store, exactly like the live BlockedApproval resume. The
-        // gate-blocked tool must still be advertised.
+        // The resume is a fresh decorator instance (new turn state), exactly
+        // like the live BlockedApproval resume.
         let next_turn = disclosure_port(
             inner as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            promoted_by_scope,
         );
-        next_turn
+        let resumed_surface = next_turn
             .visible_capabilities(VisibleCapabilityRequest)
             .await
             .expect("next visible surface");
         assert!(
-            next_turn
+            !next_turn
                 .tool_definitions()
                 .expect("next tool definitions")
                 .iter()
                 .any(|definition| definition.name.as_str() == "suspends_tool"),
-            "a gate-suspended tool must be promoted so it survives the resume"
+            "a gate-suspended tool is never promoted into tools[]"
+        );
+        assert!(
+            resumed_surface
+                .callable_capability_ids
+                .as_ref()
+                .expect("callable view")
+                .iter()
+                .any(|capability_id| capability_id.as_str() == "fixture.suspends"),
+            "the visible-surface filter must still admit the gate-suspended tool on resume"
+        );
+        let retry = provider_call("suspends_tool", json!({"path": "demo"}));
+        assert_eq!(
+            next_turn
+                .provider_tool_call_capability_ids(&retry)
+                .expect("retry resolves")
+                .provider_capability_id
+                .as_str(),
+            "fixture.suspends",
+            "the model's retry after resume resolves to the deferred target"
         );
     }
 
@@ -3313,7 +3305,6 @@ mod tests {
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
 
         let surface = port
@@ -3352,7 +3343,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_provider_encoded_builtin_dispatches_and_promotes() {
+    async fn direct_provider_encoded_builtin_dispatches_without_promotion() {
         let definitions = vec![
             provider_definition("fixture.read_file", "read_file", "Read a file"),
             provider_definition("builtin.echo", "echo", "Echo the input"),
@@ -3368,12 +3359,10 @@ mod tests {
             registered_calls: Mutex::new(Vec::new()),
             invocations: Mutex::new(Vec::new()),
         });
-        let promoted_by_scope = Arc::new(Mutex::new(HashMap::new()));
         let first_run_context = run_context(TurnId::new()).await;
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             first_run_context,
-            Arc::clone(&promoted_by_scope),
         );
 
         port.visible_capabilities(VisibleCapabilityRequest)
@@ -3458,7 +3447,6 @@ mod tests {
         let next_turn = disclosure_port(
             inner as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            promoted_by_scope,
         );
         next_turn
             .visible_capabilities(VisibleCapabilityRequest)
@@ -3466,15 +3454,15 @@ mod tests {
             .expect("next visible surface");
         let next_advertised = next_turn.tool_definitions().expect("next tool definitions");
         assert!(
-            next_advertised
+            !next_advertised
                 .iter()
                 .any(|definition| definition.name.as_str() == "echo"),
-            "successful provider-encoded direct deferred call should promote the target next turn"
+            "a dispatched deferred tool is never promoted into tools[]; it stays callable by name"
         );
     }
 
     #[tokio::test]
-    async fn direct_provider_encoded_non_builtin_extension_tool_dispatches_and_promotes() {
+    async fn direct_provider_encoded_non_builtin_extension_tool_dispatches_without_promotion() {
         // Generality guard: the forgiving direct-deferred path must resolve ANY
         // deferred tool by its provider-encoded wire name, not just `builtin__*`.
         // Production sets `ProviderToolDefinition.name` to the encoded wire name
@@ -3504,12 +3492,10 @@ mod tests {
             registered_calls: Mutex::new(Vec::new()),
             invocations: Mutex::new(Vec::new()),
         });
-        let promoted_by_scope = Arc::new(Mutex::new(HashMap::new()));
         let first_run_context = run_context(TurnId::new()).await;
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             first_run_context,
-            Arc::clone(&promoted_by_scope),
         );
 
         port.visible_capabilities(VisibleCapabilityRequest)
@@ -3594,7 +3580,6 @@ mod tests {
         let next_turn = disclosure_port(
             inner as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            promoted_by_scope,
         );
         next_turn
             .visible_capabilities(VisibleCapabilityRequest)
@@ -3602,10 +3587,10 @@ mod tests {
             .expect("next visible surface");
         let next_advertised = next_turn.tool_definitions().expect("next tool definitions");
         assert!(
-            next_advertised
+            !next_advertised
                 .iter()
                 .any(|definition| definition.name.as_str() == "gmail__send_message"),
-            "successful non-builtin direct deferred call should promote the target next turn"
+            "a dispatched deferred tool is never promoted into tools[]; it stays callable by name"
         );
     }
 
@@ -3640,7 +3625,6 @@ mod tests {
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
 
         port.visible_capabilities(VisibleCapabilityRequest)
@@ -3731,7 +3715,6 @@ mod tests {
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
         port.visible_capabilities(VisibleCapabilityRequest)
             .await
@@ -3799,7 +3782,6 @@ mod tests {
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
 
         // Build the surface first, as the real loop always does before a call.
@@ -3877,7 +3859,6 @@ mod tests {
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
         port.visible_capabilities(VisibleCapabilityRequest)
             .await
@@ -3962,7 +3943,6 @@ mod tests {
         let port = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
 
         // Build the surface first, as the real loop always does before a call.
@@ -4025,7 +4005,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn promotions_are_scoped_by_full_turn_scope_not_thread_only() {
+    async fn discovery_in_one_scope_never_changes_another_scopes_tools() {
         let inner = Arc::new(SpyPort {
             definitions: vec![
                 provider_definition("fixture.read_file", "read_file", "Read a file"),
@@ -4044,7 +4024,6 @@ mod tests {
             registered_calls: Mutex::new(Vec::new()),
             invocations: Mutex::new(Vec::new()),
         });
-        let promoted_by_scope = Arc::new(Mutex::new(HashMap::new()));
         let tenant_a_first_turn = disclosure_port(
             Arc::clone(&inner) as Arc<dyn LoopCapabilityPort>,
             run_context_for(
@@ -4055,7 +4034,6 @@ mod tests {
                 TurnId::new(),
             )
             .await,
-            Arc::clone(&promoted_by_scope),
         );
         tenant_a_first_turn
             .visible_capabilities(VisibleCapabilityRequest)
@@ -4114,7 +4092,6 @@ mod tests {
                 TurnId::new(),
             )
             .await,
-            promoted_by_scope,
         );
         tenant_b_next_turn
             .visible_capabilities(VisibleCapabilityRequest)
@@ -4127,7 +4104,7 @@ mod tests {
             !tenant_b_advertised
                 .iter()
                 .any(|definition| definition.name.as_str() == "hidden_tool"),
-            "promotion from tenant A must not leak to tenant B with the same thread id"
+            "tenant A's discovery must not change tenant B's tools[] for the same thread id"
         );
     }
 
@@ -4147,7 +4124,6 @@ mod tests {
         let port = disclosure_port(
             inner as Arc<dyn LoopCapabilityPort>,
             run_context(TurnId::new()).await,
-            Arc::new(Mutex::new(HashMap::new())),
         );
         port.visible_capabilities(VisibleCapabilityRequest)
             .await
@@ -4332,22 +4308,19 @@ mod tests {
     fn disclosure_port(
         inner: Arc<dyn LoopCapabilityPort>,
         run_context: LoopRunContext,
-        promoted_by_scope: Arc<Mutex<HashMap<PromotionScopeKey, PromotedSet>>>,
     ) -> ToolDisclosureCapabilityPort {
-        disclosure_port_with_writer(inner, run_context, promoted_by_scope, Arc::new(TestWriter))
+        disclosure_port_with_writer(inner, run_context, Arc::new(TestWriter))
     }
 
     fn disclosure_port_with_writer(
         inner: Arc<dyn LoopCapabilityPort>,
         run_context: LoopRunContext,
-        promoted_by_scope: Arc<Mutex<HashMap<PromotionScopeKey, PromotedSet>>>,
         result_writer: Arc<dyn LoopCapabilityResultWriter>,
     ) -> ToolDisclosureCapabilityPort {
         ToolDisclosureCapabilityPort {
             inner,
             run_context,
             result_writer,
-            promoted_by_scope,
             caps: DisclosureCaps {
                 max_tokens: u32::MAX,
                 max_tools: 5,

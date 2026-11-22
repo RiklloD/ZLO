@@ -12,14 +12,10 @@ use sha2::{Digest, Sha256};
 use ironclaw_host_api::turn::LoopMessageRef;
 
 use super::{
-    AgentLoopHostError, AgentLoopHostErrorKind, CapabilityDescriptionTrust,
-    CapabilityDescriptorView, LoopContextBundle, LoopContextMessage, LoopContextSnippet,
-    LoopInlineMessage, LoopInlineMessageRole, LoopModelMessage, LoopRunContext,
+    AgentLoopHostError, AgentLoopHostErrorKind, LoopContextBundle, LoopContextMessage,
+    LoopContextSnippet, LoopInlineMessage, LoopInlineMessageRole, LoopModelMessage, LoopRunContext,
     PromptSkillContextMetadata, SkillTrustLevel, VisibleCapabilitySurface,
-    prompt_text::{
-        PromptTextSurface, PromptTextValidationError, validate_model_safe_text,
-        validate_prompt_text, validate_prompt_text_with_diagnostics,
-    },
+    prompt_text::{PromptTextSurface, validate_model_safe_text, validate_prompt_text},
     runtime_context::LoopRuntimeContext,
     skill_snippet_model_message_ref,
     snippet_ref::{sanitize_ref_suffix, stable_skill_snippet_display_hash},
@@ -27,6 +23,10 @@ use super::{
 
 const CAPABILITY_SURFACE_USAGE_POLICY: &str =
     include_str!("../prompts/capability_surface_usage_policy.md");
+/// Header of the static capability-policy system message. Paired with a
+/// fixed source ref so the message ref never varies with the surface version.
+const CAPABILITY_POLICY_HEADER: &str = "Capability policy:\n";
+const CAPABILITY_POLICY_SOURCE_REF: &str = "capability-policy";
 /// Single delivery-guidance block: how to route content off the current
 /// conversation (`builtin__outbound_deliver`/`builtin__outbound_delivery_targets_list`)
 /// versus act-as-user integration messaging tools. Rendered by
@@ -342,16 +342,18 @@ impl InstructionBundleBuilder {
             )?;
         }
 
-        if let Some(surface) = request
+        // Only the presence of a non-empty surface matters here: its version
+        // and descriptors reach the model through native tool definitions,
+        // never through the cache-sensitive leading system run.
+        if request
             .visible_surface
-            .filter(|surface| !surface.descriptors.is_empty())
+            .is_some_and(|surface| !surface.descriptors.is_empty())
         {
             requires_materialization_store = true;
-            push_visible_surface(
+            push_capability_policy(
                 &mut messages,
                 &mut materialized_messages,
                 &mut fingerprint,
-                surface,
                 &mut synthetic_refs,
             )?;
         }
@@ -728,75 +730,41 @@ fn inline_role(role: LoopInlineMessageRole) -> &'static str {
     }
 }
 
-fn push_visible_surface(
+/// Push the static capability-usage policy into the leading system run.
+///
+/// Native `tools[]` definitions are the model's authoritative capability
+/// listing, so this section deliberately carries neither the visible-surface
+/// version nor a per-capability id/name/description dump. Both used to live
+/// here: the dump duplicated every advertised schema's description each call,
+/// and because the version and the descriptor set change whenever the surface
+/// does (an activated extension, a discovered deferred tool), any change
+/// rewrote the leading system message and invalidated the provider's
+/// prompt-cache prefix for the rest of the run. The policy text is a compiled
+/// asset, so this message — its content, ref, and fingerprint contribution —
+/// is byte-identical for every bundle that has a non-empty surface.
+fn push_capability_policy(
     messages: &mut Vec<LoopModelMessage>,
     materialized_messages: &mut Vec<InstructionBundleMaterializedMessage>,
     fingerprint: &mut Sha256,
-    mut surface: VisibleCapabilitySurface,
     synthetic_refs: &mut SyntheticMessageRefRegistry,
 ) -> Result<(), AgentLoopHostError> {
-    surface
-        .descriptors
-        .sort_by(|a, b| a.capability_id.cmp(&b.capability_id));
-    surface
-        .descriptors
-        .retain(|descriptor| match validate_surface_descriptor(descriptor) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(
-                    capability_id = descriptor.capability_id.as_str(),
-                    field = error.field,
-                    check = "structural prompt-text check",
-                    error_safe_summary = %error.rejection.host_error().safe_summary,
-                    "capability omitted from model prompt because its descriptor is not model-safe"
-                );
-                false
-            }
-        });
     let capability_policy = capability_surface_usage_policy()?;
-    let mut summary = format!("surface {}", surface.version.as_str());
-    summary.push_str("\nPolicy:\n");
+    let mut summary = String::from(CAPABILITY_POLICY_HEADER);
     summary.push_str(capability_policy);
-    summary.push_str("\nCapabilities:");
-    if surface.descriptors.is_empty() {
-        summary.push_str("\n(none)");
-    }
-    for descriptor in &surface.descriptors {
-        summary.push_str("\n- id: ");
-        summary.push_str(descriptor.capability_id.as_str());
-        summary.push_str("\n  name: ");
-        summary.push_str(&descriptor.safe_name);
-        summary.push_str("\n  description: ");
-        summary.push_str(&descriptor.safe_description);
-    }
     let content_ref = synthetic_message_ref(
         "surface",
-        surface.version.as_str(),
+        CAPABILITY_POLICY_SOURCE_REF,
         &summary,
         0,
         synthetic_refs,
     )?;
     feed_field(fingerprint, b"section", b"surface");
     feed_field(fingerprint, b"ref", content_ref.as_str().as_bytes());
-    feed_field(fingerprint, b"version", surface.version.as_str().as_bytes());
     feed_field(
         fingerprint,
         b"capability_policy",
         capability_policy.as_bytes(),
     );
-    for descriptor in &surface.descriptors {
-        feed_field(
-            fingerprint,
-            b"capability",
-            descriptor.capability_id.as_str().as_bytes(),
-        );
-        feed_field(fingerprint, b"name", descriptor.safe_name.as_bytes());
-        feed_field(
-            fingerprint,
-            b"description",
-            descriptor.safe_description.as_bytes(),
-        );
-    }
     materialized_messages.push(InstructionBundleMaterializedMessage {
         role: "system".to_string(),
         content_ref: content_ref.clone(),
@@ -824,41 +792,6 @@ fn normalized_capability_surface_usage_policy(
         ));
     }
     Ok(policy)
-}
-
-struct SurfaceDescriptorValidationError {
-    field: &'static str,
-    rejection: Box<PromptTextValidationError>,
-}
-
-fn validate_surface_descriptor(
-    descriptor: &CapabilityDescriptorView,
-) -> Result<(), SurfaceDescriptorValidationError> {
-    validate_prompt_text_with_diagnostics(
-        descriptor.safe_name.clone(),
-        "capability safe name",
-        PromptTextSurface::SafeSummary,
-    )
-    .map_err(|rejection| SurfaceDescriptorValidationError {
-        field: "safe_name",
-        rejection: Box::new(rejection),
-    })?;
-    let description_surface = match descriptor.description_trust {
-        CapabilityDescriptionTrust::Untrusted => PromptTextSurface::SafeSummary,
-        CapabilityDescriptionTrust::VerifiedCatalog => {
-            PromptTextSurface::VerifiedCatalogDescription
-        }
-    };
-    validate_prompt_text_with_diagnostics(
-        descriptor.safe_description.clone(),
-        "capability safe description",
-        description_surface,
-    )
-    .map_err(|rejection| SurfaceDescriptorValidationError {
-        field: "safe_description",
-        rejection: Box::new(rejection),
-    })?;
-    Ok(())
 }
 
 fn snippet_message_ref(
@@ -1044,7 +977,10 @@ mod tests {
     use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, ThreadId};
 
     use super::*;
-    use crate::{LoopInlineMessageBody, ResolvedRunProfile};
+    use crate::{
+        CapabilityDescriptionTrust, CapabilityDescriptorView, LoopInlineMessageBody,
+        ResolvedRunProfile,
+    };
     use ironclaw_host_api::turn::{RunProfileId, RunProfileVersion, TurnId, TurnRunId, TurnScope};
 
     #[test]
@@ -1193,88 +1129,162 @@ mod tests {
         );
     }
 
-    fn capability_description_surface(
-        trust: CapabilityDescriptionTrust,
-        description: &str,
+    fn surface_with(
+        version: &str,
+        descriptors: &[(&str, &str, CapabilityDescriptionTrust)],
     ) -> VisibleCapabilitySurface {
         VisibleCapabilitySurface {
-            version: crate::CapabilitySurfaceVersion::new("surface:auth-vocab").unwrap(),
-            descriptors: vec![CapabilityDescriptorView {
-                capability_id: ironclaw_host_api::ids::CapabilityId::new(
-                    "builtin.extension_register_hosted_mcp",
+            version: crate::CapabilitySurfaceVersion::new(version).unwrap(),
+            descriptors: descriptors
+                .iter()
+                .map(
+                    |(capability_id, description, trust)| CapabilityDescriptorView {
+                        capability_id: ironclaw_host_api::ids::CapabilityId::new(*capability_id)
+                            .unwrap(),
+                        provider: None,
+                        runtime: ironclaw_host_api::runtime::RuntimeKind::FirstParty,
+                        safe_name: capability_id.replace('.', "__"),
+                        safe_description: description.to_string(),
+                        description_trust: *trust,
+                        parameters_schema: serde_json::json!({"type": "object"}),
+                    },
                 )
-                .unwrap(),
-                provider: None,
-                runtime: ironclaw_host_api::runtime::RuntimeKind::FirstParty,
-                safe_name: "extension_register_hosted_mcp".to_string(),
-                safe_description: description.to_string(),
-                description_trust: trust,
-                parameters_schema: serde_json::json!({"type": "object"}),
-            }],
+                .collect(),
             callable_capability_ids: None,
         }
     }
 
-    fn surface_summary_for(trust: CapabilityDescriptionTrust, description: &str) -> String {
-        let bundle = InstructionBundleBuilder::new(test_context())
+    fn bundle_for_surface(surface: Option<VisibleCapabilitySurface>) -> InstructionBundle {
+        bundle_for_surface_in(test_context(), surface)
+    }
+
+    fn bundle_for_surface_in(
+        context: LoopRunContext,
+        surface: Option<VisibleCapabilitySurface>,
+    ) -> InstructionBundle {
+        InstructionBundleBuilder::new(context)
             .build(InstructionBundleRequest {
                 context_bundle: LoopContextBundle::default(),
-                visible_surface: Some(capability_description_surface(trust, description)),
+                visible_surface: surface,
                 safety_context: None,
                 runtime_context: None,
                 inline_messages: Vec::new(),
             })
-            .expect("instruction bundle builds");
+            .expect("instruction bundle builds")
+    }
+
+    fn system_messages(bundle: &InstructionBundle) -> Vec<(String, String)> {
         bundle
             .materialized_messages
             .iter()
-            .find(|message| message.model_content.starts_with("surface "))
-            .expect("surface summary message")
-            .model_content
-            .clone()
+            .filter(|message| message.role == "system")
+            .map(|message| {
+                (
+                    message.content_ref.as_str().to_string(),
+                    message.model_content.clone(),
+                )
+            })
+            .collect()
     }
 
-    /// Host-verified descriptions legitimately mention auth flows and remain
-    /// intact until the source-independent provider-bound redaction pass.
+    /// Native `tools[]` already carry every advertised capability's name,
+    /// description, and schema. The leading system run must not repeat them,
+    /// nor stamp the mutable surface version — either duplicates thousands of
+    /// tokens per call and rewrites the provider's cached prompt prefix.
     #[test]
-    fn verified_catalog_descriptions_with_auth_vocabulary_stay_on_the_surface() {
-        let summary = surface_summary_for(
-            CapabilityDescriptionTrust::VerifiedCatalog,
-            "Choose oauth for a browser authorization-code flow.",
-        );
+    fn native_tool_surface_never_dumps_descriptors_or_version_into_system_prompt() {
+        let description = "Use Authorization: Bearer ghp_secretvalue123 for oauth flows.";
+        let bundle = bundle_for_surface(Some(surface_with(
+            "surface:auth-vocab",
+            &[
+                (
+                    "builtin.extension_register_hosted_mcp",
+                    description,
+                    CapabilityDescriptionTrust::VerifiedCatalog,
+                ),
+                (
+                    "github.get_repo",
+                    "Fetch one repository.",
+                    CapabilityDescriptionTrust::Untrusted,
+                ),
+            ],
+        )));
+        let systems = system_messages(&bundle);
+        assert_eq!(systems.len(), 1, "one static policy message: {systems:?}");
+        let (content_ref, content) = &systems[0];
+        assert!(content.starts_with(CAPABILITY_POLICY_HEADER));
+        assert!(content.contains("Use only visible capabilities."));
+        for leaked in [
+            "surface:auth-vocab",
+            "surface ",
+            "Capabilities:",
+            "builtin.extension_register_hosted_mcp",
+            "extension_register_hosted_mcp",
+            "github.get_repo",
+            description,
+            "Fetch one repository.",
+        ] {
+            assert!(
+                !content.contains(leaked),
+                "system prompt duplicated surface data {leaked:?}: {content}"
+            );
+        }
         assert!(
-            summary.contains("builtin.extension_register_hosted_mcp"),
-            "verified-catalog description must stay on the prompt surface: {summary}"
+            !content_ref.contains("auth-vocab"),
+            "the policy message ref must not embed the surface version: {content_ref}"
         );
     }
 
-    /// Ordinary security vocabulary is data, not a credential or an authority
-    /// claim, even when its provenance is untrusted.
+    /// Regression for the prompt-cache collapse: discovering a deferred tool or
+    /// activating an extension changes the surface version and descriptor set,
+    /// which used to rewrite the leading system message every time. The policy
+    /// message — content, ref, and fingerprint — is now byte-identical.
     #[test]
-    fn untrusted_descriptions_with_auth_vocabulary_stay_on_the_surface() {
-        let summary = surface_summary_for(
-            CapabilityDescriptionTrust::Untrusted,
-            "Choose oauth for a browser authorization-code flow.",
+    fn capability_policy_is_byte_stable_across_surface_changes() {
+        let context = test_context();
+        let before = bundle_for_surface_in(
+            context.clone(),
+            Some(surface_with(
+                "surface:v1",
+                &[(
+                    "builtin.read_file",
+                    "Read a file.",
+                    CapabilityDescriptionTrust::Untrusted,
+                )],
+            )),
         );
-        assert!(
-            summary.contains("builtin.extension_register_hosted_mcp"),
-            "ordinary auth vocabulary must stay on the prompt surface: {summary}"
+        let after = bundle_for_surface_in(
+            context,
+            Some(surface_with(
+                "surface:v2-after-discovery",
+                &[
+                    (
+                        "builtin.read_file",
+                        "Read a file.",
+                        CapabilityDescriptionTrust::Untrusted,
+                    ),
+                    (
+                        "google-calendar.list_events",
+                        "List calendar events.",
+                        CapabilityDescriptionTrust::VerifiedCatalog,
+                    ),
+                ],
+            )),
         );
+        assert_eq!(system_messages(&before), system_messages(&after));
+        assert_eq!(before.messages, after.messages);
+        assert_eq!(before.fingerprint, after.fingerprint);
     }
 
     #[test]
-    fn untrusted_descriptions_with_credential_values_reach_final_redaction_boundary() {
-        let summary = surface_summary_for(
-            CapabilityDescriptionTrust::Untrusted,
-            "Use Authorization: Bearer ghp_secretvalue123.",
-        );
+    fn empty_or_absent_surface_emits_no_capability_policy() {
+        assert!(system_messages(&bundle_for_surface(None)).is_empty());
         assert!(
-            summary.contains("builtin.extension_register_hosted_mcp"),
-            "credential content must not remove the capability from the prompt surface: {summary}"
-        );
-        assert!(
-            summary.contains("ghp_secretvalue123"),
-            "the contract preserves source data for the provider-bound redaction pass: {summary}"
+            system_messages(&bundle_for_surface(Some(surface_with(
+                "surface:empty",
+                &[]
+            ))))
+            .is_empty()
         );
     }
 

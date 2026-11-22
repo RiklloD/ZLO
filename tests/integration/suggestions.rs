@@ -619,17 +619,20 @@ async fn generate_suggestions_returns_cards_and_cached_replay() -> HarnessResult
     // feature guarantees rather than an exact set that would churn whenever the
     // bundled first-party catalogue changes.
     //
-    // Read-only discovery tools still reach the model.
-    for expected in [
-        "builtin__extension_search",
-        "ironclaw__memory__read",
-        "ironclaw__memory__search",
-        "ironclaw__memory__tree",
-    ] {
+    // Read-only discovery tools still reach the model. They are deferred
+    // behind `tool_search` (the slim always-on core keeps the provider prompt
+    // prefix small and stable), so the catalog index must name their
+    // namespaces for the model to find them.
+    let tool_search_index = generation_tools[0]
+        .iter()
+        .find(|definition| definition.name == "tool_search")
+        .map(|definition| definition.description.clone())
+        .ok_or("suggestion surface must advertise tool_search")?;
+    for namespace in ["extensions", "memory"] {
         assert!(
-            observed_generation_tool_names.contains(expected),
-            "read-only discovery tool {expected} must remain on the suggestion \
-             surface (observed {observed_generation_tool_names:?})"
+            tool_search_index.contains(&format!("\n- {namespace} (")),
+            "read-only discovery namespace {namespace} must stay reachable through \
+             tool_search (index: {tool_search_index})"
         );
     }
     // Pin the WHOLE surface. Deliberately brittle: any capability newly
@@ -646,31 +649,22 @@ async fn generate_suggestions_returns_cards_and_cached_replay() -> HarnessResult
     //
     // `tool_search`/`tool_describe`/`tool_call` are progressive-disclosure
     // bridges: this surface is large enough to exceed the disclosure token
-    // budget, so the model is handed the bridges instead of every schema.
+    // budget, so the model is handed the slim always-on core plus the bridges
+    // instead of every schema. Everything else above (extension lifecycle,
+    // memory, http, time, skills, triggers) stays reachable via `tool_search`
+    // + `tool_call` under the same permission narrowing.
     let expected_autonomous_surface = BTreeSet::from(
         [
             "builtin__apply_patch",
-            "builtin__extension_install",
-            "builtin__extension_register_hosted_mcp",
-            "builtin__extension_remove",
-            "builtin__extension_search",
             "builtin__glob",
             "builtin__grep",
-            "builtin__http",
             "builtin__list_dir",
             "builtin__outbound_deliver",
             "builtin__outbound_delivery_targets_list",
             "builtin__read_file",
             "builtin__result_read",
             "builtin__shell",
-            "builtin__skill_list",
-            "builtin__time",
-            "builtin__trigger_list",
             "builtin__write_file",
-            "ironclaw__memory__read",
-            "ironclaw__memory__search",
-            "ironclaw__memory__tree",
-            "ironclaw__memory__write",
             "tool_call",
             "tool_describe",
             "tool_search",
@@ -1421,12 +1415,15 @@ async fn disabling_global_auto_approve_shrinks_the_autonomous_surface() -> Harne
     );
 
     // Everything `ask_writes` gates must leave once nothing is auto-approved.
+    // Only always-on core tools are checked here: gated deferred tools
+    // (`builtin__http`, `builtin__extension_install`) never appear in tools[]
+    // on the wide default-on surface — they ride `tool_search`, whose catalog
+    // is built from the same permitted set (pinned by the policy-narrowing
+    // cases in `tool_disclosure.rs`).
     for gated in [
         "builtin__shell",
         "builtin__write_file",
-        "builtin__http",
         "builtin__outbound_deliver",
-        "builtin__extension_install",
     ] {
         assert!(
             with_default_on.contains(gated),
