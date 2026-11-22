@@ -23,6 +23,10 @@ use super::{FIRST_PARTY_MAX_OUTPUT_BYTES, first_party_capability_manifest};
 
 #[path = "shell_core.rs"]
 mod shell_core;
+#[path = "shell_read_only.rs"]
+mod shell_read_only;
+
+pub use shell_read_only::{ApprovalReason, ShellCommandClass, classify_read_only_shell_command};
 
 pub const SHELL_CAPABILITY_ID: &str = "builtin.shell";
 

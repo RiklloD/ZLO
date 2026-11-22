@@ -75,7 +75,10 @@ pub use memory::{
 pub use outbound_deliver::OUTBOUND_DELIVER_CAPABILITY_ID;
 pub use plan_update::PLAN_UPDATE_CAPABILITY_ID;
 pub use reply_attachment::ATTACH_WORKSPACE_FILE_TO_REPLY_CAPABILITY_ID;
-pub use shell::SHELL_CAPABILITY_ID;
+pub use shell::{
+    ApprovalReason as ShellApprovalReason, SHELL_CAPABILITY_ID, ShellCommandClass,
+    classify_read_only_shell_command,
+};
 pub use skill_management::{
     SKILL_AUTO_ACTIVATE_SET_CAPABILITY_ID, SKILL_INSTALL_CAPABILITY_ID, SKILL_LIST_CAPABILITY_ID,
     SKILL_REMOVE_CAPABILITY_ID, SKILL_UPDATE_CAPABILITY_ID,
@@ -974,10 +977,23 @@ pub(super) fn normalize_optional_null_sentinels_against_schema(
             }
         }
     }
+    // An unconstrained property (no `type`, no combinator, no enum — e.g.
+    // `builtin.json`'s `data`, "JSON text or value") accepts `null` and the
+    // JSON text `"null"` as real payloads, so the sentinel rule never applies
+    // to it. Before the json schema was flattened this held only because
+    // `data` sat in every operation branch's `required`; it is now a property
+    // of the field itself. Constrained untyped fields (time's string-or-number
+    // `oneOf` timestamps) still drop sentinels.
     let declared: std::collections::HashSet<&str> = schema
         .get("properties")
         .and_then(|value| value.as_object())
-        .map(|properties| properties.keys().map(String::as_str).collect())
+        .map(|properties| {
+            properties
+                .iter()
+                .filter(|(_, property)| !property_accepts_any_value(property))
+                .map(|(name, _)| name.as_str())
+                .collect()
+        })
         .unwrap_or_default();
     let Some(object) = input.as_object_mut() else {
         return;
@@ -987,6 +1003,16 @@ pub(super) fn normalize_optional_null_sentinels_against_schema(
             && !required.contains(key)
             && (value.as_str() == Some("null") || value.is_null()))
     });
+}
+
+fn property_accepts_any_value(property: &serde_json::Value) -> bool {
+    const CONSTRAINING_KEYWORDS: [&str; 7] =
+        ["type", "oneOf", "anyOf", "allOf", "enum", "const", "not"];
+    property.as_object().is_some_and(|object| {
+        !CONSTRAINING_KEYWORDS
+            .iter()
+            .any(|keyword| object.contains_key(*keyword))
+    })
 }
 
 fn resource_profile() -> Option<ResourceProfile> {

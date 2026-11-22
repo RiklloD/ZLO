@@ -64,6 +64,8 @@ pub(super) enum LineEnding {
 pub(super) enum MatchMethod {
     Exact,
     FuzzyNormalization,
+    /// Lines addressed by verified `LINE:HASH` anchors rather than matched text.
+    LineAnchor,
 }
 
 impl MatchMethod {
@@ -71,6 +73,7 @@ impl MatchMethod {
         match self {
             MatchMethod::Exact => "Exact",
             MatchMethod::FuzzyNormalization => "FuzzyNormalization",
+            MatchMethod::LineAnchor => "LineAnchor",
         }
     }
 }

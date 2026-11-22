@@ -767,75 +767,24 @@ async fn visible_surface_resolves_builtin_first_party_input_schema_refs() {
             .is_err(),
         "apply_patch schema should reject empty edits"
     );
+    // The schema is flat (no top-level oneOf/allOf), so the cross-field
+    // rules — single edit XOR `edits`, no active "null" placeholder,
+    // `replace_all` with exactly one edit — are enforced by the apply_patch
+    // parser at dispatch. They are pinned through the caller by
+    // `builtin_apply_patch_rejects_every_retired_schema_shape_at_dispatch`
+    // (first_party_builtin_tools_coding_batch.rs).
     assert!(
-        apply_patch_validator
-            .validate(&json!({
-                "path": "/workspace/main.rs",
-                "old_string": "null",
-                "new_string": "new"
-            }))
-            .is_err(),
-        "apply_patch schema should reject active string null old_string placeholder"
+        ["oneOf", "anyOf", "allOf", "if"]
+            .iter()
+            .all(|keyword| apply_patch_schema.get(*keyword).is_none()),
+        "apply_patch schema must stay flat at the top level"
     );
-    assert!(
-        apply_patch_validator
-            .validate(&json!({
-                "path": "/workspace/main.rs",
-                "old_string": "old",
-                "new_string": "null"
-            }))
-            .is_err(),
-        "apply_patch schema should reject active string null new_string placeholder"
-    );
-    assert!(
-        apply_patch_validator
-            .validate(&json!({
-                "path": "/workspace/main.rs",
-                "edits": [
-                    {"old_string": "old", "new_string": "new"},
-                    {"old_string": "other", "new_string": "replacement"}
-                ],
-                "replace_all": true
-            }))
-            .is_err(),
-        "apply_patch schema should reject replace_all with multiple edits"
-    );
-    assert!(
-        apply_patch_validator
-            .validate(&json!({
-                "path": "/workspace/main.rs",
-                "old_string": "null",
-                "new_string": null,
-                "edits": [
-                    {"old_string": "old", "new_string": "new"},
-                    {"old_string": "other", "new_string": "replacement"}
-                ],
-                "replace_all": true
-            }))
-            .is_err(),
-        "apply_patch schema should reject replace_all multi-edit even with placeholders"
-    );
-    assert!(
-        apply_patch_validator
-            .validate(&json!({
-                "path": "/workspace/main.rs",
-                "old_string": "old",
-                "new_string": "new",
-                "edits": [{"old_string": "old", "new_string": "new"}]
-            }))
-            .is_err(),
-        "apply_patch schema should reject complete single-edit shape mixed with edits array"
-    );
-    assert!(
-        apply_patch_validator
-            .validate(&json!({
-                "path": "/workspace/main.rs",
-                "old_string": "old",
-                "edits": [{"old_string": "old", "new_string": "new"}]
-            }))
-            .is_err(),
-        "apply_patch schema should reject mixed top-level edit shapes"
-    );
+    apply_patch_validator
+        .validate(&json!({
+            "path": "/workspace/main.rs",
+            "edits": [{"anchor": "12:a3f0", "end_anchor": "14:9b2c", "new_string": "x"}]
+        }))
+        .expect("apply_patch schema should accept line-anchored edits");
 
     let trigger_create = surface
         .capabilities

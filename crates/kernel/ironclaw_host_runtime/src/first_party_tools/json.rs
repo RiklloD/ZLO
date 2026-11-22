@@ -39,6 +39,7 @@ pub(super) async fn dispatch(
         .get("operation")
         .and_then(Value::as_str)
         .ok_or_else(input_error)?;
+    reject_fields_outside_operation(input, operation)?;
     match operation {
         "parse" => {
             let data = input.get("data").ok_or_else(input_error)?;
@@ -140,15 +141,48 @@ pub(super) async fn dispatch(
             aggregate(request, &value).await
         }
         "validate" => {
-            let valid = input
-                .get("data")
-                .and_then(Value::as_str)
-                .map(|text| serde_json::from_str::<Value>(text).is_ok())
-                .unwrap_or(false);
+            let text = input.get("data").and_then(Value::as_str).ok_or_else(|| {
+                structured_input_error(
+                    "JSON validate input failed validation",
+                    "data",
+                    "JSON text as a string",
+                    input.get("data").map_or("missing", json_type),
+                )
+            })?;
+            let valid = serde_json::from_str::<Value>(text).is_ok();
             Ok(json!({ "valid": valid }))
         }
         _ => Err(input_error()),
     }
+}
+
+/// The input schema is a flat object (no per-operation `oneOf`), so the
+/// per-operation field contract it used to encode is enforced here: the
+/// inline-only operations (`parse`, `stringify`, `validate`) take neither a
+/// workspace `file_path` nor a traversal `path`. The collection operations'
+/// exactly-one-of `data`/`file_path` rule is enforced by `query_input`.
+fn reject_fields_outside_operation(
+    input: &Value,
+    operation: &str,
+) -> Result<(), FirstPartyCapabilityError> {
+    if !matches!(operation, "parse" | "stringify" | "validate") {
+        return Ok(());
+    }
+    let issues = ["file_path", "path"]
+        .into_iter()
+        .filter(|field| input.get(*field).is_some())
+        .map(|field| {
+            DispatchInputIssue::new(field, DispatchInputIssueCode::InvalidValue)
+                .expected("omitted for parse, stringify, and validate (inline data only)")
+        })
+        .collect::<Vec<_>>();
+    if issues.is_empty() {
+        return Ok(());
+    }
+    Err(FirstPartyCapabilityError::invalid_input_issues(
+        "JSON input failed validation",
+        issues,
+    ))
 }
 
 fn select<'a>(input: &Value, value: &'a Value) -> Result<&'a Value, FirstPartyCapabilityError> {
@@ -846,6 +880,79 @@ mod tests {
         assert_eq!(
             unresolved_error.safe_summary(),
             Some("JSON query path did not resolve")
+        );
+    }
+
+    /// The flat input schema no longer carries the per-operation `oneOf`, so
+    /// dispatch is now the single place the per-operation field contract is
+    /// enforced. Every shape the retired branches rejected must still fail
+    /// here with a structured invalid-input issue naming the field.
+    #[tokio::test]
+    async fn flat_schema_per_operation_contract_is_enforced_at_dispatch() {
+        let rejected = [
+            (
+                json!({"operation": "parse", "data": "{}", "file_path": "/workspace/a.json"}),
+                "file_path",
+            ),
+            (
+                json!({"operation": "parse", "data": "{}", "path": "a"}),
+                "path",
+            ),
+            (
+                json!({"operation": "stringify", "data": {"a": 1}, "path": "a"}),
+                "path",
+            ),
+            (
+                json!({"operation": "validate", "data": "{}", "file_path": "/workspace/a.json"}),
+                "file_path",
+            ),
+            (json!({"operation": "validate"}), "data"),
+            (json!({"operation": "validate", "data": {"a": 1}}), "data"),
+            (
+                json!({"operation": "query", "data": {"a": 1}, "file_path": "/workspace/a.json", "path": "a"}),
+                "data",
+            ),
+        ];
+        for (input, field) in rejected {
+            let error = dispatch(&request(input.clone()))
+                .await
+                .expect_err("retired oneOf branch shape must still be rejected");
+            let crate::FirstPartyCapabilityError::Dispatch {
+                detail: Some(detail),
+                ..
+            } = error
+            else {
+                panic!("expected a structured invalid-input error for {input}");
+            };
+            let DispatchFailureDetail::InvalidInput { issues } = *detail else {
+                panic!("expected invalid-input details for {input}");
+            };
+            assert!(
+                issues.iter().any(|issue| issue.path == field),
+                "{input} must name {field}: {issues:?}"
+            );
+        }
+
+        // Every shape the retired branches accepted still dispatches.
+        assert_eq!(
+            dispatch(&request(json!({"operation": "parse", "data": "null"})))
+                .await
+                .expect("parse of JSON text null"),
+            json!(null)
+        );
+        assert_eq!(
+            dispatch(&request(json!({"operation": "validate", "data": "{"})))
+                .await
+                .expect("validate of invalid text"),
+            json!({"valid": false})
+        );
+        assert_eq!(
+            dispatch(&request(
+                json!({"operation": "query", "data": {"a": [1]}, "path": "a[0]"})
+            ))
+            .await
+            .expect("inline query"),
+            json!(1)
         );
     }
 
