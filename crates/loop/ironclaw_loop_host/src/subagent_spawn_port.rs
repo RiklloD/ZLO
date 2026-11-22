@@ -16,8 +16,8 @@ use ironclaw_host_api::turn::{
 };
 use ironclaw_host_api::{
     ids::{CapabilityId, InvocationId, ProviderToolName, ThreadId},
-    resolution::{Resolution, ResolutionBatch, Suspension},
-    result_meta::{FailureKind, LoopRef},
+    resolution::{Resolution, ResolutionBatch},
+    result_meta::FailureKind,
     runtime::RuntimeKind,
 };
 use ironclaw_loop_contracts::{
@@ -410,6 +410,14 @@ struct SpawnContext {
     gate_override: Option<TurnGateRef>,
 }
 
+/// A spawn that passed admission and holds its reserved per-turn slot, ready
+/// for the side-effecting child-creation work.
+struct PreparedSpawn<'a> {
+    spawn_slot: SpawnSlotGuard<'a>,
+    ctx: SpawnContext,
+    actor: TurnActor,
+}
+
 #[derive(Default)]
 struct SpawnCompensationState {
     /// (child_scope, child_run_id) — the parent_run_id needed for
@@ -693,7 +701,10 @@ impl SubagentSpawnCapabilityPort {
     }
 
     fn reserve_spawn_slot(&self) -> Option<SpawnSlotGuard<'_>> {
-        self.try_reserve_spawn_slot().then_some(SpawnSlotGuard {
+        // Lazy `then`, never eager `then_some`: building the guard when the
+        // reservation failed would drop it immediately and release a slot it
+        // never held, letting later spawns exceed `max_spawn_per_turn`.
+        self.try_reserve_spawn_slot().then(|| SpawnSlotGuard {
             port: self,
             active: true,
         })
@@ -721,34 +732,43 @@ impl SubagentSpawnCapabilityPort {
         gate_override: Option<TurnGateRef>,
         provider_call_id: String,
     ) -> Result<Resolution, AgentLoopHostError> {
+        let prepared = match self.prepare_spawn(&args, gate_override).await? {
+            Ok(prepared) => prepared,
+            Err(rejection) => return Ok(rejection),
+        };
         let mut compensation = SpawnCompensationState::default();
-        self.handle_spawn_with_gate_recording(
+        self.finish_prepared_spawn(
+            prepared,
             invocation,
             args,
-            gate_override,
             provider_call_id,
             &mut compensation,
         )
         .await
     }
 
-    async fn handle_spawn_with_gate_recording(
+    /// Admission half of a spawn: reserves the per-turn spawn slot and runs
+    /// every read-only precheck (scope, actor, depth, nesting, flavor). It has
+    /// no side effects beyond the slot, which the returned guard releases on
+    /// drop, so a rejection or error here never needs compensation.
+    ///
+    /// Batched fan-out calls this serially in invocation order, so slots are
+    /// granted to the earliest invocations exactly as a sequential batch
+    /// would grant them, before any child-creation work runs concurrently.
+    async fn prepare_spawn(
         &self,
-        invocation: &LoopRequest,
-        args: SpawnSubagentArgs,
+        args: &SpawnSubagentArgs,
         gate_override: Option<TurnGateRef>,
-        provider_call_id: String,
-        compensation: &mut SpawnCompensationState,
-    ) -> Result<Resolution, AgentLoopHostError> {
+    ) -> Result<Result<PreparedSpawn<'_>, Resolution>, AgentLoopHostError> {
         let Some(spawn_slot) = self.reserve_spawn_slot() else {
-            return Ok(spawn_rejected("fanout_cap_exceeded"));
+            return Ok(Err(spawn_rejected("fanout_cap_exceeded")));
         };
 
         let Some(agent_id) = self.run_context.scope.agent_id.clone() else {
-            return Ok(spawn_rejected("spawn_requires_agent_scope"));
+            return Ok(Err(spawn_rejected("spawn_requires_agent_scope")));
         };
         let Some(actor) = self.run_context.actor.clone() else {
-            return Ok(spawn_rejected("spawn_requires_actor"));
+            return Ok(Err(spawn_rejected("spawn_requires_actor")));
         };
         let owner_user_id = actor.user_id.clone();
         let parent_record = self
@@ -765,7 +785,7 @@ impl SubagentSpawnCapabilityPort {
             })?;
         let child_depth = parent_record.subagent_depth.saturating_add(1);
         if child_depth > self.limits.max_depth {
-            return Ok(spawn_rejected("depth_cap_exceeded"));
+            return Ok(Err(spawn_rejected("depth_cap_exceeded")));
         }
         let parent_definition = self
             .deps
@@ -774,10 +794,10 @@ impl SubagentSpawnCapabilityPort {
             .await?;
         match parent_definition {
             Some(parent_definition) if !parent_definition.allow_nesting => {
-                return Ok(spawn_rejected("nesting_not_permitted"));
+                return Ok(Err(spawn_rejected("nesting_not_permitted")));
             }
             None if parent_record.subagent_depth > 0 => {
-                return Ok(spawn_rejected("nesting_not_permitted"));
+                return Ok(Err(spawn_rejected("nesting_not_permitted")));
             }
             _ => {}
         }
@@ -788,37 +808,52 @@ impl SubagentSpawnCapabilityPort {
             .resolve_kind(&args.subagent_kind)
             .await?;
         let Some(definition) = resolved else {
-            return Ok(spawn_rejected("unknown_subagent_kind"));
+            return Ok(Err(spawn_rejected("unknown_subagent_kind")));
         };
 
         let child_scope = ThreadScope {
             tenant_id: self.run_context.scope.tenant_id.clone(),
             agent_id,
             project_id: self.run_context.scope.project_id.clone(),
-            owner_user_id: Some(owner_user_id.clone()),
+            owner_user_id: Some(owner_user_id),
             mission_id: None,
         };
         let child_run_id = TurnRunId::new();
         let tree_root = parent_record
             .spawn_tree_root_run_id
             .unwrap_or(self.run_context.run_id);
-        let spawn_ctx = SpawnContext {
-            definition,
-            child_scope,
-            child_run_id,
-            tree_root,
-            gate_override,
-        };
+        Ok(Ok(PreparedSpawn {
+            spawn_slot,
+            ctx: SpawnContext {
+                definition,
+                child_scope,
+                child_run_id,
+                tree_root,
+                gate_override,
+            },
+            actor,
+        }))
+    }
 
+    /// Side-effecting half of a spawn: writes the result placeholder, child
+    /// thread, and child run. Commits the reserved slot on success; on error
+    /// it rolls back this spawn's own partial effects (the slot guard
+    /// releases the slot) before returning.
+    async fn finish_prepared_spawn(
+        &self,
+        prepared: PreparedSpawn<'_>,
+        invocation: &LoopRequest,
+        args: SpawnSubagentArgs,
+        provider_call_id: String,
+        compensation: &mut SpawnCompensationState,
+    ) -> Result<Resolution, AgentLoopHostError> {
+        let PreparedSpawn {
+            spawn_slot,
+            ctx,
+            actor,
+        } = prepared;
         let result = self
-            .finish_spawn(
-                args,
-                spawn_ctx,
-                actor,
-                invocation,
-                provider_call_id,
-                compensation,
-            )
+            .finish_spawn(args, ctx, actor, invocation, provider_call_id, compensation)
             .await;
         match result {
             Ok(outcome) => {
@@ -1174,6 +1209,13 @@ impl SubagentSpawnCapabilityPort {
 
 #[async_trait]
 impl LoopCapabilityPort for SubagentSpawnCapabilityPort {
+    /// Any spawn routes the whole batch through `invoke_capability_batch`.
+    /// "Ordered" means *this port* owns the batch, not that its spawns run
+    /// serially: consecutive spawns fan out concurrently there
+    /// (`batch_fanout`). The agent loop's generic per-call parallel path
+    /// cannot coalesce blocking spawns onto one shared batch gate, reserve
+    /// slots in invocation order, or roll siblings back when one fails, so
+    /// the veto stays.
     fn requires_ordered_batch_invocation(&self, invocations: &[LoopRequest]) -> bool {
         invocations
             .iter()
@@ -1327,76 +1369,31 @@ impl LoopCapabilityPort for SubagentSpawnCapabilityPort {
         } else {
             None
         };
+        let mut plan = SpawnBatchPlan {
+            spawn_args,
+            spawn_input_denials,
+            batch_gate: batch_blocking_gate,
+            stop_on_first_suspension: request.stop_on_first_suspension,
+        };
         let mut index = 0_usize;
         while index < request.invocations.len() {
-            let invocation = &request.invocations[index];
-            if self.is_spawn(&invocation.capability_id) {
-                if let Some(denial) = spawn_input_denials.remove(&index) {
-                    resolutions.push(denial);
+            if self.is_spawn(&request.invocations[index].capability_id) {
+                let start = index;
+                while index < request.invocations.len()
+                    && self.is_spawn(&request.invocations[index].capability_id)
+                {
                     index += 1;
-                    continue;
                 }
-                let outcome = match self.authorize_spawn(invocation).await {
-                    Ok(Err(outcome)) => outcome,
-                    Ok(Ok(provider_call_id)) => {
-                        let args = match spawn_args.remove(&index) {
-                            Some(args) => args,
-                            None => {
-                                let error = AgentLoopHostError::new(
-                                    AgentLoopHostErrorKind::Invalid,
-                                    "subagent spawn args missing from pre-decode pass",
-                                );
-                                self.rollback_batch_compensation(&mut batch_compensations)
-                                    .await;
-                                return Err(error);
-                            }
-                        };
-                        let gate_override = batch_blocking_gate.clone();
-                        let mut compensation = SpawnCompensationState::default();
-                        let outcome = match self
-                            .handle_spawn_with_gate_recording(
-                                invocation,
-                                args,
-                                gate_override,
-                                provider_call_id,
-                                &mut compensation,
-                            )
-                            .await
-                        {
-                            Ok(result) => result,
-                            Err(error) => {
-                                self.rollback_batch_compensation(&mut batch_compensations)
-                                    .await;
-                                return Err(error);
-                            }
-                        };
-                        batch_compensations.push(compensation);
-                        outcome
-                    }
-                    Err(error) => {
-                        self.rollback_batch_compensation(&mut batch_compensations)
-                            .await;
-                        return Err(error);
-                    }
-                };
-                // The spawn helpers now emit the host_api `Resolution` directly; a
-                // coalesced batch-await-dependent is the `Suspended(DependentRun)`
-                // whose preserved loop-gate origin is the shared batch gate.
-                let resolution = outcome;
-                let batch_await_dependent = matches!(
-                    &resolution,
-                    Resolution::Suspended(Suspension::DependentRun { waypoint, .. })
-                        if batch_blocking_gate.as_ref().is_some_and(|batch_gate| {
-                            waypoint.origin.as_ref().map(LoopRef::as_str)
-                                == Some(batch_gate.as_str())
-                        })
-                );
-                // `parks()`, not `is_suspension()` (H1): the batch stops on any
-                // parking resolution (gate or suspension), except a coalesced
-                // batch-await-dependent which continues to accrue siblings.
-                let parks = resolution.parks();
-                resolutions.push(resolution);
-                if parks && request.stop_on_first_suspension && !batch_await_dependent {
+                let outcome = self
+                    .invoke_spawn_run(
+                        &request.invocations[start..index],
+                        start,
+                        &mut plan,
+                        &mut resolutions,
+                        &mut batch_compensations,
+                    )
+                    .await?;
+                if outcome == SpawnRunOutcome::Stopped {
                     // Suspension is a partial-success boundary, not a failed
                     // batch; prior successful spawns remain committed.
                     batch_compensations.clear();
@@ -1405,7 +1402,6 @@ impl LoopCapabilityPort for SubagentSpawnCapabilityPort {
                         stopped_on_suspension: true,
                     });
                 }
-                index += 1;
                 continue;
             }
 
@@ -1639,6 +1635,10 @@ fn mode_label(mode: SpawnSubagentMode) -> &'static str {
         SpawnSubagentMode::Background => "background",
     }
 }
+
+mod batch_fanout;
+
+use batch_fanout::{SpawnBatchPlan, SpawnRunOutcome};
 
 #[cfg(test)]
 mod tests;

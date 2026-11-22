@@ -1,7 +1,8 @@
 #![deny(clippy::let_underscore_must_use)]
 use ironclaw_loop_host::{
-    ActiveModelRouteSettings, ModelRoute, ModelRoutePolicy, ModelRouteProviderKey,
-    ModelRouteResolver, ModelSelectionMode, ModelSlot, StaticModelRouteResolver,
+    ActiveModelRouteSettings, ModelRoute, ModelRouteErrorKind, ModelRoutePolicy,
+    ModelRouteProviderKey, ModelRouteResolver, ModelRouteSource, ModelSelectionMode, ModelSlot,
+    StaticModelRouteResolver,
 };
 
 use ironclaw_llm::{LlmConfig, NearAiConfig, SessionConfig};
@@ -29,7 +30,150 @@ fn llm_config_resolves_to_default_model_route_settings() {
 
 #[test]
 fn model_slots_are_exposed_in_cli_display_order() {
-    assert_eq!(ModelSlot::all(), &[ModelSlot::Default, ModelSlot::Mission]);
+    assert_eq!(
+        ModelSlot::all(),
+        &[ModelSlot::Default, ModelSlot::Mission, ModelSlot::Cheap]
+    );
+    assert_eq!(ModelSlot::Cheap.as_str(), "cheap");
+}
+
+#[test]
+fn lightweight_role_profiles_map_to_the_cheap_slot() {
+    for profile in [
+        "cheap_model",
+        "fast_model",
+        "explorer_model",
+        "planner_model",
+        "compaction_model",
+    ] {
+        let profile_id = ironclaw_loop_contracts::ModelProfileId::new(profile).unwrap();
+        assert_eq!(
+            ModelSlot::from_model_profile_id(&profile_id),
+            Some(ModelSlot::Cheap),
+            "{profile} must route through the cheap slot"
+        );
+    }
+    let interactive_model =
+        ironclaw_loop_contracts::ModelProfileId::new("interactive_model").unwrap();
+    assert_eq!(
+        ModelSlot::from_model_profile_id(&interactive_model),
+        Some(ModelSlot::Default),
+        "interactive turns never silently downgrade to the cheap slot"
+    );
+}
+
+#[test]
+fn cheap_slot_resolves_the_configured_cheap_route() {
+    let default_route = ModelRoute::new("openrouter", "anthropic/claude-sonnet-4").unwrap();
+    let cheap_route = ModelRoute::new("openrouter", "anthropic/claude-haiku-4").unwrap();
+    let resolver = StaticModelRouteResolver::new(
+        ModelRoutePolicy::new(ModelSelectionMode::ManagedOnly)
+            .with_approved_route(default_route.clone())
+            .with_approved_route(cheap_route.clone()),
+    )
+    .with_route(ModelSlot::Default, default_route.clone())
+    .with_route(ModelSlot::Cheap, cheap_route.clone());
+
+    let snapshot = resolver.resolve(ModelSlot::Cheap).unwrap();
+    assert_eq!(snapshot.slot(), ModelSlot::Cheap);
+    assert_eq!(snapshot.route(), &cheap_route);
+    assert_eq!(snapshot.source(), ModelRouteSource::ConfiguredDefault);
+    assert_eq!(
+        resolver
+            .validate_model_route(ModelSlot::Cheap, &cheap_route)
+            .unwrap(),
+        ModelSelectionMode::ManagedOnly
+    );
+    // The cheap route is exclusive to its slot: an interactive snapshot can
+    // never be replayed onto it, and the cheap slot never takes the default.
+    assert_eq!(
+        resolver
+            .validate_model_route(ModelSlot::Default, &cheap_route)
+            .unwrap_err()
+            .kind(),
+        ModelRouteErrorKind::RouteNotApproved
+    );
+    assert_eq!(
+        resolver
+            .validate_model_route(ModelSlot::Cheap, &default_route)
+            .unwrap_err()
+            .kind(),
+        ModelRouteErrorKind::RouteNotApproved
+    );
+}
+
+#[test]
+fn cheap_slot_falls_back_to_the_default_route_when_no_cheap_model_is_configured() {
+    let default_route = ModelRoute::new("openrouter", "anthropic/claude-sonnet-4").unwrap();
+    let unrelated_route = ModelRoute::new("openrouter", "anthropic/claude-haiku-4").unwrap();
+    let resolver = StaticModelRouteResolver::new(
+        ModelRoutePolicy::new(ModelSelectionMode::ManagedOnly)
+            .with_approved_route(default_route.clone()),
+    )
+    .with_route(ModelSlot::Default, default_route.clone());
+
+    let snapshot = resolver.resolve(ModelSlot::Cheap).unwrap();
+    assert_eq!(snapshot.slot(), ModelSlot::Cheap);
+    assert_eq!(snapshot.route(), &default_route);
+    assert_eq!(snapshot.source(), ModelRouteSource::DefaultSlotFallback);
+    assert_eq!(
+        resolver
+            .validate_model_route(ModelSlot::Cheap, &default_route)
+            .unwrap(),
+        ModelSelectionMode::ManagedOnly,
+        "a persisted fallback snapshot must replay against the default route"
+    );
+    assert_eq!(
+        resolver
+            .validate_model_route(ModelSlot::Cheap, &unrelated_route)
+            .unwrap_err()
+            .kind(),
+        ModelRouteErrorKind::RouteNotApproved,
+        "the fallback inherits the default slot's policy, never widens it"
+    );
+    // Mission keeps its strict behavior: no silent fallback.
+    assert_eq!(
+        resolver.resolve(ModelSlot::Mission).unwrap_err().kind(),
+        ModelRouteErrorKind::RouteUnavailable
+    );
+}
+
+#[test]
+fn cheap_slot_fallback_still_honors_the_route_policy() {
+    let default_route = ModelRoute::new("openrouter", "anthropic/claude-sonnet-4").unwrap();
+    let resolver =
+        StaticModelRouteResolver::new(ModelRoutePolicy::new(ModelSelectionMode::ManagedOnly))
+            .with_route(ModelSlot::Default, default_route);
+
+    assert_eq!(
+        resolver.resolve(ModelSlot::Cheap).unwrap_err().kind(),
+        ModelRouteErrorKind::RouteNotApproved
+    );
+}
+
+#[test]
+fn llm_config_cheap_model_resolves_to_cheap_route_settings_only_when_configured() {
+    let unset = nearai_config("qwen3-coder");
+    assert_eq!(
+        ActiveModelRouteSettings::cheap_from_llm_config(&unset).unwrap(),
+        None
+    );
+
+    let mut configured = nearai_config("qwen3-coder");
+    configured.cheap_model = Some("qwen3-mini".to_string());
+    let settings = ActiveModelRouteSettings::cheap_from_llm_config(&configured)
+        .unwrap()
+        .expect("LLM_CHEAP_MODEL yields cheap route settings");
+    assert_eq!(settings.provider_id(), "nearai");
+    assert_eq!(settings.model_id(), "qwen3-mini");
+
+    let mut blank = nearai_config("qwen3-coder");
+    blank.cheap_model = Some("   ".to_string());
+    assert_eq!(
+        ActiveModelRouteSettings::cheap_from_llm_config(&blank).unwrap(),
+        None,
+        "a blank cheap model is treated as unset"
+    );
 }
 
 #[test]
