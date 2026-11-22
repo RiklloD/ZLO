@@ -274,33 +274,132 @@ fn is_eligible_drop_boundary(
 /// Proactive compaction trigger evaluated by `PostCapabilityStage` after a
 /// capability batch flushes. Inspects per-capability byte accounting on
 /// `state.post_capability_state.pending_capability_bytes` and decides whether
-/// any individual capability has exceeded its configured cap, returning the
-/// `CompactionInitiator` variant that should be emitted in the resulting
-/// `LoopProgressEvent::CompactionStarted` event.
+/// the batch's results are large enough to force a compact-then-skip-model on
+/// the next iteration, returning the `CompactionInitiator` variant that should
+/// be emitted in the resulting `LoopProgressEvent::CompactionStarted` event.
 ///
 /// The name `CompactionForceStrategy` distinguishes this from `CompactionStrategy`
 /// (which decides when/how to run normal compaction) — this trait specifically
 /// decides whether to FORCE a compact-then-skip-model on the next iteration
-/// based on per-capability byte accounting.
+/// based on capability byte accounting.
 ///
-/// Future impls (e.g. `BudgetFractionStrategy` for #4311) drop in alongside
-/// `ByteCapStrategy` without changing call sites.
+/// A forced compaction is expensive: it replaces the transcript prefix (which
+/// invalidates the provider's prompt-cache prefix) and spends an iteration
+/// without a model call. The default policy is therefore
+/// [`BudgetFractionStrategy`], which scales with the run's real context
+/// window; [`ByteCapStrategy`] is the retired fixed-cap policy.
 pub(crate) trait CompactionForceStrategy: Send + Sync {
-    fn should_force_compact(&self, state: &LoopExecutionState) -> Option<CompactionInitiator>;
+    fn should_force_compact(
+        &self,
+        state: &LoopExecutionState,
+        ctx: &LoopRunContext,
+    ) -> Option<CompactionInitiator>;
+}
+
+/// Context-window-relative compaction force strategy — the default
+/// post-capability policy.
+///
+/// Trips when the capability bytes accumulated by the current turn's batch
+/// (summed across every capability, because they all land in the same
+/// prompt) exceed a fixed fraction of the run's model context window. The
+/// window is converted from tokens to bytes at [`Self::BYTES_PER_TOKEN`].
+///
+/// Scaling with the window is the point: a fixed 32 KB cap force-compacted a
+/// 200k–1M-token session after a single ordinary `read_file` (which may return
+/// up to 64 KB), discarding the cached prompt prefix on the second turn. Under
+/// this policy a 200k-token window tolerates ~160 KB of results per turn and a
+/// 32k-token window still trips at ~25 KB.
+///
+/// When the provider has not reported a window (older persisted run contexts)
+/// the policy falls back to [`Self::UNKNOWN_WINDOW_THRESHOLD_BYTES`]. Ordinary
+/// threshold compaction (`CompactionStrategy`) keeps guarding total prompt
+/// growth either way; this policy only decides when ONE turn's results are
+/// big enough to compact before the model even sees them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BudgetFractionStrategy {
+    fraction_percent: u64,
+    unknown_window_threshold_bytes: u64,
+}
+
+impl BudgetFractionStrategy {
+    /// Share of the context window, in percent, one turn's capability
+    /// results may occupy before forcing a compaction.
+    pub(crate) const DEFAULT_FRACTION_PERCENT: u64 = 20;
+    /// Token-to-byte conversion for the window. Four bytes per token is the
+    /// usual English/code average; denser text (≈3 bytes/token) makes the
+    /// effective share slightly larger, never a hair trigger.
+    pub(crate) const BYTES_PER_TOKEN: u64 = 4;
+    /// Threshold used when the run context carries no provider-reported
+    /// context window.
+    pub(crate) const UNKNOWN_WINDOW_THRESHOLD_BYTES: u64 = 256 * 1024;
+
+    /// The per-turn byte threshold for this run.
+    pub(crate) fn threshold_bytes(&self, ctx: &LoopRunContext) -> u64 {
+        match ctx.model_context_window_tokens.filter(|tokens| *tokens > 0) {
+            Some(tokens) => {
+                tokens
+                    .saturating_mul(Self::BYTES_PER_TOKEN)
+                    .saturating_mul(self.fraction_percent)
+                    / 100
+            }
+            None => self.unknown_window_threshold_bytes,
+        }
+    }
+}
+
+impl Default for BudgetFractionStrategy {
+    fn default() -> Self {
+        Self {
+            fraction_percent: Self::DEFAULT_FRACTION_PERCENT,
+            unknown_window_threshold_bytes: Self::UNKNOWN_WINDOW_THRESHOLD_BYTES,
+        }
+    }
+}
+
+impl CompactionForceStrategy for BudgetFractionStrategy {
+    fn should_force_compact(
+        &self,
+        state: &LoopExecutionState,
+        ctx: &LoopRunContext,
+    ) -> Option<CompactionInitiator> {
+        let turn_bytes = state
+            .post_capability_state
+            .pending_capability_bytes
+            .values()
+            .fold(0_u64, |total, bytes| total.saturating_add(*bytes));
+        (turn_bytes > self.threshold_bytes(ctx))
+            .then_some(CompactionInitiator::CapabilityResultOverflow)
+    }
 }
 
 /// Per-capability byte-cap compaction force strategy. Trips compaction when any
 /// single capability id has accumulated more than its configured byte cap in
 /// `pending_capability_bytes` during the current turn.
 ///
-/// v2 (`BudgetFractionStrategy`) will land alongside this once #4311 budget
-/// governance collapse merges.
+/// Retired as the default in favour of [`BudgetFractionStrategy`]: its fixed
+/// 32 KB fallback is below one ordinary `read_file` result and ignores the
+/// model's context window. Kept as an explicit alternative policy.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "retired fixed-cap policy kept as an explicit alternative; \
+                  BudgetFractionStrategy is the production default"
+    )
+)]
 #[derive(Debug, Clone)]
 pub(crate) struct ByteCapStrategy {
     caps: BTreeMap<CapabilityId, u64>,
     default_cap: u64,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "retired fixed-cap policy kept as an explicit alternative"
+    )
+)]
 impl ByteCapStrategy {
     /// Default cap applied to any capability not explicitly listed.
     pub(crate) const DEFAULT_FALLBACK_CAP_BYTES: u64 = 32_000;
@@ -336,7 +435,11 @@ impl Default for ByteCapStrategy {
 }
 
 impl CompactionForceStrategy for ByteCapStrategy {
-    fn should_force_compact(&self, state: &LoopExecutionState) -> Option<CompactionInitiator> {
+    fn should_force_compact(
+        &self,
+        state: &LoopExecutionState,
+        _ctx: &LoopRunContext,
+    ) -> Option<CompactionInitiator> {
         for (capability_id, bytes) in &state.post_capability_state.pending_capability_bytes {
             let cap = self
                 .caps
@@ -1037,6 +1140,164 @@ mod tests {
         );
     }
 
+    // --- BudgetFractionStrategy tests ---
+
+    fn budget_fraction_state(
+        label: &str,
+        window_tokens: Option<u64>,
+        entries: &[(&str, u64)],
+    ) -> (LoopRunContext, LoopExecutionState) {
+        let context = crate::test_support::test_run_context(label)
+            .with_model_context_window_tokens(window_tokens);
+        let mut state = LoopExecutionState::initial_for_run(&context);
+        for (id, bytes) in entries {
+            state
+                .post_capability_state
+                .pending_capability_bytes
+                .insert(CapabilityId::new(*id).expect("valid capability"), *bytes);
+        }
+        (context, state)
+    }
+
+    /// Regression: one ordinary 40 KB `read_file` result used to trip the
+    /// fixed 32 KB cap and force a cold compaction on turn two.
+    #[test]
+    fn budget_fraction_strategy_ignores_a_normal_file_read_in_a_large_window() {
+        let strategy = BudgetFractionStrategy::default();
+        for window in [Some(200_000), Some(1_000_000), None] {
+            let (context, state) = budget_fraction_state(
+                "budget-fraction-normal-read",
+                window,
+                &[("builtin.read_file", 40_000)],
+            );
+            assert_eq!(
+                strategy.should_force_compact(&state, &context),
+                None,
+                "a 40 KB read must not force compaction (window {window:?})"
+            );
+        }
+        // The full 64 KB read_file ceiling also stays under the fraction for a
+        // 128k window.
+        let (context, state) = budget_fraction_state(
+            "budget-fraction-max-read",
+            Some(128_000),
+            &[("builtin.read_file", 64 * 1024)],
+        );
+        assert_eq!(strategy.should_force_compact(&state, &context), None);
+    }
+
+    #[test]
+    fn budget_fraction_strategy_trips_when_turn_bytes_exceed_the_window_fraction() {
+        let strategy = BudgetFractionStrategy::default();
+        // 200k tokens × 4 bytes × 20% = 160_000 bytes.
+        let (context, _) = budget_fraction_state("budget-fraction-threshold", Some(200_000), &[]);
+        assert_eq!(strategy.threshold_bytes(&context), 160_000);
+
+        let (context, at_threshold) = budget_fraction_state(
+            "budget-fraction-at",
+            Some(200_000),
+            &[("builtin.http", 160_000)],
+        );
+        assert_eq!(strategy.should_force_compact(&at_threshold, &context), None);
+
+        let (context, over) = budget_fraction_state(
+            "budget-fraction-over",
+            Some(200_000),
+            &[("builtin.http", 160_001)],
+        );
+        assert_eq!(
+            strategy.should_force_compact(&over, &context),
+            Some(CompactionInitiator::CapabilityResultOverflow)
+        );
+    }
+
+    /// Every result of one batch lands in the same prompt, so the fraction is
+    /// measured against the turn's total, not per capability.
+    #[test]
+    fn budget_fraction_strategy_sums_bytes_across_capabilities_in_the_turn() {
+        let strategy = BudgetFractionStrategy::default();
+        let (context, state) = budget_fraction_state(
+            "budget-fraction-sum",
+            Some(200_000),
+            &[
+                ("builtin.read_file", 60_000),
+                ("builtin.grep", 60_000),
+                ("builtin.glob", 40_001),
+            ],
+        );
+        assert_eq!(
+            strategy.should_force_compact(&state, &context),
+            Some(CompactionInitiator::CapabilityResultOverflow)
+        );
+    }
+
+    #[test]
+    fn budget_fraction_strategy_scales_down_for_small_windows() {
+        let strategy = BudgetFractionStrategy::default();
+        // 32k tokens × 4 × 20% = 25_600 bytes: a 40 KB result is a real
+        // fraction of a small window and still forces compaction.
+        let (context, state) = budget_fraction_state(
+            "budget-fraction-small",
+            Some(32_000),
+            &[("builtin.read_file", 40_000)],
+        );
+        assert_eq!(strategy.threshold_bytes(&context), 25_600);
+        assert_eq!(
+            strategy.should_force_compact(&state, &context),
+            Some(CompactionInitiator::CapabilityResultOverflow)
+        );
+    }
+
+    #[test]
+    fn budget_fraction_strategy_falls_back_when_the_window_is_unknown() {
+        let strategy = BudgetFractionStrategy::default();
+        for window in [None, Some(0)] {
+            let (context, under) = budget_fraction_state(
+                "budget-fraction-unknown-under",
+                window,
+                &[(
+                    "custom.tool",
+                    BudgetFractionStrategy::UNKNOWN_WINDOW_THRESHOLD_BYTES,
+                )],
+            );
+            assert_eq!(
+                strategy.threshold_bytes(&context),
+                BudgetFractionStrategy::UNKNOWN_WINDOW_THRESHOLD_BYTES
+            );
+            const { assert!(BudgetFractionStrategy::UNKNOWN_WINDOW_THRESHOLD_BYTES >= 256 * 1024) };
+            assert_eq!(strategy.should_force_compact(&under, &context), None);
+
+            let (context, over) = budget_fraction_state(
+                "budget-fraction-unknown-over",
+                window,
+                &[(
+                    "custom.tool",
+                    BudgetFractionStrategy::UNKNOWN_WINDOW_THRESHOLD_BYTES + 1,
+                )],
+            );
+            assert_eq!(
+                strategy.should_force_compact(&over, &context),
+                Some(CompactionInitiator::CapabilityResultOverflow)
+            );
+        }
+    }
+
+    #[test]
+    fn budget_fraction_strategy_saturates_instead_of_overflowing() {
+        let strategy = BudgetFractionStrategy::default();
+        let (context, state) = budget_fraction_state(
+            "budget-fraction-saturate",
+            Some(u64::MAX),
+            &[("custom.a", u64::MAX), ("custom.b", u64::MAX)],
+        );
+        // The window conversion and the byte sum both saturate instead of
+        // panicking; a saturated sum still exceeds the saturated fraction.
+        assert_eq!(
+            strategy.should_force_compact(&state, &context),
+            Some(CompactionInitiator::CapabilityResultOverflow)
+        );
+    }
+
     // --- ByteCapStrategy tests ---
 
     #[test]
@@ -1052,7 +1313,7 @@ mod tests {
 
         let strategy = ByteCapStrategy::with_defaults();
         assert_eq!(
-            strategy.should_force_compact(&state),
+            strategy.should_force_compact(&state, &context),
             Some(CompactionInitiator::CapabilityResultOverflow)
         );
     }
@@ -1074,7 +1335,7 @@ mod tests {
             .insert(subagent_id, 47_999);
 
         let strategy = ByteCapStrategy::with_defaults();
-        assert_eq!(strategy.should_force_compact(&state), None);
+        assert_eq!(strategy.should_force_compact(&state, &context), None);
     }
 
     #[test]
@@ -1090,7 +1351,7 @@ mod tests {
 
         let strategy = ByteCapStrategy::with_defaults();
         assert_eq!(
-            strategy.should_force_compact(&state),
+            strategy.should_force_compact(&state, &context),
             Some(CompactionInitiator::CapabilityResultOverflow)
         );
     }
@@ -1101,7 +1362,7 @@ mod tests {
         let state = LoopExecutionState::initial_for_run(&context);
         // pending_capability_bytes is empty by default.
         let strategy = ByteCapStrategy::with_defaults();
-        assert_eq!(strategy.should_force_compact(&state), None);
+        assert_eq!(strategy.should_force_compact(&state, &context), None);
     }
 
     #[test]
@@ -1116,7 +1377,7 @@ mod tests {
         // Default cap (32_000) would NOT trip at 5_000; custom cap of 4_000 should trip.
         let strategy = ByteCapStrategy::with_defaults().with_cap(id, 4_000);
         assert_eq!(
-            strategy.should_force_compact(&state),
+            strategy.should_force_compact(&state, &ctx),
             Some(CompactionInitiator::CapabilityResultOverflow)
         );
     }

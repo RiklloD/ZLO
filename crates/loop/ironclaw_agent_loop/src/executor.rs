@@ -26,6 +26,7 @@ mod model;
 mod pipeline;
 mod post_capability;
 mod prompt;
+mod read_only_batch;
 mod reply_admission;
 mod turn_stop;
 

@@ -700,8 +700,8 @@ async fn no_progress_strike_reports_dominant_digest_count_for_alternating_signat
 }
 
 /// Byte-threshold trips through the full executor turn: capability batch returns
-/// a result whose `byte_len` exceeds `ByteCapStrategy::DEFAULT_FALLBACK_CAP_BYTES`
-/// (32 000). PostCapabilityStage should set both compaction flags on the state
+/// a result whose `byte_len` exceeds the `BudgetFractionStrategy` fallback
+/// threshold (256 KiB, used because the mock run context reports no window). PostCapabilityStage should set both compaction flags on the state
 /// that is written to the Final checkpoint.
 #[tokio::test]
 async fn executor_post_capability_trips_policy_and_sets_flags_in_final_state() {
@@ -714,7 +714,7 @@ async fn executor_post_capability_trips_policy_and_sets_flags_in_final_state() {
                 "big result".to_string(),
                 ironclaw_loop_contracts::CapabilityProgress::MadeProgress,
                 true,
-                33_001,
+                300_000,
                 None,
                 None,
             )],
@@ -826,7 +826,7 @@ async fn executor_skip_model_turn_bypasses_model_stage() {
                 "big result no terminate".to_string(),
                 ironclaw_loop_contracts::CapabilityProgress::MadeProgress,
                 false,
-                33_001,
+                300_000,
                 None,
                 None,
             )],
@@ -924,13 +924,13 @@ async fn executor_skip_model_turn_bypasses_model_stage() {
     );
 }
 
-/// Multi-call batch: two calls in one turn each carrying 20 000 bytes for the
-/// same capability id accumulate to 40 000, exceeding the 32 000-byte default
-/// cap. The policy trips once and clears the byte map.
+/// Multi-call batch: two calls in one turn each carrying 140 000 bytes for the
+/// same capability id accumulate to 280 000, exceeding the 256 KiB
+/// `BudgetFractionStrategy` fallback threshold (neither result alone does). The policy trips once and clears the byte map.
 #[tokio::test]
 async fn executor_batch_accumulates_per_capability_bytes_and_trips() {
     // two_calls_response() emits two calls with capability_id() ("demo.echo").
-    // Each result carries 20 000 bytes → sum = 40 000 > 32 000 → trip.
+    // Each result carries 140 000 bytes → sum = 280 000 > 262 144 → trip.
     let host = MockHost::new(vec![two_calls_response()]).with_batch_outcomes(vec![
         ironclaw_host_api::resolution::ResolutionBatch {
             resolutions: vec![
@@ -939,7 +939,7 @@ async fn executor_batch_accumulates_per_capability_bytes_and_trips() {
                     "first".to_string(),
                     ironclaw_loop_contracts::CapabilityProgress::MadeProgress,
                     true,
-                    20_000,
+                    140_000,
                     None,
                     None,
                 ),
@@ -948,7 +948,7 @@ async fn executor_batch_accumulates_per_capability_bytes_and_trips() {
                     "second".to_string(),
                     ironclaw_loop_contracts::CapabilityProgress::MadeProgress,
                     true,
-                    20_000,
+                    140_000,
                     None,
                     None,
                 ),
@@ -1089,8 +1089,7 @@ async fn await_dependent_run_preserves_model_observation_for_replay() {
 /// called once (capability turn) before the gate fires.
 #[tokio::test]
 async fn await_dependent_run_byte_len_accumulates_and_trips_policy() {
-    // Iteration 1: model → AwaitDependentRun with 33 001 bytes (> 32 000-byte
-    // default cap). The gate fires and blocks the loop. Unlike SpawnedChildRun,
+    // Iteration 1: model → AwaitDependentRun with 33 001 bytes. The gate fires and blocks the loop. Unlike SpawnedChildRun,
     // the AwaitDependentRun path exits Blocked rather than Continue, so
     // PostCapabilityStage does not evaluate the policy on this turn — but the
     // bytes ARE accumulated into pending_capability_bytes before the block.

@@ -738,15 +738,14 @@ async fn invalid_provider_tool_failure_appends_structured_model_observation() {
 }
 
 /// D2 regression: byte_len was hardcoded to 0 for SpawnedChildRun outcomes.
-/// ByteCapStrategy (WU-A) never tripped for builtin.spawn_subagent — the
-/// capability with the largest configured cap (48 KB) — even when the spawned
-/// result was huge. This test drives the full executor turn with a
+/// The post-capability compaction policy never tripped for
+/// builtin.spawn_subagent even when the spawned result was huge. This test drives the full executor turn with a
 /// SpawnedChildRun outcome carrying a large byte_len and asserts that
 /// pending_capability_bytes accumulates those bytes (not 0).
 #[tokio::test]
 async fn spawned_child_run_byte_len_accumulates_and_trips_policy() {
-    // Iteration 1: model → SpawnedChildRun with 49 001 bytes (> 32 000-byte
-    // default cap). PostCapabilityStage should set compaction flags.
+    // Iteration 1: model → SpawnedChildRun with 300 000 bytes (> the 256 KiB
+    // BudgetFractionStrategy fallback threshold). PostCapabilityStage should set compaction flags.
     // Iteration 2: SkipModel route — no model call.
     // Iteration 3: model → reply → GracefulStop.
     let host = MockHost::new(vec![calls_response(), reply_response()]).with_batch_outcomes(vec![
@@ -755,7 +754,7 @@ async fn spawned_child_run_byte_len_accumulates_and_trips_policy() {
                 TurnRunId::new(),
                 LoopResultRef::new("result:spawned-child-large").expect("valid"),
                 "spawned child with large result".to_string(),
-                49_001,
+                300_000,
                 None,
             )],
             stopped_on_suspension: false,

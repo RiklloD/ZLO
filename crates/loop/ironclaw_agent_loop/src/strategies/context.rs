@@ -48,9 +48,14 @@ pub(crate) struct DefaultContextStrategy {
 impl DefaultContextStrategy {
     /// Default ceiling on transcript messages scanned per turn.
     ///
-    /// Host adapters apply token budgeting after the scan, so this should be
-    /// large enough for compaction to observe more than the latest chat exchange.
-    pub(crate) const DEFAULT_MAX_MESSAGES: u32 = 128;
+    /// Host adapters apply token budgeting after the scan, so this bounds scan
+    /// cost, not prompt size. It must be large enough that the token budget —
+    /// not the message count — decides when context is full: at the former
+    /// 128, a session of ~60 tool turns reported a recent-window truncation
+    /// and forced window-eviction compaction while a 200k–1M-token window was
+    /// still mostly empty. Hosts may clamp it lower (the host prompt port's
+    /// ceiling is 1024).
+    pub(crate) const DEFAULT_MAX_MESSAGES: u32 = 512;
 }
 
 impl Default for DefaultContextStrategy {
@@ -249,8 +254,8 @@ mod tests {
     }
 
     #[test]
-    fn default_max_messages_is_one_hundred_twenty_eight() {
-        assert_eq!(DefaultContextStrategy::default().max_messages, 128);
+    fn default_max_messages_is_five_hundred_twelve() {
+        assert_eq!(DefaultContextStrategy::default().max_messages, 512);
     }
 
     #[tokio::test]
@@ -261,7 +266,9 @@ mod tests {
         let request = strategy.plan_context_request(&state).await;
 
         assert_eq!(request.request.mode, PromptMode::TextOnly);
-        assert_eq!(request.request.max_messages, Some(128));
+        // Regression: a 128-message request truncated long tool sessions into
+        // premature window-eviction compaction.
+        assert_eq!(request.request.max_messages, Some(512));
         assert!(request.request.inline_messages.is_empty());
         assert!(!request.emitted_admission_control);
         assert!(!request.emitted_repeated_call_warning);

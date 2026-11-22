@@ -429,7 +429,7 @@ async fn multiple_turns_complete_after_final_reply() {
 /// Caller-level test through `CanonicalAgentLoopExecutor` covering the full
 /// proactive byte-cap → SkipModel → compaction → continue chain.
 ///
-/// This test exercises the multi-stage chain that `ByteCapStrategy +
+/// This test exercises the multi-stage chain that `BudgetFractionStrategy +
 /// PostCapabilityStage + PromptStage skip_model + canonical SkipModel arm`
 /// form end-to-end. Per `.claude/rules/testing.md` "Test Through the Caller,
 /// Not Just the Helper", testing each stage in isolation is insufficient:
@@ -438,9 +438,9 @@ async fn multiple_turns_complete_after_final_reply() {
 /// PromptCompactionStep.
 ///
 /// Iteration 1: model → `SpawnedChildRun` capability outcome with
-///   `byte_len = 49 001` (exceeds the 32 000-byte default cap).
+///   `byte_len = 300 000` (exceeds the 256 KiB budget-fraction fallback).
 ///   → `push_completed_result` accumulates bytes → `PostCapabilityStage`
-///   trips `ByteCapStrategy` → sets `force_compact_on_next_iteration`,
+///   trips `BudgetFractionStrategy` → sets `force_compact_on_next_iteration`,
 ///   `skip_model_this_iteration`, and
 ///   `force_compact_initiator = CapabilityResultOverflow` → clears byte map.
 ///
@@ -472,13 +472,13 @@ async fn executor_proactive_byte_cap_drives_full_compaction_cycle() {
             },
         ]),
         capability_outcomes: VecDeque::from([vec![
-            // SpawnedChildRun with byte_len > 32 000 trips ByteCapStrategy.
+            // SpawnedChildRun with byte_len > 256 KiB trips BudgetFractionStrategy.
             ScriptedCapabilityOutcome::SpawnedChildRun {
                 child_run_id: TurnRunId::new(),
                 result_ref: "result:big-spawn-f14".to_string(),
-                // Exceeds the default 32 000-byte fallback cap; same value
+                // Exceeds the 256 KiB unknown-window fallback threshold; same value
                 // used in spawned_child_run_byte_len_accumulates_and_trips_policy.
-                byte_len: 49_001,
+                byte_len: 300_000,
             },
         ]]),
         single_call_retry_outcomes: VecDeque::new(),

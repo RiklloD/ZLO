@@ -17,7 +17,16 @@ use ironclaw_loop_contracts::{
 };
 
 const DEFAULT_TEXT_ONLY_MESSAGE_LIMIT: usize = 32;
-const MAX_TEXT_ONLY_MESSAGE_LIMIT: usize = 128;
+/// Hard ceiling on transcript messages one prompt bundle may scan.
+///
+/// This bounds the scan, not the prompt: the context port's token selector
+/// trims the scanned suffix to the model's context budget afterwards. A low
+/// ceiling (formerly 128, ≈60 tool turns) truncated the window long before
+/// a 200k–1M-token context was full, so every further turn reported a
+/// recent-window truncation and forced window-eviction compaction, wiping the
+/// provider's cached prompt prefix. The ceiling now sits well above the loop's
+/// default request (512) so token budgeting, not message count, decides.
+const MAX_TEXT_ONLY_MESSAGE_LIMIT: usize = 1024;
 
 type CurrentSurfaceVersionLookup =
     dyn Fn() -> Result<Option<CapabilitySurfaceVersion>, AgentLoopHostError> + Send + Sync;

@@ -33,7 +33,7 @@ pub(crate) use capability::{CapabilityFilter, CapabilityStrategy, DefaultCapabil
 #[cfg(test)]
 pub(crate) use compaction::DefaultCompactionStrategy;
 pub(crate) use compaction::{
-    ByteCapStrategy, CompactionDecision, CompactionForceStrategy, CompactionStrategy,
+    BudgetFractionStrategy, CompactionDecision, CompactionForceStrategy, CompactionStrategy,
 };
 #[cfg(test)]
 pub(crate) use context::ContextPlan;

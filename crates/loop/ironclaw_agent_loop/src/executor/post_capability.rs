@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::strategies::{ByteCapStrategy, CompactionForceStrategy};
+use crate::strategies::{BudgetFractionStrategy, CompactionForceStrategy};
 
 use super::{AgentLoopExecutorError, ExecutorStage, StageContext, TurnCompletedStep};
 
@@ -11,8 +11,10 @@ use super::{AgentLoopExecutorError, ExecutorStage, StageContext, TurnCompletedSt
 ///
 /// Proactive compaction policy evaluation. Reads per-capability byte
 /// accumulation on `state.post_capability_state.pending_capability_bytes`
-/// (populated by `push_completed_result`) and decides whether the next
-/// prompt build should compact-then-skip-the-model.
+/// (populated by `push_completed_result`) and, against the run's context
+/// window from `LoopRunContext`, decides whether the next prompt build should
+/// compact-then-skip-the-model. The default policy is
+/// [`BudgetFractionStrategy`].
 #[derive(Clone)]
 pub(crate) struct PostCapabilityStage {
     compaction_force: Arc<dyn CompactionForceStrategy>,
@@ -26,7 +28,7 @@ impl PostCapabilityStage {
 
 impl Default for PostCapabilityStage {
     fn default() -> Self {
-        Self::new(Arc::new(ByteCapStrategy::default()))
+        Self::new(Arc::new(BudgetFractionStrategy::default()))
     }
 }
 
@@ -42,7 +44,7 @@ impl ExecutorStage<TurnCompletedStep> for PostCapabilityStage {
 
     async fn process(
         &self,
-        _ctx: StageContext<'_>,
+        ctx: StageContext<'_>,
         input: TurnCompletedStep,
     ) -> Result<TurnCompletedStep, AgentLoopExecutorError> {
         // Exit terminates the loop — state is discarded, no future reuse possible.
@@ -60,7 +62,9 @@ impl ExecutorStage<TurnCompletedStep> for PostCapabilityStage {
             .post_capability_state
             .pending_capability_bytes
             .is_empty()
-            && let Some(initiator) = self.compaction_force.should_force_compact(&state)
+            && let Some(initiator) = self
+                .compaction_force
+                .should_force_compact(&state, ctx.host.run_context())
         {
             state.compaction_state.force_compact_on_next_iteration = true;
             state.compaction_state.force_compact_initiator = Some(initiator);
@@ -73,7 +77,7 @@ impl ExecutorStage<TurnCompletedStep> for PostCapabilityStage {
         }
 
         // Always clear the per-turn byte accumulator regardless of whether the
-        // policy tripped. ByteCapStrategy doc states "during the current turn" —
+        // policy tripped. The force policy measures "the current turn" —
         // carrying entries across turns would cause cross-turn accumulation and
         // false-positive trips on subsequent AssistantReply turns. Map is cheap
         // to drop and re-populate per turn.
@@ -103,7 +107,11 @@ mod tests {
     struct StubPolicy(Option<CompactionInitiator>);
 
     impl CompactionForceStrategy for StubPolicy {
-        fn should_force_compact(&self, _state: &LoopExecutionState) -> Option<CompactionInitiator> {
+        fn should_force_compact(
+            &self,
+            _state: &LoopExecutionState,
+            _ctx: &ironclaw_loop_contracts::LoopRunContext,
+        ) -> Option<CompactionInitiator> {
             self.0
         }
     }
@@ -289,5 +297,83 @@ mod tests {
             "pending_capability_bytes must be cleared even when the policy does not trip \
              (BUG-N1: non-trip turns were carrying bytes over to the next iteration)"
         );
+    }
+
+    /// Drive the production-default stage (`BudgetFractionStrategy`) with one
+    /// turn's capability bytes against a host whose run context reports
+    /// `window_tokens`, returning the state the stage carries forward.
+    async fn default_stage_after_turn(
+        label: &str,
+        window_tokens: Option<u64>,
+        turn_bytes: u64,
+    ) -> Box<LoopExecutionState> {
+        let context = test_run_context(label).with_model_context_window_tokens(window_tokens);
+        let host = MockAgentLoopDriverHost::builder()
+            .run_context(context.clone())
+            .build()
+            .0;
+        let mut state = LoopExecutionState::initial_for_run(&context);
+        state.post_capability_state.pending_capability_bytes.insert(
+            CapabilityId::new("builtin.read_file").expect("valid"),
+            turn_bytes,
+        );
+        let family = make_family();
+        let ctx = StageContext {
+            planner: family.planner(),
+            host: &host,
+        };
+        let input = TurnCompletedStep::Continue {
+            state: Box::new(state),
+            summary: TurnSummary::reply_rejected(),
+        };
+        let result = PostCapabilityStage::default()
+            .process(ctx, input)
+            .await
+            .expect("process ok");
+        let TurnCompletedStep::Continue { state, .. } = result else {
+            panic!("expected Continue");
+        };
+        assert!(
+            state
+                .post_capability_state
+                .pending_capability_bytes
+                .is_empty()
+        );
+        state
+    }
+
+    /// Regression (P0.3): the default stage used the fixed 32 KB
+    /// `ByteCapStrategy`, so one ordinary 40 KB `read_file` result in a 200k
+    /// window forced a compaction and skipped the next model call.
+    #[tokio::test]
+    async fn default_policy_does_not_force_compaction_for_a_normal_file_read() {
+        for window in [Some(200_000), None] {
+            let out = default_stage_after_turn("post-cap-default-read", window, 40_000).await;
+            assert!(
+                !out.compaction_state.force_compact_on_next_iteration,
+                "a 40 KB read must not force compaction (window {window:?})"
+            );
+            assert!(!out.post_capability_state.skip_model_this_iteration);
+            assert_eq!(out.compaction_state.force_compact_initiator, None);
+        }
+    }
+
+    /// The default stage reads the window from the host's run context: a turn
+    /// that fills more than the configured fraction of it still forces the
+    /// compact-then-skip-model path.
+    #[tokio::test]
+    async fn default_policy_forces_compaction_past_the_window_fraction() {
+        // 200k tokens × 4 bytes × 20% = 160_000 bytes.
+        let out = default_stage_after_turn("post-cap-default-over", Some(200_000), 160_001).await;
+        assert!(out.compaction_state.force_compact_on_next_iteration);
+        assert!(out.post_capability_state.skip_model_this_iteration);
+        assert_eq!(
+            out.compaction_state.force_compact_initiator,
+            Some(CompactionInitiator::CapabilityResultOverflow)
+        );
+
+        // The same bytes fit comfortably in a 1M-token window.
+        let out = default_stage_after_turn("post-cap-default-1m", Some(1_000_000), 160_001).await;
+        assert!(!out.compaction_state.force_compact_on_next_iteration);
     }
 }
