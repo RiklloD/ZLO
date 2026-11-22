@@ -42,9 +42,30 @@ pub struct OpenAiCodexProvider {
     api_base_url: String,
     auth: RwLock<AuthState>,
     unsupported_params: HashSet<String>,
+    route: ResponsesRoute,
+    /// Operator-configured headers (e.g. `OpenAI-Organization`,
+    /// `OpenAI-Project`) sent on every API-key request.
+    extra_headers: reqwest::header::HeaderMap,
+    /// `GET {api_base_url}/models` discovery for the API-key route; the
+    /// subscription routes list the plan's models from the Codex cache.
+    models_endpoint: Option<crate::rig_adapter::ModelsEndpoint>,
+}
+
+/// Which Responses API route (and so which auth, wire extras, and billing)
+/// this provider speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponsesRoute {
+    /// ChatGPT backend (`chatgpt.com/backend-api/codex`): JWT with a
+    /// `chatgpt-account-id` header; subscription-billed.
+    ChatGptBackend,
     /// Sign in with ChatGPT plan usage on the public API: no account header,
-    /// function tools grouped in one namespace (the route's requirement).
-    plan: bool,
+    /// function tools grouped in one namespace (the route's requirement);
+    /// subscription-billed.
+    Plan,
+    /// OpenAI platform API key (`OPENAI_API_KEY`) on the public API: Bearer
+    /// key, plain function tools, `max_output_tokens`/`temperature`/
+    /// JSON-object mode honored, billed per token.
+    ApiKey,
 }
 
 /// The namespace plan-mode requests group IronClaw's function tools in.
@@ -82,8 +103,115 @@ impl OpenAiCodexProvider {
             String::new(),
             request_timeout_secs,
         )?;
-        provider.plan = true;
+        provider.route = ResponsesRoute::Plan;
         Ok(provider)
+    }
+
+    /// A provider for an OpenAI platform API key on the public Responses API
+    /// (`{api_base_url}/responses`). Streams natively (SSE) with exact finish
+    /// reasons, round-trips encrypted reasoning items, and sends the derived
+    /// `prompt_cache_key`. `request_timeout_secs` bounds response headers and
+    /// the idle gap between SSE events; there is no total wall-clock cap.
+    pub(crate) fn new_api_key(
+        model: &str,
+        api_base_url: &str,
+        api_key: &str,
+        request_timeout_secs: u64,
+    ) -> Result<Self, LlmError> {
+        let mut provider = Self::build(
+            model,
+            api_base_url,
+            api_key,
+            String::new(),
+            request_timeout_secs,
+        )?;
+        provider.route = ResponsesRoute::ApiKey;
+        provider.models_endpoint = Some(crate::rig_adapter::ModelsEndpoint {
+            provider_id: provider.provider_label().to_string(),
+            url: format!("{}/models", provider.api_base_url),
+            auth: crate::rig_adapter::ModelsAuth::Bearer(api_key.to_string()),
+            shape: crate::rig_adapter::ModelsShape::OpenAiData,
+            extra_headers: reqwest::header::HeaderMap::new(),
+        });
+        provider.client = crate::url_check::build_http_client(
+            provider.provider_label(),
+            api_base_url,
+            crate::config::hardened_streaming_client_builder(),
+        )?;
+        Ok(provider)
+    }
+
+    /// Identity reported in typed errors and `provider_id()`.
+    fn provider_label(&self) -> &'static str {
+        match self.route {
+            ResponsesRoute::ApiKey => "openai",
+            ResponsesRoute::ChatGptBackend | ResponsesRoute::Plan => "openai_codex",
+        }
+    }
+
+    /// For the API-key route, carry the request's sampling limits and native
+    /// JSON-object mode onto the Responses body. The subscription routes
+    /// keep their established wire shape (the ChatGPT backend rejects these
+    /// fields).
+    fn apply_api_key_request_options(
+        &self,
+        body: &mut serde_json::Value,
+        max_tokens: Option<u32>,
+        temperature: Option<f32>,
+        response_format: Option<&crate::provider::CompletionResponseFormat>,
+    ) {
+        if self.route != ResponsesRoute::ApiKey {
+            return;
+        }
+        if let Some(max_tokens) = max_tokens {
+            body["max_output_tokens"] = serde_json::json!(max_tokens);
+        }
+        let model = body["model"].as_str().unwrap_or(&self.model).to_string();
+        // The public API takes `reasoning` and `text.verbosity` only on
+        // reasoning models (o-series, GPT-5+); a non-reasoning model
+        // (`gpt-4.1`, `gpt-4o`) rejects them, and reasoning models in turn
+        // reject a sampling temperature.
+        if !crate::reasoning_effort::openai_reasoning(&model) {
+            if let Some(object) = body.as_object_mut() {
+                object.remove("reasoning");
+                object.remove("include");
+            }
+            if let Some(text) = body
+                .get_mut("text")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                text.remove("verbosity");
+            }
+            if body["text"]
+                .as_object()
+                .is_some_and(serde_json::Map::is_empty)
+                && let Some(object) = body.as_object_mut()
+            {
+                object.remove("text");
+            }
+            if let Some(temperature) = temperature {
+                body["temperature"] = serde_json::json!(temperature);
+            }
+        }
+        if matches!(
+            response_format,
+            Some(crate::provider::CompletionResponseFormat::JsonObject)
+        ) {
+            body["text"]["format"] = serde_json::json!({ "type": "json_object" });
+        }
+    }
+
+    fn ensure_response_format_supported(
+        &self,
+        format: Option<&crate::provider::CompletionResponseFormat>,
+    ) -> Result<(), LlmError> {
+        if self.route == ResponsesRoute::ApiKey {
+            return Ok(());
+        }
+        crate::provider::ensure_openai_responses_response_format_supported(
+            format,
+            self.provider_label(),
+        )
     }
 
     fn build(
@@ -108,8 +236,21 @@ impl OpenAiCodexProvider {
                 account_id,
             }),
             unsupported_params: HashSet::new(),
-            plan: false,
+            route: ResponsesRoute::ChatGptBackend,
+            extra_headers: reqwest::header::HeaderMap::new(),
+            models_endpoint: None,
         })
+    }
+
+    /// Operator-configured headers for the API-key route (organization /
+    /// project selection, gateways). Applied before the provider's own auth
+    /// and protocol headers, which always win.
+    pub(crate) fn with_extra_headers(mut self, headers: reqwest::header::HeaderMap) -> Self {
+        if let Some(endpoint) = self.models_endpoint.as_mut() {
+            endpoint.extra_headers = headers.clone();
+        }
+        self.extra_headers = headers;
+        self
     }
 
     pub(crate) fn with_unsupported_params(mut self, unsupported_params: Vec<String>) -> Self {
@@ -119,10 +260,10 @@ impl OpenAiCodexProvider {
 
     /// Update the access token after a refresh.
     pub async fn update_token(&self, token: &str) -> Result<(), LlmError> {
-        let account_id = if self.plan {
-            String::new()
-        } else {
+        let account_id = if self.route == ResponsesRoute::ChatGptBackend {
             extract_account_id(token)?
+        } else {
+            String::new()
         };
         *self.auth.write().await = AuthState {
             token: token.to_string(),
@@ -140,17 +281,17 @@ impl OpenAiCodexProvider {
 
         let auth = self.auth.read().await;
 
-        let mut headers = HeaderMap::new();
+        let mut headers: HeaderMap = self.extra_headers.clone();
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {}", auth.token)).map_err(|e| {
                 LlmError::RequestFailed {
-                    provider: "openai_codex".to_string(),
+                    provider: self.provider_label().to_string(),
                     reason: format!("Invalid token for header: {e}"),
                 }
             })?,
         );
-        if !self.plan {
+        if self.route == ResponsesRoute::ChatGptBackend {
             headers.insert(
                 HeaderName::from_static("chatgpt-account-id"),
                 HeaderValue::from_str(&auth.account_id).map_err(|e| LlmError::RequestFailed {
@@ -248,7 +389,7 @@ impl OpenAiCodexProvider {
             body["parallel_tool_calls"] = serde_json::Value::Bool(true);
         }
 
-        if self.plan {
+        if self.route == ResponsesRoute::Plan {
             namespace_tools(&mut body);
         }
 
@@ -309,14 +450,14 @@ impl OpenAiCodexProvider {
         )
         .await
         .map_err(|_| LlmError::RequestFailed {
-            provider: "openai_codex".to_string(),
+            provider: self.provider_label().to_string(),
             reason: format!(
                 "timed out waiting {}s for streaming response headers",
                 self.stream_idle_timeout.as_secs()
             ),
         })?
         .map_err(|e| LlmError::RequestFailed {
-            provider: "openai_codex".to_string(),
+            provider: self.provider_label().to_string(),
             reason: format!("HTTP request failed: {e}"),
         })?;
 
@@ -356,7 +497,11 @@ impl OpenAiCodexProvider {
             let body_text = String::from_utf8_lossy(&response_body);
             return Err(crate::error::map_provider_http_error(
                 crate::error::ProviderHttpError {
-                    adapter: crate::error::ProductionModelAdapter::OpenAiCodex,
+                    adapter: if self.route == ResponsesRoute::ApiKey {
+                        crate::error::ProductionModelAdapter::OpenAiResponses
+                    } else {
+                        crate::error::ProductionModelAdapter::OpenAiCodex
+                    },
                     model: &model,
                     status: status.as_u16(),
                     body: body_text.as_ref(),
@@ -368,7 +513,13 @@ impl OpenAiCodexProvider {
         let stream = response
             .bytes_stream()
             .map(|chunk| chunk.map_err(|error| error.to_string()));
-        parse_sse_stream(stream, self.stream_idle_timeout, sink).await
+        parse_sse_stream(
+            stream,
+            self.stream_idle_timeout,
+            sink,
+            self.provider_label(),
+        )
+        .await
     }
 
     async fn complete_inner(
@@ -376,19 +527,27 @@ impl OpenAiCodexProvider {
         request: CompletionRequest,
         sink: Option<Arc<dyn CompletionStreamSink>>,
     ) -> Result<CompletionResponse, LlmError> {
-        crate::provider::ensure_openai_responses_response_format_supported(
-            request.response_format.as_ref(),
-            "openai_codex",
-        )?;
+        self.ensure_response_format_supported(request.response_format.as_ref())?;
+        let mut request = request;
+        crate::provider::strip_unsupported_completion_params(
+            &self.unsupported_params,
+            &mut request,
+        );
         let mut messages = request.messages;
         crate::provider::sanitize_tool_messages(&mut messages);
-        let body = self.build_request_body(
+        let mut body = self.build_request_body(
             self.request_model(request.model.as_deref()),
             &messages,
             None,
             None,
             request.response_format.as_ref(),
             &request.metadata,
+        );
+        self.apply_api_key_request_options(
+            &mut body,
+            request.max_tokens,
+            request.temperature,
+            request.response_format.as_ref(),
         );
         let parsed = self.send_with_reasoning_recovery(body, sink).await?;
 
@@ -409,10 +568,9 @@ impl OpenAiCodexProvider {
         request: ToolCompletionRequest,
         sink: Option<Arc<dyn CompletionStreamSink>>,
     ) -> Result<ToolCompletionResponse, LlmError> {
-        crate::provider::ensure_openai_responses_response_format_supported(
-            request.response_format.as_ref(),
-            "openai_codex",
-        )?;
+        self.ensure_response_format_supported(request.response_format.as_ref())?;
+        let mut request = request;
+        crate::provider::strip_unsupported_tool_params(&self.unsupported_params, &mut request);
         let mut messages = request.messages;
         crate::provider::sanitize_tool_messages(&mut messages);
         let name_map: std::collections::HashMap<String, String> = request
@@ -423,13 +581,19 @@ impl OpenAiCodexProvider {
                 (sanitized != tool.name).then(|| (sanitized, tool.name.clone()))
             })
             .collect();
-        let body = self.build_request_body(
+        let mut body = self.build_request_body(
             self.request_model(request.model.as_deref()),
             &messages,
             Some(&request.tools),
             request.tool_choice.as_deref(),
             request.response_format.as_ref(),
             &request.metadata,
+        );
+        self.apply_api_key_request_options(
+            &mut body,
+            request.max_tokens,
+            request.temperature,
+            request.response_format.as_ref(),
         );
         let mut parsed = self.send_with_reasoning_recovery(body, sink).await?;
 
@@ -443,11 +607,11 @@ impl OpenAiCodexProvider {
             &request.tools,
             crate::tool_schema::PlaceholderStrippingMode::NullAndEmptyStrings,
         );
-        let finish_reason = if parsed.tool_calls.is_empty() {
-            parsed.finish_reason
-        } else {
-            FinishReason::ToolUse
-        };
+        // `parse_sse_response` already resolved the provider's own status
+        // against the parsed tool calls: a clean stop with calls is
+        // `ToolUse`, while a truncated (`Length`) or filtered response stays
+        // what the provider said so its partial calls are never executed.
+        let finish_reason = parsed.finish_reason;
 
         Ok(ToolCompletionResponse {
             content: (!parsed.text_content.is_empty()).then_some(parsed.text_content),
@@ -466,7 +630,7 @@ impl OpenAiCodexProvider {
 #[async_trait]
 impl LlmProvider for OpenAiCodexProvider {
     fn provider_id(&self) -> String {
-        "openai_codex".to_string()
+        self.provider_label().to_string()
     }
 
     fn model_name(&self) -> &str {
@@ -474,11 +638,18 @@ impl LlmProvider for OpenAiCodexProvider {
     }
 
     fn cost_per_token(&self) -> (Decimal, Decimal) {
-        (Decimal::ZERO, Decimal::ZERO)
+        match self.route {
+            // API keys are billed per token at the model's list price.
+            ResponsesRoute::ApiKey => ironclaw_common::llm_costs::model_cost(&self.model)
+                .unwrap_or_else(ironclaw_common::llm_costs::default_cost),
+            // Subscription routes are flat-rate.
+            ResponsesRoute::ChatGptBackend | ResponsesRoute::Plan => (Decimal::ZERO, Decimal::ZERO),
+        }
     }
 
-    fn calculate_cost(&self, _input_tokens: u32, _output_tokens: u32) -> Decimal {
-        Decimal::ZERO
+    fn calculate_cost(&self, input_tokens: u32, output_tokens: u32) -> Decimal {
+        let (input, output) = self.cost_per_token();
+        input * Decimal::from(input_tokens) + output * Decimal::from(output_tokens)
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
@@ -509,7 +680,10 @@ impl LlmProvider for OpenAiCodexProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>, LlmError> {
-        Ok(plan_models(&self.model).await)
+        match self.models_endpoint.as_ref() {
+            Some(endpoint) => endpoint.fetch_models().await,
+            None => Ok(plan_models(&self.model).await),
+        }
     }
 
     async fn model_metadata(&self) -> Result<ModelMetadata, LlmError> {
@@ -521,7 +695,7 @@ impl LlmProvider for OpenAiCodexProvider {
 
     fn set_model(&self, _model: &str) -> Result<(), LlmError> {
         Err(LlmError::RequestFailed {
-            provider: "openai_codex".to_string(),
+            provider: self.provider_label().to_string(),
             reason: "Cannot change model on Codex provider at runtime".to_string(),
         })
     }
@@ -889,6 +1063,7 @@ async fn parse_sse_stream<S>(
     stream: S,
     idle_timeout: Duration,
     sink: Option<Arc<dyn CompletionStreamSink>>,
+    provider: &str,
 ) -> Result<ParsedResponse, LlmError>
 where
     S: Stream<Item = Result<bytes::Bytes, String>> + Unpin,
@@ -900,14 +1075,14 @@ where
         let event = tokio::time::timeout(idle_timeout, stream.next())
             .await
             .map_err(|_| LlmError::StreamInterrupted {
-                provider: "openai_codex".to_string(),
+                provider: provider.to_string(),
                 reason: format!("SSE stream was idle for {} seconds", idle_timeout.as_secs()),
             })?;
         let Some(event) = event else {
             break;
         };
         let event = event.map_err(|error| LlmError::StreamInterrupted {
-            provider: "openai_codex".to_string(),
+            provider: provider.to_string(),
             reason: format!("Failed to read SSE stream: {error}"),
         })?;
         let data = event.data.trim();
@@ -920,7 +1095,7 @@ where
         collected.push_str("\n\n");
 
         if data == "[DONE]" {
-            return parse_sse_response(&collected);
+            return parse_sse_response_for(&collected, provider);
         }
 
         let parsed = serde_json::from_str::<SseEvent>(data).ok();
@@ -948,18 +1123,25 @@ where
         if parsed.as_ref().is_some_and(|event| {
             matches!(
                 event.event_type.as_str(),
-                "response.completed" | "response.failed" | "error"
+                "response.completed" | "response.incomplete" | "response.failed" | "error"
             )
         }) {
-            return parse_sse_response(&collected);
+            return parse_sse_response_for(&collected, provider);
         }
     }
 
-    parse_sse_response(&collected)
+    parse_sse_response_for(&collected, provider)
 }
 
-/// Parse the full SSE response body into a `ParsedResponse`.
+/// Parse a full SSE body as the Codex route (test shorthand).
+#[cfg(test)]
 fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
+    parse_sse_response_for(body, "openai_codex")
+}
+
+/// Parse the full SSE response body into a `ParsedResponse`; errors name
+/// `provider`.
+fn parse_sse_response_for(body: &str, provider: &str) -> Result<ParsedResponse, LlmError> {
     let mut text_content = String::new();
     let mut reasoning_summary = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -967,7 +1149,10 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
     let mut input_tokens: u32 = 0;
     let mut cached_input_tokens: u32 = 0;
     let mut output_tokens: u32 = 0;
-    let mut finish_reason = FinishReason::Stop;
+    // The provider's own terminal word: `incomplete_details.reason`, else
+    // the response status, else a content refusal.
+    let mut reported_finish: Option<FinishReason> = None;
+    let mut saw_refusal = false;
     let mut active_function_calls: std::collections::HashMap<String, FunctionCallState> =
         std::collections::HashMap::new();
     let mut response_status: Option<String> = None;
@@ -1149,8 +1334,15 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
                 }
             }
 
-            // Response completed
-            "response.completed" => {
+            // A refusal content part: the model declined under policy.
+            "response.refusal.delta" | "response.refusal.done" => {
+                saw_refusal = true;
+            }
+
+            // Terminal response: `response.completed`, or `response.incomplete`
+            // when generation stopped early (`max_output_tokens`,
+            // `content_filter`).
+            "response.completed" | "response.incomplete" => {
                 saw_completed = true;
                 if let Some(response) = event.data.get("response") {
                     // Extract usage
@@ -1165,6 +1357,14 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0) as u32;
                     }
+                    reported_finish = response
+                        .get("incomplete_details")
+                        .and_then(|details| details.get("reason"))
+                        .and_then(|reason| reason.as_str())
+                        .map(|reason| {
+                            crate::provider::map_provider_finish_token(reason)
+                                .unwrap_or(FinishReason::Unknown)
+                        });
                     // Extract status
                     if let Some(status) = response.get("status").and_then(|s| s.as_str()) {
                         response_status = Some(status.to_string());
@@ -1193,7 +1393,7 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
                     .is_some_and(is_usage_limit_code)
                 {
                     return Err(LlmError::QuotaExceeded {
-                        provider: "openai_codex".to_string(),
+                        provider: provider.to_string(),
                         reason: reason.to_string(),
                     });
                 }
@@ -1205,7 +1405,7 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
                     return Err(LlmError::ContextLengthExceeded { used, limit });
                 }
                 return Err(LlmError::RequestFailed {
-                    provider: "openai_codex".to_string(),
+                    provider: provider.to_string(),
                     reason: format!("Response failed: {reason}"),
                 });
             }
@@ -1225,7 +1425,7 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
                     .unwrap_or("Unknown error");
                 if is_usage_limit_code(code) {
                     return Err(LlmError::QuotaExceeded {
-                        provider: "openai_codex".to_string(),
+                        provider: provider.to_string(),
                         reason: message.to_string(),
                     });
                 }
@@ -1238,7 +1438,7 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
                     return Err(LlmError::ContextLengthExceeded { used, limit });
                 }
                 return Err(LlmError::RequestFailed {
-                    provider: "openai_codex".to_string(),
+                    provider: provider.to_string(),
                     reason: format!("Error {code}: {message}"),
                 });
             }
@@ -1279,23 +1479,28 @@ fn parse_sse_response(body: &str) -> Result<ParsedResponse, LlmError> {
             "after partial output"
         };
         return Err(LlmError::StreamInterrupted {
-            provider: "openai_codex".to_string(),
+            provider: provider.to_string(),
             reason: format!("stream ended {produced} before response.completed"),
         });
     }
 
     attach_reasoning_items(&mut tool_calls, &reasoning_items);
 
-    // Map status to finish reason (matching OpenClaw's mapStopReason)
-    if !tool_calls.is_empty() {
-        finish_reason = FinishReason::ToolUse;
-    } else if let Some(ref status) = response_status {
-        finish_reason = match status.as_str() {
-            "completed" => FinishReason::Stop,
-            "incomplete" => FinishReason::Length,
-            _ => FinishReason::Stop,
-        };
-    }
+    // Map the provider's terminal word to a finish reason. A clean stop with
+    // tool calls refines to `ToolUse`; a truncated or filtered response keeps
+    // the provider's word even when it carried (partial) tool calls, so those
+    // calls are never executed (`resolve_finish_reason`).
+    let status_finish = match response_status.as_deref() {
+        Some("incomplete") => Some(FinishReason::Length),
+        Some("completed") | None => Some(FinishReason::Stop),
+        Some(_) => Some(FinishReason::Unknown),
+    };
+    let reported = if saw_refusal {
+        Some(FinishReason::ContentFilter)
+    } else {
+        reported_finish.or(status_finish)
+    };
+    let finish_reason = crate::provider::resolve_finish_reason(reported, !tool_calls.is_empty());
 
     Ok(ParsedResponse {
         text_content,
@@ -1349,7 +1554,7 @@ mod tests {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let sink = Arc::new(RecordingStreamSink { sender });
 
-        let parsed = parse_sse_stream(stream, Duration::from_secs(1), Some(sink))
+        let parsed = parse_sse_stream(stream, Duration::from_secs(1), Some(sink), "openai_codex")
             .await
             .expect("completed stream");
 
@@ -1369,7 +1574,8 @@ mod tests {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let sink = Arc::new(RecordingStreamSink { sender });
 
-        let result = parse_sse_stream(stream, Duration::from_secs(1), Some(sink)).await;
+        let result =
+            parse_sse_stream(stream, Duration::from_secs(1), Some(sink), "openai_codex").await;
 
         assert_eq!(receiver.recv().await.as_deref(), Some("partial"));
         assert!(matches!(result, Err(LlmError::StreamInterrupted { .. })));
@@ -1379,7 +1585,7 @@ mod tests {
     async fn streaming_parser_rejects_an_idle_stream_without_total_wall_clock_timeout() {
         let stream = futures::stream::pending::<Result<bytes::Bytes, String>>();
 
-        let result = parse_sse_stream(stream, Duration::from_millis(1), None).await;
+        let result = parse_sse_stream(stream, Duration::from_millis(1), None, "openai_codex").await;
 
         assert!(matches!(
             result,
@@ -2710,3 +2916,8 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
         );
     }
 }
+
+// OpenAI platform API-key route (`OPENAI_API_KEY`), kept out of this file
+// for its size budget: `src/openai_codex_provider/api_key_tests.rs`.
+#[cfg(test)]
+mod api_key_tests;

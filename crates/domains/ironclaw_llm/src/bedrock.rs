@@ -23,7 +23,9 @@ use aws_sdk_bedrockruntime::types::{
 use aws_smithy_types::{Blob, Document};
 use rust_decimal::Decimal;
 
-use crate::config::BedrockConfig;
+use crate::config::{BedrockConfig, CacheRetention};
+
+mod prompt_cache;
 use crate::error::LlmError;
 use crate::provider::{
     CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ModelMetadata, ToolCall,
@@ -39,6 +41,10 @@ pub(crate) struct BedrockProvider {
     cross_region_prefix: String,
     /// Active model ID (with cross-region prefix), switchable at runtime via `set_model()`.
     active_model: RwLock<String>,
+    /// Converse prompt caching: explicit `cachePoint` blocks after the system
+    /// prompt, the last tool, and the last message (cache-capable models
+    /// only; see `prompt_cache`).
+    cache_retention: CacheRetention,
 }
 
 impl BedrockProvider {
@@ -69,6 +75,7 @@ impl BedrockProvider {
             display_model: config.model.clone(),
             cross_region_prefix,
             active_model: RwLock::new(model_id),
+            cache_retention: config.cache_retention,
         })
     }
 
@@ -109,7 +116,15 @@ impl LlmProvider for BedrockProvider {
         // but complete() has no tools to build a toolConfig — strip them.
         strip_tool_blocks(&mut messages);
 
-        let (system_blocks, bedrock_messages) = convert_messages(&messages)?;
+        let (mut system_blocks, mut bedrock_messages) = convert_messages(&messages)?;
+        let cache_point = prompt_cache::cache_point(self.cache_retention, &model_id)?;
+        if let Some(point) = cache_point.as_ref() {
+            prompt_cache::apply_message_cache_points(
+                point,
+                &mut system_blocks,
+                &mut bedrock_messages,
+            )?;
+        }
 
         if bedrock_messages.is_empty() {
             return Err(LlmError::RequestFailed {
@@ -148,16 +163,18 @@ impl LlmProvider for BedrockProvider {
 
         let (text, _tool_calls) = extract_content_blocks(response.output())?;
         let (input_tokens, output_tokens) = extract_token_usage(response.usage());
+        let (cache_read_input_tokens, cache_creation_input_tokens) =
+            extract_cache_usage(response.usage());
 
         Ok(CompletionResponse {
             content: text,
             input_tokens,
             output_tokens,
             finish_reason: map_stop_reason(response.stop_reason()),
-            cache_creation_input_tokens: 0,
+            cache_creation_input_tokens,
             usage_source: ironclaw_host_api::resource::ModelUsageSource::Provider,
             reasoning: None,
-            cache_read_input_tokens: 0,
+            cache_read_input_tokens,
         })
     }
 
@@ -178,7 +195,15 @@ impl LlmProvider for BedrockProvider {
             strip_tool_blocks(&mut messages);
         }
 
-        let (system_blocks, bedrock_messages) = convert_messages(&messages)?;
+        let (mut system_blocks, mut bedrock_messages) = convert_messages(&messages)?;
+        let cache_point = prompt_cache::cache_point(self.cache_retention, &model_id)?;
+        if let Some(point) = cache_point.as_ref() {
+            prompt_cache::apply_message_cache_points(
+                point,
+                &mut system_blocks,
+                &mut bedrock_messages,
+            )?;
+        }
 
         if bedrock_messages.is_empty() {
             return Err(LlmError::RequestFailed {
@@ -199,6 +224,10 @@ impl LlmProvider for BedrockProvider {
             .set_messages(Some(bedrock_messages));
 
         if let Some(tc) = tool_config {
+            let tc = match cache_point.as_ref() {
+                Some(point) => prompt_cache::with_tool_cache_point(tc, point)?,
+                None => tc,
+            };
             builder = builder.tool_config(tc);
         }
 
@@ -221,6 +250,8 @@ impl LlmProvider for BedrockProvider {
 
         let (text, tool_calls) = extract_content_blocks(response.output())?;
         let (input_tokens, output_tokens) = extract_token_usage(response.usage());
+        let (cache_read_input_tokens, cache_creation_input_tokens) =
+            extract_cache_usage(response.usage());
 
         Ok(ToolCompletionResponse {
             content: if text.is_empty() { None } else { Some(text) },
@@ -228,10 +259,10 @@ impl LlmProvider for BedrockProvider {
             input_tokens,
             output_tokens,
             finish_reason: map_stop_reason(response.stop_reason()),
-            cache_creation_input_tokens: 0,
+            cache_creation_input_tokens,
             reasoning: None,
             reasoning_details: None,
-            cache_read_input_tokens: 0,
+            cache_read_input_tokens,
         })
     }
 
@@ -724,6 +755,17 @@ fn extract_token_usage(usage: Option<&aws_sdk_bedrockruntime::types::TokenUsage>
         ),
         None => (0, 0),
     }
+}
+
+/// Prompt-cache read and write token counts, `(read, write)`.
+fn extract_cache_usage(usage: Option<&aws_sdk_bedrockruntime::types::TokenUsage>) -> (u32, u32) {
+    let tokens = |value: Option<i32>| value.and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
+    usage.map_or((0, 0), |u| {
+        (
+            tokens(u.cache_read_input_tokens()),
+            tokens(u.cache_write_input_tokens()),
+        )
+    })
 }
 
 /// Map Bedrock `StopReason` to IronClaw `FinishReason`.

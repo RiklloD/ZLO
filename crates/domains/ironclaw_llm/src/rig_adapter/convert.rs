@@ -248,22 +248,24 @@ pub(super) fn normalized_tool_call_id(raw: Option<&str>, seed: usize) -> String 
 
 /// Convert IronClaw tool definitions to rig-core format.
 ///
-/// Applies `normalize_schema_strict` at the boundary, which both
-/// strict-normalizes nested objects AND flattens any top-level
-/// `oneOf`/`anyOf`/`allOf`/`enum`/`not` (OpenAI's tool API rejects those at
-/// the top level even when the rest of the schema is valid). The flatten may
-/// append an advisory hint to the tool description, so we pass an owned
-/// clone through and read it back.
-pub(super) fn convert_tools(tools: &[IronToolDefinition]) -> Vec<RigToolDefinition> {
+/// Applies the adapter's [`ToolSchemaPolicy`] at the boundary. Both policies
+/// flatten any top-level `oneOf`/`anyOf`/`allOf`/`enum`/`not` (the OpenAI,
+/// Anthropic and Gemini tool APIs all reject those at the top level even when
+/// the rest of the schema is valid); only `StrictOpenAi` additionally rewrites
+/// optional object fields into required-nullable strict mode, which is an
+/// OpenAI strict-mode contract and costs other providers prompt and output
+/// tokens (`"optional_field": null`). The flatten may append an advisory hint
+/// to the tool description, so we pass an owned clone through and read it
+/// back.
+pub(super) fn convert_tools(
+    tools: &[IronToolDefinition],
+    policy: ToolSchemaPolicy,
+) -> Vec<RigToolDefinition> {
     tools
         .iter()
         .map(|t| {
             let mut description = t.description.clone();
-            let parameters = shape_tool_schema(
-                ToolSchemaPolicy::StrictOpenAi,
-                &t.parameters,
-                &mut description,
-            );
+            let parameters = shape_tool_schema(policy, &t.parameters, &mut description);
             RigToolDefinition {
                 name: t.name.clone(),
                 description,

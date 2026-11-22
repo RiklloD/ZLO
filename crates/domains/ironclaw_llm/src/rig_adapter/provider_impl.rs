@@ -28,7 +28,7 @@ where
     }
 
     fn cache_write_multiplier(&self) -> Decimal {
-        match self.cache_retention {
+        match self.priced_cache_retention() {
             CacheRetention::None => Decimal::ONE,
             CacheRetention::Short => Decimal::new(125, 2), // 1.25× (125% of input rate)
             CacheRetention::Long => Decimal::TWO,          // 2.0×  (200% of input rate)
@@ -36,7 +36,7 @@ where
     }
 
     fn cache_read_discount(&self) -> Decimal {
-        if self.cache_retention != CacheRetention::None {
+        if self.priced_cache_retention() != CacheRetention::None {
             dec!(10) // Anthropic: 90% discount (cost = input_rate / 10)
         } else {
             Decimal::ONE
@@ -214,7 +214,7 @@ where
         let mut messages = request.messages;
         crate::provider::sanitize_tool_messages(&mut messages);
         let (preamble, history) = convert_messages(&messages);
-        let tools = convert_tools(&request.tools);
+        let tools = convert_tools(&request.tools, self.tool_schema_policy);
         let tool_choice = convert_tool_choice(request.tool_choice.as_deref());
 
         let mut rig_req = build_rig_request(
@@ -325,7 +325,7 @@ where
         let mut messages = request.messages;
         crate::provider::sanitize_tool_messages(&mut messages);
         let (preamble, history) = convert_messages(&messages);
-        let tools = convert_tools(&request.tools);
+        let tools = convert_tools(&request.tools, self.tool_schema_policy);
         let tool_choice = convert_tool_choice(request.tool_choice.as_deref());
 
         let mut rig_req = build_rig_request(

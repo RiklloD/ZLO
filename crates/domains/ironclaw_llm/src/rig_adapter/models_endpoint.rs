@@ -49,7 +49,7 @@ impl ModelsEndpoint {
     /// adapter-specific auth scheme, and parses the adapter-specific response
     /// shape. Network, auth, and parse failures map to `LlmError` so the caller
     /// can surface a real message instead of an empty list.
-    pub(super) async fn fetch_models(&self) -> Result<Vec<String>, LlmError> {
+    pub(crate) async fn fetch_models(&self) -> Result<Vec<String>, LlmError> {
         let validated = crate::url_check::check_models_url(&self.provider_id, &self.url).await?;
 
         // `check_models_url` validates only the initial URL. Disable redirect

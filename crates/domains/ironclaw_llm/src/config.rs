@@ -14,9 +14,10 @@ use ironclaw_common::paths::ironclaw_base_dir;
 
 /// Sentinel value used as `api_key` when only an OAuth token is present.
 ///
-/// When we only have an OAuth token the provider factory in `llm/mod.rs`
-/// checks for this value and routes to `AnthropicOAuthProvider`, so this
-/// placeholder is never sent over the wire.
+/// When we only have an OAuth token the provider factory in `lib.rs`
+/// (`create_anthropic_from_registry`) checks for this value and builds the
+/// OAuth-credential `AnthropicProvider`, so this placeholder is never sent
+/// over the wire.
 pub const OAUTH_PLACEHOLDER: &str = "oauth-placeholder";
 
 /// Prompt cache retention policy for Anthropic.
@@ -235,6 +236,9 @@ pub struct BedrockConfig {
     pub cross_region: Option<String>,
     /// AWS named profile (for SSO / assume-role workflows).
     pub profile: Option<String>,
+    /// Converse prompt-cache retention (`BEDROCK_CACHE_RETENTION`, default
+    /// `short`): explicit `cachePoint` blocks on cache-capable models.
+    pub cache_retention: CacheRetention,
 }
 
 impl BedrockConfig {
@@ -279,6 +283,7 @@ impl BedrockConfig {
             model,
             cross_region,
             profile,
+            cache_retention: CacheRetention::default(),
         })
     }
 }
@@ -643,6 +648,7 @@ mod tests {
         assert_eq!(cfg.model, "model-x");
         assert!(cfg.cross_region.is_none());
         assert!(cfg.profile.is_none());
+        assert_eq!(cfg.cache_retention, CacheRetention::Short);
     }
 
     #[test]

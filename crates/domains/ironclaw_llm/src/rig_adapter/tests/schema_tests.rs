@@ -460,7 +460,7 @@ fn test_convert_tools_handles_top_level_oneof_dispatcher() {
             ]
         }),
     }];
-    let converted = convert_tools(&tools);
+    let converted = convert_tools(&tools, ToolSchemaPolicy::StrictOpenAi);
     assert_eq!(converted.len(), 1);
     let tool = &converted[0];
 
@@ -596,11 +596,14 @@ fn test_realistic_wasm_schema_survives_normalize_flatten_pipeline() {
     );
 
     // Path 2: rig-based provider entry point.
-    let tools = convert_tools(&[IronToolDefinition {
-        name: "google_docs_tool".to_string(),
-        description: "Google Docs".to_string(),
-        parameters: wasm_schema.clone(),
-    }]);
+    let tools = convert_tools(
+        &[IronToolDefinition {
+            name: "google_docs_tool".to_string(),
+            description: "Google Docs".to_string(),
+            parameters: wasm_schema.clone(),
+        }],
+        ToolSchemaPolicy::StrictOpenAi,
+    );
     assert_eq!(tools.len(), 1);
     assert!(
         tools[0].parameters.get("oneOf").is_none(),

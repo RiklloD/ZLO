@@ -24,7 +24,9 @@ async fn oauth_new_model_family_keeps_short_retention_cache_control() {
     );
     config.oauth_token = Some(SecretString::from("test-token".to_string()));
     config.cache_retention = CacheRetention::Short;
-    let provider = AnthropicOAuthProvider::new(&config).expect("provider");
+    let provider =
+        AnthropicProvider::new_oauth(&config, crate::config::DEFAULT_REQUEST_TIMEOUT_SECS)
+            .expect("provider");
 
     #[expect(
         clippy::let_underscore_must_use,
