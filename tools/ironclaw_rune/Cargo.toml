@@ -28,8 +28,8 @@ ironclaw_extension_contracts = { path = "../../crates/contracts/ironclaw_extensi
 ironclaw_config = { path = "../../crates/app/ironclaw_config" }
 
 # Pinned rev of Rune's fast-forward-only `dev` branch. Bump on purpose.
-rune = { git = "https://github.com/anomalyco/rune", rev = "c853811c8e0e60a632eaa2e72992f871225737ef", features = ["native-file-dialog"] }
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "c853811c8e0e60a632eaa2e72992f871225737ef", features = ["markdown"] }
+rune = { git = "https://github.com/anomalyco/rune", rev = "c7896b0f80054c22f44e42c0cdb0d3f1681ac924", features = ["native-file-dialog"] }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "c7896b0f80054c22f44e42c0cdb0d3f1681ac924", features = ["markdown"] }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "fs"] }
 futures = "0.3"
@@ -57,26 +57,18 @@ strip = true
 [profile.dev.package."*"]
 opt-level = 1
 
-# Rune with ZLO's energy patches, kept local (Rune takes no PRs): a clone of
-# the pinned rev above at ../../../rune-zlo (~/rune-zlo), branch
-# `zlo-energy-2`. It caches the IME cursor area, honours a zero word reveal
-# under reduced motion, steps word fades at 40 Hz and adds
-# `rune::cap_ambient_motion` (60 Hz once input rests), which main.rs calls.
-# Building elsewhere needs that clone: `git clone <rune> ~/rune-zlo`, then
-# check out `zlo-energy-2` (or re-apply its one commit on c853811).
-[patch."https://github.com/anomalyco/rune"]
-rune = { path = "../../../rune-zlo/crates/rune" }
-rune-kit = { path = "../../../rune-zlo/crates/rune-kit" }
-
-# Rune's own crates.io patches (its vendored winit, wgpu-hal, parley_engine,
-# sctk-adwaita and AccessKit adapters, each published plus a small patch).
-# A dependency's `[patch]` doesn't reach the workspace that depends on it, so
-# an app building Rune repeats them; keep this list in step with the
-# `[patch.crates-io]` block in Rune's root Cargo.toml on every bump.
+# Rune's own crates.io patches (its vendored winit, wgpu-hal, naga,
+# parley_engine, sctk-adwaita and AccessKit adapters, each published plus a
+# small patch), taken from the same Rune rev as above. A dependency's `[patch]`
+# doesn't reach the workspace that depends on it, so an app building Rune
+# repeats them; keep this list and rev in step with the `[patch.crates-io]`
+# block in Rune's root Cargo.toml on every bump.
 [patch.crates-io]
-wgpu-hal = { path = "../../../rune-zlo/vendor/wgpu-hal" }
-winit = { path = "../../../rune-zlo/vendor/winit" }
-sctk-adwaita = { path = "../../../rune-zlo/vendor/sctk-adwaita" }
-parley_engine = { path = "../../../rune-zlo/vendor/parley_engine" }
-accesskit_windows = { path = "../../../rune-zlo/vendor/accesskit_windows" }
-accesskit_macos = { path = "../../../rune-zlo/vendor/accesskit_macos" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "c7896b0f80054c22f44e42c0cdb0d3f1681ac924" }
+naga = { git = "https://github.com/anomalyco/rune", rev = "c7896b0f80054c22f44e42c0cdb0d3f1681ac924" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "c7896b0f80054c22f44e42c0cdb0d3f1681ac924" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "c7896b0f80054c22f44e42c0cdb0d3f1681ac924" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "c7896b0f80054c22f44e42c0cdb0d3f1681ac924" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "c7896b0f80054c22f44e42c0cdb0d3f1681ac924" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "c7896b0f80054c22f44e42c0cdb0d3f1681ac924" }
+accesskit_atspi_common = { git = "https://github.com/anomalyco/rune", rev = "c7896b0f80054c22f44e42c0cdb0d3f1681ac924" }

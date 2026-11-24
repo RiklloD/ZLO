@@ -3,7 +3,7 @@
 The native macOS window onto the IronClaw gateway: `app/` is the binary `zlo`
 (package `ironclaw_rune`), `client/` the UI-free gateway client
 (`zlo_client`). It is its own cargo workspace; `Cargo.toml` says how it is
-built against the local Rune checkout and `bundle.sh` builds `ZLO.app`.
+built against a pinned rev of upstream Rune and `bundle.sh` builds `ZLO.app`.
 Feature notes live in `docs/`.
 
 ## How the app is put together

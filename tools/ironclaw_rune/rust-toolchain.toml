@@ -1,5 +1,6 @@
-# Rune pins 1.99.1; this workspace follows it, separate from the main
-# IronClaw pin (1.98.0) because it is its own workspace and build.
+# Its own workspace and build, but it shares the contracts crates with the
+# main IronClaw workspace, so it follows the IronClaw pin (rust-toolchain.toml
+# at the repo root). Rune pins an older 1.99.1, which is only its minimum.
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 components = ["clippy", "rustfmt"]

@@ -120,11 +120,6 @@ fn main() {
         service::stop_on_terminate();
         energy::start();
     }
-    // Motion nobody steers (a reply streaming in, the list following it)
-    // paces at 60 Hz; any input lifts the cap, so scrolling and typing keep
-    // the panel's full 120 Hz.
-    rune::cap_ambient_motion(true);
-
     let spec = AppSpec::<State> {
         min_size: Some((720.0, 480.0)),
         fonts: design::FONTS,
