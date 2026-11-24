@@ -2,8 +2,10 @@
 //! `ModelPicker::render`, `render_popover`, `group_header`, `model_row`),
 //! with the thinking level as a slider under the models.
 
+use rune::shape::{LineCap, Shape};
 use rune::{
-    Color, Cx, Cycle, El, Key, Modifier, MotionIntent, Phase, Spring, TextEdit, col, el, row,
+    Color, Cx, Cycle, El, Key, Modifier, MotionIntent, Phase, Spring, TextEdit, canvas, col, el,
+    row,
 };
 use rune_kit::{Kit, Placement, RollingText, TextInput, scrim};
 use zlo_client::orchestration::RouteProvider;
@@ -640,36 +642,53 @@ fn model_row(
     .on_press(move |s: &mut State| pick(s, pick_slot.clone(), pv.clone(), md.clone()))
 }
 
-/// The thinking slider's track height; its ends are round, so the first and
-/// last stops sit half a height in from the edges.
-const TRACK_H: f32 = 24.;
-const TRACK_R: f32 = TRACK_H / 2.;
-const KNOB_H: f32 = 16.;
-const KNOB_W: f32 = 16.;
-/// The knob stretches while it is held.
-const KNOB_W_HELD: f32 = 24.;
-/// The knob settling on a level: quick, with a small overshoot.
+/// The thinking slider's field: a recessed well of dots, `ROWS` high and
+/// `COLS` across, with a row of stop ticks under it.
+const TRACK_H: f32 = 36.;
+const TRACK_RADIUS: f32 = 8.;
+/// The first and last stops sit this far in from the well's edges (inside
+/// its 1 pt rim).
+const INSET: f32 = 10.;
+const COLS: usize = 48;
+const ROWS: usize = 5;
+const DOT: f32 = 2.;
+const DOT_PITCH: f32 = 4.5;
+const FIELD_TOP: f32 = 6.;
+const FIELD_H: f32 = (ROWS - 1) as f32 * DOT_PITCH + DOT;
+const TICK_H: f32 = 4.;
+/// Ordered-dither thresholds (a 4×4 Bayer matrix): a dot lights once the
+/// level's density passes its cell's threshold, so Low is a sparse speckle
+/// and the top level a solid block.
+const BAYER: [u8; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+/// The cursor settling on a level: quick, with a small overshoot.
 const SETTLE: Spring = Spring::new(0.34, 0.18);
-/// The knob following the pointer: near-instant, so it never trails.
+/// The cursor following the pointer: near-instant, so it never trails.
 const FOLLOW: Spring = Spring::new(0.06, 0.);
-/// The bars inside the filled part of the track, one every `BAR_PITCH`
-/// points; enough for the widest track.
-const BARS: usize = 64;
-const BAR_PITCH: f32 = 5.;
-/// The bars' heights, repeating, so the fill reads as a level meter.
-const BAR_HEIGHTS: [f32; 7] = [6., 10., 8., 12., 7., 11., 9.];
-/// A bright pulse travelling along the bars: each bar lights for a fifth of
-/// the period, one after the other.
-static WAVE: [(f32, f32); 4] = [(0., 0.2), (0.12, 0.85), (0.3, 0.2), (1., 0.2)];
+/// A bright pulse sweeping the lit columns left to right.
+static PULSE: [(f32, f32); 4] = [(0., 0.5), (0.08, 1.), (0.24, 0.5), (1., 0.5)];
+
+/// The field's resting dots, all `COLS` × `ROWS` of them in one shape
+/// stretched across the field: column `c` sits at `c` of `COLS - 1` units,
+/// and each dot is a stroke, whose width stays in points.
+fn resting_dots(color: Color) -> El {
+    let mut shape = Shape::new();
+    for c in 0..COLS {
+        for r in 0..ROWS {
+            let (x, y) = (c as f32, r as f32 * DOT_PITCH);
+            shape = shape.line([x, y], [x, y + DOT], DOT, LineCap::Butt, color);
+        }
+    }
+    canvas(shape.view_box((COLS - 1) as f32, FIELD_H)).h(FIELD_H)
+}
 
 /// The popover's thinking slider: Auto (the provider's default) and the
-/// current model's levels as stops along one track. Drag the knob, or press
-/// anywhere on the track, and it snaps to the nearest stop when let go; the
-/// level's name rolls over in the header as it changes. The filled part
-/// fills with bars whose pulse runs faster, and whose fill grows stronger,
-/// the more the model thinks. Picking a level keeps the popover open;
-/// Tab / Shift+Tab in the search field step it from the keyboard. `None`
-/// when the model has no levels.
+/// current model's levels as stops across a field of dots. Drag anywhere on
+/// the field, or press it, and a hairline cursor follows; letting go snaps
+/// it to the nearest stop, and the level's name rolls over in the header.
+/// Dots left of the cursor light up, densest at the top level, and a pulse
+/// sweeps them, quicker the more the model thinks. Picking a level keeps
+/// the popover open; Tab / Shift+Tab in the search field step it from the
+/// keyboard. `None` when the model has no levels.
 fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option<El> {
     let choices = thinking_choices(m);
     if choices.len() < 2 {
@@ -687,62 +706,70 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option
     } else {
         at
     };
-    let intensity = shown as f32 / last;
     let name = choices[shown]
         .as_deref()
         .map_or_else(|| "Auto".to_string(), effort_label);
-    let ink = p.accent.alpha(0.22 + 0.5 * intensity);
     let spring = if held { FOLLOW } else { SETTLE };
 
-    // A pulse running left to right across the bars, quicker as it rises.
-    let period = 1.6 - 0.9 * intensity;
-    let bars = row()
-        .pin(Some(0.), Some(0.), Some(0.), Some(0.))
-        .clip_rounded(0.)
-        .gap(BAR_PITCH - 1.5)
-        .pl(2.)
-        .center_y()
-        .children((0..BARS).map(|i| {
-            el().w(1.5)
-                .h(BAR_HEIGHTS[i % BAR_HEIGHTS.len()])
-                .radius(1.)
-                .fill(p.text)
-                .cycle(Cycle {
-                    period,
-                    phase: -(i as f32) * 0.035,
-                    stops: &WAVE,
-                    still: 0.35,
-                    fps: 30.,
-                })
-        }));
-    let fill = el()
-        .key("thinking-fill")
-        .pin(Some(0.), Some(0.), None, Some(0.))
-        .w_frac(frac)
-        .fill(ink)
-        .motion(spring)
-        .motion_intent(MotionIntent::OVERSHOOT)
-        .child(bars);
-    // The track's round start, filled at every level so Auto still shows
-    // where the fill begins.
-    let cap = el()
-        .pin(Some(-TRACK_R + 1.), Some(0.), None, Some(0.))
-        .w(TRACK_R)
-        .corners([TRACK_R - 1., 0., 0., TRACK_R - 1.])
-        .fill(ink)
-        .motion(spring);
-    let stops = row()
-        .pin(Some(0.), Some(0.), Some(0.), Some(0.))
+    // The field: every column spans the stops' width, so column `c` sits
+    // at `c / (COLS - 1)` of it, the same scale as the cursor.
+    let reach = frac * (COLS - 1) as f32;
+    let period = 2.0 - 1.3 * frac;
+    // The resting dots sit under the lit ones, centred on the columns.
+    let resting = resting_dots(p.text_faint.alpha(0.28)).pin(
+        Some(DOT / 2.),
+        Some(FIELD_TOP),
+        Some(DOT / 2.),
+        None,
+    );
+    // Each lit dot is its own plain, childless leaf, so its pulse repaints
+    // by patching its opacity rather than the scene.
+    let field = row()
+        .pin(Some(0.), Some(FIELD_TOP), Some(0.), None)
+        .h(FIELD_H)
         .justify_between()
-        .center_y()
+        .children((0..COLS).map(|c| {
+            let shown = c as f32 <= reach + 0.01;
+            // The column or two at the cursor read brightest, and hold still.
+            let edge = shown && reach - c as f32 <= 1.5;
+            let dots = (0..ROWS)
+                .filter(|&r| {
+                    let threshold = (f32::from(BAYER[(r % 4) * 4 + c % 4]) + 0.5) / 16.;
+                    shown && threshold < frac
+                })
+                .map(|r| {
+                    let dot = el()
+                        .absolute(0., r as f32 * DOT_PITCH)
+                        .size(DOT, DOT)
+                        .fill(if edge { p.text } else { p.accent });
+                    if edge {
+                        dot
+                    } else {
+                        dot.cycle(Cycle {
+                            period,
+                            phase: c as f32 / COLS as f32 * 0.9,
+                            stops: &PULSE,
+                            still: 0.8,
+                            fps: 30.,
+                        })
+                    }
+                });
+            el().key(format!("thinking-dots-{c}"))
+                .w(DOT)
+                .h_full()
+                .children(dots)
+        }));
+    let stops = row()
+        .pin(Some(0.), None, Some(0.), Some(4.))
+        .h(TICK_H)
+        .justify_between()
         .children(choices.iter().enumerate().map(|(i, value)| {
             let key = value.clone().unwrap_or_else(|| "auto".into());
             let full = value
                 .as_deref()
                 .map_or_else(|| "Auto".to_string(), effort_label);
-            let passed = i <= shown;
             let (pick_slot, level) = (slot.clone(), value.clone());
-            // Zero wide, so the pointer lands on the track; this press is
+            // Zero wide, so the pointer lands on the field; this press is
             // the stop's accessibility action.
             el().key(format!("thinking-{key}"))
                 .role("radio")
@@ -753,40 +780,31 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option
                 .h_full()
                 .center()
                 .child(
-                    el().size(4., 4.)
-                        .radius(2.)
-                        .fill(if passed {
-                            p.text.alpha(0.55)
+                    el().w(1.)
+                        .h(TICK_H)
+                        .fill(if i == shown {
+                            p.text
                         } else {
-                            p.text_faint.alpha(0.6)
+                            p.text_faint.alpha(0.5)
                         })
                         .motion(SETTLE),
                 )
         }));
-    let knob_w = if held { KNOB_W_HELD } else { KNOB_W };
-    let knob = el()
+    // The cursor: a hairline at the end of an invisible bar as wide as the
+    // level, brighter while held.
+    let cursor = el()
         .key("thinking-knob")
-        .pin(
-            None,
-            Some((TRACK_H - 2. - KNOB_H) / 2.),
-            Some(-knob_w / 2.),
-            None,
-        )
-        .size(knob_w, KNOB_H)
-        .radius(KNOB_H / 2.)
-        .fill(p.text)
-        .shadow(1., 4., Color::BLACK.alpha(0.35))
-        .motion(SETTLE)
-        .motion_intent(MotionIntent::OVERSHOOT);
-    // An invisible bar as wide as the fill: the knob rides its end, above
-    // the stops.
+        .pin(None, Some(2.), Some(-0.5), Some(TICK_H + 6.))
+        .w(1.)
+        .fill(p.text.alpha(if held { 0.7 } else { 0.3 }))
+        .motion(SETTLE);
     let rider = el()
         .key("thinking-rider")
         .pin(Some(0.), Some(0.), None, Some(0.))
         .w_frac(frac)
         .motion(spring)
         .motion_intent(MotionIntent::OVERSHOOT)
-        .child(knob);
+        .child(cursor);
     let drag_slot = slot.clone();
     let track = el()
         .key("thinking-track")
@@ -794,8 +812,8 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option
         .label("Thinking")
         .w_full()
         .h(TRACK_H)
-        .px(TRACK_R)
-        .radius(TRACK_R)
+        .px(INSET)
+        .radius(TRACK_RADIUS)
         .fill(p.bg)
         .border(1., p.border)
         .cursor(rune::Cursor::Pointer)
@@ -803,8 +821,8 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option
         .child(
             el().w_full()
                 .h_full()
-                .child(cap)
-                .child(fill)
+                .child(resting)
+                .child(field)
                 .child(stops)
                 .child(rider),
         );
@@ -850,9 +868,9 @@ fn thinking_choices(m: &ModelPickerState) -> Vec<Option<String>> {
 /// it back.
 fn thinking_drag(s: &mut State, slot: &Slot, d: &mut rune::Drag, tx: &mut rune::Tx) {
     let Some(m) = slot.get_mut(s) else { return };
-    // The stops span the track less its round ends (and its 1 pt rim).
-    let span = (d.w - 2. * TRACK_R - 2.).max(1.);
-    let frac = ((d.x - TRACK_R - 1.) / span).clamp(0., 1.);
+    // The stops span the field less its insets (and its 1 pt rim).
+    let span = (d.w - 2. * INSET - 2.).max(1.);
+    let frac = ((d.x - INSET - 1.) / span).clamp(0., 1.);
     match d.phase {
         Phase::Down | Phase::Move => m.thinking_drag = Some(frac),
         Phase::Up => {
@@ -935,7 +953,8 @@ mod tests {
         let (track, _) = rt.presented("thinking-track").expect("track drawn");
         let y = track[1] + track[3] / 2.;
         // Stops: Auto, Low, Medium, High (picked), Extra High.
-        let stop = |i: f32| track[0] + 13. + (track[2] - 26.) * i / 4.;
+        let inset = super::INSET + 1.;
+        let stop = |i: f32| track[0] + inset + (track[2] - 2. * inset) * i / 4.;
         rt.pointer_move(stop(3.), y);
         rt.pointer_down(stop(3.), y);
         step(&mut rt);

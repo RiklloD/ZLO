@@ -383,7 +383,7 @@ fn one_outline_card_glides_along_the_rail() {
     assert!(ticks_moving, "the lift eases back down");
 }
 
-/// The thinking row's knob is one plate that glides to the picked level
+/// The thinking row's cursor is one hairline that glides to the picked level
 /// (same element, between its old and new places mid-way), and the provider
 /// rail's selection is one pill that glides the same way.
 #[test]
