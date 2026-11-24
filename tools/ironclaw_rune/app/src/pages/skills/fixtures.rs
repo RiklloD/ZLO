@@ -76,14 +76,8 @@ pub fn skills(s: &mut State) {
             "uses": uses,
             "last_used_ms": if uses > 0 { Some(1_800_000_000_000u64) } else { None },
             "listing": listing,
-            "basis": basis,
             "pin": if basis == "pinned" { Some(listing) } else { None },
-            "sources": sources.iter().map(|source| json!({
-                "source": source,
-                "listing": listing,
-                "basis": basis,
-                "uses": uses,
-            })).collect::<Vec<_>>(),
+            "sources": sources,
         })
     };
     sk.listing = decode(

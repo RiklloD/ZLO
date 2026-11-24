@@ -1968,7 +1968,10 @@ async fn skill_listing_follows_the_shared_store() {
     let body = SKILLS.replace("@ARGS@", args_log.to_str().unwrap());
     let mut config = claude_config(dir.path(), script(dir.path(), "claude", &body), None);
     config.skills = SkillListing {
-        usage: CliSkillUsage::new(store.clone(), owner.clone()),
+        usage: CliSkillUsage::new(
+            ironclaw_skills::usage::SharedSkillUsage::new(store.clone()),
+            owner.clone(),
+        ),
         legacy_state_file: Some(legacy.clone()),
     };
     let weak: Weak<dyn TurnEventSink> = Arc::downgrade(&sink) as Weak<dyn TurnEventSink>;
@@ -2082,7 +2085,10 @@ fn skills_runtime(
     let body = SKILLS.replace("@ARGS@", args_log.to_str().unwrap());
     let mut config = claude_config(dir, script(dir, "claude", &body), None);
     config.skills = SkillListing {
-        usage: CliSkillUsage::new(store, skill_owner()),
+        usage: CliSkillUsage::new(
+            ironclaw_skills::usage::SharedSkillUsage::new(store),
+            skill_owner(),
+        ),
         legacy_state_file: legacy,
     };
     let weak: Weak<dyn TurnEventSink> = Arc::downgrade(sink) as Weak<dyn TurnEventSink>;

@@ -242,7 +242,7 @@ where
         workspace_filesystem: Arc<ScopedFilesystem<W>>,
         staging_filesystem: Arc<ScopedFilesystem<S>>,
         auto_activate_flag: Arc<AtomicBool>,
-        skill_usage: Arc<dyn ironclaw_skills::usage::SkillUsageStore>,
+        skill_usage: ironclaw_skills::usage::SharedSkillUsage,
     ) -> FirstPartySelectableSkillsRuntime<F>
     where
         W: RootFilesystem + 'static,
@@ -267,7 +267,7 @@ where
         config: SkillActivationSelectorConfig,
         workspace_filesystem: Arc<ScopedFilesystem<W>>,
         auto_activate_flag: Arc<AtomicBool>,
-        skill_usage: Arc<dyn ironclaw_skills::usage::SkillUsageStore>,
+        skill_usage: ironclaw_skills::usage::SharedSkillUsage,
     ) -> FirstPartySelectableSkillsRuntime<F>
     where
         W: RootFilesystem + 'static,

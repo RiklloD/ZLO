@@ -5,8 +5,7 @@
 use rune::{El, col, row, text};
 use rune_kit::Kit;
 use zlo_client::skill_listing::{
-    RebornSkillListingBasis, RebornSkillListingEntry, RebornSkillListingResponse,
-    RebornSkillListingState, RebornSkillPin,
+    RebornSkillListingEntry, RebornSkillListingResponse, RebornSkillListingState,
 };
 
 use crate::jobs;
@@ -32,7 +31,7 @@ pub fn refresh(s: &mut State) {
     );
 }
 
-fn set_pin(s: &mut State, name: String, pin: Option<RebornSkillPin>) {
+fn set_pin(s: &mut State, name: String, pin: Option<RebornSkillListingState>) {
     st(s).pinning = Some(name.clone());
     jobs::run(
         s,
@@ -68,10 +67,8 @@ fn summary(e: &RebornSkillListingEntry) -> String {
         RebornSkillListingState::NameOnly => "Name only",
         RebornSkillListingState::Off => "Off",
     };
-    let basis = match e.basis {
-        RebornSkillListingBasis::Auto => "auto",
-        RebornSkillListingBasis::Pinned => "pinned",
-    };
+    // A pinned skill is listed as its pin; otherwise usage decided.
+    let basis = if e.pin.is_some() { "pinned" } else { "auto" };
     let uses = match e.uses {
         0 => "never used".to_string(),
         1 => "1 use".to_string(),
@@ -81,7 +78,7 @@ fn summary(e: &RebornSkillListingEntry) -> String {
     let sources: Vec<&str> = e
         .sources
         .iter()
-        .map(|x| match x.source.as_str() {
+        .map(|x| match x.as_str() {
             "harness" => "ZLO",
             other => other.strip_prefix("cli:").unwrap_or(other),
         })
@@ -95,9 +92,9 @@ fn summary(e: &RebornSkillListingEntry) -> String {
 fn picked(e: &RebornSkillListingEntry) -> usize {
     match e.pin {
         None => 0,
-        Some(RebornSkillPin::AlwaysFull) => 1,
-        Some(RebornSkillPin::NameOnly) => 2,
-        Some(RebornSkillPin::Off) => 3,
+        Some(RebornSkillListingState::Full) => 1,
+        Some(RebornSkillListingState::NameOnly) => 2,
+        Some(RebornSkillListingState::Off) => 3,
     }
 }
 
@@ -124,9 +121,9 @@ pub fn control(s: &State, k: &Kit, name: &str) -> Option<El> {
             .child(
                 segmented(k, &CHOICES, picked(e), busy, move |s, ix, _| {
                     let pin = match ix {
-                        1 => Some(RebornSkillPin::AlwaysFull),
-                        2 => Some(RebornSkillPin::NameOnly),
-                        3 => Some(RebornSkillPin::Off),
+                        1 => Some(RebornSkillListingState::Full),
+                        2 => Some(RebornSkillListingState::NameOnly),
+                        3 => Some(RebornSkillListingState::Off),
                         _ => None,
                     };
                     set_pin(s, owned.clone(), pin);
@@ -185,4 +182,27 @@ pub fn others(s: &State, k: &Kit) -> Option<El> {
             )
             .child(list),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Skills scene's listing decodes from the wire shape, and a
+    /// pinned skill reads as pinned from its pin alone.
+    #[test]
+    fn the_scene_listing_decodes_and_reads_its_pins() {
+        let mut s = crate::chat::fixtures::test_state();
+        crate::pages::skills::fixtures::skills(&mut s);
+        let pinned = entry(&s, "rust-review").expect("the scene's listing decodes");
+        assert_eq!(pinned.pin, Some(RebornSkillListingState::NameOnly));
+        assert_eq!(picked(pinned), 2);
+        assert!(
+            summary(pinned).starts_with("Name only · pinned"),
+            "{}",
+            summary(pinned)
+        );
+        let auto = entry(&s, "commit").expect("commit listed");
+        assert_eq!(summary(auto), "Full · auto · 14 uses · in ZLO, claude-cli");
+    }
 }

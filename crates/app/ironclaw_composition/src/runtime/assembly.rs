@@ -1972,7 +1972,7 @@ pub(super) async fn assemble_runtime(
         shared_extension_registry: services.shared_extension_registry.clone(),
         extension_settings: Arc::clone(&services.extension_settings),
         skill_auto_activate_learned: Arc::clone(&services.skill_auto_activate_learned),
-        skill_usage: Arc::clone(&services.skill_usage),
+        skill_usage: services.skill_usage.clone(),
         extension_management: services.extension_management.clone(),
         runtime_http_egress: services.runtime_http_egress.as_ref().map(Arc::clone),
         ironhub_link_state,

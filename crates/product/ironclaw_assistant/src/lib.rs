@@ -74,6 +74,9 @@ pub mod projection;
 mod reborn_services;
 mod run_delivery;
 pub mod skill_listing_page;
+/// The Skills page's product service; consumer: `ironclaw_composition`
+/// (built over the deployment's skill stores).
+pub mod skills_product_service;
 pub mod supermemory;
 pub mod usage;
 

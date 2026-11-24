@@ -1765,8 +1765,10 @@ async fn codex_profile_index_follows_the_skill_ledger_and_counts_reads() {
         .set_pin(&owner, &name("gone"), Some(SkillPin::Off))
         .await
         .unwrap();
-    let rt = codex_with(dir.path(), &recorder, None, &body)
-        .with_skill_usage(CliSkillUsage::new(store.clone(), owner.clone()));
+    let rt = codex_with(dir.path(), &recorder, None, &body).with_skill_usage(CliSkillUsage::new(
+        ironclaw_skills::usage::SharedSkillUsage::new(store.clone()),
+        owner.clone(),
+    ));
     let entry = |n: &str, description: &str| ProfileSkillEntry {
         name: n.into(),
         description: description.into(),
@@ -1931,8 +1933,10 @@ async fn codex_turn_does_not_wait_on_a_stalled_skill_store() {
         tenant_id: TenantId::new("t").unwrap(),
         user_id: UserId::new("u").unwrap(),
     };
-    let rt = codex_with(dir.path(), &recorder, None, &body)
-        .with_skill_usage(CliSkillUsage::new(Arc::new(StalledSkillStore), owner));
+    let rt = codex_with(dir.path(), &recorder, None, &body).with_skill_usage(CliSkillUsage::new(
+        ironclaw_skills::usage::SharedSkillUsage::new(Arc::new(StalledSkillStore)),
+        owner,
+    ));
     let mut turn = input();
     turn.profile = Some(TurnProfile {
         skills: Some(ProfileSkills {

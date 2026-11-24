@@ -344,7 +344,7 @@ impl Client {
     pub async fn set_skill_listing_pin(
         &self,
         name: &str,
-        pin: Option<ironclaw_product_contracts::skill_listing::RebornSkillPin>,
+        pin: Option<ironclaw_product_contracts::skill_listing::RebornSkillListingState>,
     ) -> Result<ironclaw_product_contracts::skill_listing::RebornSkillListingResponse, ClientError>
     {
         self.send(
