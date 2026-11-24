@@ -133,3 +133,8 @@ libsql = { workspace = true, features = ["remote", "tls"] }
 # debug! logging (item 5 of the PR-2 review fix wave) can be asserted on
 # through the caller, not just trusted by inspection.
 tracing-test = { workspace = true, features = ["no-env-filter"] }
+
+# Deliberately opts out of `[workspace.lints]` due to rustc `unreachable_pub`
+# false positives on re-exports through private modules (see root Cargo.toml).
+# `clippy::let_underscore_must_use` is denied via crate-root attributes instead.
+[lints]

@@ -111,3 +111,8 @@ base64 = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "time", "io-util", "sync", "test-util"] }
+
+# Deliberately opts out of `[workspace.lints]` due to rustc `unreachable_pub`
+# false positives on re-exports through private modules (see root Cargo.toml).
+# `clippy::let_underscore_must_use` is denied via crate-root attributes instead.
+[lints]
