@@ -290,6 +290,21 @@ impl RebornIntegrationHarnessBuilder {
         self
     }
 
+    /// Stream this harness's scripted tool calls through `tool_call_ready`,
+    /// holding the stream of the call `gate` parks open after announcing the
+    /// first `announced_before_park` calls until the test releases it.
+    pub fn stream_tool_calls_parking(
+        mut self,
+        gate: ParkingModelGate,
+        announced_before_park: usize,
+    ) -> Self {
+        self.model_mode = ThreadModelMode::StreamingToolCalls {
+            gate,
+            announced_before_park,
+        };
+        self
+    }
+
     /// Add deterministic latency at the raw provider seam before every scripted
     /// model response. The real decorator chain still wraps this provider.
     pub fn with_model_call_delay_for_test(mut self, delay: Duration) -> Self {

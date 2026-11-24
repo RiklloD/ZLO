@@ -365,6 +365,14 @@ pub(super) async fn stream_model_with_read_only_pre_execution(
             {
                 pre.settle(calls, &mut cancellation).await?
             }
+            // A side-effecting batch reuses nothing, but it dispatches the
+            // confirmed reads again under the same activity identity: let
+            // those finish first rather than abort them mid-dispatch, so the
+            // host replays a clean record instead of a torn one.
+            ParentLoopOutput::CapabilityCalls(calls) => {
+                pre.settle(calls, &mut cancellation).await?;
+                SpeculativeReads::default()
+            }
             _ => SpeculativeReads::default(),
         },
         Err(_) => SpeculativeReads::default(),

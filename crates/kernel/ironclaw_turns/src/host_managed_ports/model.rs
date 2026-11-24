@@ -17,8 +17,8 @@ use ironclaw_loop_contracts::{
     AgentLoopHostError, LoopHostMilestoneEmitter, LoopHostMilestoneSink, LoopModelBudgetAccountant,
     LoopModelGateway, LoopModelGatewayError, LoopModelGatewayRequest, LoopModelPolicyGuard,
     LoopModelPort, LoopModelProgressSink, LoopModelRequest, LoopModelResponse, LoopRunContext,
-    ModelCallOutcome, ModelWorkRequest, NoOpBudgetAccountant, NoOpPolicyGuard, ParentLoopOutput,
-    sanitize_model_visible_text,
+    LoopStreamedCapabilityCallObserver, ModelCallOutcome, ModelWorkRequest, NoOpBudgetAccountant,
+    NoOpPolicyGuard, ParentLoopOutput, sanitize_model_visible_text,
 };
 
 /// Maximum idle period for a primary assistant model call.
@@ -109,6 +109,30 @@ where
         &self,
         request: LoopModelRequest,
     ) -> Result<LoopModelResponse, AgentLoopHostError> {
+        self.stream_model_guarded(request, None).await
+    }
+
+    /// Same guards, accounting, and watchdog as [`Self::stream_model`]; the
+    /// observer is forwarded to the gateway, which keeps the opt-in.
+    async fn stream_model_observing_capability_calls(
+        &self,
+        request: LoopModelRequest,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<LoopModelResponse, AgentLoopHostError> {
+        self.stream_model_guarded(request, Some(observer)).await
+    }
+}
+
+impl<G, S> HostManagedLoopModelPort<G, S>
+where
+    G: LoopModelGateway + ?Sized,
+    S: LoopHostMilestoneSink + ?Sized + 'static,
+{
+    async fn stream_model_guarded(
+        &self,
+        request: LoopModelRequest,
+        observer: Option<Arc<dyn LoopStreamedCapabilityCallObserver>>,
+    ) -> Result<LoopModelResponse, AgentLoopHostError> {
         let work_request = ModelWorkRequest::for_assistant(&self.context, &request);
 
         // Policy check — rejects before any provider or credential is touched.
@@ -152,13 +176,22 @@ where
             emitted_reasoning: AtomicBool::new(false),
             progress_generation,
         });
-        let gateway_call = self.gateway.stream_model_with_progress(
-            LoopModelGatewayRequest {
-                context: self.context.clone(),
-                request: request.clone(),
-            },
-            progress_sink.clone(),
-        );
+        let gateway_request = LoopModelGatewayRequest {
+            context: self.context.clone(),
+            request: request.clone(),
+        };
+        let gateway_call = match observer {
+            Some(observer) => self
+                .gateway
+                .stream_model_with_progress_observing_capability_calls(
+                    gateway_request,
+                    progress_sink.clone(),
+                    observer,
+                ),
+            None => self
+                .gateway
+                .stream_model_with_progress(gateway_request, progress_sink.clone()),
+        };
         let gateway_result = match await_with_progress_timeout(
             gateway_call,
             progress_updates,

@@ -136,6 +136,7 @@ use super::scripted_provider::{
     RecoverableModelFailureScript, SCRIPTED_FALLBACK_MODEL_NAME, SCRIPTED_MODEL_NAME,
     delayed_trace_llm, parking_trace_llm, recording_llm, recoverable_failure_trace_llm,
     scripted_fallback_vendor_pair, scripted_fallback_vendor_pair_after, scripted_trace_llm,
+    streaming_tool_calls_trace_llm,
 };
 use super::session_thread::RebornThreadHarness;
 use super::test_adapter::RebornTestIngress;
@@ -1760,6 +1761,13 @@ pub(crate) enum ThreadModelMode {
     /// This thread's model call parks until the gate is released (E-GATEWAY
     /// seam), enabling a mid-turn cancel test.
     Parked(ParkingModelGate),
+    /// Tool-capable calls stream their tool calls (`tool_call_ready`); the
+    /// call `gate` parks holds the stream open after announcing the first
+    /// `announced_before_park` calls, until the test releases it.
+    StreamingToolCalls {
+        gate: ParkingModelGate,
+        announced_before_park: usize,
+    },
     /// Delays each scripted vendor call while keeping the real decorator chain.
     Delayed(Duration),
     /// Reports a recoverable provider failure a bounded number of times, then
@@ -1948,6 +1956,19 @@ impl<'g> RebornThreadBuilder<'g> {
             ThreadModelProviderParts = match self.model_mode {
             ThreadModelMode::Parked(gate) => (
                 Arc::new(parking_trace_llm(gate, scripted_llm.clone())),
+                None,
+                None,
+                None,
+            ),
+            ThreadModelMode::StreamingToolCalls {
+                gate,
+                announced_before_park,
+            } => (
+                Arc::new(streaming_tool_calls_trace_llm(
+                    gate,
+                    announced_before_park,
+                    scripted_llm.clone(),
+                )),
                 None,
                 None,
                 None,

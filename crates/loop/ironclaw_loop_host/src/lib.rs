@@ -229,10 +229,11 @@ use ironclaw_loop_contracts::{
     LoopHostMilestoneEmitter, LoopHostMilestoneSink, LoopInlineMessageBody, LoopInputCursor,
     LoopModelMessage, LoopModelPort, LoopModelRequest, LoopModelResponse, LoopModelUsage,
     LoopPromptBundleAuthority, LoopRequest, LoopRequestBatch, LoopRunContext, LoopRunInfoPort,
-    LoopSafeSummary, LoopTranscriptPort, MemoryPromptContextLoad, MemoryPromptContextService,
-    ModelProfileId, ModelStreamChunk, ParentLoopOutput, PromptMode, SystemInferenceContextMessage,
-    SystemInferenceContextRole, VisibleCapabilityRequest, VisibleCapabilitySurface, resolution,
-    sanitize_model_visible_text, sort_instruction_snippets_for_prompt,
+    LoopSafeSummary, LoopStreamedCapabilityCallObserver, LoopTranscriptPort,
+    MemoryPromptContextLoad, MemoryPromptContextService, ModelProfileId, ModelStreamChunk,
+    ParentLoopOutput, PromptMode, SystemInferenceContextMessage, SystemInferenceContextRole,
+    VisibleCapabilityRequest, VisibleCapabilitySurface, resolution, sanitize_model_visible_text,
+    sort_instruction_snippets_for_prompt,
 };
 use ironclaw_outbound::{
     OutboundError, ReplyAttachmentHandle, ReplyAttachmentIntent, ReplyAttachmentIntentPort,
@@ -1714,6 +1715,31 @@ where
         &self,
         request: LoopModelRequest,
     ) -> Result<LoopModelResponse, AgentLoopHostError> {
+        self.stream_model_observed(request, None).await
+    }
+
+    /// The opt-in: streamed pure-read calls are registered against this
+    /// port's capability surface and announced (see
+    /// `model_gateway::streamed_tool_calls`).
+    async fn stream_model_observing_capability_calls(
+        &self,
+        request: LoopModelRequest,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<LoopModelResponse, AgentLoopHostError> {
+        self.stream_model_observed(request, Some(observer)).await
+    }
+}
+
+impl<S, G> ThreadBackedLoopModelPort<S, G>
+where
+    S: SessionThreadService + ?Sized + Send + Sync,
+    G: HostManagedModelGateway + ?Sized + Send + Sync,
+{
+    async fn stream_model_observed(
+        &self,
+        request: LoopModelRequest,
+        observer: Option<Arc<dyn LoopStreamedCapabilityCallObserver>>,
+    ) -> Result<LoopModelResponse, AgentLoopHostError> {
         validate_thread_scope_for_run(&self.thread_scope, &self.run_context)?;
         let requested_model_profile_id = request.model_preference.clone();
         let model_profile_id = requested_model_profile_id.clone().unwrap_or_else(|| {
@@ -1856,18 +1882,31 @@ where
                 } else {
                     Arc::clone(capabilities)
                 };
-            if let Some(stream_sink) = self.stream_sink.as_ref() {
-                self.gateway
-                    .stream_model_with_capabilities_and_progress(
-                        host_request,
-                        capabilities,
-                        Arc::clone(stream_sink),
-                    )
-                    .await
-            } else {
-                self.gateway
-                    .stream_model_with_capabilities(host_request, capabilities)
-                    .await
+            match (observer, self.stream_sink.as_ref()) {
+                (Some(observer), stream_sink) => {
+                    self.gateway
+                        .stream_model_with_capabilities_observing_calls(
+                            host_request,
+                            capabilities,
+                            stream_sink.cloned(),
+                            observer,
+                        )
+                        .await
+                }
+                (None, Some(stream_sink)) => {
+                    self.gateway
+                        .stream_model_with_capabilities_and_progress(
+                            host_request,
+                            capabilities,
+                            Arc::clone(stream_sink),
+                        )
+                        .await
+                }
+                (None, None) => {
+                    self.gateway
+                        .stream_model_with_capabilities(host_request, capabilities)
+                        .await
+                }
             }
         } else if let Some(stream_sink) = self.stream_sink.as_ref() {
             self.gateway
@@ -2418,6 +2457,32 @@ pub trait HostManagedModelGateway: Send + Sync {
     ) -> Result<HostManagedModelResponse, HostManagedModelError> {
         self.stream_model_with_capabilities(request, capabilities)
             .await
+    }
+
+    /// [`Self::stream_model_with_capabilities_and_progress`] (or, without a
+    /// `sink`, [`Self::stream_model_with_capabilities`]) that announces to
+    /// `observer` each pure-read capability call the provider finishes
+    /// streaming, registered exactly as the final response will register it.
+    /// The default ignores the observer: a gateway that does not override it
+    /// degrades to no speculation, never to a different result.
+    async fn stream_model_with_capabilities_observing_calls(
+        &self,
+        request: HostManagedModelRequest,
+        capabilities: Arc<dyn LoopCapabilityPort>,
+        sink: Option<Arc<dyn HostManagedModelStreamSink>>,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        drop(observer);
+        match sink {
+            Some(sink) => {
+                self.stream_model_with_capabilities_and_progress(request, capabilities, sink)
+                    .await
+            }
+            None => {
+                self.stream_model_with_capabilities(request, capabilities)
+                    .await
+            }
+        }
     }
 
     /// Resolve a scope-specific gateway, if this gateway multiplexes by scope.
