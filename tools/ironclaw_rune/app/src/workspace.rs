@@ -326,6 +326,11 @@ pub(crate) fn carry_triage(s: &mut State) {
 pub(crate) mod triage_test {
     use super::*;
 
+    /// The app connected again (or to a new computer).
+    pub(crate) fn connected(s: &mut State) -> bool {
+        triage::connected(s)
+    }
+
     pub(crate) fn start(s: &mut State) {
         triage::start(s);
     }

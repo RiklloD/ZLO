@@ -106,7 +106,17 @@ pub(super) fn send_block(s: &State) -> Option<String> {
             "{} is still preparing the triage session; Send works once it is ready.",
             machine(s)
         )),
-        Link::Failed(why) => Some(why.clone()),
+        // Only a chip that links no session here blocks: without one the
+        // person's words send as an ordinary message (the error line still
+        // points at `zlo triage`), never stranded.
+        Link::Failed(why) => {
+            let chip = s
+                .workspace
+                .draft
+                .as_ref()
+                .is_some_and(|d| playbook_pill(&d.input).is_some());
+            chip.then(|| why.clone())
+        }
     }
 }
 
@@ -164,7 +174,13 @@ pub(super) fn carry(s: &mut State) {
 /// draft still waiting on a reply the reconnect dropped asks again.
 pub(super) fn connected(s: &mut State) -> bool {
     let Some(carried) = s.workspace.triage.as_mut().and_then(|t| t.carried.take()) else {
-        if current(s).is_some_and(|t| t.link == Link::Preparing) {
+        // Still waiting on a reply the reconnect dropped, or failed (a
+        // gateway blip, the rate limit): ask this computer again.
+        let unready = current(s).is_some_and(|t| !matches!(t.link, Link::Ready { .. }));
+        if unready && is_triage_draft(s) {
+            if let Some(t) = s.workspace.triage.as_mut() {
+                t.link = Link::Preparing;
+            }
             prepare(s);
         }
         return false;

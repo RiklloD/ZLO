@@ -306,8 +306,8 @@ fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
 
 /// Write the session's two files into a new private folder of its own and
 /// answer where they are, only once both are written. The folder's name is
-/// unguessable: it is what lets a session's chip be read back for the
-/// session's own thread (`ironclaw_assistant`'s triage grant).
+/// unguessable, and its shape is what `ironclaw_assistant`'s triage read
+/// checks (`is_session_name`) before inlining a linked session's files.
 pub(crate) fn write_session(input: &SessionInput<'_>) -> std::io::Result<TriageSession> {
     let stamp = input.now.to_rfc3339_opts(SecondsFormat::Millis, true);
     let root = &input.paths.sessions_dir;

@@ -262,8 +262,11 @@ fn host_root(alias: &str, folder: &Path) -> Option<Root> {
 /// level is opened no-follow from `/`, and the sessions folder, the session
 /// folder and both files must be this user's and private (no group or other
 /// access), as the session writer makes them, and the files regular with one
-/// link. A session folder's name is unguessable, so a mention can only name
-/// one the backend prepared and answered to its operator.
+/// link. The session folder's name must have the writer's shape
+/// ([`is_session_name`]). Its uuid part makes it unguessable to anyone who
+/// was not answered it; nothing ties a session to one thread, and anything
+/// running as this user could still make such a folder (no escalation over
+/// what it can already do).
 pub(super) fn open_triage_session(
     sessions: &Path,
     raw: &str,
@@ -286,7 +289,7 @@ pub(super) fn open_triage_session(
     let [session, file] = parts.as_slice() else {
         return Err("not a triage session");
     };
-    if *file != prompt_name {
+    if *file != prompt_name || !session.to_str().is_some_and(is_session_name) {
         return Err("not a triage session");
     }
     let me = rustix::process::geteuid().as_raw();
@@ -331,6 +334,26 @@ pub(super) fn open_triage_session(
         })
     };
     Ok([open(prompt_name)?, open(context_name)?])
+}
+
+/// A name the triage session writer makes (`ironclaw_cli`'s
+/// `write_session`): an RFC 3339 millisecond UTC stamp with `:` and `.`
+/// turned into `-`, then `-` and a v4 uuid as 32 lowercase hex digits
+/// (`2026-11-24T09-30-05-000Z-0123…cdef`). Anything else under the sessions
+/// folder was not written by it.
+fn is_session_name(name: &str) -> bool {
+    const STAMP: &[u8] = b"dddd-dd-ddTdd-dd-dd-dddZ-";
+    let bytes = name.as_bytes();
+    if bytes.len() != STAMP.len() + 32 {
+        return false;
+    }
+    let (stamp, id) = bytes.split_at(STAMP.len());
+    stamp.iter().zip(STAMP).all(|(b, want)| match want {
+        b'd' => b.is_ascii_digit(),
+        _ => b == want,
+    }) && id
+        .iter()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
 }
 
 /// `(device, inode)` of an open descriptor.

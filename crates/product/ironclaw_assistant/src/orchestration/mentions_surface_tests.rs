@@ -639,13 +639,20 @@ async fn a_triage_link_reaches_native_and_cli_models_on_the_first_turn() {
     // not private, and a backend without the folder all read nothing.
     let elsewhere = triage_session(&dir.path().join("other"), "s");
     let deeper = triage_session(&sessions.join("nested"), "s");
-    let open = triage_session(&sessions, "open-session");
+    let open = triage_session(
+        &sessions,
+        "2026-11-24T09-31-00-000Z-fedcba9876543210fedcba9876543210",
+    );
     std::fs::set_permissions(
         open.parent().unwrap(),
         std::fs::Permissions::from_mode(0o755),
     )
     .unwrap();
-    for path in [&elsewhere, &deeper, &open] {
+    // Private and in the right place, but not a name the session writer
+    // makes (`<time>-<32 hex>`): something else planted it.
+    let planted = triage_session(&sessions, "planted");
+    let short = triage_session(&sessions, "2026-11-24T09-32-00-000Z-0123");
+    for path in [&elsewhere, &deeper, &open, &planted, &short] {
         let typed = format!("Read {} and follow it.", link(path));
         surface
             .invoke(owner.clone(), submit("t-current", &typed, Vec::new()))

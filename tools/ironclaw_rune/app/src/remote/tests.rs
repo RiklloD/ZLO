@@ -558,8 +558,68 @@ mod triage_switch {
                 server_version: "1.2.0".into(),
             }),
         );
-        let why = triage::send_block(&s).expect("no link, no Send");
+        // No chip to send with: the words still send, and the error line
+        // points at the terminal.
+        assert!(
+            triage::send_block(&s).is_none(),
+            "no chip, nothing to wait for"
+        );
+        let d = s.workspace.draft.as_ref().expect("draft");
+        let why = d.error.as_deref().expect("the terminal line");
         assert!(why.contains("zlo triage"), "{why}");
+    }
+
+    /// Review P2: a failed prepare never strands the person's words. With
+    /// the chip deleted the draft is an ordinary one and sends; with the
+    /// chip kept, connecting again asks the computer to prepare again.
+    #[test]
+    fn a_failed_triage_draft_retries_on_reconnect_and_sends_without_its_chip() {
+        let _guard = crate::service::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let failed = |s: &mut State| {
+            triage::start(s);
+            triage::land(
+                s,
+                None,
+                Err(ClientError::Config("gateway answered 503".into())),
+            );
+            let d = s.workspace.draft.as_ref().expect("draft");
+            assert!(d.error.is_some(), "the failure is shown");
+        };
+
+        let mut s = on_this_mac();
+        failed(&mut s);
+        assert!(!triage::connected(&mut s), "nothing carried");
+        let why = triage::send_block(&s).expect("asked again: still waits");
+        assert!(why.contains("preparing"), "{why}");
+        triage::land(&mut s, None, prepared(MAC));
+        assert!(triage::send_block(&s).is_none(), "the retry's link sends");
+
+        let mut s = on_this_mac();
+        triage::start(&mut s);
+        triage::land(&mut s, None, prepared(MAC));
+        switch_to_studio(&mut s);
+        triage::land(
+            &mut s,
+            None,
+            Err(ClientError::Config("gateway answered 503".into())),
+        );
+        assert!(
+            triage::send_block(&s).is_some(),
+            "the Mac's chip: Send waits"
+        );
+        let d = s.workspace.draft.as_mut().expect("draft");
+        crate::chat::inline_files::set_content(&mut d.input, "it crashed on launch", &[]);
+        assert!(
+            triage::send_block(&s).is_none(),
+            "no chip: an ordinary draft that sends"
+        );
+        crate::workspace::send_draft(&mut s);
+        assert!(
+            s.workspace.draft.as_ref().is_none_or(|d| d.sending),
+            "the words went out"
+        );
     }
 
     /// A draft that is not a triage draft goes with the old computer, as

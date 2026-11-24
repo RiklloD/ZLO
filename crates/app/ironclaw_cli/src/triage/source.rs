@@ -275,9 +275,10 @@ impl ProcessGit {
     }
 }
 
-/// Kills the process group a git run leads when dropped: after it exits,
-/// times out, or the request awaiting it goes away. Stray children
-/// (`git-remote-https`, a helper) die with it.
+/// Kills the process group a git run leads when dropped while armed: when it
+/// times out or the request awaiting it goes away. Stray children
+/// (`git-remote-https`, a helper) die with it. Disarmed once git has exited
+/// and been reaped, so a reused pid is never signalled.
 struct ProcessGroup(Option<u32>);
 
 impl Drop for ProcessGroup {
@@ -319,7 +320,7 @@ impl GitRunner for ProcessGit {
             operation: operation.clone(),
             reason: error.to_string(),
         })?;
-        let _group = ProcessGroup(child.id());
+        let mut group = ProcessGroup(child.id());
         let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
             Err(_elapsed) => {
                 return Err(GitError::TimedOut {
@@ -328,12 +329,17 @@ impl GitRunner for ProcessGit {
                 });
             }
             Ok(Err(error)) => {
+                group.0 = None;
                 return Err(GitError::Spawn {
                     operation,
                     reason: error.to_string(),
                 });
             }
-            Ok(Ok(output)) => output,
+            Ok(Ok(output)) => {
+                // Exited and reaped (its pipes closed, so its children too).
+                group.0 = None;
+                output
+            }
         };
         if !output.status.success() {
             return Err(GitError::Failed {
