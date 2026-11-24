@@ -106,6 +106,7 @@ turning the `webui_v2_routes()` descriptors into tower layers.
 | `identity_listener_router(router)` / `serve_bound_identity_listener(bound, router, shutdown)` | The `tailscale serve` target: the same router plus a layer that reads `Tailscale-User-Login` into a request extension and removes every `Tailscale-*` header. Only requests that came through it can reach `POST /api/auth/pair/tailnet`. |
 | `main_listener_router(router)` | The normal listener: removes every `Tailscale-*` header before routing, so the identity header is never read there. |
 | `self_update_route_mount(service) -> ProtectedRouteMount` / `SelfUpdateService` / `SelfUpdateError` | The operator self-update routes ("update all machines", below) over the `SelfUpdateService` port this crate declares and the `ironclaw` binary implements (it alone knows how its host is installed). No method takes request input. |
+| `triage_route_mount(service) -> ProtectedRouteMount` / `TriageService` / `TriageError` | The operator "Triage an issue" route (below) over the `TriageService` port this crate declares and the `ironclaw` binary implements (session writer, source clone of its own build). |
 | `PublicRouteMount` | `{ router, descriptors }` pair handed to `WebuiServeConfig::with_public_route_mount` |
 | `OAuthProvider` trait (in `auth/provider.rs`) | Extension point for per-provider URL / code-exchange logic. Deliberately lives in its own module so each provider does not depend on the others. `GoogleProvider` and `GitHubProvider` ship today. |
 | `GoogleProvider` (in `auth/google.rs`) | Google OIDC provider (scopes `openid email profile`, PKCE S256, optional `hd` hosted-domain restriction). Built from `GoogleOAuthConfig`. |
@@ -217,6 +218,22 @@ Tests: `tests/self_update_routes.rs` (operator-only, `202` then `409`, a
 finished job read back, `not_configured`, a body refused); the port's real
 implementation (git, lock, detached job, records) is tested in the binary
 (`crates/app/ironclaw_cli/src/commands/update/`).
+
+## Triage (`src/triage.rs`)
+
+"Triage an issue" (`docs/using/triage.mdx`); DTOs and path are
+`ironclaw_product_contracts::triage`. Bearer, operator-only (`403
+operator_required` otherwise), body bounded to 4 KiB by the descriptor before
+the handler.
+
+| Route | Rate limit | Result |
+|---|---|---|
+| `POST /api/operator/triage` | 10/min per caller | Body `PrepareTriageRequest` (the client's label, app version and OS; each field cut to one line of at most 80 characters here, empty dropped). The port writes `<ZLO_HOME>/triage/<time>/{context.md,triage-playbook.md}`, starts fetching the source of the backend's own build in the background, and the route answers `PrepareTriageResponse`: the composer text linking the prompt file as a file mention, and the backend's version. `400 invalid_request` for a malformed body; `503 triage_unavailable` when the session files could not be written. |
+
+Tests: `tests/triage_routes.rs` (operator-only, the bounded client reaching
+the port, the prompt read back, `400`, `413`, `503`); the port's real
+implementation (session files, source ref, clone) is tested in the binary
+(`crates/app/ironclaw_cli/src/triage/`).
 
 ## Operator observability (`src/operator_observability.rs`)
 

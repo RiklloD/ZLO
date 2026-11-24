@@ -52,7 +52,7 @@ fn open_desktop_log() -> Option<File> {
 
 pub fn desktop_log() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join("Library/Logs/ZLO/rune.log"))
+    Some(PathBuf::from(home).join(ironclaw_config::DESKTOP_APP_LOG_RELATIVE_PATH))
 }
 
 pub fn gateway_log() -> Option<PathBuf> {

@@ -68,6 +68,32 @@ const SYSTEMD_UNIT: &str = "zlo.service";
 const LEGACY_SERVICE_LABEL: &str = "com.ironclaw.reborn";
 /// Pre-ZLO systemd unit; same retirement contract as [`LEGACY_SERVICE_LABEL`].
 const LEGACY_SYSTEMD_UNIT: &str = "ironclaw-reborn.service";
+/// Where the OS service is defined, for `zlo triage`'s context.
+pub(crate) fn service_definition() -> String {
+    if cfg!(target_os = "macos") {
+        let plist = home_dir()
+            .map(|home| {
+                home.join("Library/LaunchAgents")
+                    .join(format!("{SERVICE_LABEL}.plist"))
+                    .display()
+                    .to_string()
+            })
+            .unwrap_or_else(|error| {
+                tracing::debug!(%error, "no home folder for the launchd plist path");
+                format!("~/Library/LaunchAgents/{SERVICE_LABEL}.plist")
+            });
+        format!(
+            "launchd job {SERVICE_LABEL} ({plist}; pre-ZLO label {LEGACY_SERVICE_LABEL}); it logs to the backend logs below"
+        )
+    } else if cfg!(target_os = "linux") {
+        format!(
+            "systemd user unit {SYSTEMD_UNIT} (pre-ZLO {LEGACY_SYSTEMD_UNIT}); it logs to the journal: `journalctl --user -u {SYSTEMD_UNIT}`"
+        )
+    } else {
+        "none on this platform".into()
+    }
+}
+
 const UNSUPPORTED_OS_MESSAGE: &str = "Service management is only supported on macOS and Linux";
 
 // ── Clap surface ────────────────────────────────────────────────

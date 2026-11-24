@@ -14,6 +14,7 @@ mod runtime;
 mod serve_invocation;
 mod setup_bundle;
 mod tailscale;
+mod triage;
 mod webui_token;
 
 fn main() -> anyhow::Result<()> {

@@ -86,6 +86,7 @@ pub mod task_models;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod thread_repo;
+pub mod triage;
 pub mod usage;
 pub mod views;
 pub mod workspace_views;

@@ -40,6 +40,7 @@ mod shell;
 mod sidebar_pane;
 mod status;
 pub(crate) mod thread_drag;
+mod triage;
 pub(crate) mod ui;
 
 // Voice and SnapShot call these.
@@ -294,6 +295,8 @@ pub(crate) fn connected(
     crate::onboarding::decide(s);
     start_polling(s);
     status::start(s);
+    // An unsent triage draft follows the computer it now talks to.
+    triage::connected(s);
     // Plugins' slots: read once per connection, again on lifecycle changes.
     crate::plugins::refresh_slots(s);
     let reopen = reopen.filter(|id| s.workspace.inbox.row(id).is_some());

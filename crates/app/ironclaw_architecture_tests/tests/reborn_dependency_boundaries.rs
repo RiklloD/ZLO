@@ -1735,7 +1735,14 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // the working slack), so 53 lines of wire do not fit under it: the
         // pin is the minimum that passes, +15 over 16_976. Measured with
         // `scripts/ci/lib/production_loc.py loc` on this tree.
-        ("ironclaw_product_contracts", 16_991),
+        // 16_991 -> 17_037 (2026-11-24, zlo-triage): +46 lines for the
+        // `triage` wire module — the operator route path, the prompt file
+        // name, the client-field bound and the three request/response DTOs
+        // the WebUI transport and the ZLO client share. Vocabulary only: the
+        // session writer and source fetch live in the `ironclaw` binary.
+        // The tree measures 17_187; the pin is the minimum that passes
+        // (17_187 - 150 slack), read from this test's failure message.
+        ("ironclaw_product_contracts", 17_037),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

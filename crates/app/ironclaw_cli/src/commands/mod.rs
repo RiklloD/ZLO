@@ -26,6 +26,7 @@ pub(crate) mod skills;
 pub(crate) mod status;
 pub(crate) mod traces;
 pub(crate) mod transfer;
+pub(crate) mod triage;
 pub(crate) mod update;
 pub(crate) mod user_directory;
 pub(crate) mod webui_auth;
@@ -81,6 +82,9 @@ pub(crate) enum Command {
     Traces(Box<traces::TracesCommand>),
     /// Move this computer's ZLO setup to another computer over SSH.
     Transfer(transfer::TransferCommand),
+    /// Investigate a ZLO problem on this machine with Claude Code, Codex, or
+    /// Antigravity, and help file a good issue.
+    Triage(triage::TriageCommand),
     /// Update this installation from its source checkout (`[update]`).
     Update(update::UpdateCommand),
 }
@@ -161,6 +165,13 @@ impl Command {
             }
             Self::Transfer(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
+            }
+            Self::Triage(command) => {
+                // Read-only resolution: no legacy-home move, no config file,
+                // so triage still starts when the install is broken.
+                command.execute(
+                    crate::context::RebornCliContext::resolve_from_env_without_migrating()?,
+                )
             }
             Self::Update(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)

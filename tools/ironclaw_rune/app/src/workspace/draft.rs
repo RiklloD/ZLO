@@ -507,6 +507,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         return el();
     };
     let name = profile_name(s);
+    let triage = super::triage::is_triage_draft(s);
     let ready = send_ready(draft);
     let fresh = draft.fresh;
     // The chat composer's own controls, so the card that flies to the
@@ -749,7 +750,20 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             col()
                 .items_center()
                 .gap(8.)
-                .child(greeting.child(tw("What should we work on?", 32., SEMIBOLD, p.text)))
+                .child(greeting.child(tw(
+                    if triage {
+                        "What went wrong?"
+                    } else {
+                        "What should we work on?"
+                    },
+                    32.,
+                    SEMIBOLD,
+                    p.text,
+                )))
+                .children(triage.then(|| {
+                    el().max_w(HERO_WIDTH)
+                        .child(t(super::triage::hero_line(s), SM, p.text_muted).wrap())
+                }))
                 .child(profile_switch),
         )
         .child(card);

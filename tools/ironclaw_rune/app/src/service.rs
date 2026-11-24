@@ -26,7 +26,8 @@ use std::time::{Duration, Instant};
 /// the pre-ZLO `ironclaw service` label and `zlo service`'s own. Retired on
 /// start.
 const LAUNCHD_LABELS: [&str; 2] = ["com.ironclaw.reborn", "com.zlo.serve"];
-const PID_FILE: &str = "zlo-backend.pid";
+/// Read by `zlo triage` to report whether this app's backend runs.
+const PID_FILE: &str = ironclaw_config::DESKTOP_BACKEND_PID_FILE;
 const STOP_GRACE: Duration = Duration::from_secs(6);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// A run this long resets the restart backoff.

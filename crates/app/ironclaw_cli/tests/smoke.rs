@@ -1130,6 +1130,7 @@ fn help_mentions_reborn_commands() {
     assert!(stdout.contains("service"), "stdout: {stdout}");
     assert!(stdout.contains("skills"), "stdout: {stdout}");
     assert!(stdout.contains("export"), "stdout: {stdout}");
+    assert!(stdout.contains("triage"), "stdout: {stdout}");
     assert!(stdout.contains("import"), "stdout: {stdout}");
     assert!(stdout.contains("transfer"), "stdout: {stdout}");
     // No standalone `tui` subcommand exists (Reborn's interactive surface

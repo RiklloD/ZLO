@@ -18,6 +18,14 @@ pub const LEGACY_REBORN_HOME_ENV: &str = "IRONCLAW_REBORN_HOME";
 /// Folder under the user's home directory that holds the ZLO state root.
 pub const DEFAULT_HOME_DIR_NAME: &str = ".zlo";
 
+/// The desktop app's own log, relative to the user's home directory
+/// (macOS). Written by the ZLO app, read by `zlo triage`.
+pub const DESKTOP_APP_LOG_RELATIVE_PATH: &str = "Library/Logs/ZLO/rune.log";
+
+/// File in the state root holding the pid of the backend the desktop app
+/// started (`zlo-backend serve`); present only while that backend runs.
+pub const DESKTOP_BACKEND_PID_FILE: &str = "zlo-backend.pid";
+
 const V1_BASE_DIR_ENV: &str = "IRONCLAW_BASE_DIR";
 
 /// Source used to resolve [`RebornHome`].
@@ -236,6 +244,17 @@ impl RebornHome {
     /// out the path.
     pub fn providers_file_path(&self) -> PathBuf {
         self.path.join("providers.json")
+    }
+
+    /// Folder of the backend's logs: `serve.stdout.log` / `serve.stderr.log`
+    /// from the desktop app's backend and the launchd service.
+    pub fn logs_dir(&self) -> PathBuf {
+        self.path.join("logs")
+    }
+
+    /// The desktop app's backend pid file (see [`DESKTOP_BACKEND_PID_FILE`]).
+    pub fn desktop_backend_pid_file_path(&self) -> PathBuf {
+        self.path.join(DESKTOP_BACKEND_PID_FILE)
     }
 }
 

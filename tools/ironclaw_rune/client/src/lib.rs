@@ -37,6 +37,7 @@ pub mod tailnet;
 #[cfg(test)]
 mod test_http;
 pub mod transcript;
+pub mod triage_calls;
 pub mod update_calls;
 pub mod usage;
 pub mod visual;

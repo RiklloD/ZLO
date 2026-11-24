@@ -48,6 +48,7 @@ enum Cmd {
     StatusBar,
     ToggleScheme,
     Browser,
+    Triage,
 }
 
 impl Cmd {
@@ -63,6 +64,7 @@ impl Cmd {
             Cmd::StatusBar => "status-bar".into(),
             Cmd::ToggleScheme => "toggle-scheme".into(),
             Cmd::Browser => "browser".into(),
+            Cmd::Triage => "triage".into(),
         }
     }
 }
@@ -191,6 +193,13 @@ fn entries(s: &State) -> Vec<Entry> {
         hint: "Action".into(),
         hit: None,
     });
+    out.push(Entry {
+        cmd: Cmd::Triage,
+        icon: &icons::CIRCLE_ALERT,
+        title: "Triage an issue".into(),
+        hint: "Help".into(),
+        hit: None,
+    });
     out
 }
 
@@ -292,6 +301,7 @@ fn run(s: &mut State, cmd: Cmd, tx: &mut Tx) {
         Cmd::StatusBar => super::toggle_status_bar(s),
         Cmd::ToggleScheme => super::toggle_scheme(s, tx),
         Cmd::Browser => super::open_in_browser(s, tx),
+        Cmd::Triage => super::triage::start(s),
     }
 }
 

@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 zlo_client.workspace = true
+# Shared file names with the backend and `zlo triage` (pid file, app log).
+ironclaw_config.workspace = true
 ironclaw_host_api.workspace = true
 rune.workspace = true
 rune-kit.workspace = true

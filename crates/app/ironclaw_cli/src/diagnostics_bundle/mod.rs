@@ -646,8 +646,9 @@ fn extensions_json(storage_root: &Path) -> anyhow::Result<Value> {
     Ok(json!({ "installed": installed }))
 }
 
-/// The log files the OS service and the updater write under the home.
-fn log_files(home: &Path) -> Vec<PathBuf> {
+/// The log files the OS service and the updater write under the home;
+/// also the backend logs `zlo triage` names in its context.
+pub(crate) fn log_files(home: &Path) -> Vec<PathBuf> {
     vec![
         home.join("logs").join("serve.stdout.log"),
         home.join("logs").join("serve.stderr.log"),

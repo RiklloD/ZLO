@@ -1806,6 +1806,7 @@ dependencies = [
  "dirs",
  "futures",
  "image",
+ "ironclaw_config",
  "ironclaw_host_api",
  "objc2 0.6.5",
  "raw-window-handle",

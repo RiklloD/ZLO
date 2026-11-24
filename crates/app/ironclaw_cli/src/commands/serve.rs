@@ -710,6 +710,11 @@ impl ServeCommand {
             serve_config = serve_config.with_protected_route_mount(
                 crate::commands::update::self_update_routes(Arc::clone(&self_update)),
             );
+            // "Triage an issue": session files under the home and a
+            // background fetch of this build's source (`crate::triage`).
+            serve_config = serve_config.with_protected_route_mount(
+                crate::triage::service::route_mount(boot_config.home(), boot_config.profile()),
+            );
             // Operator observability: the public `/api/ready` probe reports the
             // composed readiness; `/api/operator/metrics` is the operator-only
             // Prometheus scrape over the process-wide metrics registry the

@@ -48,6 +48,7 @@
                 "pages": [
                   "using/webui",
                   "using/cli",
+                  "using/triage",
                   "using/service"
                 ]
               },

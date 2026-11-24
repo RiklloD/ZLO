@@ -43,6 +43,9 @@ mod product_auth;
 mod self_update;
 mod session;
 mod signed_session_login;
+// "Triage an issue": the operator route over the binary-implemented
+// `TriageService` port. See the module docs.
+mod triage;
 // Folded in from the former `ironclaw_webui_v2` crate: the WebChat v2 HTTP
 // route surface + static SPA bundle. Public so this crate's own middleware,
 // composition's `#[cfg(test)]` unit tests, and downstream test crates can
@@ -78,6 +81,7 @@ pub use peer_client::{HttpPeerLinkService, transport_allowed};
 pub use peer_routes::{PeerRouteConfig, peer_route_mount};
 pub use product_auth::{ProductAuthRouteMount, ProductAuthRouteState, product_auth_route_mount};
 pub use self_update::{SelfUpdateError, SelfUpdateService, self_update_route_mount};
+pub use triage::{TriageError, TriageService, triage_route_mount};
 pub use webui_rate_limit::RateLimitConfigError;
 pub use webui_serve::{
     WebuiAuthentication, WebuiAuthenticator, WebuiServeConfig, WebuiServeConfigError,

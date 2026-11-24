@@ -1,0 +1,59 @@
+---
+title: "Triage an Issue"
+description: "Let your own coding agent investigate a ZLO problem and help file a good issue"
+icon: stethoscope
+---
+
+Triage lets your own coding agent investigate a ZLO problem. The agent reads the logs
+and state of the machine, checks the ZLO source for the exact build that runs there,
+finds known issues, and can help you write a good GitHub issue. It asks before it
+applies a fix or posts anything.
+
+## In the app
+
+Press <kbd>⌘K</kbd> and choose **Triage an issue**. The new-thread screen opens with
+the triage playbook linked in the message and asks "What went wrong?". Describe the
+problem after the link, pick any model, and send. While you write, ZLO fetches the
+source of the backend's build.
+
+Triage runs on the computer the app is connected to; the line under the question
+names it. If you switch to another computer before you send, the draft moves there:
+that computer prepares its own session and the link changes. The agent runs inside
+that ZLO backend, so it gives you any restart steps and does not do them itself.
+
+## In a terminal
+
+If the app does not start, or triage does not work in the app, run this on the
+machine with the problem:
+
+```bash
+zlo triage
+```
+
+It starts Claude Code, Codex, or Antigravity in your terminal with the same
+instructions. If more than one is installed, it asks which to use. You can also choose
+explicitly:
+
+```bash
+zlo triage --agent antigravity
+zlo triage --agent codex
+```
+
+Pass `--model <model-id>` to choose a model, or leave it out to use the CLI's default.
+Antigravity needs Google's standalone `agy` CLI on your `PATH` and its own sign-in.
+If none of the three is installed, `zlo triage` prints where it wrote the prompt so you
+can paste it into any coding agent.
+
+`zlo triage` reads no configuration and opens no database, so it works when the
+backend will not start. Its files go to `~/.zlo/triage/<time>/` (`context.md` with the
+machine facts, `triage-playbook.md` with the instructions), and the agent fetches
+source into `~/.zlo/source/`.
+
+## What the agent follows
+
+The playbook is [`.github/triage/PLAYBOOK.md`](https://github.com/RiklloD/ZLO/blob/main/.github/triage/PLAYBOOK.md).
+The agent checks for a newer copy on `main` first, never reads your secrets (the
+WebUI token, the secrets master key, Keychain items), redacts tokens and your home
+folder from anything it quotes, prefers commenting on an existing issue over filing a
+duplicate, and shows you the complete issue text before posting it with the
+**Triage report** issue template.
