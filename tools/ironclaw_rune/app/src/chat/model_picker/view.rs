@@ -2,7 +2,7 @@
 //! `ModelPicker::render`, `render_popover`, `group_header`, `model_row`),
 //! with the thinking level as a slider under the models.
 
-use rune::shape::Shape;
+use rune::shape::{LineCap, Shape};
 use rune::{
     Color, Cx, Cycle, El, Key, Modifier, MotionIntent, Phase, Spring, TextEdit, canvas, col, el,
     row,
@@ -649,11 +649,12 @@ const TRACK_RADIUS: f32 = 8.;
 /// The first and last stops sit this far in from the well's edges (inside
 /// its 1 pt rim).
 const INSET: f32 = 10.;
-const COLS: usize = 56;
+const COLS: usize = 48;
 const ROWS: usize = 5;
 const DOT: f32 = 2.;
 const DOT_PITCH: f32 = 4.5;
 const FIELD_TOP: f32 = 6.;
+const FIELD_H: f32 = (ROWS - 1) as f32 * DOT_PITCH + DOT;
 const TICK_H: f32 = 4.;
 /// Ordered-dither thresholds (a 4×4 Bayer matrix): a dot lights once the
 /// level's density passes its cell's threshold, so Low is a sparse speckle
@@ -666,17 +667,18 @@ const FOLLOW: Spring = Spring::new(0.06, 0.);
 /// A bright pulse sweeping the lit columns left to right.
 static PULSE: [(f32, f32); 4] = [(0., 0.5), (0.08, 1.), (0.24, 0.5), (1., 0.5)];
 
-/// One column of the field: its lit dots (`lit`) or its resting ones.
-fn dot_column(rows: impl Iterator<Item = usize>, color: Color) -> El {
+/// The field's resting dots, all `COLS` × `ROWS` of them in one shape
+/// stretched across the field: column `c` sits at `c` of `COLS - 1` units,
+/// and each dot is a stroke, whose width stays in points.
+fn resting_dots(color: Color) -> El {
     let mut shape = Shape::new();
-    for r in rows {
-        let y = r as f32 * DOT_PITCH;
-        shape = shape.fill(
-            vec![[0., y], [DOT, y], [DOT, y + DOT], [0., y + DOT]],
-            color,
-        );
+    for c in 0..COLS {
+        for r in 0..ROWS {
+            let (x, y) = (c as f32, r as f32 * DOT_PITCH);
+            shape = shape.line([x, y], [x, y + DOT], DOT, LineCap::Butt, color);
+        }
     }
-    canvas(shape).size(DOT, (ROWS - 1) as f32 * DOT_PITCH + DOT)
+    canvas(shape.view_box((COLS - 1) as f32, FIELD_H)).h(FIELD_H)
 }
 
 /// The popover's thinking slider: Auto (the provider's default) and the
@@ -713,36 +715,49 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option
     // at `c / (COLS - 1)` of it, the same scale as the cursor.
     let reach = frac * (COLS - 1) as f32;
     let period = 2.0 - 1.3 * frac;
-    let rest = p.text_faint.alpha(0.28);
+    // The resting dots sit under the lit ones, centred on the columns.
+    let resting = resting_dots(p.text_faint.alpha(0.28)).pin(
+        Some(DOT / 2.),
+        Some(FIELD_TOP),
+        Some(DOT / 2.),
+        None,
+    );
+    // Each lit dot is its own plain, childless leaf, so its pulse repaints
+    // by patching its opacity rather than the scene.
     let field = row()
         .pin(Some(0.), Some(FIELD_TOP), Some(0.), None)
+        .h(FIELD_H)
         .justify_between()
         .children((0..COLS).map(|c| {
-            let lit = |r: usize| {
-                let threshold = (f32::from(BAYER[(r % 4) * 4 + c % 4]) + 0.5) / 16.;
-                c as f32 <= reach + 0.01 && threshold < frac
-            };
-            // The column or two at the cursor read brightest.
-            let edge = c as f32 <= reach + 0.01 && reach - c as f32 <= 1.5;
-            let on = el()
-                .absolute(0., 0.)
-                .child(dot_column((0..ROWS).filter(|&r| lit(r)), {
-                    if edge { p.text } else { p.accent }
-                }));
-            let on = if edge {
-                on
-            } else {
-                on.cycle(Cycle {
-                    period,
-                    phase: c as f32 / COLS as f32 * 0.9,
-                    stops: &PULSE,
-                    still: 0.8,
-                    fps: 30.,
+            let shown = c as f32 <= reach + 0.01;
+            // The column or two at the cursor read brightest, and hold still.
+            let edge = shown && reach - c as f32 <= 1.5;
+            let dots = (0..ROWS)
+                .filter(|&r| {
+                    let threshold = (f32::from(BAYER[(r % 4) * 4 + c % 4]) + 0.5) / 16.;
+                    shown && threshold < frac
                 })
-            };
+                .map(|r| {
+                    let dot = el()
+                        .absolute(0., r as f32 * DOT_PITCH)
+                        .size(DOT, DOT)
+                        .fill(if edge { p.text } else { p.accent });
+                    if edge {
+                        dot
+                    } else {
+                        dot.cycle(Cycle {
+                            period,
+                            phase: c as f32 / COLS as f32 * 0.9,
+                            stops: &PULSE,
+                            still: 0.8,
+                            fps: 30.,
+                        })
+                    }
+                });
             el().key(format!("thinking-dots-{c}"))
-                .child(dot_column((0..ROWS).filter(|&r| !lit(r)), rest))
-                .child(on)
+                .w(DOT)
+                .h_full()
+                .children(dots)
         }));
     let stops = row()
         .pin(Some(0.), None, Some(0.), Some(4.))
@@ -806,6 +821,7 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option
         .child(
             el().w_full()
                 .h_full()
+                .child(resting)
                 .child(field)
                 .child(stops)
                 .child(rider),
