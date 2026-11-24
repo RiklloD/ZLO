@@ -194,6 +194,10 @@ pub(crate) struct TimelineRow {
     pub(crate) at: Option<i64>,
     /// The engine's steer id when the runtime journaled this row as one.
     pub(crate) steer_id: Option<String>,
+    /// Assistant text the run moved on from: a tool call or a later
+    /// assistant row of the same run follows it. Clients subdue it and fold
+    /// it into the turn's work; only the run's last row reads as the answer.
+    pub(crate) commentary: bool,
 }
 
 /// The id a timeline row gets: stable for its position in the history.
@@ -253,9 +257,41 @@ pub(crate) fn timeline_rows(thread: &ThreadId, history: &[HistoryMessage]) -> Ve
             run_id: m.run_id.clone(),
             at: m.at,
             steer_id: m.steer_id.clone(),
+            commentary: false,
         });
     }
+    mark_commentary(history, &mut rows);
     rows
+}
+
+/// Flag assistant rows the run moved on from (see [`TimelineRow::commentary`]).
+/// One backwards pass: a row is commentary when a tool call or another
+/// assistant row of its run comes after its first message.
+fn mark_commentary(history: &[HistoryMessage], rows: &mut [TimelineRow]) {
+    use std::collections::HashSet;
+    // Runs with a tool call at or after each history position.
+    let mut working: HashSet<&str> = HashSet::new();
+    let mut work_after = vec![false; history.len()];
+    for (i, m) in history.iter().enumerate().rev() {
+        let Some(run) = m.run_id.as_deref() else {
+            continue;
+        };
+        if !m.hidden && (m.role == HistoryRole::Tool || !m.tool_calls.is_empty()) {
+            working.insert(run);
+        }
+        work_after[i] = working.contains(run);
+    }
+    let mut answered: HashSet<String> = HashSet::new();
+    for row in rows.iter_mut().rev() {
+        if row.kind != "assistant" {
+            continue;
+        }
+        let Some(run) = row.run_id.clone() else {
+            continue;
+        };
+        row.commentary = work_after[row.index] || answered.contains(&run);
+        answered.insert(run);
+    }
 }
 
 /// Every timeline row of a CLI history, oldest first, as timeline items.
@@ -263,7 +299,8 @@ pub(super) fn timeline_values(thread: &ThreadId, history: &[HistoryMessage]) -> 
     timeline_rows(thread, history)
         .into_iter()
         .map(|row| {
-            json!({
+            let commentary = row.commentary;
+            let mut value = json!({
                 "message_id": row.message_id,
                 "thread_id": thread.as_str(),
                 "sequence": row.index as u64 + 1,
@@ -283,7 +320,12 @@ pub(super) fn timeline_values(thread: &ThreadId, history: &[HistoryMessage]) -> 
                     .at
                     .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
                     .map(|at| at.to_rfc3339()),
-            })
+            });
+            // Omitted when false so older clients and fixtures see no change.
+            if commentary {
+                value["commentary"] = Value::Bool(true);
+            }
+            value
         })
         .collect()
 }

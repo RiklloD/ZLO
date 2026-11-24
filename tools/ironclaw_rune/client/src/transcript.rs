@@ -522,6 +522,7 @@ fn borrowed_rows(messages: &[TimelineMessage], prefix: &str, rows: &mut Vec<Row>
                 attachments: Vec::new(),
                 steer: None,
             },
+            MessageKind::Assistant if message.commentary => Row::Narration { key, text },
             MessageKind::Assistant => Row::Assistant {
                 key,
                 text,
@@ -1708,10 +1709,16 @@ impl Transcript {
                         }
                         None => key,
                     };
-                    rows.push(Row::Assistant {
-                        key,
-                        text,
-                        streaming: false,
+                    // Text the run moved on from is commentary: subdued,
+                    // folded with the work, never the answer.
+                    rows.push(if message.commentary {
+                        Row::Narration { key, text }
+                    } else {
+                        Row::Assistant {
+                            key,
+                            text,
+                            streaming: false,
+                        }
                     });
                     // The run's notice goes once, under its last row.
                     if let Some(r) = run.as_deref()
@@ -2227,6 +2234,28 @@ mod tests {
                 "tool:bun test",
             ]
         );
+    }
+
+    /// A stored row the gateway flags `commentary` (text the run moved on
+    /// from) is narration, never an answer bubble: it draws subdued and
+    /// folds with the work. The run's last row stays the answer.
+    #[test]
+    fn stored_commentary_rows_are_narration_and_the_answer_stays_a_reply() {
+        let mut t = Transcript::default();
+        t.set_timeline(page(serde_json::json!([
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "spin up 2" },
+            { "message_id": "m2", "sequence": 2, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "I'll launch two subagents.", "commentary": true },
+            { "message_id": "m3", "sequence": 3, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "Both are running." },
+        ])));
+        let rows = t.rows();
+        assert!(
+            matches!(&rows[1], Row::Narration { text, .. } if text == "I'll launch two subagents."),
+            "{rows:?}"
+        );
+        assert!(matches!(&rows[2], Row::Assistant { text, .. } if text == "Both are running."));
     }
 
     /// The running turn's prompt is shown once a message of the person's
