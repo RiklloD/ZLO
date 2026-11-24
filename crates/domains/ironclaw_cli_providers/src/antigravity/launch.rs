@@ -90,6 +90,9 @@ pub(super) fn agent_command(c: &AntigravityConfig) -> Command {
         .env("AGY_ACP_FORCE_FILE_STORAGE", "1")
         .env("PYTHONUNBUFFERED", "1")
         .env("ELECTRON_RUN_AS_NODE", "1")
+        // An `agy` that replaces itself in place mid-turn breaks the
+        // running agent (t3code #39363); the user updates it themselves.
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
         .env("TMPDIR", tmp)
         // A background turn never opens a browser on its own.
         .env("BROWSER", "/usr/bin/true");
@@ -103,6 +106,50 @@ pub(super) fn agent_command(c: &AntigravityConfig) -> Command {
         .process_group(0)
         .kill_on_drop(true);
     cmd
+}
+
+/// The folder of `open` and `xdg-open` stubs that fail, under the state
+/// folder, (re)written for an agent ZLO starts on its own. agy finds the
+/// browser opener on PATH (it names no absolute `/usr/bin/open`), so with
+/// this folder first on PATH a sign-in that wants a browser fails instead
+/// of opening one. Each stub is written beside its final name and renamed
+/// over it, so a concurrent start never sees a torn file.
+pub(super) async fn browser_stubs(config: &AntigravityConfig) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    const STUB: &str =
+        "#!/bin/sh\n# ZLO: an agent started in the background never opens a browser.\nexit 1\n";
+    let dir = config.state_dir.join("no-browser");
+    private_dir_all(&dir).await?;
+    for name in ["open", "xdg-open"] {
+        let path = dir.join(name);
+        let current = tokio::fs::symlink_metadata(&path).await.ok(); // silent-ok: missing is rewritten
+        let intact = match current {
+            Some(meta) if meta.is_file() && meta.permissions().mode() & 0o777 == 0o700 => {
+                tokio::fs::read_to_string(&path).await.ok().as_deref() == Some(STUB) // silent-ok: unreadable is rewritten
+            }
+            _ => false,
+        };
+        if intact {
+            continue;
+        }
+        let tmp = dir.join(format!(".{name}.{}", uuid::Uuid::new_v4()));
+        tokio::fs::write(&tmp, STUB).await?;
+        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).await?;
+        tokio::fs::rename(&tmp, &path).await?;
+    }
+    Ok(dir)
+}
+
+/// Put the [`browser_stubs`] folder first on the agent's PATH.
+pub(super) fn without_browser(cmd: &mut Command, stubs: &Path) -> Result<(), String> {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(std::iter::once(stubs.to_path_buf()).chain(
+        // An empty entry would mean the agent's working folder.
+        std::env::split_paths(&inherited).filter(|p| !p.as_os_str().is_empty()),
+    ))
+    .map_err(|e| format!("browser stubs on PATH: {e}"))?;
+    cmd.env("PATH", path);
+    Ok(())
 }
 
 /// Profile folders, the work folder and the session map. The auth method
@@ -139,7 +186,7 @@ pub(super) async fn prepare_dirs(config: &AntigravityConfig) -> std::io::Result<
 }
 
 /// `create_dir_all`, with every folder it creates 0700.
-async fn private_dir_all(path: &Path) -> std::io::Result<()> {
+pub(super) async fn private_dir_all(path: &Path) -> std::io::Result<()> {
     tokio::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -163,19 +210,29 @@ async fn tighten(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The skill folders Antigravity reads for every project, relative to a
-/// Gemini directory.
-const USER_SKILL_DIRS: [&str; 2] = ["config/skills", "antigravity-cli/skills"];
+/// What Antigravity reads for every project, relative to a Gemini
+/// directory: the skill folders, the skill manifest (`config/skills.json`,
+/// t3code #39765) and the global rules (`AGENTS.md`, `GEMINI.md`, t3code
+/// #39531).
+const USER_CONFIG_ENTRIES: [&str; 5] = [
+    "config/skills",
+    "antigravity-cli/skills",
+    "config/skills.json",
+    "AGENTS.md",
+    "GEMINI.md",
+];
 
 /// The private profile isolates sign-in, hooks and MCP servers, so the
 /// user's own global skills (`~/.gemini/config/skills`,
-/// `~/.gemini/antigravity-cli/skills`) are linked into it. Only a missing
+/// `~/.gemini/antigravity-cli/skills`, `~/.gemini/config/skills.json`) and
+/// rules (`~/.gemini/AGENTS.md`, `~/.gemini/GEMINI.md`) are linked into it;
+/// a file the profile has of its own stays. Only a missing
 /// entry, an empty placeholder folder (the agent makes one on launch) or a
 /// link of ours (to exactly the managed target) is replaced; a folder with
 /// content and a link pointing anywhere else are the user's and stay. No
 /// symlinked folder inside the profile is followed on the way there.
 pub(super) async fn link_user_skills(profile: &Path, user_gemini: &Path) {
-    for rel in USER_SKILL_DIRS {
+    for rel in USER_CONFIG_ENTRIES {
         let (link, target) = (profile.join(rel), user_gemini.join(rel));
         if link == target {
             continue;
@@ -305,6 +362,8 @@ async fn cli_version(agy: &Path) -> Option<(u64, u64, u64)> {
                 .iter()
                 .filter_map(|k| Some((k, std::env::var_os(k)?))),
         )
+        // Killed after its deadline: never mid-way through replacing itself.
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -419,6 +478,8 @@ mod tests {
             work_dir: state.join("work"),
             state_dir: state,
             background_hold: Duration::from_secs(30),
+            prompt_silence: Duration::from_secs(120),
+            keyring: None,
         }
     }
 
@@ -486,6 +547,49 @@ mod tests {
         assert!(
             std::fs::symlink_metadata(profile.join("config/skills")).is_err(),
             "dangling link removed"
+        );
+    }
+
+    /// t3code #39531 / #39765: the user's global rules and skills.json
+    /// are linked into the private profile; the profile's own file stays.
+    #[tokio::test]
+    async fn user_rules_and_skills_json_are_linked_and_the_profiles_own_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let (profile, user) = (dir.path().join("profile"), dir.path().join("gemini"));
+        std::fs::create_dir_all(user.join("config")).unwrap();
+        std::fs::write(user.join("AGENTS.md"), "global agents rule").unwrap();
+        std::fs::write(user.join("GEMINI.md"), "global gemini rule").unwrap();
+        std::fs::write(user.join("config/skills.json"), "{}").unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        link_user_skills(&profile, &user).await;
+        for rel in ["AGENTS.md", "GEMINI.md", "config/skills.json"] {
+            assert_eq!(
+                std::fs::read_link(profile.join(rel)).unwrap(),
+                user.join(rel),
+                "{rel}"
+            );
+        }
+        std::fs::remove_file(user.join("AGENTS.md")).unwrap();
+        std::fs::remove_file(profile.join("GEMINI.md")).unwrap();
+        std::fs::write(profile.join("GEMINI.md"), "profile's own rule").unwrap();
+        link_user_skills(&profile, &user).await;
+        assert!(std::fs::symlink_metadata(profile.join("AGENTS.md")).is_err());
+        assert_eq!(
+            std::fs::read_to_string(profile.join("GEMINI.md")).unwrap(),
+            "profile's own rule"
+        );
+    }
+
+    #[test]
+    fn the_agent_never_updates_itself_mid_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path().join("p"), dir.path().join("s"), None);
+        let command = agent_command(&config);
+        let env: Vec<_> = command.as_std().get_envs().collect();
+        assert!(
+            env.iter()
+                .any(|(k, v)| *k == "AGY_CLI_DISABLE_AUTO_UPDATE" && v.is_some_and(|v| v == "1")),
+            "{env:?}"
         );
     }
 
