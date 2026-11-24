@@ -1,32 +1,29 @@
-//! Writes `context.md` and the playbook prompt into a fresh
-//! `<ZLO_HOME>/triage/<time>` folder. Both `zlo triage` and the in-app entry
-//! start from these files. Every path the context names comes from its
-//! owner: home resolution (`ironclaw_config`), the standalone database and
-//! master-key names (`ironclaw_composition::setup_transfer`), the WebUI token
-//! file, the service module, the diagnostics bundle's log list.
+//! Writes `context.md` and the playbook prompt into a new private
+//! `<ZLO_HOME>/triage/<time>-<random>` folder (0700, files 0600, created
+//! exclusively). Both `zlo triage` and the in-app entry start from these
+//! files. Every path the context names comes from its owner: home
+//! resolution (`ironclaw_config`), the standalone database and master-key
+//! names (`ironclaw_composition::setup_transfer`), the WebUI token file, the
+//! service module, the diagnostics bundle's log list, and each agent
+//! runtime's folders (`ironclaw_cli_providers`, through
+//! `ironclaw_composition::agent_runtime_paths`).
 
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use ironclaw_config::{DESKTOP_APP_LOG_RELATIVE_PATH, RebornHome, RebornProfile};
-use ironclaw_product_contracts::triage::TRIAGE_PROMPT_FILE_NAME;
+use ironclaw_product_contracts::triage::{TRIAGE_CONTEXT_FILE_NAME, TRIAGE_PROMPT_FILE_NAME};
 
 use crate::dto::ServiceStateDto;
 use crate::triage::prompt::{
     ContextInput, SourceClone, TriageEntry, TriagePaths, build_context, seed_prompt,
 };
 
-/// The coding-agent runtimes ZLO drives, with where each keeps its own
-/// state: `(label, env override, default folder under the user's home)`.
-/// `zlo triage` launches the first three; the context names all of them so
-/// the agent can check harness health.
-pub(crate) const RUNTIME_STATE_DIRS: [(&str, &str, &str); 4] = [
+/// The coding-agent CLIs `zlo triage` launches, with where each keeps its
+/// own state: `(label, env override, default folder under the user's home)`.
+pub(crate) const CLI_STATE_DIRS: [(&str, &str, &str); 2] = [
     ("Claude Code (claude)", "CLAUDE_CONFIG_DIR", ".claude"),
-    ("Codex (codex)", "CODEX_HOME", ".codex"),
     ("Antigravity CLI (agy)", "GEMINI_HOME", ".gemini"),
-    // ZLO's own Antigravity profile and transcripts
-    // (`ironclaw_cli_providers::antigravity::default_config`).
-    ("ZLO's Antigravity runtime", "", ".ironclaw/antigravity"),
 ];
 
 /// `env` override, else `default` under the user's home.
@@ -37,6 +34,83 @@ pub(crate) fn runtime_state_dir(user_home: &Path, env: &str, default: &str) -> P
         return PathBuf::from(value);
     }
     user_home.join(default)
+}
+
+/// Every coding-agent runtime's own state, named by its owner
+/// (`ironclaw_cli_providers`) where ZLO keeps it: the agent can check
+/// harness health there.
+fn runtime_state(user_home: &Path) -> Vec<(String, PathBuf)> {
+    use ironclaw_composition::agent_runtime_paths as paths;
+    let [
+        (claude_label, claude_env, claude_dir),
+        (agy_label, agy_env, agy_dir),
+    ] = CLI_STATE_DIRS;
+    vec![
+        (
+            claude_label.into(),
+            runtime_state_dir(user_home, claude_env, claude_dir),
+        ),
+        ("Codex (codex)".into(), paths::codex_home(user_home)),
+        (
+            agy_label.into(),
+            runtime_state_dir(user_home, agy_env, agy_dir),
+        ),
+        (
+            "ZLO's Antigravity runtime".into(),
+            paths::antigravity_state_dir(user_home),
+        ),
+        (
+            "ZLO's Antigravity profile (may be the one Hermes signed in)".into(),
+            paths::antigravity_profile_dir(user_home),
+        ),
+        (
+            "ZLO's Muse Code runtime".into(),
+            paths::muse_state_dir(user_home),
+        ),
+    ]
+}
+
+/// What the agent must never read: ZLO's own secrets and every agent
+/// runtime's credentials (files and Keychain items).
+fn secrets(state_dir: &Path, master_key: &Path, user_home: &Path) -> Vec<String> {
+    use ironclaw_composition::agent_runtime_paths as paths;
+    let show = |path: PathBuf| path.display().to_string();
+    let claude = runtime_state_dir(user_home, "CLAUDE_CONFIG_DIR", ".claude");
+    let gemini = runtime_state_dir(user_home, "GEMINI_HOME", ".gemini");
+    vec![
+        format!(
+            "ZLO's WebUI token: {}",
+            show(crate::webui_token::webui_token_file_path(state_dir))
+        ),
+        format!(
+            "ZLO's secrets master key: {}",
+            show(master_key.to_path_buf())
+        ),
+        "the ZLO items in the login Keychain, and the encrypted secret records in the database"
+            .into(),
+        format!(
+            "Claude Code's sign-in: {} and the Keychain item `Claude Code-credentials`",
+            show(claude.join(".credentials.json"))
+        ),
+        format!(
+            "Codex's sign-in: {}",
+            show(paths::codex_home(user_home).join("auth.json"))
+        ),
+        format!(
+            "Antigravity's sign-in: {}, {}, {}, and the Keychain items `gemini` and \
+             `antigravity`",
+            show(gemini.join("oauth_creds.json")),
+            show(paths::antigravity_sign_in_dir(&gemini)),
+            show(paths::antigravity_sign_in_dir(
+                &paths::antigravity_profile_dir(user_home)
+            ))
+        ),
+        format!(
+            "Muse Code's sign-in (what `muse login` writes) and any auth, token or credentials \
+             file under {}",
+            show(paths::muse_state_dir(user_home))
+        ),
+    ]
 }
 
 impl TriagePaths {
@@ -62,24 +136,10 @@ impl TriagePaths {
                 .then(|| user_home.join(DESKTOP_APP_LOG_RELATIVE_PATH)),
             desktop_backend_pid_file: home.desktop_backend_pid_file_path(),
             service: crate::commands::service::service_definition(),
-            runtime_state: RUNTIME_STATE_DIRS
-                .iter()
-                .map(|(label, env, default)| {
-                    (
-                        (*label).to_string(),
-                        runtime_state_dir(user_home, env, default),
-                    )
-                })
-                .collect(),
-            secrets: vec![
-                crate::webui_token::webui_token_file_path(&state_dir)
-                    .display()
-                    .to_string(),
-                master_key.display().to_string(),
-                "the ZLO items in the login Keychain".into(),
-                "the encrypted secret records in the database".into(),
-            ],
+            runtime_state: runtime_state(user_home),
+            secrets: secrets(&state_dir, &master_key, user_home),
             source_cache_dir: crate::triage::source::source_cache_dir(&state_dir),
+            sessions_dir: home.triage_sessions_dir(),
             state_dir,
         }
     }
@@ -177,32 +237,110 @@ pub(crate) struct SessionInput<'a> {
     pub(crate) entry: &'a TriageEntry,
     pub(crate) server: String,
     pub(crate) source_clone: Option<&'a SourceClone>,
+    pub(crate) diagnostics: &'a [String],
     pub(crate) now: DateTime<Utc>,
 }
 
-/// Write the session's two files and answer where they are.
+/// The sessions folder, created private, and refused when it is a symlink,
+/// not a folder, or (unix) not this user's.
+fn sessions_root(root: &Path) -> std::io::Result<()> {
+    if let Some(parent) = root.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match private_dir_builder().create(root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let meta = std::fs::symlink_metadata(root)?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(std::io::Error::other(format!(
+            "{} is not a plain folder",
+            root.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        // SAFETY: `geteuid` reads this process's effective uid; no memory.
+        let me = unsafe { libc::geteuid() };
+        if meta.uid() != me {
+            return Err(std::io::Error::other(format!(
+                "{} belongs to another user",
+                root.display()
+            )));
+        }
+        if meta.mode() & 0o077 != 0 {
+            std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    Ok(())
+}
+
+fn private_dir_builder() -> std::fs::DirBuilder {
+    #[allow(unused_mut)] // `mode` is unix-only
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder
+}
+
+/// Create `path` (never an existing file, never through a symlink), owner
+/// read/write only, holding `text`.
+fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()
+}
+
+/// Write the session's two files into a new private folder of its own and
+/// answer where they are, only once both are written. The folder's name is
+/// unguessable: it is what lets a session's chip be read back for the
+/// session's own thread (`ironclaw_assistant`'s triage grant).
 pub(crate) fn write_session(input: &SessionInput<'_>) -> std::io::Result<TriageSession> {
     let stamp = input.now.to_rfc3339_opts(SecondsFormat::Millis, true);
-    let session_dir = input
-        .paths
-        .state_dir
-        .join("triage")
-        .join(stamp.replace([':', '.'], "-"));
-    std::fs::create_dir_all(&session_dir)?;
-    let context_file = session_dir.join("context.md");
-    std::fs::write(
+    let root = &input.paths.sessions_dir;
+    sessions_root(root)?;
+    let session_dir = root.join(format!(
+        "{}-{}",
+        stamp.replace([':', '.'], "-"),
+        uuid::Uuid::new_v4().simple()
+    ));
+    // Fails when it exists: a session folder is never reused.
+    private_dir_builder().create(&session_dir)?;
+    let context_file = session_dir.join(TRIAGE_CONTEXT_FILE_NAME);
+    let prompt_file = session_dir.join(TRIAGE_PROMPT_FILE_NAME);
+    let written = write_new(
         &context_file,
-        build_context(&ContextInput {
+        &build_context(&ContextInput {
             generated_at: stamp,
             entry: input.entry,
             os: describe_os(),
             server: input.server.clone(),
             source_clone: input.source_clone,
             paths: input.paths,
+            diagnostics: input.diagnostics,
         }),
-    )?;
-    let prompt_file = session_dir.join(TRIAGE_PROMPT_FILE_NAME);
-    std::fs::write(&prompt_file, seed_prompt(&context_file, input.entry))?;
+    )
+    .and_then(|()| write_new(&prompt_file, &seed_prompt(&context_file, input.entry)));
+    if let Err(error) = written {
+        // A half-written session is never linked; its folder goes.
+        if let Err(cleanup) = std::fs::remove_dir_all(&session_dir) {
+            tracing::debug!(%cleanup, "triage: half-written session folder not removed");
+        }
+        return Err(error);
+    }
     Ok(TriageSession {
         session_dir,
         context_file,
@@ -215,33 +353,50 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    #[test]
-    fn writes_context_and_prompt_into_a_timestamped_session_folder() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn paths_in(tmp: &Path) -> TriagePaths {
         let home = RebornHome::resolve_from_env_parts_without_migrating(
-            Some(tmp.path().join("zlo home").into_os_string()),
-            Some(tmp.path().as_os_str().to_os_string()),
+            Some(tmp.join("zlo home").into_os_string()),
+            Some(tmp.as_os_str().to_os_string()),
             None,
         )
         .expect("home");
-        let paths = TriagePaths::derive(&home, RebornProfile::Standalone, tmp.path());
+        TriagePaths::derive(&home, RebornProfile::Standalone, tmp)
+    }
+
+    fn write(paths: &TriagePaths, now: DateTime<Utc>) -> std::io::Result<TriageSession> {
         let entry = TriageEntry::Cli {
             cli_version: "1.2.0".into(),
             launched_as: "zlo triage".into(),
         };
-        let now = Utc.with_ymd_and_hms(2026, 11, 24, 9, 30, 5).unwrap();
-        let session = write_session(&SessionInput {
-            paths: &paths,
+        write_session(&SessionInput {
+            paths,
             entry: &entry,
             server: describe_backend(&PidFileState::Absent, ServiceStateDto::NotInstalled),
             source_clone: None,
+            diagnostics: &[],
             now,
         })
-        .expect("session");
+    }
+
+    #[test]
+    fn writes_context_and_prompt_into_a_timestamped_session_folder() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let paths = paths_in(tmp.path());
+        let now = Utc.with_ymd_and_hms(2026, 11, 24, 9, 30, 5).unwrap();
+        let session = write(&paths, now).expect("session");
         assert_eq!(
-            session.session_dir,
-            tmp.path().join("zlo home/triage/2026-11-24T09-30-05-000Z")
+            session.session_dir.parent(),
+            Some(tmp.path().join("zlo home/triage").as_path())
         );
+        let name = session
+            .session_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("name");
+        let random = name
+            .strip_prefix("2026-11-24T09-30-05-000Z-")
+            .expect("timestamped");
+        assert_eq!(random.len(), 32, "unguessable: {name}");
         assert_eq!(
             session.prompt_file,
             session.session_dir.join("triage-playbook.md")
@@ -265,6 +420,94 @@ mod tests {
             );
         }
         assert!(context.contains("no `zlo service` job is installed"));
+    }
+
+    /// Two sessions in the same millisecond never share (or overwrite) a
+    /// folder, and both are private to this user.
+    #[test]
+    fn every_session_gets_its_own_private_folder() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let paths = paths_in(tmp.path());
+        let now = Utc.with_ymd_and_hms(2026, 11, 24, 9, 30, 5).unwrap();
+        let first = write(&paths, now).expect("first");
+        let second = write(&paths, now).expect("second");
+        assert_ne!(first.session_dir, second.session_dir);
+        assert!(first.prompt_file.is_file() && second.prompt_file.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = |p: &Path| std::fs::metadata(p).expect("meta").permissions().mode() & 0o777;
+            assert_eq!(mode(&paths.sessions_dir), 0o700);
+            assert_eq!(mode(&first.session_dir), 0o700);
+            assert_eq!(mode(&first.context_file), 0o600);
+            assert_eq!(mode(&first.prompt_file), 0o600);
+        }
+    }
+
+    /// A sessions folder that is a symlink is refused: nothing is written
+    /// where it points, and no link comes back.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_sessions_folder_is_refused() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let paths = paths_in(tmp.path());
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("elsewhere");
+        std::fs::create_dir_all(paths.sessions_dir.parent().expect("parent")).expect("home");
+        std::os::unix::fs::symlink(&elsewhere, &paths.sessions_dir).expect("symlink");
+        let now = Utc.with_ymd_and_hms(2026, 11, 24, 9, 30, 5).unwrap();
+        assert!(write(&paths, now).is_err());
+        assert_eq!(std::fs::read_dir(&elsewhere).expect("dir").count(), 0);
+    }
+
+    /// A session whose second file cannot be written is not returned, and
+    /// its folder is gone.
+    #[cfg(unix)]
+    #[test]
+    fn a_half_written_session_is_never_linked() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let paths = paths_in(tmp.path());
+        let now = Utc.with_ymd_and_hms(2026, 11, 24, 9, 30, 5).unwrap();
+        write(&paths, now).expect("root exists");
+        // A read-only sessions folder: the session folder cannot be made.
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&paths.sessions_dir, std::fs::Permissions::from_mode(0o500))
+            .expect("chmod");
+        let result = write(&paths, now);
+        std::fs::set_permissions(&paths.sessions_dir, std::fs::Permissions::from_mode(0o700))
+            .expect("chmod back");
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_dir(&paths.sessions_dir).expect("dir").count(),
+            1
+        );
+    }
+
+    /// Both entry points name every agent runtime's credentials as never to
+    /// be read, beside ZLO's own secrets.
+    #[test]
+    fn the_context_forbids_every_agent_credential() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let paths = paths_in(tmp.path());
+        let session = write(&paths, Utc::now()).expect("session");
+        let context = std::fs::read_to_string(&session.context_file).expect("context");
+        let forbidden = context
+            .split("- Secrets and agent credentials (NEVER read")
+            .nth(1)
+            .expect("the secrets list");
+        for needle in [
+            "webui-token",
+            "Claude Code-credentials",
+            ".credentials.json",
+            "auth.json",
+            "oauth_creds.json",
+            "antigravity-acp",
+            "`gemini`",
+            "`antigravity`",
+            "muse login",
+        ] {
+            assert!(forbidden.contains(needle), "{needle} missing:\n{forbidden}");
+        }
     }
 
     #[test]
@@ -294,12 +537,32 @@ mod tests {
         assert!(!is_zlo_process(u32::MAX - 7));
     }
 
+    /// Runtime folders come from their owners: ZLO's Antigravity profile is
+    /// Hermes's when Hermes signed one in, and Muse's state is its own.
     #[test]
-    fn runtime_state_honours_the_env_override() {
-        let home = Path::new("/home/u");
+    fn runtime_folders_come_from_their_owners() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let hermes = tmp
+            .path()
+            .join(".hermes/plugin-data/t3code/antigravity/profile");
+        std::fs::create_dir_all(&hermes).expect("hermes");
+        let state = runtime_state(tmp.path());
+        let find = |label: &str| {
+            state
+                .iter()
+                .find(|(l, _)| l.starts_with(label))
+                .map(|(_, p)| p.clone())
+        };
+        assert_eq!(find("ZLO's Antigravity profile"), Some(hermes));
         assert_eq!(
-            runtime_state_dir(home, "", ".ironclaw/antigravity"),
-            PathBuf::from("/home/u/.ironclaw/antigravity")
+            find("ZLO's Muse Code runtime"),
+            Some(ironclaw_composition::agent_runtime_paths::muse_state_dir(
+                tmp.path()
+            ))
+        );
+        assert_eq!(
+            runtime_state_dir(Path::new("/home/u"), "", ".x"),
+            PathBuf::from("/home/u/.x")
         );
     }
 }

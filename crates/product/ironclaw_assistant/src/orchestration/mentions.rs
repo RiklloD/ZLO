@@ -30,6 +30,17 @@
 //! CLI engines (Claude, Codex) read files themselves, so a whole-file or
 //! folder mention reaches them as its path; ranges, threads and diffs are
 //! inlined because the CLI cannot see them as they were at send time.
+//!
+//! Triage sessions: "Triage an issue" writes a session under the backend's
+//! triage folder and the composer links its playbook. That folder is never
+//! a mention root, and a remote client sends none for it; instead a
+//! playbook link that names a session this backend wrote (exactly one
+//! private, unguessably named folder below `triage`, [`fs`] checks) brings
+//! the playbook and the session's `context.md` inline, for every runtime,
+//! so a native model with workspace-only tools gets the same first turn a
+//! CLI agent does. Host-written, so it sits in the context block outside
+//! the untrusted-content wrapper (the client-reported line inside it is
+//! labelled as data by the writer); leak redaction still applies.
 
 #[cfg(unix)]
 mod fs;
@@ -41,6 +52,8 @@ use ironclaw_product_contracts::mention::{
     LineRange, MENTION_CONTEXT_CLOSE, MENTION_CONTEXT_OPEN, MentionPart, MentionSpan, MentionUri,
     mention_parts, strip_mention_context,
 };
+#[cfg(unix)]
+use ironclaw_product_contracts::triage::{TRIAGE_CONTEXT_FILE_NAME, TRIAGE_PROMPT_FILE_NAME};
 use ironclaw_safety::LeakDetector;
 #[cfg(unix)]
 use tokio::io::AsyncReadExt as _;
@@ -105,16 +118,30 @@ pub(super) trait ThreadDigests: Send + Sync {
     async fn digest(&self, thread_id: &str) -> Option<ThreadDigest>;
 }
 
+/// Where the host reads from for a message, beyond the client's roots.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct HostFolders<'a> {
+    /// The user's home folder, which no root may cover.
+    pub(super) home: Option<&'a Path>,
+    /// The host folder `/workspace` names for the sender.
+    pub(super) workspace: Option<&'a Path>,
+    /// The backend's triage sessions folder (`RebornHome::triage_sessions_dir`).
+    pub(super) triage: Option<&'a Path>,
+}
+
+/// The wrapper-free heading of a triage session's block.
+const TRIAGE_HEADING: &str = "The triage session this ZLO backend prepared for this message \
+     (written by the backend itself; the user asked you to follow its playbook). Both files are \
+     below, so you do not need to open them:";
+
 /// `content` with its mentions expanded, at most `limit` bytes in all.
 /// Skill and extension links become the `/name` and `@name` words the loop
 /// already understands; the rest stay links, and their context is appended
-/// when it fits. `home` is the user's home folder, which no root may cover;
-/// `workspace` is the host folder `/workspace` names for the sender.
+/// when it fits.
 pub(super) async fn expand(
     content: &str,
     roots: &[String],
-    home: Option<&Path>,
-    workspace: Option<&Path>,
+    host: HostFolders<'_>,
     runtime: MentionRuntime,
     threads: &dyn ThreadDigests,
     limit: usize,
@@ -149,11 +176,26 @@ pub(super) async fn expand(
     if mentions.is_empty() {
         return text;
     }
-    let workspace = workspace.map(|folder| (ironclaw_attachments::WORKSPACE_ALIAS, folder));
-    let roots = Roots::vet_with_workspace(roots, home, workspace);
+    let workspace = host
+        .workspace
+        .map(|folder| (ironclaw_attachments::WORKSPACE_ALIAS, folder));
+    let roots = Roots::vet_with_workspace(roots, host.home, workspace);
     let detector = LeakDetector::new();
     let mut blocks: Vec<String> = Vec::new();
     let mut used = 0usize;
+    // A triage session's files first: they are what the message is for.
+    let mut trusted: Option<String> = None;
+    if let Some(sessions) = host.triage
+        && let Some(ix) = mentions.iter().position(is_triage_link)
+        && let Some(block) = triage_block(&mentions[ix], sessions).await
+    {
+        let (block, _) = detector.redact_all_secrets(&block);
+        if block.len() + 2 <= budget {
+            used += block.len() + 2;
+            trusted = Some(block);
+            mentions.remove(ix);
+        }
+    }
     for (ix, span) in mentions.iter().enumerate() {
         let block = if ix >= MAX_MENTIONS {
             format!(
@@ -181,15 +223,80 @@ pub(super) async fn expand(
         blocks.push(block);
     }
     // Escaping inside the wrapper can grow it: drop blocks until it fits.
-    while !blocks.is_empty() {
-        let body = ironclaw_safety::wrap_external_content(CONTEXT_SOURCE, &blocks.join("\n\n"));
+    loop {
+        let body = match (&trusted, blocks.is_empty()) {
+            (None, true) => return text,
+            (Some(trusted), true) => trusted.clone(),
+            (trusted, false) => {
+                let wrapped =
+                    ironclaw_safety::wrap_external_content(CONTEXT_SOURCE, &blocks.join("\n\n"));
+                match trusted {
+                    Some(trusted) => format!("{trusted}\n\n{wrapped}"),
+                    None => wrapped,
+                }
+            }
+        };
         let out = format!("{text}{MENTION_CONTEXT_OPEN}{body}{MENTION_CONTEXT_CLOSE}");
         if out.len() <= limit {
             return out;
         }
-        blocks.pop();
+        if blocks.pop().is_none() {
+            return text;
+        }
     }
-    text
+}
+
+/// A whole-file link to a triage playbook.
+fn is_triage_link(span: &MentionSpan) -> bool {
+    #[cfg(unix)]
+    {
+        matches!(
+            &span.uri,
+            MentionUri::File { path, line_range: None }
+                if Path::new(path).file_name().is_some_and(|n| n == TRIAGE_PROMPT_FILE_NAME)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = span;
+        false
+    }
+}
+
+/// Both files of the session `span` names, inline, when it is one this
+/// backend wrote; `None` otherwise (the link then expands like any other).
+async fn triage_block(span: &MentionSpan, sessions: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        let raw = span.uri.path()?;
+        let opened = match fs::open_triage_session(
+            sessions,
+            raw,
+            TRIAGE_PROMPT_FILE_NAME,
+            TRIAGE_CONTEXT_FILE_NAME,
+        ) {
+            Ok(opened) => opened,
+            Err(why) => {
+                tracing::debug!(why, "triage link is not a prepared session");
+                return None;
+            }
+        };
+        let [prompt, context] = opened;
+        let prompt = file_block(&span.label, prompt, None, MentionRuntime::Loop).await;
+        let context = file_block(
+            TRIAGE_CONTEXT_FILE_NAME,
+            context,
+            None,
+            MentionRuntime::Loop,
+        )
+        .await;
+        Some(format!("{TRIAGE_HEADING}\n\n{prompt}\n\n{context}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (span, sessions);
+        None
+    }
 }
 
 async fn expand_one(
@@ -464,8 +571,7 @@ mod tests {
         expand(
             content,
             &roots,
-            None,
-            None,
+            HostFolders::default(),
             runtime,
             &Threads::default(),
             60_000,
@@ -557,8 +663,7 @@ mod tests {
         let tight = expand(
             &content,
             &roots,
-            None,
-            None,
+            HostFolders::default(),
             MentionRuntime::Loop,
             &Threads::default(),
             limit,
@@ -583,8 +688,7 @@ mod tests {
             let out = expand(
                 &typed,
                 &roots,
-                None,
-                None,
+                HostFolders::default(),
                 MentionRuntime::Loop,
                 &Threads::default(),
                 limit,
@@ -601,8 +705,7 @@ mod tests {
         let out = expand(
             &typed,
             &roots,
-            None,
-            None,
+            HostFolders::default(),
             MentionRuntime::Loop,
             &Threads::default(),
             limit,
@@ -658,8 +761,7 @@ mod tests {
         let out = expand(
             &format!("{mine} vs {other}"),
             &[],
-            None,
-            None,
+            HostFolders::default(),
             MentionRuntime::Loop,
             &threads,
             60_000,
@@ -724,8 +826,10 @@ mod tests {
                 expand(
                     &content,
                     &[],
-                    None,
-                    Some(&folder),
+                    HostFolders {
+                        workspace: Some(&folder),
+                        ..HostFolders::default()
+                    },
                     runtime,
                     &Threads::default(),
                     60_000,

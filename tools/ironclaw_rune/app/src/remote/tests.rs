@@ -385,3 +385,196 @@ fn a_removed_computer_leaves_no_update_prompt_behind() {
         "no row for a computer that is gone"
     );
 }
+
+mod triage_switch {
+    use super::*;
+    use crate::state::Page;
+    use crate::workspace::triage_test as triage;
+    use zlo_client::ClientError;
+    use zlo_client::triage_calls::{PrepareTriageResponse, TRIAGE_PROMPT_FILE_NAME};
+    use zlo_client::wire::SessionInfo;
+
+    fn backend() -> zlo_client::Backend {
+        zlo_client::Backend::new(
+            zlo_client::Client::new(zlo_client::Connection {
+                base_url: "http://127.0.0.1:9".into(),
+                token: zlo_client::Token::new("t").unwrap(),
+                token_source: "test".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn session() -> SessionInfo {
+        serde_json::from_str(r#"{"tenant_id":"t","user_id":"u"}"#).expect("session")
+    }
+
+    fn prepared(path: &str) -> Result<PrepareTriageResponse, ClientError> {
+        let link = zlo_client::mentions::MentionUri::File {
+            path: path.into(),
+            line_range: None,
+        }
+        .to_link(TRIAGE_PROMPT_FILE_NAME);
+        Ok(PrepareTriageResponse {
+            prompt: format!("Read {link} and follow it. "),
+            server_version: "1.2.0".into(),
+        })
+    }
+
+    const MAC: &str = "/Users/a/.zlo/triage/1/triage-playbook.md";
+    const STUDIO: &str = "/home/b/.zlo/triage/2/triage-playbook.md";
+
+    /// This Mac, connected, with no request leaving the test (the prepare
+    /// replies are landed by hand: pending until then).
+    fn on_this_mac() -> State {
+        let mut s = state();
+        s.fixture = true;
+        s.remote.registry.upsert(studio());
+        connect::adopt(&mut s, Computer::ThisMac, None);
+        s.rt.backend = Some(backend());
+        s.conn = Conn::Ready;
+        s
+    }
+
+    /// The real switch: the old computer's state goes, the new one answers.
+    fn switch_to_studio(s: &mut State) {
+        let inbox = s.workspace.inbox.list.clone();
+        let mut tx = rune::Tx::default();
+        connect::switched(
+            s,
+            connect::Mode::Switch,
+            backend(),
+            Computer::remote("env-studio", "Studio"),
+            None,
+            session(),
+            inbox,
+            &mut tx,
+        );
+    }
+
+    fn outgoing(s: &State) -> String {
+        let d = s.workspace.draft.as_ref().expect("draft");
+        crate::chat::inline_files::outgoing(&d.input, &d.staged).0
+    }
+
+    fn type_after(s: &mut State, text: &str) {
+        let d = s.workspace.draft.as_mut().expect("draft");
+        let end = d.input.text.len();
+        d.input.set_caret(end);
+        d.input.insert(text);
+    }
+
+    #[test]
+    fn a_prepared_triage_draft_moves_and_sends_only_with_the_new_link() {
+        let _guard = crate::service::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut s = on_this_mac();
+        triage::start(&mut s);
+        assert!(triage::send_block(&s).is_some(), "pending: Send waits");
+        triage::land(&mut s, None, prepared(MAC));
+        assert!(triage::send_block(&s).is_none());
+        type_after(&mut s, "it crashes");
+
+        switch_to_studio(&mut s);
+        assert_eq!(s.page, Page::Draft, "the draft stays on screen");
+        assert_eq!(s.onboarding.computer.key(), "env-studio");
+        let d = s.workspace.draft.as_ref().expect("the draft came along");
+        assert!(d.input.text.ends_with("it crashes"), "{}", d.input.text);
+        let block = triage::send_block(&s).expect("Studio has not prepared yet");
+        assert!(block.contains("preparing"), "{block}");
+
+        // A reply asked of This Mac lands nowhere now.
+        triage::land(&mut s, Some("this-mac"), prepared(MAC));
+        assert!(triage::send_block(&s).is_some());
+
+        triage::land(&mut s, None, prepared(STUDIO));
+        assert!(
+            triage::send_block(&s).is_none(),
+            "Studio's link: Send works"
+        );
+        let sent = outgoing(&s);
+        assert!(sent.contains("file:///home/b/.zlo/triage/2/"), "{sent}");
+        assert!(!sent.contains("/Users/a/"), "{sent}");
+        assert!(sent.ends_with("it crashes"), "{sent}");
+    }
+
+    #[test]
+    fn a_switch_while_preparing_prepares_on_the_new_computer() {
+        let _guard = crate::service::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut s = on_this_mac();
+        triage::start(&mut s);
+        type_after(&mut s, "agy will not sign in");
+        switch_to_studio(&mut s);
+        assert!(triage::send_block(&s).is_some(), "still pending");
+        let d = s.workspace.draft.as_ref().expect("draft");
+        assert_eq!(d.input.text, "agy will not sign in");
+        triage::land(&mut s, None, prepared(STUDIO));
+        assert!(triage::is_ready(&s));
+        let sent = outgoing(&s);
+        assert!(
+            sent.starts_with("Read [@triage-playbook.md](file:///home/b/"),
+            "{sent}"
+        );
+        assert!(sent.ends_with("agy will not sign in"), "{sent}");
+    }
+
+    #[test]
+    fn a_failed_prepare_on_the_new_computer_blocks_send_and_points_at_the_terminal() {
+        let _guard = crate::service::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut s = on_this_mac();
+        triage::start(&mut s);
+        triage::land(&mut s, None, prepared(MAC));
+        switch_to_studio(&mut s);
+        triage::land(
+            &mut s,
+            None,
+            Err(ClientError::Config(
+                "cannot reach the IronClaw gateway".into(),
+            )),
+        );
+        let why = triage::send_block(&s).expect("Send waits");
+        assert!(why.contains("zlo triage"), "{why}");
+        let d = s.workspace.draft.as_ref().expect("draft");
+        assert_eq!(d.error.as_deref(), Some(why.as_str()));
+        // Sending is refused with that line, and nothing is sent.
+        crate::workspace::send_draft(&mut s);
+        let d = s.workspace.draft.as_ref().expect("draft");
+        assert!(!d.sending, "nothing was sent");
+
+        // A reply the composer cannot make a chip of: the terminal line too.
+        let mut s = on_this_mac();
+        triage::start(&mut s);
+        triage::land(
+            &mut s,
+            None,
+            Ok(PrepareTriageResponse {
+                prompt: "Read C:\\Users\\a\\triage-playbook.md and follow it. ".into(),
+                server_version: "1.2.0".into(),
+            }),
+        );
+        let why = triage::send_block(&s).expect("no link, no Send");
+        assert!(why.contains("zlo triage"), "{why}");
+    }
+
+    /// A draft that is not a triage draft goes with the old computer, as
+    /// before.
+    #[test]
+    fn an_ordinary_draft_stays_behind() {
+        let _guard = crate::service::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut s = on_this_mac();
+        crate::workspace::start_in_profile(&mut s, zlo_client::profiles::DEFAULT_PROFILE_ID.into());
+        type_after(&mut s, "plain words");
+        switch_to_studio(&mut s);
+        let text = s.workspace.draft.as_ref().map(|d| d.input.text.clone());
+        assert_ne!(text.as_deref(), Some("plain words"));
+        assert!(s.workspace.triage.is_none());
+    }
+}

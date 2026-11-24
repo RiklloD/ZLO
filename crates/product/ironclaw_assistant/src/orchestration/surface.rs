@@ -71,6 +71,9 @@ pub struct OrchestratedProductSurface {
     /// Where each caller's `/workspace` lives on this disk, for workspace
     /// mentions; [`NoWorkspaceFolders`] until composition sets it.
     workspace: Arc<dyn WorkspaceFolders>,
+    /// The backend's triage sessions folder: a playbook link naming one of
+    /// its sessions brings that session's files inline (`mentions`).
+    triage_sessions: Option<std::path::PathBuf>,
 }
 
 impl OrchestratedProductSurface {
@@ -86,7 +89,14 @@ impl OrchestratedProductSurface {
             bridge,
             importer: SessionImporter::from_env().map(Arc::new),
             workspace: Arc::new(NoWorkspaceFolders),
+            triage_sessions: None,
         }
+    }
+
+    /// Read triage playbook links that name a session under `folder`.
+    pub fn with_triage_sessions(mut self, folder: Option<std::path::PathBuf>) -> Self {
+        self.triage_sessions = folder;
+        self
     }
 
     /// Resolve `@`-mentions of `/workspace/...` under `workspace`'s folder.
@@ -915,11 +925,15 @@ impl ProductSurface for OrchestratedProductSurface {
                         let in_front = handoff.as_ref().map_or(0, |c| c.len() + HANDOFF_SEP.len());
                         let home = std::env::home_dir();
                         let folder = self.workspace.host_folder(&caller);
+                        let host = super::mentions::HostFolders {
+                            home: home.as_deref(),
+                            workspace: folder.as_deref(),
+                            triage: self.triage_sessions.as_deref(),
+                        };
                         let expanded = super::mentions::expand(
                             typed,
                             &roots,
-                            home.as_deref(),
-                            folder.as_deref(),
+                            host,
                             runtime,
                             &threads,
                             cap.saturating_sub(in_front),

@@ -1,10 +1,6 @@
-//! "Triage an issue": the operator route a client calls to start an in-app
-//! triage session (`docs/using/triage.mdx`). The backend writes the session
-//! files (machine context and the playbook prompt) under its data folder,
-//! starts fetching the source of its own build, and answers the composer
-//! text that links the prompt file. Shared by the WebUI transport and the
-//! ZLO client; the session writer and the source clone live in the `zlo`
-//! binary.
+//! "Triage an issue" (`docs/using/triage.mdx`): the operator route a client
+//! calls to start an in-app session, whose files the `zlo` binary writes and
+//! whose composer text links the prompt file. Shared by WebUI and the client.
 
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +9,8 @@ pub const OPERATOR_TRIAGE_PATH: &str = "/api/operator/triage";
 /// The file each session's playbook prompt is written to. A composer draft
 /// is a triage draft while it links a file of this name.
 pub const TRIAGE_PROMPT_FILE_NAME: &str = "triage-playbook.md";
+/// The machine context written beside the prompt file in each session.
+pub const TRIAGE_CONTEXT_FILE_NAME: &str = "context.md";
 /// Most characters of one [`TriageClient`] field the backend keeps.
 pub const MAX_TRIAGE_CLIENT_FIELD_CHARS: usize = 80;
 

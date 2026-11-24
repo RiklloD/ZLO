@@ -27,14 +27,25 @@ pub(crate) fn user_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// `1.2.0 (commit 94172fa26c1e)`, or the version alone.
+/// `1.2.0 (commit <full hash>)`, or the version alone. The full hash: it
+/// names the source cache folder and is what the agent checks out.
 pub(crate) fn describe_build(build: &ironclaw_product_contracts::self_update::BuildInfo) -> String {
     match &build.commit {
-        Some(commit) => format!(
-            "{} (commit {})",
-            build.version,
-            commit.chars().take(12).collect::<String>()
-        ),
+        Some(commit) => format!("{} (commit {commit})", build.version),
         None => build.version.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_build_keeps_its_full_commit() {
+        let commit = "94172fa26c1e0b6a9c3d2e1f0a9b8c7d6e5f4a3b";
+        let described =
+            super::describe_build(&ironclaw_product_contracts::self_update::BuildInfo {
+                version: "1.2.0".into(),
+                commit: Some(commit.into()),
+            });
+        assert_eq!(described, format!("1.2.0 (commit {commit})"));
     }
 }

@@ -328,6 +328,10 @@ pub(crate) fn build_product_surface_with_channel_connection(
             runtime.cli_bridge.clone(),
             runtime.native_model_routes(),
             workspace_folders(runtime),
+            // "Triage an issue" sessions (the `zlo` binary writes them).
+            runtime
+                .webui_boot_config()
+                .map(|boot| boot.home().triage_sessions_dir()),
         ),
         None => Arc::new(api) as _,
     };

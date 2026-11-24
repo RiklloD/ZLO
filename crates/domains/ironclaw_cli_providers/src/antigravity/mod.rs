@@ -1613,18 +1613,35 @@ impl TurnRuntime for AntigravityRuntime {
     }
 }
 
+/// ZLO's own Antigravity folder: its profile (unless Hermes's is used),
+/// work folder and transcripts.
+pub fn state_dir(home: &Path) -> PathBuf {
+    home.join(".ironclaw").join("antigravity")
+}
+
+/// The profile (`--gemini-dir`) ZLO runs Antigravity with: the one Hermes
+/// already signed in when there is one, else ZLO's own.
+pub fn profile_dir(home: &Path) -> PathBuf {
+    let hermes_profile = home.join(".hermes/plugin-data/t3code/antigravity/profile");
+    if hermes_profile.is_dir() {
+        hermes_profile
+    } else {
+        state_dir(home).join("profile")
+    }
+}
+
+/// Where the agent keeps its sign-in (`acp_token.json`) under a profile.
+pub fn sign_in_dir(profile_dir: &Path) -> PathBuf {
+    profile_dir.join(launch::APP_DATA_DIR)
+}
+
 /// The default account: the installed agent (native CLI first), the
 /// profile Hermes already signed in when there is one (the plan shares CLI
 /// logins across apps), else IronClaw's own.
 pub async fn default_config(home: &Path) -> Option<AntigravityConfig> {
     let launch = launch::find_agent(home).await?;
-    let hermes_profile = home.join(".hermes/plugin-data/t3code/antigravity/profile");
-    let state = home.join(".ironclaw").join("antigravity");
-    let profile_dir = if hermes_profile.is_dir() {
-        hermes_profile
-    } else {
-        state.join("profile")
-    };
+    let state = state_dir(home);
+    let profile_dir = profile_dir(home);
     Some(AntigravityConfig {
         runtime_id: "antigravity".into(),
         display_name: "Antigravity".into(),

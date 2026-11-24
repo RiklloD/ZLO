@@ -255,6 +255,84 @@ fn host_root(alias: &str, folder: &Path) -> Option<Root> {
     })
 }
 
+/// The two files of one triage session, opened for a mention of its
+/// playbook: `<sessions>/<session>/triage-playbook.md` and the
+/// `context.md` beside it. Not a mention root: only a path exactly one
+/// session folder below `sessions` naming the playbook qualifies, every
+/// level is opened no-follow from `/`, and the sessions folder, the session
+/// folder and both files must be this user's and private (no group or other
+/// access), as the session writer makes them, and the files regular with one
+/// link. A session folder's name is unguessable, so a mention can only name
+/// one the backend prepared and answered to its operator.
+pub(super) fn open_triage_session(
+    sessions: &Path,
+    raw: &str,
+    prompt_name: &str,
+    context_name: &str,
+) -> Result<[Opened; 2], &'static str> {
+    let canonical = std::fs::canonicalize(sessions).map_err(|_| "no triage sessions here")?;
+    let raw = Path::new(raw);
+    let rel = raw
+        .strip_prefix(sessions)
+        .or_else(|_| raw.strip_prefix(&canonical))
+        .map_err(|_| "not a triage session")?;
+    let parts: Vec<&std::ffi::OsStr> = rel
+        .components()
+        .map(|c| match c {
+            Component::Normal(name) => Ok(name),
+            _ => Err("not a triage session"),
+        })
+        .collect::<Result<_, _>>()?;
+    let [session, file] = parts.as_slice() else {
+        return Err("not a triage session");
+    };
+    if *file != prompt_name {
+        return Err("not a triage session");
+    }
+    let me = rustix::process::geteuid().as_raw();
+    let private = |fd: &OwnedFd, want: FileType| -> Result<(), &'static str> {
+        let stat = rustix::fs::fstat(fd).map_err(|_| "unreadable")?;
+        let kind = FileType::from_raw_mode(stat.st_mode);
+        if kind != want {
+            return Err("not a triage session");
+        }
+        if stat.st_uid != me || u32::from(stat.st_mode) & 0o077 != 0 {
+            return Err("triage session is not private to this user");
+        }
+        if want == FileType::RegularFile && stat.st_nlink > 1 {
+            return Err("hard-linked file");
+        }
+        Ok(())
+    };
+    let root = from_anchor(&canonical).ok_or("no triage sessions here")?;
+    private(&root, FileType::Directory)?;
+    let dir = rustix::fs::openat(root.as_fd(), *session, DIR_FLAGS, Mode::empty())
+        .map_err(|_| "not found, or reached through a symlink")?;
+    private(&dir, FileType::Directory)?;
+    let folder = canonical.join(session);
+    let open = |name: &str| -> Result<Opened, &'static str> {
+        let fd = rustix::fs::openat(
+            dir.as_fd(),
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| "not found, or reached through a symlink")?;
+        private(&fd, FileType::RegularFile)?;
+        let size = rustix::fs::fstat(&fd)
+            .map(|s| u64::try_from(s.st_size).unwrap_or(0))
+            .map_err(|_| "unreadable")?;
+        let path = folder.join(name);
+        Ok(Opened {
+            fd,
+            shown: path.clone(),
+            path,
+            size,
+        })
+    };
+    Ok([open(prompt_name)?, open(context_name)?])
+}
+
 /// `(device, inode)` of an open descriptor.
 fn identity(fd: &OwnedFd) -> Option<(u64, u64)> {
     let stat = rustix::fs::fstat(fd).ok()?;

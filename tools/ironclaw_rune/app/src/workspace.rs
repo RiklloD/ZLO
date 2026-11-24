@@ -107,6 +107,9 @@ pub struct WorkspaceState {
     pub draft: Option<draft::DraftState>,
     /// Bumped per new draft, so a late attach never lands in a newer one.
     pub draft_opens: jobs::Generation,
+    /// The new-thread draft's triage state while it is a triage draft;
+    /// kept across a switch to another computer (`triage::carry`).
+    pub(crate) triage: Option<triage::TriageDraft>,
     /// The ⌘K menu while open.
     pub command: Option<command::CommandMenu>,
     pub command_opens: u64,
@@ -158,6 +161,7 @@ impl Default for WorkspaceState {
             drafts: Default::default(),
             draft: None,
             draft_opens: Default::default(),
+            triage: None,
             command: None,
             command_opens: 0,
             message_search: Default::default(),
@@ -295,15 +299,57 @@ pub(crate) fn connected(
     crate::onboarding::decide(s);
     start_polling(s);
     status::start(s);
-    // An unsent triage draft follows the computer it now talks to.
-    triage::connected(s);
+    // An unsent triage draft follows the computer it now talks to, and
+    // stays on screen instead of the last thread opened there.
+    let triage_draft = triage::connected(s);
     // Plugins' slots: read once per connection, again on lifecycle changes.
     crate::plugins::refresh_slots(s);
+    if triage_draft {
+        return;
+    }
     let reopen = reopen.filter(|id| s.workspace.inbox.row(id).is_some());
     match reopen.or_else(|| inbox::first_open(s)) {
         Some(first) => open_thread(s, first),
         // Nothing open: a fresh draft in the default profile.
         None => start_in_profile(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into()),
+    }
+}
+
+/// The app is leaving its computer: an unsent triage draft is kept for the
+/// next one (`remote::connect::reset_for_switch`, before the draft goes).
+pub(crate) fn carry_triage(s: &mut State) {
+    triage::carry(s);
+}
+
+/// ⌘K "Triage an issue", and its reply landing (tests drive the switch).
+#[cfg(test)]
+pub(crate) mod triage_test {
+    use super::*;
+
+    pub(crate) fn start(s: &mut State) {
+        triage::start(s);
+    }
+
+    /// The prepare reply for the open draft, as asked of `computer` (the
+    /// one in use when `None`).
+    pub(crate) fn land(
+        s: &mut State,
+        computer: Option<&str>,
+        result: Result<zlo_client::triage_calls::PrepareTriageResponse, zlo_client::ClientError>,
+    ) {
+        let Some(generation) = s.workspace.draft.as_ref().map(|d| d.generation) else {
+            return;
+        };
+        let computer = computer.map_or_else(|| s.onboarding.computer.key(), str::to_string);
+        triage::prepared(s, generation, &computer, result);
+    }
+
+    pub(crate) fn send_block(s: &State) -> Option<String> {
+        triage::send_block(s)
+    }
+
+    pub(crate) fn is_ready(s: &State) -> bool {
+        matches!(triage::link(s), Some(triage::Link::Ready { .. }))
     }
 }
 

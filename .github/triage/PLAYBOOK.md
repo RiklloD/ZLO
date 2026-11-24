@@ -88,7 +88,9 @@ Then work from evidence, not assumption. In rough order of value:
   redacted zip; review it with them before anything leaves the machine.
 - For problems with a coding-agent runtime (Claude Code, Codex, Antigravity,
   Muse): the runtime state folders from the context file, and the backend logs
-  for that runtime's start-up and sign-in.
+  for that runtime's start-up and sign-in. Those folders hold each runtime's
+  credentials: never open them (step 9). Check sign-in with the CLI's own
+  status command, or ask the user.
 - The libSQL database. Read it freely, but only write when a write is necessary
   to fix the problem the user described, and get their explicit permission
   before any write.
@@ -164,10 +166,23 @@ of `main` for that work, never the commit-pinned diagnosis clone.
 
 ## 9. Redact
 
-Never read the secrets named in the context file. Scrub anything you quote in an
-issue or comment: API keys, tokens, the WebUI token, pairing codes, device
-tokens, Tailscale names and addresses, and the user's home directory path. When
-in doubt, leave it out.
+Never read, print, copy, or upload the secrets the context file lists, not even
+to check that they exist. That covers ZLO's own (the WebUI token, the secrets
+master key, its Keychain items, the encrypted secret records in the database)
+and every coding-agent runtime's credentials:
+
+- Claude Code: `.credentials.json` in its config folder, and the Keychain item
+  `Claude Code-credentials`.
+- Codex: `auth.json` in `CODEX_HOME` (`~/.codex`).
+- Antigravity: `oauth_creds.json` and the `antigravity-acp` sign-in folder in
+  each Antigravity profile (`~/.gemini`, ZLO's own, or the one Hermes signed
+  in), and the Keychain items `gemini` and `antigravity`.
+- Muse Code: what `muse login` writes, and any auth, token or credentials file
+  in its state folder.
+
+Scrub anything you quote in an issue or comment: API keys, tokens, the WebUI
+token, pairing codes, device tokens, Tailscale names and addresses, and the
+user's home directory path. When in doubt, leave it out.
 
 ## 10. Prefer duplicates over new issues
 

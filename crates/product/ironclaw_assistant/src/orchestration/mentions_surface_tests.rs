@@ -485,3 +485,189 @@ async fn the_workspace_index_view_walks_the_inner_listings() {
         .unwrap_err();
     assert_eq!(malformed.status_code, 400, "{malformed:?}");
 }
+
+/// A CLI runtime that records the text of each turn it is asked to start.
+#[derive(Default)]
+struct Capturing {
+    turns: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl TurnRuntime for Capturing {
+    fn id(&self) -> RuntimeId {
+        RuntimeId::new("claude-cli").unwrap()
+    }
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities::default()
+    }
+    async fn create_thread(&self, _: CreateThread) -> Result<CreatedThread, RuntimeError> {
+        Err(RuntimeError::Unsupported("create"))
+    }
+    async fn start_turn(
+        &self,
+        _: &ThreadRecord,
+        input: TurnInput,
+    ) -> Result<TurnAdmission, RuntimeError> {
+        self.turns.lock().unwrap().push(input.text);
+        Ok(TurnAdmission::Busy)
+    }
+    async fn steer(
+        &self,
+        _: &ThreadRecord,
+        _: &str,
+        _: SteerHow,
+    ) -> Result<SteerOutcome, RuntimeError> {
+        Err(RuntimeError::Unsupported("steer"))
+    }
+    async fn cancel(&self, _: &ThreadRecord, _: &str) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+    async fn history(
+        &self,
+        _: &ThreadRecord,
+        _: usize,
+    ) -> Result<Vec<HistoryMessage>, RuntimeError> {
+        Ok(Vec::new())
+    }
+}
+
+/// A triage session as the `zlo` session writer leaves it: a private,
+/// unguessably named folder with two private files.
+#[cfg(unix)]
+fn triage_session(sessions: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let private = |path: &std::path::Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    std::fs::create_dir_all(sessions).unwrap();
+    private(sessions, 0o700);
+    let session = sessions.join(name);
+    std::fs::create_dir(&session).unwrap();
+    private(&session, 0o700);
+    for (file, body) in [
+        ("triage-playbook.md", "SEED-AND-PLAYBOOK-BODY"),
+        ("context.md", "MACHINE-CONTEXT-BODY"),
+    ] {
+        std::fs::write(session.join(file), body).unwrap();
+        private(&session.join(file), 0o600);
+    }
+    session.join("triage-playbook.md")
+}
+
+/// "Triage an issue" from a remote client: the message links the playbook
+/// of a session the backend prepared and sends no mention root. The first
+/// turn carries the playbook and the machine context inline for a native
+/// model (IronClaw's loop) and for a CLI runtime alike, outside the
+/// untrusted-content wrapper; the typed text stays as sent. The sessions
+/// folder is not a root: nothing else under it, nor a look-alike elsewhere,
+/// nor a session that is not private, expands.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_triage_link_reaches_native_and_cli_models_on_the_first_turn() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = dir.path().join("zlo/triage");
+    let playbook = triage_session(
+        &sessions,
+        "2026-11-24T09-30-05-000Z-0123456789abcdef0123456789abcdef",
+    );
+    let link = |path: &std::path::Path| {
+        MentionUri::File {
+            path: path.to_string_lossy().into_owned(),
+            line_range: None,
+        }
+        .to_link("triage-playbook.md")
+    };
+    let typed = format!(
+        "Read {} and follow it. agy will not sign in",
+        link(&playbook)
+    );
+
+    let engine = engine(dir.path()).await;
+    let owner = ProductSurfaceCaller::new(
+        TenantId::new("t").unwrap(),
+        UserId::new("owner").unwrap(),
+        Some(AgentId::new("agent").unwrap()),
+        None,
+    );
+    let record = ThreadRecord::new(
+        ThreadId::new("cli-triage").unwrap(),
+        scope_of(&owner),
+        RuntimeId::new("claude-cli").unwrap(),
+    );
+    engine.store().ensure_thread(&record).await.unwrap();
+    let cli = Arc::new(Capturing::default());
+    engine.register_runtime(cli.clone());
+    let inner = Arc::new(Recording::default());
+    let surface = OrchestratedProductSurface::new(inner.clone(), Arc::clone(&engine), None)
+        .with_triage_sessions(Some(sessions.clone()));
+
+    let assert_first_turn = |text: &str, who: &str| {
+        assert_eq!(strip_mention_context(text), typed, "{who}: typed text kept");
+        let context = &text[text.find(MENTION_CONTEXT_OPEN).expect("context")..];
+        let playbook_at = context.find("SEED-AND-PLAYBOOK-BODY").expect(who);
+        assert!(context.contains("MACHINE-CONTEXT-BODY"), "{who}: {context}");
+        assert!(
+            context
+                .find("EXTERNAL, UNTRUSTED")
+                .is_none_or(|at| at > playbook_at),
+            "{who}: the host's own files are not wrapped as untrusted: {context}"
+        );
+    };
+
+    // IronClaw's loop (a native model): the inner surface's turn.
+    surface
+        .invoke(owner.clone(), submit("t-current", &typed, Vec::new()))
+        .await
+        .unwrap();
+    let sent = inner.submits.lock().unwrap()[0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_first_turn(&sent, "native");
+
+    // A CLI runtime: the turn the engine starts.
+    surface
+        .invoke(owner.clone(), submit("cli-triage", &typed, Vec::new()))
+        .await
+        .unwrap();
+    let turns = cli.turns.lock().unwrap().clone();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    assert_first_turn(&turns[0], "cli");
+
+    // Not a root: a look-alike elsewhere, a deeper path, a session that is
+    // not private, and a backend without the folder all read nothing.
+    let elsewhere = triage_session(&dir.path().join("other"), "s");
+    let deeper = triage_session(&sessions.join("nested"), "s");
+    let open = triage_session(&sessions, "open-session");
+    std::fs::set_permissions(
+        open.parent().unwrap(),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    for path in [&elsewhere, &deeper, &open] {
+        let typed = format!("Read {} and follow it.", link(path));
+        surface
+            .invoke(owner.clone(), submit("t-current", &typed, Vec::new()))
+            .await
+            .unwrap();
+        let sent = inner.submits.lock().unwrap().last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            !sent.contains("SEED-AND-PLAYBOOK-BODY"),
+            "{}: {sent}",
+            path.display()
+        );
+    }
+    let bare = OrchestratedProductSurface::new(inner.clone(), engine, None);
+    bare.invoke(owner, submit("t-current", &typed, Vec::new()))
+        .await
+        .unwrap();
+    let sent = inner.submits.lock().unwrap().last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!sent.contains("SEED-AND-PLAYBOOK-BODY"), "{sent}");
+}

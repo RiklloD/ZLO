@@ -66,6 +66,7 @@ pub use doctor::RebornDoctorReport;
 pub use home::{
     DEFAULT_HOME_DIR_NAME, DESKTOP_APP_LOG_RELATIVE_PATH, DESKTOP_BACKEND_PID_FILE,
     LEGACY_REBORN_HOME_ENV, REBORN_HOME_ENV, RebornConfigError, RebornHome, RebornHomeSource,
+    TRIAGE_SESSIONS_DIR,
 };
 pub use home_migration::{
     HomeMigration, MIGRATION_PENDING_MARKER, legacy_home_path, migrate_legacy_home,

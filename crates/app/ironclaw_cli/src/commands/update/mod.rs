@@ -21,6 +21,8 @@
 //! no input at all.
 
 mod git;
+/// Also validates the triage source cache's commits (`crate::triage::source`).
+pub(crate) use git::is_full_hash;
 mod job;
 mod records;
 mod service;

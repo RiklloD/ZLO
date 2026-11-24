@@ -5,7 +5,9 @@
 //! Works when the app or the backend will not start — that is its point: it
 //! reads no config file, opens no database, and starts no runtime. It only
 //! resolves the home from the environment (without the legacy-home move),
-//! writes `<ZLO_HOME>/triage/<time>/`, and runs the agent there.
+//! writes `<ZLO_HOME>/triage/<time>-<random>/`, and runs the agent there. A
+//! broken setting it can work around (an unknown `ZLO_PROFILE`) does not
+//! stop it: the session is written and the problem is listed in its context.
 
 use std::ffi::OsStr;
 use std::io::{BufRead, IsTerminal as _, Write};
@@ -13,7 +15,8 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
 
-use crate::context::RebornCliContext;
+use ironclaw_config::{RebornHome, RebornProfile};
+
 use crate::triage::prompt::{TriageEntry, TriagePaths, launch_prompt};
 use crate::triage::session::{
     PidFileState, SessionInput, TriageSession, describe_backend, is_zlo_process, read_pid_file,
@@ -137,12 +140,70 @@ fn pick_agent_on_terminal(agents: &[&'static TriageAgent]) -> anyhow::Result<Opt
 
 /// The executable `command` on `path` (a `PATH` value), as an absolute
 /// path: the agent starts in the session folder, where a relative `PATH`
-/// entry would point somewhere else.
-pub(crate) fn find_on_path(command: &str, path: &OsStr, cwd: &Path) -> Option<PathBuf> {
+/// entry would point somewhere else. `extensions` are tried in order after
+/// the bare name (Windows' `PATHEXT`; none elsewhere).
+pub(crate) fn find_on_path(
+    command: &str,
+    path: &OsStr,
+    cwd: &Path,
+    extensions: &[String],
+) -> Option<PathBuf> {
+    let names: Vec<String> = std::iter::once(command.to_string())
+        .chain(extensions.iter().map(|ext| format!("{command}{ext}")))
+        .collect();
     std::env::split_paths(path)
         .filter(|dir| !dir.as_os_str().is_empty())
-        .map(|dir| cwd.join(dir).join(command))
+        .flat_map(|dir| names.iter().map(move |name| cwd.join(&dir).join(name)))
         .find(|candidate| is_executable(candidate))
+}
+
+/// Executable extensions: Windows' `PATHEXT` (`.COM;.EXE;.BAT;.CMD` when
+/// unset), nothing elsewhere.
+pub(crate) fn executable_extensions(pathext: Option<&OsStr>) -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    pathext
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into())
+        .split(';')
+        .map(str::trim)
+        .filter(|ext| ext.starts_with('.'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The profile from `ZLO_PROFILE`, else the default with a line for the
+/// context saying why: triage must start even when that setting is broken.
+pub(crate) fn profile_or_diagnostic(
+    value: Option<std::ffi::OsString>,
+) -> (RebornProfile, Option<String>) {
+    let shown = value
+        .as_ref()
+        .map(|v| v.to_string_lossy().chars().take(80).collect::<String>());
+    match RebornProfile::from_env_value(value) {
+        Ok(profile) => (profile, None),
+        Err(_) => {
+            let fallback = RebornProfile::default();
+            (
+                fallback,
+                Some(format!(
+                    "`{}` is set to `{}`, which is not a ZLO profile, so other `zlo` commands \
+                     refuse to start. The paths below assume the default profile ({}). Valid \
+                     values: {}.",
+                    ironclaw_config::REBORN_PROFILE_ENV,
+                    shown.unwrap_or_default().replace('`', "'"),
+                    fallback.as_str(),
+                    RebornProfile::all()
+                        .iter()
+                        .map(|p| p.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            )
+        }
+    }
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -169,11 +230,22 @@ fn describe_files(session: &TriageSession) -> Vec<String> {
 }
 
 impl TriageCommand {
-    pub(crate) fn execute(self, context: RebornCliContext) -> anyhow::Result<()> {
-        let boot = context.boot_config();
-        let home = boot.home();
+    /// Resolves the home on its own (no legacy-home move, no config file)
+    /// and the profile leniently, then runs.
+    pub(crate) fn execute_from_env(self) -> anyhow::Result<()> {
+        let home = RebornHome::resolve_from_env_without_migrating()?;
+        let (profile, diagnostic) = profile_or_diagnostic(ironclaw_config::profile_env_value());
+        self.execute(&home, profile, diagnostic.into_iter().collect())
+    }
+
+    fn execute(
+        self,
+        home: &RebornHome,
+        profile: RebornProfile,
+        diagnostics: Vec<String>,
+    ) -> anyhow::Result<()> {
         let user_home = crate::triage::user_home().unwrap_or_else(|| home.path().to_path_buf());
-        let paths = TriagePaths::derive(home, boot.profile(), &user_home);
+        let paths = TriagePaths::derive(home, profile, &user_home);
         let build = crate::commands::update::current_build();
         let launched_as = std::env::current_exe()
             .map(|exe| format!("{} triage", exe.display()))
@@ -192,6 +264,7 @@ impl TriageCommand {
             entry: &entry,
             server,
             source_clone: None,
+            diagnostics: &diagnostics,
             now: chrono::Utc::now(),
         })?;
         if let PidFileState::Unreadable(reason) = &pid_file {
@@ -200,9 +273,15 @@ impl TriageCommand {
 
         let path = std::env::var_os("PATH").unwrap_or_default();
         let cwd = std::env::current_dir()?;
+        let extensions = executable_extensions(std::env::var_os("PATHEXT").as_deref());
         let installed: Vec<(&'static TriageAgent, PathBuf)> = TRIAGE_AGENTS
             .iter()
-            .filter_map(|agent| Some((agent, find_on_path(agent.command, &path, &cwd)?)))
+            .filter_map(|agent| {
+                Some((
+                    agent,
+                    find_on_path(agent.command, &path, &cwd, &extensions)?,
+                ))
+            })
             .collect();
 
         let selected = match self.agent {
@@ -356,12 +435,65 @@ mod tests {
             std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod");
             std::fs::write(bin.join("claude"), "not executable").expect("write");
-            assert_eq!(find_on_path("claude", OsStr::new("bin"), tmp.path()), None);
+            assert_eq!(
+                find_on_path("claude", OsStr::new("bin"), tmp.path(), &[]),
+                None
+            );
         }
         assert_eq!(
-            find_on_path("codex", OsStr::new("bin"), tmp.path()),
+            find_on_path("codex", OsStr::new("bin"), tmp.path(), &[]),
             Some(tmp.path().join("bin").join("codex"))
         );
-        assert_eq!(find_on_path("agy", OsStr::new("bin"), tmp.path()), None);
+        assert_eq!(
+            find_on_path("agy", OsStr::new("bin"), tmp.path(), &[]),
+            None
+        );
+    }
+
+    /// Windows names executables by extension (`codex.CMD` from npm): the
+    /// bare name is tried first, then each `PATHEXT` extension in order.
+    #[test]
+    fn pathext_extensions_resolve_after_the_bare_name() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).expect("bin");
+        let agent = bin.join("codex.CMD");
+        std::fs::write(&agent, "@echo off\r\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        let exts = [".EXE".to_string(), ".CMD".to_string()];
+        assert_eq!(
+            find_on_path("codex", OsStr::new("bin"), tmp.path(), &exts),
+            Some(agent)
+        );
+        assert_eq!(
+            find_on_path("codex", OsStr::new("bin"), tmp.path(), &[]),
+            None
+        );
+        if cfg!(windows) {
+            assert_eq!(
+                executable_extensions(Some(OsStr::new(".EXE; .CMD;junk"))),
+                exts
+            );
+        } else {
+            assert!(executable_extensions(Some(OsStr::new(".EXE"))).is_empty());
+        }
+    }
+
+    #[test]
+    fn an_unknown_profile_falls_back_with_a_diagnostic() {
+        let (profile, diagnostic) = profile_or_diagnostic(Some("no-such`profile".into()));
+        assert_eq!(profile, RebornProfile::default());
+        let diagnostic = diagnostic.expect("a diagnostic");
+        assert!(diagnostic.contains("ZLO_PROFILE"), "{diagnostic}");
+        assert!(diagnostic.contains("no-such'profile"), "{diagnostic}");
+        assert_eq!(
+            profile_or_diagnostic(None),
+            (RebornProfile::default(), None)
+        );
     }
 }

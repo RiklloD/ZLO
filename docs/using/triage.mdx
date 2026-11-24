@@ -18,8 +18,12 @@ source of the backend's build.
 
 Triage runs on the computer the app is connected to; the line under the question
 names it. If you switch to another computer before you send, the draft moves there:
-that computer prepares its own session and the link changes. The agent runs inside
-that ZLO backend, so it gives you any restart steps and does not do them itself.
+that computer prepares its own session and the link changes. Send waits until the
+link points at a session on the computer you are on; if that computer cannot prepare
+one, the draft says so and points you at `zlo triage`. Any model works: the playbook
+and the machine facts are part of your first message, so a model without file access
+gets them too. The agent runs inside that ZLO backend, so it gives you any restart
+steps and does not do them itself.
 
 ## In a terminal
 
@@ -45,15 +49,19 @@ If none of the three is installed, `zlo triage` prints where it wrote the prompt
 can paste it into any coding agent.
 
 `zlo triage` reads no configuration and opens no database, so it works when the
-backend will not start. Its files go to `~/.zlo/triage/<time>/` (`context.md` with the
-machine facts, `triage-playbook.md` with the instructions), and the agent fetches
-source into `~/.zlo/source/`.
+backend will not start, and a setting it can work around (such as an unknown
+`ZLO_PROFILE`) is listed in the session for the agent instead of stopping it. Each
+session gets its own private folder, `~/.zlo/triage/<time>-<random>/` (`context.md`
+with the machine facts, `triage-playbook.md` with the instructions), and the agent
+fetches source into `~/.zlo/source/`. The in-app entry runs `git` for that fetch with
+your git configuration, hooks, and credential helpers switched off, over https only.
 
 ## What the agent follows
 
 The playbook is [`.github/triage/PLAYBOOK.md`](https://github.com/RiklloD/ZLO/blob/main/.github/triage/PLAYBOOK.md).
 The agent checks for a newer copy on `main` first, never reads your secrets (the
-WebUI token, the secrets master key, Keychain items), redacts tokens and your home
+WebUI token, the secrets master key, Keychain items) or any coding agent's sign-in
+(Claude Code, Codex, Antigravity, Muse), redacts tokens and your home
 folder from anything it quotes, prefers commenting on an existing issue over filing a
 duplicate, and shows you the complete issue text before posting it with the
 **Triage report** issue template.

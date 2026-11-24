@@ -1466,8 +1466,13 @@ pub fn find_binary(home: &Path) -> Option<PathBuf> {
     rpc::find_on_path(home, "muse")
 }
 
+/// ZLO's Muse Code folder: its work folder and state.
+pub fn state_dir(home: &Path) -> PathBuf {
+    home.join(".ironclaw").join("muse-code")
+}
+
 pub fn default_config(home: &Path, binary: &Path) -> MuseConfig {
-    let state = home.join(".ironclaw").join("muse-code");
+    let state = state_dir(home);
     MuseConfig {
         runtime_id: "muse-code".into(),
         display_name: "Muse Code".into(),

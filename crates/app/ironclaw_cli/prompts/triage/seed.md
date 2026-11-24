@@ -7,4 +7,3 @@ Machine facts (versions, OS, paths, backend liveness) are in the triage context 
 {first_step}
 
 ---
-

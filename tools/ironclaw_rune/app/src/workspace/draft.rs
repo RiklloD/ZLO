@@ -303,6 +303,43 @@ pub fn start_in_profile(s: &mut State, profile: String) {
     record(s);
 }
 
+/// Put a draft carried from another computer back as the new-thread draft
+/// (triage's switch, `super::triage::connected`) and show it. Its profile
+/// falls back to the default when this computer has no such profile.
+/// Answers the new draft's generation.
+pub(super) fn restore(
+    s: &mut State,
+    profile: String,
+    text: &str,
+    pills: &[(std::ops::Range<usize>, String)],
+    staged: Vec<StagedFile>,
+    worktree: Option<bool>,
+) -> Generation {
+    let known = s
+        .workspace
+        .inbox
+        .list
+        .profiles
+        .iter()
+        .any(|p| p.profile_id == profile);
+    let profile = if known {
+        profile
+    } else {
+        DEFAULT_PROFILE_ID.into()
+    };
+    let mut draft = empty_draft(&profile);
+    draft.staged = staged;
+    draft.worktree = worktree;
+    inline_files::set_content(&mut draft.input, text, pills);
+    let generation = s.workspace.draft_opens.bump();
+    draft.generation = generation;
+    s.workspace.draft = Some(draft);
+    load_menu(s, generation);
+    open(s);
+    // Saved once this computer's session is linked (`triage::prepared`).
+    generation
+}
+
 /// Drop the unsent new-thread draft (text, files, profile). An open
 /// new-thread screen starts over empty.
 pub(super) fn discard_new_draft(s: &mut State) {
@@ -508,7 +545,8 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     };
     let name = profile_name(s);
     let triage = super::triage::is_triage_draft(s);
-    let ready = send_ready(draft);
+    // A triage draft sends only once its chip links this computer's session.
+    let ready = send_ready(draft) && super::triage::send_block(s).is_none();
     let fresh = draft.fresh;
     // The chat composer's own controls, so the card that flies to the
     // chat's dock on send is one component.

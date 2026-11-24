@@ -167,11 +167,10 @@ impl Command {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)
             }
             Self::Triage(command) => {
-                // Read-only resolution: no legacy-home move, no config file,
-                // so triage still starts when the install is broken.
-                command.execute(
-                    crate::context::RebornCliContext::resolve_from_env_without_migrating()?,
-                )
+                // Its own lenient resolution: no legacy-home move, no config
+                // file, and a broken `ZLO_PROFILE` is reported in the session
+                // instead of stopping it, so triage starts on a broken install.
+                command.execute_from_env()
             }
             Self::Update(command) => {
                 command.execute(crate::context::RebornCliContext::resolve_from_env()?)

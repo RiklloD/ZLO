@@ -230,3 +230,42 @@ fn an_agent_on_a_relative_path_entry_starts_from_the_session_folder() {
     assert_eq!(output.status.code(), Some(1), "{}", text(&output));
     assert!(text(&output).contains("Codex exited with code 1."));
 }
+
+/// A broken `ZLO_PROFILE` makes every other command refuse to start; triage
+/// still writes its session and lists the problem for the agent.
+#[test]
+fn a_malformed_profile_is_a_diagnostic_not_a_failure() {
+    let fixture = Fixture::new(&[]);
+    let output = fixture
+        .command(&[])
+        .env("ZLO_PROFILE", "not-a-profile")
+        .output()
+        .expect("run");
+    assert!(output.status.success(), "{}", text(&output));
+    let all = text(&output);
+    let prompt = all
+        .lines()
+        .map(str::trim)
+        .find(|line| line.ends_with("triage-playbook.md"))
+        .expect("the prompt file is named");
+    let context = std::fs::read_to_string(Path::new(prompt).with_file_name("context.md"))
+        .expect("context written");
+    assert!(
+        context.contains("## Problems found while starting triage"),
+        "{context}"
+    );
+    assert!(
+        context.contains("`ZLO_PROFILE` is set to `not-a-profile`"),
+        "{context}"
+    );
+    assert!(
+        context.contains(
+            &fixture
+                .path()
+                .join("zlo home/local-dev")
+                .display()
+                .to_string()
+        ),
+        "default-profile paths: {context}"
+    );
+}

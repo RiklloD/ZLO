@@ -65,7 +65,7 @@ pub(crate) const NEEDS_COMPUTER: &str = "Add a computer to work on.";
 
 /// How the app waits: a full connecting screen, or the old screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Mode {
+pub(super) enum Mode {
     Fresh,
     Switch,
     /// The same computer over a better route: nothing on screen changes,
@@ -577,7 +577,7 @@ fn problem_of(computer: &Computer, e: &ClientError) -> Problem {
 /// reloads on the new one. `tx` is the reply's commit, which
 /// `workspace::connected` animates when it replaces the launch screen.
 #[allow(clippy::too_many_arguments)]
-fn switched(
+pub(super) fn switched(
     s: &mut State,
     mode: Mode,
     backend: Backend,
@@ -651,6 +651,8 @@ pub(crate) fn adopt(s: &mut State, computer: Computer, descriptor: Option<Enviro
 pub(crate) fn reset_for_switch(s: &mut State) {
     s.chat = None;
     s.pages = Default::default();
+    // An unsent triage draft moves to the next computer instead.
+    crate::workspace::carry_triage(s);
     s.workspace.draft = None;
     s.workspace.telemetry = None;
     s.workspace.titles = Default::default();

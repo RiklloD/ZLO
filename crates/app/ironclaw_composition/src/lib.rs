@@ -19,6 +19,8 @@
 use std::sync::Arc;
 
 mod admin_secrets;
+/// Where each agent runtime keeps its state and sign-in, for `zlo triage`.
+pub mod agent_runtime_paths;
 #[cfg(test)]
 mod approval_test_support;
 mod automation;

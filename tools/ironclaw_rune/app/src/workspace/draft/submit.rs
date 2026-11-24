@@ -111,6 +111,13 @@ pub(super) fn send_with(s: &mut State, voice: Option<crate::voice::Submission>) 
     if let Some(why) = refusal(s.workspace.draft.as_ref()) {
         return refuse(s, why);
     }
+    // A triage draft waits for the computer in use to prepare its session.
+    if let Some(why) = super::super::triage::send_block(s) {
+        if let Some(draft) = s.workspace.draft.as_mut() {
+            draft.error = Some(why.clone());
+        }
+        return refuse(s, &why);
+    }
     if let Some(Err(why)) = s
         .workspace
         .draft

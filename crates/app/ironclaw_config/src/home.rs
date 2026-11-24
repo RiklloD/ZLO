@@ -26,6 +26,10 @@ pub const DESKTOP_APP_LOG_RELATIVE_PATH: &str = "Library/Logs/ZLO/rune.log";
 /// started (`zlo-backend serve`); present only while that backend runs.
 pub const DESKTOP_BACKEND_PID_FILE: &str = "zlo-backend.pid";
 
+/// Folder in the state root holding triage sessions
+/// ([`RebornHome::triage_sessions_dir`]).
+pub const TRIAGE_SESSIONS_DIR: &str = "triage";
+
 const V1_BASE_DIR_ENV: &str = "IRONCLAW_BASE_DIR";
 
 /// Source used to resolve [`RebornHome`].
@@ -250,6 +254,12 @@ impl RebornHome {
     /// from the desktop app's backend and the launchd service.
     pub fn logs_dir(&self) -> PathBuf {
         self.path.join("logs")
+    }
+
+    /// Folder of triage sessions (`zlo triage`, "Triage an issue"): one
+    /// private folder per session holding its context and playbook prompt.
+    pub fn triage_sessions_dir(&self) -> PathBuf {
+        self.path.join(TRIAGE_SESSIONS_DIR)
     }
 
     /// The desktop app's backend pid file (see [`DESKTOP_BACKEND_PID_FILE`]).

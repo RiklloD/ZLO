@@ -62,8 +62,9 @@ use ironclaw_product_contracts::surface::ProductSurface;
 /// returned; `cli_bridge` streams CLI threads and answers their tool-call
 /// approvals; `routes` lists the other providers a thread may run on;
 /// `workspace` names the host folder of each caller's `/workspace`, which
-/// `@`-mentions of workspace paths read from. Falls back to `inner` when the
-/// runtime cannot be built.
+/// `@`-mentions of workspace paths read from; `triage_sessions` is the
+/// backend's triage folder, whose prepared sessions a playbook link brings
+/// inline. Falls back to `inner` when the runtime cannot be built.
 pub fn orchestrate(
     engine: &Arc<Engine>,
     inner: Arc<dyn ProductSurface>,
@@ -71,6 +72,7 @@ pub fn orchestrate(
     cli_bridge: Option<Arc<CliBridge>>,
     routes: Option<Arc<dyn NativeModelRoutes>>,
     workspace: Arc<dyn WorkspaceFolders>,
+    triage_sessions: Option<std::path::PathBuf>,
 ) -> Arc<dyn ProductSurface> {
     match AgentLoopRuntime::new(Arc::clone(&inner), session_extension_id, routes) {
         Ok(agent_loop) => engine.register_runtime(Arc::new(agent_loop)),
@@ -83,7 +85,8 @@ pub fn orchestrate(
     engine.start(std::time::Duration::from_secs(2));
     let surface: Arc<dyn ProductSurface> = Arc::new(
         OrchestratedProductSurface::new(inner, Arc::clone(engine), cli_bridge)
-            .with_workspace_folders(workspace),
+            .with_workspace_folders(workspace)
+            .with_triage_sessions(triage_sessions),
     );
     inbox::title_on_completion(engine, &surface);
     surface

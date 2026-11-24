@@ -228,7 +228,7 @@ the handler.
 
 | Route | Rate limit | Result |
 |---|---|---|
-| `POST /api/operator/triage` | 10/min per caller | Body `PrepareTriageRequest` (the client's label, app version and OS; each field cut to one line of at most 80 characters here, empty dropped). The port writes `<ZLO_HOME>/triage/<time>/{context.md,triage-playbook.md}`, starts fetching the source of the backend's own build in the background, and the route answers `PrepareTriageResponse`: the composer text linking the prompt file as a file mention, and the backend's version. `400 invalid_request` for a malformed body; `503 triage_unavailable` when the session files could not be written. |
+| `POST /api/operator/triage` | 10/min per caller | Body `PrepareTriageRequest` (the client's label, app version and OS; each field cut to one line of at most 80 characters here, empty dropped). The port writes a new private session folder `<ZLO_HOME>/triage/<time>-<random>/{context.md,triage-playbook.md}` (0700, files 0600 created exclusively; the client fields land there as labelled untrusted data), starts fetching the source of the backend's own build in the background (isolated git, coordinated across processes by a lock), and the route answers `PrepareTriageResponse`: the composer text linking the prompt file as a file mention, and the backend's version. `400 invalid_request` for a malformed body; `503 triage_unavailable` when the session files could not be written. |
 
 Tests: `tests/triage_routes.rs` (operator-only, the bounded client reaching
 the port, the prompt read back, `400`, `413`, `503`); the port's real

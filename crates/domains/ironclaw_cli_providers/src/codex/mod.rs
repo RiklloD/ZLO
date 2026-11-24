@@ -1406,11 +1406,17 @@ pub fn find_binary(home: &Path) -> Option<PathBuf> {
     rpc::find_on_path(home, "codex")
 }
 
+/// The Codex CLI's own folder (`CODEX_HOME`, else `~/.codex`), which holds
+/// its sign-in (`auth.json`).
+pub fn codex_home(home: &Path) -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"))
+}
+
 pub fn default_config(home: &Path, binary: &Path) -> CodexConfig {
     let state = state_dir(home);
-    let codex_home = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".codex"));
+    let codex_home = codex_home(home);
     CodexConfig {
         runtime_id: "codex".into(),
         display_name: "Codex CLI".into(),
