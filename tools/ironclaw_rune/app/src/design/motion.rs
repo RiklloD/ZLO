@@ -21,7 +21,7 @@
 //! | `dock.rs` composer hand-off | `El::matched(COMPOSER_MATCH)` on both composers ([`COMPOSER_MATCH`]) |
 //! | `flip.rs` resorted rows / sliding pills | keyed inbox rows on `.motion(ROW_RESORT)`; the side dock's tab pill on `.motion(PILL)` |
 //! | `pulse.rs` shared 30 Hz loop clock | `El::looping` / `El::cycle` (one render clock, frames only while visible) |
-//! | `smooth_scroll.rs` wheel glide | Rune glides notched wheels natively (Chromium curve, whole device pixels, retargeted mid-ease, chained across nested viewports); ZLO's Rune marks every macOS line delta a notch, so no viewport needs a wrapper and trackpads stay 1:1 |
+//! | `smooth_scroll.rs` wheel glide | Rune glides notched wheels natively (Chromium curve, whole device pixels, retargeted mid-ease, chained across nested viewports); upstream Rune marks only Windows and Linux whole-line deltas as notches, so a macOS mouse wheel scrolls in steps until anomalyco/rune#2015 lands (no wrapper: one taking `&mut State` rebuilt the view per wheel event); trackpads stay 1:1 |
 //!
 //! Reduced motion (the battery saver, `prefs.reduce_motion`) is one switch
 //! for all of it: `look::apply_motion` sets `Cx::reduced_motion`, under which

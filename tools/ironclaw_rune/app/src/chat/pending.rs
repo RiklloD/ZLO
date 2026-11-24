@@ -38,6 +38,9 @@ pub fn render_working(s: &State, stopping: bool, since: Option<Instant>, clock: 
                 // Live text: each tick repaints the label in a box sized for
                 // the widest it gets before the line is built again
                 // (`clock_view`).
+                // Upstream Rune's accessibility tree only refreshes on a
+                // commit, so VoiceOver reads the time as of the last rebuild
+                // until anomalyco/rune#2015 lands.
                 .child(
                     text(clock_placeholder(secs))
                         .live_text(clock)

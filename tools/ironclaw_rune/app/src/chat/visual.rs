@@ -89,10 +89,10 @@ pub(crate) fn markdown_style(s: &State, k: &Kit) -> MarkdownStyle {
 
 /// The streamed words' fade-in, in seconds. Each fade keeps the window
 /// drawing at the display's full rate (120 Hz on ProMotion) for as long as
-/// words keep arriving, which was most of ZLO's energy while a reply
-/// streamed; the pacer already lands the reply word by word, so with the
-/// window in the background, the battery saver engaged or motion reduced,
-/// words land without it.
+/// words keep arriving (upstream Rune has no capped clock for word fades
+/// yet, anomalyco/rune#2015); the pacer already lands the reply word by
+/// word, so with the window in the background, the battery saver engaged or
+/// motion reduced, words land without it.
 fn word_fade(s: &State) -> f32 {
     // `ZLO_WORD_FADE=1`/`0` forces it, for energy measurements (`energy.rs`).
     static FORCED: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
@@ -547,3 +547,7 @@ fn table(s: &State, columns: &[String], rows: &[Vec<String>]) -> El {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "visual_tests.rs"]
+mod tests;

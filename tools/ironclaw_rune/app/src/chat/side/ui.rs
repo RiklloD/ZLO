@@ -6,7 +6,12 @@
 use crate::design::kit::Spinner;
 use crate::design::motion;
 use rune::tok::TextStyle;
-use rune::{Color, El, GrowthSpec, Icon, ScrollSpec, col, el, icon, row, text};
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use rune::{
+    Color, El, GrowthSpec, Icon, ScrollPos, ScrollSource, ScrollSpec, Tx, col, el, icon, row, text,
+};
 use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, RollingText,
 };
@@ -214,11 +219,37 @@ pub fn heading(s: &State, content: impl Into<String>) -> El {
         .child(line(content, xs_med(), s.palette.text_faint))
 }
 
+thread_local! {
+    /// Where each tab's scrolling column was last scrolled to, by its key.
+    /// Rune drops a viewport's offset when it unmounts (a tab switch, a dock
+    /// closing), so the tab puts it back when it mounts again.
+    static SCROLL_AT: RefCell<HashMap<String, f32>> = RefCell::new(HashMap::new());
+}
+
+/// Makes the scroll viewport keyed `key` keep its offset across unmounts:
+/// it records every move (not the 0 a fresh mount reports before it is
+/// scrolled) and scrolls back there, instantly, when it mounts again.
+fn keeps_offset(viewport: El, key: String) -> El {
+    let record = key.clone();
+    viewport
+        .on_scroll_offset(move |at: ScrollPos| {
+            if at.source != ScrollSource::None {
+                SCROLL_AT.with(|m| m.borrow_mut().insert(record.clone(), at.offset[1]));
+            }
+        })
+        .on_mount(move |_: &mut State, tx: &mut Tx| {
+            let y = SCROLL_AT.with(|m| m.borrow().get(&key).copied());
+            if let Some(y) = y.filter(|y| *y > 0.) {
+                tx.scroll_to_instant(key.clone(), 0., y);
+            }
+        })
+}
+
 /// A tab's scrolling column. Each tab keys its own, so each keeps its
-/// scroll position.
+/// scroll position ([`keeps_offset`]).
 pub fn scroll(key: impl Into<String>, content: El) -> El {
     let key: String = key.into();
-    col()
+    let viewport = col()
         .key(key.clone())
         .w_full()
         .grow(1.)
@@ -226,7 +257,8 @@ pub fn scroll(key: impl Into<String>, content: El) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .child(col().w_full().pb(12.).child(content))
+        .child(col().w_full().pb(12.).child(content));
+    keeps_offset(viewport, key)
 }
 
 /// [`scroll`] over a long list as Rune virtual rows: `count` rows, row `i`
@@ -241,7 +273,7 @@ pub fn virtual_scroll(
     build: impl Fn(&State, usize) -> El + 'static,
 ) -> El {
     let scroll_key: String = scroll_key.into();
-    col()
+    let viewport = col()
         .key(scroll_key.clone())
         .w_full()
         .grow(1.)
@@ -268,7 +300,8 @@ pub fn virtual_scroll(
                         }
                     },
                 ),
-        )
+        );
+    keeps_offset(viewport, scroll_key)
 }
 
 /// A column that fills the rest of a tab (`v_flex().flex_1().min_h_0()`).
@@ -387,3 +420,7 @@ pub fn empty_diff() -> &'static rune_kit::diff::DiffState {
 pub fn spare_diff() -> &'static mut rune_kit::diff::DiffState {
     Box::leak(Box::new(rune_kit::diff::DiffState::new(Vec::new())))
 }
+
+#[cfg(test)]
+#[path = "ui_tests.rs"]
+mod tests;
