@@ -101,6 +101,7 @@ impl TurnRuntime for FakeRuntime {
                 efforts: vec!["low".into(), "high".into()],
                 model_efforts: [("m2".to_string(), vec!["low".to_string()])].into(),
                 brand: None,
+                launch: None,
             })
             .into_iter()
             .collect())

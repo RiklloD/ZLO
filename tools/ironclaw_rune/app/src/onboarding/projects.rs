@@ -10,7 +10,6 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use rune::El;
 use rune_kit::Kit;
 use zlo_client::session_import::{
     ImportTrigger, ProjectSelection, SessionImportProject, SessionImportProjects,
@@ -414,7 +413,7 @@ pub fn outcome(status: &SessionImportStatus) -> (u32, Option<String>) {
 }
 
 /// The step's view (`projects/list.rs`).
-pub fn view(s: &State, k: &Kit) -> El {
+pub fn view(s: &State, k: &Kit) -> super::view::StepView {
     list::view(s, k)
 }
 

@@ -1912,6 +1912,12 @@ impl TurnRuntime for AntigravityRuntime {
             efforts: cached.efforts,
             model_efforts: cached.model_efforts,
             brand: None,
+            // Setup offers what the program found supports: the legacy
+            // runtime has no sign-in command of its own.
+            launch: Some(match self.config.launch {
+                AgentLaunch::Cli { .. } => CatalogLaunch::Native,
+                AgentLaunch::Runtime { .. } => CatalogLaunch::Legacy,
+            }),
         }])
     }
 }

@@ -95,6 +95,16 @@ use super::styles::Style;
 use super::{Palette, lift};
 use crate::state::State;
 
+/// The kit rune-kit's `Checkbox` builds from: an unchecked box keeps a
+/// visible hairline (the palette's strong border) on any row fill, where
+/// the kit's weak separator all but vanishes on a grouped row. Only the
+/// checkbox takes it; inputs and dividers keep the kit's own.
+pub fn checkbox_kit(p: &Palette, k: &rune_kit::Kit) -> rune_kit::Kit {
+    let mut c = k.clone();
+    c.c.border_weak = p.border_strong;
+    c
+}
+
 /// `text-xs` and `text-sm` at the 16 pt rem.
 pub const XS: f32 = 12.;
 pub const SM: f32 = 14.;

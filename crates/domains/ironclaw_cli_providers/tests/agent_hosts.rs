@@ -400,6 +400,25 @@ async fn antigravity_failed_refresh_backs_off() {
     );
 }
 
+/// Review P4: the catalog says which agent program it found, so setup can
+/// offer a legacy-runtime-only install the CLI (that runtime has no sign-in
+/// command of its own) instead of a sign-in command it lacks.
+#[tokio::test]
+async fn antigravity_catalog_names_the_agent_program_it_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let legacy = antigravity(dir.path(), None, &recorder);
+    assert_eq!(
+        legacy.catalog(&scope()).await.unwrap()[0].launch,
+        Some(CatalogLaunch::Legacy)
+    );
+    let cli = antigravity_cli(dir.path(), "perm", &recorder, None);
+    assert_eq!(
+        cli.catalog(&scope()).await.unwrap()[0].launch,
+        Some(CatalogLaunch::Native)
+    );
+}
+
 /// Signed out, the catalog never starts the agent: a sign-in would wait on a
 /// browser nobody opens.
 #[tokio::test]

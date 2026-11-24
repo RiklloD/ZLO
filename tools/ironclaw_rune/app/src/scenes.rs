@@ -259,9 +259,17 @@ pub const SCENES: &[Scene] = &[
         page_with(s, Page::Projects, crate::pages::projects::fixture)
     }),
     ("onboarding-agents", crate::onboarding::fixtures::agents),
+    (
+        "onboarding-agents-long",
+        crate::onboarding::fixtures::agents_long,
+    ),
     ("onboarding-connect", crate::onboarding::fixtures::connect),
     ("onboarding-pairing", crate::onboarding::fixtures::pairing),
     ("onboarding-projects", crate::onboarding::fixtures::projects),
+    (
+        "onboarding-projects-long",
+        crate::onboarding::fixtures::projects_long,
+    ),
     (
         "onboarding-projects-loading",
         crate::onboarding::fixtures::projects_loading,

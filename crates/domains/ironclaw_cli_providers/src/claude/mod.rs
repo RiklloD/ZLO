@@ -1226,6 +1226,7 @@ impl TurnRuntime for ClaudeCliRuntime {
             efforts: EFFORTS.iter().map(|e| e.to_string()).collect(),
             model_efforts: Default::default(),
             brand: None,
+            launch: None,
         }])
     }
 }

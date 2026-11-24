@@ -804,6 +804,7 @@ pub fn fixture() -> ModelPickerState {
             efforts: efforts.iter().map(|m| m.to_string()).collect(),
             model_efforts: Default::default(),
             brand: None,
+            launch: None,
         };
     let route = ThreadRoute {
         thread_id: "t1".into(),
