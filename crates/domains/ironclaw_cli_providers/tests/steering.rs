@@ -985,6 +985,8 @@ fn antigravity_with(
             work_dir: dir.join("work"),
             state_dir: dir.join("state"),
             background_hold: Duration::from_secs(30),
+            prompt_silence: Duration::from_secs(120),
+            keyring: None,
         },
         sink(recorder),
         bridge,
