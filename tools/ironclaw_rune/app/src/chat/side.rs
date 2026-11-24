@@ -53,7 +53,7 @@ use crate::jobs::{self, Generation};
 use crate::state::{Page, State};
 
 mod activity;
-mod agents;
+pub(crate) mod agents;
 mod bridge;
 mod browser;
 mod busy;
@@ -549,6 +549,10 @@ pub fn dock_slide(s: &State, tx: &mut Tx) {
 pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     // The Browser's page changed (its observer woke the app).
     let page = browser::poll(s, tx);
+    // The Agents tab keeps itself fresh while shown, however it came up
+    // (a tab click, a thread switch, the pane reopened).
+    agents::sync_trail(s);
+    agents::ensure_poll(s);
     let open = [dock_open(s, Dock::Work), dock_open(s, Dock::Side)];
     let Some(x) = side_mut(s) else { return false };
     let mut changed = page;
@@ -616,7 +620,8 @@ fn load(s: &mut State, tab: Tab) {
         return;
     }
     match tab {
-        Tab::Activity | Tab::Agents | Tab::SideChat => {}
+        Tab::Activity | Tab::SideChat => {}
+        Tab::Agents => agents::load(s),
         Tab::Plugin => {
             if let Some(key) = plugin_mount(s) {
                 crate::plugins::render(s, key);
@@ -873,7 +878,7 @@ pub fn native_wanted(s: &State) -> [Option<crate::native_view::Source>; 2] {
 fn badge(s: &State, tab: Tab) -> bool {
     match tab {
         Tab::Activity => activity::waiting(s) > 0 || bridge::running(s),
-        Tab::Agents => bridge::tasks(s).iter().any(|t| t.status.is_live()),
+        Tab::Agents => agents::summary(s).0 > 0,
         Tab::Changes => side(s).is_some_and(|x| x.changes.has_turn()),
         Tab::Browser => browser::page().is_some(),
         Tab::Console => console::is_running(s),
@@ -953,18 +958,14 @@ fn tab_status(s: &State, tab: Tab) -> Option<(String, Tone)> {
     };
     Some(match tab {
         Tab::Activity => activity::status(s),
-        Tab::Agents => {
-            let tasks = bridge::tasks(s);
-            let live = tasks.iter().filter(|t| t.status.is_live()).count();
-            match (live, tasks.len()) {
-                (_, 0) => ("No subagents".into(), Tone::Quiet),
-                (0, n) => (
-                    format!("{} · all done", plural(n, "subagent", "subagents")),
-                    Tone::Good,
-                ),
-                (l, n) => (format!("{l} running · {n} total"), Tone::Live),
-            }
-        }
+        Tab::Agents => match agents::summary(s) {
+            (_, 0) => ("No subagents".into(), Tone::Quiet),
+            (0, n) => (
+                format!("{} · all done", plural(n, "subagent", "subagents")),
+                Tone::Good,
+            ),
+            (l, n) => (format!("{l} running · {n} total"), Tone::Live),
+        },
         Tab::Routines => match routines::count(s) {
             None => ("Loading…".into(), Tone::Quiet),
             Some(0) => ("No routines".into(), Tone::Quiet),
@@ -1003,7 +1004,7 @@ fn tab_count(s: &State, tab: Tab) -> Option<usize> {
             (n > 0).then_some(n)
         }
         Tab::Agents => {
-            let n = bridge::tasks(s).len();
+            let n = agents::summary(s).1;
             (n > 0).then_some(n)
         }
         Tab::Routines => routines::count(s).filter(|n| *n > 0),
