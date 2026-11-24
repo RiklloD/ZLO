@@ -187,16 +187,16 @@ wasmtime = { version = "49.0.7", features = ["component-model"] }
 # Only the WASI p2 host API is linked (`p2::add_to_linker_sync`). Keeping
 # defaults off avoids compiling unused p0/p1 WITX proc macros under remote CI
 # sccache workers, where registry sidecar WITX files are not present.
-wasmtime-wasi = { version = "49.0.7", default-features = false, features = ["p2"] }
+wasmtime-wasi = { version = "50.0.2", default-features = false, features = ["p2"] }
 # WebAssembly text + component tooling used by the WASM lane tests to build
 # fixture components. All three stay on the wasm-tools 0.258 line that
 # wasmtime 49 itself links (`wasm-encoder`/`wasmparser`/`wit-parser` 0.258), so
 # the lockfile carries one copy of each; `wat` is capped with `~` because a
 # bare "1.x" floats to the newest wasm-tools release and re-adds the duplicates.
 # Move all three together with wasmtime.
-wat = "~1.258.3"
-wit-component = "0.258.3"
-wit-parser = "0.258.3"
+wat = "~1.263.0"
+wit-component = "0.261.0"
+wit-parser = "0.261.0"
 zeroize = "1"
 zip = { version = "9", default-features = false }
 
