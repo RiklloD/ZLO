@@ -66,7 +66,6 @@ mod sandbox;
 /// Storage half of `zlo export` / `zlo import` (moving a setup to another
 /// computer); consumer: `ironclaw` binary's `export`/`import` commands.
 pub mod setup_transfer;
-mod skill_usage_assembly;
 mod standalone_bootstrap_assembly;
 mod storage_catalog;
 mod support;

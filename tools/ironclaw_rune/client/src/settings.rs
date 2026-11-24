@@ -330,33 +330,6 @@ impl Client {
         .await
     }
 
-    /// How each skill is listed to the models (full, name only, off), by
-    /// which source, with its uses and pin.
-    pub async fn skill_listing(
-        &self,
-    ) -> Result<ironclaw_product_contracts::skill_listing::RebornSkillListingResponse, ClientError>
-    {
-        self.get(&format!("{V2}/skill-listing")).await
-    }
-
-    /// Pin how one skill is listed (`None` back to automatic); answers with
-    /// the listing as stored.
-    pub async fn set_skill_listing_pin(
-        &self,
-        name: &str,
-        pin: Option<ironclaw_product_contracts::skill_listing::RebornSkillPin>,
-    ) -> Result<ironclaw_product_contracts::skill_listing::RebornSkillListingResponse, ClientError>
-    {
-        self.send(
-            self.request(
-                Method::PUT,
-                &format!("{V2}/skill-listing/{}/pin", seg(name)),
-            )
-            .json(&json!({ "pin": pin })),
-        )
-        .await
-    }
-
     pub async fn remove_skill(&self, name: &str) -> Result<RebornSkillActionResponse, ClientError> {
         self.send(self.request(Method::DELETE, &format!("{V2}/skills/{}", seg(name))))
             .await

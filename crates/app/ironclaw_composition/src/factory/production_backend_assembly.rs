@@ -510,7 +510,9 @@ pub(super) async fn build_backend_production(
     let outbound_stores = build_outbound_stores(Arc::clone(&stores.filesystem));
     let notification_inbox = build_notification_inbox(Arc::clone(&stores.filesystem));
     let skill_usage = skill_usage.unwrap_or_else(|| {
-        crate::skill_usage_assembly::build_skill_usage_store(Arc::clone(&stores.filesystem))
+        ironclaw_skills::usage::FilesystemSkillUsageStore::shared(crate::wrap_scoped(Arc::clone(
+            &stores.filesystem,
+        )))
     });
     let outbound_delivery_targets =
         Arc::new(ironclaw_outbound::MutableOutboundDeliveryTargetRegistry::default());

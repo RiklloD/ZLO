@@ -73,9 +73,7 @@ use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
 use crate::slot::{Claim, GroupGuard, Slots};
-use context::{
-    AGY_SUBAGENT_DENIAL, AGY_SUBAGENT_TOOLS, ANTIGRAVITY_TOOLS_PROMPT, McpToken, TurnContext,
-};
+use context::{AGY_SUBAGENT_DENIAL, AGY_SUBAGENT_TOOLS, McpToken, TurnContext};
 use fold::PromptFold;
 use launch::AgentLaunch;
 use live::LiveFold;
@@ -194,6 +192,8 @@ pub struct AntigravityRuntime {
     bridge: Option<Arc<CliBridge>>,
     active: Slots<ActiveTurn>,
     primed: Arc<context::InlinePrimed>,
+    /// What each thread's agent was sent, for the context meter.
+    sent: Arc<crate::context_meter::SentContexts>,
     /// Single flight for the background model-list refresh.
     refreshing: Arc<AtomicBool>,
     /// When the last refresh started (ms), for [`REFRESH_RETRY_MS`].
@@ -224,6 +224,7 @@ impl AntigravityRuntime {
             bridge,
             active: Slots::default(),
             primed: Arc::default(),
+            sent: Arc::default(),
             refreshing: Arc::new(AtomicBool::new(false)),
             last_refresh: Arc::new(std::sync::atomic::AtomicI64::new(i64::MIN)),
             write_timeout: rpc::WRITE_TIMEOUT,
@@ -340,8 +341,17 @@ impl AntigravityRuntime {
             &thread.thread_id,
             &run_id,
         );
+        // Recorded once the prompt is on the wire, like the inline notes: a
+        // turn that fails to launch keeps the thread's earlier record.
+        let delivery = self.sent.pending(
+            &thread.thread_id,
+            Some(&context.session),
+            &context.turn,
+            mcp.is_some(),
+        );
         let turn = Turn {
             mcp,
+            delivery,
             config: Arc::clone(&self.config),
             key,
             model: thread.model.clone(),
@@ -596,6 +606,9 @@ struct Turn {
     run_id: String,
     /// ZLO's MCP server for this turn; revoked when the turn is dropped.
     mcp: Option<McpToken>,
+    /// What the turn sends, for the context meter; recorded once its first
+    /// prompt is on the wire.
+    delivery: crate::context_meter::Delivery,
     skills: Arc<crate::skill_listing::CliSkills>,
     /// Which shown skills' SKILL.md this turn read.
     skill_reads: Mutex<crate::skill_listing::SkillReadWatch>,
@@ -703,6 +716,7 @@ impl Turn {
                 if self.carries_inline(agent) {
                     self.context.inline_delivered();
                 }
+                self.delivery.delivered();
                 Some(pending)
             }
             Err(error) => {
@@ -1436,15 +1450,15 @@ impl TurnRuntime for AntigravityRuntime {
 
     fn injected_context(
         &self,
+        thread: &ThreadId,
         profile: Option<&TurnProfile>,
         goal: Option<&str>,
     ) -> ironclaw_orchestrator::context_report::ContextSample {
-        let mut sample = crate::injected_context(profile, goal);
-        sample.add_text(
-            ironclaw_product_contracts::orchestration::ContextCategory::Instructions,
-            ANTIGRAVITY_TOOLS_PROMPT.trim(),
-        );
-        sample
+        self.sent.sample(thread, || {
+            let context = TurnContext::new(&Arc::default(), thread, profile, None, goal);
+            let mcp = McpToken::available(&self.config.launch, self.bridge.as_ref());
+            (context.session.then(context.turn), mcp)
+        })
     }
 
     fn capabilities(&self) -> RuntimeCapabilities {

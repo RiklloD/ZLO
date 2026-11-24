@@ -279,6 +279,8 @@ impl SkillWatch {
 /// records the turn under.
 pub(crate) struct LaunchSkills {
     pub settings: Option<String>,
+    /// The profile's skills as the CLI lists them under `settings`.
+    pub listing: Option<String>,
     pub names: SkillNames,
     pub source: Option<SkillUsageSource>,
 }
@@ -330,9 +332,41 @@ pub(crate) async fn launch_settings(
     }
     LaunchSkills {
         settings: settings_json(&overrides),
+        listing: plugin_listing(profile, &names, &overrides),
         names,
         source,
     }
+}
+
+/// The profile's (plugin) skills as the CLI lists them under `overrides`:
+/// `- name: description` on, `- name` name-only, nothing off; a skill
+/// without an override is on. `None` without profile skills.
+fn plugin_listing(
+    profile: Option<&ironclaw_orchestrator::runtime::ProfileSkills>,
+    names: &SkillNames,
+    overrides: &BTreeMap<String, Listed>,
+) -> Option<String> {
+    let lines: Vec<String> = profile?
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            let native =
+                usage_name(&entry.name).map_or_else(|| entry.name.clone(), |n| names.native(&n));
+            match overrides.get(&native).copied().unwrap_or(Listed::On) {
+                Listed::On => Some(format!("- {native}: {}", entry.description)),
+                Listed::NameOnly => Some(format!("- {native}")),
+                Listed::Off => None,
+            }
+        })
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// [`plugin_listing`] with no overrides: what an unmanaged turn lists.
+pub(crate) fn unmanaged_listing(
+    profile: Option<&ironclaw_orchestrator::runtime::ProfileSkills>,
+) -> Option<String> {
+    plugin_listing(profile, &SkillNames::default(), &BTreeMap::new())
 }
 
 /// Record one turn in the shared store.

@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use super::launch::AgentLaunch;
 use crate::bridge::{CliBridge, MCP_SERVER_NAME, SESSION_TOKEN_TTL, SessionGrant};
+use crate::context_meter::Notes;
 
 /// What every Antigravity session is told about the T3 tools' names here
 /// and its own subagent tools.
@@ -70,6 +71,10 @@ pub(super) struct TurnContext {
     /// goal, put ahead of the prompt for an agent that cannot.
     pub(super) inline: Option<String>,
     ticket: Option<PrimeTicket>,
+    /// The session notes and this turn's own, as the context meter sees
+    /// them (the agent holds the session notes either way).
+    pub(super) session: Notes,
+    pub(super) turn: Notes,
 }
 
 impl TurnContext {
@@ -84,25 +89,27 @@ impl TurnContext {
         requested: Option<&str>,
         goal: Option<&str>,
     ) -> Self {
-        let notes = crate::join_notes([
-            crate::session_context(profile),
-            Some(ANTIGRAVITY_TOOLS_PROMPT.trim().to_string()),
-        ]);
-        let ticket = notes.as_deref().map(stamp).and_then(|stamp| {
+        let notes = crate::session_context(profile)
+            .instructions(Some(ANTIGRAVITY_TOOLS_PROMPT.trim().to_string()));
+        let ticket = notes.text().as_deref().map(stamp).and_then(|stamp| {
             (primed.delivered(thread) != Some(stamp)).then(|| PrimeTicket {
                 primed: Arc::clone(primed),
                 thread: thread.clone(),
                 stamp,
             })
         });
-        let inline_notes = ticket.as_ref().and(notes.clone());
+        let inline_notes = ticket.as_ref().map(|_| notes.clone()).unwrap_or_default();
         // The skills this message asks for ride every turn that asks, beside
         // (not inside) the stamped session notes.
-        let requested = requested.map(str::to_string);
+        let turn = Notes::default()
+            .instructions(requested.map(str::to_string))
+            .then(crate::goal_notes(goal));
         Self {
-            system: crate::prompt_context(crate::join_notes([notes, requested.clone()]), goal),
-            inline: crate::prompt_context(crate::join_notes([inline_notes, requested]), goal),
+            system: notes.clone().then(turn.clone()).text(),
+            inline: inline_notes.then(turn.clone()).text(),
             ticket,
+            session: notes,
+            turn,
         }
     }
 
@@ -133,7 +140,7 @@ impl McpToken {
         thread: &ThreadId,
         run_id: &str,
     ) -> Option<Self> {
-        if !matches!(launch, AgentLaunch::Cli { .. }) {
+        if !Self::available(launch, bridge) {
             return None;
         }
         let bridge = bridge?;
@@ -150,6 +157,11 @@ impl McpToken {
             url,
             token,
         })
+    }
+
+    /// Whether a turn would get a token now.
+    pub(super) fn available(launch: &AgentLaunch, bridge: Option<&Arc<CliBridge>>) -> bool {
+        matches!(launch, AgentLaunch::Cli { .. }) && bridge.is_some_and(|b| b.mcp_url().is_some())
     }
 
     /// The `mcpServers` entry ACP takes for an HTTP server.

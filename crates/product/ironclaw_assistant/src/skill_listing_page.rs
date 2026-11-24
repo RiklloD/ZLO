@@ -3,13 +3,13 @@
 //! writes read back as the listing the store committed.
 
 use ironclaw_product_contracts::skill_listing::{
-    RebornSkillListingBasis, RebornSkillListingEntry, RebornSkillListingPinRequest,
-    RebornSkillListingResponse, RebornSkillListingSource, RebornSkillListingState, RebornSkillPin,
+    RebornSkillListingEntry, RebornSkillListingPinRequest, RebornSkillListingResponse,
+    RebornSkillListingState,
 };
 use ironclaw_product_contracts::surface::{ProductSurfaceError, ProductSurfaceValidationCode};
 use ironclaw_skills::usage::{
-    SkillListing, SkillListingBasis, SkillListingPolicy, SkillPin, SkillUsageDocument,
-    SkillUsageName, SkillUsageOwner, SkillUsageStore, summarize,
+    SkillListing, SkillListingPolicy, SkillPin, SkillUsageDocument, SkillUsageName,
+    SkillUsageOwner, SkillUsageStore, summarize,
 };
 
 /// The `skill_listing` view for `owner`, from the ledger's summary.
@@ -44,9 +44,9 @@ pub async fn set_skill_listing_pin(
         return Err(ProductSurfaceError::service_unavailable(false));
     }
     let pin = request.pin.map(|pin| match pin {
-        RebornSkillPin::AlwaysFull => SkillPin::AlwaysFull,
-        RebornSkillPin::NameOnly => SkillPin::NameOnly,
-        RebornSkillPin::Off => SkillPin::Off,
+        RebornSkillListingState::Full => SkillPin::AlwaysFull,
+        RebornSkillListingState::NameOnly => SkillPin::NameOnly,
+        RebornSkillListingState::Off => SkillPin::Off,
     });
     let written = store
         .set_pin(owner, &name, pin)
@@ -70,21 +70,11 @@ fn listing_response(document: Option<&SkillUsageDocument>) -> RebornSkillListing
             uses: summary.uses,
             last_used_ms: summary.last_used_ms,
             listing: wire_listing(summary.state.listing),
-            basis: wire_basis(summary.state.basis),
-            pin: summary.pin.map(|pin| match pin {
-                SkillPin::AlwaysFull => RebornSkillPin::AlwaysFull,
-                SkillPin::NameOnly => RebornSkillPin::NameOnly,
-                SkillPin::Off => RebornSkillPin::Off,
-            }),
+            pin: summary.pin.map(|pin| wire_listing(pin.listing())),
             sources: summary
                 .sources
                 .into_iter()
-                .map(|source| RebornSkillListingSource {
-                    source: source.source.wire(),
-                    listing: wire_listing(source.state.listing),
-                    basis: wire_basis(source.state.basis),
-                    uses: source.uses,
-                })
+                .map(|source| source.source.wire())
                 .collect(),
         })
         .collect();
@@ -99,14 +89,6 @@ fn wire_listing(listing: SkillListing) -> RebornSkillListingState {
         SkillListing::Full => RebornSkillListingState::Full,
         SkillListing::NameOnly => RebornSkillListingState::NameOnly,
         SkillListing::Off => RebornSkillListingState::Off,
-    }
-}
-
-fn wire_basis(basis: SkillListingBasis) -> RebornSkillListingBasis {
-    match basis {
-        SkillListingBasis::Pinned => RebornSkillListingBasis::Pinned,
-        // The summary decides without any source's own rules.
-        SkillListingBasis::Auto | SkillListingBasis::Source => RebornSkillListingBasis::Auto,
     }
 }
 
@@ -141,7 +123,7 @@ mod tests {
             &owner(),
             RebornSkillListingPinRequest {
                 name: "pdf".into(),
-                pin: Some(RebornSkillPin::Off),
+                pin: Some(RebornSkillListingState::Off),
             },
         )
         .await

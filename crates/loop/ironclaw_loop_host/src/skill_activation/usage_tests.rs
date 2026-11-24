@@ -7,7 +7,7 @@ use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
 use ironclaw_host_api::mount::{MountGrant, MountPermissions, MountView};
 use ironclaw_host_api::path::{MountAlias, VirtualPath};
 use ironclaw_skills::usage::{
-    FilesystemSkillUsageStore, SkillPin, SkillUsageName, SkillUsageObservation, SkillUsageOwner,
+    FilesystemSkillUsageStore, SharedSkillUsage, SkillPin, SkillUsageName, SkillUsageStore, SkillUsageObservation, SkillUsageOwner,
     SkillUsageSource,
 };
 
@@ -70,7 +70,7 @@ async fn a_cold_skill_is_listed_by_name_only_and_an_activation_is_recorded() {
         .await
         .unwrap();
     let selectable = SelectableSkillContextSource::new(two_skill_source(), listing_config())
-        .with_skill_usage_store(store.clone());
+        .with_skill_usage_store(SharedSkillUsage::new(store.clone()));
     let context = run_context().await;
     selectable
         .record_user_message(
@@ -116,7 +116,7 @@ async fn an_explicit_mention_counts_and_an_off_pin_leaves_the_listing() {
         .await
         .unwrap();
     let selectable = SelectableSkillContextSource::new(two_skill_source(), listing_config())
-        .with_skill_usage_store(store.clone());
+        .with_skill_usage_store(SharedSkillUsage::new(store.clone()));
     let context = run_context().await;
     selectable
         .record_user_message(
@@ -218,7 +218,7 @@ const HUNG: std::time::Duration = std::time::Duration::from_secs(20);
 #[tokio::test]
 async fn a_stalled_store_never_holds_the_prompt_build() {
     let selectable = SelectableSkillContextSource::new(two_skill_source(), listing_config())
-        .with_skill_usage_store(Arc::new(StalledStore));
+        .with_skill_usage_store(SharedSkillUsage::new(Arc::new(StalledStore)));
     let context = run_context().await;
     selectable
         .record_user_message(
@@ -259,7 +259,7 @@ async fn an_explicit_request_loads_a_skill_pinned_off() {
         .await
         .unwrap();
     let selectable = SelectableSkillContextSource::new(two_skill_source(), listing_config())
-        .with_skill_usage_store(store.clone());
+        .with_skill_usage_store(SharedSkillUsage::new(store.clone()));
     let context = run_context().await;
     selectable
         .record_user_message(

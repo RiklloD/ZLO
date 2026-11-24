@@ -278,7 +278,11 @@ const WS0_COMPOSITION_SHARE_BP: usize = 642;
 /// ✎ Re-measured 34_603 -> 34_618 on 2026-11-19 (consent review round 3): the
 /// tree measured 34_599 before the fix (the record was 4 high); the per-run
 /// hook consent check adds +19. Breakdown in the manifest.
-const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 34_618;
+/// ✎ Re-measured 34_618 -> 34_669 on 2026-11-24 (context-meter-and-ceilings):
+/// the merges since the last record (steering, skill manager) measured 34_940;
+/// the Skills product service's move to `ironclaw_assistant` takes -271.
+/// Breakdown in the manifest.
+const COMPOSITION_ABSOLUTE_SRC_LOC: usize = 34_669;
 
 /// Composition dispatch, from the same `--print` run: "composition dispatch:
 /// 827 Arc<dyn> (governed prod, excl slack/extension_host)".
