@@ -135,20 +135,33 @@ fn is_prompt(item: &Item) -> bool {
     matches!(item, Item::Row(Row::User { steer: None, .. }))
 }
 
+/// What a fold reads besides the rows.
+#[derive(Clone, Copy)]
+pub struct Folding<'a> {
+    /// Each settled prompt's worked time (`Transcript::turn_spans`).
+    pub spans: &'a HashMap<String, i64>,
+    /// The folds and groups the reader opened or shut.
+    pub toggles: &'a HashMap<String, bool>,
+    /// The running turn's prompt is among the rows
+    /// (`Transcript::shows_running_prompt`): false while a run started
+    /// elsewhere waits for its prompt, so the newest prompt shown is not
+    /// taken for the live turn's.
+    pub prompt_shown: bool,
+}
+
 /// Fold `rows` into list items, t3code's timeline: each turn is its
 /// prompt, the agent's words and tool groups in arrival order, and the
 /// answer. `live` marks a run in flight: its turn gets the working line
 /// under the prompt and its trailing group follows the newest step. A
-/// settled turn folds everything before its answer under "Worked for …"
-/// (`spans`: each prompt's worked time), shut unless `toggles` opened it.
+/// settled turn folds everything before its answer under "Worked for …",
+/// shut unless the reader opened it.
 pub fn fold(
     rows: &[Row],
     live: bool,
     stopping: bool,
     tail: bool,
     reserve: bool,
-    spans: &HashMap<String, i64>,
-    toggles: &HashMap<String, bool>,
+    ctx: &Folding,
 ) -> Vec<Item> {
     let mut grouped: Vec<Item> = Vec::with_capacity(rows.len() + 2);
     for row in rows {
@@ -170,7 +183,7 @@ pub fn fold(
         *live = true;
     }
     let working = live || stopping;
-    let mut items = fold_turns(grouped, working, spans, toggles);
+    let mut items = fold_turns(grouped, working, ctx);
     // The thinking line closes the live turn, unless its trailing group
     // already shows the step at work.
     if stopping || (live && !matches!(items.last(), Some(Item::Activity { live: true, .. }))) {
@@ -186,19 +199,19 @@ pub fn fold(
 }
 
 /// Split `items` into turns at each prompt: the live (newest) turn gets its
-/// working line, every settled turn folds its work.
-fn fold_turns(
-    items: Vec<Item>,
-    working: bool,
-    spans: &HashMap<String, i64>,
-    toggles: &HashMap<String, bool>,
-) -> Vec<Item> {
+/// working line, every settled turn folds its work. A run whose prompt has
+/// not loaded yet gets its working line at the end.
+fn fold_turns(items: Vec<Item>, working: bool, ctx: &Folding) -> Vec<Item> {
     let starts: Vec<usize> = items
         .iter()
         .enumerate()
         .filter_map(|(ix, item)| is_prompt(item).then_some(ix))
         .collect();
     let Some(&first) = starts.first() else {
+        let mut items = items;
+        if working {
+            items.push(Item::Working);
+        }
         return items;
     };
     let mut out = Vec::with_capacity(items.len() + starts.len() + 1);
@@ -208,12 +221,15 @@ fn fold_turns(
         let prompt = &items[start];
         out.push(prompt.clone());
         let body = &items[start + 1..end];
-        if working && n + 1 == starts.len() {
+        if working && ctx.prompt_shown && n + 1 == starts.len() {
             out.push(Item::Working);
             out.extend_from_slice(body);
         } else {
-            fold_turn(prompt.key(), body, spans, toggles, &mut out);
+            fold_turn(prompt.key(), body, ctx.spans, ctx.toggles, &mut out);
         }
+    }
+    if working && !ctx.prompt_shown {
+        out.push(Item::Working);
     }
     out
 }
@@ -243,6 +259,8 @@ fn fold_turn(
     let hides = |ix: usize, item: &Item| {
         let after = answer.is_some_and(|a| ix > a);
         match item {
+            // The live run's work is never folded into an older turn.
+            Item::Activity { live: true, .. } => false,
             Item::Activity { rows, .. } => {
                 !after
                     || rows.iter().all(|r| {

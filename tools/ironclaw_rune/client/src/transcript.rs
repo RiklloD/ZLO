@@ -1321,21 +1321,27 @@ impl Transcript {
     /// prompt to the run's last row, stored or live (t3code's "Worked for").
     /// The running turn has no length yet and is left out.
     pub fn turn_spans(&self) -> HashMap<String, i64> {
-        let durable = self
-            .durable
-            .iter()
-            .filter_map(|m| Some((m.turn_run_id.as_deref()?, m.created_at?.timestamp_millis())));
-        let live = self
-            .live
-            .values()
-            .filter_map(|e| Some((e.run.as_deref()?, e.at)));
-        let mut last_at: HashMap<&str, i64> = HashMap::new();
-        for (run, at) in durable.chain(live) {
-            last_at
-                .entry(run)
-                .and_modify(|t| *t = (*t).max(at))
-                .or_insert(at);
+        // Stored times are the runtime's own; a live entry's is when this
+        // view first saw it (late for a replayed frame), so it only stands
+        // in for a run with no stored time past its prompt.
+        fn latest<'a>(pairs: impl Iterator<Item = (&'a str, i64)>) -> HashMap<&'a str, i64> {
+            let mut last: HashMap<&str, i64> = HashMap::new();
+            for (run, at) in pairs {
+                last.entry(run)
+                    .and_modify(|t| *t = (*t).max(at))
+                    .or_insert(at);
+            }
+            last
         }
+        let stored =
+            latest(self.durable.iter().filter_map(|m| {
+                Some((m.turn_run_id.as_deref()?, m.created_at?.timestamp_millis()))
+            }));
+        let seen = latest(
+            self.live
+                .values()
+                .filter_map(|e| Some((e.run.as_deref()?, e.at))),
+        );
         let active = self.active_run();
         let mut started: HashSet<&str> = HashSet::new();
         let mut spans = HashMap::new();
@@ -1352,14 +1358,45 @@ impl Transcript {
             if !started.insert(run) || active == Some(run) {
                 continue;
             }
-            if let (Some(sent), Some(end)) = (m.created_at, last_at.get(run)) {
-                let ms = end - sent.timestamp_millis();
-                if ms > 0 {
-                    spans.insert(self.key_of_message(&m.message_id), ms);
-                }
+            let Some(sent) = m.created_at.map(|t| t.timestamp_millis()) else {
+                continue;
+            };
+            let end = stored
+                .get(run)
+                .filter(|end| **end > sent)
+                .or_else(|| seen.get(run));
+            if let Some(ms) = end.map(|end| end - sent).filter(|ms| *ms > 0) {
+                spans.insert(self.key_of_message(&m.message_id), ms);
             }
         }
         spans
+    }
+
+    /// Whether the running turn's prompt is among the rows: one sent from
+    /// this view, or the newest stored message of the person's belongs to
+    /// the run (or has no run yet). False while a run started elsewhere
+    /// waits for its prompt to load, so the turn before it is not taken
+    /// for the live one.
+    pub fn shows_running_prompt(&self) -> bool {
+        let Some(run) = self.active_run() else {
+            return true;
+        };
+        self.pending_user.iter().any(|p| p.steer.is_none())
+            || self
+                .durable
+                .iter()
+                .rev()
+                .find(|m| m.kind == MessageKind::User && m.is_visible())
+                .is_none_or(|m| m.turn_run_id.as_deref().is_none_or(|r| r == run))
+    }
+
+    /// The text of stored message `message_id`, for finding the row it
+    /// draws as when that row kept the key of the live text it replaced.
+    pub fn message_text(&self, message_id: &str) -> Option<&str> {
+        self.durable
+            .iter()
+            .find(|m| m.message_id == message_id)
+            .and_then(|m| m.content.as_deref())
     }
 
     pub fn rows(&self) -> Vec<Row> {
@@ -2192,6 +2229,28 @@ mod tests {
         );
     }
 
+    /// The running turn's prompt is shown once a message of the person's
+    /// belongs to it; a run started elsewhere, its prompt not loaded yet,
+    /// is not taken for the newest prompt's.
+    #[test]
+    fn a_running_prompt_is_shown_once_it_belongs_to_the_run() {
+        let mut t = Transcript::default();
+        t.set_timeline(page(serde_json::json!([
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": "6f1c1c0e-0000-4000-8000-0000000000ff", "content": "earlier" },
+        ])));
+        assert!(t.shows_running_prompt(), "nothing runs");
+        t.apply(&status("running"));
+        assert!(!t.shows_running_prompt(), "the run's prompt is not loaded");
+        t.set_timeline(page(serde_json::json!([
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": "6f1c1c0e-0000-4000-8000-0000000000ff", "content": "earlier" },
+            { "message_id": "m2", "sequence": 2, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "now" },
+        ])));
+        assert!(t.shows_running_prompt());
+    }
+
     /// A settled turn is timed from its prompt to its run's last row; the
     /// running turn has no length yet.
     #[test]
@@ -2214,9 +2273,22 @@ mod tests {
             "31m 12s, steers included"
         );
         assert!(!spans.contains_key("msg:m3"), "a steer is not a turn");
-        // While the run is live, its turn has no length yet.
-        t.apply(&status("running"));
-        assert!(t.turn_spans().is_empty());
+        // A live frame seen late does not stretch a turn with stored times.
+        t.apply(&items(serde_json::json!([{ "text": {
+            "id": format!("text:{RUN}:cli:t1:9"), "run_id": RUN,
+            "body": "Done.", "narration": false } }])));
+        t.apply(&status("completed"));
+        assert_eq!(t.turn_spans().get("msg:m1"), Some(&1_872_000));
+        // While a run is live, its turn has no length yet.
+        let mut live = Transcript::default();
+        live.set_timeline(page(serde_json::json!([
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "go", "created_at": "2026-11-22T21:00:00Z" },
+            { "message_id": "m2", "sequence": 2, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "Working on it.", "created_at": "2026-11-22T21:10:00Z" },
+        ])));
+        live.apply(&status("running"));
+        assert!(live.turn_spans().is_empty());
     }
 
     fn items(items: serde_json::Value) -> StreamEvent {

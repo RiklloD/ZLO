@@ -21,15 +21,26 @@ fn tool(key: &str, title: &str) -> Row {
 }
 
 fn fold(rows: &[Row], live: bool, stopping: bool, tail: bool, reserve: bool) -> Vec<Item> {
+    let none = HashMap::new();
     super::flow::fold(
         rows,
         live,
         stopping,
         tail,
         reserve,
-        &HashMap::new(),
-        &HashMap::new(),
+        &ctx(&none, &HashMap::new()),
     )
+}
+
+fn ctx<'a>(
+    spans: &'a HashMap<String, i64>,
+    toggles: &'a HashMap<String, bool>,
+) -> super::flow::Folding<'a> {
+    super::flow::Folding {
+        spans,
+        toggles,
+        prompt_shown: true,
+    }
 }
 
 fn user(key: &str) -> Row {
@@ -133,7 +144,12 @@ fn settled_gates_fold_into_the_work_and_open_ones_do_not() {
     ];
     assert_eq!(fold(&rows, false, false, false, false).len(), 1);
     let rows = vec![tool("a", "ironclaw.shell"), gate(GateState::Open)];
-    assert_eq!(fold(&rows, true, false, false, false).len(), 3);
+    // The group, the open card, then (no prompt in view) the working and
+    // thinking lines.
+    assert_eq!(
+        shape(&fold(&rows, true, false, false, false)),
+        ["act:a", "g", "working", "pending"]
+    );
     // The tail follows the working line and stays above the reserve.
     let items = fold(&rows, true, false, true, true);
     assert!(matches!(
@@ -158,14 +174,21 @@ fn a_settled_turn_folds_its_work_above_the_answer() {
         answer("a"),
     ];
     let spans = HashMap::from([("p".to_string(), 1_872_000)]);
-    let shut = super::flow::fold(&rows, false, false, false, false, &spans, &HashMap::new());
+    let shut = super::flow::fold(
+        &rows,
+        false,
+        false,
+        false,
+        false,
+        &ctx(&spans, &HashMap::new()),
+    );
     assert_eq!(shape(&shut), ["p", "fold:Worked for 31m 12s", "a"]);
     let Item::TurnFold { hidden, .. } = &shut[1] else {
         panic!("a fold");
     };
     assert!(hidden.iter().any(|k| k == "s1") && hidden.iter().any(|k| k == "t3"));
     let toggles = HashMap::from([("fold-p".to_string(), true)]);
-    let open = super::flow::fold(&rows, false, false, false, false, &spans, &toggles);
+    let open = super::flow::fold(&rows, false, false, false, false, &ctx(&spans, &toggles));
     assert_eq!(
         shape(&open),
         [
@@ -212,6 +235,23 @@ fn the_live_turn_works_in_the_open() {
     rows.push(said("s2"));
     let items = fold(&rows, true, false, false, false);
     assert_eq!(shape(&items).last().map(String::as_str), Some("pending"));
+}
+
+/// A run started elsewhere, its prompt not loaded yet: the turn before it
+/// stays folded, and the working line waits at the end.
+#[test]
+fn a_run_whose_prompt_has_not_loaded_leaves_the_last_turn_folded() {
+    let rows = vec![user("p1"), tool("t1", "cli.bash"), answer("a1")];
+    let (none, toggles) = (HashMap::new(), HashMap::new());
+    let early = super::flow::Folding {
+        prompt_shown: false,
+        ..ctx(&none, &toggles)
+    };
+    let items = super::flow::fold(&rows, true, false, false, false, &early);
+    assert_eq!(
+        shape(&items),
+        ["p1", "fold:Worked", "a1", "working", "pending"]
+    );
 }
 
 /// A plain answer has nothing to fold; a failed or stopped run keeps its
@@ -494,4 +534,35 @@ fn stream_rows_wait_for_the_pacers_next_step() {
         "the step is due: the rows fold now"
     );
     assert!(!fold(&mut rt, None), "no pacer: the rows fold now");
+}
+
+/// A search hit on commentary folded into a settled turn opens the fold,
+/// found by its stored text when the row kept the live text's key.
+#[test]
+fn a_search_hit_inside_a_shut_fold_opens_it() {
+    let mut s = super::fixtures::test_state();
+    super::fixtures::cli_turn_settled(&mut s);
+    let said = "First, the decision record. It's the contract that everything else follows.";
+    if let Some(c) = s.chat.as_mut() {
+        let page = serde_json::from_value(serde_json::json!({
+            "thread": { "thread_id": "t1" },
+            "messages": [{ "message_id": "m-said", "sequence": 3, "kind": "assistant",
+                           "status": "finalized", "content": said }]
+        }))
+        .expect("timeline decodes");
+        c.transcript.set_timeline(page);
+        assert!(
+            !c.items.iter().any(|i| i.key() == "say:c1"),
+            "the commentary starts folded"
+        );
+    }
+    let mut tx = rune::Tx::default();
+    super::reveal_message(&mut s, "m-said".into(), &mut tx);
+    let c = s.chat.as_ref().expect("chat");
+    assert_eq!(c.toggles.get("fold-msg:c1"), Some(&true), "the fold opened");
+    assert!(
+        c.items.iter().any(|i| i.key() == "say:c1"),
+        "the hit is shown"
+    );
+    assert!(c.reveal.is_none(), "the hit was found");
 }

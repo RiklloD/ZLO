@@ -84,9 +84,12 @@ pub fn refold_chat(s: &mut State, id: &str) {
     };
     let live = c.fixture_run.is_some();
     c.has_tail = has_tail;
-    c.items = Rc::new(flow::fold(
-        &c.rows, live, false, has_tail, false, &c.spans, &c.toggles,
-    ));
+    let ctx = flow::Folding {
+        spans: &c.spans,
+        toggles: &c.toggles,
+        prompt_shown: true,
+    };
+    c.items = Rc::new(flow::fold(&c.rows, live, false, has_tail, false, &ctx));
 }
 
 /// Put `rows` into `chat` the way a timeline load folds them; `live` adds a
@@ -107,15 +110,12 @@ pub fn fill(chat: &mut ChatState, rows: Vec<Row>, live: bool) {
             })
             .collect(),
     );
-    chat.items = Rc::new(flow::fold(
-        &rows,
-        live,
-        false,
-        false,
-        false,
-        &chat.spans,
-        &chat.toggles,
-    ));
+    let ctx = flow::Folding {
+        spans: &chat.spans,
+        toggles: &chat.toggles,
+        prompt_shown: true,
+    };
+    chat.items = Rc::new(flow::fold(&rows, live, false, false, false, &ctx));
     chat.outline.set(super::outline::prompts(&chat.items));
     chat.rows = Rc::new(rows);
     question_form::sync_drafts(chat);

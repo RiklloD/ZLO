@@ -196,7 +196,16 @@ fn fold(c: &mut ChatState) {
     let stopping = c.transcript.is_stopping();
     c.spans = Rc::new(c.transcript.turn_spans());
     c.items = Rc::new(super::flow::fold(
-        &rows, live, stopping, false, false, &c.spans, &c.toggles,
+        &rows,
+        live,
+        stopping,
+        false,
+        false,
+        &super::flow::Folding {
+            spans: &c.spans,
+            toggles: &c.toggles,
+            prompt_shown: c.transcript.shows_running_prompt(),
+        },
     ));
     c.outline.set(outline::prompts(&c.items));
     c.rows = rows;

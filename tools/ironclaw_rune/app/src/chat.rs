@@ -745,8 +745,11 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
         stopping,
         c.has_tail,
         c.reserve.is_some(),
-        &c.spans,
-        &c.toggles,
+        &flow::Folding {
+            spans: &c.spans,
+            toggles: &c.toggles,
+            prompt_shown: c.transcript.shows_running_prompt(),
+        },
     );
     if *c.items == new_items && !c.pin_next {
         return false;
@@ -803,9 +806,22 @@ fn try_reveal(s: &mut State, id: &str, tx: &mut Tx) {
     let Some(target) = c.reveal.clone() else {
         return;
     };
-    // A message sent from this view keeps its bubble's key.
+    // A message sent from this view keeps its bubble's key, and a reply
+    // keeps the key of the live text it replaced: find that row by its
+    // stored text.
     let sent = c.transcript.key_of_message(&target);
-    let hit = |key: &str| key.ends_with(&target) || key == sent;
+    let kept = c.transcript.message_text(&target).and_then(|text| {
+        let text = text.trim();
+        c.rows.iter().find_map(|r| match r {
+            Row::Assistant { key, text: t, .. } | Row::Narration { key, text: t }
+                if !text.is_empty() && t.trim() == text =>
+            {
+                Some(key.clone())
+            }
+            _ => None,
+        })
+    });
+    let hit = |key: &str| key.ends_with(&target) || key == sent || kept.as_deref() == Some(key);
     // A hit inside a settled turn's shut fold opens the fold first.
     let folded = c.items.iter().find_map(|item| match item {
         Item::TurnFold {
