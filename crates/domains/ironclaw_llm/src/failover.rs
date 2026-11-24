@@ -400,6 +400,14 @@ impl CompletionStreamSink for FailoverStreamSink {
         self.inner.reasoning_delta(delta).await;
     }
 
+    /// Forwarded unchanged and deliberately not counted as emitted text: a
+    /// streamed tool call is speculative (see
+    /// [`CompletionStreamSink::tool_call_ready`]), so failing over after one
+    /// stays safe — the consumer reconciles against the final response.
+    async fn tool_call_ready(&self, call: crate::provider::ToolCall) {
+        self.inner.tool_call_ready(call).await;
+    }
+
     fn text_is_visible(&self) -> bool {
         self.inner.text_is_visible()
     }
@@ -1938,5 +1946,113 @@ mod tests {
         let result = failover2.complete(make_request()).await;
         assert!(result.is_err());
         assert_eq!(solo2.call_count(), 3);
+    }
+
+    /// Streams one tool call through the sink, then fails or succeeds.
+    struct StreamedToolCallProvider {
+        call_id: &'static str,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl LlmProvider for StreamedToolCallProvider {
+        fn model_name(&self) -> &str {
+            "streamed-tool-call"
+        }
+
+        fn cost_per_token(&self) -> (Decimal, Decimal) {
+            (Decimal::ZERO, Decimal::ZERO)
+        }
+
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            panic!("tool streaming test must not use complete()")
+        }
+
+        async fn complete_with_tools(
+            &self,
+            _request: ToolCompletionRequest,
+        ) -> Result<ToolCompletionResponse, LlmError> {
+            panic!("tool streaming test must stream")
+        }
+
+        async fn complete_with_tools_streaming(
+            &self,
+            _request: ToolCompletionRequest,
+            sink: Arc<dyn CompletionStreamSink>,
+        ) -> Result<ToolCompletionResponse, LlmError> {
+            let call = crate::provider::ToolCall {
+                id: self.call_id.to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({"path": "a.txt"}),
+                reasoning: None,
+                signature: None,
+                arguments_parse_error: None,
+            };
+            sink.tool_call_ready(call.clone()).await;
+            if self.fail {
+                return Err(LlmError::StreamInterrupted {
+                    provider: "streamed-tool-call".to_string(),
+                    reason: "disconnected after a tool call".to_string(),
+                });
+            }
+            Ok(ToolCompletionResponse {
+                content: None,
+                tool_calls: vec![call],
+                input_tokens: 1,
+                output_tokens: 1,
+                finish_reason: FinishReason::ToolUse,
+                reasoning: None,
+                reasoning_details: None,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct ToolCallSink(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl CompletionStreamSink for ToolCallSink {
+        async fn text_delta(&self, _delta: String) {}
+
+        async fn tool_call_ready(&self, call: crate::provider::ToolCall) {
+            self.0.lock().unwrap().push(call.id);
+        }
+    }
+
+    /// A streamed tool call is forwarded through the failover sink and, being
+    /// speculative, does not pin the attempt the way visible text does: the
+    /// fallback still runs, and the consumer sees both attempts' calls and
+    /// reconciles against the final response.
+    #[tokio::test]
+    async fn streaming_failover_forwards_tool_call_ready_without_blocking_failover() {
+        let provider = FailoverProvider::new(vec![
+            Arc::new(StreamedToolCallProvider {
+                call_id: "primary_call",
+                fail: true,
+            }),
+            Arc::new(StreamedToolCallProvider {
+                call_id: "fallback_call",
+                fail: false,
+            }),
+        ])
+        .unwrap();
+        let sink = Arc::new(ToolCallSink::default());
+
+        let response = provider
+            .complete_with_tools_streaming(make_tool_request(), sink.clone())
+            .await
+            .expect("fallback succeeds after a streamed tool call");
+
+        assert_eq!(
+            sink.0.lock().unwrap().as_slice(),
+            ["primary_call", "fallback_call"]
+        );
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "fallback_call");
     }
 }

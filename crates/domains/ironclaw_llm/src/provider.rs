@@ -1141,6 +1141,18 @@ pub trait CompletionStreamSink: Send + Sync {
     /// sinks that only want answer text need not care.
     async fn reasoning_delta(&self, _delta: String) {}
 
+    /// A complete tool call block has finished streaming from the model while
+    /// the response stream is still open. Append-only; the final response
+    /// still carries all tool calls in order. Default drops it.
+    ///
+    /// Speculative by contract: a call fires only once its block closed and
+    /// its arguments parsed as JSON, but the response that carries it may
+    /// still fail, truncate (`Length`), or be replaced by a retry or failover
+    /// attempt that streams different calls. Consumers must treat a streamed
+    /// call as a hint and reconcile it against the final response by id,
+    /// name, and arguments before acting on any result derived from it.
+    async fn tool_call_ready(&self, _call: ToolCall) {}
+
     /// Whether emitted text is visible outside the provider chain. Decorators
     /// use this to avoid suppressing safe retries or failover when a caller is
     /// consuming a stream only for transport progress.

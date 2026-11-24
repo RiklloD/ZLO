@@ -5,6 +5,8 @@ use tracing::debug;
 
 use crate::{family::LoopFamily, state::LoopExecutionState, strategies::TurnEndKind};
 
+use super::streamed_reads::SpeculativeReads;
+
 use super::{
     AgentLoopExecutorError, AssistantReplyInput, BudgetInput, BudgetStep, CancelCheck,
     CapabilityInput, CheckpointStage, DefaultExecutorPipeline, DrainInput, ExecutorStage,
@@ -120,7 +122,7 @@ impl DefaultExecutorPipeline {
                             note_started_at,
                         );
                     }
-                    let model_response = match latency::stage!(
+                    let (model_response, speculative_reads) = match latency::stage!(
                         "model",
                         host.run_context(),
                         state.iteration,
@@ -135,7 +137,7 @@ impl DefaultExecutorPipeline {
                             },
                         ),
                     )? {
-                        ModelStep::Response(next, response) => {
+                        ModelStep::Response(next, response, speculative_reads) => {
                             state = *next;
                             // The model call carried everything drained so
                             // far: the agent has read it.
@@ -148,7 +150,7 @@ impl DefaultExecutorPipeline {
                                     }
                                 })?;
                             }
-                            response
+                            (response, speculative_reads)
                         }
                         ModelStep::RetryIteration(next) => {
                             state = *next;
@@ -197,6 +199,7 @@ impl DefaultExecutorPipeline {
                                     state,
                                     surface: prompt.surface,
                                     calls,
+                                    speculative_reads,
                                 },
                             ),
                         )?,
@@ -336,6 +339,7 @@ impl DefaultExecutorPipeline {
                                 state: resume.state,
                                 surface: resume.surface,
                                 calls: vec![resume.call],
+                                speculative_reads: SpeculativeReads::default(),
                             },
                         ),
                     )?;

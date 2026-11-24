@@ -498,6 +498,7 @@ async fn auth_resume_slot_targets_matching_activity_not_first_capability_match()
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface,
                 calls,
@@ -611,6 +612,7 @@ async fn truncated_batch_gate_preserves_unlaunched_sibling_auth_resume() {
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface,
                 calls,

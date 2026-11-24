@@ -1036,3 +1036,185 @@ async fn complete_streaming_rejects_eof_without_terminal_event() {
         ["partial"]
     );
 }
+
+/// Records streamed tool calls, noting whether the loopback server had
+/// already sent the rest of the stream when each one arrived, and releases
+/// the server on the first call.
+struct ToolCallReadySink {
+    rest_sent: Arc<std::sync::atomic::AtomicBool>,
+    release: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    seen: std::sync::Mutex<Vec<(String, bool)>>,
+}
+
+#[async_trait]
+impl CompletionStreamSink for ToolCallReadySink {
+    async fn text_delta(&self, _delta: String) {}
+
+    async fn tool_call_ready(&self, call: ToolCall) {
+        let rest_sent = self.rest_sent.load(std::sync::atomic::Ordering::SeqCst);
+        self.seen
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((call.id, rest_sent));
+        if let Some(release) = self
+            .release
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            // A dropped receiver means the server already gave up waiting,
+            // which the test reports through its `released` assertion.
+            if release.send(()).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// P2.1: a closed `tool_use` block is announced while the stream is still
+/// open. The server holds back the end of call #2 until the sink has seen
+/// call #1, so the test only passes when `tool_call_ready` fires mid-stream.
+#[tokio::test]
+async fn complete_with_tools_streaming_announces_a_closed_tool_block_before_the_next_finishes() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("loopback listener");
+    let base_url = format!(
+        "http://{}",
+        listener.local_addr().expect("loopback address")
+    );
+    let rest_sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let server_rest_sent = Arc::clone(&rest_sent);
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept request");
+        let mut request = vec![0_u8; 16 * 1024];
+        let _ = socket.read(&mut request).await.expect("read request");
+        let head = concat!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-1\",\"name\":\"read_file\",\"input\":{}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-2\",\"name\":\"read_file\",\"input\":{}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\"}}\n\n",
+        );
+        socket.write_all(head.as_bytes()).await.expect("write head");
+        socket.flush().await.expect("flush head");
+        // Call #2 stays unfinished until call #1 has been announced.
+        let released = tokio::time::timeout(std::time::Duration::from_secs(5), release_rx)
+            .await
+            .is_ok();
+        server_rest_sent.store(true, std::sync::atomic::Ordering::SeqCst);
+        let rest = concat!(
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"b.txt\\\"}\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":9}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        socket.write_all(rest.as_bytes()).await.expect("write rest");
+        // Dropping the socket at the end of the task closes the stream.
+        released
+    });
+
+    let mut config = RegistryProviderConfig::generic(
+        crate::registry::ProviderProtocol::Anthropic,
+        "anthropic_oauth",
+        None,
+        base_url,
+        "claude-test",
+    );
+    config.oauth_token = Some(SecretString::from("test-token".to_string()));
+    let provider =
+        AnthropicProvider::new_oauth(&config, crate::config::DEFAULT_REQUEST_TIMEOUT_SECS)
+            .expect("provider");
+    let sink = Arc::new(ToolCallReadySink {
+        rest_sent: Arc::clone(&rest_sent),
+        release: std::sync::Mutex::new(Some(release_tx)),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let response = provider
+        .complete_with_tools_streaming(
+            crate::provider::ToolCompletionRequest::new(
+                vec![ChatMessage::user("read both")],
+                Vec::new(),
+            ),
+            sink.clone(),
+        )
+        .await
+        .expect("streamed tool response");
+    let released = server.await.expect("loopback server");
+
+    assert!(
+        released,
+        "call #1 must be announced before call #2 finishes"
+    );
+    assert_eq!(
+        sink.seen
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_slice(),
+        [("call-1".to_string(), false), ("call-2".to_string(), true)]
+    );
+    // The final response stays authoritative and carries both, in order.
+    let ids: Vec<&str> = response
+        .tool_calls
+        .iter()
+        .map(|call| call.id.as_str())
+        .collect();
+    assert_eq!(ids, ["call-1", "call-2"]);
+    assert_eq!(
+        response.tool_calls[1].arguments,
+        serde_json::json!({"path": "b.txt"})
+    );
+}
+
+/// A malformed (unparseable) tool block is never announced early; the
+/// whole response is still rejected by `finish`.
+#[tokio::test]
+async fn anthropic_stream_does_not_announce_a_malformed_tool_block() {
+    let sink = ToolCallReadySink {
+        rest_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        release: std::sync::Mutex::new(None),
+        seen: std::sync::Mutex::new(Vec::new()),
+    };
+    let mut response = AnthropicStreamingResponse::for_provider("anthropic_oauth");
+    for (event, data) in [
+        (
+            "content_block_start",
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-1","name":"read_file","input":{}}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}"#,
+        ),
+        (
+            "content_block_stop",
+            r#"{"type":"content_block_stop","index":0}"#,
+        ),
+    ] {
+        ingest_anthropic_event(&mut response, event, data, &sink)
+            .await
+            .expect("event");
+    }
+    assert!(
+        sink.seen
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty()
+    );
+    assert!(response.finish().is_err());
+}

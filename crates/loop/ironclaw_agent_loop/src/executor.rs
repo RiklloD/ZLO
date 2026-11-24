@@ -28,6 +28,7 @@ mod post_capability;
 mod prompt;
 mod read_only_batch;
 mod reply_admission;
+mod streamed_reads;
 mod turn_stop;
 
 use assistant_reply::{AssistantReplyInput, AssistantReplyStage};

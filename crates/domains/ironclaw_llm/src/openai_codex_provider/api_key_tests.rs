@@ -140,14 +140,77 @@ async fn api_key_incomplete_response_reports_exact_length() {
     ];
     let (base_url, _request) = serve_sse(frames).await;
     let provider = api_key_provider(&base_url, "gpt-5.5", 30);
+    let sink = Arc::new(DeltaRecorder::default());
     let response = provider
         .complete_with_tools_streaming(
             ToolCompletionRequest::new(vec![ChatMessage::user("go")], vec![search_tool()]),
-            Arc::new(DeltaRecorder::default()),
+            sink.clone(),
         )
         .await
         .expect("incomplete is a terminal response, not an interruption");
     assert_eq!(response.finish_reason, FinishReason::Length);
+    // A truncated call whose arguments are not JSON is never announced.
+    assert_eq!(sink.events(), ["text:partial"]);
+}
+
+/// P2.1: a closed `function_call` item is announced through
+/// `tool_call_ready` while the stream is still open — before the marker
+/// text that follows it, and before call #2's arguments finish streaming.
+#[tokio::test]
+async fn api_key_stream_announces_a_closed_function_call_before_the_next_finishes() {
+    let frames = vec![
+        event(
+            serde_json::json!({"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"search"}}),
+        ),
+        event(
+            serde_json::json!({"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"query\":\"a\"}"}),
+        ),
+        event(
+            serde_json::json!({"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"search","arguments":"{\"query\":\"a\"}"}}),
+        ),
+        text_delta("between").delayed(Duration::from_millis(50)),
+        event(
+            serde_json::json!({"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"search"}}),
+        ),
+        event(
+            serde_json::json!({"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"{\"query\":"}),
+        ),
+        event(
+            serde_json::json!({"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"\"b\"}"}),
+        )
+        .delayed(Duration::from_millis(50)),
+        event(
+            serde_json::json!({"type":"response.output_item.done","item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"search","arguments":"{\"query\":\"b\"}"}}),
+        ),
+        completed("completed"),
+    ];
+    let (base_url, _request) = serve_sse(frames).await;
+    let provider = api_key_provider(&base_url, "gpt-5.5", 30);
+    let sink = Arc::new(DeltaRecorder::default());
+    let response = provider
+        .complete_with_tools_streaming(
+            ToolCompletionRequest::new(vec![ChatMessage::user("go")], vec![search_tool()]),
+            sink.clone(),
+        )
+        .await
+        .expect("stream completes");
+
+    assert_eq!(
+        sink.events(),
+        ["tool:call_1", "text:between", "tool:call_2"]
+    );
+    // The final response stays authoritative: both calls, in order.
+    let ids: Vec<&str> = response
+        .tool_calls
+        .iter()
+        .map(|call| call.id.as_str())
+        .collect();
+    assert_eq!(ids, ["call_1", "call_2"]);
+    assert_eq!(
+        response.tool_calls[1].arguments,
+        serde_json::json!({"query": "b"})
+    );
+    assert_eq!(response.finish_reason, FinishReason::ToolUse);
 }
 
 /// A refusal content part is a content-policy stop.

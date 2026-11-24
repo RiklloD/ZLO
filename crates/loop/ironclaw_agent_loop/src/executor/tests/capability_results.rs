@@ -115,6 +115,7 @@ async fn capability_stage_returns_after_batch_summary() {
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,

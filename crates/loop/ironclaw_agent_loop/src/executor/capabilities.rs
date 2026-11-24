@@ -25,6 +25,7 @@ use super::capability_records::{
 };
 use super::gates::{gate_outcome_kind, gate_outcome_writes_before_block};
 use super::read_only_batch::BatchEffectClass;
+use super::streamed_reads::SpeculativeReads;
 use super::{
     AgentLoopExecutorError, BatchStep, CancelCheck, CapabilitySurfaceIndex, CheckpointStage,
     ExecutorStage, GateInput, GateStage, StageContext, TurnCompletedStep, capability_batch_counts,
@@ -56,6 +57,9 @@ pub(super) struct CapabilityInput {
     pub(super) state: LoopExecutionState,
     pub(super) surface: VisibleCapabilitySurface,
     pub(super) calls: Vec<CapabilityCallCandidate>,
+    /// Reads pre-executed while the model streamed (P2.1); reused only for
+    /// identical calls of a read-only batch, discarded otherwise.
+    pub(super) speculative_reads: SpeculativeReads,
 }
 
 #[async_trait]
@@ -72,6 +76,7 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
         let mut capability_batch = CapabilityBatchTurnSummary::default();
         let surface_index = CapabilitySurfaceIndex::new(&input.surface);
         let calls = input.calls;
+        let speculative_reads = input.speculative_reads;
         let denied_auth_activity_id = state
             .pending_auth_resume
             .as_ref()
@@ -420,11 +425,14 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
                 capability_invocation_from_candidate(call, resume)
             })
             .collect();
+        // Reads that already ran while the model streamed resolve from their
+        // pre-executed result instead of dispatching again.
+        let pre_executed = speculative_reads.harvest(effect_class, &visible_calls);
         // Race the batch against Stop. Dropping it drops every in-flight
         // invocation (dispatch reservations release, host processes are
         // killed by their group guard), so Stop ends a long tool at once.
         let batch_result = {
-            let batch = self.invoke_batch(ctx, policy, effect_class, invocations);
+            let batch = self.invoke_batch(ctx, policy, effect_class, invocations, pre_executed);
             tokio::pin!(batch);
             let cancellation = ctx.host.cancellation_requested();
             tokio::pin!(cancellation);

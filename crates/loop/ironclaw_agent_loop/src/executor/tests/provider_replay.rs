@@ -94,6 +94,7 @@ async fn filtered_capability_retry_records_signature_after_host_outcome() {
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state: LoopExecutionState::initial_for_run(host.run_context()),
                 surface,
                 calls,

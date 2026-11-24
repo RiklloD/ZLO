@@ -92,7 +92,7 @@ fn is_read_only_capability(capability_id: &CapabilityId) -> bool {
 /// Whether one model-emitted call is provably read-only: the invoked
 /// capability AND every capability it resolves to must be on the read-only
 /// allowlist, so a bridge or alias that fans out to a writer fails closed.
-fn is_read_only_call(call: &CapabilityCallCandidate) -> bool {
+pub(super) fn is_read_only_call(call: &CapabilityCallCandidate) -> bool {
     is_read_only_capability(&call.capability_id)
         && call
             .effective_capability_ids
@@ -108,11 +108,16 @@ fn is_read_only_call(call: &CapabilityCallCandidate) -> bool {
 ///   resolves a durable gate record, which is itself a host-side mutation;
 /// - every call must be [`is_read_only_call`].
 fn is_read_only_batch(state: &LoopExecutionState, calls: &[CapabilityCallCandidate]) -> bool {
-    !calls.is_empty()
-        && state.pending_approval_resume.is_none()
+    !calls.is_empty() && has_no_pending_gate_resume(state) && calls.iter().all(is_read_only_call)
+}
+
+/// Whether no approval, auth, or external-tool resume is pending. A turn that
+/// resumes a parked gate resolves a durable gate record, so neither its batch
+/// nor anything streamed alongside it is treated as read-only.
+pub(super) fn has_no_pending_gate_resume(state: &LoopExecutionState) -> bool {
+    state.pending_approval_resume.is_none()
         && state.pending_auth_resume.is_none()
         && state.pending_external_tool_resume.is_none()
-        && calls.iter().all(is_read_only_call)
 }
 
 #[cfg(test)]

@@ -181,11 +181,14 @@ pub(crate) async fn captured(rx: oneshot::Receiver<CapturedRequest>) -> Captured
         .expect("captured request")
 }
 
-/// A sink recording every text and reasoning delta, in order.
+/// A sink recording every text and reasoning delta, in order, plus one
+/// ordered log of text deltas and streamed tool calls (`text:<delta>` /
+/// `tool:<call id>`) so a test can prove a call was announced mid-stream.
 #[derive(Default)]
 pub(crate) struct DeltaRecorder {
     pub(crate) text: std::sync::Mutex<Vec<String>>,
     pub(crate) reasoning: std::sync::Mutex<Vec<String>>,
+    pub(crate) events: std::sync::Mutex<Vec<String>>,
 }
 
 impl DeltaRecorder {
@@ -202,15 +205,34 @@ impl DeltaRecorder {
             .unwrap_or_else(|error| error.into_inner())
             .clone()
     }
+
+    pub(crate) fn events(&self) -> Vec<String> {
+        self.events
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    fn log(&self, entry: String) {
+        self.events
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(entry);
+    }
 }
 
 #[async_trait::async_trait]
 impl crate::provider::CompletionStreamSink for DeltaRecorder {
     async fn text_delta(&self, delta: String) {
+        self.log(format!("text:{delta}"));
         self.text
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .push(delta);
+    }
+
+    async fn tool_call_ready(&self, call: crate::provider::ToolCall) {
+        self.log(format!("tool:{}", call.id));
     }
 
     async fn reasoning_delta(&self, delta: String) {

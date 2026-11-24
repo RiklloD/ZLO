@@ -18,6 +18,7 @@ use crate::{
 };
 
 use super::prompt::build_prompt_bundle_for_surface;
+use super::streamed_reads::{SpeculativeReads, stream_model_with_read_only_pre_execution};
 use super::{
     AgentLoopExecutorError, CancelCheck, CheckpointStage, ExecutorStage, FailedExitDetails,
     HostStage, StageContext, exit_id, failed_exit, loop_gate_kind, model_error_class,
@@ -40,6 +41,7 @@ pub(super) enum ModelStep {
     Response(
         Box<LoopExecutionState>,
         ironclaw_loop_contracts::LoopModelResponse,
+        SpeculativeReads,
     ),
     RetryIteration(Box<LoopExecutionState>),
     Exit(LoopExit),
@@ -137,18 +139,13 @@ impl ExecutorStage<ModelInput> for ModelStage {
             // host-managed model port's release guard returns the in-flight
             // budget reservation. The cancel check then writes the normal
             // cancelled exit instead of waiting for the full response.
-            let model_result = {
-                let model_call = ctx.host.stream_model(request.clone());
-                tokio::pin!(model_call);
-                let cancellation = ctx.host.cancellation_requested();
-                tokio::pin!(cancellation);
-                tokio::select! {
-                    biased;
-                    result = &mut model_call => Some(result),
-                    _signal = &mut cancellation => None,
-                }
-            };
-            let Some(model_result) = model_result else {
+            //
+            // Streamed read-only tool calls start while the model still
+            // streams (P2.1, `streamed_reads`); a failed, cancelled, or
+            // ineligible attempt drops them, so a retry starts clean.
+            let model_result =
+                stream_model_with_read_only_pre_execution(ctx, &state, request.clone()).await;
+            let Some((model_result, speculative_reads)) = model_result else {
                 return match CheckpointStage.cancel_if_requested(ctx, state).await? {
                     CancelCheck::Exit(exit) => Ok(ModelStep::Exit(exit)),
                     CancelCheck::Continue(_) => Err(AgentLoopExecutorError::Cancelled),
@@ -184,7 +181,11 @@ impl ExecutorStage<ModelInput> for ModelStage {
                     }
                     state.recovery_state = state.recovery_state.cleared_attempts();
                     state.accumulate_model_usage(response.usage);
-                    return Ok(ModelStep::Response(Box::new(state), response));
+                    return Ok(ModelStep::Response(
+                        Box::new(state),
+                        response,
+                        speculative_reads,
+                    ));
                 }
                 Err(error) => {
                     if error.kind == AgentLoopHostErrorKind::Cancelled {

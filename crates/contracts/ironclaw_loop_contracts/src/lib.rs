@@ -82,11 +82,11 @@ pub use host::{
     LoopPromptBundleGrant, LoopPromptBundleRef, LoopPromptBundleRequest,
     LoopPromptDiagnosticMetadata, LoopPromptPort, LoopRecoveryClass, LoopRecoveryDisposition,
     LoopRecoveryStage, LoopRequest, LoopRequestBatch, LoopRunContext, LoopRunInfoPort,
-    LoopSafeSummary, LoopTranscriptPort, ModelStreamChunk, ParentLoopOutput, PromptMode,
-    ProviderToolCall, ProviderToolCallCapabilityIds, ProviderToolCallReference,
-    ProviderToolCallReplay, ProviderToolDefinition, RegisterProviderToolCallRequest,
-    StageCheckpointPayloadRequest, VisibleCapabilityRequest, VisibleCapabilitySurface,
-    sanitize_model_visible_text, validate_model_route_component_value,
+    LoopSafeSummary, LoopStreamedCapabilityCallObserver, LoopTranscriptPort, ModelStreamChunk,
+    ParentLoopOutput, PromptMode, ProviderToolCall, ProviderToolCallCapabilityIds,
+    ProviderToolCallReference, ProviderToolCallReplay, ProviderToolDefinition,
+    RegisterProviderToolCallRequest, StageCheckpointPayloadRequest, VisibleCapabilityRequest,
+    VisibleCapabilitySurface, sanitize_model_visible_text, validate_model_route_component_value,
 };
 pub use instruction_bundle::{
     EphemeralInstructionMaterializationStore, InstructionBundle, InstructionBundleBuilder,

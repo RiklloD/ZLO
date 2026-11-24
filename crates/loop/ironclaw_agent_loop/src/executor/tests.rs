@@ -81,6 +81,7 @@ mod prompt_stage;
 mod provider_replay;
 mod read_only_batch;
 mod reply_input;
+mod streamed_reads;
 
 fn diagnostic_failure_detail(text: &str) -> CapabilityFailureDetail {
     CapabilityFailureDetail::Diagnostic {

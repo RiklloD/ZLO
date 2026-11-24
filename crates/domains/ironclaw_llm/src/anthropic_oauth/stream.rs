@@ -112,6 +112,32 @@ impl AnthropicStreamingResponse {
         Ok(self)
     }
 
+    /// The tool call a just-closed `tool_use` block at `index` streamed, when
+    /// it is complete: id and name present and arguments valid JSON. `None`
+    /// for any other block or a malformed one — [`Self::finish`] stays the
+    /// authority that rejects malformed calls for the whole response.
+    fn ready_tool_call(&self, index: u64) -> Option<ToolCall> {
+        let state = self.tool_call_parts.get(&index)?;
+        if state.id.is_empty() || state.name.is_empty() {
+            return None;
+        }
+        let arguments = if state.input_json.is_empty() {
+            serde_json::json!({})
+        } else {
+            // silent-ok: a malformed block is not announced early; `finish`
+            // rejects it as InvalidResponse for the whole stream.
+            serde_json::from_str(&state.input_json).ok()?
+        };
+        Some(ToolCall {
+            id: state.id.clone(),
+            name: state.name.clone(),
+            arguments,
+            reasoning: None,
+            signature: None,
+            arguments_parse_error: None,
+        })
+    }
+
     /// The finish reason this stream reported: the provider's exact
     /// `stop_reason`, refined to `ToolUse` only when it was a clean stop
     /// that carried tool calls (or said nothing at all).
@@ -259,6 +285,14 @@ pub(super) async fn ingest_anthropic_event(
                     }
                 }
                 _ => {}
+            }
+        }
+        "content_block_stop" => {
+            // A closed `tool_use` block is announced while the stream is
+            // still open so callers can overlap read-only tool I/O with the
+            // rest of generation. Not semantic progress: no new model output.
+            if let Some(call) = response.ready_tool_call(index) {
+                sink.tool_call_ready(call).await;
             }
         }
         "message_delta" => {

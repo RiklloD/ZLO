@@ -1056,6 +1056,159 @@ struct FunctionCallState {
     arguments: String,
 }
 
+/// Function calls a Responses stream has opened, keyed by item id. Shared by
+/// the incremental streaming loop (which announces each closed call through
+/// [`CompletionStreamSink::tool_call_ready`]) and the full-body parser (the
+/// authority for the final response), so both fold the same events the same
+/// way.
+#[derive(Debug, Default)]
+struct FunctionCallTracker {
+    active: std::collections::HashMap<String, FunctionCallState>,
+}
+
+/// A function call closed by `response.output_item.done`.
+struct ClosedFunctionCall {
+    call: ToolCall,
+    /// The arguments parsed as JSON. Unparseable arguments are kept as a
+    /// JSON string (the established final-response behavior) and are never
+    /// announced early.
+    arguments_are_json: bool,
+}
+
+fn function_call_arguments(raw: &str) -> (serde_json::Value, bool) {
+    match serde_json::from_str(raw) {
+        Ok(arguments) => (arguments, true),
+        Err(_) => (serde_json::Value::String(raw.to_string()), false),
+    }
+}
+
+fn tool_call_from_parts(call_id: String, name: String, arguments: serde_json::Value) -> ToolCall {
+    ToolCall {
+        id: call_id,
+        name,
+        arguments,
+        reasoning: None,
+        signature: None,
+        arguments_parse_error: None,
+    }
+}
+
+impl FunctionCallTracker {
+    /// Fold one `function_call` lifecycle event. Returns `true` when the
+    /// event belonged to the function-call lifecycle (other than item
+    /// completion, which goes through [`Self::close`]).
+    fn observe(&mut self, event_type: &str, data: &serde_json::Value) -> bool {
+        match event_type {
+            "response.output_item.added" => {
+                if let Some(item) = data.get("item").filter(|item| {
+                    item.get("type").and_then(|t| t.as_str()) == Some("function_call")
+                }) {
+                    let item_id = item
+                        .get("id")
+                        .or_else(|| item.get("call_id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let call_id = item
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&item_id)
+                        .to_string();
+                    self.active.insert(
+                        item_id,
+                        FunctionCallState {
+                            call_id,
+                            name,
+                            arguments: String::new(),
+                        },
+                    );
+                }
+                true
+            }
+            "response.function_call_arguments.delta" => {
+                if let Some(delta) = data.get("delta").and_then(|d| d.as_str()) {
+                    let item_id = data.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if let Some(state) = self.active.get_mut(item_id) {
+                        state.arguments.push_str(delta);
+                    }
+                }
+                true
+            }
+            "response.function_call_arguments.done" => {
+                // Arguments are finalized, item_id used to match
+                if let Some(args_str) = data.get("arguments").and_then(|a| a.as_str()) {
+                    let item_id = data.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if let Some(state) = self.active.get_mut(item_id) {
+                        state.arguments = args_str.to_string();
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Close the `function_call` item an `output_item.done` event carries.
+    fn close(&mut self, item: &serde_json::Value) -> ClosedFunctionCall {
+        let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let (call_id, name, raw_arguments) = match self.active.remove(item_id) {
+            Some(state) => (state.call_id, state.name, state.arguments),
+            // Fallback: extract directly from the item
+            None => (
+                item.get("call_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(item_id)
+                    .to_string(),
+                item.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                item.get("arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}")
+                    .to_string(),
+            ),
+        };
+        let (arguments, arguments_are_json) = function_call_arguments(&raw_arguments);
+        ClosedFunctionCall {
+            call: tool_call_from_parts(call_id, name, arguments),
+            arguments_are_json,
+        }
+    }
+
+    /// Calls still open when the stream ended, as the final parser keeps them.
+    fn into_remaining(self) -> impl Iterator<Item = ToolCall> {
+        self.active
+            .into_values()
+            .filter(|state| !state.name.is_empty())
+            .map(|state| {
+                let (arguments, _) = function_call_arguments(&state.arguments);
+                tool_call_from_parts(state.call_id, state.name, arguments)
+            })
+    }
+}
+
+/// The tool call to announce for a streamed Responses event: a
+/// `function_call` item that just closed with a name and JSON arguments.
+fn ready_function_call(tracker: &mut FunctionCallTracker, event: &SseEvent) -> Option<ToolCall> {
+    if tracker.observe(&event.event_type, &event.data)
+        || event.event_type != "response.output_item.done"
+    {
+        return None;
+    }
+    let item = event
+        .data
+        .get("item")
+        .filter(|item| item.get("type").and_then(|t| t.as_str()) == Some("function_call"))?;
+    let closed = tracker.close(item);
+    (closed.arguments_are_json && !closed.call.name.is_empty()).then_some(closed.call)
+}
+
 /// Consume the Responses API incrementally, publishing text deltas while
 /// retaining the established full-response parser as the authority for tool
 /// calls, usage, finish reasons, and terminal validation.
@@ -1070,6 +1223,7 @@ where
 {
     let mut stream = stream.eventsource();
     let mut collected = String::new();
+    let mut function_calls = FunctionCallTracker::default();
 
     loop {
         let event = tokio::time::timeout(idle_timeout, stream.next())
@@ -1119,6 +1273,15 @@ where
         {
             sink.reasoning_delta(delta.to_string()).await;
         }
+        // A closed function call is announced before `response.completed`
+        // so callers can overlap read-only tool I/O with generation; the
+        // full-body parse below stays the authority for the final response.
+        if let Some(event) = parsed.as_ref()
+            && let Some(sink) = sink.as_ref()
+            && let Some(call) = ready_function_call(&mut function_calls, event)
+        {
+            sink.tool_call_ready(call).await;
+        }
 
         if parsed.as_ref().is_some_and(|event| {
             matches!(
@@ -1153,8 +1316,7 @@ fn parse_sse_response_for(body: &str, provider: &str) -> Result<ParsedResponse, 
     // the response status, else a content refusal.
     let mut reported_finish: Option<FinishReason> = None;
     let mut saw_refusal = false;
-    let mut active_function_calls: std::collections::HashMap<String, FunctionCallState> =
-        std::collections::HashMap::new();
+    let mut function_calls = FunctionCallTracker::default();
     let mut response_status: Option<String> = None;
     // Whether a terminal `response.completed` event was observed. A stream
     // that ends without it (mid-stream disconnect) is truncated and must not
@@ -1207,67 +1369,8 @@ fn parse_sse_response_for(body: &str, provider: &str) -> Result<ParsedResponse, 
                     &event.data,
                 ) => {}
 
-            // Output item added (could be message or function_call)
-            "response.output_item.added" => {
-                if let Some(item) = event.data.get("item") {
-                    let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    if item_type == "function_call" {
-                        let item_id = item
-                            .get("id")
-                            .or_else(|| item.get("call_id"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let name = item
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let call_id = item
-                            .get("call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&item_id)
-                            .to_string();
-                        active_function_calls.insert(
-                            item_id.clone(),
-                            FunctionCallState {
-                                call_id,
-                                name,
-                                arguments: String::new(),
-                            },
-                        );
-                    }
-                }
-            }
-
-            // Function call arguments streaming
-            "response.function_call_arguments.delta" => {
-                if let Some(delta) = event.data.get("delta").and_then(|d| d.as_str()) {
-                    let item_id = event
-                        .data
-                        .get("item_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if let Some(state) = active_function_calls.get_mut(item_id) {
-                        state.arguments.push_str(delta);
-                    }
-                }
-            }
-
-            // Function call arguments done
-            "response.function_call_arguments.done" => {
-                // Arguments are finalized, item_id used to match
-                if let Some(args_str) = event.data.get("arguments").and_then(|a| a.as_str()) {
-                    let item_id = event
-                        .data
-                        .get("item_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if let Some(state) = active_function_calls.get_mut(item_id) {
-                        state.arguments = args_str.to_string();
-                    }
-                }
-            }
+            // Function-call lifecycle (added / argument deltas / done)
+            event_type if function_calls.observe(event_type, &event.data) => {}
 
             // Output item done (finalize function call)
             "response.output_item.done" => {
@@ -1287,49 +1390,7 @@ fn parse_sse_response_for(body: &str, provider: &str) -> Result<ParsedResponse, 
                             }));
                         }
                     } else if item_type == "function_call" {
-                        let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        if let Some(state) = active_function_calls.remove(item_id) {
-                            let arguments: serde_json::Value =
-                                serde_json::from_str(&state.arguments).unwrap_or_else(|_| {
-                                    serde_json::Value::String(state.arguments.clone())
-                                });
-                            tool_calls.push(ToolCall {
-                                id: state.call_id,
-                                name: state.name,
-                                arguments,
-                                reasoning: None,
-                                signature: None,
-                                arguments_parse_error: None,
-                            });
-                        } else {
-                            // Fallback: extract directly from the item
-                            let call_id = item
-                                .get("call_id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or(item_id)
-                                .to_string();
-                            let name = item
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let args_str = item
-                                .get("arguments")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("{}");
-                            let arguments: serde_json::Value = serde_json::from_str(args_str)
-                                .unwrap_or_else(|_| {
-                                    serde_json::Value::String(args_str.to_string())
-                                });
-                            tool_calls.push(ToolCall {
-                                id: call_id,
-                                name,
-                                arguments,
-                                reasoning: None,
-                                signature: None,
-                                arguments_parse_error: None,
-                            });
-                        }
+                        tool_calls.push(function_calls.close(item).call);
                     }
                 }
             }
@@ -1451,20 +1512,7 @@ fn parse_sse_response_for(body: &str, provider: &str) -> Result<ParsedResponse, 
     }
 
     // Finalize any remaining active function calls
-    for (_, state) in active_function_calls {
-        if !state.name.is_empty() {
-            let arguments: serde_json::Value = serde_json::from_str(&state.arguments)
-                .unwrap_or(serde_json::Value::String(state.arguments));
-            tool_calls.push(ToolCall {
-                id: state.call_id,
-                name: state.name,
-                arguments,
-                reasoning: None,
-                signature: None,
-                arguments_parse_error: None,
-            });
-        }
-    }
+    tool_calls.extend(function_calls.into_remaining());
 
     // Truncated-stream guard: the Responses API always emits a terminal
     // `response.completed` (errors return early above). If the stream ended

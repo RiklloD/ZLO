@@ -244,6 +244,7 @@ async fn capability_stage_trims_batch_to_remaining_capability_budget() {
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface,
                 calls,
@@ -359,6 +360,7 @@ async fn stale_surface_batch_releases_unlaunched_invocation_budget() {
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: surface.clone(),
                 calls: calls(),
@@ -380,6 +382,7 @@ async fn stale_surface_batch_releases_unlaunched_invocation_budget() {
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state: *state,
                 surface,
                 calls: calls(),
@@ -469,6 +472,7 @@ async fn capability_retry_does_not_dispatch_when_invocation_budget_is_exhausted(
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface,
                 calls: vec![call],

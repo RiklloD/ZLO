@@ -41,7 +41,7 @@ impl InvokedCapabilityBatch {
     }
 }
 
-fn resolution_stops_parallel_launch(resolution: &Resolution) -> bool {
+pub(super) fn resolution_stops_parallel_launch(resolution: &Resolution) -> bool {
     resolution.parks()
         || matches!(
             resolution,
@@ -61,10 +61,31 @@ impl CapabilityStage {
         policy: BatchPolicyKind,
         effect_class: BatchEffectClass,
         invocations: Vec<LoopRequest>,
+        pre_executed: Vec<Option<Resolution>>,
     ) -> Result<InvokedCapabilityBatch, InvokedCapabilityBatchError> {
+        if pre_executed.len() != invocations.len() {
+            return Err(InvokedCapabilityBatchError {
+                error: Box::new(ironclaw_loop_contracts::AgentLoopHostError::new(
+                    ironclaw_loop_contracts::AgentLoopHostErrorKind::Internal,
+                    "pre-executed results are not aligned with the capability batch",
+                )),
+                launched_count: 0,
+            });
+        }
         let ordered = invocations.len() >= 2
             && policy == BatchPolicyKind::Parallel
             && ctx.host.requires_ordered_batch_invocation(&invocations);
+        // A lone read that already ran while the model streamed is the whole
+        // batch: reuse it without entering the host again.
+        let mut pre_executed = pre_executed;
+        if invocations.len() == 1
+            && let Some(resolution) = pre_executed.pop().flatten()
+        {
+            return Ok(InvokedCapabilityBatch {
+                outcomes: vec![InvokedCapabilityOutcome::Resolution(resolution)],
+                truncated_launch_window: false,
+            });
+        }
         if invocations.len() < 2 || policy != BatchPolicyKind::Parallel || ordered {
             return ctx
                 .host
@@ -82,9 +103,17 @@ impl CapabilityStage {
         }
 
         let invocation_count = invocations.len();
-        let mut indexed_invocations = invocations.into_iter().enumerate();
-        let invoke = |(index, invocation)| async move {
-            (index, ctx.host.invoke_capability(invocation).await)
+        let mut indexed_invocations = invocations.into_iter().zip(pre_executed).enumerate();
+        // A pre-executed read resolves at once from its streamed result but
+        // still occupies its launch slot, so window and stop semantics hold.
+        let invoke = |(index, (invocation, pre_executed)): (
+            usize,
+            (LoopRequest, Option<Resolution>),
+        )| async move {
+            match pre_executed {
+                Some(resolution) => (index, Ok(resolution)),
+                None => (index, ctx.host.invoke_capability(invocation).await),
+            }
         };
         let mut pending = FuturesUnordered::new();
         let mut launched = 0_usize;

@@ -427,12 +427,46 @@ pub struct CapabilityCallCandidate {
     pub provider_replay: Option<ProviderToolCallReplay>,
 }
 
+/// Receives capability-call candidates a host validated and registered while
+/// the model response was still streaming.
+///
+/// A candidate is speculative: the response carrying it may still fail, be
+/// cancelled, truncate, or be replaced by a retry. The loop may pre-execute
+/// a provably read-only candidate, but acts on its result only after the
+/// final [`ParentLoopOutput::CapabilityCalls`] carries an identical
+/// candidate (same activity, surface version, capability ids, input ref).
+/// Synchronous and non-blocking so announcing never stalls the stream.
+pub trait LoopStreamedCapabilityCallObserver: Send + Sync {
+    fn capability_call_ready(&self, candidate: CapabilityCallCandidate);
+}
+
 #[async_trait]
 pub trait LoopModelPort: Send + Sync {
     async fn stream_model(
         &self,
         request: LoopModelRequest,
     ) -> Result<LoopModelResponse, AgentLoopHostError>;
+
+    /// [`Self::stream_model`], announcing each tool call the provider
+    /// finishes streaming to `observer` before the response completes.
+    ///
+    /// The default ignores the observer, so a port that does not override
+    /// this never enables speculative pre-execution. Overriding it is the
+    /// host's opt-in, and asserts that (1) an announced candidate is exactly
+    /// the one the final response would carry for that call (registration is
+    /// idempotent per input ref), and (2) invoking a pure-read capability on
+    /// it before the response is accepted leaves no external effect and no
+    /// durable record beyond what an unconfirmed read may leave. Decorators
+    /// must forward this method to keep the opt-in; one that does not
+    /// degrades to no speculation, never to a different result.
+    async fn stream_model_observing_capability_calls(
+        &self,
+        request: LoopModelRequest,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<LoopModelResponse, AgentLoopHostError> {
+        drop(observer);
+        self.stream_model(request).await
+    }
 }
 
 #[cfg(test)]
@@ -526,5 +560,60 @@ mod tests {
             .authorize_latest_model_request(&context, &[], &None)
             .expect_err("evicted grant must not authorize a model request");
         assert_eq!(error.kind, AgentLoopHostErrorKind::InvalidInvocation);
+    }
+
+    struct ReplyPort;
+
+    #[async_trait]
+    impl LoopModelPort for ReplyPort {
+        async fn stream_model(
+            &self,
+            _request: LoopModelRequest,
+        ) -> Result<LoopModelResponse, AgentLoopHostError> {
+            Ok(LoopModelResponse {
+                chunks: Vec::new(),
+                safe_reasoning_deltas: Vec::new(),
+                output: ParentLoopOutput::AssistantReply(AssistantReply {
+                    content: "done".to_string(),
+                }),
+                effective_model_profile_id: ModelProfileId::new("model").expect("profile"),
+                usage: None,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingObserver(std::sync::atomic::AtomicUsize);
+
+    impl LoopStreamedCapabilityCallObserver for CountingObserver {
+        fn capability_call_ready(&self, _candidate: CapabilityCallCandidate) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// A port that does not opt in streams exactly as before and never
+    /// announces a call, so existing ports enable no speculation.
+    #[tokio::test]
+    async fn observing_stream_defaults_to_plain_stream_without_announcing() {
+        let observer = Arc::new(CountingObserver::default());
+        let request = LoopModelRequest {
+            messages: Vec::new(),
+            inline_messages: Vec::new(),
+            surface_version: None,
+            model_preference: None,
+            fallback_index: 0,
+            iteration: 0,
+            capability_view: None,
+            tool_choice: None,
+        };
+        let response = ReplyPort
+            .stream_model_observing_capability_calls(request, observer.clone())
+            .await
+            .expect("default delegates to stream_model");
+        assert!(matches!(
+            response.output,
+            ParentLoopOutput::AssistantReply(ref reply) if reply.content == "done"
+        ));
+        assert_eq!(observer.0.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

@@ -54,6 +54,7 @@ async fn capability_stage_denied_approval_resume_surfaces_gate_declined_failure_
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,
@@ -174,6 +175,7 @@ async fn capability_stage_denied_approval_resume_with_feedback_hands_feedback_to
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,
@@ -292,6 +294,7 @@ async fn capability_stage_denied_auth_resume_surfaces_gate_declined_failure_and_
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: current_surface,
                 calls,
@@ -404,6 +407,7 @@ async fn auth_gate_without_resume_token_records_activity_id_for_denial_failure()
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state: LoopExecutionState::initial_for_run(host.run_context()),
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,
@@ -446,6 +450,7 @@ async fn auth_gate_without_resume_token_records_activity_id_for_denial_failure()
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state: blocked_state,
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,
@@ -614,6 +619,7 @@ async fn capability_stage_denied_auth_resume_only_fails_matching_call_remaining_
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,
@@ -828,6 +834,7 @@ async fn capability_stage_denied_auth_resume_only_fails_matching_activity_when_c
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,
@@ -1046,6 +1053,7 @@ async fn capability_stage_denied_auth_resume_one_denied_two_remaining_all_dispat
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,
@@ -1279,6 +1287,7 @@ async fn capability_stage_denied_approval_resume_only_fails_matching_call_remain
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,
@@ -1471,6 +1480,7 @@ async fn capability_stage_denied_approval_resume_no_matching_call_dispatches_unr
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,
@@ -1615,6 +1625,7 @@ async fn capability_stage_denied_external_tool_resume_clears_matching_slot_witho
         .process(
             ctx,
             CapabilityInput {
+                speculative_reads: Default::default(),
                 state,
                 surface: ironclaw_loop_contracts::LoopCapabilityPort::visible_capabilities(
                     &host,

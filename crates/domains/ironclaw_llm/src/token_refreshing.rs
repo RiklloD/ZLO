@@ -73,6 +73,14 @@ impl CompletionStreamSink for AuthRetryStreamSink {
         self.inner.reasoning_delta(delta).await;
     }
 
+    /// Forwarded and not counted as emitted text: a streamed tool call is
+    /// speculative (see [`CompletionStreamSink::tool_call_ready`]), so the
+    /// auth retry stays safe and the consumer reconciles against the final
+    /// response.
+    async fn tool_call_ready(&self, call: crate::provider::ToolCall) {
+        self.inner.tool_call_ready(call).await;
+    }
+
     fn text_is_visible(&self) -> bool {
         self.inner.text_is_visible()
     }
@@ -462,6 +470,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         deltas: Mutex<Vec<String>>,
+        tool_calls: Mutex<Vec<String>>,
         replacements: AtomicUsize,
         finishes: AtomicUsize,
     }
@@ -470,6 +479,10 @@ mod tests {
     impl CompletionStreamSink for RecordingSink {
         async fn text_delta(&self, delta: String) {
             self.deltas.lock().unwrap().push(delta);
+        }
+
+        async fn tool_call_ready(&self, call: crate::provider::ToolCall) {
+            self.tool_calls.lock().unwrap().push(call.id);
         }
 
         fn supports_text_replacement(&self) -> bool {
@@ -695,5 +708,27 @@ mod tests {
 
         assert_eq!(inner.replacements.load(Ordering::Relaxed), 1);
         assert_eq!(inner.finishes.load(Ordering::Relaxed), 1);
+    }
+
+    /// A streamed tool call reaches the caller's sink through the auth-retry
+    /// wrapper and is not mistaken for visible text (which would suppress the
+    /// safe auth retry).
+    #[tokio::test]
+    async fn auth_retry_sink_forwards_tool_call_ready_without_marking_text() {
+        let inner = Arc::new(RecordingSink::default());
+        let sink = AuthRetryStreamSink::new(inner.clone());
+
+        sink.tool_call_ready(crate::provider::ToolCall {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({}),
+            reasoning: None,
+            signature: None,
+            arguments_parse_error: None,
+        })
+        .await;
+
+        assert_eq!(inner.tool_calls.lock().unwrap().as_slice(), ["call_1"]);
+        assert!(!sink.emitted_text());
     }
 }

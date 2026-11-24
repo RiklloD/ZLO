@@ -50,6 +50,10 @@ mod compaction;
 
 use compaction::MockCompactionSupport;
 
+/// Candidates one observing model call announces, and how many speculative
+/// single invocations must start before its response is released.
+type StreamedCallScript = (Vec<CapabilityCallCandidate>, usize);
+
 #[derive(Clone)]
 pub(super) struct MockHost {
     context: LoopRunContext,
@@ -112,6 +116,14 @@ pub(super) struct MockHost {
     fail_batch_with: Arc<Mutex<Option<AgentLoopHostErrorKind>>>,
     fail_transcript_with: Arc<Mutex<Option<AgentLoopHostErrorKind>>>,
     extra_capability_descriptors: Vec<CapabilityDescriptorView>,
+    /// P2.1: per observing model call, the candidates to announce mid-stream
+    /// and how many speculative single invocations must start before the
+    /// response is released.
+    streamed_calls: Arc<Mutex<VecDeque<StreamedCallScript>>>,
+    /// Per observing model call: whether the expected speculative reads
+    /// started while the response was still held open.
+    streamed_overlap: Arc<Mutex<Vec<bool>>>,
+    finished_single_invocations: Arc<AtomicUsize>,
 }
 
 impl MockHost {
@@ -167,7 +179,32 @@ impl MockHost {
             fail_batch_with: Arc::new(Mutex::new(None)),
             fail_transcript_with: Arc::new(Mutex::new(None)),
             extra_capability_descriptors: Vec::new(),
+            streamed_calls: Arc::new(Mutex::new(VecDeque::new())),
+            streamed_overlap: Arc::new(Mutex::new(Vec::new())),
+            finished_single_invocations: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Announce `candidates` mid-stream on the next observing model call and
+    /// hold its response until `expected_starts` single invocations started.
+    pub(super) fn with_streamed_capability_calls(
+        self,
+        candidates: Vec<CapabilityCallCandidate>,
+        expected_starts: usize,
+    ) -> Self {
+        self.streamed_calls
+            .lock()
+            .expect("lock")
+            .push_back((candidates, expected_starts));
+        self
+    }
+
+    pub(super) fn streamed_overlap(&self) -> Vec<bool> {
+        self.streamed_overlap.lock().expect("lock").clone()
+    }
+
+    pub(super) fn finished_single_invocations(&self) -> usize {
+        self.finished_single_invocations.load(Ordering::SeqCst)
     }
 
     pub(super) fn with_suppressed_scheduled_context(mut self) -> Self {
@@ -908,6 +945,35 @@ impl ironclaw_loop_contracts::LoopModelPort for MockHost {
         }
         Ok(response)
     }
+
+    async fn stream_model_observing_capability_calls(
+        &self,
+        request: LoopModelRequest,
+        observer: Arc<dyn ironclaw_loop_contracts::LoopStreamedCapabilityCallObserver>,
+    ) -> Result<LoopModelResponse, AgentLoopHostError> {
+        let script = self.streamed_calls.lock().expect("lock").pop_front();
+        let Some((candidates, expected_starts)) = script else {
+            return self.stream_model(request).await;
+        };
+        let started_before = self.single_invocations.lock().expect("lock").len();
+        for candidate in candidates {
+            observer.capability_call_ready(candidate);
+        }
+        // Overlap barrier: the "stream" stays open until the announced reads
+        // have entered the host, so a pass proves they started before the
+        // model call returned.
+        let mut overlapped = expected_starts == 0;
+        for _ in 0..40 {
+            if overlapped {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            overlapped = self.single_invocations.lock().expect("lock").len()
+                >= started_before + expected_starts;
+        }
+        self.streamed_overlap.lock().expect("lock").push(overlapped);
+        self.stream_model(request).await
+    }
 }
 
 #[async_trait]
@@ -1018,6 +1084,8 @@ impl ironclaw_loop_contracts::LoopCapabilityPort for MockHost {
         tokio::time::sleep(delay).await;
         self.active_single_invocations
             .fetch_sub(1, Ordering::SeqCst);
+        self.finished_single_invocations
+            .fetch_add(1, Ordering::SeqCst);
         outcome
     }
 
