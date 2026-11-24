@@ -298,13 +298,16 @@ impl Engine {
                 "A fork keeps its source thread's profile; delegate to run as another profile.",
             ));
         }
-        let (runtime_id, provider, model) = self
-            .resolve_target(
-                &target.cloned().unwrap_or_default(),
-                &source_ctx,
-                &source.runtime_id,
-            )
+        let target = target.cloned().unwrap_or_default();
+        let crate::delegation::Route {
+            runtime: runtime_id,
+            provider,
+            model,
+            effort: route_effort,
+        } = self
+            .resolve_target(&target, &source_ctx, &source.runtime_id)
             .await?;
+        let fork_effort = crate::delegation::explicit_effort(&target).or(route_effort);
         let runtime = self.runtime(&runtime_id)?;
         let source_title = source.title.clone().unwrap_or_else(|| "thread".into());
         let name = match title.map(str::trim).filter(|t| !t.is_empty()) {
@@ -376,6 +379,11 @@ impl Engine {
         fork.title = Some(name.clone());
         fork.native_session_id = created.native_session_id;
         self.store.ensure_thread(&fork).await?;
+        if fork_effort.is_some() {
+            self.store
+                .set_thread_effort(&fork.thread_id, fork_effort.as_deref())
+                .await?;
+        }
         let pending = handoff_text.is_some();
         // A portable fork rides its context on the first message sent in it,
         // so it runs nothing until then and merge-back has no run to skip.

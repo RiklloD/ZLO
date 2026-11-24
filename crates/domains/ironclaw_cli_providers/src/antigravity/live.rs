@@ -14,7 +14,10 @@
 //! daemon (`IsDaemon`) may never finish, so it never holds a turn. agy's
 //! own `schedule` call stays in progress until its wake fires, then the
 //! agent replies by itself: it holds the turn too, without the silent-hold
-//! bound a command gets ([`LiveFold::schedule_pending`]).
+//! bound a command gets ([`LiveFold::schedule_pending`]), but only until
+//! its own deadline: the delay it asked for plus a grace, or a finite
+//! fallback when it named none ([`LiveFold::schedule_overdue`]). A wake
+//! that never reports firing must not pin the turn and its agent.
 //!
 //! agy reports its `update_steps` checklist only as tool calls: they become
 //! the thread's plan, never tool rows ([`LiveFold::take_steps`]). A call
@@ -67,6 +70,10 @@ struct Tool {
     daemon: bool,
     /// agy's own `schedule` call: running until its wake fires.
     schedule: bool,
+    /// The delay a `schedule` call asked for (`DurationSeconds`).
+    wake_in: Option<std::time::Duration>,
+    /// When the call started running.
+    running_since: Option<std::time::Instant>,
     status: Status,
     /// Output already sent, to send only what an update adds.
     output: String,
@@ -113,6 +120,26 @@ const SUBAGENT_SUBJECT_FIELDS: [&str; 9] = [
 const SCHEDULE_TITLES: [&str; 2] = ["Run schedule", "Running schedule"];
 /// The title of agy's `update_steps` checklist call.
 const STEPS_TITLE: &str = "Run update_steps";
+/// The delay a `schedule` call names, in seconds (agy 1.5.13:
+/// `DurationSeconds`), as a number or a numeric string.
+fn wake_delay(input: &Value) -> Option<std::time::Duration> {
+    [
+        "DurationSeconds",
+        "durationSeconds",
+        "DelaySeconds",
+        "delaySeconds",
+    ]
+    .iter()
+    .find_map(|key| {
+        let value = input.get(*key)?;
+        value
+            .as_f64()
+            .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+    })
+    .filter(|secs| secs.is_finite() && *secs >= 0.0)
+    .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok())
+}
+
 /// Input fields that hold a command line.
 const COMMAND_FIELDS: [&str; 4] = ["CommandLine", "command_line", "commandLine", "command"];
 
@@ -245,6 +272,8 @@ impl LiveFold {
                 self.tools.entry(id.to_string()).or_insert(Tool {
                     execute: s(update, "kind") == Some("execute") && proxied_mcp(update).is_none(),
                     schedule: false,
+                    wake_in: None,
+                    running_since: None,
                     daemon: update["rawInput"]["IsDaemon"].as_bool() == Some(true),
                     status: Status::Pending,
                     output: String::new(),
@@ -256,6 +285,9 @@ impl LiveFold {
         }
         if s(update, "title").is_some_and(|t| SCHEDULE_TITLES.contains(&t)) {
             tool.schedule = true;
+        }
+        if let Some(delay) = wake_delay(&update["rawInput"]) {
+            tool.wake_in = Some(delay);
         }
         if let Some(text) = output_text(update)
             && text != tool.output
@@ -274,7 +306,12 @@ impl LiveFold {
         }
         match update.get("status").and_then(Value::as_str) {
             Some("pending") => tool.status = Status::Pending,
-            Some("in_progress") => tool.status = Status::Running,
+            Some("in_progress") => {
+                if tool.status != Status::Running {
+                    tool.running_since = Some(std::time::Instant::now());
+                }
+                tool.status = Status::Running;
+            }
             Some(end @ ("completed" | "failed")) => {
                 tool.status = Status::Done;
                 steps.push(LiveStep::ToolFinished {
@@ -302,6 +339,28 @@ impl LiveFold {
         self.tools
             .values()
             .any(|t| t.schedule && t.status == Status::Running)
+    }
+
+    /// A scheduled wake is past its deadline: the delay it asked for plus
+    /// `grace` since it started, or `fallback` when it named no delay; never
+    /// later than `cap`.
+    pub(crate) fn schedule_overdue(
+        &self,
+        grace: std::time::Duration,
+        fallback: std::time::Duration,
+        cap: std::time::Duration,
+    ) -> bool {
+        self.tools
+            .values()
+            .filter(|t| t.schedule && t.status == Status::Running)
+            .any(|t| {
+                let bound = t
+                    .wake_in
+                    .map_or(fallback, |delay| delay.saturating_add(grace))
+                    .min(cap);
+                t.running_since
+                    .is_some_and(|since| since.elapsed() >= bound)
+            })
     }
 
     /// An `update_steps` update: `Some(plan)` for one that carries its

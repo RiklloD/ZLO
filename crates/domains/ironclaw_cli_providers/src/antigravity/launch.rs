@@ -142,7 +142,7 @@ pub(super) async fn prepare_dirs(config: &AntigravityConfig) -> std::io::Result<
 }
 
 /// `create_dir_all`, with every folder it creates 0700.
-async fn private_dir_all(path: &Path) -> std::io::Result<()> {
+pub(super) async fn private_dir_all(path: &Path) -> std::io::Result<()> {
     tokio::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -432,6 +432,8 @@ mod tests {
             work_dir: state.join("work"),
             state_dir: state,
             background_hold: Duration::from_secs(30),
+            prompt_silence: Duration::from_secs(120),
+            keyring: None,
         }
     }
 

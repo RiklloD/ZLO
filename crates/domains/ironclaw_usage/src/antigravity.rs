@@ -9,7 +9,14 @@
 //! agy 1.5 writes no `acp_token.json`: a file sign-in of its own
 //! (`antigravity-acp/antigravity-oauth-token`) holds an access token and its
 //! expiry but no OAuth client, so it is used as is until it expires (t3code
-//! #38957). A sign-in agy keeps in the OS keyring is not read.
+//! #38957).
+//!
+//! By default agy 1.5 keeps the sign-in in one OS keyring entry instead
+//! (go-keyring: service `gemini`, account `antigravity`; the same entry the
+//! Antigravity driver in `ironclaw_cli_providers` looks up). Its secret is
+//! never read: reading it would show the keychain's access prompt. The
+//! entry is only looked up by its attributes, so a keyring-only sign-in
+//! reads as signed in with its quota unavailable, never as signed out.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -28,11 +35,22 @@ const QUOTA_HOSTS: &[&str] = &[
 ];
 const USER_AGENT: &str = "antigravity/hub/1.0.0 (aidev_client; os_type=darwin; cl=963137146)";
 
+/// agy's go-keyring entry (`ironclaw_cli_providers`' `signin` names the same).
+const KEYRING_SERVICE: &str = "gemini";
+const KEYRING_ACCOUNT: &str = "antigravity";
+const KEYRING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+pub(crate) const KEYRING_SIGN_IN: &str = "Signed in to Antigravity through the system keychain. \
+     Quota lookup is unavailable for keychain sign-ins: ZLO never reads keychain secrets.";
+
 pub struct AntigravityLogin {
     /// Each profile's `antigravity-acp` folder, in order.
-    sign_in_dirs: Vec<PathBuf>,
+    pub(crate) sign_in_dirs: Vec<PathBuf>,
     /// `(fingerprint of the refresh token, access token, expiry millis)`.
-    access: Mutex<Option<(String, SecretString, i64)>>,
+    pub(crate) access: Mutex<Option<(String, SecretString, i64)>>,
+    /// The tool that looks agy's keyring entry up without reading it
+    /// (`/usr/bin/security` on macOS); `None` checks no keyring.
+    pub(crate) keyring_tool: Option<PathBuf>,
 }
 
 /// What a profile's sign-in buys a quota read with.
@@ -65,11 +83,54 @@ impl AntigravityLogin {
                 acp(home.join(".ironclaw/antigravity/profile")),
             ],
             access: Mutex::new(None),
+            keyring_tool: Some(PathBuf::from("/usr/bin/security"))
+                .filter(|tool| cfg!(target_os = "macos") && tool.is_file()),
+        }
+    }
+
+    /// Whether agy's keyring entry exists, looked up by its attributes
+    /// alone (no `-g`/`-w`: the secret, and its access prompt, stay out).
+    async fn keyring_signed_in(&self) -> bool {
+        let Some(tool) = &self.keyring_tool else {
+            return false;
+        };
+        let mut command = tokio::process::Command::new(tool);
+        command
+            .args([
+                "find-generic-password",
+                "-s",
+                KEYRING_SERVICE,
+                "-a",
+                KEYRING_ACCOUNT,
+            ])
+            .env_clear()
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        for key in ["HOME", "USER", "LOGNAME", "PATH"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        match tokio::time::timeout(KEYRING_TIMEOUT, command.status()).await {
+            Ok(Ok(status)) => status.success(),
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "antigravity keyring lookup did not start");
+                false
+            }
+            Err(_elapsed) => {
+                tracing::debug!("antigravity keyring lookup timed out");
+                false
+            }
         }
     }
 
     pub(crate) async fn fetch(&self, egress: &dyn NetworkHttpEgress, now_ms: i64) -> Fetched {
         let Some(credential) = self.credential().await else {
+            if self.keyring_signed_in().await {
+                return Fetched::NotConfigured(KEYRING_SIGN_IN.to_string());
+            }
             return Fetched::NotConfigured(
                 "Sign in to Antigravity once to see its limits.".to_string(),
             );

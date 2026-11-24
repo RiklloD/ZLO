@@ -323,7 +323,9 @@ impl Engine {
                 "effort": effort,
             }));
         }
-        let mut out = self.switch_route(thread, target).await?;
+        let (mut out, route_effort) = self.switch_route(thread, target).await?;
+        // A `<model>-<level>` id carries its level when none is explicit.
+        let effort = effort.or(route_effort);
         if out["ok"] == json!(true) {
             self.store
                 .set_thread_effort(&thread.thread_id, effort.as_deref())
@@ -339,7 +341,11 @@ impl Engine {
     /// a context handoff when the runtime changed.
     /// Model `default` clears the pick (IronClaw's loop then uses the
     /// profile's model).
-    async fn switch_route(&self, thread: &ThreadRecord, target: &Target) -> Result<Value> {
+    async fn switch_route(
+        &self,
+        thread: &ThreadRecord,
+        target: &Target,
+    ) -> Result<(Value, Option<String>)> {
         if thread.is_running() {
             return Err(OrchestratorError::request(
                 "thread_busy",
@@ -354,15 +360,22 @@ impl Engine {
         };
         let wants_default = target.model.as_deref().map(str::trim) == Some("default");
         // "Default" exists only on IronClaw's loop.
-        let (runtime_id, provider, model) = if wants_default {
-            (self.default_runtime.clone(), target.provider.clone(), None)
+        let (runtime_id, provider, model, route_effort) = if wants_default {
+            (
+                self.default_runtime.clone(),
+                target.provider.clone(),
+                None,
+                None,
+            )
         } else {
             let probe = Target {
                 model: target.model.clone().filter(|_| !wants_default),
                 ..target.clone()
             };
-            self.resolve_target(&probe, &ctx, &thread.runtime_id)
-                .await?
+            let route = self
+                .resolve_target(&probe, &ctx, &thread.runtime_id)
+                .await?;
+            (route.runtime, route.provider, route.model, route.effort)
         };
         // A thread in a worktree stays on runtimes that run turns there.
         if self.thread_work_dir(&thread.thread_id).await?.is_some() {
@@ -381,9 +394,11 @@ impl Engine {
             };
         // A thread with history keeps its id: the switch opens a segment.
         if !is_fresh(thread) {
-            return self
-                .switch_in_place(thread, runtime_id, provider, model)
-                .await;
+            return Ok((
+                self.switch_in_place(thread, runtime_id, provider, model)
+                    .await?,
+                route_effort,
+            ));
         }
         if runtime_id == thread.runtime_id {
             self.store
@@ -395,11 +410,9 @@ impl Engine {
                     thread.native_session_id.as_deref(),
                 )
                 .await?;
-            return Ok(done(
-                "in_place",
-                None,
-                provider.as_deref(),
-                model.as_deref(),
+            return Ok((
+                done("in_place", None, provider.as_deref(), model.as_deref()),
+                route_effort,
             ));
         }
         let (provider, model, session) = if runtime_id == self.default_runtime {
@@ -430,7 +443,10 @@ impl Engine {
                 session.as_deref(),
             )
             .await?;
-        Ok(done("rebound", None, provider.as_deref(), model.as_deref()))
+        Ok((
+            done("rebound", None, provider.as_deref(), model.as_deref()),
+            route_effort,
+        ))
     }
 }
 

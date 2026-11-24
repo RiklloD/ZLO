@@ -45,7 +45,12 @@ mod context;
 mod fold;
 pub mod launch;
 mod live;
+mod locked;
 mod outcome;
+mod ownership;
+mod paths;
+pub mod signin;
+mod sqlite;
 mod steer;
 mod store;
 mod superseded;
@@ -107,6 +112,15 @@ const HOLD_QUIET: Duration = Duration::from_secs(60);
 /// How long a wake agy queued may stay silent before the first token of its
 /// reply (t3code's open-reply quiet limit).
 const OPEN_REPLY_QUIET: Duration = Duration::from_secs(120);
+/// How long past the delay it asked for a scheduled wake may take to report
+/// firing (at most the configured background hold).
+const SCHEDULE_GRACE: Duration = Duration::from_secs(5 * 60);
+/// While a silent prompt is watched for a logged failure: how often the
+/// session log is read.
+const SILENCE_CHECK: Duration = Duration::from_secs(5);
+/// How long a prompt may stay silent before its session log is read for a
+/// failure agy logged and never reported (t3code #33596's watchdog).
+pub const DEFAULT_PROMPT_SILENCE: Duration = Duration::from_secs(2 * 60);
 /// The transcript recap a fresh session gets when the thread's earlier
 /// session is gone: this many messages, at most this many characters.
 const RECAP_MESSAGES: usize = 40;
@@ -139,8 +153,17 @@ pub struct AntigravityConfig {
     /// Session-id map, transcripts and the model list.
     pub state_dir: PathBuf,
     /// How long a turn held for a background command waits on a silent
-    /// agent before it ends unverified ([`DEFAULT_BACKGROUND_HOLD`]).
+    /// agent before it ends unverified ([`DEFAULT_BACKGROUND_HOLD`]). A
+    /// scheduled wake that names no delay is held this long too.
     pub background_hold: Duration,
+    /// How long a running prompt may stay silent before its session log is
+    /// checked for a failure agy logged but never reported; one found ends
+    /// the turn with it ([`DEFAULT_PROMPT_SILENCE`]).
+    pub prompt_silence: Duration,
+    /// agy's OS keyring sign-in, looked up (never read) to tell whether the
+    /// account is signed in without starting the agent
+    /// ([`signin::KeyringEntry::agy`]); `None` checks no keyring.
+    pub keyring: Option<signin::KeyringEntry>,
 }
 
 impl AntigravityConfig {
@@ -197,6 +220,8 @@ pub struct AntigravityRuntime {
     refreshing: Arc<AtomicBool>,
     /// When the last refresh started (ms), for [`REFRESH_RETRY_MS`].
     last_refresh: Arc<std::sync::atomic::AtomicI64>,
+    /// The passive sign-in status, reused briefly across catalog reads.
+    sign_in: Arc<signin::StatusCache>,
     /// How long one frame may take to go onto the agent's stdin.
     write_timeout: Duration,
     /// How the profile's skills are listed and their reads counted. agy's
@@ -226,6 +251,7 @@ impl AntigravityRuntime {
             sent: Arc::default(),
             refreshing: Arc::new(AtomicBool::new(false)),
             last_refresh: Arc::new(std::sync::atomic::AtomicI64::new(i64::MIN)),
+            sign_in: Arc::default(),
             write_timeout: rpc::WRITE_TIMEOUT,
             skills,
             #[cfg(test)]
@@ -366,6 +392,7 @@ impl AntigravityRuntime {
             run_id: run_id.clone(),
             skills: Arc::clone(&self.skills),
             skill_reads: Mutex::new(self.skills.watch(&thread.thread_id)),
+            sign_in: Arc::clone(&self.sign_in),
         };
         let bridge = self.bridge.clone();
         let sink = self.sink.clone();
@@ -585,6 +612,21 @@ fn send_prompt(
     Ok((Box::pin(reply.wait(PROMPT_TIMEOUT)), written))
 }
 
+/// The failure the session log shows behind a prompt that just settled
+/// with a clean stop; its steps are read (and the log's cursor moved past
+/// them) whatever its answer, so a later prompt is judged on its own.
+async fn settled_failure(
+    log: Option<&mut outcome::SessionLog>,
+    answer: &Result<Value, RpcError>,
+) -> Option<outcome::HiddenFailure> {
+    let step = log?.take().await;
+    let stop = answer.as_ref().ok()?.get("stopReason")?.as_str();
+    if !matches!(stop, Some("end_turn" | "refusal")) {
+        return None;
+    }
+    outcome::hidden_failure(stop, step.as_ref(), Some(now_ms()))
+}
+
 /// One turn's protocol work, owned by its task.
 struct Turn {
     config: Arc<AntigravityConfig>,
@@ -611,6 +653,17 @@ struct Turn {
     skills: Arc<crate::skill_listing::CliSkills>,
     /// Which shown skills' SKILL.md this turn read.
     skill_reads: Mutex<crate::skill_listing::SkillReadWatch>,
+    /// Dropped once this turn's `authenticate` is noted.
+    sign_in: Arc<signin::StatusCache>,
+}
+
+/// Why a turn held for work the agent left running ended unverified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unverified {
+    /// A backgrounded command went silent past the hold.
+    Command,
+    /// A scheduled wake never reported firing by its deadline.
+    Schedule,
 }
 
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
@@ -695,6 +748,10 @@ impl Turn {
         )
         .await;
 
+        // The session's own log, for failures a clean stop (or silence)
+        // hides: marked before the first prompt goes out, so a failure the
+        // agent logs at once is this turn's.
+        let mut log = outcome::SessionLog::open(&self.config.profile_dir, &session_id).await;
         let first = self.prompt_text(agent, recap.as_deref());
         let mut answer: Result<Value, RpcError> = Err(RpcError::Closed);
         let mut superseded = Superseded::default();
@@ -727,15 +784,45 @@ impl Turn {
         let mut held = false;
         let mut quiet_since = Instant::now();
         let mut closed_by_usage = false;
-        // Set when a held command never reported back within the bound.
-        let mut unverified = false;
-        // The session's own log, for failures a clean stop hides.
-        let log = outcome::SessionLog::open(&self.config.profile_dir, &session_id).await;
+        // Set when held work never reported back within its bound.
+        let mut unverified: Option<Unverified> = None;
+        // The failure the log shows behind the last settled prompt's clean
+        // stop; earlier prompts' ones, read before later work buried them;
+        // one logged by a prompt that then went silent.
+        let mut settled: Option<outcome::HiddenFailure> = None;
+        let mut earlier_hidden: Vec<outcome::HiddenFailure> = Vec::new();
+        let mut silent_failure: Option<outcome::HiddenFailure> = None;
+        let mut next_silence_check = Instant::now();
         let mut resumed = false;
         // A wake agy queued but has not replied to yet (checked at most
         // once per [`HOLD_SETTLE`]).
         let (mut wake_pending, mut next_wake_check) = (false, Instant::now());
         loop {
+            if prompt.is_some()
+                && self.permissions.load(Ordering::SeqCst) == 0
+                && quiet_since.elapsed() >= self.config.prompt_silence
+                && Instant::now() >= next_silence_check
+                && let Some(log) = log.as_mut()
+            {
+                // Silent, with nothing waiting on us: a failure agy logged
+                // and never reported ends the turn with its own words
+                // instead of an hours-long wait that loses the cause.
+                next_silence_check = Instant::now() + SILENCE_CHECK;
+                let step = log.peek().await;
+                if let Some(failure) =
+                    outcome::hidden_failure(Some("end_turn"), step.as_ref(), None)
+                {
+                    tracing::debug!("antigravity: a silent prompt's log shows a failure");
+                    if let Ok(_guard) = self.session.lock()
+                        && let Err(error) =
+                            client.notify("session/cancel", Some(json!({"sessionId": session_id})))
+                    {
+                        tracing::debug!(error = %error.label(), "antigravity: cancel not sent");
+                    }
+                    silent_failure = Some(failure);
+                    break;
+                }
+            }
             if prompt.is_none() {
                 let ended = self.cancelled.load(Ordering::SeqCst)
                     || answer
@@ -744,15 +831,26 @@ impl Turn {
                 if ended {
                     break;
                 }
-                let finish = if live.background_running() {
+                // A failure the prompt's log recorded: nothing it left
+                // running (a command, a schedule) is waited on.
+                let failed = settled.is_some();
+                let finish = if failed {
+                    true
+                } else if live.background_running() {
                     held = true;
-                    // ACP still connected but silent past the bound: the
-                    // command's end will not be reported; stop holding. A
-                    // scheduled wake reports nothing until it fires.
-                    if quiet_since.elapsed() >= self.config.background_hold
-                        && !live.schedule_pending()
-                    {
-                        unverified = true;
+                    if live.schedule_pending() {
+                        // A wake reports nothing until it fires, so silence
+                        // proves nothing; its own deadline bounds it.
+                        let grace = self.config.background_hold.min(SCHEDULE_GRACE);
+                        if live.schedule_overdue(grace, self.config.background_hold, PROMPT_TIMEOUT)
+                        {
+                            unverified = Some(Unverified::Schedule);
+                            break;
+                        }
+                    } else if quiet_since.elapsed() >= self.config.background_hold {
+                        // ACP still connected but silent past the bound: the
+                        // command's end will not be reported; stop holding.
+                        unverified = Some(Unverified::Command);
                         break;
                     }
                     false
@@ -770,9 +868,11 @@ impl Turn {
                     // (a mid-turn 404): resend once before failing.
                     if !resumed
                         && agent.steers
-                        && let Some(text) = self.resume_prompt(log.as_ref(), &answer).await
+                        && let Some(text) = settled.as_ref().and_then(|f| f.resume_with)
                     {
                         resumed = true;
+                        // Retried: its failure stands only if the retry fails.
+                        settled = None;
                         let Some((pending, _written)) =
                             self.send_locked(&client, &session_id, text)
                         else {
@@ -790,7 +890,7 @@ impl Turn {
                         quiet_since = Instant::now();
                         continue;
                     }
-                    if quiet_since.elapsed() >= OPEN_REPLY_QUIET {
+                    if failed || quiet_since.elapsed() >= OPEN_REPLY_QUIET {
                         break;
                     }
                     if Instant::now() >= next_wake_check {
@@ -820,6 +920,9 @@ impl Turn {
                             self.handle(&client, &session_id, agent, message, &mut fold, &mut live);
                         quiet_since = Instant::now();
                     }
+                    // This prompt's own steps, read now, before later work
+                    // (a steer, a wake's reply) can bury them.
+                    settled = settled_failure(log.as_mut(), &answer).await;
                 }
                 next = inbound.recv() => match next {
                     Some(message) => {
@@ -856,6 +959,19 @@ impl Turn {
                             self.handle(&client, &session_id, agent, message, &mut fold, &mut live);
                     }
                     let mut entries: Vec<HistoryMessage> = fold.take_partial().into_iter().collect();
+                    // What the earlier prompt logged is judged before the
+                    // steer's own steps follow it: a failure stays the turn's.
+                    if let Some(failure) = settled.take() {
+                        earlier_hidden.push(failure);
+                    }
+                    if let Some(log) = log.as_mut() {
+                        let step = log.take().await;
+                        if let Some(failure) =
+                            outcome::hidden_failure(Some("end_turn"), step.as_ref(), Some(now_ms()))
+                        {
+                            earlier_hidden.push(failure);
+                        }
+                    }
                     // Checked and queued under the session lock, which Stop
                     // takes to send its cancel: no prompt goes out after it.
                     // No I/O in between: the requester is answered at once
@@ -912,7 +1028,7 @@ impl Turn {
                     answer = Err(RpcError::Closed);
                     break;
                 }
-                () = tokio::time::sleep(HOLD_TICK), if prompt.is_none() => {}
+                () = tokio::time::sleep(HOLD_TICK), if prompt.is_none() || log.is_some() => {}
             }
         }
         superseded.settle_ready();
@@ -923,18 +1039,24 @@ impl Turn {
         if let Some(bridge) = &self.bridge {
             bridge.flush_details(&self.thread_id, &self.run_id);
         }
-        let mut outcome = fold.outcome(self.cancelled.load(Ordering::SeqCst), &answer);
-        if unverified && !self.cancelled.load(Ordering::SeqCst) {
+        let cancelled = self.cancelled.load(Ordering::SeqCst);
+        let mut outcome = fold.outcome(cancelled, &answer);
+        if let Some(kind) = unverified
+            && !cancelled
+        {
+            let error = match kind {
+                Unverified::Command => format!(
+                    "antigravity: a background command never reported finishing \
+                     ({} s without word from the agent); the turn ended unverified",
+                    self.config.background_hold.as_secs()
+                ),
+                Unverified::Schedule => "antigravity: a scheduled wake never reported firing \
+                     by its deadline; the turn ended unverified"
+                    .to_string(),
+            };
             outcome = TurnOutcome {
                 final_text: Some(fold.answer_text()).filter(|t| !t.is_empty()),
-                ..TurnOutcome::ended(
-                    TurnEndStatus::Interrupted,
-                    Some(format!(
-                        "antigravity: a background command never reported finishing \
-                         ({} s without word from the agent); the turn ended unverified",
-                        self.config.background_hold.as_secs()
-                    )),
-                )
+                ..TurnOutcome::ended(TurnEndStatus::Interrupted, Some(error))
             };
         }
         let stop = answer
@@ -942,25 +1064,46 @@ impl Turn {
             .ok()
             .and_then(|r| r["stopReason"].as_str())
             .map(str::to_string);
-        if !unverified
-            && !self.cancelled.load(Ordering::SeqCst)
+        let hidden = if let Some(failure) = silent_failure {
+            Some(failure)
+        } else if unverified.is_none()
+            && !cancelled
             && matches!(stop.as_deref(), Some("end_turn" | "refusal"))
         {
-            let step = match &log {
-                Some(log) => log.last_step().await,
-                None => None,
-            };
-            if let Some(hidden) = outcome::hidden_failure(stop.as_deref(), step.as_ref(), now_ms())
-            {
-                if hidden.broken {
-                    store::retire_session(&self.config.session_file(&self.key)).await;
-                }
-                outcome = TurnOutcome {
-                    final_text: outcome.final_text.take(),
-                    usage: outcome.usage.take(),
-                    ..hidden.outcome
-                };
+            match settled.take() {
+                Some(failure) => Some(failure),
+                // Steps added since the prompt settled (a held reply).
+                None => match log.as_mut() {
+                    Some(log) => {
+                        let step = log.take().await;
+                        outcome::hidden_failure(stop.as_deref(), step.as_ref(), Some(now_ms()))
+                    }
+                    None => None,
+                },
             }
+        } else {
+            None
+        };
+        // A failure an earlier prompt logged: a later success does not undo it.
+        let hidden = hidden.or_else(|| {
+            (outcome.status == TurnEndStatus::Completed && !cancelled)
+                .then(|| earlier_hidden.into_iter().next())
+                .flatten()
+        });
+        if let Some(hidden) = hidden
+            && !cancelled
+        {
+            if hidden.broken {
+                store::retire_session(&self.config.session_file(&self.key)).await;
+            }
+            outcome = TurnOutcome {
+                final_text: outcome
+                    .final_text
+                    .take()
+                    .or_else(|| Some(fold.answer_text()).filter(|t| !t.is_empty())),
+                usage: outcome.usage.take(),
+                ..hidden.outcome
+            };
         }
         let earlier = std::mem::take(&mut superseded.errors);
         if !self.cancelled.load(Ordering::SeqCst)
@@ -996,22 +1139,6 @@ impl Turn {
         }
         let telemetry = fold.telemetry(&self.config.runtime_id, answer.as_ref().ok());
         (outcome, telemetry)
-    }
-
-    /// The prompt a failure hidden behind the last clean stop can be
-    /// resumed with, if any.
-    async fn resume_prompt(
-        &self,
-        log: Option<&outcome::SessionLog>,
-        answer: &Result<Value, RpcError>,
-    ) -> Option<&'static str> {
-        let stop = answer
-            .as_ref()
-            .ok()?
-            .get("stopReason")
-            .and_then(Value::as_str);
-        let step = log?.last_step().await;
-        outcome::hidden_failure(stop, step.as_ref(), now_ms())?.resume_with
     }
 
     /// Queue a prompt of ours under the session lock Stop takes for its
@@ -1067,6 +1194,9 @@ impl Turn {
             steers: self.config.launch.may_steer() && launch::steers_with_prompt(&init),
             appends: launch::appends_system_prompt(&init),
         };
+        // Noted under the time the attempt started: an older attempt that
+        // finishes later cannot overwrite it.
+        let attempt = now_ms();
         let authed = client
             .request(
                 "authenticate",
@@ -1074,16 +1204,23 @@ impl Turn {
                 self.config.auth_timeout,
             )
             .await;
-        match authed {
-            Ok(_) => store::note_sign_in(&self.config.state_dir, true).await,
+        let failed = match authed {
+            Ok(_) => {
+                signin::note(&self.config.state_dir, attempt, true).await;
+                None
+            }
             Err(error) => {
                 let (outcome, signed_out) =
                     fold::sign_in_failed(&error, self.config.uses_browser());
                 if signed_out {
-                    store::note_sign_in(&self.config.state_dir, false).await;
+                    signin::note(&self.config.state_dir, attempt, false).await;
                 }
-                return Err(outcome);
+                Some(outcome)
             }
+        };
+        self.sign_in.invalidate();
+        if let Some(outcome) = failed {
+            return Err(outcome);
         }
 
         let cwd = self.config.work_dir.display().to_string();
@@ -1715,35 +1852,33 @@ impl TurnRuntime for AntigravityRuntime {
     }
 
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
-        let authenticated = store::signed_in(&self.config).await;
-        // agy 1.5 keeps its sign-in in the OS keyring, where only a probe
-        // can see it, so the native CLI is asked even with no local
-        // evidence (one probe per [`REFRESH_RETRY_MS`]). A legacy runtime
-        // signed out would only wait on a browser sign-in nobody opens.
-        let probe = authenticated || matches!(self.config.launch, AgentLaunch::Cli { .. });
+        // Passive: no read here starts the agent unless the sign-in is
+        // already on hand ([`signin`]). Native agy opens the system browser
+        // itself for a signed-out `authenticate`, so a probe on a fresh
+        // profile would pop a sign-in page when the picker opens.
+        let status = self.sign_in.get(&self.config).await;
         let now = now_ms();
-        if probe
+        if status.may_probe
             && now.saturating_sub(self.last_refresh.load(Ordering::SeqCst)) >= REFRESH_RETRY_MS
             && store::models_stale(&self.config.models_file()).await
             && !self.refreshing.swap(true, Ordering::SeqCst)
         {
             self.last_refresh.store(now, Ordering::SeqCst);
             let config = Arc::clone(&self.config);
+            let sign_in = Arc::clone(&self.sign_in);
             let flag = store::RefreshFlag(Arc::clone(&self.refreshing));
             tokio::spawn(async move {
                 let _flag = flag; // cleared on every exit, a panic included
-                if let Err(error) = store::refresh_models(&config).await {
+                if let Err(error) = store::refresh_models(&config, &sign_in).await {
                     tracing::debug!(%error, "antigravity: model list refresh failed");
                 }
             });
         }
         let cached = store::cached_models(&self.config).await;
-        // A probe may have just answered the sign-in question.
-        let authenticated = authenticated || store::signed_in(&self.config).await;
         Ok(vec![CatalogProvider {
             provider: self.config.runtime_id.clone(),
             name: self.config.display_name.clone(),
-            authenticated,
+            authenticated: status.signed_in,
             current: false,
             models: cached.models,
             // `agy` 1.5 offers a thinking level beside the model; 1.3 put
@@ -1779,6 +1914,8 @@ pub async fn default_config(home: &Path) -> Option<AntigravityConfig> {
         work_dir: state.join("work"),
         state_dir: state,
         background_hold: DEFAULT_BACKGROUND_HOLD,
+        prompt_silence: DEFAULT_PROMPT_SILENCE,
+        keyring: signin::KeyringEntry::agy(),
     })
 }
 
@@ -1810,6 +1947,8 @@ mod tests {
                 work_dir: dir.path().join("work"),
                 state_dir: dir.path().join("state"),
                 background_hold: DEFAULT_BACKGROUND_HOLD,
+                prompt_silence: DEFAULT_PROMPT_SILENCE,
+                keyring: None,
             },
             recorder.sink(),
             None,

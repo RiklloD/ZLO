@@ -1,24 +1,26 @@
 //! Failures agy hides behind a clean stop (t3code's
 //! `AntigravityTurnOutcome`). agy reports an upstream API failure (a 502, a
-//! mid-turn 404, a quota) as a chat message and `end_turn`; its own session
-//! log (`<profile>/antigravity-acp/conversations/<session>.db`) ends that
-//! turn with an error step. The driver reads only the steps this turn added,
-//! read-only, from the session's own file: never a link, never a file that
-//! replaced the one seen before the turn.
+//! mid-turn 404, a quota) as a chat message and `end_turn`, or goes silent
+//! after logging it; its own session log
+//! (`<profile>/antigravity-acp/conversations/<session>.db`) ends that
+//! prompt with an error step. The driver marks the log before the turn's
+//! first prompt goes out and reads each settled prompt's own steps when it
+//! settles, before a later steer's steps can bury them; read-only, from the
+//! session's own file reached through plain folders: never a link, never a
+//! file that replaced the one seen before.
 //!
-//! The log is SQLite. It is read through the system `sqlite3` tool rather
-//! than a linked driver (the persistence driver cone stays where
-//! `reborn_persistence_driver_boundary.rs` allows it); without the tool, or
-//! with an unreadable log, the typed stop reason alone decides, as before.
+//! The log is SQLite, read through the system `sqlite3` ([`super::sqlite`]);
+//! without the tool, or with an unreadable log, the typed stop reason alone
+//! decides, as before.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use ironclaw_orchestrator::runtime::{TurnEndStatus, TurnOutcome};
-use tokio::process::Command;
 
-use super::fold::{INVALID_THINKING_SIGNATURE, reset_at, usage_limited};
+use super::fold::{INVALID_THINKING_SIGNATURE, reset_at, reset_stamp, usage_limited};
 use super::launch::APP_DATA_DIR;
+use super::paths::{self, Kind, Managed};
+use super::sqlite;
 
 /// `CORTEX_STEP_TYPE_ERROR_MESSAGE` in agy's trajectory.
 const ERROR_STEP: i64 = 17;
@@ -26,8 +28,6 @@ const ERROR_STEP: i64 = 17;
 const PLANNER_RESPONSE_STEP: i64 = 15;
 /// The harness error text leads the payload; a Go stack trace follows it.
 const MAX_ERROR_PAYLOAD_BYTES: usize = 16_384;
-/// One `sqlite3` read, output included.
-const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// The prompt a transient mid-turn failure is resumed with, once.
 pub(super) const RESUME_PROMPT: &str = "continue";
 
@@ -51,14 +51,19 @@ pub(super) struct HiddenFailure {
     pub(super) resume_with: Option<&'static str>,
 }
 
-/// The failure behind a prompt's stop: an error step this turn added, or a
+/// The failure behind a prompt's stop: an error step the prompt added, or a
 /// typed `refusal` (agy's quota stop) without one. `now` anchors a relative
-/// reset delay (ms).
+/// reset delay (ms); `None` for a failure read long after it happened (a
+/// silent prompt), which keeps only an absolute reset time.
 pub(super) fn hidden_failure(
     stop_reason: Option<&str>,
     step: Option<&LastStep>,
-    now: i64,
+    now: Option<i64>,
 ) -> Option<HiddenFailure> {
+    let reset = |text: &str| match now {
+        Some(now) => reset_at(text, now),
+        None => reset_stamp(text),
+    };
     let refusal = stop_reason == Some("refusal");
     let error_text = step
         .filter(|s| s.step_type == ERROR_STEP)
@@ -74,7 +79,7 @@ pub(super) fn hidden_failure(
     };
     let api = api_error(text).or_else(|| status_error(text));
     if refusal || text.contains("reason:QUOTA_EXHAUSTED") {
-        return Some(failed(usage_limited(reset_at(text, now))));
+        return Some(failed(usage_limited(reset(text))));
     }
     if INVALID_THINKING_SIGNATURE
         .iter()
@@ -100,7 +105,7 @@ pub(super) fn hidden_failure(
         )));
     };
     if api.http == 429 || api.status == "RESOURCE_EXHAUSTED" {
-        return Some(failed(usage_limited(reset_at(text, now))));
+        return Some(failed(usage_limited(reset(text))));
     }
     // A 404 before the model answered is an unknown or unentitled model;
     // after, a transient edge error the session can carry on from.
@@ -221,91 +226,151 @@ fn status_error(text: &str) -> Option<ApiError<'_>> {
     None
 }
 
-/// The session's own log, as it stood before the turn's first prompt.
+/// The session's own log, read one settled prompt at a time.
 #[derive(Debug)]
 pub(super) struct SessionLog {
-    path: PathBuf,
-    /// `(dev, ino)` of the file seen before the turn; `None` when the turn
+    profile: PathBuf,
+    /// `<session>.db` under `antigravity-acp/conversations`.
+    file: String,
+    /// `(dev, ino)` of the file first seen; `None` until the session
     /// creates it.
     identity: Option<(u64, u64)>,
-    /// The last step index before the turn.
-    start: i64,
+    /// The last step index already attributed to a prompt.
+    cursor: i64,
 }
 
-/// `(dev, ino)` of a plain file, never through a link.
-async fn plain_file(path: &Path) -> Result<Option<(u64, u64)>, ()> {
+/// What a prompt added to the log since the cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Span {
+    last: Option<LastStep>,
+    max_idx: i64,
+}
+
+/// `(dev, ino)` of a plain file.
+async fn identity_of(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
-    match tokio::fs::symlink_metadata(path).await {
-        Ok(meta) if meta.file_type().is_file() => Ok(Some((meta.dev(), meta.ino()))),
-        Ok(_) => Err(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => {
-            tracing::debug!(%error, "antigravity: session log unreadable");
-            Err(())
-        }
-    }
+    let meta = tokio::fs::symlink_metadata(path).await.ok()?; // silent-ok: checked just before; gone means no log
+    meta.file_type().is_file().then(|| (meta.dev(), meta.ino()))
 }
 
 impl SessionLog {
-    /// Mark where the turn starts; `None` when the log cannot be trusted
-    /// (a link, an unreadable file, no `sqlite3`), and the typed stop
-    /// reason alone decides.
+    /// Mark where the turn starts, before its first prompt goes out;
+    /// `None` when the log cannot be trusted (a link anywhere on its path,
+    /// an unreadable file, no `sqlite3`), and the typed stop reason alone
+    /// decides.
     pub(super) async fn open(profile: &Path, session_id: &str) -> Option<Self> {
-        let valid = !session_id.is_empty()
-            && session_id
+        if session_id.is_empty()
+            || !session_id
                 .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-        if !valid {
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
             return None;
         }
-        let path = profile
-            .join(APP_DATA_DIR)
-            .join("conversations")
-            .join(format!("{session_id}.db"));
-        let identity = plain_file(&path).await.ok()?;
-        let start = match identity {
-            None => -1,
-            Some(_) => query(&path, "SELECT coalesce(max(idx), -1) FROM steps;")
-                .await?
-                .trim()
-                .parse()
-                .ok()?,
+        sqlite::tool()?;
+        let mut log = Self {
+            profile: profile.to_path_buf(),
+            file: format!("{session_id}.db"),
+            identity: None,
+            cursor: -1,
         };
-        Some(Self {
-            path,
-            identity,
-            start,
-        })
+        match log.checked_path().await? {
+            Managed::Missing(_) => {}
+            Managed::Found(path) => {
+                log.identity = Some(identity_of(&path).await?);
+                log.cursor =
+                    match sqlite::query(&path, "SELECT coalesce(max(idx), -1) FROM steps;").await {
+                        Ok(out) => out.trim().parse().ok()?,
+                        Err(error) => {
+                            tracing::debug!(%error, "antigravity: session log not marked");
+                            return None;
+                        }
+                    };
+            }
+        }
+        Some(log)
     }
 
-    /// The newest step the turn added: from the same file as before the
-    /// turn, or the plain file the turn created.
-    pub(super) async fn last_step(&self) -> Option<LastStep> {
-        let now = plain_file(&self.path).await.ok()??;
-        if self.identity.is_some_and(|before| before != now) {
-            tracing::debug!("antigravity: session log was replaced during the turn");
-            return None;
+    async fn checked_path(&self) -> Option<Managed> {
+        paths::managed(
+            &self.profile,
+            &[APP_DATA_DIR, "conversations", &self.file],
+            Kind::File,
+        )
+        .await
+    }
+
+    /// The newest step added since the last [`Self::take`], which moves the
+    /// cursor past it: each settled prompt is judged on its own steps.
+    pub(super) async fn take(&mut self) -> Option<LastStep> {
+        let span = self.span().await?;
+        self.cursor = self.cursor.max(span.max_idx);
+        span.last
+    }
+
+    /// The newest step added since the last [`Self::take`], cursor kept
+    /// (a prompt that has not settled yet).
+    pub(super) async fn peek(&mut self) -> Option<LastStep> {
+        self.span().await?.last
+    }
+
+    async fn span(&mut self) -> Option<Span> {
+        let path = self.checked_path().await?.found()?;
+        let now = identity_of(&path).await?;
+        match self.identity {
+            Some(before) if before != now => {
+                tracing::debug!("antigravity: session log was replaced during the turn");
+                return None;
+            }
+            Some(_) => {}
+            // The file this turn's session created.
+            None => self.identity = Some(now),
         }
-        let start = self.start;
+        let start = self.cursor;
         let sql = format!(
-            "SELECT step_type, hex(substr(step_payload, 1, {MAX_ERROR_PAYLOAD_BYTES})) \
+            "SELECT 'L', step_type, hex(substr(step_payload, 1, {MAX_ERROR_PAYLOAD_BYTES})) \
              FROM steps WHERE idx > {start} ORDER BY idx DESC LIMIT 1; \
-             SELECT EXISTS(SELECT 1 FROM steps WHERE idx > {start} \
-             AND step_type = {PLANNER_RESPONSE_STEP});"
+             SELECT 'R', EXISTS(SELECT 1 FROM steps WHERE idx > {start} \
+             AND step_type = {PLANNER_RESPONSE_STEP}); \
+             SELECT 'M', coalesce(max(idx), -1) FROM steps;"
         );
-        parse_last_step(&query(&self.path, &sql).await?)
+        match sqlite::query(&path, &sql).await {
+            Ok(out) => parse_span(&out),
+            Err(error) => {
+                // Lock contention, a changed schema and corruption read
+                // apart here.
+                tracing::debug!(%error, "antigravity: session log query failed");
+                None
+            }
+        }
     }
 }
 
-/// The two result rows of [`SessionLog::last_step`]'s query.
-fn parse_last_step(output: &str) -> Option<LastStep> {
-    let mut lines = output.lines();
-    let (step_type, hex) = lines.next()?.split_once('|')?;
-    let reached_model = lines.next().is_some_and(|l| l.trim() == "1");
-    Some(LastStep {
-        step_type: step_type.trim().parse().ok()?,
-        text: String::from_utf8_lossy(&unhex(hex.trim())?).into_owned(),
-        reached_model,
+/// The tagged rows of [`SessionLog::span`]'s query.
+fn parse_span(output: &str) -> Option<Span> {
+    let (mut last, mut reached_model, mut max_idx) = (None, false, None);
+    for line in output.lines() {
+        let mut cells = line.split('|');
+        match cells.next() {
+            Some("L") => {
+                let step_type = cells.next()?.trim().parse().ok()?;
+                let hex = cells.next()?.trim();
+                last = Some((
+                    step_type,
+                    String::from_utf8_lossy(&unhex(hex)?).into_owned(),
+                ));
+            }
+            Some("R") => reached_model = cells.next().is_some_and(|c| c.trim() == "1"),
+            Some("M") => max_idx = cells.next()?.trim().parse().ok(),
+            _ => {}
+        }
+    }
+    Some(Span {
+        last: last.map(|(step_type, text)| LastStep {
+            step_type,
+            text,
+            reached_model,
+        }),
+        max_idx: max_idx?,
     })
 }
 
@@ -317,45 +382,6 @@ fn unhex(hex: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
         .collect()
-}
-
-/// The system `sqlite3`, if any.
-fn sqlite3() -> Option<PathBuf> {
-    let system = PathBuf::from("/usr/bin/sqlite3");
-    if system.is_file() {
-        return Some(system);
-    }
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    crate::rpc::find_on_path(&home, "sqlite3")
-}
-
-/// Run one read-only query, bounded; `None` on any failure.
-async fn query(db: &Path, sql: &str) -> Option<String> {
-    let tool = sqlite3()?;
-    let run = Command::new(tool)
-        .args(["-readonly", "-batch", "-noheader", "-separator", "|"])
-        .args(["-cmd", ".timeout 100"])
-        .arg(db)
-        .arg(sql)
-        .env_clear()
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    match tokio::time::timeout(QUERY_TIMEOUT, run).await {
-        Ok(Ok(out)) if out.status.success() => String::from_utf8(out.stdout).ok(),
-        Ok(Ok(out)) => {
-            tracing::debug!(status = ?out.status, "antigravity: session log query failed");
-            None
-        }
-        Ok(Err(error)) => {
-            tracing::debug!(%error, "antigravity: sqlite3 did not start");
-            None
-        }
-        Err(_elapsed) => {
-            tracing::debug!("antigravity: session log query timed out");
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -379,7 +405,7 @@ mod tests {
         let payload = "\u{12}7Error 502, Message: Bad Gateway: Failed to connect to backend API, \
                        Status: 502 Bad Gateway, Details: []\ngoroutine 1 [running]";
         let failure =
-            hidden_failure(Some("end_turn"), Some(&step(17, payload, true)), NOW).unwrap();
+            hidden_failure(Some("end_turn"), Some(&step(17, payload, true)), Some(NOW)).unwrap();
         assert_eq!(failure.outcome.status, TurnEndStatus::Failed);
         let error = failure.outcome.error.unwrap();
         assert!(
@@ -413,14 +439,15 @@ mod tests {
         let personal =
             "\u{12}7NOT_FOUND (code 404): Requested entity was not found.\u{1a}\u{80}\u{1}HTTP 404";
         for payload in [classic, personal] {
-            let late =
-                hidden_failure(Some("end_turn"), Some(&step(17, payload, true)), NOW).unwrap();
+            let late = hidden_failure(Some("end_turn"), Some(&step(17, payload, true)), Some(NOW))
+                .unwrap();
             assert_eq!(late.resume_with, Some(RESUME_PROMPT), "{payload}");
             let error = late.outcome.error.unwrap();
             assert!(error.contains("Requested entity was not found."), "{error}");
             assert!(error.contains("404 NOT_FOUND"), "{error}");
             let early =
-                hidden_failure(Some("end_turn"), Some(&step(17, payload, false)), NOW).unwrap();
+                hidden_failure(Some("end_turn"), Some(&step(17, payload, false)), Some(NOW))
+                    .unwrap();
             assert_eq!(early.resume_with, None);
             assert!(!early.outcome.error.unwrap().contains("retry"));
         }
@@ -431,49 +458,74 @@ mod tests {
     fn quotas_keep_their_reset_and_clean_stops_pass() {
         let quota =
             "RESOURCE_EXHAUSTED (code 429): You have exhausted your capacity. Resets in 4m42s.";
-        let failure = hidden_failure(Some("end_turn"), Some(&step(17, quota, true)), NOW).unwrap();
+        let failure =
+            hidden_failure(Some("end_turn"), Some(&step(17, quota, true)), Some(NOW)).unwrap();
         assert!(failure.outcome.error.unwrap().starts_with("usage_limit"));
         assert_eq!(failure.outcome.usage_limit_resets_at, Some(NOW + 282_000));
+        // Read long after it happened (a silent prompt): a relative delay
+        // has no anchor and is dropped; an absolute reset time is kept.
+        let late = hidden_failure(Some("end_turn"), Some(&step(17, quota, true)), None).unwrap();
+        assert_eq!(late.outcome.usage_limit_resets_at, None);
+        let stamped =
+            "RESOURCE_EXHAUSTED (code 429): out [quotaResetTimeStamp:2026-11-20T00:00:00Z]";
+        let late = hidden_failure(Some("end_turn"), Some(&step(17, stamped, true)), None).unwrap();
+        assert!(late.outcome.usage_limit_resets_at.is_some());
         // agy's typed quota stop, with nothing in the log.
-        let refusal = hidden_failure(Some("refusal"), None, NOW).unwrap();
+        let refusal = hidden_failure(Some("refusal"), None, Some(NOW)).unwrap();
         assert!(refusal.outcome.error.unwrap().starts_with("usage_limit"));
         // A planner reply quoting a notice is no failure; nor is a clean stop.
         assert_eq!(
-            hidden_failure(Some("end_turn"), Some(&step(15, quota, true)), NOW),
+            hidden_failure(Some("end_turn"), Some(&step(15, quota, true)), Some(NOW)),
             None
         );
-        assert_eq!(hidden_failure(Some("end_turn"), None, NOW), None);
+        assert_eq!(hidden_failure(Some("end_turn"), None, Some(NOW)), None);
         // An unparsed error step still fails the turn.
-        let other = hidden_failure(Some("end_turn"), Some(&step(17, "boom", true)), NOW).unwrap();
+        let other =
+            hidden_failure(Some("end_turn"), Some(&step(17, "boom", true)), Some(NOW)).unwrap();
         assert_eq!(other.outcome.status, TurnEndStatus::Failed);
         // A lost thinking signature marks the session broken.
         let lost = "Error 400, Message: messages.3.content.0: Invalid `signature` in `thinking` block, Status: INVALID_ARGUMENT";
         assert!(
-            hidden_failure(Some("end_turn"), Some(&step(17, lost, true)), NOW)
+            hidden_failure(Some("end_turn"), Some(&step(17, lost, true)), Some(NOW))
                 .unwrap()
                 .broken
         );
     }
 
     #[test]
-    fn last_step_rows_parse() {
-        assert_eq!(parse_last_step("17|4F4B\n1\n"), Some(step(17, "OK", true)));
-        assert_eq!(parse_last_step("0\n"), None);
-        assert_eq!(parse_last_step("17|4F4\n0\n"), None);
+    fn span_rows_parse() {
+        assert_eq!(
+            parse_span("L|17|4F4B\nR|1\nM|4\n"),
+            Some(Span {
+                last: Some(step(17, "OK", true)),
+                max_idx: 4
+            })
+        );
+        // Nothing added: no step row.
+        assert_eq!(
+            parse_span("R|0\nM|3\n"),
+            Some(Span {
+                last: None,
+                max_idx: 3
+            })
+        );
+        assert_eq!(parse_span("L|17|4F4\nR|0\nM|1\n"), None);
+        assert_eq!(parse_span("R|0\n"), None);
     }
 
-    /// Reads only what the turn added, from the session's own plain file.
+    /// Each settled prompt reads only its own steps, from the session's
+    /// own plain file; a link anywhere on the path is never followed.
     #[tokio::test]
-    async fn the_log_is_read_from_the_turns_own_steps() {
-        if sqlite3().is_none() {
+    async fn each_prompt_reads_its_own_steps() {
+        let Some(sqlite) = sqlite::tool() else {
             return; // no sqlite3 on this host: the typed stop alone decides
-        }
+        };
         let dir = tempfile::tempdir().unwrap();
         let conversations = dir.path().join(APP_DATA_DIR).join("conversations");
         std::fs::create_dir_all(&conversations).unwrap();
         let db = conversations.join("s-1.db");
         let sql = |statement: &str| {
-            let ok = std::process::Command::new(sqlite3().unwrap())
+            let ok = std::process::Command::new(&sqlite)
                 .arg(&db)
                 .arg(statement)
                 .status()
@@ -485,20 +537,31 @@ mod tests {
             "CREATE TABLE steps (idx integer PRIMARY KEY, step_type integer NOT NULL DEFAULT 0, step_payload blob);\
              INSERT INTO steps VALUES (0, 14, NULL), (1, 17, CAST('old error' AS BLOB));",
         );
-        let log = SessionLog::open(dir.path(), "s-1").await.unwrap();
-        assert_eq!(log.start, 1);
-        assert_eq!(log.last_step().await, None, "nothing added yet");
+        let mut log = SessionLog::open(dir.path(), "s-1").await.unwrap();
+        assert_eq!(log.cursor, 1);
+        assert_eq!(log.peek().await, None, "nothing added yet");
+        // A first prompt fails; a steer's prompt then succeeds.
         sql(
             "INSERT INTO steps VALUES (2, 15, CAST('hi' AS BLOB)), (3, 17, CAST('Error 502, Message: Bad Gateway, Status: 502 Bad Gateway' AS BLOB));",
         );
-        let last = log.last_step().await.unwrap();
-        assert_eq!(last.step_type, 17);
-        assert!(last.reached_model);
-        assert!(last.text.contains("Bad Gateway"));
+        let first = log.take().await.unwrap();
+        assert_eq!(first.step_type, 17);
+        assert!(first.reached_model);
+        assert!(first.text.contains("Bad Gateway"));
+        sql("INSERT INTO steps VALUES (4, 15, CAST('fine' AS BLOB));");
+        assert_eq!(log.take().await.unwrap().step_type, 15);
+        assert_eq!(log.take().await, None, "nothing new since");
         // A session id that could leave the folder is never read.
         assert!(SessionLog::open(dir.path(), "../s-1").await.is_none());
+        assert!(SessionLog::open(dir.path(), "").await.is_none());
         // A link in place of the log is never followed.
         std::os::unix::fs::symlink(&db, conversations.join("s-2.db")).unwrap();
         assert!(SessionLog::open(dir.path(), "s-2").await.is_none());
+        // Nor a linked `conversations` folder.
+        let other = tempfile::tempdir().unwrap();
+        let acp = other.path().join(APP_DATA_DIR);
+        std::fs::create_dir_all(&acp).unwrap();
+        std::os::unix::fs::symlink(&conversations, acp.join("conversations")).unwrap();
+        assert!(SessionLog::open(other.path(), "s-1").await.is_none());
     }
 }

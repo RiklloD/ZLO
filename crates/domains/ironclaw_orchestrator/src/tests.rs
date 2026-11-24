@@ -1503,6 +1503,65 @@ async fn profile_defaults_must_name_an_offered_provider_and_model() {
     assert!(check(defaults("cli", "m9")).await.is_err());
 }
 
+/// Review P2 (t3code #39413): a delegated `<model>-<level>` id is routed as
+/// the advertised model at that level, not rejected; the child's first turn
+/// runs on that model and level. A level the model does not offer, or an
+/// unknown suffix, is still refused; an explicit level wins.
+#[tokio::test]
+async fn delegation_accepts_a_model_id_carrying_its_level() {
+    let h = harness().await;
+    let cli = Arc::new(FakeRuntime {
+        name: Some("cli"),
+        ..Default::default()
+    });
+    h.engine.register_runtime(cli.clone());
+    h.engine
+        .ensure_thread(&tid("p"), &scope(), None)
+        .await
+        .unwrap();
+    let delegate = |target: serde_json::Value| {
+        let engine = h.engine.clone();
+        async move {
+            engine
+                .delegate(
+                    &ctx("p"),
+                    serde_json::from_value(json!({"task": "x", "target": target})).unwrap(),
+                )
+                .await
+        }
+    };
+    let child_effort = |task: &serde_json::Value| {
+        let engine = h.engine.clone();
+        let child = tid(task["childThreadId"].as_str().unwrap());
+        async move { engine.store().thread_effort(&child).await.unwrap() }
+    };
+
+    let task = delegate(json!({"provider": "cli", "model": "m1-high"}))
+        .await
+        .unwrap();
+    assert_eq!(task["model"], "m1");
+    assert_eq!(child_effort(&task).await.as_deref(), Some("high"));
+    // Model only: routed to the provider that advertises it.
+    let task = delegate(json!({"model": "m2-low"})).await.unwrap();
+    assert_eq!(
+        (task["provider"].as_str(), task["model"].as_str()),
+        (Some("cli"), Some("m2"))
+    );
+    assert_eq!(child_effort(&task).await.as_deref(), Some("low"));
+    // An explicit level wins over the suffix.
+    let task = delegate(json!({"provider": "cli", "model": "m1-high", "reasoning_effort": "low"}))
+        .await
+        .unwrap();
+    assert_eq!(child_effort(&task).await.as_deref(), Some("low"));
+    // m2 offers only `low`; `turbo` is no level at all.
+    for model in ["m2-high", "m1-turbo", "m9-high"] {
+        let err = delegate(json!({"provider": "cli", "model": model}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "model_unavailable", "{model}");
+    }
+}
+
 #[tokio::test]
 async fn an_effort_pick_rides_the_route_and_a_switch_keeps_only_its_own() {
     let h = harness().await;

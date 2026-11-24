@@ -15,6 +15,7 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use super::launch::APP_DATA_DIR;
+use super::paths::{self, Kind};
 
 const HIGH: &str = "MESSAGE_PRIORITY_HIGH";
 const LOW: &str = "MESSAGE_PRIORITY_LOW";
@@ -25,18 +26,24 @@ const MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// How much of the transcript's end is read for its last line.
 const TAIL_BYTES: u64 = 64 * 1024;
 
-fn generated(profile: &Path, session_id: &str) -> Option<PathBuf> {
+/// `brain/<session>/.system_generated/<parts>` under the profile, reached
+/// through plain folders only ([`paths::managed`]).
+async fn generated(
+    profile: &Path,
+    session_id: &str,
+    parts: &[&str],
+    kind: Kind,
+) -> Option<PathBuf> {
     let valid = !session_id.is_empty()
         && session_id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    valid.then(|| {
-        profile
-            .join(APP_DATA_DIR)
-            .join("brain")
-            .join(session_id)
-            .join(".system_generated")
-    })
+    if !valid {
+        return None;
+    }
+    let mut all = vec![APP_DATA_DIR, "brain", session_id, ".system_generated"];
+    all.extend_from_slice(parts);
+    paths::managed(profile, &all, kind).await?.found()
 }
 
 /// A plain file (never a link) of at most [`MAX_FILE_BYTES`], read whole.
@@ -48,28 +55,27 @@ async fn read_plain(path: &Path) -> Option<String> {
     tokio::fs::read_to_string(path).await.ok() // silent-ok: an unreadable record means nothing pending
 }
 
-async fn plain_dir(path: &Path) -> bool {
-    tokio::fs::symlink_metadata(path)
-        .await
-        .is_ok_and(|m| m.file_type().is_dir())
-}
-
 /// Whether agy has a waking message it has not answered yet.
 pub(super) async fn pending_reply(profile: &Path, session_id: &str) -> bool {
-    let Some(root) = generated(profile, session_id) else {
-        return false;
-    };
-    if !plain_dir(&root).await {
-        return false;
+    if let Some(inbox) = generated(profile, session_id, &["messages"], Kind::Dir).await
+        && unread_waking_message(&inbox).await
+    {
+        return true;
     }
-    unread_waking_message(&root.join("messages")).await
-        || last_step_waits(&root.join("logs").join("transcript.jsonl")).await
+    match generated(
+        profile,
+        session_id,
+        &["logs", "transcript.jsonl"],
+        Kind::File,
+    )
+    .await
+    {
+        Some(transcript) => last_step_waits(&transcript).await,
+        None => false,
+    }
 }
 
 async fn unread_waking_message(inbox: &Path) -> bool {
-    if !plain_dir(inbox).await {
-        return false;
-    }
     let Ok(mut entries) = tokio::fs::read_dir(inbox).await else {
         return false; // silent-ok: an unreadable inbox means nothing pending
     };
@@ -216,6 +222,24 @@ mod tests {
             "{\"type\":\"SYSTEM_MESSAGE\"}\n{\"type\":\"PLANNER_RESPONSE\"}\n",
         )
         .unwrap();
+        assert!(!pending_reply(dir.path(), "s-1").await);
+    }
+
+    #[tokio::test]
+    async fn a_linked_parent_folder_is_never_followed() {
+        let (dir, root) = setup();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let generated = elsewhere.path().join("s-1/.system_generated/messages");
+        std::fs::create_dir_all(&generated).unwrap();
+        std::fs::write(
+            generated.join("m1.json"),
+            r#"{"id":"m1","priority":"MESSAGE_PRIORITY_HIGH"}"#,
+        )
+        .unwrap();
+        // `brain` itself is a link out of the profile.
+        let brain = root.parent().unwrap().parent().unwrap().to_path_buf();
+        std::fs::remove_dir_all(&brain).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), &brain).unwrap();
         assert!(!pending_reply(dir.path(), "s-1").await);
     }
 

@@ -265,25 +265,34 @@ pub(crate) fn usage_limited(resets_at: Option<i64>) -> TurnOutcome {
 /// (RFC 3339), else a `quotaResetDelay` or `retryDelay` Go duration from
 /// `now` (ms).
 pub(crate) fn reset_at(text: &str, now: i64) -> Option<i64> {
-    let field = |key: &str| {
-        let start = text.find(key)? + key.len();
-        let rest = &text[start..];
-        let end = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, ']' | ',' | '"' | '}'))
-            .unwrap_or(rest.len());
-        Some(&rest[..end])
-    };
-    if let Some(stamp) = field("quotaResetTimeStamp:")
-        && let Ok(at) = chrono::DateTime::parse_from_rfc3339(stamp)
-    {
-        return Some(at.timestamp_millis());
+    if let Some(at) = reset_stamp(text) {
+        return Some(at);
     }
-    let delay = field("quotaResetDelay:")
-        .or_else(|| field("retryDelay:"))
+    let delay = reset_field(text, "quotaResetDelay:")
+        .or_else(|| reset_field(text, "retryDelay:"))
         .or_else(|| resets_in(text))?;
     go_duration_ms(delay)
         .filter(|ms| *ms > 0.0)
         .map(|ms| now.saturating_add(ms.round() as i64))
+}
+
+/// The value after `key`, up to the next delimiter.
+fn reset_field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    let start = text.find(key)? + key.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, ']' | ',' | '"' | '}'))
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// The provider's own `quotaResetTimeStamp` (RFC 3339), which needs no
+/// anchor: a failure read long after it happened keeps only this.
+pub(crate) fn reset_stamp(text: &str) -> Option<i64> {
+    let stamp = reset_field(text, "quotaResetTimeStamp:")?;
+    chrono::DateTime::parse_from_rfc3339(stamp)
+        .ok() // silent-ok: an unparsable stamp falls back to the delay
+        .map(|at| at.timestamp_millis())
 }
 
 /// The Go duration of agy 1.5's "... Resets in 4m42s." message: digits, dots
