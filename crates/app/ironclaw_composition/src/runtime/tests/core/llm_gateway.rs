@@ -622,8 +622,8 @@ async fn swappable_gateway_uses_current_active_model_for_requests() {
     let raw: Arc<dyn ironclaw_llm::LlmProvider> = provider.clone();
     let session =
         ironclaw_llm::create_session_manager(ironclaw_llm::SessionConfig::default()).await;
-    let bundle =
-        crate::runtime::wrap_swappable_gateway(raw, session, None, None).expect("gateway bundle");
+    let bundle = crate::runtime::wrap_swappable_gateway(raw, session, None, None, None)
+        .expect("gateway bundle");
 
     bundle
         .gateway
@@ -653,6 +653,90 @@ async fn swappable_gateway_uses_current_active_model_for_requests() {
             Some("reloaded-model".to_string())
         ],
         "production gateway must not keep sending the model selected at boot"
+    );
+}
+
+fn gateway_test_request_for_profile(profile: &str) -> HostManagedModelRequest {
+    HostManagedModelRequest {
+        model_profile_id: ironclaw_loop_contracts::ModelProfileId::new(profile)
+            .expect("model profile id"),
+        ..nearai_gateway_test_request()
+    }
+}
+
+/// Explorer/planner subagent profiles run on the configured cheap model
+/// (`LLM_CHEAP_MODEL`) through the production gateway; the interactive
+/// profile stays on the active model. With no cheap model configured, the
+/// explorer/planner profiles fall back to the live active model, and an
+/// unknown profile id stays denied.
+#[tokio::test]
+async fn production_gateway_routes_explorer_and_planner_profiles_to_the_cheap_model() {
+    for (cheap_model, expected_cheap_route) in [
+        (Some("cheap-model".to_string()), "cheap-model"),
+        (None, "boot-model"),
+        (Some("   ".to_string()), "boot-model"),
+    ] {
+        let provider = Arc::new(RecordingLlmProvider::new("boot-model"));
+        let raw: Arc<dyn ironclaw_llm::LlmProvider> = provider.clone();
+        let session =
+            ironclaw_llm::create_session_manager(ironclaw_llm::SessionConfig::default()).await;
+        let bundle =
+            crate::runtime::wrap_swappable_gateway(raw, session, None, None, cheap_model.clone())
+                .expect("gateway bundle");
+
+        for profile in ["interactive_model", "explorer_model", "planner_model"] {
+            bundle
+                .gateway
+                .stream_model(gateway_test_request_for_profile(profile))
+                .await
+                .unwrap_or_else(|error| panic!("{profile} request failed: {error:?}"));
+        }
+        let denied = bundle
+            .gateway
+            .stream_model(gateway_test_request_for_profile("unlisted_model"))
+            .await;
+        assert!(
+            denied.is_err(),
+            "an unlisted model profile must stay denied (cheap={cheap_model:?})"
+        );
+
+        let requests = provider
+            .requests
+            .lock()
+            .expect("recording provider request lock poisoned")
+            .clone();
+        assert_eq!(
+            requests,
+            vec![
+                Some("boot-model".to_string()),
+                Some(expected_cheap_route.to_string()),
+                Some(expected_cheap_route.to_string()),
+            ],
+            "cheap={cheap_model:?}"
+        );
+    }
+}
+
+/// The boot cheap model is read from the resolved LLM config: unset → no cheap
+/// route; `LLM_CHEAP_MODEL` → that model on the active provider.
+#[test]
+fn boot_cheap_model_reads_the_llm_config_cheap_model() {
+    assert_eq!(
+        crate::model_gateway_assembly::boot_cheap_model(None).expect("no config"),
+        None
+    );
+    let session_dir = tempfile::tempdir().expect("session tempdir");
+    let mut config = dead_endpoint_nearai_config(session_dir.path().join("session.json"));
+    config.cheap_model = None;
+    config.nearai.cheap_model = None;
+    assert_eq!(
+        crate::model_gateway_assembly::boot_cheap_model(Some(&config)).expect("unset"),
+        None
+    );
+    config.cheap_model = Some("small-model".to_string());
+    assert_eq!(
+        crate::model_gateway_assembly::boot_cheap_model(Some(&config)).expect("configured"),
+        Some("small-model".to_string())
     );
 }
 
@@ -718,6 +802,7 @@ async fn wrap_swappable_gateway_applies_provider_factory() {
         built,
         session,
         Some(Arc::new(move |_built| Arc::clone(&factory_mock))),
+        None,
         None,
     )
     .expect("gateway builds with the provider factory");
@@ -843,7 +928,7 @@ async fn provider_factory_survives_live_reload() {
     let built = ironclaw_llm::build_static_provider_chain(&config, Arc::clone(&session))
         .await
         .expect("provider chain builds from config");
-    let bundle = crate::runtime::wrap_swappable_gateway(built, session, Some(factory), None)
+    let bundle = crate::runtime::wrap_swappable_gateway(built, session, Some(factory), None, None)
         .expect("gateway builds with the provider factory");
 
     // First model call routes through the instrumentation wrapper. The dead
@@ -1006,8 +1091,8 @@ async fn swappable_gateway_records_llm_requests_into_operator_metrics() {
     let provider_id = raw.provider_id();
     let session =
         ironclaw_llm::create_session_manager(ironclaw_llm::SessionConfig::default()).await;
-    let bundle =
-        crate::runtime::wrap_swappable_gateway(raw, session, None, None).expect("gateway bundle");
+    let bundle = crate::runtime::wrap_swappable_gateway(raw, session, None, None, None)
+        .expect("gateway bundle");
     bundle
         .gateway
         .stream_model(nearai_gateway_test_request())

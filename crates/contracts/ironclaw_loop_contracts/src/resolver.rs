@@ -223,6 +223,14 @@ impl RunProfileDefinition {
         definition
     }
 
+    /// Override the model profile the resolved run requests. The host's model
+    /// gateway decides what the id maps to (and fails closed on an id it does
+    /// not permit), so this narrows nothing and grants nothing by itself.
+    pub fn with_model_profile_id(mut self, model_profile_id: ModelProfileId) -> Self {
+        self.model_profile_id = model_profile_id;
+        self
+    }
+
     pub fn with_personal_context_policy(mut self, policy: PersonalContextPolicy) -> Self {
         self.personal_context_policy = policy;
         self

@@ -57,6 +57,7 @@ pub(crate) struct ProviderRoutesInput {
 pub(crate) async fn build_production_model_gateway(
     provider_factory: Option<ironclaw_operator::RebornProviderFactory>,
     routes: Option<ProviderRoutesInput>,
+    cheap_model: Option<String>,
 ) -> Result<
     (
         Arc<dyn ironclaw_loop_host::HostManagedModelGateway>,
@@ -67,7 +68,7 @@ pub(crate) async fn build_production_model_gateway(
 > {
     let LlmGatewayBundle {
         gateway, reload, ..
-    } = build_placeholder_llm_gateway(provider_factory, routes).await?;
+    } = build_placeholder_llm_gateway(provider_factory, routes, cheap_model).await?;
     Ok((gateway, None, Some(reload)))
 }
 
@@ -140,6 +141,7 @@ pub(crate) fn live_llm_default(
 async fn build_placeholder_llm_gateway(
     provider_factory: Option<ironclaw_operator::RebornProviderFactory>,
     routes: Option<ProviderRoutesInput>,
+    cheap_model: Option<String>,
 ) -> Result<LlmGatewayBundle, RebornRuntimeError> {
     let session =
         ironclaw_llm::create_session_manager(ironclaw_llm::SessionConfig::default()).await;
@@ -151,7 +153,51 @@ async fn build_placeholder_llm_gateway(
             Arc::clone(&session),
         ))
     });
-    wrap_swappable_gateway(raw, session, provider_factory, routes)
+    wrap_swappable_gateway(raw, session, provider_factory, routes, cheap_model)
+}
+
+/// The cheap-slot model for lightweight subagent roles, from the boot LLM
+/// config (`LLM_CHEAP_MODEL`, or `NEARAI_CHEAP_MODEL` on NEAR AI). `None` when
+/// unset, blank, or when no LLM config was resolved at boot — the explorer and
+/// planner profiles then run on the live active model. A configured but
+/// invalid model id fails boot loudly rather than silently falling back.
+pub(crate) fn boot_cheap_model(
+    config: Option<&ironclaw_llm::LlmConfig>,
+) -> Result<Option<String>, RebornRuntimeError> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    ironclaw_loop_host::ActiveModelRouteSettings::cheap_from_llm_config(config)
+        .map(|settings| settings.map(|settings| settings.model_id().to_string()))
+        .map_err(|error| {
+            RebornRuntimeError::LlmProvider(format!("invalid cheap model configuration: {error}"))
+        })
+}
+
+/// Model profiles the production gateway serves. `interactive_model` always
+/// runs on the live active model. `explorer_model` / `planner_model` (the
+/// explorer and planner subagent flavors) run on `cheap_model` when one is
+/// configured and otherwise fall back to the live active model, so an unset
+/// `LLM_CHEAP_MODEL` changes nothing. Every other profile id stays denied
+/// (fail closed). The cheap model is a model id on the active provider, read
+/// at boot: after an operator switches provider, set `LLM_CHEAP_MODEL` for the
+/// new provider (or unset it) and restart.
+fn production_model_profile_policy(
+    cheap_model: Option<String>,
+) -> Result<ironclaw_loop_host::LlmModelProfilePolicy, RebornRuntimeError> {
+    use ironclaw_loop_contracts::ModelProfileId;
+    let profile = |id: &str| {
+        ModelProfileId::new(id).map_err(|reason| {
+            RebornRuntimeError::LlmProvider(format!("invalid model profile id `{id}`: {reason}"))
+        })
+    };
+    let cheap_model = cheap_model
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty());
+    Ok(ironclaw_loop_host::LlmModelProfilePolicy::new()
+        .allow_model_profile(profile("interactive_model")?, None)
+        .allow_model_profile(profile("explorer_model")?, cheap_model.clone())
+        .allow_model_profile(profile("planner_model")?, cheap_model))
 }
 
 /// Apply instrumentation outside the swappable provider so it survives reloads.
@@ -162,11 +208,11 @@ pub(crate) fn wrap_swappable_gateway(
     session: Arc<ironclaw_llm::SessionManager>,
     provider_factory: Option<ironclaw_operator::RebornProviderFactory>,
     routes: Option<Arc<ironclaw_operator::RebornProviderRoutes>>,
+    cheap_model: Option<String>,
 ) -> Result<LlmGatewayBundle, RebornRuntimeError> {
     use ironclaw_llm::provider_routing::ProviderRouter;
     use ironclaw_llm::{LlmProvider, LlmReloadHandle, SwappableLlmProvider};
-    use ironclaw_loop_contracts::ModelProfileId;
-    use ironclaw_loop_host::{LlmModelProfilePolicy, LlmProviderModelGateway};
+    use ironclaw_loop_host::LlmProviderModelGateway;
 
     let swappable = Arc::new(SwappableLlmProvider::new(raw));
     let reload_handle = Arc::new(LlmReloadHandle::new(Arc::clone(&swappable), None));
@@ -185,10 +231,7 @@ pub(crate) fn wrap_swappable_gateway(
         ironclaw_operator::operator_metrics(),
     );
 
-    let model_profile_id = ModelProfileId::new("interactive_model").map_err(|reason| {
-        RebornRuntimeError::LlmProvider(format!("invalid interactive model profile id: {reason}"))
-    })?;
-    let policy = LlmModelProfilePolicy::new().allow_model_profile(model_profile_id, None);
+    let policy = production_model_profile_policy(cheap_model)?;
     let gateway = LlmProviderModelGateway::new(provider, policy);
     Ok(LlmGatewayBundle {
         gateway: Arc::new(gateway),

@@ -9,7 +9,7 @@ use ironclaw_agent_loop::{
 };
 use ironclaw_loop_contracts::{
     AgentLoopDriver, AgentLoopDriverDescriptor, AgentLoopDriverError, CapabilitySurfaceProfileId,
-    CheckpointSchemaId, InMemoryRunProfileRegistry, InMemoryRunProfileResolver,
+    CheckpointSchemaId, InMemoryRunProfileRegistry, InMemoryRunProfileResolver, ModelProfileId,
     RunProfileDefinition, RunProfileRegistryError,
 };
 use ironclaw_turns::{RunProfileId, RunProfileVersion};
@@ -30,6 +30,15 @@ pub const PLANNED_DRIVER_CHECKPOINT_SCHEMA_VERSION: u64 = CHECKPOINT_SCHEMA_VERS
 pub const PLANNED_DEFAULT_PROFILE_ID: &str = "reborn-planned-default";
 pub const SUBAGENT_PLANNED_DRIVER_ID: &str = "reborn:planned-subagent";
 pub const SUBAGENT_PLANNED_PROFILE_ID: &str = "reborn-planned-subagent";
+/// Explorer/planner subagent run profiles. Identical to
+/// [`SUBAGENT_PLANNED_PROFILE_ID`] (same driver, surface, budget) except for
+/// the model profile they request: `explorer_model` / `planner_model`, which
+/// the host maps to the cheap model slot (`LLM_CHEAP_MODEL`) and serves with
+/// the active model when no cheap model is configured.
+pub const SUBAGENT_EXPLORER_PLANNED_PROFILE_ID: &str = "reborn-planned-subagent-explorer";
+pub const SUBAGENT_PLANNER_PLANNED_PROFILE_ID: &str = "reborn-planned-subagent-planner";
+pub const EXPLORER_MODEL_PROFILE_ID: &str = "explorer_model";
+pub const PLANNER_MODEL_PROFILE_ID: &str = "planner_model";
 /// Capability-surface profile id for the default interactive planned driver.
 const INTERACTIVE_CAPABILITY_SURFACE_PROFILE_ID: &str = "interactive_tools";
 pub const SUBAGENT_CAPABILITY_SURFACE_PROFILE_ID: &str = "subagent_tools";
@@ -99,8 +108,12 @@ pub fn subagent_planned_profile_id() -> Result<RunProfileId, String> {
 pub(crate) fn is_subagent_planned_profile(
     profile: &ironclaw_loop_contracts::ResolvedRunProfile,
 ) -> bool {
-    profile.profile_id.as_str() == SUBAGENT_PLANNED_PROFILE_ID
-        && profile.loop_driver.id.as_str() == SUBAGENT_PLANNED_DRIVER_ID
+    matches!(
+        profile.profile_id.as_str(),
+        SUBAGENT_PLANNED_PROFILE_ID
+            | SUBAGENT_EXPLORER_PLANNED_PROFILE_ID
+            | SUBAGENT_PLANNER_PLANNED_PROFILE_ID
+    ) && profile.loop_driver.id.as_str() == SUBAGENT_PLANNED_DRIVER_ID
         && profile.loop_driver.version == planned_driver_default_version()
 }
 
@@ -376,10 +389,50 @@ pub fn register_default_planned_profile(
     registry.register(planned_default_profile_definition()?)
 }
 
+/// A subagent profile variant that only swaps the run profile id and the
+/// requested model profile id.
+fn subagent_model_variant_profile_definition(
+    profile_id: &str,
+    model_profile_id: &str,
+) -> Result<RunProfileDefinition, RunProfileRegistryError> {
+    let descriptor = subagent_planned_driver_descriptor()
+        .map_err(|reason| RunProfileRegistryError::InvalidProfile { reason })?;
+    let profile_id = RunProfileId::new(profile_id)
+        .map_err(|reason| RunProfileRegistryError::InvalidProfile { reason })?;
+    let model_profile_id = ModelProfileId::new(model_profile_id)
+        .map_err(|reason| RunProfileRegistryError::InvalidProfile { reason })?;
+    Ok(planned_like_profile_definition(
+        profile_id,
+        descriptor,
+        SUBAGENT_CAPABILITY_SURFACE_PROFILE_ID,
+    )?
+    .with_model_profile_id(model_profile_id))
+}
+
+pub fn subagent_explorer_planned_profile_definition()
+-> Result<RunProfileDefinition, RunProfileRegistryError> {
+    subagent_model_variant_profile_definition(
+        SUBAGENT_EXPLORER_PLANNED_PROFILE_ID,
+        EXPLORER_MODEL_PROFILE_ID,
+    )
+}
+
+pub fn subagent_planner_planned_profile_definition()
+-> Result<RunProfileDefinition, RunProfileRegistryError> {
+    subagent_model_variant_profile_definition(
+        SUBAGENT_PLANNER_PLANNED_PROFILE_ID,
+        PLANNER_MODEL_PROFILE_ID,
+    )
+}
+
+/// Registers every subagent run profile: the default one (general/coder
+/// flavors, default model) and the explorer/planner variants (cheap model).
 pub fn register_subagent_planned_profile(
     registry: &mut InMemoryRunProfileRegistry,
 ) -> Result<(), RunProfileRegistryError> {
-    registry.register(subagent_planned_profile_definition()?)
+    registry.register(subagent_planned_profile_definition()?)?;
+    registry.register(subagent_explorer_planned_profile_definition()?)?;
+    registry.register(subagent_planner_planned_profile_definition()?)
 }
 
 pub fn register_scheduled_trigger_planned_profile(
@@ -615,6 +668,44 @@ mod tests {
             snapshot.capability_surface_profile_id.as_str(),
             SUBAGENT_CAPABILITY_SURFACE_PROFILE_ID
         );
+    }
+
+    /// Explorer/planner flavors request the cheap-slot model profiles; the
+    /// default subagent profile (general/coder) stays on the interactive model.
+    /// Every variant is still a subagent planned profile (same driver and
+    /// surface), so the subagent prompt/surface narrowing keeps applying.
+    #[tokio::test]
+    async fn subagent_profile_variants_request_their_model_profile() {
+        let mut registry = InMemoryRunProfileRegistry::with_builtin_profiles();
+        register_subagent_planned_profile(&mut registry).expect("profiles should register");
+        let resolver = InMemoryRunProfileResolver::new(registry);
+        for (profile_id, model_profile_id) in [
+            (SUBAGENT_PLANNED_PROFILE_ID, "interactive_model"),
+            (
+                SUBAGENT_EXPLORER_PLANNED_PROFILE_ID,
+                EXPLORER_MODEL_PROFILE_ID,
+            ),
+            (
+                SUBAGENT_PLANNER_PLANNED_PROFILE_ID,
+                PLANNER_MODEL_PROFILE_ID,
+            ),
+        ] {
+            let snapshot = resolver
+                .resolve_run_profile(
+                    RunProfileResolutionRequest::interactive_default()
+                        .with_requested_run_profile(RunProfileRequest::new(profile_id).unwrap()),
+                )
+                .await
+                .expect("profile should resolve");
+            assert_eq!(snapshot.profile_id.as_str(), profile_id);
+            assert_eq!(snapshot.model_profile_id.as_str(), model_profile_id);
+            assert_eq!(snapshot.loop_driver.id.as_str(), SUBAGENT_PLANNED_DRIVER_ID);
+            assert_eq!(
+                snapshot.capability_surface_profile_id.as_str(),
+                SUBAGENT_CAPABILITY_SURFACE_PROFILE_ID
+            );
+            assert!(is_subagent_planned_profile(&snapshot), "{profile_id}");
+        }
     }
 
     #[tokio::test]

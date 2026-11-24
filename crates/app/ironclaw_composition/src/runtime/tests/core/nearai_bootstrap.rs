@@ -475,8 +475,8 @@ async fn root_llm_gateway_bootstraps_nearai_session_token_from_env() {
     let built = ironclaw_llm::build_static_provider_chain(&config, Arc::clone(&session))
         .await
         .expect("provider chain builds from config");
-    let bundle =
-        crate::runtime::wrap_swappable_gateway(built, session, None, None).expect("gateway builds");
+    let bundle = crate::runtime::wrap_swappable_gateway(built, session, None, None, None)
+        .expect("gateway builds");
     let response = bundle
         .gateway
         .stream_model(nearai_gateway_test_request())

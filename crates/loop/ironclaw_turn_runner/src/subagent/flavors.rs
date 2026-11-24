@@ -5,7 +5,10 @@ use ironclaw_loop_host::{SubagentDefinition, SubagentDefinitionResolver, Subagen
 use ironclaw_turns::{RunProfileRequest, TurnRunId};
 use serde::{Deserialize, Serialize};
 
-use crate::planned_driver_factory::SUBAGENT_PLANNED_PROFILE_ID;
+use crate::planned_driver_factory::{
+    SUBAGENT_EXPLORER_PLANNED_PROFILE_ID, SUBAGENT_PLANNED_PROFILE_ID,
+    SUBAGENT_PLANNER_PLANNED_PROFILE_ID,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -134,6 +137,20 @@ pub const BUILTIN_SUBAGENT_FLAVORS: &[SubagentFlavor] = &[
     },
 ];
 
+impl SubagentFlavorId {
+    /// The run profile a child of this flavor requests. Explorer and planner
+    /// are lightweight read/research roles and request the cheap-slot model
+    /// profile (served by the default model when `LLM_CHEAP_MODEL` is unset);
+    /// general and coder stay on the default model.
+    pub fn run_profile_id(self) -> &'static str {
+        match self {
+            Self::Explorer => SUBAGENT_EXPLORER_PLANNED_PROFILE_ID,
+            Self::Planner => SUBAGENT_PLANNER_PLANNED_PROFILE_ID,
+            Self::General | Self::Coder => SUBAGENT_PLANNED_PROFILE_ID,
+        }
+    }
+}
+
 pub fn lookup_flavor(id: SubagentFlavorId) -> Option<&'static SubagentFlavor> {
     BUILTIN_SUBAGENT_FLAVORS
         .iter()
@@ -172,7 +189,7 @@ impl SubagentDefinitionResolver for StaticSubagentDefinitionResolver {
         Ok(Some(SubagentDefinition {
             subagent_kind: kind.clone(),
             allow_nesting: flavor.allow_nesting,
-            requested_run_profile: RunProfileRequest::new(SUBAGENT_PLANNED_PROFILE_ID).map_err(
+            requested_run_profile: RunProfileRequest::new(flavor.id.run_profile_id()).map_err(
                 |reason| {
                     AgentLoopHostError::new(
                         ironclaw_loop_contracts::AgentLoopHostErrorKind::Internal,
@@ -376,21 +393,31 @@ mod tests {
         }
     }
 
+    /// Explorer/planner request the cheap-model subagent profiles;
+    /// general/coder keep the default-model subagent profile.
     #[tokio::test]
-    async fn static_policy_resolver_binds_subagent_profile() {
+    async fn static_policy_resolver_binds_each_flavor_to_its_run_profile() {
         let resolver = StaticSubagentDefinitionResolver;
-        let policy = resolver
-            .resolve_kind(&SubagentKindId::new("planner").unwrap())
-            .await
-            .unwrap()
-            .expect("planner flavor");
+        for (kind, expected_profile) in [
+            ("general", SUBAGENT_PLANNED_PROFILE_ID),
+            ("coder", SUBAGENT_PLANNED_PROFILE_ID),
+            ("explorer", SUBAGENT_EXPLORER_PLANNED_PROFILE_ID),
+            ("planner", SUBAGENT_PLANNER_PLANNED_PROFILE_ID),
+        ] {
+            let policy = resolver
+                .resolve_kind(&SubagentKindId::new(kind).unwrap())
+                .await
+                .unwrap()
+                .expect("builtin flavor");
 
-        assert_eq!(policy.subagent_kind.as_str(), "planner");
-        assert_eq!(
-            policy.requested_run_profile.as_str(),
-            SUBAGENT_PLANNED_PROFILE_ID
-        );
-        assert!(!policy.allow_nesting);
+            assert_eq!(policy.subagent_kind.as_str(), kind);
+            assert_eq!(
+                policy.requested_run_profile.as_str(),
+                expected_profile,
+                "{kind}"
+            );
+            assert!(!policy.allow_nesting);
+        }
     }
 
     #[tokio::test]

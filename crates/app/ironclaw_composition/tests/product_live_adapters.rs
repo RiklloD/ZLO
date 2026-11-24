@@ -194,8 +194,9 @@ async fn capability_io_resolves_staged_inputs_and_materializes_run_scoped_result
 
 /// F6: ProductLiveCapabilityIo::write_capability_result must return a byte_len
 /// equal to the serialized payload size. Verifies that the writer's returned
-/// byte_len value can be relied upon by callers (e.g. ByteCapStrategy and
-/// CapabilityOutcome::AwaitDependentRun) to measure actual payload size.
+/// byte_len value can be relied upon by callers (e.g. the post-capability
+/// `BudgetFractionStrategy` and CapabilityOutcome::AwaitDependentRun) to
+/// measure actual payload size.
 #[tokio::test]
 async fn capability_io_write_capability_result_returns_serialized_payload_byte_len() {
     let io = ProductLiveCapabilityIo::default();

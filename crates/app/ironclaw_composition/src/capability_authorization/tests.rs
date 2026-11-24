@@ -815,6 +815,65 @@ async fn standalone_authorizer_observes_global_auto_approve_revocation_on_next_i
     );
 }
 
+/// Pins why read-only shell approval narrowing is NOT wired through descriptor
+/// effects: for a durable-approval-eligible tool (`Allow`/`Ask`), the
+/// production gate decides at the auto-approve / "Ask first" steps (#4776
+/// steps 6 and 8) before effects are ever consulted (step 9). A `builtin.shell`
+/// descriptor narrowed to pure `ReadFilesystem` is therefore gated exactly like
+/// `builtin.read_file`: allowed when auto-approve is on (already true for the
+/// full shell), asked when the user chose "Ask first". Narrowing effects would
+/// add a classifier-driven relaxation path to the kernel with no change to any
+/// production verdict. If this test starts failing, the gate precedence moved
+/// and the narrowing question must be re-decided, not silently shipped.
+#[tokio::test]
+async fn read_only_effects_do_not_change_the_gate_verdict_for_an_eligible_shell() {
+    let user_id = UserId::new("test-user").expect("user id");
+    let auto_approve = Arc::new(in_memory_backed_auto_approve_setting_store());
+    let scope = ironclaw_host_api::resource::ResourceScope::local_default(
+        user_id.clone(),
+        ironclaw_host_api::ids::InvocationId::new(),
+    )
+    .expect("local resource scope");
+    auto_approve
+        .set(AutoApproveSettingInput {
+            scope,
+            enabled: false,
+            updated_by: Principal::User(user_id.clone()),
+        })
+        .await
+        .expect("auto-approve setting update");
+    let settings = Arc::new(StoreApprovalSettingsProvider::new(
+        Arc::new(in_memory_backed_capability_permission_override_store()),
+        auto_approve,
+        Arc::new(in_memory_backed_persistent_approval_policy_store()),
+    ));
+    let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
+    let authorizer = capability_authorizer(None, policy, settings);
+
+    for permission in [PermissionMode::Ask, PermissionMode::Allow] {
+        let (mut descriptor, context, mut trust_decision) =
+            local_host_shell_authorization_inputs_with_permission(&user_id, permission);
+        descriptor.effects = vec![EffectKind::ReadFilesystem];
+        trust_decision.authority_ceiling.allowed_effects = vec![EffectKind::ReadFilesystem];
+        let decision = authorizer
+            .authorize_dispatch_with_trust(
+                &context,
+                &descriptor,
+                &ResourceEstimate::default(),
+                &trust_decision,
+            )
+            .await;
+        assert!(
+            matches!(
+                decision,
+                ironclaw_host_api::decision::Decision::RequireApproval { .. }
+            ),
+            "with auto-approve off a read-only-effect shell ({permission:?}) must still ask, \
+             like builtin.read_file; got {decision:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn standalone_authorizer_caches_global_auto_approve_within_one_invocation() {
     let user_id = UserId::new("test-user").expect("user id");

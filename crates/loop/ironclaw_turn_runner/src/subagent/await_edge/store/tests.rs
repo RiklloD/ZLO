@@ -709,3 +709,121 @@ async fn recording_attention_twice_keeps_the_first_outcome() {
         "replay must return the outcome already durably recorded"
     );
 }
+
+/// Concurrency audit for W2-2's 4-wide spawn fan-out (`batch_fanout.rs`):
+/// sibling children submitted *concurrently* into one parent spawn tree and
+/// one shared await group (the batch gate) must neither over-grant the tree's
+/// descendant cap nor lose or duplicate an await edge. The journal applies
+/// every command through its single-writer group-commit funnel (and CAS on
+/// the tree row across processes), so the cap check-and-increment is atomic;
+/// edges are keyed per `(parent, child)`, so the shared group has no
+/// aggregate row to race on. Driven through the real journal submission port
+/// and read back through the production `list_group` projection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_sibling_spawns_respect_the_tree_cap_and_keep_every_group_edge() {
+    const CAP: u32 = 4;
+    const ATTEMPTS: usize = 7;
+
+    let (store, journal) = new_store();
+    let (parent_run_id, _, edge) = edge_fixture();
+    let parent_process_id = ProcessId::from_uuid(parent_run_id.as_uuid());
+    journal
+        .submit_process(SubmitProcessRequest {
+            process_id: parent_process_id,
+            process_kind: ProcessKind::AgentTurn,
+            scope: edge.parent_run_context.scope.to_resource_scope(),
+            exclusive_within_scope: false,
+            operation_id: None,
+            owner_user_id: None,
+            concurrency_class: None,
+            parent_process_id: None,
+            root_process_id: None,
+            spawn_tree_descendant_cap: None,
+            dependency: None,
+            checkpoint_ref: None,
+            input: None,
+            created_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+        })
+        .await
+        .expect("submit parent process");
+
+    let mut handles = Vec::with_capacity(ATTEMPTS);
+    for _ in 0..ATTEMPTS {
+        let journal = Arc::clone(&journal);
+        let edge = edge.clone();
+        let child_run_id = TurnRunId::new();
+        handles.push(tokio::spawn(async move {
+            let result = journal
+                .submit_process(SubmitProcessRequest {
+                    process_id: ProcessId::from_uuid(child_run_id.as_uuid()),
+                    process_kind: ProcessKind::AgentTurn,
+                    scope: edge.child_scope.to_resource_scope(),
+                    exclusive_within_scope: false,
+                    operation_id: None,
+                    owner_user_id: None,
+                    concurrency_class: None,
+                    parent_process_id: Some(parent_process_id),
+                    root_process_id: Some(parent_process_id),
+                    spawn_tree_descendant_cap: Some(CAP),
+                    dependency: Some(ironclaw_processes::ProcessDependencySubmission {
+                        dependent_process_id: parent_process_id,
+                        root_process_id: parent_process_id,
+                        group_ref: Some(edge.gate_ref.as_str().to_string()),
+                        metadata: serde_json::to_value(awaited_child_set_record(
+                            child_run_id,
+                            &edge,
+                        ))
+                        .expect("serialize the production blob"),
+                    }),
+                    checkpoint_ref: None,
+                    input: None,
+                    created_at: Utc::now(),
+                    metadata: serde_json::Value::Null,
+                })
+                .await;
+            (child_run_id, result)
+        }));
+    }
+
+    let mut accepted = std::collections::BTreeSet::new();
+    let mut rejected = 0usize;
+    for handle in handles {
+        let (child_run_id, result) = handle.await.expect("submission task");
+        match result {
+            Ok(_) => {
+                accepted.insert(child_run_id.as_uuid());
+            }
+            Err(ProcessJournalStoreError::ProcessTreeCapacityExceeded { cap }) => {
+                assert_eq!(cap, CAP);
+                rejected += 1;
+            }
+            Err(other) => panic!("unexpected concurrent submission error: {other:?}"),
+        }
+    }
+    assert_eq!(
+        accepted.len(),
+        CAP as usize,
+        "the tree cap must hold exactly"
+    );
+    assert_eq!(rejected, ATTEMPTS - CAP as usize);
+
+    let group = store
+        .list_group(&edge.child_scope, parent_run_id, &edge.gate_ref)
+        .await
+        .expect("list the shared await group");
+    let grouped = group
+        .iter()
+        .map(|(child_run_id, _)| child_run_id.as_uuid())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(group.len(), CAP as usize, "no duplicated group edge");
+    assert_eq!(
+        grouped, accepted,
+        "every accepted sibling (and only those) owns an edge in the shared group"
+    );
+    assert!(
+        group
+            .iter()
+            .all(|(_, edge)| edge.state == AwaitEdgeState::Open)
+    );
+}
