@@ -190,10 +190,11 @@ impl Rows {
                 rows::render_row(s, chat, row_, k),
                 k,
             ),
-            // The bubble's own key: text that turns into narration keeps its
-            // element, so it neither re-parses nor fades in again.
+            // Commentary: subdued, never answer-weight. The bubble's own key,
+            // so text that turns into commentary keeps its element and
+            // neither re-parses nor fades in again.
             Item::Row(Row::Narration { text, .. }) => {
-                super::super::visual::prose(s, id, item.key(), text, false, k)
+                super::super::visual::commentary(s, id, item.key(), text, k)
             }
             Item::Row(Row::Question {
                 key,

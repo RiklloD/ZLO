@@ -566,3 +566,67 @@ fn a_search_hit_inside_a_shut_fold_opens_it() {
     );
     assert!(c.reveal.is_none(), "the hit was found");
 }
+
+/// Regression (2026-11-24): a model re-announcing its plan before every
+/// call drew each rephrasing as its own line. Live or settled and opened,
+/// the turn keeps the first; a distinct line stays.
+#[test]
+fn repeated_commentary_draws_once_live_and_settled() {
+    let rows = vec![
+        user("u"),
+        Row::Narration {
+            key: "s1".into(),
+            text: "I'll launch two more subagents with fresh puzzles you can watch.".into(),
+        },
+        tool("t1", "t3_delegate"),
+        Row::Narration {
+            key: "s2".into(),
+            text: "I'll launch two fresh subagents with different puzzles you can watch.".into(),
+        },
+        tool("t2", "t3_delegate"),
+        said("Both are starting; checking on them."),
+        tool("t3", "t3_tasks"),
+    ];
+    let live = shape(&fold(&rows, true, false, false, false));
+    assert_eq!(
+        live,
+        [
+            "u",
+            "working",
+            "s1",
+            "act:t1",
+            "Both are starting; checking on them.",
+            "act:t3:live"
+        ]
+    );
+    let mut settled = rows.clone();
+    settled.push(answer("done"));
+    let spans = HashMap::new();
+    let toggles = HashMap::from([("fold-u".to_string(), true)]);
+    let opened = super::flow::fold(&settled, false, false, false, false, &ctx(&spans, &toggles));
+    let narration: Vec<&str> = opened
+        .iter()
+        .filter_map(|i| match i {
+            Item::Row(Row::Narration { key, .. }) => Some(key.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(narration, ["s1", "Both are starting; checking on them."]);
+}
+
+/// A live thought previews its newest words, cut at a word.
+#[test]
+fn a_live_thought_previews_its_newest_words() {
+    assert_eq!(
+        super::flow::thought_tail("  short\n thought "),
+        "short thought"
+    );
+    let long = format!("{} the newest words", "older words ".repeat(40));
+    let tail = super::flow::thought_tail(&long);
+    assert!(
+        tail.starts_with('…') && tail.ends_with("the newest words"),
+        "{tail}"
+    );
+    assert!(tail.chars().count() <= 281);
+    assert!(!tail.contains("older wor ") && !tail.starts_with("…ords"));
+}

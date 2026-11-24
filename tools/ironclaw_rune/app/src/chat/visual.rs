@@ -133,6 +133,27 @@ pub(crate) fn prose(s: &State, thread: &str, id: &str, text: &str, streaming: bo
         .key(id.to_string())
 }
 
+/// Commentary (what the agent says between its calls): the reply's
+/// Markdown one step down, 13 px in muted ink, so only the answer reads at
+/// full weight (t3code's work entries).
+pub(crate) fn commentary(s: &State, thread: &str, id: &str, text: &str, k: &Kit) -> El {
+    let thread = thread.to_string();
+    Markdown::new(file_links::link_paths(text))
+        .style(
+            MarkdownStyle::from_kit(k)
+                .body_font(flow::type_at(s, 13., 20., 400.))
+                .text(s.palette.text_muted)
+                .paragraph_margin(0., 4.),
+        )
+        .selectable(true)
+        .on_link_tx(move |s: &mut State, href: &str, tx: &mut rune::Tx| {
+            let external = tx.mods().cmd;
+            actions::open_link(s, &thread, href, external, tx);
+        })
+        .build(k)
+        .key(id.to_string())
+}
+
 fn card_frame(s: &State, key: String) -> El {
     let p = &s.palette;
     col()
