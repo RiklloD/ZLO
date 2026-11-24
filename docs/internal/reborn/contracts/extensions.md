@@ -144,7 +144,7 @@ pinned by
 `cargo test -p ironclaw_extension_registry --test installations_contract`
 (normalized layout, membership mutation, interruption, and backend
 contracts) and
-`cargo test --test reborn_integration_extension_user_lifecycle_isolation`
+`cargo test --test reborn_integration_suite_extensions extension_user_lifecycle_isolation::`
 (the production-composition restart journey).
 
 These are `VirtualPath` keys, not a promise of literal host directories.

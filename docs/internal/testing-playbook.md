@@ -271,7 +271,7 @@ group directory and include the module from that group's `main.rs` instead of
 creating another harness.
 
 ```bash
-cargo test --test reborn_integration_greeting
+cargo test --test reborn_integration_suite_turns greeting::
 ```
 
 ### Caller-path side effect
@@ -471,9 +471,10 @@ for p in ironclaw_filesystem ironclaw_secrets ironclaw_triggers ironclaw_process
   cargo test -p "$p" --all-features --no-fail-fast
 done
 cargo test -p ironclaw_hooks --features integration,test-support --no-fail-fast
-cargo test -p ironclaw_integration_tests --test reborn_integration_backend_matrix \
-  --test reborn_integration_db_write_canonical --test reborn_integration_extension_runtime \
-  --test reborn_integration_extension_ingress --test reborn_integration_extension_delivery
+cargo test -p ironclaw_integration_tests --test reborn_integration_suite_platform backend_matrix::
+cargo test -p ironclaw_integration_tests --test reborn_integration_db_write_canonical
+cargo test -p ironclaw_integration_tests --test reborn_integration_suite_extensions \
+  -- extension_runtime:: extension_ingress:: extension_delivery::
 ```
 
 ### Live canary

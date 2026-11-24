@@ -1,7 +1,7 @@
 //! C-JOURNEY — multi-turn Reborn journeys: deterministic twins of the live
 //! canary use cases that chain gate → resume → next turn on ONE
 //! conversation/harness. Distinct from `reborn_group_approvals` /
-//! `reborn_integration_auth_gate` (single-gate mechanics): the value here is
+//! `reborn_integration_suite_extensions::auth_gate` (single-gate mechanics): the value here is
 //! the chaining across turns.
 //!
 //! | scenario | inbound | gate(s) | outcome |
@@ -34,7 +34,7 @@
 //!   (`RebornIntegrationHarness::submit_triggered_turn_scripted`) to reconcile
 //!   the trigger's minted owner scope with the journey approval helpers'
 //!   binding scope. Single-turn triggered-origin coverage already exists (see
-//!   `reborn_integration_triggered_submit`).
+//!   `reborn_integration_suite_turns::triggered_submit`).
 //! - **Multi-actor GATED journey** (`multi_actor_gate_isolation`): runs on
 //!   `RebornIntegrationGroup::multiuser_approvals()`, whose C-MULTIUSER
 //!   `scope_capability_by_run_owner` seam scopes each actor's gated write to

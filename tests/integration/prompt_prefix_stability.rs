@@ -4,12 +4,7 @@
 //! the cached system prefix, neither mid-run (nudges render on a later
 //! iteration) nor across turns of one conversation (the clock advances).
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::builder::RebornIntegrationHarness;
 use reborn_support::reply::RebornScriptedReply;

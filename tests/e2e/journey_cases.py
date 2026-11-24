@@ -303,7 +303,7 @@ PRODUCT_JOURNEY_CASES = (
         evidence=CargoEvidence(
             source="tests/integration/extension_ingress.rs",
             test="signed_acme_post_flows_through_the_production_mount_into_a_turn",
-            target="reborn_integration_extension_ingress",
+            target="reborn_integration_suite_extensions",
         ),
     ),
     ProductJourneyCase(
@@ -339,7 +339,7 @@ PRODUCT_JOURNEY_CASES = (
         evidence=CargoEvidence(
             source="tests/integration/extension_delivery.rs",
             test="slack_final_reply_flows_through_the_real_delivery_coordinator",
-            target="reborn_integration_extension_delivery",
+            target="reborn_integration_suite_extensions",
         ),
         delivery_addresses=(
             DeliveryAddressEvidence(
@@ -366,7 +366,7 @@ PRODUCT_JOURNEY_CASES = (
         evidence=CargoEvidence(
             source="tests/integration/extension_delivery.rs",
             test="telegram_update_becomes_a_turn_and_a_coordinated_reply",
-            target="reborn_integration_extension_delivery",
+            target="reborn_integration_suite_extensions",
         ),
         delivery_addresses=(
             DeliveryAddressEvidence(
@@ -395,7 +395,7 @@ PRODUCT_JOURNEY_CASES = (
                 "paired_telegram_bot_actor_turns_attribute_to_the_user_"
                 "and_disconnect_revokes_admission"
             ),
-            target="reborn_integration_extension_delivery",
+            target="reborn_integration_suite_extensions",
         ),
         delivery_addresses=(
             DeliveryAddressEvidence(
@@ -429,7 +429,7 @@ PRODUCT_JOURNEY_CASES = (
         evidence=CargoEvidence(
             source="tests/integration/delivery_user_journeys.rs",
             test="routine_fire_delivers_via_tool_without_stored_target",
-            target="reborn_integration_delivery_user_journeys",
+            target="reborn_integration_suite_extensions",
         ),
     ),
     ProductJourneyCase(
@@ -448,7 +448,7 @@ PRODUCT_JOURNEY_CASES = (
         evidence=CargoEvidence(
             source="tests/integration/delivery_user_journeys.rs",
             test="webui_send_me_on_slack_delivers_via_bot_with_evidence",
-            target="reborn_integration_delivery_user_journeys",
+            target="reborn_integration_suite_extensions",
         ),
         delivery_addresses=(
             DeliveryAddressEvidence(
@@ -481,7 +481,7 @@ PRODUCT_JOURNEY_CASES = (
         evidence=CargoEvidence(
             source="tests/integration/delivery_user_journeys.rs",
             test="blocked_fire_pushes_web_app_notice_to_enrolled_browser",
-            target="reborn_integration_delivery_user_journeys",
+            target="reborn_integration_suite_extensions",
         ),
         delivery_addresses=(
             DeliveryAddressEvidence(

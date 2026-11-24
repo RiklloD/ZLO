@@ -78,8 +78,8 @@ So a two-turn thread where both turns raise and resolve a gate needs 4 entries
    façade removes.
 3. **Mock only at the SDK seam.** Use `RebornScriptedReply`; do not swap the
    gateway or stub internals.
-4. **Zero setup by default.** Ordinary bins pass offline via a plain
-   `cargo test --test reborn_integration_<name>` — no services, API keys, Docker, or special
+4. **Zero setup by default.** Ordinary scenarios pass offline via a plain
+   `cargo test --test reborn_integration_suite_<domain> <name>::` — no services, API keys, Docker, or special
    linker. The sole exception is `reborn_integration_sandbox_shell_turn`, a backend/runtime
    integration test selected by a dedicated Docker CI lane; locally it skips
    visibly unless Docker and the worker image are available, and CI sets
@@ -162,29 +162,66 @@ So a two-turn thread where both turns raise and resolve a gate needs 4 entries
   model-prompt assertion `assert_system_prompt_contains` (reads the scripted
   `TraceLlm`'s captured requests via `captured_system_prompts`, not the egress
   log).
-- Tests live as bins anywhere under `tests/integration/` — flat
-  (`tests/integration/<name>.rs`) or inside a domain folder — each registered
-  as its own `[[test]]` in the workspace `Cargo.toml` with
-  `name = "reborn_integration_<name>"`. Domain folders group related bins by
-  pointing the `[[test]]` `path` into the folder — `tests/integration/auth/`
-  holds the auth user-journey bins (`oauth_connect`, `oauth_popup_journeys`,
-  `oauth_refresh`, `auth_gate`, `auth_failure`, `reopen_resume_through_gate`;
-  binary names unchanged), with shared fixtures in `auth/common.rs` mounted
-  per-bin via `#[path = "common.rs"] mod common;`. Files one level deeper
-  mount the support trees as `#[path = "../support/mod.rs"]` and
-  `#[path = "../../support/mod.rs"]`. Extension-lifecycle journeys live as
-  scenarios under `group_extensions/` (see Group tests below).
+- Flat (single-thread) scenarios live as one file each under
+  `tests/integration/` — `tests/integration/<name>.rs`, or inside a domain
+  folder such as `tests/integration/auth/` (the auth user-journey files, with
+  shared fixtures in `auth/common.rs`, mounted once by the suite root as
+  `auth_common` and imported with `use crate::auth_common as common;`). They are **not** separate test
+  binaries: each file is a module of one **suite binary** per domain (see
+  [Suite binaries](#suite-binaries) below). Extension-lifecycle journeys live
+  as scenarios under `group_extensions/` (see Group tests below).
 
-Module paths: each flat `tests/integration/<name>.rs` declares both
-`#[path = "support/mod.rs"] mod reborn_support;` and
-`#[path = "../support/mod.rs"] mod support;` (bins one folder deeper prepend
-one more `../` to each, as above), then
-`use reborn_support::builder::RebornIntegrationHarness;` /
-`use reborn_support::reply::RebornScriptedReply;`. Inside the support tree,
-siblings reference each other via `super::` and `trace_llm` via
-`crate::support::trace_llm` (the top-level `tests/support/` tree, mounted
-separately from `tests/integration/support/` via the second `#[path]`). Copy
-the includes from `tests/integration/greeting.rs`.
+### Suite binaries
+
+Every flat scenario file links into one of four domain suites, so the whole
+Reborn stack is linked four times instead of once per file:
+
+| Suite (`cargo test --test …`) | Root | Holds |
+|---|---|---|
+| `reborn_integration_suite_turns` | `suite_turns/main.rs` | chat & turn lifecycle, model recovery, prompts, suggestions, sub-agents |
+| `reborn_integration_suite_tools` | `suite_tools/main.rs` | tool dispatch, egress, MCP, disclosure, first-party tools |
+| `reborn_integration_suite_extensions` | `suite_extensions/main.rs` | extensions, channels, delivery, `auth/` journeys |
+| `reborn_integration_suite_platform` | `suite_platform/main.rs` | durability, storage, wiring, WebUI/operator surfaces |
+
+Membership is the `#[path = "../<file>.rs"] mod <file>;` list in each
+`main.rs` — re-derive it with `rg -n '#\[path' tests/integration/suite_*/main.rs`.
+The suite root mounts `support/` and `../support/` **once** for all members,
+so a member file does not declare them; it imports what it uses:
+
+```rust
+use crate::reborn_support;                 // when the file names `reborn_support::…`
+use crate::support;                        // only if it names `support::…` directly
+use reborn_support::builder::RebornIntegrationHarness;
+use reborn_support::reply::RebornScriptedReply;
+```
+
+Copy the header from `tests/integration/greeting.rs`. Inside the support
+tree, siblings reference each other via `super::` and `trace_llm` via
+`crate::support::trace_llm` (the top-level `tests/support/` tree). A member's
+own `#[path]` mounts resolve relative to the member file; a fixture file two
+members share is mounted once at the suite root instead (a second mount of
+the same file trips clippy's `duplicate_mod`).
+
+**Adding a flat scenario file:** add `#[path = "../<name>.rs"] mod <name>;` to
+the owning suite's `main.rs` — no `Cargo.toml` change. Test names carry the
+member module: run one file with
+`cargo test --test reborn_integration_suite_turns greeting::`, one test with
+`… greeting::replies_to_greeting -- --exact`. The CI inventory
+(`scripts/ci/lib/integration_test_inventory.py`) parses the mount list to route
+a changed member file to its suite's lane and fails closed on a suite that
+mounts a missing file, a file mounted twice, a member that is also its own
+`[[test]]`, or a `.rs` file outside `support/` and `group_*/` that no target
+compiles (an unmounted file would otherwise silently never build or run).
+
+**Standalone targets** keep their own `[[test]]` because something pins the
+binary or its process: `reborn_integration_sandbox_shell_turn` (dedicated
+Docker CI lane), `reborn_integration_trace_capture` (sets the process-global
+`IRONCLAW_BASE_DIR` before `ironclaw_common`'s `LazyLock` reads it, so it must
+own its process under `cargo test`'s threaded runner),
+`reborn_integration_db_write_canonical` (measured write-volume workload), and
+the `reborn_generated_*` sequence binaries. A new member must likewise not
+mutate process-global state (env vars, global `LazyLock`s) — under
+`cargo test`/`llvm-cov` every member of a suite shares one process.
 
 Design rationale: see git history.
 
@@ -304,7 +341,7 @@ Script with `RebornScriptedReply::tool_call("mock-mcp.search", json!({}))`.
 - `assert_mcp_tool_called(tool_name)` — maps `tool_name` → `"mock-mcp.<tool_name>"` and delegates to `assert_tool_invoked`.
 
 User-registered hosted-MCP admission and lifecycle behavior belongs in
-`reborn_integration_hosted_mcp_registration` rather than the single-tool turn
+`reborn_integration_suite_tools::hosted_mcp_registration` rather than the single-tool turn
 harness above. Its loopback server in
 `tests/support/hosted_mcp_registration_server.rs` drives registration,
 discovery, ordinary install/auth/activation, credential injection, restore,

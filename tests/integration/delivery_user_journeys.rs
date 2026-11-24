@@ -30,20 +30,15 @@
 //! Slack-origin journeys admit their turn directly through the generic
 //! sink's `InboundSink` seam (`GenericChannelInboundSink::admit`), skipping
 //! HTTP transport and signature verification entirely — that transport/auth
-//! proof belongs to `reborn_integration_extension_delivery`, exhaustively;
+//! proof belongs to `reborn_integration_suite_extensions::extension_delivery`, exhaustively;
 //! this suite only needs a REAL admitted turn under a REAL vendor scope.
 //!
-//! Complementary suites: `reborn_integration_extension_delivery` owns
+//! Complementary suites: `reborn_integration_suite_extensions::extension_delivery` owns
 //! implicit-source channel ingress (signed HTTP → verified admission) → run →
 //! bot-reply (lane 1); `group_triggers` owns trigger-selected delivery through
 //! the codec-based `TriggeredRunDeliveryDriver`.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -542,7 +537,7 @@ async fn assert_partial_failure_attempts(services: &RebornRuntime, scope: &TurnS
 // turn whose reply-target binding is a genuine Slack conversation, so lane-1's
 // automatic FinalReply echo and the same-origin check both see a real vendor
 // binding. This suite is about the delivery TOOL, not ingress transport or
-// signature verification — that is `reborn_integration_extension_delivery`'s
+// signature verification — that is `reborn_integration_suite_extensions::extension_delivery`'s
 // job, exhaustively — so admission goes straight through the generic sink's
 // `InboundSink` seam (`GenericChannelInboundSink::admit`), skipping HTTP and
 // HMAC signing entirely. Everything from admission onward — the idempotency

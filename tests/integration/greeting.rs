@@ -11,14 +11,9 @@
 //! rather than a redundant file, since both ride the same `build → submit_turn`
 //! path.
 
-// The support tree is large and shared; a single-test file only exercises a
-// slice, so suppress dead-code warnings on the includes.
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+// The suite root (`suite_*/main.rs`) mounts the shared support trees once
+// for every member file; this file imports the alias it names.
+use crate::reborn_support;
 
 use reborn_support::builder::RebornIntegrationHarness;
 use reborn_support::reply::RebornScriptedReply;

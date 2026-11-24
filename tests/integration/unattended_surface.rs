@@ -10,12 +10,8 @@
 //! keeps them behind the ordinary approval gate: with auto-approve off the
 //! call parks and the user is asked, never a direct engine call.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
+use crate::support;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

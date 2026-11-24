@@ -46,7 +46,7 @@ filter = "package(ironclaw_composition) & (binary(budget_e2e) | binary(runtime))
 test-group = "composition-runtime-process-local"
 
 [[profile.ci.overrides]]
-filter = "package(ironclaw) & binary(ironclaw) & test(~commands::traces::tests::)"
+filter = "package(ironclaw) & binary(zlo) & test(~commands::traces::tests::)"
 test-group = "ironclaw-cli-global-policy"
 
 # Per-test windows for the handful of scenarios that genuinely need more

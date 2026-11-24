@@ -9,14 +9,9 @@
 //! freeze time 3 days ahead so a just-created account appears idle without an
 //! actual wait.  Design spec §9 build-order, step 8.
 
-// The support tree is large and shared; a single-test file exercises only a
-// slice of it, so suppress dead-code warnings on the includes.
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../../support/mod.rs"]
-mod support;
+// The suite root (`suite_*/main.rs`) mounts the shared support trees once
+// for every member file; this file imports the alias it names.
+use crate::reborn_support;
 
 use chrono::{Duration, Utc};
 use ironclaw_auth::{AuthProductScope, AuthSurface, CredentialAccountLookupRequest};

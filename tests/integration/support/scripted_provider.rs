@@ -4,7 +4,7 @@
 //! (design §3.1/§3.3).
 
 // The parking provider (`ParkingModelGate`/`ParkingLlm`) is consumed only by the
-// `reborn_integration_cancel` test binary, so it reads as dead in the
+// `reborn_integration_suite_turns::cancel` test binary, so it reads as dead in the
 // `support_unit_tests` binary that compiles this tree without that consumer —
 // matching the file-level allow every sibling support module already carries.
 #![allow(dead_code)]

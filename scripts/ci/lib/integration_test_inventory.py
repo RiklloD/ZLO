@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import posixpath
+import re
 import sys
 import tomllib
 from typing import Any
@@ -15,6 +17,16 @@ INTEGRATION_PARTITION_COUNT = 4
 INTEGRATION_PATH_PREFIX = "tests/integration/"
 FLAT_NAME_PREFIXES = ("reborn_integration_", "reborn_generated_")
 GROUP_NAME_PREFIX = "reborn_group_"
+# Flat-scenario suite binaries: `reborn_integration_suite_<domain>` rooted at
+# `tests/integration/suite_<domain>/main.rs`, mounting each member scenario file
+# with `#[path = "../<member>.rs"] mod <member>;`. They run on the flat lanes;
+# their member files route to the suite's lane.
+SUITE_NAME_PREFIX = "reborn_integration_suite_"
+INTEGRATION_SUPPORT_PREFIX = f"{INTEGRATION_PATH_PREFIX}support/"
+_PATH_MOUNT = re.compile(
+    r'#\[\s*path\s*=\s*"(?P<path>[^"]+)"\s*\]\s*'
+    r"(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*;"
+)
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 
@@ -40,6 +52,49 @@ def _registered_tests(repo_root: str | pathlib.Path = ROOT) -> list[tuple[str, s
         for path, name in _registered_test_records(repo_root)
         if path.startswith(INTEGRATION_PATH_PREFIX)
     ]
+
+
+def _strip_line_comments(source: str) -> str:
+    return "\n".join(line.split("//", 1)[0] for line in source.splitlines())
+
+
+def suite_member_paths(
+    repo_root: str | pathlib.Path, suite_path: str
+) -> list[str]:
+    """Return the scenario files a suite root mounts, repo-relative, sorted.
+
+    Members are the `#[path]`-mounted modules that resolve inside
+    `tests/integration/` but outside its shared `support/` tree. A suite that
+    mounts nothing is a broken registration, not an empty one.
+    """
+
+    expected_prefix = f"{INTEGRATION_PATH_PREFIX}suite_"
+    if not (suite_path.startswith(expected_prefix) and suite_path.endswith("/main.rs")):
+        raise ValueError(
+            f"integration suite root must be {expected_prefix}<domain>/main.rs, "
+            f"found {suite_path!r}"
+        )
+    main = pathlib.Path(repo_root) / suite_path
+    try:
+        source = main.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ValueError(f"integration suite root {suite_path!r} is unreadable: {error}")
+    members = set()
+    suite_directory = posixpath.dirname(suite_path)
+    for match in _PATH_MOUNT.finditer(_strip_line_comments(source)):
+        resolved = posixpath.normpath(posixpath.join(suite_directory, match["path"]))
+        if not resolved.startswith(INTEGRATION_PATH_PREFIX) or resolved.startswith(
+            INTEGRATION_SUPPORT_PREFIX
+        ):
+            continue
+        if not (pathlib.Path(repo_root) / resolved).is_file():
+            raise ValueError(
+                f"integration suite {suite_path!r} mounts missing file {resolved!r}"
+            )
+        members.add(resolved)
+    if not members:
+        raise ValueError(f"integration suite {suite_path!r} mounts no scenario files")
+    return sorted(members)
 
 
 def cargo_test_names(repo_root: str | pathlib.Path = ROOT) -> list[str]:
@@ -75,10 +130,71 @@ def planner_test_lanes(
         name: index % INTEGRATION_PARTITION_COUNT
         for index, name in enumerate(flat_names)
     }
-    return {
+    lanes: dict[str, str | int] = {
         path: "groups" if name.startswith(GROUP_NAME_PREFIX) else flat_lanes[name]
         for path, name in tests.items()
     }
+    # A suite member is compiled and run only through its suite, so a change to
+    # the member file selects the suite's lane exactly as a change to a
+    # standalone registration selects its own.
+    member_owners: dict[str, str] = {}
+    for path, name in tests.items():
+        if not name.startswith(SUITE_NAME_PREFIX):
+            continue
+        expected = (
+            f"{INTEGRATION_PATH_PREFIX}suite_"
+            f"{name.removeprefix(SUITE_NAME_PREFIX)}/main.rs"
+        )
+        if path != expected:
+            raise ValueError(
+                f"suite registration path mismatch for {name!r}: "
+                f"expected {expected!r}, found {path!r}"
+            )
+        for member in suite_member_paths(repo_root, path):
+            if member in tests:
+                raise ValueError(
+                    f"{member!r} is mounted by suite {name!r} and also registered "
+                    f"as its own target {tests[member]!r}"
+                )
+            if member in member_owners:
+                raise ValueError(
+                    f"{member!r} is mounted by both {member_owners[member]!r} "
+                    f"and {name!r}"
+                )
+            member_owners[member] = name
+            lanes[member] = lanes[path]
+    orphans = _orphan_scenario_files(repo_root, lanes)
+    if orphans:
+        raise ValueError(
+            "integration scenario file(s) compiled by no target — mount each in a "
+            "tests/integration/suite_*/main.rs or register it: " + ", ".join(orphans)
+        )
+    return lanes
+
+
+def _orphan_scenario_files(
+    repo_root: str | pathlib.Path, lanes: dict[str, str | int]
+) -> list[str]:
+    """Rust files under `tests/integration/` that no target compiles.
+
+    Group directories own their scenario modules and `support/` is shared
+    plumbing; every other `.rs` file must be a registered target root or a
+    suite member, or it would silently never build or run.
+    """
+
+    root = pathlib.Path(repo_root)
+    integration_root = root / INTEGRATION_PATH_PREFIX
+    if not integration_root.is_dir():
+        return []
+    orphans = []
+    for source in sorted(integration_root.rglob("*.rs")):
+        relative = source.relative_to(root).as_posix()
+        top = relative.removeprefix(INTEGRATION_PATH_PREFIX).split("/", 1)[0]
+        if relative.startswith(INTEGRATION_SUPPORT_PREFIX) or top.startswith("group_"):
+            continue
+        if relative not in lanes:
+            orphans.append(relative)
+    return orphans
 
 
 def inventory_document(repo_root: str | pathlib.Path = ROOT) -> dict[str, Any]:

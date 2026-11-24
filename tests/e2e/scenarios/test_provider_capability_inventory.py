@@ -24,6 +24,7 @@ from provider_capability_inventory import (
     backlogged_capabilities,
     capability_id_to_wire_name,
 )
+from journey_types import cargo_target_sources
 from provider_operation_cases import PROVIDER_OPERATION_CASES
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -107,9 +108,12 @@ def _assert_integration_evidence_is_executable(
     assert evidence["target"] in targets, (
         f"unknown Cargo test target {evidence['target']!r}: {evidence}"
     )
-    assert targets[evidence["target"]] == evidence["source"], (
+    assert (ROOT / evidence["source"]).resolve() in cargo_target_sources(
+        ROOT / targets[evidence["target"]]
+    ), (
         f"Cargo target {evidence['target']!r} points to "
-        f"{targets[evidence['target']]!r}, not {evidence['source']!r}"
+        f"{targets[evidence['target']]!r}, which neither is nor mounts "
+        f"{evidence['source']!r}"
     )
 
     source = ROOT / evidence["source"]

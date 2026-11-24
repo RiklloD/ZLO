@@ -12,12 +12,7 @@
 //! sites this mirrors (`ironclaw_host_runtime::egress::HostHttpEgressService::production`,
 //! `ironclaw_network::PolicyNetworkHttpEgress`).
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::assertions::ToolErrorClass;
 use reborn_support::builder::RebornIntegrationHarness;

@@ -4,12 +4,7 @@
 //! methods). Hand-built because `webui.rs`'s builder needs a `&RebornRuntime`
 //! the harness never constructs.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use std::io::Write;
 use std::sync::Arc;

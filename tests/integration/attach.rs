@@ -13,12 +13,7 @@
 //! through a vision-pattern model id, and asserts the model request carried
 //! the image as a `data:` URL.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use axum::http::StatusCode;
 use ironclaw_assistant::RebornServices;

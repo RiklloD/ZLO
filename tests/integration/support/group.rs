@@ -1479,7 +1479,7 @@ impl RebornIntegrationGroupBuilder {
             // `Cancelled`. `RebornLoopDriverHostFactory` always builds its own
             // default `AgentTurnRunCancellationFactory`, whose cancel poll loop
             // drives a parked run to `Cancelled` on resume regardless (verified
-            // by `reborn_integration_cancel`). Supplying one here would only add
+            // by `reborn_integration_suite_turns::cancel`). Supplying one here would only add
             // the product-live wake-notifier fan-out, unexercised by this test.
             cancellation_factory: None,
             // E-SKILL: wire the local-dev skill context source so an activated

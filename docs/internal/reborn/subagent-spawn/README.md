@@ -739,7 +739,7 @@ Things no slice may break; each is enforced or pinned today.
 | Executor input drain | `crates/loop/ironclaw_agent_loop/src/executor/input.rs` |
 | `activate()`, provenance, streak cap | `crates/kernel/ironclaw_turns/src/coordinator.rs` + `process_projection/` (journaled metadata) |
 | Composition wiring | `crates/app/ironclaw_composition/src/runtime.rs` |
-| Integration scenarios (edges) | `tests/integration/subagent_await_edge.rs` (`reborn_integration_subagent_await_edge`) |
+| Integration scenarios (edges) | `tests/integration/subagent_await_edge.rs` (`reborn_integration_suite_turns::subagent_await_edge`) |
 | Disabled-capability pins | `tests/integration/tool_call.rs` |
 | E2E suite (ignored until R4) | `tests/reborn_subagent_spawn_e2e.rs` |
 | Child gate → owner inbox (R3 3a) | `crates/product/ironclaw_assistant/src/run_outcome_observer.rs` (`child_gate_run`, `observe_child_gate_commit`) |

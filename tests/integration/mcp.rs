@@ -6,12 +6,8 @@
 //! captured → the model finalizes a text reply. Same SDK seam as slices 1–2;
 //! no real network, no services, no API keys, no Docker, no `integration` feature.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
+use crate::support;
 
 use ironclaw_network::NetworkHttpRequest;
 use reborn_support::assertions::ToolErrorClass;
@@ -725,4 +721,4 @@ async fn mcp_tool_call_output_too_large_surfaces_failed() {
 // the cases above, a 401/403 maps to `McpClientError::AuthRequired` — an auth
 // *gate*, not a model-visible tool error — and requires a capability-backend
 // credential stub this tier lacks. Same deferred "live-401 re-auth arm" as
-// `reborn_integration_auth_failure.rs`.
+// `auth_failure.rs`.

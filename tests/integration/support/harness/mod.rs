@@ -1341,7 +1341,7 @@ impl HostRuntimeCapabilityHarness {
     /// **network** HTTP egress (see `RecordingNetworkHttpEgress::push_status`).
     /// For `GithubIssueTools`-backed harnesses, the real WASM HTTP call flows
     /// through this lane (not `install_http_responses`'s runtime-egress
-    /// matcher) — see `reborn_integration_secret_injection.rs`'s module doc.
+    /// matcher) — see `secret_injection.rs`'s module doc.
     /// Errors if this harness wired no recording network egress.
     pub(crate) fn install_network_status_script(&self, status: u16) -> HarnessResult<()> {
         self.network_egress
@@ -1571,7 +1571,7 @@ impl HostRuntimeCapabilityHarness {
     /// E-PROFILE: the raw local-dev memory filesystem backing the user-profile
     /// source, for write→read-back assertions on `context/profile.json`. `Some`
     /// only for `new_with_options`-built harnesses. Consumed by the E-PROFILE
-    /// `profile_tools()` constructor and the `reborn_integration_profile` test.
+    /// `profile_tools()` constructor and the `reborn_integration_suite_tools::profile` test.
     pub(crate) fn profile_filesystem_for_test(&self) -> Option<Arc<dyn RootFilesystem>> {
         self.profile_filesystem.clone()
     }

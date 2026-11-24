@@ -2822,7 +2822,7 @@ class RebornPrTestPlanTests(unittest.TestCase):
             any(
                 override.get("filter")
                 == (
-                    "package(ironclaw) & binary(ironclaw) & "
+                    "package(ironclaw) & binary(zlo) & "
                     "test(~commands::traces::tests::)"
                 )
                 and override.get("test-group") == "ironclaw-cli-global-policy"

@@ -8,12 +8,7 @@
 //! `assert_system_prompt_contains` assertion actually discriminates on real
 //! content rather than passing vacuously.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_loop_contracts::InstructionSafetyContext;
 use reborn_support::builder::RebornIntegrationHarness;

@@ -20,12 +20,7 @@
 //! proves a `Completed`/applied outcome actually reached the service seam — a
 //! no-op set that still fabricated a success payload would leave it empty.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::assertions::ToolErrorClass;
 use reborn_support::group::RebornIntegrationGroup;
@@ -211,7 +206,7 @@ async fn notification_channels_set_approval_gate_deny_leaves_channels_unchanged(
     // surfaces this as a fixed host-authored planner summary, NOT the
     // `capability_denied_summary`/`capability_failed_summary` prefix wrapper
     // (those apply only when a capability itself returns Denied/Failed).
-    // Mirrors the analogous assertion in `reborn_integration_auth_gate.rs`.
+    // Mirrors the analogous assertion in `auth_gate.rs`.
     harness
         .assert_tool_error_summary_contains("approval gate denied by user")
         .await

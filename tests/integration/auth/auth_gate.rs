@@ -18,12 +18,7 @@
 //! `Backend`, and that failure ALSO finalizes `Completed`. Only the persisted
 //! tool-error class/reason distinguishes them.
 
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_host_api::turn::{TurnGateRef, TurnStatus};
 use reborn_support::assertions::ToolErrorClass;
