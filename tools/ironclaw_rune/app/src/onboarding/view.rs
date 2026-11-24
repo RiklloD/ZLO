@@ -113,10 +113,12 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
     }
     // The step's scroll viewport: it takes what the stepper and the footer
     // leave, and shrinks below its content when the window is short. Each
-    // step has its own, so a step opens at its top whatever the last one
-    // was scrolled to; the viewport carries the step's transition.
+    // visit to a step has its own, so a step opens at its top whatever it
+    // or the last one was scrolled to, even when the person comes back
+    // before the old body finished fading; the viewport carries the step's
+    // transition.
     let scroll = col()
-        .key(format!("onboarding-scroll-{:?}", o.step))
+        .key(scroll_key(o))
         .w_full()
         .shrink()
         .min_h(0.)
@@ -150,7 +152,18 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .clip_rounded(crate::design::PANEL_RADIUS)
         .child(header(s, k))
         .child(rule(p))
-        .child(scroll)
+        .child(
+            // Between the stepper and the footer, and nowhere else: the body
+            // fading out keeps its old, maybe taller, rect, and this clip
+            // keeps it off the footer and the header.
+            col()
+                .key("onboarding-viewport")
+                .w_full()
+                .shrink()
+                .min_h(0.)
+                .clip_corners([0.; 4])
+                .child(scroll),
+        )
         .child(rule(p))
         .child(footer(step.actions))
         .token_motion(k.motion.overlay)
@@ -174,6 +187,11 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
             .center()
             .child(panel),
     );
+}
+
+/// The key of the step's scroll viewport for this visit.
+pub(super) fn scroll_key(o: &super::OnboardingState) -> String {
+    format!("onboarding-scroll-{:?}-{}", o.step, o.entry.0)
 }
 
 fn rule(p: &crate::design::Palette) -> El {

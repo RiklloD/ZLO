@@ -87,6 +87,10 @@ pub struct OnboardingState {
     /// `State::remote`).
     pub computer: gateway::Computer,
     pub step: Step,
+    /// Bumped each time setup enters a step: each visit gets its own scroll
+    /// viewport, opening at its top, even when it comes back before the
+    /// last visit's body finished fading out.
+    pub entry: crate::jobs::Generation,
     /// Which way the last step change went: `1` forward, `-1` back, `0`
     /// none yet. The new step's body arrives from that side.
     pub direction: i8,
@@ -229,12 +233,20 @@ pub fn go_to(s: &mut State, step: Step) {
         return;
     }
     let o = &mut s.onboarding;
-    o.direction = match step.index().cmp(&o.step.index()) {
+    let from = o.step;
+    o.direction = match step.index().cmp(&from.index()) {
         std::cmp::Ordering::Greater => 1,
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => o.direction,
     };
     o.step = step;
+    if step != from {
+        // A fresh scroll viewport per visit (`view::scroll_key`).
+        o.entry.bump();
+        if from == Step::Agents {
+            agents::left(s);
+        }
+    }
     match step {
         Step::Connect => {}
         Step::Agents => agents::entered(s),
@@ -313,6 +325,10 @@ fn land(s: &mut State, how: Finish) {
     let o = &mut s.onboarding;
     o.finishing = false;
     o.decision = Decision::App;
+    if o.step == Step::Agents {
+        agents::left(s);
+    }
+    let o = &mut s.onboarding;
     o.step = Step::Connect;
     o.direction = 0;
     let toast = match (&how.warning, how.imported) {

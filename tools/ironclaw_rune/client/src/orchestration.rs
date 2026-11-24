@@ -775,6 +775,14 @@ mod tests {
         assert_eq!(unknown.launch, Some(CatalogLaunch::Other));
         let none: RouteProvider = serde_json::from_value(json!({"provider": "x"})).unwrap();
         assert_eq!(none.launch, None);
+        // An older gateway sends no launch kind: not known either way.
+        assert!(none.launch_unknown() && unknown.launch_unknown());
+        assert!(!native.launch_unknown() && !legacy.launch_unknown());
+        let signed_in = RouteProvider {
+            authenticated: true,
+            ..none
+        };
+        assert!(!signed_in.launch_unknown());
     }
 }
 
@@ -819,6 +827,18 @@ impl RouteProvider {
     /// Signed out on a runtime that has no sign-in command of its own.
     pub fn needs_native_cli(&self) -> bool {
         !self.authenticated && self.launch == Some(CatalogLaunch::Legacy)
+    }
+
+    /// Signed out, and the gateway did not say which program it found (an
+    /// older gateway sends no `launch`; a newer one may send a kind this
+    /// client does not know): for a CLI that can be found through a legacy
+    /// runtime, its sign-in may not exist.
+    pub fn launch_unknown(&self) -> bool {
+        !self.authenticated
+            && !matches!(
+                self.launch,
+                Some(CatalogLaunch::Native | CatalogLaunch::Legacy)
+            )
     }
 
     /// The efforts `model` takes; `"default"` is the provider's default.

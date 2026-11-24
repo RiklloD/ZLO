@@ -111,7 +111,21 @@ pub enum AgentState {
     /// to sign in.
     NeedsCli,
     SignIn,
+    /// Signed out, and the gateway did not say which program it found (an
+    /// older gateway): it may be the legacy runtime with no sign-in, so
+    /// installing the CLI is offered beside the sign-in.
+    SignInOrInstall,
     Ready,
+}
+
+impl AgentState {
+    /// Still waiting for the person to sign in.
+    fn signed_out(self) -> bool {
+        matches!(
+            self,
+            AgentState::SignIn | AgentState::SignInOrInstall | AgentState::Checking
+        )
+    }
 }
 
 pub fn agent_state(
@@ -141,6 +155,13 @@ pub fn agent_state(
         AgentState::Ready
     } else if shown.iter().all(|r| r.needs_native_cli()) && driver.install().is_some() {
         AgentState::NeedsCli
+    } else if driver.known().is_some_and(|k| k.legacy_runtime)
+        && driver.install().is_some()
+        && shown
+            .iter()
+            .all(|r| r.launch_unknown() || r.needs_native_cli())
+    {
+        AgentState::SignInOrInstall
     } else {
         AgentState::SignIn
     }
@@ -170,16 +191,26 @@ pub struct AgentsState {
     pub catalog: Option<Vec<RouteProvider>>,
     pub hidden: Vec<String>,
     pub catalog_error: Option<String>,
+    /// Bumped when the computer changes: a catalog request of the old one
+    /// lands nowhere.
     refresh_gen: Generation,
+    /// A catalog request is out: at most one is ([`request_catalog`]).
+    in_flight: bool,
+    /// Asked again while one was out: one more request once it lands
+    /// (`true` when the answer is to animate).
+    queued: Option<bool>,
     /// Bumped per restart wait, and when the computer changes.
     restart_gen: Generation,
     pub terminal: Option<AgentTerminal>,
     /// The gateway restarts to find a CLI installed just now.
     pub restarting: bool,
-    /// The agent whose sign-in setup watches for, after its sign-in panel
-    /// closed ([`watch_sign_in`]).
-    pub watching: Option<Driver>,
-    /// Bumped per sign-in watch, and when the computer changes.
+    /// The agents whose sign-in setup watches for, after their sign-in
+    /// panels closed ([`watch_sign_in`]); one watch covers them all.
+    pub watching: Vec<Driver>,
+    /// When the watch gives up; `None` while no watch runs.
+    watch_until: Option<std::time::Instant>,
+    /// Bumped per watch, when setup leaves the step, and when the
+    /// computer changes: an older watch's timer stops.
     watch_gen: Generation,
     /// What happened to an install, under the agents.
     pub agent_notice: Option<String>,
@@ -195,8 +226,9 @@ pub fn reset(s: &mut State) {
     let a = &mut s.onboarding.agents;
     a.refresh_gen.bump();
     a.restart_gen.bump();
-    a.watch_gen.bump();
-    a.watching = None;
+    a.in_flight = false;
+    a.queued = None;
+    stop_watch(a);
     a.catalog = None;
     a.hidden.clear();
     a.catalog_error = None;
@@ -216,47 +248,113 @@ pub fn reset(s: &mut State) {
 /// The step opened: the agents' states land as the reply to the
 /// person's step, so they settle in with motion.
 pub fn entered(s: &mut State) {
-    refresh_shown(s, true);
+    request_catalog(s, true);
     crate::pages::providers::refresh(s);
+}
+
+/// Setup left the step: its sign-in watch ends, so coming back starts
+/// afresh rather than reviving it.
+pub fn left(s: &mut State) {
+    stop_watch(&mut s.onboarding.agents);
+}
+
+fn stop_watch(a: &mut AgentsState) {
+    a.watch_gen.bump();
+    a.watching.clear();
+    a.watch_until = None;
 }
 
 /// Ask the gateway which CLIs it found (t3code `refreshProviders`), in the
 /// background (the window came back to the front): the answer lands at
 /// once.
 pub fn refresh(s: &mut State) {
-    refresh_shown(s, false);
+    request_catalog(s, false);
 }
 
-/// [`refresh`]; `shown` when it answers something the person just did
-/// (entered the step, closed the Terminal panel), so the answer animates.
-fn refresh_shown(s: &mut State, shown: bool) {
-    let generation = s.onboarding.agents.refresh_gen.bump();
-    jobs::run(
+/// Ask the gateway which CLIs it found; `shown` when it answers something
+/// the person just did (entered the step, closed the Terminal panel), so
+/// the answer animates. One request at a time: asked while one is out, it
+/// goes once that one lands (several asks fold into one). A restart owns
+/// the requests until the new gateway answers ([`wait_for_gateway`]).
+fn request_catalog(s: &mut State, shown: bool) {
+    let a = &mut s.onboarding.agents;
+    if s.fixture {
+        return;
+    }
+    if a.in_flight || a.restarting {
+        a.queued = Some(a.queued.unwrap_or(false) || shown);
+        return;
+    }
+    a.in_flight = true;
+    let generation = a.refresh_gen;
+    jobs::run_rerouted(
         s,
         "onboarding",
         |c| async move { c.providers().await },
-        move |s, result, tx| {
+        move |s, reply, tx| {
             let a = &mut s.onboarding.agents;
             if a.refresh_gen != generation {
                 return;
             }
-            if shown {
-                tx.animated();
+            a.in_flight = false;
+            let mut again = a.queued.take();
+            match reply {
+                jobs::Reply::Fresh(result) => {
+                    let signed_in = land_catalog(a, result);
+                    // The answer to the person's step, or the sign-in they
+                    // just made landing; the polls land quietly.
+                    if shown || signed_in {
+                        tx.animated();
+                    }
+                    settle_watch(a);
+                }
+                // The same computer, over another of its routes now: ask it
+                // again there.
+                jobs::Reply::Rerouted => again = Some(again.unwrap_or(false) || shown),
             }
-            match result {
-                Ok(catalog) => {
-                    a.hidden = catalog.picker.hidden_providers.clone();
-                    a.catalog = Some(catalog.providers);
-                    a.catalog_error = None;
-                }
-                // Not knowing must not block setup: the cards say so.
-                Err(e) => {
-                    a.catalog = Some(Vec::new());
-                    a.catalog_error = Some(e.to_string());
-                }
+            if let Some(shown) = again {
+                request_catalog(s, shown);
             }
         },
     );
+}
+
+/// One catalog answer into the step. A failed one keeps the agents last
+/// seen (a gateway that blinks must not read as one with no agents), and
+/// says it could not check. Returns whether a watched agent is Ready now.
+fn land_catalog(
+    a: &mut AgentsState,
+    result: Result<zlo_client::orchestration::ProviderCatalog, zlo_client::ClientError>,
+) -> bool {
+    match result {
+        Ok(catalog) => {
+            let hidden = catalog.picker.hidden_providers;
+            let signed_in = a
+                .watching
+                .iter()
+                .any(|d| agent_state(Some(&catalog.providers), &hidden, *d) == AgentState::Ready);
+            a.hidden = hidden;
+            a.catalog = Some(catalog.providers);
+            a.catalog_error = None;
+            signed_in
+        }
+        // Not knowing must not block setup: the cards say so.
+        Err(e) => {
+            if a.catalog.is_none() {
+                a.catalog = Some(Vec::new());
+            }
+            a.catalog_error = Some(e.to_string());
+            false
+        }
+    }
+}
+
+/// Every watched agent the catalog no longer shows waiting for a sign-in
+/// (Ready, mostly) is settled: the watch stops looking for it.
+fn settle_watch(a: &mut AgentsState) {
+    let (catalog, hidden) = (a.catalog.as_deref(), &a.hidden);
+    a.watching
+        .retain(|d| agent_state(catalog, hidden, *d).signed_out());
 }
 
 /// Open Terminal with `command` shown; it runs once Enter is pressed.
@@ -351,12 +449,12 @@ fn close_terminal(s: &mut State) {
     };
     // Only this Mac's own CLI and gateway are looked at or restarted here.
     if !t.install {
-        refresh_shown(s, true);
         watch_sign_in(s, t.driver);
+        request_catalog(s, true);
         return;
     }
     if crate::remote::backend_is_remote(s) || s.fixture {
-        refresh_shown(s, true);
+        request_catalog(s, true);
         return;
     }
     // Only a CLI that is really there now is worth a restart: closing a
@@ -369,12 +467,12 @@ fn close_terminal(s: &mut State) {
             // The reply to the person's Done.
             tx.animated();
             if !installed {
-                refresh_shown(s, true);
+                request_catalog(s, true);
                 return;
             }
             if !crate::service::restart() {
                 // A gateway this app did not start (`zlo serve`).
-                refresh_shown(s, true);
+                request_catalog(s, true);
                 s.onboarding.agents.agent_notice = Some(format!(
                     "{} is installed. Restart IronClaw so it finds it.",
                     driver.name()
@@ -400,87 +498,58 @@ fn close_terminal(s: &mut State) {
 /// where it can only check now and then), a look lands within a poll of
 /// it, as long as it learns within the window; the window also covers a
 /// sign-in finished a while after the panel closed.
+#[cfg(not(test))]
 const SIGN_IN_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(test)]
+const SIGN_IN_POLL: std::time::Duration = std::time::Duration::from_millis(40);
+#[cfg(not(test))]
 const SIGN_IN_WATCH: std::time::Duration = std::time::Duration::from_secs(90);
+#[cfg(test)]
+const SIGN_IN_WATCH: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// After `driver`'s sign-in panel closed: look at the agents again every
 /// [`SIGN_IN_POLL`], quietly (no one pressed anything just then), until
-/// it is Ready, the step or the computer changes, or [`SIGN_IN_WATCH`]
-/// is over.
+/// every watched agent is settled, setup leaves the step or the computer
+/// changes, or [`SIGN_IN_WATCH`] since the last panel closed is over. A
+/// second panel closing joins the watch already running.
 fn watch_sign_in(s: &mut State, driver: Driver) {
     let a = &mut s.onboarding.agents;
-    a.watching = Some(driver);
-    let generation = a.watch_gen.bump();
-    poll_sign_in(
-        s,
-        driver,
-        generation,
-        std::time::Instant::now() + SIGN_IN_WATCH,
-    );
+    if !a.watching.contains(&driver) {
+        a.watching.push(driver);
+    }
+    let until = std::time::Instant::now() + SIGN_IN_WATCH;
+    let running = a.watch_until.is_some();
+    a.watch_until = Some(a.watch_until.map_or(until, |u| u.max(until)));
+    if !running {
+        let generation = a.watch_gen.bump();
+        poll_sign_in(s, generation);
+    }
 }
 
-/// Whether the sign-in watch `generation` still has a reason to look.
-fn keeps_watching(s: &State, driver: Driver, generation: Generation, before: bool) -> bool {
+/// Whether the watch still has a reason to look.
+fn keeps_watching(s: &State) -> bool {
     let a = &s.onboarding.agents;
-    before
-        && a.watch_gen == generation
-        && a.watching == Some(driver)
+    a.watch_until
+        .is_some_and(|until| std::time::Instant::now() < until)
+        && !a.watching.is_empty()
         && super::wizard_shown(s)
         && s.onboarding.step == super::Step::Agents
-        && !a.restarting
-        && matches!(
-            agent_state(a.catalog.as_deref(), &a.hidden, driver),
-            AgentState::SignIn | AgentState::Checking
-        )
 }
 
-fn poll_sign_in(
-    s: &mut State,
-    driver: Driver,
-    generation: Generation,
-    deadline: std::time::Instant,
-) {
-    jobs::after(s, SIGN_IN_POLL, move |s, _| {
-        let before = std::time::Instant::now() < deadline;
-        if !keeps_watching(s, driver, generation, before) {
-            if s.onboarding.agents.watch_gen == generation {
-                s.onboarding.agents.watching = None;
-            }
-            return;
+fn poll_sign_in(s: &mut State, generation: Generation) {
+    jobs::after_if(s, SIGN_IN_POLL, move |s, _| {
+        let a = &mut s.onboarding.agents;
+        if a.watch_gen != generation {
+            return false;
         }
-        let asked = s.onboarding.agents.refresh_gen.bump();
-        jobs::run(
-            s,
-            "onboarding",
-            |c| async move { c.providers().await },
-            move |s, result, tx| {
-                let a = &mut s.onboarding.agents;
-                if a.watch_gen != generation {
-                    return;
-                }
-                if a.refresh_gen == asked {
-                    match result {
-                        Ok(catalog) => {
-                            let ready = agent_state(Some(&catalog.providers), &a.hidden, driver)
-                                == AgentState::Ready;
-                            a.hidden = catalog.picker.hidden_providers.clone();
-                            a.catalog = Some(catalog.providers);
-                            a.catalog_error = None;
-                            if ready {
-                                // The sign-in the person just made lands.
-                                tx.animated();
-                            }
-                        }
-                        // The gateway went away: stop asking it.
-                        Err(e) => {
-                            a.catalog = Some(Vec::new());
-                            a.catalog_error = Some(e.to_string());
-                        }
-                    }
-                }
-                poll_sign_in(s, driver, generation, deadline);
-            },
-        );
+        if !keeps_watching(s) {
+            stop_watch(&mut s.onboarding.agents);
+            return false;
+        }
+        // A restart holds the requests: look again after it.
+        request_catalog(s, false);
+        poll_sign_in(s, generation);
+        false
     });
 }
 
@@ -557,16 +626,11 @@ fn restarted(
 ) {
     let a = &mut s.onboarding.agents;
     a.restarting = false;
-    match result {
-        Ok(catalog) => {
-            a.hidden = catalog.picker.hidden_providers.clone();
-            a.catalog = Some(catalog.providers);
-            a.catalog_error = None;
-        }
-        Err(e) => {
-            a.catalog = Some(Vec::new());
-            a.catalog_error = Some(e.to_string());
-        }
+    land_catalog(a, result);
+    settle_watch(a);
+    // Asked while the restart held the requests.
+    if let Some(shown) = a.queued.take() {
+        request_catalog(s, shown);
     }
 }
 
@@ -649,10 +713,22 @@ fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
             "Found an older runtime with no sign-in. Install the CLI to sign in."
         }
         AgentState::SignIn => "Installed. Sign in to use your plan.",
+        AgentState::SignInOrInstall => {
+            "Installed. Sign in to use your plan; if it has no sign-in, install the CLI."
+        }
     };
     let terminal_open = a.terminal.is_some();
     // Each state's trailing part is its own keyed element, so a change
     // (Checking… → Ready) fades one out as the next comes in.
+    let button = |label: &'static str, install: bool, key: String| {
+        button_sized(label, Look::Outline, Size::Small)
+            .icon(&crate::icons::SQUARE_TERMINAL)
+            .disabled(terminal_open)
+            .on_press(move |s: &mut State| open_terminal(s, driver, install))
+            .build(k)
+            .key(key)
+            .press_scale(motion::PRESS)
+    };
     let action = |install: bool| {
         let command = if install {
             driver.install()
@@ -661,15 +737,11 @@ fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
         };
         let label = if install { "Install" } else { "Sign in" };
         match command {
-            Some(_) => row().key("action").transition(motion::fade()).child(
-                button_sized(label, Look::Outline, Size::Small)
-                    .icon(&crate::icons::SQUARE_TERMINAL)
-                    .disabled(terminal_open)
-                    .on_press(move |s: &mut State| open_terminal(s, driver, install))
-                    .build(k)
-                    .key(format!("agent-action-{}", driver.runtime()))
-                    .press_scale(motion::PRESS),
-            ),
+            Some(_) => row().key("action").transition(motion::fade()).child(button(
+                label,
+                install,
+                format!("agent-action-{}", driver.runtime()),
+            )),
             // No command to run: Settings → Providers says how.
             None => row().key("action").transition(motion::fade()).child(tag(
                 p,
@@ -707,6 +779,23 @@ fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
         )),
         AgentState::Install | AgentState::NeedsCli => action(true),
         AgentState::SignIn => action(false),
+        // Both ways, each its own button: the sign-in first, the CLI as
+        // the way out when there is no sign-in to run.
+        AgentState::SignInOrInstall => row()
+            .key("sign-in-or-install")
+            .gap(6.)
+            .center_y()
+            .transition(motion::fade())
+            .child(button(
+                "Install CLI",
+                true,
+                format!("agent-install-{}", driver.runtime()),
+            ))
+            .child(button(
+                "Sign in",
+                false,
+                format!("agent-action-{}", driver.runtime()),
+            )),
     };
     list_row(
         s,
@@ -858,7 +947,10 @@ mod tests {
         assert_eq!(listed(Some(&found)).last(), Some(&Driver::Muse));
         // Antigravity's states come from the gateway's catalog, as the
         // others' do.
-        let catalog = vec![route("antigravity", "antigravity", false)];
+        let catalog = vec![RouteProvider {
+            launch: Some(zlo_client::orchestration::CatalogLaunch::Native),
+            ..route("antigravity", "antigravity", false)
+        }];
         assert_eq!(
             agent_state(Some(&catalog), &[], Driver::Antigravity),
             AgentState::SignIn
@@ -889,49 +981,196 @@ mod tests {
         unreachable!("tests build their own state")
     }
 
-    /// Review P2: closing a sign-in panel watches for the sign-in instead
-    /// of looking twice at fixed times: it keeps looking while the agent
-    /// still asks to sign in, and stops once it is Ready, setup moved on,
-    /// the computer changed, or the window is over.
-    #[test]
-    fn closing_a_sign_in_watches_until_ready_or_setup_moves_on() {
+    // The sign-in watch, driven for real: its timers fire on the app's
+    // timer queue and its requests go over HTTP to a scripted loopback
+    // gateway; the test runs the completions as the UI thread would.
+
+    use crate::jobs::harness::Pump;
+    use crate::test_gateway::{Answer, Gateway};
+    use std::time::Duration;
+
+    /// The catalog's path (`Client::providers`).
+    const CATALOG: &str = "/api/webchat/v2/providers";
+
+    /// Long enough for any of these to happen, short of a hang.
+    const WAIT: Duration = Duration::from_secs(5);
+
+    fn catalog(rows: &[(&str, bool)]) -> String {
+        let providers: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(runtime, authenticated)| {
+                serde_json::json!({
+                    "provider": runtime, "runtime": runtime,
+                    "authenticated": authenticated, "launch": "native",
+                })
+            })
+            .collect();
+        serde_json::json!({ "providers": providers, "picker": {} }).to_string()
+    }
+
+    /// Setup open on the Agents step of a live gateway answering `script`.
+    fn live(script: Vec<Answer>) -> (State, Pump, Gateway) {
+        let gateway = Gateway::start(script);
         let mut s = state();
-        super::super::fixtures::agents_long(&mut s);
-        let driver = Driver::Antigravity;
-        assert!(
-            matches!(&s.onboarding.agents.terminal, Some(t) if t.driver == driver && !t.install)
-        );
-        close_terminal(&mut s);
-        assert_eq!(s.onboarding.agents.watching, Some(driver));
-        let watch = s.onboarding.agents.watch_gen;
-        let signed_out = vec![route("antigravity", "antigravity", false)];
-        s.onboarding.agents.catalog = Some(signed_out.clone());
-        assert!(keeps_watching(&s, driver, watch, true));
-        assert!(
-            !keeps_watching(&s, driver, watch, false),
-            "the window is over"
-        );
-
-        s.onboarding.agents.catalog = Some(vec![route("antigravity", "antigravity", true)]);
-        assert!(!keeps_watching(&s, driver, watch, true), "Ready: done");
-
-        s.onboarding.agents.catalog = Some(signed_out.clone());
-        s.onboarding.step = super::super::Step::Projects;
-        assert!(!keeps_watching(&s, driver, watch, true), "setup moved on");
+        s.onboarding.decision = super::super::Decision::Wizard;
         s.onboarding.step = super::super::Step::Agents;
-        assert!(keeps_watching(&s, driver, watch, true));
+        s.rt.backend = Some(gateway.backend());
+        let pump = Pump::install(&mut s);
+        assert!(super::super::wizard_shown(&s));
+        (s, pump, gateway)
+    }
 
-        // The gateway stopped answering: the catalog reads empty.
-        s.onboarding.agents.catalog = Some(Vec::new());
+    /// The person closes `driver`'s sign-in panel.
+    fn close_sign_in(s: &mut State, driver: Driver) {
+        s.onboarding.agents.terminal = Some(AgentTerminal {
+            driver,
+            command: driver.login().unwrap(),
+            install: false,
+            state: TerminalState::Ready,
+        });
+        close_terminal(s);
+    }
+
+    fn state_of(s: &State, driver: Driver) -> AgentState {
+        let a = &s.onboarding.agents;
+        agent_state(a.catalog.as_deref(), &a.hidden, driver)
+    }
+
+    /// Review P2: a second sign-in panel closing joins the watch instead
+    /// of cancelling the first; each answer settles every agent it shows
+    /// Ready, and the watch ends once all are.
+    #[test]
+    fn one_watch_covers_every_closed_sign_in_until_each_is_ready() {
+        let (agy, claude) = (Driver::Antigravity, Driver::ClaudeCode);
+        let signed_out = catalog(&[("antigravity", false), ("claude-cli", false)]);
+        let (mut s, mut pump, gateway) = live(vec![Answer::ok(signed_out)]);
+        close_sign_in(&mut s, agy);
+        assert!(pump.until(&mut s, WAIT, |s| state_of(s, agy) == AgentState::SignIn));
+        close_sign_in(&mut s, claude);
+        assert_eq!(s.onboarding.agents.watching, vec![agy, claude]);
+
+        // Claude Code signs in first: it settles, Antigravity is still
+        // watched, and the polls go on.
+        gateway.script(vec![Answer::ok(catalog(&[
+            ("antigravity", false),
+            ("claude-cli", true),
+        ]))]);
+        assert!(pump.until(&mut s, WAIT, |s| state_of(s, claude) == AgentState::Ready));
+        assert_eq!(s.onboarding.agents.watching, vec![agy]);
+        let asked = gateway.requests_to(CATALOG);
         assert!(
-            !keeps_watching(&s, driver, watch, true),
-            "the connection went away"
+            pump.until(&mut s, WAIT, |_| gateway.requests_to(CATALOG) >= asked + 2),
+            "the first panel's watch still looks"
         );
-        s.onboarding.agents.catalog = Some(signed_out);
 
+        // Then Antigravity: everything is settled and the watch ends.
+        gateway.script(vec![Answer::ok(catalog(&[
+            ("antigravity", true),
+            ("claude-cli", true),
+        ]))]);
+        assert!(pump.until(&mut s, WAIT, |s| {
+            s.onboarding.agents.watch_until.is_none()
+        }));
+        assert_eq!(state_of(&s, agy), AgentState::Ready);
+        assert!(s.onboarding.agents.watching.is_empty());
+        let asked = gateway.requests_to(CATALOG);
+        pump.run_for(&mut s, SIGN_IN_POLL * 5);
+        assert_eq!(gateway.requests_to(CATALOG), asked, "no watch, no polls");
+    }
+
+    /// Review P2: one failed answer keeps the agents last seen and the
+    /// watch going: the next answer brings the sign-in.
+    #[test]
+    fn a_transient_catalog_error_keeps_the_agents_and_the_watch() {
+        let agy = Driver::Antigravity;
+        let (mut s, mut pump, gateway) = live(vec![Answer::ok(catalog(&[("antigravity", false)]))]);
+        close_sign_in(&mut s, agy);
+        assert!(pump.until(&mut s, WAIT, |s| state_of(s, agy) == AgentState::SignIn));
+        gateway.script(vec![
+            Answer::fail(),
+            Answer::ok(catalog(&[("antigravity", true)])),
+        ]);
+        let mut lost = false;
+        let mut failed = false;
+        assert!(
+            pump.until(&mut s, WAIT, |s| {
+                let a = &s.onboarding.agents;
+                failed |= a.catalog_error.is_some();
+                lost |= a.catalog.as_ref().is_none_or(|c| c.is_empty());
+                state_of(s, agy) == AgentState::Ready
+            }),
+            "the watch outlived the failed answer"
+        );
+        assert!(failed, "the failed answer landed");
+        assert!(!lost, "the known agents were never cleared");
+        assert!(s.onboarding.agents.catalog_error.is_none());
+    }
+
+    /// Review P2: leaving the step ends the watch; coming straight back
+    /// starts afresh (one look on entering), not the old watch's polls.
+    #[test]
+    fn leaving_the_step_ends_the_watch_and_a_quick_return_starts_fresh() {
+        let agy = Driver::Antigravity;
+        let (mut s, mut pump, gateway) = live(vec![Answer::ok(catalog(&[("antigravity", false)]))]);
+        close_sign_in(&mut s, agy);
+        assert!(pump.until(&mut s, WAIT, |s| state_of(s, agy) == AgentState::SignIn));
+        super::super::go_to(&mut s, super::super::Step::Projects);
+        assert!(s.onboarding.agents.watching.is_empty());
+        super::super::go_to(&mut s, super::super::Step::Agents);
+        let asked = gateway.requests_to(CATALOG);
+        pump.run_for(&mut s, SIGN_IN_POLL * 8);
+        assert!(s.onboarding.agents.watching.is_empty());
+        assert!(
+            gateway.requests_to(CATALOG) <= asked + 1,
+            "only the entry's own look: {:?}",
+            gateway.paths()
+        );
+
+        // A new computer ends a watch too.
+        close_sign_in(&mut s, agy);
+        assert_eq!(s.onboarding.agents.watching, vec![agy]);
         reset(&mut s);
-        assert!(!keeps_watching(&s, driver, watch, true), "another computer");
-        assert_eq!(s.onboarding.agents.watching, None);
+        assert!(s.onboarding.agents.watching.is_empty());
+        assert!(s.onboarding.agents.watch_until.is_none());
+    }
+
+    /// Review P2: the computer in use moving to another of its routes
+    /// while a look is out asks again on the new route, instead of
+    /// dropping the answer and the watch with it.
+    #[test]
+    fn a_route_change_mid_request_resumes_the_watch() {
+        let agy = Driver::Antigravity;
+        let (mut s, mut pump, _gateway) = live(vec![
+            Answer::ok(catalog(&[("antigravity", false)])).after(Duration::from_millis(300)),
+            Answer::ok(catalog(&[("antigravity", true)])),
+        ]);
+        close_sign_in(&mut s, agy);
+        // `connect::adopt` on a route refresh: the same computer, a new
+        // connection.
+        s.remote.tag.generation = Generation::unique();
+        assert!(
+            pump.until(&mut s, WAIT, |s| state_of(s, agy) == AgentState::Ready),
+            "the watch went on over the new route"
+        );
+        assert!(!s.onboarding.agents.in_flight);
+    }
+
+    /// Review P2: closing panels again and again while the gateway is slow
+    /// never has more than one look out at a time.
+    #[test]
+    fn repeated_closes_keep_one_request_in_flight() {
+        let slow = Answer::ok(catalog(&[("antigravity", false), ("claude-cli", false)]))
+            .after(Duration::from_millis(120));
+        let (mut s, mut pump, gateway) = live(vec![slow]);
+        for driver in [Driver::Antigravity, Driver::ClaudeCode].repeat(3) {
+            close_sign_in(&mut s, driver);
+            pump.run_for(&mut s, Duration::from_millis(15));
+        }
+        s.onboarding.agents.terminal = None;
+        super::super::window_focus(&mut s, true);
+        pump.run_for(&mut s, Duration::from_millis(700));
+        assert!(gateway.requests_to(CATALOG) >= 3, "it kept looking");
+        assert_eq!(gateway.max_in_flight(), 1, "one look at a time");
     }
 
     /// Review P2: Antigravity found only through its legacy ACP runtime
@@ -958,6 +1197,41 @@ mod tests {
         };
         assert_eq!(
             agent_state(Some(&[native]), &[], Driver::Antigravity),
+            AgentState::SignIn
+        );
+        // Review P2: an older gateway sends no launch kind. Signed out, it
+        // may be the legacy runtime: install is offered beside sign-in.
+        let unknown = route("antigravity", "antigravity", false);
+        assert_eq!(
+            agent_state(
+                Some(std::slice::from_ref(&unknown)),
+                &[],
+                Driver::Antigravity
+            ),
+            AgentState::SignInOrInstall
+        );
+        assert!(
+            AgentState::SignInOrInstall.signed_out(),
+            "a sign-in is watched for"
+        );
+        assert_eq!(
+            agent_state(
+                Some(&[RouteProvider {
+                    authenticated: true,
+                    ..unknown
+                }]),
+                &[],
+                Driver::Antigravity
+            ),
+            AgentState::Ready
+        );
+        // Claude Code has one program: its sign-in alone.
+        assert_eq!(
+            agent_state(
+                Some(&[route("claude-cli", "claude-cli", false)]),
+                &[],
+                Driver::ClaudeCode
+            ),
             AgentState::SignIn
         );
     }

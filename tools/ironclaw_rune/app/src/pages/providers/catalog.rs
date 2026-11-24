@@ -99,6 +99,9 @@ pub struct KnownCli {
     pub login: Option<&'static str>,
     /// IronClaw has no driver yet.
     pub planned: bool,
+    /// The gateway can find it through a legacy runtime with no sign-in
+    /// command of its own (Antigravity's ACP runtime), not only its CLI.
+    pub legacy_runtime: bool,
 }
 
 pub const KNOWN_CLIS: &[KnownCli] = &[
@@ -110,6 +113,7 @@ pub const KNOWN_CLIS: &[KnownCli] = &[
         install: Some("curl -fsSL https://claude.ai/install.sh | bash"),
         login: Some("claude auth login"),
         planned: false,
+        legacy_runtime: false,
     },
     KnownCli {
         runtime: "antigravity",
@@ -123,6 +127,7 @@ pub const KNOWN_CLIS: &[KnownCli] = &[
         // keyring, which `agy acp` shares whatever profile it runs on.
         login: Some("agy acp --login"),
         planned: false,
+        legacy_runtime: true,
     },
     KnownCli {
         runtime: "muse",
@@ -132,6 +137,7 @@ pub const KNOWN_CLIS: &[KnownCli] = &[
         install: None,
         login: None,
         planned: false,
+        legacy_runtime: false,
     },
     KnownCli {
         runtime: "codex",
@@ -141,23 +147,30 @@ pub const KNOWN_CLIS: &[KnownCli] = &[
         install: Some("curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
         login: Some("codex login"),
         planned: false,
+        legacy_runtime: false,
     },
 ];
 
-/// What a found CLI row offers next, as (button label, shell command):
+/// What a found CLI row offers next, as (label, shell command) pairs:
 /// nothing once signed in; installing the CLI when the runtime found has
-/// no sign-in command of its own (Antigravity's legacy ACP runtime);
-/// else its sign-in.
-pub fn next_step(
+/// no sign-in command of its own (Antigravity's legacy ACP runtime); both
+/// its sign-in and installing the CLI when the gateway did not say which
+/// it found (an older gateway) and it can be the legacy one; else its
+/// sign-in.
+pub fn next_steps(
     known: &KnownCli,
     route: &zlo_client::orchestration::RouteProvider,
-) -> Option<(&'static str, &'static str)> {
+) -> Vec<(&'static str, &'static str)> {
+    let sign_in = known.login.map(|c| ("Sign in", c));
+    let install = known.install.map(|c| ("Install the CLI", c));
     if route.authenticated {
-        None
+        Vec::new()
     } else if route.needs_native_cli() {
-        known.install.map(|c| ("Install", c))
+        known.install.map(|c| ("Install", c)).into_iter().collect()
+    } else if route.launch_unknown() && known.legacy_runtime {
+        sign_in.into_iter().chain(install).collect()
     } else {
-        known.login.map(|c| ("Sign in", c))
+        sign_in.into_iter().collect()
     }
 }
 
@@ -181,21 +194,35 @@ mod tests {
             launch,
             ..RouteProvider::default()
         };
+        let install = agy.install.unwrap();
         assert_eq!(
-            next_step(agy, &route(false, Some(CatalogLaunch::Legacy))),
-            Some(("Install", agy.install.unwrap()))
+            next_steps(agy, &route(false, Some(CatalogLaunch::Legacy))),
+            vec![("Install", install)]
         );
         assert_eq!(
-            next_step(agy, &route(false, Some(CatalogLaunch::Native))),
-            Some(("Sign in", "agy acp --login"))
+            next_steps(agy, &route(false, Some(CatalogLaunch::Native))),
+            vec![("Sign in", "agy acp --login")]
         );
+        // Review P2: an older gateway sends no launch kind, so a signed-out
+        // Antigravity may be the legacy runtime with no sign-in: both ways
+        // are offered.
+        for unknown in [None, Some(CatalogLaunch::Other)] {
+            assert_eq!(
+                next_steps(agy, &route(false, unknown)),
+                vec![("Sign in", "agy acp --login"), ("Install the CLI", install)]
+            );
+        }
+        assert!(next_steps(agy, &route(true, Some(CatalogLaunch::Legacy))).is_empty());
+        assert!(next_steps(agy, &route(true, None)).is_empty());
+        // A CLI with only one program keeps its one sign-in.
+        let claude = known_cli("claude-cli").unwrap();
+        let claude_route = RouteProvider {
+            runtime: "claude-cli".into(),
+            ..route(false, None)
+        };
         assert_eq!(
-            next_step(agy, &route(false, None)),
-            Some(("Sign in", "agy acp --login"))
-        );
-        assert_eq!(
-            next_step(agy, &route(true, Some(CatalogLaunch::Legacy))),
-            None
+            next_steps(claude, &claude_route),
+            vec![("Sign in", "claude auth login")]
         );
     }
 

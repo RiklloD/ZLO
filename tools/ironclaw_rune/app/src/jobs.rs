@@ -25,6 +25,10 @@ pub struct Rt {
     pub handle: AppHandle<State>,
     /// The gateway, once connected.
     pub backend: Option<Backend>,
+    /// Tests: where this module's completions go instead of the app's
+    /// queue, so a test runs them ([`harness::Pump`]).
+    #[cfg(test)]
+    pub(crate) sink: Option<harness::Sink>,
 }
 
 impl Rt {
@@ -32,7 +36,19 @@ impl Rt {
         Self {
             handle,
             backend: None,
+            #[cfg(test)]
+            sink: None,
         }
+    }
+
+    /// Queue `f` for the UI thread (`AppHandle::update_if`).
+    fn deliver(&self, f: impl FnOnce(&mut State, &mut Tx) -> bool + Send + 'static) {
+        #[cfg(test)]
+        if let Some(sink) = &self.sink {
+            sink.push(Box::new(f));
+            return;
+        }
+        self.handle.update_if(f);
     }
 }
 
@@ -57,44 +73,85 @@ pub fn run<F, Fut, T>(
     Fut: Future<Output = Result<T, ClientError>> + Send + 'static,
     T: Send + 'static,
 {
+    run_rerouted(s, label, f, move |s, reply, tx| {
+        if let Reply::Fresh(result) = reply {
+            done(s, result, tx);
+        }
+    });
+}
+
+/// How a [`run_rerouted`] request ended.
+pub enum Reply<T> {
+    /// Answered on the connection in use.
+    Fresh(Result<T, ClientError>),
+    /// The same computer moved to another of its routes while the request
+    /// was out: its answer is the old connection's and is not used, but
+    /// the computer is still the one that asked, so a poll goes on (asks
+    /// again) rather than stopping.
+    Rerouted,
+}
+
+/// [`run`] for a loop that must survive the computer in use changing
+/// route mid-request (`remote::connect::refresh`): such a reply lands as
+/// [`Reply::Rerouted`] instead of being dropped. A reply from another
+/// computer is still dropped.
+pub fn run_rerouted<F, Fut, T>(
+    s: &State,
+    label: &'static str,
+    f: F,
+    done: impl FnOnce(&mut State, Reply<T>, &mut Tx) + Send + 'static,
+) where
+    F: FnOnce(Client) -> Fut,
+    Fut: Future<Output = Result<T, ClientError>> + Send + 'static,
+    T: Send + 'static,
+{
     // A fixture scene's state is not the gateway's: never send its requests
     // (their replies would be dropped anyway).
     if s.fixture {
         return;
     }
-    let handle = s.rt.handle.clone();
+    let rt = s.rt.clone();
     // Asked on this connection: a reply that lands after a switch to
     // another computer (or a reconnect) is dropped (`remote::lands`).
     let tag = s.remote.tag.clone();
     let Some(backend) = s.rt.backend.as_ref() else {
-        handle.update(move |s, tx| {
+        rt.deliver(move |s, tx| {
             if s.fixture || !crate::remote::lands(s, &tag) {
-                return;
+                return false;
             }
             done(
                 s,
-                Err(ClientError::Config("not connected to the gateway".into())),
+                Reply::Fresh(Err(ClientError::Config(
+                    "not connected to the gateway".into(),
+                ))),
                 tx,
-            )
+            );
+            true
         });
         return;
     };
     let job = backend.spawn(f);
+    let land = rt.clone();
     backend.spawn(move |_| async move {
         let result = flatten(job.await);
         if let Err(e) = &result {
             tracing::warn!(view = label, error = %e, "gateway request failed");
         }
-        handle.update(move |s, tx| {
+        land.deliver(move |s, tx| {
             crate::energy::hit(crate::energy::C::UpdateJob);
             if s.fixture {
-                return;
+                return false;
             }
-            if !crate::remote::lands(s, &tag) {
+            if crate::remote::lands(s, &tag) {
+                done(s, Reply::Fresh(result), tx);
+            } else if crate::remote::same_computer(s, &tag) {
+                tracing::debug!(view = label, "reply from the computer's earlier route");
+                done(s, Reply::Rerouted, tx);
+            } else {
                 tracing::debug!(view = label, "reply from an earlier connection dropped");
-                return;
+                return false;
             }
-            done(s, result, tx)
+            true
         });
     });
 }
@@ -105,14 +162,15 @@ pub fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     done: impl FnOnce(&mut State, T, &mut Tx) + Send + 'static,
 ) {
-    let handle = s.rt.handle.clone();
+    let rt = s.rt.clone();
     std::thread::spawn(move || {
         let out = work();
-        handle.update(move |s, tx| {
+        rt.deliver(move |s, tx| {
             crate::energy::hit(crate::energy::C::UpdateBlocking);
             if !s.fixture {
                 done(s, out, tx)
             }
+            true
         });
     });
 }
@@ -141,9 +199,9 @@ pub fn after_if(
     delay: Duration,
     f: impl FnOnce(&mut State, &mut Tx) -> bool + Send + 'static,
 ) {
-    let handle = s.rt.handle.clone();
+    let rt = s.rt.clone();
     timers::schedule(delay, move || {
-        handle.update_if(move |s, tx| {
+        rt.deliver(move |s, tx| {
             crate::energy::hit(crate::energy::C::UpdateTimer);
             !s.fixture && f(s, tx)
         });
@@ -334,6 +392,97 @@ mod timers {
             assert_eq!(ids.len(), 40, "every timer fired");
             assert!(ids.iter().all(|id| *id == ids[0]));
             assert_ne!(ids[0], std::thread::current().id());
+        }
+    }
+}
+
+/// Tests: run the completions this module queues ([`run`], [`after`],
+/// [`blocking`]) on the test's own thread, with the real timer queue and
+/// real HTTP behind them. Install a [`Pump`] on a state, then
+/// [`Pump::until`] a condition.
+#[cfg(test)]
+pub mod harness {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Condvar, Mutex, PoisonError};
+    use std::time::{Duration, Instant};
+
+    use rune::Tx;
+
+    use crate::state::State;
+
+    type Update = Box<dyn FnOnce(&mut State, &mut Tx) -> bool + Send>;
+
+    #[derive(Clone, Default)]
+    pub struct Sink(Arc<(Mutex<VecDeque<Update>>, Condvar)>);
+
+    impl Sink {
+        pub(super) fn push(&self, f: Update) {
+            let (queue, ready) = &*self.0;
+            queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push_back(f);
+            ready.notify_all();
+        }
+
+        fn next(&self, until: Instant) -> Option<Update> {
+            let (queue, ready) = &*self.0;
+            let mut q = queue.lock().unwrap_or_else(PoisonError::into_inner);
+            loop {
+                if let Some(f) = q.pop_front() {
+                    return Some(f);
+                }
+                let now = Instant::now();
+                if now >= until {
+                    return None;
+                }
+                q = ready
+                    .wait_timeout(q, until - now)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+            }
+        }
+    }
+
+    pub struct Pump {
+        sink: Sink,
+        /// How many completions ran.
+        pub ran: usize,
+    }
+
+    impl Pump {
+        /// Route `s`'s completions to this pump.
+        pub fn install(s: &mut State) -> Pump {
+            let sink = Sink::default();
+            s.rt.sink = Some(sink.clone());
+            Pump { sink, ran: 0 }
+        }
+
+        /// Run completions as they arrive until `done(s)` holds (checked
+        /// before each wait); false when `timeout` passed first.
+        pub fn until(
+            &mut self,
+            s: &mut State,
+            timeout: Duration,
+            mut done: impl FnMut(&State) -> bool,
+        ) -> bool {
+            let until = Instant::now() + timeout;
+            loop {
+                if done(s) {
+                    return true;
+                }
+                let Some(f) = self.sink.next(until) else {
+                    return done(s);
+                };
+                let mut tx = Tx::default();
+                f(s, &mut tx);
+                self.ran += 1;
+            }
+        }
+
+        /// Run whatever arrives for `period`.
+        pub fn run_for(&mut self, s: &mut State, period: Duration) {
+            self.until(s, period, |_| false);
         }
     }
 }
