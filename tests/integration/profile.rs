@@ -11,12 +11,7 @@
 //! Mutation-catching: an ignored filesystem input or an always-`None` source
 //! makes `resolve_user_profile` return `None`, failing the `expect` below.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_loop_contracts::RunProfileResolver;
 use ironclaw_loop_contracts::{

@@ -36,9 +36,17 @@ impl Drop for CleanupGuard {
         for (path, kind) in &self.paths {
             match kind {
                 PathKind::File => {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "best-effort cleanup on drop: the path may never have been created"
+                    )]
                     let _ = std::fs::remove_file(path);
                 }
                 PathKind::Dir => {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "best-effort cleanup on drop: the path may never have been created"
+                    )]
                     let _ = std::fs::remove_dir_all(path);
                 }
             }

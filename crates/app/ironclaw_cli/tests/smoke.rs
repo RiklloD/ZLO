@@ -4028,7 +4028,7 @@ fn bundle_with_log_and_env(
         let mut entry = archive.by_index(index).expect("entry");
         let mut text = String::new();
         std::io::Read::read_to_string(&mut entry, &mut text).expect("read entry");
-        entries.insert(entry.name().to_string(), text);
+        entries.insert(entry.name().expect("zip entry name").into_owned(), text);
     }
     (output, entries)
 }

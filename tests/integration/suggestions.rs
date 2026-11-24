@@ -2,12 +2,8 @@
 //! caller-path test.  It must exercise composition, the canonical unbound
 //! structured-output loop, and durable thread state without mounting WebUI.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
+use crate::support;
 
 use std::collections::BTreeSet;
 use std::path::Path;

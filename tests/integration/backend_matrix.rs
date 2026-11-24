@@ -9,12 +9,7 @@
 //! `integration` feature — libSQL is an embedded SQLite file in a `TempDir`
 //! dropped at test end.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_filesystem::{Filter, Page, RootFilesystem};
 use ironclaw_host_api::{

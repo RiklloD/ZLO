@@ -1346,6 +1346,10 @@ where
                 .await;
 
                 if let Err(error) = execution {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "best-effort release on the failure path: the operation's own failure is returned, and OperationFailure::new already reports a release failure under IRONCLAW_STRESS_DEBUG_ERRORS"
+                    )]
                     let _ = time_stage(
                         &mut stages.resource_release,
                         release_resources(Arc::clone(&self.governor), reservation.id),
@@ -1409,6 +1413,10 @@ where
                     .await;
 
                 if let Err(error) = execution {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "best-effort release on the failure path: the operation's own failure is returned, and OperationFailure::new already reports a release failure under IRONCLAW_STRESS_DEBUG_ERRORS"
+                    )]
                     let _ = time_stage(
                         &mut stages.resource_release,
                         release_resources(Arc::clone(&self.governor), reservation.id),

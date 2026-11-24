@@ -13,8 +13,8 @@
 //!   Failed with no exchange and no account, and an immediate fresh Connect
 //!   succeeds.
 
-#[path = "common.rs"]
-mod common;
+// Shared OAuth fixtures, mounted once by the suite root (`suite_extensions`).
+use crate::auth_common as common;
 
 use chrono::{Duration, Utc};
 use common::{authorized_callback_request, hex64, new_flow_request, test_scope};

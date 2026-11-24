@@ -1,21 +1,20 @@
 [package]
 name = "ironclaw_attachments"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Channel-agnostic attachment landing for IronClaw Reborn: write attachment bytes through the scoped filesystem authority and return a ScopedPath storage key."
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
 layer = "substrates"
 
 [dependencies]
-async-trait = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
+async-trait = { workspace = true }
+chrono = { workspace = true, default-features = true, features = ["serde"] }
 ironclaw_common = { path = "../../contracts/ironclaw_common", version = "0.4.2" }
 ironclaw_extractors = { path = "../ironclaw_extractors", version = "0.1.0" }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version = "0.1.0" }
@@ -28,17 +27,17 @@ ironclaw_host_api = { path = "../../contracts/ironclaw_host_api", version = "0.1
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts", version = "0.1.0" }
 # `ThreadScope` — the ports are scoped per canonical thread.
 ironclaw_threads = { path = "../ironclaw_threads", version = "0.1.0" }
-serde = { version = "1", features = ["derive"] }
-sha2 = "0.11"
-thiserror = "2"
-tracing = "0.1"
+serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version = "0.1.0", features = [
     "test-support",
 ] }
-serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

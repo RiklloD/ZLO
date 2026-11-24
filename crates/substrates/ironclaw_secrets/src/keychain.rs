@@ -395,10 +395,14 @@ fn env_value_is_falsey(value: &std::ffi::OsStr) -> bool {
 /// Whether the current process is a cargo-built test harness.
 ///
 /// `cargo test` and `cargo nextest` run integration/unit test binaries out of
-/// `<target-dir>/<profile>/deps/`, and that profile dir always holds cargo's
-/// `.fingerprint/` bookkeeping. `cargo run` binaries live one level up (in
-/// `<profile>/` itself) and installed binaries live nowhere near a
-/// `.fingerprint/` dir, so neither is affected.
+/// either:
+/// - legacy layout: `<target-dir>/<profile>/deps/<bin>` (with `.fingerprint/`), or
+/// - Cargo 1.100+ build-dir layout: `<target-dir>/<profile>/build/<pkg>/<hash>/out/<bin>`
+///   (with `.cargo-lock` / `.cargo-build-lock` / `.cargo-artifact-lock` / `.fingerprint/`
+///   in `<profile>/`).
+///
+/// `cargo run` binaries live directly in `<profile>/` itself and installed
+/// binaries live nowhere near Cargo profile bookkeeping, so neither is affected.
 fn running_as_cargo_test_harness() -> bool {
     static IS_HARNESS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *IS_HARNESS.get_or_init(|| {
@@ -408,15 +412,41 @@ fn running_as_cargo_test_harness() -> bool {
     })
 }
 
+fn has_cargo_profile_marker(profile: &std::path::Path) -> bool {
+    profile.join(".fingerprint").is_dir()
+        || profile.join(".cargo-lock").is_file()
+        || profile.join(".cargo-build-lock").is_file()
+        || profile.join(".cargo-artifact-lock").is_file()
+}
+
 fn is_cargo_test_harness_path(exe: &std::path::Path) -> bool {
-    let Some(deps) = exe.parent() else {
+    let Some(parent) = exe.parent() else {
         return false;
     };
-    if deps.file_name() != Some(std::ffi::OsStr::new("deps")) {
-        return false;
+    let os_name = parent.file_name();
+
+    // Legacy layout: `<profile>/deps/<bin>`
+    if os_name == Some(std::ffi::OsStr::new("deps")) {
+        return parent.parent().is_some_and(has_cargo_profile_marker);
     }
-    deps.parent()
-        .is_some_and(|profile| profile.join(".fingerprint").is_dir())
+
+    // Cargo 1.100+ build-dir layout: `<profile>/build/<pkg>/<hash>/out/<bin>`
+    if os_name == Some(std::ffi::OsStr::new("out")) {
+        let Some(hash_dir) = parent.parent() else {
+            return false;
+        };
+        let Some(pkg_dir) = hash_dir.parent() else {
+            return false;
+        };
+        let Some(build_dir) = pkg_dir.parent() else {
+            return false;
+        };
+        if build_dir.file_name() == Some(std::ffi::OsStr::new("build")) {
+            return build_dir.parent().is_some_and(has_cargo_profile_marker);
+        }
+    }
+
+    false
 }
 
 const SUPPRESSED_MESSAGE: &str = "OS keychain access suppressed (cfg!(test), \
@@ -685,8 +715,9 @@ mod tests {
         }
     }
 
-    // edge: the harness check must catch `target/<profile>/deps/<bin>` and
-    // leave `cargo run` binaries and installed binaries alone.
+    // edge: the harness check must catch both legacy `target/<profile>/deps/<bin>`
+    // and Cargo 1.100+ `target/<profile>/build/<pkg>/<hash>/out/<bin>`, while
+    // leaving `cargo run` binaries and installed binaries alone.
     #[test]
     fn cargo_test_harness_path_detection() {
         let root = tempfile::tempdir().unwrap();
@@ -699,9 +730,23 @@ mod tests {
         ));
         assert!(!is_cargo_test_harness_path(&profile.join("ironclaw")));
 
+        // Cargo 1.100+ new build-dir layout (`target/<profile>/build/<pkg>/<hash>/out/<bin>`)
+        let new_profile = root.path().join("target_1100/debug");
+        let new_out = new_profile.join("build/ironclaw_secrets/8b4be98eb8250d84/out");
+        std::fs::create_dir_all(&new_out).unwrap();
+        std::fs::write(new_profile.join(".cargo-lock"), b"").unwrap();
+        assert!(is_cargo_test_harness_path(
+            &new_out.join("ironclaw_secrets-8b4be98eb8250d84")
+        ));
+        assert!(!is_cargo_test_harness_path(&new_profile.join("zlo")));
+
         let installed = root.path().join("opt/deps");
         std::fs::create_dir_all(&installed).unwrap();
         assert!(!is_cargo_test_harness_path(&installed.join("ironclaw")));
+
+        let fake_out = root.path().join("opt/build/pkg/hash/out");
+        std::fs::create_dir_all(&fake_out).unwrap();
+        assert!(!is_cargo_test_harness_path(&fake_out.join("zlo")));
     }
 
     // The binary running this very test lives in `target/<profile>/deps/`.

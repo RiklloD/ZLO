@@ -6,12 +6,7 @@
 //! events. Distinct from T0-SYSPROMPT (captured model requests) and
 //! `reborn_recorded_trace_parity.rs` (recorded-response replay).
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_turns::TurnEventKind;
 use reborn_support::builder::RebornIntegrationHarness;

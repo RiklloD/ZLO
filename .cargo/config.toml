@@ -18,6 +18,14 @@ git-fetch-with-cli = true   # git deps fetch via the git CLI, which retries too
 # slower cold downloads, far fewer spurious failures.
 multiplexing = false
 
+# Supply-chain cooldown (Cargo 1.100+): ignore newly published crates.io versions
+# younger than 7 days during resolution/updates so compromised or broken releases
+# have time to be yanked before landing in Cargo.lock. Existing pinned entries in
+# Cargo.lock are unaffected. Emergency override for an urgent security patch:
+#   CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow cargo update -p <crate> --precise <ver>
+[registry]
+global-min-publish-age = "7 days"
+
 # macOS dev builds: re-sign `cargo run` binaries with a stable identity before
 # launching them, so an OS keychain "Always Allow" survives rebuilds. No-op
 # unless IRONCLAW_CODESIGN_IDENTITY is set (e.g. in ~/.cargo/config.toml [env]).

@@ -1,7 +1,10 @@
 [package]
 name = "ironclaw_wasm"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -11,16 +14,16 @@ layer = "runtimes"
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 ironclaw_wasm_limiter = { path = "../ironclaw_wasm_limiter" }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
-tracing = "0.1"
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+tracing = { workspace = true }
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
 
 [dev-dependencies]
 ironclaw_extension_contracts = { path = "../../contracts/ironclaw_extension_contracts", version = "0.1.0" }
-async-trait = "0.1"
+async-trait = { workspace = true }
 # Dev-only: `wasm_dispatch_integration` drives the real `RuntimeDispatcher`.
 # Previously reached through the `ironclaw_dispatcher` re-export shim (deleted
 # in WS8); `test-support` on host_api came transitively via that shim's own
@@ -31,11 +34,11 @@ ironclaw_event_log = { path = "../../events/ironclaw_event_log" }
 ironclaw_extension_registry = { path = "../../extensions/ironclaw_extension_registry" }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem" }
 ironclaw_resources = { path = "../../kernel/ironclaw_resources" }
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
-wat = "1.245.1"
-wit-component = "0.258.3"
-wit-parser = "0.258.3"
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+wat = { workspace = true }
+wit-component = { workspace = true }
+wit-parser = { workspace = true }
 
 [lints]
 workspace = true

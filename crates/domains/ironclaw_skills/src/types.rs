@@ -458,8 +458,8 @@ mod tests {
             "patterns should be capped at {}",
             MAX_PATTERNS_PER_SKILL
         );
-        for i in 0..MAX_PATTERNS_PER_SKILL {
-            assert_eq!(criteria.patterns[i], format!("pattern{}", i));
+        for (i, pattern) in criteria.patterns.iter().enumerate() {
+            assert_eq!(pattern, &format!("pattern{i}"));
         }
 
         assert!(

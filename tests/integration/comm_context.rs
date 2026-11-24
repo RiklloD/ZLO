@@ -8,12 +8,7 @@
 //! this binary covers only that the field threads through the coordinator path
 //! into the model request.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_extension_contracts::channel_adapter::ProductTriggerReason;
 use ironclaw_host_api::turn::TurnStatus;

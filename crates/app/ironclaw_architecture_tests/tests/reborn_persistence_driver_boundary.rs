@@ -68,7 +68,9 @@ const DRIVER_LINKED_CRATES: &[&str] = &[
 /// (`{libsql_runtime, filesystem, event_store, composition}` plus shrink-only
 /// `{triggers, hooks}` — so `auth`/`host_runtime`/`turn_runner`/`stress` are the
 /// named residue, and `turn_runner` holding a database driver is the entry most
-/// worth an owner's attention).
+/// worth an owner's attention). ✎ 2026-11-24: neither `turn_runner` nor
+/// `host_runtime` named `libsql` in production code; both normal edges were
+/// pruned, leaving `stress` as the only named residue.
 ///
 /// Seeded, not aspirational: every entry is measured on this tree through
 /// `cargo metadata`, and the equality below fails in **both** directions, so a
@@ -91,16 +93,19 @@ const ADDITIONAL_DRIVER_ALLOWLISTS: &[(&str, &[&str])] = &[
             "ironclaw_orchestrator",
             // Measured residue the clause names explicitly as "today also
             // includes". Each is a standing §11.2.6 target, not a charter.
-            "ironclaw_host_runtime",
-            "ironclaw_turn_runner",
+            // (`ironclaw_host_runtime` — now a dev-only libSQL user — and
+            // `ironclaw_turn_runner` left this list 2026-11-24, when unused
+            // driver dependencies were pruned.)
             "ironclaw_stress",
         ],
     ),
     (
         "deadpool",
         &[
-            // The pool type itself — only the two crates that build pools.
-            "ironclaw_filesystem",
+            // The pool type itself — only the crate that builds pools.
+            // (`ironclaw_filesystem` left 2026-11-24: it builds its Postgres pool
+            // through `deadpool-postgres`, which re-exports the pool type, and
+            // never named `deadpool` directly.)
             "ironclaw_libsql_runtime",
         ],
     ),

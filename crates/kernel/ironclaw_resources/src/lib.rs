@@ -1216,26 +1216,22 @@ fn normalize_parent_dir_sync_result(result: std::io::Result<()>) -> Result<(), R
     }
 }
 
+#[cfg(windows)]
 fn is_unsupported_parent_dir_sync_error(error: &std::io::Error) -> bool {
-    if matches!(error.kind(), ErrorKind::Unsupported) {
-        return true;
-    }
+    const ERROR_INVALID_FUNCTION: i32 = 1;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    matches!(
+        error.kind(),
+        ErrorKind::Unsupported | ErrorKind::PermissionDenied
+    ) || matches!(
+        error.raw_os_error(),
+        Some(ERROR_INVALID_FUNCTION) | Some(ERROR_ACCESS_DENIED)
+    )
+}
 
-    #[cfg(windows)]
-    {
-        const ERROR_INVALID_FUNCTION: i32 = 1;
-        const ERROR_ACCESS_DENIED: i32 = 5;
-        if matches!(error.kind(), ErrorKind::PermissionDenied)
-            || matches!(
-                error.raw_os_error(),
-                Some(ERROR_INVALID_FUNCTION) | Some(ERROR_ACCESS_DENIED)
-            )
-        {
-            return true;
-        }
-    }
-
-    false
+#[cfg(not(windows))]
+fn is_unsupported_parent_dir_sync_error(error: &std::io::Error) -> bool {
+    matches!(error.kind(), ErrorKind::Unsupported)
 }
 
 pub(crate) fn storage_error(error: impl std::fmt::Display) -> ResourceError {

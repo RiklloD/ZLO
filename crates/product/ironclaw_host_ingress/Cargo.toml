@@ -1,13 +1,12 @@
 [package]
 name = "ironclaw_host_ingress"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Host HTTP ingress route mount carriers for IronClaw Reborn"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 # Layer `substrates`, not `products` (WS2 re-layer, #7092). This crate is
@@ -25,7 +24,7 @@ publish = false
 layer = "substrates"
 
 [dependencies]
-axum = "0.8"
+axum = { workspace = true }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 
 

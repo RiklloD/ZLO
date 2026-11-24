@@ -360,7 +360,7 @@ mod teardown {
                 .push(container_name.to_string());
             if self
                 .rm_failures_left
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                     left.checked_sub(1)
                 })
                 .is_ok()
@@ -705,7 +705,7 @@ mod teardown {
             fn force_remove(&self, _name: &str, _bound: Duration) -> Result<(), String> {
                 if self
                     .rm_failures_left
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                         left.checked_sub(1)
                     })
                     .is_ok()

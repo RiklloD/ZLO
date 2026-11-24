@@ -884,10 +884,10 @@ impl HostInputEnqueuePort for RaceClosingEnqueue {
         request: EnqueueQueuedMessageRequest,
     ) -> Result<HostInputEnvelope, HostInputQueueError> {
         complete_active_run(&self.transitions, &self.scope).await;
-        let _ = self
-            .inner
+        self.inner
             .settle_unconsumed(request.run_id, ironclaw_loop_host::RunQueueEnding::Ended)
-            .await;
+            .await
+            .expect("close the racing run's input queue");
         Err(HostInputQueueError::RunClosed)
     }
 }

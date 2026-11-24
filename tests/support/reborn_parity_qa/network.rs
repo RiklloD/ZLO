@@ -183,7 +183,9 @@ impl LiveLoopbackHttpServer {
             requests: Arc::clone(&requests),
         });
         let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
+            axum::serve(listener, app)
+                .await
+                .expect("live loopback HTTP server");
         });
         Self {
             port,

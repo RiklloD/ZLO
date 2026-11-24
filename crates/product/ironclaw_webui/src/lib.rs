@@ -110,7 +110,6 @@ pub use signed_session_login::{
     SignedTokenSessionStore, build_signed_session_login, signed_session_store,
 };
 
-use std::convert::Infallible;
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
@@ -229,10 +228,9 @@ async fn deferred_webui_handler(
             .into_response();
     };
 
-    router
-        .oneshot(request)
-        .await
-        .unwrap_or_else(|err: Infallible| match err {})
+    // `Router`'s service error is `Infallible`, so the `Ok` pattern is irrefutable.
+    let Ok(response) = router.oneshot(request).await;
+    response
 }
 
 /// A WebChat v2 listener that is bound but not yet served. Connections queue

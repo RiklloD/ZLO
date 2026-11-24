@@ -125,7 +125,7 @@ pub(crate) async fn github_issue_tools_auth_required() -> HarnessResult<HostRunt
 ///
 /// Empirically verified: removing the obligation does not fall back to an
 /// unauthenticated request — the run hangs and never reaches `Completed`.
-/// That's why `reborn_integration_secret_injection.rs`'s mutation-verify
+/// That's why `secret_injection.rs`'s mutation-verify
 /// flips the secret *value* (a fast, specific failure) rather than removing
 /// the obligation (a slow, ambiguous timeout).
 fn github_issue_tools_with_credential_result(

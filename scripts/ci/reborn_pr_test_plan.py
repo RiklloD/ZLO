@@ -528,18 +528,18 @@ PR_STATIC_CONTROL_PATHS = {
     #     this block because they are decided elsewhere above — the former in
     #     the container-build pair, the latter in `IGNORED_ROOT_FILES`.
     #
-    #     Workspace lint/format/dependency/release policy, owned by the lanes
+    #     Workspace lint/format/dependency policy, owned by the lanes
     #     that read them — `clippy.toml` by Code Style, `deny.toml` by
-    #     cargo-deny, `release-plz.toml` by the release workflow:
+    #     cargo-deny:
     "clippy.toml",
     "deny.toml",
-    "release-plz.toml",
-    #     VCS/repo metadata — read by git and by review tooling, never a lane:
+    #     VCS/repo metadata & local task runner — never a Rust test lane:
+    ".editorconfig",
     ".gitattributes",
     ".coderabbit.yaml",
     ".mcp.json",
+    "justfile",
     #     Toolchain pins and lint config for non-Rust lanes:
-    ".node-version",
     ".nvmrc",
     ".sqlfluff",
     #     Container/deploy descriptors owned by their own workflows:

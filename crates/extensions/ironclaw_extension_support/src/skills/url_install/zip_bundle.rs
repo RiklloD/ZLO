@@ -23,6 +23,19 @@ pub(super) async fn extract_skill_bundle_blocking(
         })?
 }
 
+/// Decode an archive entry's name. An entry whose name the archive cannot
+/// decode is rejected as malformed input, like a duplicate path.
+fn zip_entry_name<R: Read + ?Sized>(
+    file: &zip::read::ZipFile<'_, R>,
+) -> Result<String, SkillManagementCapabilityError> {
+    file.name()
+        .map(std::borrow::Cow::into_owned)
+        .map_err(|error| {
+            tracing::debug!(%error, "skill bundle zip entry name could not be decoded");
+            SkillManagementCapabilityError::new(RuntimeDispatchErrorKind::InputEncode)
+        })
+}
+
 pub(super) fn extract_skill_bundle(
     data: &[u8],
     requested_subdir: Option<&str>,
@@ -48,7 +61,7 @@ pub(super) fn extract_skill_bundle(
                     RuntimeDispatchErrorKind::OutputTooLarge,
                 ));
             }
-            raw_paths.push(normalize_archive_path(Path::new(file.name()))?);
+            raw_paths.push(normalize_archive_path(Path::new(&zip_entry_name(&file)?))?);
         }
     }
     let strip_root = strip_common_archive_root(&raw_paths);
@@ -69,7 +82,7 @@ pub(super) fn extract_skill_bundle(
                 RuntimeDispatchErrorKind::OutputTooLarge,
             ));
         }
-        let entry_name = file.name().to_string();
+        let entry_name = zip_entry_name(&file)?;
         let mut path = normalize_archive_path(Path::new(&entry_name))?;
         if let Some(root) = &strip_root
             && let Ok(stripped) = path.strip_prefix(root)

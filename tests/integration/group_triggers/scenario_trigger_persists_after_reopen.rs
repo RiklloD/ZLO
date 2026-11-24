@@ -2,7 +2,7 @@
 //! repository at the SAME on-disk local-dev `storage_root` — proving
 //! capability-produced trigger state persists to disk, not just to in-memory
 //! state. Parallels `assert_reply_persists_after_reopen` (thread history) and
-//! `reborn_integration_durable.rs` (extension installs) for the trigger
+//! `durable.rs` (extension installs) for the trigger
 //! repository.
 //!
 //! Creates a one-shot `Once` trigger through a real turn, reads the

@@ -1,17 +1,18 @@
 [package]
 name = "ironclaw_computer_use"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Computer use: the Open Computer Use binary as a stdio MCP server, one session per thread, with Stop, take over and the latest screenshot frame"
-license = "MIT OR Apache-2.0"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
 layer = "runtimes"
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 base64 = { workspace = true }
 # Live view: decode a window capture or the agent's screenshot, scale it and
 # re-encode it as a small JPEG (what Pillow did in the Hermes plugin).
@@ -22,14 +23,14 @@ ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 ironclaw_mcp = { path = "../ironclaw_mcp" }
 # Declares the `ComputerUseSessions` port this crate implements for product.
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
-regex = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
-tracing = "0.1"
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
+tracing = { workspace = true }
 # Unpredictable capture file names.
-uuid = { version = "1", features = ["v4"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
 # Descriptor-relative file operations (openat/mkdirat/unlinkat/fstat/fchmod)
@@ -41,8 +42,8 @@ rustix = { version = "1", features = ["fs", "process"] }
 core-foundation-sys = "0.8"
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "process"] }
 
 [lints]
 workspace = true

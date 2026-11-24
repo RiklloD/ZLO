@@ -91,12 +91,10 @@ tests/fixtures/llm_traces/live/*.log
 .anvil/
 .codegraph/
 
-# codebase-memory knowledge graph. Share only the compressed bootstrap snapshot;
-# local metadata and runtime state remain per-environment.
-# See CLAUDE.md -> "Code Discovery".
+# codebase-memory knowledge graph: built locally on demand, never committed to git
+# (zstd-compressed SQLite blobs cannot delta-compress and bloat the packfile).
 .codebase-memory/*
 !.codebase-memory/.gitattributes
-!.codebase-memory/graph.db.zst
 
 # test-tools fixture-bundle build artifacts — regenerate with
 # scripts/build-test-tools.sh; only sources/manifests/schemas/prompts are tracked.

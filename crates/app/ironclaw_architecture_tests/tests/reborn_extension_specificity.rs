@@ -1282,7 +1282,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "crates/ironclaw_extension_contracts/src/auth_prompt.rs",
         "telegram",
     ),
-    ("crates/ironclaw_assistant/Cargo.toml", "telegram"),
     // `conversation_binding.rs` was carved for a vendor example in
     // `ProductConversationRouteKey`'s doc. WS2.2 moved that type to
     // `ironclaw_product_contracts::subject_route` (today's
@@ -1756,7 +1755,10 @@ const ALLOWLIST: &[(&str, &str)] = &[
 // sanctioned vendor home), retiring its "gmail" and "google" carve-outs.
 // 98 -> 97 (upstream #8102): `google_oauth_configured` left `factory.rs` when
 // provider-instance readiness became a live port.
-const WS0_EXTENSION_SPECIFICITY_ALLOWLIST_BASELINE: usize = 97;
+// 97 -> 96 (2026-11-24, workspace dep centralization): `ironclaw_assistant`'s
+// unused `ironclaw_telegram_extension` dev-dependency was pruned, retiring the
+// manifest's "telegram" carve-out.
+const WS0_EXTENSION_SPECIFICITY_ALLOWLIST_BASELINE: usize = 96;
 
 /// §11.2.8 vendor-scope shrink, armed at the WS0 baseline.
 ///

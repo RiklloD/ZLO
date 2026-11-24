@@ -11,12 +11,7 @@
 //! production tick) reaps a wedged run into a terminal, observable state
 //! instead of leaving it `Running` forever.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use std::time::Duration;
 

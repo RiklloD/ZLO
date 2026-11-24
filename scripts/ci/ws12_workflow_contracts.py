@@ -1820,6 +1820,31 @@ def validate_crate_name_residue(
     return errors
 
 
+_USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*['\"]?([^'\"\s#]+)['\"]?")
+_PINNED_SHA_RE = re.compile(r"@[0-9a-f]{40}$")
+
+
+def validate_actions_sha_pinned(workflows: dict[str, str]) -> list[str]:
+    """Every third-party GitHub Action `uses:` must pin a 40-char commit SHA."""
+    errors: list[str] = []
+    for path, text in sorted(workflows.items()):
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            match = _USES_RE.match(line)
+            if not match:
+                continue
+            ref = match.group(1)
+            if ref.startswith("./") or ref.startswith("docker://"):
+                continue
+            if not _PINNED_SHA_RE.search(ref):
+                errors.append(
+                    f"{path}:{lineno}: action {ref!r} is not pinned to a 40-char commit SHA"
+                )
+    return errors
+
+
 def validate_workflow_texts(
     workflows: dict[str, str], root: Path = ROOT
 ) -> list[str]:
@@ -1871,6 +1896,7 @@ def validate_workflow_texts(
     errors.extend(validate_no_job_env_rustflags_with_setup_rust(workflows))
     errors.extend(validate_toolchain_pin_sync(root))
     errors.extend(validate_single_debug_policy_owner(root))
+    errors.extend(validate_actions_sha_pinned(workflows))
     return errors
 
 

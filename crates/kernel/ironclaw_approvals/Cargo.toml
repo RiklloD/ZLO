@@ -1,7 +1,10 @@
 [package]
 name = "ironclaw_approvals"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -15,8 +18,8 @@ layer = "kernel"
 test-support = []
 
 [dependencies]
-async-trait = "0.1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+async-trait = { workspace = true }
+chrono = { workspace = true, features = ["clock", "serde"] }
 ironclaw_authorization = { path = "../ironclaw_authorization" }
 ironclaw_event_log = { path = "../../events/ironclaw_event_log" }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem" }
@@ -29,22 +32,22 @@ ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 # classification lives). Both are inventoried same-layer kernel edges.
 ironclaw_runtime_policy = { path = "../ironclaw_runtime_policy" }
 ironclaw_trust = { path = "../ironclaw_trust" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["sync"] }
-tracing = "0.1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 # Enables the in-memory-backed capability-lease store constructor for tests only.
 ironclaw_authorization = { path = "../ironclaw_authorization", features = ["test-support"] }
 # FaultInjecting decorator: test store fault paths through the real store
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features = ["test-support"] }
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 # Asserts the best-effort audit emit logs its failure (`no-env-filter` so the
 # library crate's `debug!` lines are captured, not only the test crate's).
-tracing-test = { version = "0.2", features = ["no-env-filter"] }
+tracing-test = { workspace = true, features = ["no-env-filter"] }
 
 [lints]
 workspace = true

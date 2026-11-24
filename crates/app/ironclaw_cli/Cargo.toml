@@ -1,13 +1,12 @@
 [package]
 name = "ironclaw"
 version = "1.2.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Secure personal AI assistant that protects your data and expands its capabilities on the fly"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -45,10 +44,10 @@ test-support = [
 # Both crates are already in the tree (aes-gcm via ironclaw_secrets, pbkdf2
 # via zip); no new crate enters Cargo.lock.
 aes-gcm = "0.11"
-anyhow = "1"
-async-trait = { version = "0.1" }
-chrono = { version = "0.4", features = ["serde"] }
-hex = "0.4.3"
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true, default-features = true, features = ["serde"] }
+hex = { workspace = true }
 pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4.5.0"
@@ -80,27 +79,27 @@ ironclaw_telegram_extension = { path = "../../extensions/packages/telegram", ver
 ironclaw_web_app = { path = "../../domains/ironclaw_web_app", version = "0.1.0" }
 ironclaw_web_app_extension = { path = "../../extensions/packages/web-app", version = "0.1.0" }
 ironclaw_webui = { path = "../../product/ironclaw_webui", version = "0.1.0" }
-rand = "0.10"
+rand = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart", "rustls", "stream"] }
-secrecy = "0.10"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.11"
-tempfile = "3"
+secrecy = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
 # `zlo doctor --bundle`: reads only `id`/`version` from on-disk extension
 # manifests. Already a dev-dependency here and in the lockfile.
-toml = "1.1"
-thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-util", "io-std", "sync", "time"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
-zeroize = "1"
+toml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "io-util", "io-std", "sync", "time"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+uuid = { workspace = true, features = ["v4", "v5", "serde"] }
+zeroize = { workspace = true }
 # `zlo doctor --bundle` archive. Same version/features as the workspace's
 # other zip users (ironclaw_extension_host, ironclaw_documents, …); no new
 # crate enters Cargo.lock.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { workspace = true, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 # O_NOFOLLOW for the single-handle, symlink-safe token file open in
@@ -108,7 +107,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 # across unix platforms (Linux vs macOS), so it must come from `libc`
 # rather than being hardcoded. Already present transitively; pinned here
 # as a direct dependency of the code that now uses it.
-libc = "0.2"
+libc = { workspace = true }
 
 [dev-dependencies]
 # Enable the composition crate's `test-support` seam for CLI unit tests so

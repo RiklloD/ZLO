@@ -1,28 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pre-commit hook: run version bump checks when WIT or extension sources change.
-# Install: git config core.hooksPath .githooks
+# Unified pre-commit hook:
+#   1. Version-bump check when WIT definitions change.
+#   2. Static safety checks on staged Rust files (scripts/pre-commit-safety.sh).
+# Install: git config core.hooksPath .githooks  (or `just setup`)
 
-# Only run the check if relevant files are staged
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 STAGED=$(git diff --cached --name-only)
 
 # The WIT branch is depth-agnostic on purpose. `wit/` lives inside the
-# `ironclaw_wasm` crate, and WS7 moved that crate into its family directory
-# (`crates/lanes/ironclaw_wasm/`, PROPOSAL §5). A flat path literal here fails
-# *silently* — the hook keeps exiting 0 and version bumps stop being checked —
-# so the branch matches the crate at any depth under `crates/`, exactly as
-# `platform-and-compat.yml`'s `has_direct_wasm_abi_risk` filter already does.
-# Pinned by `scripts/ci/test_pre_commit_staged_paths.py` against the real
-# inventory, so a rename (which the regex cannot follow) still fails loudly.
+# `ironclaw_wasm` crate (`crates/lanes/ironclaw_wasm/`). Pinned by
+# `scripts/ci/test_pre_commit_staged_paths.py` against the live crate inventory.
 NEEDS_CHECK=false
-if echo "$STAGED" | grep -qE '^crates/([^/]+/)*ironclaw_wasm/wit/|^channels-src/|^tools-src/'; then
+if echo "$STAGED" | grep -qE '^crates/([^/]+/)*ironclaw_wasm/wit/'; then
     NEEDS_CHECK=true
 fi
 
 if $NEEDS_CHECK; then
     echo "pre-commit: checking version bumps..."
-    if ! ./scripts/check-version-bumps.sh; then
+    if ! "$REPO_ROOT/scripts/check-version-bumps.sh"; then
         echo ""
         echo "Commit blocked: version bump check failed."
         echo "Bump versions in the relevant registry JSON and/or WIT package declaration."
@@ -31,7 +28,11 @@ if $NEEDS_CHECK; then
     fi
 fi
 
-# Reborn WebUI i18n parity (crates/ironclaw_webui/frontend/src/i18n/*.ts) is
-# enforced by the frontend's own tooling (`pnpm lint`/`pnpm test` in the
-# `webui-v2-js-lint` CI job), not by this shell hook — the v1 gateway's
-# `.js` language packs were deleted under Tier B.
+# Static Rust safety checks & composition mass ratchet (only runs on staged .rs
+# or composition-budget edits; fast no-op otherwise).
+if [ "${IRONCLAW_PRECOMMIT_SAFETY:-1}" = "1" ] && [ -x "$REPO_ROOT/scripts/pre-commit-safety.sh" ]; then
+    "$REPO_ROOT/scripts/pre-commit-safety.sh"
+fi
+
+# Reborn WebUI i18n parity (crates/product/ironclaw_webui/frontend/src/i18n/*.ts)
+# is enforced by the frontend's own tooling (`just webui` / `pnpm lint`).

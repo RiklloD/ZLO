@@ -19,12 +19,7 @@
 //! `no_bounded_payload_text_reaches_the_projection` in
 //! `crates/product/ironclaw_assistant/src/reborn_services/run_artifact/timings.rs`.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use std::sync::Arc;
 use std::time::Duration;

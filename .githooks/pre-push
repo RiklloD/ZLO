@@ -71,12 +71,12 @@ echo "==> static: include_str! paths + Docker COPY coverage"
 echo "==> static: hermetic env mutation"
 "$SCRIPT_DIR/check-hermetic-env.sh"
 
-if [ "${IRONCLAW_PREPUSH_REBORN_COVERAGE_RATCHET:-1}" = "1" ]; then
-    echo "==> reborn coverage ratchet (CI parity, heavy; skip with IRONCLAW_PREPUSH_REBORN_COVERAGE_RATCHET=0)"
+if [ "${IRONCLAW_PREPUSH_REBORN_COVERAGE_RATCHET:-0}" = "1" ]; then
+    echo "==> reborn coverage ratchet (heavy, opt-in via IRONCLAW_PREPUSH_REBORN_COVERAGE_RATCHET=1)"
     run_ci_env "$SCRIPT_DIR/reborn-local-coverage-ratchet.sh"
 fi
 
-if [ "${IRONCLAW_PREPUSH_REBORN_WEBUI_E2E:-1}" = "1" ]; then
+if [ "${IRONCLAW_PREPUSH_REBORN_WEBUI_E2E:-0}" = "1" ]; then
     emulate_cli="${IRONCLAW_EMULATE_CLI:-$REPO_ROOT/.emulate/packages/emulate/dist/index.js}"
     if [ ! -f "$emulate_cli" ]; then
         cat >&2 <<EOF
@@ -84,13 +84,10 @@ ERROR: Emulate CLI not found for the pre-push WebUI provider replay.
 
 Set IRONCLAW_EMULATE_CLI to the built Emulate CLI, or install it at:
   $REPO_ROOT/.emulate/packages/emulate/dist/index.js
-
-This hook runs the same provider replay lane that gates CI because it catches
-tool-inventory regressions that Rust unit tests and clippy do not.
 EOF
         exit 1
     fi
-    echo "==> reborn WebUI provider replay (CI parity; skip with IRONCLAW_PREPUSH_REBORN_WEBUI_E2E=0)"
+    echo "==> reborn WebUI provider replay (opt-in via IRONCLAW_PREPUSH_REBORN_WEBUI_E2E=1)"
     IRONCLAW_EMULATE_CLI="$emulate_cli" run_ci_env pytest \
         tests/e2e/scenarios/test_provider_capability_inventory.py \
         tests/e2e/scenarios/test_journey_coverage.py \

@@ -14,12 +14,7 @@
 //! real PostgreSQL testcontainer (REL-3: provisioning failure is a test
 //! failure, never a skip).
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::builder::{RebornIntegrationHarness, StorageMode};
 use reborn_support::group::{GroupCapability, RebornIntegrationGroup};

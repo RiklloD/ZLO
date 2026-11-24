@@ -522,9 +522,11 @@ for f in $CHANGED_FILES; do
     [ "${line_count:-0}" -gt 1500 ] || continue
     file_diff=$(diff_for_file "$f")
     added_count=$(printf '%s\n' "$file_diff" | awk '/^\+/ && !/^\+\+\+ / { count++ } END { print count + 0 }')
-    [ "${added_count:-0}" -gt 0 ] || continue
+    deleted_count=$(printf '%s\n' "$file_diff" | awk '/^-/ && !/^--- / { count++ } END { print count + 0 }')
+    net_growth=$((added_count - deleted_count))
+    [ "${net_growth:-0}" -gt 0 ] || continue
     if ! file_content_for_file "$f" | grep -Eq "$LARGE_FILE_EXEMPT_RE"; then
-        LARGE_FILE_HITS="${LARGE_FILE_HITS}    ${f} (${line_count} lines, +${added_count})
+        LARGE_FILE_HITS="${LARGE_FILE_HITS}    ${f} (${line_count} lines, +${added_count}/-${deleted_count}, net +${net_growth})
 "
     fi
 done

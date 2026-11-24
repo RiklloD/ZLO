@@ -27,12 +27,7 @@
 //!    and `builtin_write_file_rejects_extracted_read_representation_at_unlisted_extension`
 //!    in `crates/kernel/ironclaw_host_runtime/tests/first_party_builtin_tools_coding_edits.rs`.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::group::RebornIntegrationGroup;
 use reborn_support::reply::RebornScriptedReply;

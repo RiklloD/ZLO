@@ -55,13 +55,15 @@ impl ParkingCapabilityGate {
     pub(crate) async fn wait_until_parked(&self) {
         let mut rx = self.0.parked_rx.clone();
         while !*rx.borrow() {
-            let _ = rx.changed().await;
+            rx.changed()
+                .await
+                .expect("the gate owns the sender, so it outlives this receiver");
         }
     }
 
     /// Release the parked capability dispatch so it delegates to the inner runtime.
     pub(crate) fn release(&self) {
-        let _ = self.0.release_tx.send(true);
+        self.0.release_tx.send_replace(true);
     }
 
     pub(crate) fn dispatch_count(&self) -> usize {
@@ -81,10 +83,12 @@ impl ParkingCapabilityGate {
     /// only to hold the tool call open long enough for the run's real, short-TTL
     /// (test-only) scheduler lease to expire before its own next heartbeat.
     async fn park(&self) {
-        let _ = self.0.parked_tx.send(true);
+        self.0.parked_tx.send_replace(true);
         let mut rx = self.0.release_rx.clone();
         while !*rx.borrow() {
-            let _ = rx.changed().await;
+            rx.changed()
+                .await
+                .expect("the gate owns the sender, so it outlives this receiver");
         }
     }
 }

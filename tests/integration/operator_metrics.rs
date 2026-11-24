@@ -15,12 +15,7 @@
 //! report zero tokens unless they declare usage (`with_usage`); the token
 //! scenarios here declare it so the token family moves by exact amounts.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use std::sync::Arc;
 use std::time::Duration;

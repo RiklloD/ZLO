@@ -810,7 +810,7 @@ async fn qa_installing_bundled_extensions_exposes_complete_model_surface_e2e_imp
             // fail-closed only after live discovery, which this binary-tier
             // harness has no scripted egress seam for. Its install→publish→
             // dispatch contract is pinned end-to-end by
-            // `reborn_integration_mcp::nearai_web_search_dispatches_through_bundled_hosted_mcp`;
+            // `reborn_integration_suite_tools::mcp::nearai_web_search_dispatches_through_bundled_hosted_mcp`;
             // this smoke asserts the statically-published surface.
             capability_ids: capability_ids(
                 &BUNDLED_EXTENSION_CAPABILITY_IDS

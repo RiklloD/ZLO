@@ -9,12 +9,7 @@
 //! registry step activation uses, and BOTH capabilities are granted — so the
 //! registry-level visibility filter is the only thing under test.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::group::RebornIntegrationGroup;
 use reborn_support::harness::profiles::extension::AUTH_VOCABULARY_DESCRIPTION;

@@ -95,6 +95,141 @@ test = [
                     with self.assertRaisesRegex(ValueError, "unsupported.*new_test"):
                         projection(root)
 
+    def write_suite_repo(
+        self,
+        root: Path,
+        registrations: list[tuple[str, str]],
+        files: dict[str, str],
+    ) -> None:
+        (root / "Cargo.toml").write_text(
+            "".join(
+                f'[[test]]\nname = "{name}"\npath = "{path}"\n\n'
+                for name, path in registrations
+            ),
+            encoding="utf-8",
+        )
+        for relative, text in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+    def test_suite_members_route_to_their_suite_lane(self) -> None:
+        suite_main = (
+            '#[allow(dead_code)]\n#[path = "../support/mod.rs"]\nmod reborn_support;\n'
+            '#[allow(dead_code)]\n#[path = "../../support/mod.rs"]\nmod support;\n'
+            '#[path = "../alpha.rs"]\nmod alpha;\n'
+            '#[path = "../auth/beta.rs"]\nmod beta;\n'
+            '// #[path = "../commented_out.rs"] mod commented_out;\n'
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_suite_repo(
+                root,
+                [
+                    ("reborn_generated_first", "tests/integration/first.rs"),
+                    (
+                        "reborn_integration_suite_core",
+                        "tests/integration/suite_core/main.rs",
+                    ),
+                ],
+                {
+                    "tests/integration/first.rs": "",
+                    "tests/integration/suite_core/main.rs": suite_main,
+                    "tests/integration/alpha.rs": "",
+                    "tests/integration/auth/beta.rs": "",
+                    "tests/integration/support/mod.rs": "",
+                },
+            )
+
+            self.assertEqual(
+                inventory.suite_member_paths(
+                    root, "tests/integration/suite_core/main.rs"
+                ),
+                ["tests/integration/alpha.rs", "tests/integration/auth/beta.rs"],
+            )
+            self.assertEqual(
+                inventory.planner_test_lanes(root),
+                {
+                    "tests/integration/first.rs": 0,
+                    "tests/integration/suite_core/main.rs": 1,
+                    "tests/integration/alpha.rs": 1,
+                    "tests/integration/auth/beta.rs": 1,
+                },
+            )
+            self.assertEqual(
+                [test["name"] for test in inventory.inventory_document(root)["tests"]],
+                ["reborn_generated_first", "reborn_integration_suite_core"],
+                "suite members are modules, not execution targets",
+            )
+
+    def test_suite_topology_fails_closed(self) -> None:
+        suite = ("reborn_integration_suite_core", "tests/integration/suite_core/main.rs")
+        mount_alpha = '#[path = "../alpha.rs"]\nmod alpha;\n'
+        cases = (
+            (
+                [("reborn_integration_suite_core", "tests/integration/core.rs")],
+                {"tests/integration/core.rs": mount_alpha, "tests/integration/alpha.rs": ""},
+                "suite registration path mismatch",
+            ),
+            ([suite], {"tests/integration/suite_core/main.rs": mount_alpha}, "mounts missing file"),
+            (
+                [suite],
+                {"tests/integration/suite_core/main.rs": '#[path = "../support/mod.rs"]\nmod s;\n'},
+                "mounts no scenario files",
+            ),
+            (
+                [suite, ("reborn_integration_alpha", "tests/integration/alpha.rs")],
+                {"tests/integration/suite_core/main.rs": mount_alpha, "tests/integration/alpha.rs": ""},
+                "also registered as its own target",
+            ),
+            (
+                [suite, ("reborn_integration_suite_more", "tests/integration/suite_more/main.rs")],
+                {
+                    "tests/integration/suite_core/main.rs": mount_alpha,
+                    "tests/integration/suite_more/main.rs": mount_alpha,
+                    "tests/integration/alpha.rs": "",
+                },
+                "mounted by both",
+            ),
+            (
+                [suite],
+                {
+                    "tests/integration/suite_core/main.rs": mount_alpha,
+                    "tests/integration/alpha.rs": "",
+                    "tests/integration/forgotten.rs": "",
+                },
+                "compiled by no target.*tests/integration/forgotten.rs",
+            ),
+            (
+                [suite],
+                {
+                    "tests/integration/suite_core/main.rs": mount_alpha,
+                    "tests/integration/alpha.rs": "",
+                    "tests/integration/suite_unregistered/main.rs": mount_alpha,
+                },
+                "compiled by no target.*suite_unregistered/main.rs",
+            ),
+        )
+        for registrations, files, error in cases:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self.write_suite_repo(root, registrations, files)
+                with self.assertRaisesRegex(ValueError, error):
+                    inventory.planner_test_lanes(root)
+
+    def test_live_suites_cover_their_member_files(self) -> None:
+        lanes = inventory.planner_test_lanes(ROOT)
+        suites = {
+            path: name
+            for path, name in inventory._planner_registrations(ROOT).items()
+            if name.startswith(inventory.SUITE_NAME_PREFIX)
+        }
+        self.assertTrue(suites, "the live tree registers no suite binaries")
+        for path in suites:
+            for member in inventory.suite_member_paths(ROOT, path):
+                with self.subTest(member=member):
+                    self.assertEqual(lanes[member], lanes[path])
+
     def test_document_is_versioned_and_self_validating(self) -> None:
         document = inventory.inventory_document(ROOT)
 

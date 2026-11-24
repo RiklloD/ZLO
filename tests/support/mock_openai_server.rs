@@ -104,11 +104,16 @@ impl MockOpenAiServerBuilder {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
-            let _ = axum::serve(listener, app)
+            axum::serve(listener, app)
                 .with_graceful_shutdown(async {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "a dropped sender (the handle went away) means shut down too"
+                    )]
                     let _ = shutdown_rx.await;
                 })
-                .await;
+                .await
+                .expect("mock OpenAI server");
         });
 
         MockOpenAiServer {
@@ -142,10 +147,14 @@ impl MockOpenAiServer {
 
     pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the server may already have stopped and dropped its receiver"
+            )]
             let _ = tx.send(());
         }
         if let Some(handle) = self.server_task.take() {
-            let _ = handle.await;
+            handle.await.expect("mock OpenAI server task");
         }
     }
 }
@@ -153,6 +162,10 @@ impl MockOpenAiServer {
 impl Drop for MockOpenAiServer {
     fn drop(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the server may already have stopped and dropped its receiver"
+            )]
             let _ = tx.send(());
         }
         if let Some(handle) = self.server_task.take() {

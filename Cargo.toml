@@ -1,5 +1,90 @@
 [workspace]
-members = [".", "crates/contracts/ironclaw_common", "crates/substrates/ironclaw_observability", "crates/contracts/ironclaw_host_api", "crates/product/ironclaw_host_ingress", "crates/substrates/ironclaw_libsql_runtime", "crates/substrates/ironclaw_filesystem", "crates/domains/ironclaw_attachments", "crates/domains/ironclaw_extractors", "crates/substrates/ironclaw_documents", "crates/domains/ironclaw_memory", "crates/extensions/packages/memory-native", "crates/extensions/packages/mem0", "crates/events/ironclaw_event_log", "crates/events/ironclaw_event_projections", "crates/events/ironclaw_event_streams", "crates/events/ironclaw_event_store", "crates/extensions/ironclaw_extension_registry", "crates/extensions/ironclaw_extension_host", "crates/extensions/ironclaw_extension_manager", "crates/kernel/ironclaw_processes", "crates/lanes/ironclaw_sandbox", "crates/lanes/ironclaw_mcp", "crates/lanes/ironclaw_computer_use", "crates/lanes/ironclaw_wasm", "crates/lanes/ironclaw_wasm_limiter", "crates/kernel/ironclaw_capabilities", "crates/substrates/ironclaw_secrets", "crates/substrates/ironclaw_network", "crates/kernel/ironclaw_host_runtime", "crates/kernel/ironclaw_runtime_policy", "crates/kernel/ironclaw_authorization", "crates/kernel/ironclaw_approvals", "crates/kernel/ironclaw_resources", "crates/domains/ironclaw_auth", "crates/kernel/ironclaw_trust", "crates/kernel/ironclaw_turns", "crates/contracts/ironclaw_loop_contracts", "crates/contracts/ironclaw_extension_contracts", "crates/contracts/ironclaw_product_contracts", "crates/loop/ironclaw_agent_loop", "crates/domains/ironclaw_threads", "crates/contracts/ironclaw_prompt_envelope", "crates/loop/ironclaw_hooks", "crates/loop/ironclaw_loop_host", "crates/loop/ironclaw_turn_runner", "crates/app/ironclaw_config", "crates/product/ironclaw_operator", "crates/app/ironclaw_composition", "crates/domains/ironclaw_identity", "crates/extensions/ironclaw_extension_support", "crates/app/ironclaw_cli", "crates/domains/ironclaw_trace_commons", "crates/product/ironclaw_webui", "crates/product/ironclaw_openai_compat", "crates/domains/ironclaw_conversations", "crates/product/ironclaw_assistant", "crates/extensions/packages/telegram", "crates/extensions/packages/slack", "crates/extensions/packages/web-app", "crates/domains/ironclaw_notifications", "crates/domains/ironclaw_outbound", "crates/domains/ironclaw_triggers", "crates/domains/ironclaw_orchestrator", "crates/domains/ironclaw_cli_providers", "crates/domains/ironclaw_usage", "crates/domains/ironclaw_supermemory", "crates/domains/ironclaw_web_app", "crates/app/ironclaw_architecture_tests", "crates/substrates/ironclaw_safety", "crates/domains/ironclaw_skills", "crates/domains/ironclaw_llm", "tools/ironclaw_stress"]
+members = [
+    ".",
+    # app
+    "crates/app/ironclaw_architecture_tests",
+    "crates/app/ironclaw_cli",
+    "crates/app/ironclaw_composition",
+    "crates/app/ironclaw_config",
+    # contracts
+    "crates/contracts/ironclaw_common",
+    "crates/contracts/ironclaw_extension_contracts",
+    "crates/contracts/ironclaw_host_api",
+    "crates/contracts/ironclaw_loop_contracts",
+    "crates/contracts/ironclaw_product_contracts",
+    "crates/contracts/ironclaw_prompt_envelope",
+    # domains
+    "crates/domains/ironclaw_attachments",
+    "crates/domains/ironclaw_auth",
+    "crates/domains/ironclaw_cli_providers",
+    "crates/domains/ironclaw_conversations",
+    "crates/domains/ironclaw_extractors",
+    "crates/domains/ironclaw_identity",
+    "crates/domains/ironclaw_llm",
+    "crates/domains/ironclaw_memory",
+    "crates/domains/ironclaw_notifications",
+    "crates/domains/ironclaw_orchestrator",
+    "crates/domains/ironclaw_outbound",
+    "crates/domains/ironclaw_skills",
+    "crates/domains/ironclaw_supermemory",
+    "crates/domains/ironclaw_threads",
+    "crates/domains/ironclaw_trace_commons",
+    "crates/domains/ironclaw_triggers",
+    "crates/domains/ironclaw_usage",
+    "crates/domains/ironclaw_web_app",
+    # events
+    "crates/events/ironclaw_event_log",
+    "crates/events/ironclaw_event_projections",
+    "crates/events/ironclaw_event_store",
+    "crates/events/ironclaw_event_streams",
+    # extensions
+    "crates/extensions/ironclaw_extension_host",
+    "crates/extensions/ironclaw_extension_manager",
+    "crates/extensions/ironclaw_extension_registry",
+    "crates/extensions/ironclaw_extension_support",
+    "crates/extensions/packages/mem0",
+    "crates/extensions/packages/memory-native",
+    "crates/extensions/packages/slack",
+    "crates/extensions/packages/telegram",
+    "crates/extensions/packages/web-app",
+    # kernel
+    "crates/kernel/ironclaw_approvals",
+    "crates/kernel/ironclaw_authorization",
+    "crates/kernel/ironclaw_capabilities",
+    "crates/kernel/ironclaw_host_runtime",
+    "crates/kernel/ironclaw_processes",
+    "crates/kernel/ironclaw_resources",
+    "crates/kernel/ironclaw_runtime_policy",
+    "crates/kernel/ironclaw_trust",
+    "crates/kernel/ironclaw_turns",
+    # lanes
+    "crates/lanes/ironclaw_computer_use",
+    "crates/lanes/ironclaw_mcp",
+    "crates/lanes/ironclaw_sandbox",
+    "crates/lanes/ironclaw_wasm",
+    "crates/lanes/ironclaw_wasm_limiter",
+    # loop
+    "crates/loop/ironclaw_agent_loop",
+    "crates/loop/ironclaw_hooks",
+    "crates/loop/ironclaw_loop_host",
+    "crates/loop/ironclaw_turn_runner",
+    # product
+    "crates/product/ironclaw_assistant",
+    "crates/product/ironclaw_host_ingress",
+    "crates/product/ironclaw_openai_compat",
+    "crates/product/ironclaw_operator",
+    "crates/product/ironclaw_webui",
+    # substrates
+    "crates/substrates/ironclaw_documents",
+    "crates/substrates/ironclaw_filesystem",
+    "crates/substrates/ironclaw_libsql_runtime",
+    "crates/substrates/ironclaw_network",
+    "crates/substrates/ironclaw_observability",
+    "crates/substrates/ironclaw_safety",
+    "crates/substrates/ironclaw_secrets",
+    # tools
+    "tools/ironclaw_stress",
+]
 default-members = ["crates/app/ironclaw_cli"]
 exclude = [
     # Standalone ZLO desktop app (Rune): its own workspace, kept out of the
@@ -20,9 +105,80 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.96"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nearai/ironclaw"
 
 [workspace.dependencies]
+# Every external crate declared by three or more workspace members is pinned
+# here once and referenced from members as `{ workspace = true }` (members keep
+# their own `features = [...]` / `optional = true`). Enforced by
+# `crates/app/ironclaw_architecture_tests/tests/reborn_workspace_dep_centralization.rs`.
+#
+# Entries carry only the version requirement (plus `default-features = false`
+# when any member builds the crate without its defaults); features are opted
+# into per member.
+# With `default-features = false` here, a member that needs the crate's
+# defaults says `default-features = true` explicitly (chrono, futures-util).
+# tokio's default feature set is empty, so disabling it here changes nothing.
+#
+# Keep this table sorted by crate name.
+anyhow = "1"
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.23"
+blake3 = "1"
+chrono = { version = "0.4", default-features = false }
+chrono-tz = "0.10"
+deadpool-postgres = "0.14"
+dirs = "6"
+futures = "0.3"
+futures-util = { version = "0.3", default-features = false }
+hex = "0.4.3"
+hmac = "0.13"
+http = "1"
+http-body-util = "0.1"
+jsonschema = { version = "0.49", default-features = false }
+libc = "0.2"
+# libSQL driver. Members add `remote` + `tls` when they open Turso/remote
+# databases (`Builder::new_remote`). `replication` (embedded replicas,
+# `Builder::new_remote_replica`) is deliberately NOT enabled: nothing in the
+# workspace uses it, and it alone pulls tonic 0.11 → axum 0.6 / tower-http 0.4.
+# The remaining legacy transport (hyper 0.14 / http 0.2 / h2 0.3 /
+# hyper-rustls 0.25 → rustls 0.22) is still pinned by `remote` + `tls` in
+# every published libsql release up to and including 0.10.0 — see deny.toml.
+libsql = { version = "0.9", default-features = false, features = ["core"] }
+parking_lot = "0.12"
+percent-encoding = "2"
+proptest = "1"
+rand = "0.10"
+regex = "1"
+# HTTP client. Members opt into TLS (`rustls`, which verifies against the OS
+# trust store via rustls-platform-verifier) and body features explicitly.
+reqwest = { version = "0.13", default-features = false }
+rust_decimal = "1"
+rust_decimal_macros = "1"
+secrecy = "0.10"
+serde = "1"
+serde_json = "1"
+sha2 = "0.11"
+static_assertions = "1"
+subtle = "2"
+tempfile = "3"
+testcontainers-modules = "0.12"
+thiserror = "2"
+tokio = { version = "1", default-features = false }
+tokio-postgres = "0.7"
+tokio-util = "0.7"
+toml = "1.1"
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-test = "0.2"
+url = "2"
+urlencoding = "2"
+uuid = "1"
 # WASM sandbox for untrusted tool execution.
 # Floor 47.0.4: minimum current major patch containing the fixes for the
 # Wasmtime advisories RUSTSEC-2026-0149, RUSTSEC-2026-0188,
@@ -32,19 +188,17 @@ wasmtime = { version = "49.0.7", features = ["component-model"] }
 # defaults off avoids compiling unused p0/p1 WITX proc macros under remote CI
 # sccache workers, where registry sidecar WITX files are not present.
 wasmtime-wasi = { version = "49.0.7", default-features = false, features = ["p2"] }
-
-# libSQL driver. Members add `remote` + `tls` when they open Turso/remote
-# databases (`Builder::new_remote`). `replication` (embedded replicas,
-# `Builder::new_remote_replica`) is deliberately NOT enabled: nothing in the
-# workspace uses it, and it alone pulls tonic 0.11 → axum 0.6 / tower-http 0.4.
-# The remaining legacy transport (hyper 0.14 / http 0.2 / h2 0.3 /
-# hyper-rustls 0.25 → rustls 0.22) is still pinned by `remote` + `tls` in
-# every published libsql release up to and including 0.10.0 — see deny.toml.
-libsql = { version = "0.9", default-features = false, features = ["core"] }
-base64 = "0.23"
-# HTTP client. Members opt into TLS (`rustls`, which verifies against the OS
-# trust store via rustls-platform-verifier) and body features explicitly.
-reqwest = { version = "0.13", default-features = false }
+# WebAssembly text + component tooling used by the WASM lane tests to build
+# fixture components. All three stay on the wasm-tools 0.258 line that
+# wasmtime 49 itself links (`wasm-encoder`/`wasmparser`/`wit-parser` 0.258), so
+# the lockfile carries one copy of each; `wat` is capped with `~` because a
+# bare "1.x" floats to the newest wasm-tools release and re-adds the duplicates.
+# Move all three together with wasmtime.
+wat = "~1.258.3"
+wit-component = "0.258.3"
+wit-parser = "0.258.3"
+zeroize = "1"
+zip = { version = "9", default-features = false }
 
 # Maintainability guardrails against dead/speculative public API
 # (the "Theme 1" anti-pattern from the maintainability audit: accessors,
@@ -59,11 +213,12 @@ reqwest = { version = "0.13", default-features = false }
 # - `dead_code`: warn on never-used items (this is the rustc default, declared
 #   here so it survives any future `#![allow(dead_code)]` creep at the crate root).
 [workspace.lints.rust]
-# Every crates/** package inherits these (`[lints] workspace = true`) except
-# `ironclaw_assistant` and `ironclaw_webui`, whose remaining `unreachable_pub`
-# fires are the rustc false-positive class on `pub use` re-exports routed
-# through a private module (`reborn_services.rs` -> `lib.rs`); see CHECKLIST
-# WS8's dated note.
+# Every crates/** package and `tools/ironclaw_stress` inherits these
+# (`[lints] workspace = true`) except `ironclaw_assistant` and
+# `ironclaw_webui`, whose remaining `unreachable_pub` fires are the rustc
+# false-positive class on `pub use` re-exports routed through a private module
+# (`reborn_services.rs` -> `lib.rs`); see CHECKLIST WS8's dated note. The root
+# integration-suite package does not inherit them either (see its `[lints]`).
 #
 # `warn`, not `deny`, for the same reason as `dead_code` below: whether an item
 # is reachable varies with the feature set. Several crates re-export behind
@@ -93,18 +248,19 @@ dead_code = "warn"
 # sweep.
 unused_must_use = "deny"
 
-# `clippy::let_underscore_must_use` (`let _ = <must_use>`, the other swallow
-# idiom) is deliberately NOT a `[workspace.lints]` entry: those bind every crate
-# that opts in with `[lints] workspace = true` (69 of 71), and the discards were
-# triaged in 45 of them (12, then 33 more on 2026-11-15). Those deny it with a crate-root
-# `#![deny(clippy::let_underscore_must_use)]` in every target root (lib, tests,
-# bins, benches, examples) — Cargo forbids a per-crate `[lints]` table beside
-# `workspace = true`. A kept discard there carries a statement-level
-# `#[expect(clippy::let_underscore_must_use, reason = "...")]`, so a stale
-# exemption fails the build. The crate list lives in one place,
-# `crates/app/ironclaw_architecture_tests/tests/reborn_let_underscore_scope.rs`,
-# which fails if a target root drops the deny. Every other crate is unenforced;
-# the untriaged backlog is tracked in `docs/internal/lint-backlog.md`.
+[workspace.lints.clippy]
+# `let _ = <must_use>` is the other swallow idiom: it discards a `Result` or
+# other must-use value with no trace. Denied everywhere (promoted 2026-11-24
+# after every package — those under `crates/`, the root integration suite and
+# `tools/ironclaw_stress` — was triaged). A kept discard carries a
+# statement-level `#[expect(clippy::let_underscore_must_use, reason = "...")]`
+# so a stale exemption fails the build; never a bare `#[allow]`. Packages that
+# do not inherit workspace lints deny it themselves: the root package with its
+# own `[lints.clippy]` entry, `ironclaw_assistant` and `ironclaw_webui` with a
+# crate-root `#![deny(clippy::let_underscore_must_use)]` in every target root.
+# `crates/app/ironclaw_architecture_tests/tests/reborn_let_underscore_scope.rs`
+# pins this entry and every member's coverage.
+let_underscore_must_use = "deny"
 
 [package]
 # Tier B (see docs/internal/plans/2026-07-02-reborn-internal-module-refactor.md §8):
@@ -116,11 +272,10 @@ unused_must_use = "deny"
 name = "ironclaw_integration_tests"
 publish = false
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 
 [package.metadata.ironclaw]
 layer = "app"
@@ -128,32 +283,40 @@ layer = "app"
 [package.metadata.dist]
 dist = false
 
+# Not `workspace = true`: the shared test-support trees (`tests/support/`,
+# `tests/integration/support/`) are `#[path]`-mounted into every bin with `pub`
+# items, which the workspace `unreachable_pub` lint would flag ~830 times. The
+# package takes the workspace's `clippy::let_underscore_must_use` deny directly
+# (pinned by `reborn_let_underscore_scope.rs`).
+[lints.clippy]
+let_underscore_must_use = "deny"
+
 [dev-dependencies]
 # Common utility crates the Reborn integration tests (`tests/integration/*`,
 # `tests/reborn_*.rs`) reference directly — previously satisfied via the now-
 # deleted v1 `[dependencies]` block, since regular deps were visible to test
 # binaries too.
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-async-trait = "0.1"
-thiserror = "2"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
-secrecy = { version = "0.10", features = ["serde"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-axum = "0.8"
-tower = { version = "0.5", features = ["util"] }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true, default-features = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "v5", "serde"] }
+secrecy = { workspace = true, features = ["serde"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+axum = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 reqwest = { workspace = true, features = ["json", "multipart", "rustls", "stream"] }
 base64 = { workspace = true }
-rust_decimal = { version = "1", features = ["serde", "serde-with-str"] }
-regex = "1"
-sha2 = "0.11"
-hex = "0.4"
-url = "2"
-toml = "1.1"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+rust_decimal = { workspace = true, features = ["serde", "serde-with-str"] }
+regex = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+url = { workspace = true }
+toml = { workspace = true }
+zip = { workspace = true, features = ["deflate"] }
 libsql = { workspace = true, features = ["remote", "tls"] }
 # `test-support` exposes the witness-gated protocol-auth test seam and the
 # messaging conformance helpers used by the integration fixtures. Declared
@@ -174,17 +337,14 @@ ironclaw_trace_commons = { path = "crates/domains/ironclaw_trace_commons", versi
 # feature lane (StorageMode::Postgres skips at runtime when unavailable), so
 # the pool deps are unconditional dev-dependencies (the `postgres` feature is
 # a marker with no dependency gating).
-deadpool-postgres = "0.14"
-tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
+deadpool-postgres = { workspace = true }
+tokio-postgres = { workspace = true, features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
 # The generic-extension ingress/delivery integration suites verify webhook
 # HMAC recipes and collect axum response bodies.
-hmac = "0.13"
-http-body-util = "0.1"
-tokio-test = "0.4"
-tracing-test = "0.2"
-testcontainers-modules = { version = "0.12", features = ["postgres"] }
-pretty_assertions = "1"
-tempfile = "3"
+hmac = { workspace = true }
+http-body-util = { workspace = true }
+testcontainers-modules = { workspace = true, features = ["postgres"] }
+tempfile = { workspace = true }
 insta = { version = "1.46.3", features = ["yaml"] }
 # Pull the LLM crate's `testing` feature in only for tests so `StubLlm` and
 # fault-injection helpers don't ship in release binaries.
@@ -193,7 +353,7 @@ ironclaw_agent_loop = { path = "crates/loop/ironclaw_agent_loop", version = "0.1
 ironclaw_approvals = { path = "crates/kernel/ironclaw_approvals", version = "0.1.0", features = ["test-support"] }
 # Pull the auth crate's `test-support` feature in only for tests so the
 # `test_support::conformance` OAuth-flow suite (used by the
-# `reborn_integration_oauth_connect` test) doesn't ship in release binaries.
+# `reborn_integration_suite_extensions::oauth_connect` test) doesn't ship in release binaries.
 ironclaw_auth = { path = "crates/domains/ironclaw_auth", version = "0.1.0", features = ["test-support"] }
 # C-ATTACH: `InboundAttachment` for `submit_turn_with_image_attachment`.
 ironclaw_attachments = { path = "crates/domains/ironclaw_attachments", version = "0.1.0" }
@@ -242,7 +402,7 @@ ironclaw_loop_host = { path = "crates/loop/ironclaw_loop_host", features = ["tes
 # drives the bare router, not the `webui_v2_app` wrapper. The v2 route surface
 # merged into `ironclaw_webui` (as its public `webui_v2` module).
 ironclaw_webui = { path = "crates/product/ironclaw_webui", version = "0.1.0" }
-# `reborn_integration_operator_metrics` records a whole turn through the
+# `reborn_integration_suite_platform::operator_metrics` records a whole turn through the
 # operator-metrics decorators at their production positions.
 ironclaw_operator = { path = "crates/product/ironclaw_operator", version = "0.1.0" }
 # Direct dev-dep for the same reason as ironclaw_webui above: composition's
@@ -336,269 +496,34 @@ path = "tests/integration/generated_restart_sequences.rs"
 name = "reborn_group_journeys"
 path = "tests/integration/group_journeys/main.rs"
 
+# Flat-scenario suite binaries: each mounts a domain's single-thread
+# `tests/integration/<name>.rs` files as modules (one link per domain instead
+# of one per file). Membership is the `#[path]` list in each `main.rs`; the CI
+# inventory (`scripts/ci/lib/integration_test_inventory.py`) reads it to route
+# a changed member file to its suite's lane.
 [[test]]
-name = "reborn_integration_oauth_refresh"
-path = "tests/integration/auth/oauth_refresh.rs"
+name = "reborn_integration_suite_extensions"
+path = "tests/integration/suite_extensions/main.rs"
 
 [[test]]
-name = "reborn_integration_attach"
-path = "tests/integration/attach.rs"
+name = "reborn_integration_suite_platform"
+path = "tests/integration/suite_platform/main.rs"
 
 [[test]]
-name = "reborn_integration_document_edit"
-path = "tests/integration/document_edit.rs"
+name = "reborn_integration_suite_tools"
+path = "tests/integration/suite_tools/main.rs"
 
 [[test]]
-name = "reborn_integration_notification_inbox_user_isolation"
-path = "tests/integration/notification_inbox_user_isolation.rs"
+name = "reborn_integration_suite_turns"
+path = "tests/integration/suite_turns/main.rs"
 
 [[test]]
 name = "reborn_integration_sandbox_shell_turn"
 path = "tests/integration/reborn_sandbox_shell_turn.rs"
 
 [[test]]
-name = "reborn_integration_suggestions"
-path = "tests/integration/suggestions.rs"
-
-[[test]]
-name = "reborn_integration_unattended_surface"
-path = "tests/integration/unattended_surface.rs"
-
-[[test]]
-name = "reborn_integration_subagent_await_edge"
-path = "tests/integration/subagent_await_edge.rs"
-
-[[test]]
-name = "reborn_integration_unbound_turns"
-path = "tests/integration/unbound_turns.rs"
-
-[[test]]
-name = "reborn_integration_auth_failure"
-path = "tests/integration/auth/auth_failure.rs"
-
-[[test]]
-name = "reborn_integration_auth_gate"
-path = "tests/integration/auth/auth_gate.rs"
-
-[[test]]
-name = "reborn_integration_backend_matrix"
-path = "tests/integration/backend_matrix.rs"
-
-[[test]]
-name = "reborn_integration_budget"
-path = "tests/integration/budget.rs"
-
-[[test]]
-name = "reborn_integration_cancel"
-path = "tests/integration/cancel.rs"
-
-[[test]]
-name = "reborn_integration_steering"
-path = "tests/integration/steering.rs"
-
-[[test]]
-name = "reborn_integration_model_recovery"
-path = "tests/integration/model_recovery.rs"
-
-[[test]]
-name = "reborn_integration_terminal_warning"
-path = "tests/integration/terminal_warning.rs"
-
-[[test]]
-name = "reborn_integration_channel_connection_projection"
-path = "tests/integration/channel_connection_projection.rs"
-
-[[test]]
-name = "reborn_integration_comm_context"
-path = "tests/integration/comm_context.rs"
-
-[[test]]
-name = "reborn_integration_prompt_prefix_stability"
-path = "tests/integration/prompt_prefix_stability.rs"
-
-[[test]]
-name = "reborn_integration_durable"
-path = "tests/integration/durable.rs"
-
-[[test]]
-name = "reborn_integration_delivery_user_journeys"
-path = "tests/integration/delivery_user_journeys.rs"
-
-[[test]]
-name = "reborn_integration_extension_runtime"
-path = "tests/integration/extension_runtime.rs"
-
-[[test]]
-name = "reborn_integration_extension_ingress"
-path = "tests/integration/extension_ingress.rs"
-
-[[test]]
-name = "reborn_integration_environment_access"
-path = "tests/integration/environment_access.rs"
-
-[[test]]
-name = "reborn_integration_extension_delivery"
-path = "tests/integration/extension_delivery.rs"
-
-[[test]]
-name = "reborn_integration_extension_visibility"
-path = "tests/integration/extension_visibility.rs"
-
-[[test]]
-name = "reborn_integration_external_tool_gate_denied_resume"
-path = "tests/integration/external_tool_gate_denied_resume.rs"
-
-[[test]]
-name = "reborn_integration_extension_user_lifecycle_isolation"
-path = "tests/integration/extension_user_lifecycle_isolation.rs"
-
-[[test]]
-name = "reborn_integration_golden_payload"
-path = "tests/integration/golden_payload.rs"
-
-[[test]]
-name = "reborn_integration_greeting"
-path = "tests/integration/greeting.rs"
-
-[[test]]
-name = "reborn_integration_operator_metrics"
-path = "tests/integration/operator_metrics.rs"
-
-[[test]]
-name = "reborn_integration_hooks"
-path = "tests/integration/hooks.rs"
-
-[[test]]
-name = "reborn_integration_http_matcher"
-path = "tests/integration/http_matcher.rs"
-
-[[test]]
-name = "reborn_integration_idempotent_replay"
-path = "tests/integration/idempotent_replay.rs"
-
-[[test]]
-name = "reborn_integration_identity_resolution_smoke"
-path = "tests/integration/identity_resolution_smoke.rs"
-
-[[test]]
-name = "reborn_integration_lease_wedge"
-path = "tests/integration/lease_wedge.rs"
-
-[[test]]
-name = "reborn_integration_mcp"
-path = "tests/integration/mcp.rs"
-
-[[test]]
-name = "reborn_integration_hosted_mcp_registration"
-path = "tests/integration/hosted_mcp_registration.rs"
-
-[[test]]
-name = "reborn_integration_oauth_connect"
-path = "tests/integration/auth/oauth_connect.rs"
-
-[[test]]
-name = "reborn_integration_oauth_popup_journeys"
-path = "tests/integration/auth/oauth_popup_journeys.rs"
-
-[[test]]
-name = "reborn_integration_outbound_store_durability"
-path = "tests/integration/outbound_store_durability.rs"
-
-[[test]]
-name = "reborn_integration_outbound_target"
-path = "tests/integration/outbound_target.rs"
-
-[[test]]
-name = "reborn_integration_process_port"
-path = "tests/integration/process_port.rs"
-
-[[test]]
-name = "reborn_integration_profile"
-path = "tests/integration/profile.rs"
-
-[[test]]
-name = "reborn_integration_project_create"
-path = "tests/integration/project_create.rs"
-
-[[test]]
-name = "reborn_integration_real_egress_pipeline"
-path = "tests/integration/real_egress_pipeline.rs"
-
-[[test]]
-name = "reborn_integration_reopen_resume_through_gate"
-path = "tests/integration/auth/reopen_resume_through_gate.rs"
-
-[[test]]
-name = "reborn_integration_safety"
-path = "tests/integration/safety.rs"
-
-[[test]]
-name = "reborn_integration_secret_injection"
-path = "tests/integration/secret_injection.rs"
-
-[[test]]
-name = "reborn_integration_secrets"
-path = "tests/integration/secrets.rs"
-
-[[test]]
-name = "reborn_integration_skill_activate"
-path = "tests/integration/skill_activate.rs"
-
-[[test]]
-name = "reborn_integration_surface_disclosure"
-path = "tests/integration/surface_disclosure.rs"
-
-[[test]]
-name = "reborn_integration_tool_call"
-path = "tests/integration/tool_call.rs"
-
-[[test]]
-name = "reborn_integration_tool_disclosure"
-path = "tests/integration/tool_disclosure.rs"
-
-[[test]]
 name = "reborn_integration_trace_capture"
 path = "tests/integration/trace_capture.rs"
-
-[[test]]
-name = "reborn_integration_tracecap"
-path = "tests/integration/tracecap.rs"
-
-[[test]]
-name = "reborn_integration_triggered_submit"
-path = "tests/integration/triggered_submit.rs"
-
-[[test]]
-name = "reborn_integration_web_access"
-path = "tests/integration/web_access.rs"
-
-[[test]]
-name = "reborn_integration_config_reload"
-path = "tests/integration/config_reload.rs"
-
-[[test]]
-name = "reborn_integration_webui_v2_product_api"
-path = "tests/integration/webui_v2_product_api.rs"
-
-[[test]]
-name = "reborn_integration_plugin_ui"
-path = "tests/integration/plugin_ui.rs"
-
-[[test]]
-name = "reborn_integration_openai_compat_embeddings"
-path = "tests/integration/openai_compat_embeddings.rs"
-
-[[test]]
-name = "reborn_integration_webui_v2_router_smoke"
-path = "tests/integration/webui_v2_router_smoke.rs"
-
-[[test]]
-name = "reborn_integration_wiring_parity"
-path = "tests/integration/wiring_parity.rs"
-
-[[test]]
-name = "reborn_integration_run_artifact_timings"
-path = "tests/integration/run_artifact_timings.rs"
 
 [[test]]
 name = "reborn_integration_db_write_canonical"
@@ -617,6 +542,26 @@ path = "tests/integration/db_write_canonical.rs"
 # inspection? Override per-run: `CARGO_PROFILE_DEV_DEBUG=2 cargo <cmd>`.
 [profile.dev]
 debug = 0
+
+# Optimize heavy parse/diff dev-dependencies even in dev/test builds.
+# `ironclaw_architecture_tests` parses the entire `crates/` tree with `syn` on
+# every run (~110s locally / ~180s in CI at opt-level=0); compiling `syn`,
+# `proc-macro2`, `quote`, `insta`, and `similar` at opt-level=3 is a one-time
+# cached cost that cuts AST-scan test runtime by ~5-10x.
+[profile.dev.package.syn]
+opt-level = 3
+
+[profile.dev.package.proc-macro2]
+opt-level = 3
+
+[profile.dev.package.quote]
+opt-level = 3
+
+[profile.dev.package.insta]
+opt-level = 3
+
+[profile.dev.package.similar]
+opt-level = 3
 
 [profile.release]
 # Already cargo's built-in default (debug info is off by default in

@@ -4,13 +4,8 @@
 //! backed by a libSQL composite, then reopens a genuinely fresh store over the
 //! same on-disk database file and reads the secret back — real on-disk
 //! durability, without the turn/model layer.
-//!
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+
+use crate::reborn_support;
 
 use std::sync::Arc;
 

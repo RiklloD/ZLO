@@ -1,13 +1,12 @@
 [package]
 name = "ironclaw_extension_host"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Generic extension lifecycle host, active snapshot, loaders, and resolvers for IronClaw Reborn"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -24,11 +23,11 @@ test-support = [
 ]
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 base64 = { workspace = true }
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
-hmac = "0.13"
-hex = "0.4.3"
+chrono = { workspace = true, features = ["clock", "serde", "std"] }
+hmac = { workspace = true }
+hex = { workspace = true }
 ironclaw_auth = { path = "../../domains/ironclaw_auth" }
 # `InboundAttachmentLander` — the channel host lands inbound attachment bytes
 # before accepting a message.
@@ -61,32 +60,31 @@ ironclaw_triggers = { path = "../../domains/ironclaw_triggers" }
 ironclaw_trust = { path = "../../kernel/ironclaw_trust" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
 ironclaw_turns = { path = "../../kernel/ironclaw_turns" }
-axum = { version = "0.8" }
-futures = "0.3"
+axum = { workspace = true }
+futures = { workspace = true }
 # Query-value escaping for the connect link appended to a channel's
 # `connect_required` notice (extension ids come from durable records).
-percent-encoding = "2"
-rand = "0.10"
-rust_decimal = { version = "1", features = ["serde", "serde-with-str"] }
-secrecy = "0.10"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.11"
-subtle = "2"
-thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
-toml = "1.1"
-tracing = "0.1"
-url = "2"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+percent-encoding = { workspace = true }
+rand = { workspace = true }
+secrecy = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+zip = { workspace = true, features = ["deflate"] }
 
 [build-dependencies]
 ironclaw_skills = { path = "../../domains/ironclaw_skills" }
-serde_json = "1"
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # Property testing for the shared ingress verifier (#6524 workstream 9).
-proptest = "1"
+proptest = { workspace = true }
 ironclaw_auth = { path = "../../domains/ironclaw_auth", features = ["test-support"] }
 ironclaw_authorization = { path = "../../kernel/ironclaw_authorization" }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features = ["test-support"] }
@@ -97,10 +95,10 @@ ironclaw_processes = { path = "../../kernel/ironclaw_processes", features = ["te
 ironclaw_assistant = { path = "../../product/ironclaw_assistant", features = ["test-support"] }
 ironclaw_resources = { path = "../../kernel/ironclaw_resources", features = ["test-support"] }
 ironclaw_slack_extension = { path = "../packages/slack" }
-http-body-util = "0.1"
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
-tower = { version = "0.5", features = ["util"] }
+http-body-util = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
+tower = { workspace = true, features = ["util"] }
 # Installs a level-appropriate subscriber so a `tracing` body actually runs
 # under test: `tracing` short-circuits on the null dispatcher, so without one
 # the log a sanitization test needs to inspect is never formatted, and a test
@@ -108,7 +106,7 @@ tower = { version = "0.5", features = ["util"] }
 # crate's log guards depend on that distinction — the DEBUG-level lifecycle
 # sanitization tests and the WARN-level transient-cause test, whose 503 body is
 # deliberately sanitized.
-tracing-subscriber = "0.3"
+tracing-subscriber = { workspace = true }
 
 [[test]]
 name = "lifecycle_contract"

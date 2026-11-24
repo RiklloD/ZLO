@@ -12,8 +12,8 @@
 //! The abandoned/denied/expired/replayed POPUP journeys over the same seam
 //! live next door in `oauth_popup_journeys.rs`.
 
-#[path = "common.rs"]
-mod common;
+// Shared OAuth fixtures, mounted once by the suite root (`suite_extensions`).
+use crate::auth_common as common;
 
 use std::sync::Arc;
 

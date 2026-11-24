@@ -1,14 +1,13 @@
 [package]
 name = "ironclaw_turns"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 # Keep in sync with the workspace-level package.rust-version.
 rust-version.workspace = true
 description = "Host-layer turn coordination contracts for IronClaw Reborn"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -19,19 +18,19 @@ layer = "kernel"
 test-support = ["ironclaw_host_api/test-support"]
 
 [dependencies]
-async-trait = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
+async-trait = { workspace = true }
+chrono = { workspace = true, default-features = true, features = ["serde"] }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version = "0.1.0" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api", version = "0.1.0" }
 ironclaw_observability = { path = "../../substrates/ironclaw_observability" }
 ironclaw_processes = { path = "../ironclaw_processes", version = "0.1.0" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["rt", "sync", "time"] }
-tracing = "0.1"
-uuid = { version = "1", features = ["v4", "serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
 # Self-reference so the crate's own integration tests see `test_support`.
@@ -42,24 +41,14 @@ ironclaw_processes = { path = "../ironclaw_processes", features = ["test-support
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version = "0.1.0", features = [
     "test-support",
 ] }
-# Test-only: the durable-read perf harness (`events_query_stress`) builds a real
-# libSQL-backed store.
-libsql = { workspace = true, features = ["remote", "tls"] }
-# Optional live-Postgres durable replay contract (skips when no test database
-# URL is configured). Versions match the workspace integration harness.
-deadpool-postgres = "0.14"
-tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
-rand = "0.10"
-static_assertions = "1"
-tempfile = "3"
-tokio = { version = "1", features = [
+tokio = { workspace = true, features = [
     "macros",
     "rt",
     "rt-multi-thread",
     "test-util",
     "time",
 ] }
-tracing-subscriber = "0.3"
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

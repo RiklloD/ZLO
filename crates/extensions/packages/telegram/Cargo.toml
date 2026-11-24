@@ -1,22 +1,20 @@
 [package]
 name = "ironclaw_telegram_extension"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Telegram channel extension for IronClaw Reborn: Bot API protocol engine + ChannelAdapter (#3285)"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
 layer = "products"
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 base64 = { workspace = true }
-chrono = { version = "0.4", features = ["serde"] }
 # Production deps only. `tracing` is here for one purpose: the attachment
 # transfer path must retain the cause of a provider parse failure server-side
 # while the user-facing reason stays a fixed literal. `uuid` is here
@@ -33,11 +31,11 @@ chrono = { version = "0.4", features = ["serde"] }
 ironclaw_host_api = { path = "../../../contracts/ironclaw_host_api", version = "0.1.0" }
 ironclaw_extension_contracts = { path = "../../../contracts/ironclaw_extension_contracts", version = "0.1.0" }
 ironclaw_attachments = { path = "../../../domains/ironclaw_attachments", version = "0.1.0" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 # --- Linked-device (MTProto) session half -------------------------------
 #
@@ -107,27 +105,27 @@ grammers-tl-types = { version = "=0.10.0", default-features = false, features = 
 ] }
 # The device-link flow receives login codes and account passwords as
 # `SecretString`; reading one is a single greppable `expose_secret()`.
-secrecy = "0.10"
-static_assertions = "1"
+secrecy = { workspace = true }
+static_assertions = { workspace = true }
 # The session blob carries 256-byte MTProto auth keys through an intermediate
 # base64 string on decode; that buffer is wiped rather than left in the heap.
-zeroize = "1"
+zeroize = { workspace = true }
 # Production `tokio` is new for this package (it was dev-only). The MTProto
 # sender runner is a spawned task — `rt` is the floor, `sync`/`time`/`macros`
 # carry the pool's locks, timers, and the per-link gate.
-tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]
 # Property testing for the ingress boundary (#6524 workstream 9) — arrived
 # with the `payload` module in the Wave 2 merge.
-proptest = "1"
+proptest = { workspace = true }
 # `test-support` exposes the shared channel-adapter conformance fakes.
 ironclaw_host_api = { path = "../../../contracts/ironclaw_host_api", version = "0.1.0", features = ["test-support"] }
 # The exported channel-adapter conformance suite moved here with
 # `ChannelAdapter` (WS1.4); `tests/channel_conformance.rs` runs it.
 ironclaw_extension_contracts = { path = "../../../contracts/ironclaw_extension_contracts", version = "0.1.0", features = ["test-support"] }
-tokio = { version = "1", features = ["macros", "rt", "sync"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 [lints]
 workspace = true

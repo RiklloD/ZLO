@@ -766,7 +766,7 @@ Rules — kept short on purpose:
   proofs' `Delivered`-attempt assertions run matrixed over
   `StorageMode::{LibSql,Postgres}` (`tests/integration/extension_delivery.rs`;
   a Postgres provisioning failure is a test failure, never a skip). NOTE: the
-  separately-cited `reborn_integration_outbound_store_durability` binary is
+  separately-cited `reborn_integration_suite_platform::outbound_store_durability` binary is
   libsql-only (its single test is a fresh-libsql reopen); the both-DB guarantee
   rides the delivery-proof matrix above, not that store suite.
 - [x] OUT-10 Slack rendering/splitting/DM-provisioning and Telegram rendering

@@ -1,7 +1,6 @@
 use std::{
     cmp::Ordering,
     collections::BTreeMap,
-    fmt::Write,
     fs::File,
     io::{BufRead, BufReader},
     path::PathBuf,
@@ -10,6 +9,7 @@ use std::{
 use ironclaw_stress::db_probe::DbProbeSummary;
 use serde_json::Value;
 
+use crate::report_text::ReportText;
 use crate::{
     Args, RunSummary,
     capture::CapturedRun,
@@ -36,33 +36,28 @@ pub(crate) fn render_bottleneck_report(
     findings.sort_by(compare_findings);
 
     let mut output = String::new();
-    let _ = writeln!(output, "\nBottleneck analysis");
-    let _ = writeln!(output, "{:<22} {:<7} evidence", "signal", "level");
-    let _ = writeln!(output, "{:-<22} {:-<7} {:-<56}", "", "", "");
+    output.push_line(format_args!("\nBottleneck analysis"));
+    output.push_line(format_args!("{:<22} {:<7} evidence", "signal", "level"));
+    output.push_line(format_args!("{:-<22} {:-<7} {:-<56}", "", "", ""));
     if findings.is_empty() {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<7} no threshold-level signal found for run_id={run_id}",
             "none", "info"
-        );
-        let _ = writeln!(
-            output,
-            "\nNext probes\n- Increase concurrency/users with --bottleneck-report and enable --trace-jsonl for interval-level collapse detection."
-        );
+        ));
+        output.push_line(format_args!("\nNext probes\n- Increase concurrency/users with --bottleneck-report and enable --trace-jsonl for interval-level collapse detection."));
         return output;
     }
 
     for finding in &findings {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<7} {}",
             finding.signal, finding.level, finding.evidence
-        );
+        ));
     }
 
-    let _ = writeln!(output, "\nNext probes");
+    output.push_line(format_args!("\nNext probes"));
     for finding in findings.iter().take(5) {
-        let _ = writeln!(output, "- {}", finding.next_probe);
+        output.push_line(format_args!("- {}", finding.next_probe));
     }
     output
 }

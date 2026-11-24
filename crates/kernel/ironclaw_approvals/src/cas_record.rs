@@ -156,8 +156,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
-
     use super::*;
 
     fn path(name: &str) -> ScopedPath {
@@ -167,25 +165,13 @@ mod tests {
     #[test]
     fn bounded_path_cache_evicts_least_recently_used_entry() {
         let mut cache = BoundedPathCache::new(2);
-        cache
-            .get_or_insert_with(&"a", |_| Ok::<_, Infallible>(path("a")))
-            .unwrap();
-        cache
-            .get_or_insert_with(&"b", |_| Ok::<_, Infallible>(path("b")))
-            .unwrap();
-        cache
-            .get_or_insert_with(&"a", |_| Ok::<_, Infallible>(path("a2")))
-            .unwrap();
-        cache
-            .get_or_insert_with(&"c", |_| Ok::<_, Infallible>(path("c")))
-            .unwrap();
+        let Ok(_) = cache.get_or_insert_with(&"a", |_| Ok::<_, !>(path("a")));
+        let Ok(_) = cache.get_or_insert_with(&"b", |_| Ok::<_, !>(path("b")));
+        let Ok(_) = cache.get_or_insert_with(&"a", |_| Ok::<_, !>(path("a2")));
+        let Ok(_) = cache.get_or_insert_with(&"c", |_| Ok::<_, !>(path("c")));
 
-        let a = cache
-            .get_or_insert_with(&"a", |_| Ok::<_, Infallible>(path("a-miss")))
-            .unwrap();
-        let b = cache
-            .get_or_insert_with(&"b", |_| Ok::<_, Infallible>(path("b-reloaded")))
-            .unwrap();
+        let Ok(a) = cache.get_or_insert_with(&"a", |_| Ok::<_, !>(path("a-miss")));
+        let Ok(b) = cache.get_or_insert_with(&"b", |_| Ok::<_, !>(path("b-reloaded")));
 
         assert_eq!(a, path("a"));
         assert_eq!(b, path("b-reloaded"));

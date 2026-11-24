@@ -1,20 +1,23 @@
-//! Pins the scope of `clippy::let_underscore_must_use`.
+//! Pins the scope of `clippy::let_underscore_must_use`: the whole workspace.
 //!
 //! `let _ = <must_use>` silently swallows a `Result` or other must-use value.
-//! The discards were triaged in [`TRIAGED_CRATES`] only: each kept discard
-//! there carries a statement-level `#[expect(..., reason = "...")]`. The lint is
-//! not a `[workspace.lints]` entry, because those bind every crate that opts in
-//! with `[lints] workspace = true` (most of the workspace, almost all of it
-//! untriaged), and Cargo forbids a per-crate `[lints]` table beside
-//! `workspace = true`. So each triaged crate denies it with an inner attribute
-//! in **every target root** — a crate-root attribute binds only the target it
-//! heads, and `tests/*.rs` are separate crates from `src/lib.rs`.
+//! Every discard in the workspace was triaged (fixed, or kept behind a
+//! statement-level `#[expect(..., reason = "...")]`), and the lint is denied by
+//! `[workspace.lints.clippy]` in the root `Cargo.toml`. That entry binds only
+//! packages that opt in with `[lints] workspace = true`. The members that do
+//! not (over `unreachable_pub` noise — see the root `Cargo.toml`) deny it
+//! themselves, in one of two ways:
 //!
-//! This gate is the one place the list lives. It fails when a target root of a
-//! triaged crate loses the deny (or a new target lands without it), so the
-//! enforced scope cannot shrink silently. To widen it: triage a crate, add the
-//! deny to its target roots, add the crate here. Backlog:
-//! `docs/internal/lint-backlog.md`.
+//! - a package-level `[lints.clippy] let_underscore_must_use = "deny"` table
+//!   (the root integration-suite package), which binds all of its targets; or
+//! - an inner attribute in **every target root** (`ironclaw_assistant`,
+//!   `ironclaw_webui`), since a crate-root attribute binds only the target it
+//!   heads and `tests/*.rs` are separate crates from `src/lib.rs`.
+//!
+//! This gate fails when the workspace entry is weakened or removed, when a
+//! member stops inheriting workspace lints without denying the lint itself, or
+//! when an attribute-scoped member gains a target root without the deny — so
+//! the enforced scope cannot shrink silently.
 
 #![deny(clippy::let_underscore_must_use)]
 mod ratchet_support;
@@ -23,88 +26,78 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ratchet_support::{crate_dir, workspace_root};
+use ratchet_support::workspace_root;
 use syn::parse::Parser;
 use syn::{AttrStyle, Meta, Token};
 
-/// Crates whose `let _ = <must_use>` discards were triaged (fix/let-underscore-must-use,
-/// then chore/triage-let-underscore-batch-1 and -batch-2). Entries are crate *directory* names, as
-/// `crate_dir` resolves them (`memory-native`, `slack`, ...), not package names.
-const TRIAGED_CRATES: &[&str] = &[
-    "ironclaw_agent_loop",
-    "ironclaw_approvals",
-    "ironclaw_architecture_tests",
-    "ironclaw_assistant",
-    "ironclaw_attachments",
-    "ironclaw_auth",
-    "ironclaw_authorization",
-    "ironclaw_capabilities",
-    "ironclaw_cli",
-    "ironclaw_cli_providers",
-    "ironclaw_common",
-    "ironclaw_composition",
-    "ironclaw_computer_use",
-    "ironclaw_config",
-    "ironclaw_conversations",
-    "ironclaw_documents",
-    "ironclaw_event_log",
-    "ironclaw_event_projections",
-    "ironclaw_event_store",
-    "ironclaw_event_streams",
-    "ironclaw_extension_contracts",
-    "ironclaw_extension_host",
-    "ironclaw_extension_manager",
-    "ironclaw_extension_registry",
-    "ironclaw_extension_support",
-    "ironclaw_extractors",
-    "ironclaw_filesystem",
-    "ironclaw_hooks",
-    "ironclaw_host_api",
-    "ironclaw_host_ingress",
-    "ironclaw_host_runtime",
-    "ironclaw_identity",
-    "ironclaw_libsql_runtime",
-    "ironclaw_llm",
-    "ironclaw_loop_contracts",
-    "ironclaw_loop_host",
-    "ironclaw_mcp",
-    "ironclaw_memory",
-    "ironclaw_network",
-    "ironclaw_notifications",
-    "ironclaw_observability",
-    "ironclaw_openai_compat",
-    "ironclaw_operator",
-    "ironclaw_orchestrator",
-    "ironclaw_outbound",
-    "ironclaw_processes",
-    "ironclaw_product_contracts",
-    "ironclaw_prompt_envelope",
-    "ironclaw_resources",
-    "ironclaw_runtime_policy",
-    "ironclaw_safety",
-    "ironclaw_sandbox",
-    "ironclaw_secrets",
-    "ironclaw_skills",
-    "ironclaw_supermemory",
-    "ironclaw_threads",
-    "ironclaw_trace_commons",
-    "ironclaw_triggers",
-    "ironclaw_trust",
-    "ironclaw_turn_runner",
-    "ironclaw_turns",
-    "ironclaw_usage",
-    "ironclaw_wasm",
-    "ironclaw_wasm_limiter",
-    "ironclaw_web_app",
-    "ironclaw_webui",
-    "mem0",
-    "memory-native",
-    "slack",
-    "telegram",
-    "web-app",
+const LINT: &str = "let_underscore_must_use";
+const DENY_ATTRIBUTE: &str = "#![deny(clippy::let_underscore_must_use)]";
+
+/// Workspace members that do not inherit `[lints] workspace = true` and deny
+/// the lint with their own package-level `[lints.clippy]` entry (paths relative
+/// to the workspace root). Widening this list is a review decision.
+const PACKAGE_SCOPED_MEMBERS: &[&str] = &["."];
+
+/// Workspace members that do not inherit `[lints] workspace = true` and carry
+/// `DENY_ATTRIBUTE` in every target root instead. Widening this list is a
+/// review decision, not a side effect.
+const ATTRIBUTE_SCOPED_MEMBERS: &[&str] = &[
+    "crates/product/ironclaw_assistant",
+    "crates/product/ironclaw_webui",
 ];
 
-const DENY_ATTRIBUTE: &str = "#![deny(clippy::let_underscore_must_use)]";
+fn read_manifest(path: &Path) -> toml::Table {
+    let text =
+        fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    toml::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
+}
+
+/// True when a Cargo lint level (`"deny"` or `{ level = "deny", ... }`) is
+/// `deny` or `forbid`.
+fn level_denies(value: &toml::Value) -> bool {
+    let level = match value {
+        toml::Value::String(level) => Some(level.as_str()),
+        toml::Value::Table(table) => table.get("level").and_then(toml::Value::as_str),
+        _ => None,
+    };
+    matches!(level, Some("deny" | "forbid"))
+}
+
+/// The workspace members, as directories relative to the workspace root.
+fn workspace_members(root_manifest: &toml::Table) -> Vec<String> {
+    root_manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .expect("root Cargo.toml lists [workspace] members")
+        .iter()
+        .map(|member| {
+            let member = member.as_str().expect("workspace member is a string");
+            assert!(
+                !member.contains('*'),
+                "workspace member `{member}` is a glob; extend this gate to expand it"
+            );
+            member.trim_end_matches('/').to_string()
+        })
+        .collect()
+}
+
+/// True when the package's own `[lints.clippy]` table denies the lint.
+fn package_lints_deny(manifest: &toml::Table) -> bool {
+    manifest
+        .get("lints")
+        .and_then(|lints| lints.get("clippy"))
+        .and_then(|clippy| clippy.get(LINT))
+        .is_some_and(level_denies)
+}
+
+fn inherits_workspace_lints(manifest: &toml::Table) -> bool {
+    manifest
+        .get("lints")
+        .and_then(|lints| lints.get("workspace"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false)
+}
 
 /// Every compilation-target root Cargo would build for the crate: the
 /// auto-discovered layout, the build script, and any target an explicit
@@ -202,25 +195,53 @@ fn carries_deny(source: &str) -> bool {
 }
 
 #[test]
-fn triaged_crates_deny_let_underscore_must_use_in_every_target_root() {
+fn workspace_lints_deny_let_underscore_must_use() {
+    let manifest = read_manifest(&workspace_root().join("Cargo.toml"));
+    let entry = manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("lints"))
+        .and_then(|lints| lints.get("clippy"))
+        .and_then(|clippy| clippy.get(LINT));
+    assert!(
+        entry.is_some_and(level_denies),
+        "[workspace.lints.clippy] must set `{LINT} = \"deny\"` (found {entry:?}); every \
+         workspace member was triaged against it (docs/internal/lint-backlog.md)"
+    );
+}
+
+#[test]
+fn every_workspace_member_denies_let_underscore_must_use() {
     let root = workspace_root();
-    let mut checked = 0usize;
+    let members = workspace_members(&read_manifest(&root.join("Cargo.toml")));
+    // Non-vacuity: the root package plus the ~70 crates and tools.
+    assert!(
+        members.len() > 60,
+        "non-vacuity: only {} workspace members",
+        members.len()
+    );
+
+    let mut package_scoped = Vec::new();
+    let mut attribute_scoped = Vec::new();
     let mut missing = Vec::new();
-    for name in TRIAGED_CRATES {
-        let directory = crate_dir(&root, name);
+    for member in &members {
+        let directory = root.join(member);
+        let manifest = read_manifest(&directory.join("Cargo.toml"));
+        if inherits_workspace_lints(&manifest) {
+            continue;
+        }
+        if package_lints_deny(&manifest) {
+            package_scoped.push(member.clone());
+            continue;
+        }
+        attribute_scoped.push(member.clone());
         let roots = target_roots(&directory);
-        // Non-vacuity per crate: a library or a binary root must be found
-        // (`ironclaw_cli` is binary-only).
         assert!(
-            roots
-                .iter()
-                .any(|path| path.ends_with("src/lib.rs") || path.ends_with("src/main.rs")),
-            "{name}: expected a src/lib.rs or src/main.rs target root; the scan found {roots:?}"
+            !roots.is_empty(),
+            "{member}: opts out of workspace lints but the scan found no target roots"
         );
         for path in roots {
             let source = fs::read_to_string(&path)
                 .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-            checked += 1;
             if !carries_deny(&source) {
                 missing.push(
                     path.strip_prefix(&root)
@@ -231,42 +252,45 @@ fn triaged_crates_deny_let_underscore_must_use_in_every_target_root() {
             }
         }
     }
-    assert!(
-        checked >= TRIAGED_CRATES.len(),
-        "non-vacuity: scanned {checked} target roots for {} crates",
-        TRIAGED_CRATES.len()
+
+    assert_eq!(
+        package_scoped, PACKAGE_SCOPED_MEMBERS,
+        "workspace members that deny clippy::{LINT} in their own `[lints.clippy]` \
+         table instead of inheriting workspace lints; list them in PACKAGE_SCOPED_MEMBERS"
+    );
+    assert_eq!(
+        attribute_scoped, ATTRIBUTE_SCOPED_MEMBERS,
+        "workspace members that neither set `[lints] workspace = true` nor deny \
+         clippy::{LINT} in their own `[lints.clippy]` table; such a member must be \
+         listed in ATTRIBUTE_SCOPED_MEMBERS and carry `{DENY_ATTRIBUTE}` in every \
+         target root"
     );
     assert!(
         missing.is_empty(),
-        "these target roots of triaged crates lack `{DENY_ATTRIBUTE}`; add it as a \
-         crate-level attribute (see Cargo.toml [workspace.lints] notes and \
-         docs/internal/lint-backlog.md):\n  {}",
+        "these target roots of members that opt out of workspace lints lack \
+         `{DENY_ATTRIBUTE}`; add it as a crate-level attribute (see the root \
+         Cargo.toml [workspace.lints] notes):\n  {}",
         missing.join("\n  ")
     );
 }
 
 #[test]
-fn let_underscore_must_use_stays_out_of_workspace_lints() {
-    // A workspace-wide entry would bind the opted-in crates whose discards were never
-    // triaged — the regression this crate-scoped opt-in replaced.
-    let manifest_path = workspace_root().join("Cargo.toml");
-    let manifest: toml::Table = toml::from_str(
-        &fs::read_to_string(&manifest_path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display())),
-    )
-    .unwrap_or_else(|error| panic!("parse {}: {error}", manifest_path.display()));
-    let entry = manifest
-        .get("workspace")
-        .and_then(|workspace| workspace.get("lints"))
-        .and_then(|lints| lints.get("clippy"))
-        .and_then(|clippy| clippy.get("let_underscore_must_use"));
-    assert!(
-        entry.is_none(),
-        "clippy::let_underscore_must_use is scoped per crate by \
-         `{DENY_ATTRIBUTE}` in the triaged crates' target roots; do not add it to \
-         [workspace.lints.clippy] until every opted-in crate is triaged \
-         (docs/internal/lint-backlog.md)"
-    );
+fn lint_level_parsing_accepts_only_deny_and_forbid() {
+    assert!(level_denies(&toml::Value::String("deny".into())));
+    assert!(level_denies(&toml::Value::String("forbid".into())));
+    assert!(!level_denies(&toml::Value::String("warn".into())));
+    assert!(!level_denies(&toml::Value::String("allow".into())));
+    let table: toml::Table =
+        toml::from_str("x = { level = \"deny\", priority = 1 }").expect("toml");
+    assert!(level_denies(&table["x"]));
+    let table: toml::Table = toml::from_str("x = { level = \"warn\" }").expect("toml");
+    assert!(!level_denies(&table["x"]));
+
+    let manifest: toml::Table =
+        toml::from_str("[lints.clippy]\nlet_underscore_must_use = \"deny\"\n").expect("toml");
+    assert!(package_lints_deny(&manifest) && !inherits_workspace_lints(&manifest));
+    let manifest: toml::Table = toml::from_str("[lints]\nworkspace = true\n").expect("toml");
+    assert!(inherits_workspace_lints(&manifest) && !package_lints_deny(&manifest));
 }
 
 #[test]

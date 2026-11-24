@@ -298,6 +298,10 @@ impl HostedMcpRegistrationServer {
         let task = tokio::spawn(async move {
             axum::serve(listener, app)
                 .with_graceful_shutdown(async {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "a dropped sender (the handle went away) means shut down too"
+                    )]
                     let _ = receiver.await;
                 })
                 .await
@@ -354,6 +358,10 @@ impl HostedMcpRegistrationServer {
 impl Drop for HostedMcpRegistrationServer {
     fn drop(&mut self) {
         if let Some(sender) = self.shutdown.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the server may already have stopped and dropped its receiver"
+            )]
             let _ = sender.send(());
         }
         if let Some(task) = self.task.take() {

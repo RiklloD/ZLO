@@ -50,7 +50,7 @@ one).
   for the historical leak lives in `ironclaw_extension_support`
   (`coding/file.rs::tests::read_file_extraction_failure_summary_carries_no_parser_detail`).
 - **Bomb caps fail closed:** every ZIP-based format goes through
-  `bounded_read_zip_entry` — per-entry (50 MB) and cumulative (100 MB)
+  `bounded_read_zip_entry` (`src/ooxml.rs`) — per-entry (50 MB) and cumulative (100 MB)
   decompressed bounds, actual-bytes-read tracking because headers can lie.
 - Pure leaf: no async, no I/O — enforced by charter and by the layer matrix.
 

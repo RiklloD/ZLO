@@ -1,13 +1,12 @@
 [package]
 name = "ironclaw_assistant"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Product-facing workflow service for IronClaw Reborn (#3280)"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -25,20 +24,17 @@ test-support = [
 ]
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 base64 = { workspace = true }
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { workspace = true, default-features = true, features = ["serde"] }
 # Default zone for `t3_schedule` fixed_time schedules (already in the lock via chrono).
 iana-time-zone = "0.1"
-futures = "0.3"
+futures = { workspace = true }
 ironclaw_common = { path = "../../contracts/ironclaw_common", version = "0.4.1" }
 ironclaw_attachments = { path = "../../domains/ironclaw_attachments", version = "0.1.0" }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version = "0.1.0" }
 ironclaw_approvals = { path = "../../kernel/ironclaw_approvals", version = "0.1.0" }
 ironclaw_authorization = { path = "../../kernel/ironclaw_authorization", version = "0.1.0" }
-# The approval-gated `supermemory.write` tool persists its replay payload
-# through the capability replay store, as the other gated synthetic tools do.
-ironclaw_capabilities = { path = "../../kernel/ironclaw_capabilities", version = "0.1.0" }
 ironclaw_auth = { path = "../../domains/ironclaw_auth", version = "0.1.0" }
 ironclaw_event_projections = { path = "../../events/ironclaw_event_projections", version = "0.1.0" }
 ironclaw_event_streams = { path = "../../events/ironclaw_event_streams", version = "0.1.0" }
@@ -71,18 +67,18 @@ ironclaw_skills = { path = "../../domains/ironclaw_skills", version = "0.3.0" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
 ironclaw_hooks = { path = "../../loop/ironclaw_hooks", version = "0.1.0" }
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", version = "0.1.0" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 # Hermes profile import reads `config.yaml` (stage 3 profiles).
 serde_yaml = "0.9"
-secrecy = { version = "0.10", features = ["serde"] }
-sha2 = "0.11"
-thiserror = "2"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "sync", "time"] }
-toml = "1.1"
-tracing = "0.1"
-url = "2"
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
+secrecy = { workspace = true, features = ["serde"] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "sync", "time"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v5", "serde"] }
 
 [target.'cfg(unix)'.dependencies]
 # Mention expansion (orchestration/mentions): no-follow `openat` walks from a
@@ -122,19 +118,23 @@ ironclaw_turn_runner = { path = "../../loop/ironclaw_turn_runner", features = ["
 ironclaw_trust = { path = "../../kernel/ironclaw_trust" }
 ironclaw_assistant = { path = ".", features = ["test-support"] }
 ironclaw_threads = { path = "../../domains/ironclaw_threads", version = "0.1.0", features = ["test-support"] }
-ironclaw_telegram_extension = { path = "../../extensions/packages/telegram" }
-tempfile = "3"
+tempfile = { workspace = true }
 # The inbox caller test opens the orchestrator engine over a real libSQL file.
 ironclaw_libsql_runtime = { path = "../../substrates/ironclaw_libsql_runtime" }
-tokio = { version = "1", features = ["macros", "rt", "sync", "test-util", "time"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
+tokio-util = { workspace = true, features = ["rt"] }
 # Durable-ledger contract tests drive the libSQL/Postgres RootFilesystem
 # backends directly; the Postgres leg builds its own pool. libSQL leg runs
 # embedded; Postgres leg needs a DB URL.
-deadpool-postgres = "0.14"
-tokio-postgres = "0.7"
+deadpool-postgres = { workspace = true }
+tokio-postgres = { workspace = true }
 libsql = { workspace = true, features = ["remote", "tls"] }
 # Captures per-test tracing output so the command-palette parse/rejection
 # debug! logging (item 5 of the PR-2 review fix wave) can be asserted on
 # through the caller, not just trusted by inspection.
-tracing-test = { version = "0.2", features = ["no-env-filter"] }
+tracing-test = { workspace = true, features = ["no-env-filter"] }
+
+# Deliberately opts out of `[workspace.lints]` due to rustc `unreachable_pub`
+# false positives on re-exports through private modules (see root Cargo.toml).
+# `clippy::let_underscore_must_use` is denied via crate-root attributes instead.
+[lints]

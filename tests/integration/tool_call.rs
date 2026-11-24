@@ -2,12 +2,7 @@
 //! scripted `builtin.http` call → real `RuntimeHttpEgress` → recording egress
 //! (Tier-2) → finalized reply. Same scripted `TraceLlm` seam as other harness tests.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_auth::{
     GOOGLE_GMAIL_MODIFY_SCOPE, GOOGLE_GMAIL_READONLY_SCOPE, GOOGLE_GMAIL_SEND_SCOPE,

@@ -142,7 +142,7 @@ python scripts/telegram_smoke/run_smoke.py --list-cases
    #6375):
    ```bash
    cargo test -p ironclaw_telegram_extension
-   cargo test --test reborn_integration_extension_delivery --test reborn_integration_channel_connection_projection
+   cargo test --test reborn_integration_suite_extensions -- extension_delivery:: channel_connection_projection::
    ```
 2. Start the release-candidate IronClaw build.
 3. Run the real Telegram smoke script.

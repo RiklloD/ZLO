@@ -93,7 +93,7 @@ const REBORN_FIRST_PARTY_E2E_COVERED_CAPABILITIES: &[&str] = &[
     TRACE_COMMONS_PROFILE_SET_CAPABILITY_ID,
     TRACE_COMMONS_ACCOUNT_LOGIN_LINK_CAPABILITY_ID,
     // The explicit model-initiated delivery tool. Its e2e coverage is the
-    // delivery user journeys in `reborn_integration_delivery_user_journeys`
+    // delivery user journeys in `reborn_integration_suite_extensions::delivery_user_journeys`
     // (`webui_send_me_on_slack_delivers_via_bot_with_evidence` and siblings),
     // which drive it through the real composition-wired
     // `ExtensionHostModelChannelDelivery` → `DeliveryCoordinator` → channel
@@ -107,7 +107,7 @@ const REBORN_FIRST_PARTY_E2E_COVERED_CAPABILITIES: &[&str] = &[
     // production_reply_attachment_capability_registers_durable_run_intent`.
     ATTACH_WORKSPACE_FILE_TO_REPLY_CAPABILITY_ID,
     // #6898 item 3. Both are driven end-to-end by
-    // `reborn_integration_document_edit`: the redline journey reads a .docx
+    // `reborn_integration_suite_tools::document_edit`: the redline journey reads a .docx
     // structurally and resolves its tracked changes into a new document, the
     // spreadsheet journey sets a formula under a named column, the deck journey
     // clones a slide with its layout, and the PDF journey authors HTML and

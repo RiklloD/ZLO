@@ -128,56 +128,9 @@ pub(crate) const MIN_CRATE_DIRECTORIES: usize = 20;
 const CRATES_ROOT: &str = "crates";
 const WORKSPACE_TABLE_HEADER: &str = "[workspace]";
 
-/// Every crate directory under `crates/`, repo-relative, POSIX-separated,
-/// sorted. Errors carry the reason so the caller can panic with it.
-#[allow(dead_code)]
-pub(crate) fn try_crate_directories(root: &Path) -> Result<Vec<String>, String> {
-    let crates_root = root.join(CRATES_ROOT);
-    if !crates_root.is_dir() {
-        return Err(format!(
-            "no {CRATES_ROOT}/ directory under {} — crate discovery cannot run. Every \
-             path-keyed gate resolves its scope through this inventory; refusing rather \
-             than scanning nothing is deliberate \
-             (docs/internal/reborn/target-architecture/CHECKLIST.md WS10).",
-            root.display()
-        ));
-    }
-
-    let mut manifests = Vec::new();
-    collect_crate_manifest_dirs(root, &crates_root, &mut manifests)?;
-    // Shallowest first so the outermost owner of a path is always seen before
-    // any manifest nested inside it.
-    manifests.sort_by(|left, right| {
-        (left.matches('/').count(), left.as_str())
-            .cmp(&(right.matches('/').count(), right.as_str()))
-    });
-
-    let mut directories: Vec<String> = Vec::new();
-    for candidate in manifests {
-        if directories
-            .iter()
-            .any(|kept| candidate == *kept || candidate.starts_with(&format!("{kept}/")))
-        {
-            continue;
-        }
-        directories.push(candidate);
-    }
-
-    if directories.len() < MIN_CRATE_DIRECTORIES {
-        return Err(format!(
-            "crate discovery found only {} crate director(ies) under {} (floor is {}). \
-             Either the crate tree moved out from under this gate or the workspace root is \
-             wrong. Failing closed: a gate that scans nothing must never report success \
-             (docs/internal/reborn/target-architecture/CHECKLIST.md WS10).",
-            directories.len(),
-            crates_root.display(),
-            MIN_CRATE_DIRECTORIES
-        ));
-    }
-
-    directories.sort();
-    Ok(directories)
-}
+mod inventory_cache;
+#[allow(unused_imports)]
+pub(crate) use inventory_cache::try_crate_directories;
 
 /// `try_crate_directories`, panicking on refusal.
 #[allow(dead_code)]

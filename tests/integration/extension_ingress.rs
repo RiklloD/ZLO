@@ -17,12 +17,7 @@
 //! (challenge response), ING-10 (signed vendor POST → turn admitted through
 //! the existing workflow), and the acme half of ING-12.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use std::sync::{Arc, Mutex};
 
@@ -66,7 +61,7 @@ fn acme_signature(timestamp: &str, body: &str) -> String {
     use std::fmt::Write as _;
     let mut hex = String::new();
     for byte in digest {
-        let _ = write!(&mut hex, "{byte:02x}");
+        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
     }
     format!("v0={hex}")
 }

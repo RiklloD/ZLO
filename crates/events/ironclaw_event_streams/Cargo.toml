@@ -1,8 +1,10 @@
 [package]
 name = "ironclaw_event_streams"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Transport-neutral Reborn projection stream manager"
 publish = false
 
@@ -10,20 +12,20 @@ publish = false
 layer = "substrates"
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 ironclaw_event_projections = { path = "../ironclaw_event_projections" }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 ironclaw_outbound = { path = "../../domains/ironclaw_outbound" }
-parking_lot = "0.12"
-serde = { version = "1", features = ["derive", "rc"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["macros", "sync", "rt"] }
+parking_lot = { workspace = true }
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "sync", "rt"] }
 
 [dev-dependencies]
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { workspace = true, features = ["clock"] }
 ironclaw_event_log = { path = "../ironclaw_event_log" }
-tokio = { version = "1", features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true

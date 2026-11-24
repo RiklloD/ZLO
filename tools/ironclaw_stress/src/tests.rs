@@ -1,12 +1,12 @@
 use super::*;
 use crate::db_probe::{begin_measurement, finish_measurement};
-use crate::redaction::redact_postgres_url;
 use ironclaw_stress::db_probe::{
     self as db_probe, DbProbeConfig, DbProbeDelta, DbProbeSnapshot, StatsScope,
     aggregate_statement_calls, begin as begin_db_probe, capture as capture_db_probe,
     finish as finish_db_probe, pg_stat_statements_unavailable, sanitize_postgres_error,
     summarize_measurement, try_capture_libsql,
 };
+use ironclaw_stress::redaction::redact_postgres_url;
 
 #[test]
 fn redacts_postgres_uri_credentials_but_keeps_host() {
@@ -1837,8 +1837,8 @@ fn bottleneck_report_includes_thread_list_stage_latency() {
 #[test]
 fn bottleneck_report_surfaces_missing_trace_file() {
     let mut args = test_args();
-    args.trace_jsonl = Some(PathBuf::from("/tmp/ironclaw-missing-trace-test.jsonl"));
-    let _ = std::fs::remove_file(args.trace_jsonl.as_ref().expect("trace path"));
+    let trace_dir = tempfile::tempdir().expect("trace tempdir");
+    args.trace_jsonl = Some(trace_dir.path().join("ironclaw-missing-trace-test.jsonl"));
     let captured = capture::CapturedRun::Single(Box::new(run_summary_with_bottlenecks()));
 
     let rendered = analysis::render_bottleneck_report(&args, "run", &captured);
@@ -1889,7 +1889,7 @@ fn comparison_report_flags_single_run_regressions() {
     assert!(rendered.contains("failure-rate regression"));
     assert!(rendered.contains("CPU regression"));
     assert!(rendered.contains("RSS regression"));
-    let _ = std::fs::remove_file(baseline_path);
+    std::fs::remove_file(baseline_path).expect("remove baseline");
 }
 
 #[test]
@@ -1958,7 +1958,7 @@ fn comparison_report_accepts_jsonl_suite() {
     assert!(rendered.contains("c2"));
     assert!(rendered.contains("c1 throughput regression"));
     assert!(rendered.contains("c1 p95 regression"));
-    let _ = std::fs::remove_file(baseline_path);
+    std::fs::remove_file(baseline_path).expect("remove baseline");
 }
 
 #[test]
@@ -1994,7 +1994,7 @@ fn comparison_report_compares_single_runs_with_different_labels() {
     assert!(rendered.contains("throughput regression"));
     assert!(!rendered.contains("missing_in_baseline"));
     assert!(!rendered.contains("missing_in_current"));
-    let _ = std::fs::remove_file(baseline_path);
+    std::fs::remove_file(baseline_path).expect("remove baseline");
 }
 
 fn run_summary_with_bottlenecks() -> RunSummary {

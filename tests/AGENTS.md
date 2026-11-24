@@ -13,8 +13,8 @@ name) that proves it. It answers two questions:
 document in the SAME commit.**
 
 - New `tests/integration/group_*/scenario_*.rs` → add a row to §3.
-- New `tests/integration/<name>.rs` bin → add a row to §4.
-- New `tests/integration/auth/<name>.rs` bin → add a row to §4.
+- New `tests/integration/<name>.rs` scenario file → add a row to §4.
+- New `tests/integration/auth/<name>.rs` scenario file → add a row to §4.
 - New `tests/*.rs` bin → add a row to §5.
 - New `tests/e2e/scenarios/test_*.py` → add a row to §6.
 - Closing a gap listed in §7 → delete that gap row and add the coverage row.
@@ -32,8 +32,11 @@ them in the same commit; re-derive any of them with:
   1 -type d -name 'group_*' | wc -l`. Scenarios inside one named group (e.g.
   `group_approvals`): `find tests/integration/group_approvals -maxdepth 1 -name
   'scenario_*.rs' | wc -l`.
-- Flat integration bins: `ls tests/integration/*.rs tests/integration/auth/*.rs
-  | wc -l`.
+- Flat integration files: `ls tests/integration/*.rs tests/integration/auth/*.rs
+  | wc -l`. They build as suite binaries plus a few standalone targets —
+  re-derive with `rg -n '#\[path' tests/integration/suite_*/main.rs` and the
+  root `Cargo.toml` `[[test]]` list (see `tests/integration/AGENTS.md`
+  §"Suite binaries").
 - Top-level Rust bins: `ls tests/*.rs | wc -l`.
 - E2E files: `ls tests/e2e/scenarios/test_*.py | wc -l`.
 - E2E test *functions* (the §2 "889" figure — every `test_*` function or
@@ -100,8 +103,10 @@ assertions) and `tests/e2e/AGENTS.md` (pytest fixtures, Playwright, mock LLM).
 | Providers (Google/Slack/GitHub contracts) | — | — | ✓ | ✓ |
 | Coverage/meta gates | — | 2 | ✓ | ✓ |
 
-Totals: **65** group scenarios · **69** flat integration bins (62 in
-`tests/integration/`, 7 in `tests/integration/auth/`) · **39** top-level Rust bins ·
+Totals: **65** group scenarios · **70** flat integration files (63 in
+`tests/integration/`, 7 in `tests/integration/auth/` including the shared
+`auth/common.rs`; built as 4 suite
+binaries plus 5 standalone targets) · **39** top-level Rust bins ·
 **103** Python scenario files (**889** test functions) registered in the active
 Reborn coverage map below. Section 6 separately inventories retained and legacy
 Python scenarios, so its exhaustive totals are intentionally broader.
@@ -225,7 +230,7 @@ ones speak MTProto over a raw socket with no injectable seam.
 
 ---
 
-## 4. Flat integration bins — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (69)
+## 4. Flat integration files — `tests/integration/*.rs` and `tests/integration/auth/*.rs` (70)
 
 One thread, whole real turn. Grouped by what the user experiences.
 
@@ -364,7 +369,7 @@ One thread, whole real turn. Grouped by what the user experiences.
 | A canonical 10-tool-call agent turn's database write volume is measured and reported (for tracking, not gated) on both libSQL and Postgres, and custom-actor group threads are rejected from canonical durable milestones | `db_write_canonical.rs` |
 | A downloaded run artifact carries per-iteration model-call timing evidence for a completed run, and still carries durable per-message timestamps (with an explicit `run_not_resident` reason) when the process-local timing buffer was evicted or the process restarted | `run_artifact_timings.rs` |
 
-One of the 69 registered bins, `delivery_user_journeys.rs`, holds the explicit
+One of the 70 flat files, `delivery_user_journeys.rs`, holds the explicit
 channel-delivery journeys (two-lane model):
 
 | A user can… | Scenario |
@@ -618,5 +623,7 @@ test exists:
 
 1. If you added a new scenario rather than extending an existing one, the row
    you write below must explain why an existing scenario couldn't absorb it.
-2. Register the binary if it's a new Rust bin (`[[test]]` in the workspace `Cargo.toml`).
+2. Register a new flat scenario file by mounting it in its domain suite's
+   `tests/integration/suite_*/main.rs` (`#[path = "../<name>.rs"] mod <name>;`);
+   a new group or top-level Rust bin gets a `[[test]]` in the workspace `Cargo.toml`.
 3. **Add the row here.** See the maintenance rule at the top.

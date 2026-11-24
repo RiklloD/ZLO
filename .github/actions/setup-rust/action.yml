@@ -27,7 +27,7 @@ inputs:
       Pass an explicit value (e.g. nightly-2025-11-01) for a lane that
       intentionally does not track the pinned stable toolchain.
     required: false
-    default: "1.98.0"
+    default: "1.100.0"
   components:
     description: Comma-separated rustup components, passed through.
     required: false

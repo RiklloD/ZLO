@@ -12,12 +12,7 @@
 //! expensive to review); add a scenario only when an existing one can't
 //! absorb it — see root `CLAUDE.md` Testing Discipline.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::builder::RebornIntegrationHarness;
 use reborn_support::comm_context::RecordingCommunicationContextProvider;
@@ -27,7 +22,7 @@ use serde_json::json;
 
 const HTTP_TOOL_URL: &str = "https://api.example.test/v1/items";
 /// A vision-capable model id per `ironclaw_llm::vision_models::VISION_PATTERNS`
-/// (mirrors `tests/reborn_integration_attach.rs`).
+/// (mirrors `tests/attach.rs`).
 const VISION_MODEL: &str = "claude-3-5-sonnet-20241022";
 const PNG_MIME: &str = "image/png";
 const PNG_BYTES: &[u8] = &[0x89, b'P', b'N', b'G', 1, 2, 3, 4];
@@ -180,7 +175,7 @@ async fn golden_parallel_tool_calls() {
 /// `submit_inbound_with_attachments` entry point, routed through a
 /// vision-pattern model id. Pins byte-for-byte how `ContentPart::ImageUrl`
 /// renders alongside the text part — complements
-/// `tests/reborn_integration_attach.rs`'s substring check by catching drift in
+/// `tests/attach.rs`'s substring check by catching drift in
 /// part ordering/shape a substring check can't see.
 #[tokio::test]
 async fn golden_image_attachment_turn() {

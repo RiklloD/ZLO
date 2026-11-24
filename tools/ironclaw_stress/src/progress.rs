@@ -128,6 +128,10 @@ pub(crate) fn spawn_progress_reporter(
 
 pub(crate) fn stop_progress_reporter(progress_reporter: Option<ProgressReporter>) {
     if let Some(progress_reporter) = progress_reporter {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the reporter thread may already have exited; its join below reports a panic"
+        )]
         let _ = progress_reporter.stop_sender.send(());
         if let Err(payload) = progress_reporter.handle.join() {
             eprintln!(

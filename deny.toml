@@ -17,6 +17,34 @@ ignore = [
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
     "RUSTSEC-2026-0104",
+    # RUSTSEC-2026-0382: rustls-webpki 0.102.8 may accept paths through the
+    # distrusted emSign intermediates. Patched only in 0.103.16+, which rustls
+    # 0.22 cannot use — same libsql pin as above. (The 0.103 line ZLO links
+    # directly is on 0.103.17, which carries the fix.)
+    "RUSTSEC-2026-0382",
+    # rustls 0.22.4 advisories — same libsql 0.9 → hyper-rustls 0.25 pin; rustls
+    # has no patched 0.22.x release.
+    # RUSTSEC-2026-0346: derived `Debug` on client session values prints TLS
+    # secrets. Only custom `ClientSessionStore` implementations that format
+    # session values with `Debug` are affected; ZLO implements no
+    # `ClientSessionStore` and libsql uses the built-in (redacted) cache.
+    "RUSTSEC-2026-0346",
+    # RUSTSEC-2026-0349: an unauthenticated ServerHello can pin later handshakes
+    # to classical key exchange. The impact is loss of post-quantum
+    # confidentiality; rustls 0.22 never offers the X25519MLKEM768 hybrid group,
+    # so its libsql connections are classical-only regardless.
+    "RUSTSEC-2026-0349",
+    # url 2.5.8 stack overflow in `Url::origin()` on nested `blob:` URLs. The fix
+    # (2.5.9) was published 2026-11-20 and is still inside the 7-day supply-chain
+    # cooldown (`.cargo/config.toml`); no workspace code calls `Url::origin()`.
+    # Remove this entry with `cargo update -p url` once it clears (2026-11-27).
+    "RUSTSEC-2026-0592",
+    # chrono / chrono-tz declared unmaintained (informational, no vulnerability,
+    # "no safe upgrade"). chrono is the timestamp type across ~50 crates and the
+    # persisted record formats; migrating to jiff/time is a tracked follow-up,
+    # not a dependency bump.
+    "RUSTSEC-2026-0543",
+    "RUSTSEC-2026-0555",
     # h2 unbounded empty DATA frames — h2 0.4 is patched in Cargo.lock, but
     # libsql's `remote` feature enables hyper 0.14 with `http2`, which pins
     # h2 0.3.27 (tonic, the other 0.3 consumer, left with the unused
@@ -57,19 +85,113 @@ allow = [
 unused-allowed-license = "allow"
 
 [bans]
-multiple-versions = "warn"
+# A new duplicate crate version fails the check. The skip list below names the
+# exact older versions that are unavoidable today (every entry is a transitive
+# pin, not a workspace version drift — those are centralized in the root
+# `[workspace.dependencies]`). Pinning `name@version` rather than a bare name
+# means a third version of any of these crates still fails loudly. When an
+# upgrade removes a duplicate, delete its entry (cargo-deny warns on unused
+# skips).
+multiple-versions = "deny"
 wildcards = "deny"
-# monty (Pydantic's embedded Python) is git-only (not on crates.io),
-# so it inherently lacks a version constraint. Allow path-dep wildcards.
+# Workspace members reference each other by `path` without a version; allow
+# those wildcards (registry dependencies still need a version requirement).
 allow-wildcard-paths = true
+skip = [
+    # libSQL 0.9's legacy transport (`remote` + `tls`): hyper 0.14 / http 0.2 / h2 0.3 /
+    # hyper-rustls 0.25 → rustls 0.22, plus its own base64 / tower / thiserror /
+    # zerocopy / phf lines. Every published libsql through 0.10.0 keeps this
+    # stack (see the advisory notes above); drop these with the libsql upgrade.
+    "base64@0.21.7",
+    "core-foundation@0.9.4",
+    "h2@0.3.27",
+    "http-body@0.4.6",
+    "hyper-rustls@0.25.0",
+    "hyper@0.14.32",
+    "itertools@0.12.1",
+    "openssl-probe@0.1.6",
+    "phf_codegen@0.11.3",
+    "rustls-native-certs@0.7.3",
+    "rustls-webpki@0.102.8",
+    "rustls@0.22.4",
+    "security-framework@2.11.1",
+    "socket2@0.5.10",
+    "thiserror-impl@1.0.69",
+    "thiserror@1.0.69",
+    "tokio-rustls@0.25.0",
+    "tower@0.4.13",
+    "webpki-roots@0.26.11",
+    "zerocopy-derive@0.7.35",
+    "zerocopy@0.7.35",
+    # RustCrypto 0.10 → 0.11 (digest/cipher) transition: ed25519-dalek, rsa, the
+    # wasmtime/cranelift cache, lopdf (pdf-extract), aws-config, and axum/tungstenite
+    # (sha1) are still on the previous generation.
+    "aes@0.8.4",
+    "block-buffer@0.10.4",
+    "block-padding@0.3.3",
+    "cbc@0.1.2",
+    "cipher@0.4.4",
+    "const-oid@0.9.6",
+    "cpufeatures@0.2.17",
+    "crypto-common@0.1.7",
+    "digest@0.10.7",
+    "ecb@0.1.2",
+    "inout@0.1.4",
+    "md-5@0.10.6",
+    "sha1@0.10.7",
+    "sha2@0.10.9",
+    # rand / getrandom generations: rand 0.8 (rust_decimal, nanoid, num-bigint-dig,
+    # phf_generator, tungstenite 0.23), rand 0.9 (rust_decimal, tungstenite 0.29),
+    # rand_core 0.6 (ed25519-dalek / rsa `OsRng`, which ironclaw_trace_commons and
+    # ironclaw_webui name directly for signing keys), getrandom 0.2/0.3 (ring,
+    # jsonwebtoken, ahash, jsonschema).
+    "getrandom@0.2.17",
+    "getrandom@0.3.4",
+    "r-efi@5.3.0",
+    "rand@0.8.7",
+    "rand@0.9.5",
+    "rand_chacha@0.3.1",
+    "rand_core@0.6.4",
+    "rand_core@0.9.5",
+    "wasi@0.11.1+wasi-snapshot-preview1",
+    # AWS SDK (Bedrock) still on http 0.2 alongside http 1.
+    "http@0.2.12",
+    # Other transitive lines with no single-version resolution today.
+    "base64@0.22.1",
+    "constant_time_eq@0.4.2",
+    "fallible-iterator@0.2.0",
+    "hashbrown@0.14.5",
+    "hashbrown@0.16.1",
+    "heck@0.4.1",
+    "io-lifetimes@2.0.4",
+    "linux-raw-sys@0.4.15",
+    "lopdf@0.42.0",
+    "nix@0.31.3",
+    "nom@7.1.3",
+    "pem@3.0.6",
+    "phf@0.11.3",
+    "phf@0.12.1",
+    "phf_generator@0.11.3",
+    "phf_macros@0.11.3",
+    "phf_shared@0.11.3",
+    "phf_shared@0.12.1",
+    "redox_users@0.4.6",
+    "rustc-hash@1.1.0",
+    "rustix@0.38.44",
+    "shlex@1.3.0",
+    "syn@2.0.119",
+    "tower-http@0.6.11",
+    "untrusted@0.7.1",
+    "weezl@0.1.12",
+    "windows-sys@0.52.0",
+    "windows-sys@0.59.0",
+    "winnow@0.7.15",
+]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = [
-    # Monty (Pydantic's embedded Python interpreter) — not yet on crates.io.
-    # Pulls in ruff_* crates from samuelcolvin/ruff at a pinned revision.
-    "https://github.com/pydantic/monty.git",
-    "https://github.com/samuelcolvin/ruff.git",
-]
+# No git dependencies remain in Cargo.lock (Monty and its ruff_* crates were
+# removed); add an entry here only together with a git dependency.
+allow-git = []
