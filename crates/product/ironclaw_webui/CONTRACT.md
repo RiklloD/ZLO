@@ -145,7 +145,7 @@ Invariants:
   `webui_v2/descriptors.rs` table.
 
 Tests: `tests/integration/environment_access.rs`
-(`cargo test -p ironclaw_integration_tests --test reborn_integration_environment_access`)
+(`cargo test -p ironclaw_integration_tests --test reborn_integration_suite_platform environment_access::`)
 drives the composed `webui_v2_app` over the real identity store; the store's
 own contract is `ironclaw_identity`'s `environment_access::tests`.
 

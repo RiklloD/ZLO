@@ -2,12 +2,7 @@
 //! `FilesystemIdempotencyLedger` (crate-tier idempotency tests use an in-memory fake) —
 //! proves a second read-modify-write cycle short-circuits to `Duplicate`, not a fresh turn/run.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_extension_contracts::channel_adapter::ProductTriggerReason;
 use ironclaw_product_contracts::inbound::ProductInboundAck;

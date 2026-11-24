@@ -1,11 +1,6 @@
 //! Whole-turn coverage for checkpointed pre-termination warning recovery.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use std::num::NonZeroU32;
 

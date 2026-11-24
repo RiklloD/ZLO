@@ -69,10 +69,10 @@ async fn triggers_group_e2e() {
 
     // Triggered-turn coverage map (E-TRIGGERED-SUBMIT via `submit_triggered_turn`)
     // — do NOT duplicate any of this here:
-    //   - origin propagation: `tests/reborn_integration_triggered_submit.rs`
+    //   - origin propagation: `tests/triggered_submit.rs`
     //   - gate raise/approve/deny/resume: `triggered_gate_group` below
     //   - one-shot fire -> Completed: `trigger_poller_e2e.rs` + `repository_contract.rs`
-    //   - reply persists in trigger's own thread: `reborn_integration_triggered_submit.rs`
+    //   - reply persists in trigger's own thread: `triggered_submit.rs`
     //   - push leg (trigger -> channel outbound delivery):
     //     `trigger_poller_e2e.rs::scheduled_trigger_results_reach_exact_slack_targets_once_across_restart`
     //     joins the production poller/run graph to the generic post-submit

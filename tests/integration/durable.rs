@@ -6,12 +6,7 @@
 //! to disk, not just to in-memory state. Parallels
 //! `assert_reply_persists_after_reopen` for capability state.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::group::RebornIntegrationGroup;
 use reborn_support::reply::RebornScriptedReply;

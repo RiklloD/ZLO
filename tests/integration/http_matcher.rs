@@ -10,12 +10,7 @@
 //! slices 1–2 (scripted `TraceLlm` beneath the real decorator chain); no
 //! network, no services, no keys, no Docker, no `integration` feature.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_threads::MessageKind;
 use reborn_support::assertions::ToolErrorClass;

@@ -143,7 +143,7 @@ Important boundaries:
 Primary regression coverage:
 
 - `tests/integration/mcp.rs::mcp_mixed_content_is_normalized_before_durable_result_storage`
-- `RUST_MIN_STACK=8388608 cargo test -p ironclaw_integration_tests --test reborn_integration_mcp mcp_mixed_content_is_normalized_before_durable_result_storage -- --exact`
+- `RUST_MIN_STACK=8388608 cargo test -p ironclaw_integration_tests --test reborn_integration_suite_tools mcp::mcp_mixed_content_is_normalized_before_durable_result_storage -- --exact`
 
 ---
 

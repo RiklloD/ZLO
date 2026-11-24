@@ -13,12 +13,7 @@
 //! scenario lives in `steering.rs` now that a busy submit queues as steering
 //! input instead of rejecting.)
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use std::time::Duration;
 

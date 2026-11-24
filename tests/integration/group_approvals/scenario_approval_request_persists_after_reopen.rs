@@ -2,7 +2,7 @@
 //! the approval-request store at the SAME on-disk local-dev `storage_root` —
 //! proving approval state persists to disk, not just in memory. Parallels
 //! `assert_reply_persists_after_reopen` (thread history) and
-//! `reborn_integration_durable.rs` (extension installs).
+//! `durable.rs` (extension installs).
 //!
 //! Raises a real `BlockedApproval` gate, reopens a FRESH `ApprovalRequestStorePort`
 //! at the same root, and asserts the `Pending` record is there independent of

@@ -3,12 +3,7 @@
 //! These scenarios cross the production turn scheduler, canonical loop,
 //! provider gateway, checkpoint, compaction, and transcript seams.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_loop_contracts::LoopRecoveryClass;
 use ironclaw_threads::SessionThreadError;

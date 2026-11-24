@@ -14,7 +14,7 @@ Current replay assets include:
   + `scripts/ci/check-reborn-qa-fixtures.sh`) — the Reborn recorded-fixture
   gate that replaced the v1 `replay-gate.yml`;
 - `tests/snapshots/` (the `golden_payload__*.snap` insta snapshots checked by
-  `reborn_integration_golden_payload`).
+  `reborn_integration_suite_turns::golden_payload`).
 
 The existing replay model has two layers:
 

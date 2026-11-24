@@ -181,49 +181,49 @@ review_condition = "Remove when a resettable MTProto provider world can assert e
 [[integration_evidence]]
 capability = "github.handle_webhook"
 outcome_class = "success"
-target = "reborn_integration_tool_call"
+target = "reborn_integration_suite_tools"
 source = "tests/integration/tool_call.rs"
 test = "github_webhook_normalization_dispatches_through_bundled_wasm"
 
 [[integration_evidence]]
 capability = "nearai.web_search"
 outcome_class = "success"
-target = "reborn_integration_mcp"
+target = "reborn_integration_suite_tools"
 source = "tests/integration/mcp.rs"
 test = "nearai_web_search_dispatches_through_bundled_hosted_mcp"
 
 [[integration_evidence]]
 capability = "web-access.get_content"
 outcome_class = "success"
-target = "reborn_integration_web_access"
+target = "reborn_integration_suite_tools"
 source = "tests/integration/web_access.rs"
 test = "get_content_dispatches_through_scripted_exa_mcp"
 
 [[integration_evidence]]
 capability = "web-access.search"
 outcome_class = "success"
-target = "reborn_integration_web_access"
+target = "reborn_integration_suite_tools"
 source = "tests/integration/web_access.rs"
 test = "web_search_dispatches_through_scripted_exa_mcp"
 
 [[integration_evidence]]
 capability = "nearai.web_search"
 outcome_class = "empty"
-target = "reborn_integration_mcp"
+target = "reborn_integration_suite_tools"
 source = "tests/integration/mcp.rs"
 test = "nearai_web_search_empty_result_dispatches_through_bundled_hosted_mcp"
 
 [[integration_evidence]]
 capability = "web-access.get_content"
 outcome_class = "empty"
-target = "reborn_integration_web_access"
+target = "reborn_integration_suite_tools"
 source = "tests/integration/web_access.rs"
 test = "get_content_empty_result_dispatches_through_scripted_exa_mcp"
 
 [[integration_evidence]]
 capability = "web-access.search"
 outcome_class = "empty"
-target = "reborn_integration_web_access"
+target = "reborn_integration_suite_tools"
 source = "tests/integration/web_access.rs"
 test = "web_search_empty_result_dispatches_through_scripted_exa_mcp"
 

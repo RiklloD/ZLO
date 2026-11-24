@@ -9,12 +9,7 @@
 //! proves only that the accountant is live: on the turn's first model call it
 //! seeds the run owner's daily USD cap, observable via the in-memory governor.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::builder::RebornIntegrationHarness;
 use reborn_support::reply::RebornScriptedReply;

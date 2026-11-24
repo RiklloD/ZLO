@@ -1,7 +1,9 @@
 """Typed vocabulary shared by whole-path journey registries and runners."""
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import TypeAlias
 
 
@@ -90,6 +92,33 @@ class CargoEvidence:
     test: str
     target: str
     manifest: str | None = None
+
+
+_RUST_PATH_MOUNT = re.compile(
+    r'#\[\s*path\s*=\s*"(?P<path>[^"]+)"\s*\]\s*'
+    r"(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*;"
+)
+
+
+def cargo_target_sources(target_root: Path) -> set[Path]:
+    """Return the resolved source files a Cargo test target compiles as tests.
+
+    That is the target root itself plus every file the root mounts with a
+    `#[path = "..."] mod name;` declaration — how a suite binary
+    (`tests/integration/suite_*/main.rs`) gathers its member scenario files.
+    Line comments are ignored, so a commented-out mount is not evidence.
+    """
+
+    sources = {target_root.resolve()}
+    if not target_root.is_file():
+        return sources
+    code = "\n".join(
+        line.split("//", 1)[0]
+        for line in target_root.read_text(encoding="utf-8").splitlines()
+    )
+    for match in _RUST_PATH_MOUNT.finditer(code):
+        sources.add((target_root.parent / match["path"]).resolve())
+    return sources
 
 
 @dataclass(frozen=True)

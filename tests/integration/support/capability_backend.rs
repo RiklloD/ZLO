@@ -220,7 +220,7 @@ impl RebornCapabilityBackend {
                 // The real github WASM HTTP call flows through the **network**
                 // egress lane, not the runtime-egress lane the matcher above
                 // scripts (`try_with_host_http_egress` overwrites the runtime
-                // port — see `reborn_integration_secret_injection.rs`'s module
+                // port — see `secret_injection.rs`'s module
                 // doc), so a runtime-401-after-injection scenario scripts the
                 // status here instead. A no-op (empty vec) for existing callers.
                 for (status, body) in github_network_responses {

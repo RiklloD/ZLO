@@ -11,12 +11,7 @@
 //! project is actually present — mirrors the E-PROFILE write -> read-back
 //! pattern.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_assistant::{ProjectCaller, RebornListProjectsRequest};
 use reborn_support::assertions::ToolErrorClass;

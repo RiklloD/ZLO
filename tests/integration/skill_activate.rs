@@ -16,12 +16,7 @@
 //! (keyword) auto-activation stays OFF on the coordinator path (product
 //! decision, closed issue #5530).
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::assertions::ToolErrorClass;
 use reborn_support::group::RebornIntegrationGroup;

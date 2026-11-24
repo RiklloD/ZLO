@@ -12,12 +12,7 @@
 //!
 //! Security: the token is a synthetic test fixture, never a real credential.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::builder::RebornIntegrationHarness;
 use reborn_support::reply::RebornScriptedReply;

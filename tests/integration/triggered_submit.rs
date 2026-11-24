@@ -4,12 +4,7 @@
 //! C-TRIGGERED-ORIGIN. Scheduled delivery/push routing is covered by
 //! `trigger_poller_e2e.rs::scheduled_trigger_results_reach_exact_slack_targets_once_across_restart`.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use reborn_support::builder::RebornIntegrationHarness;
 use reborn_support::reply::RebornScriptedReply;

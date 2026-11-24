@@ -122,7 +122,7 @@ activation fails recoverably and the model must report the ambiguity rather
 than guessing; source-qualified activation is deferred. The model-facing
 instruction is covered by
 `tests/integration/skill_activate.rs::skill_criteria_auto_activation_stays_off_on_coordinator_path`
-(`cargo test --test reborn_integration_skill_activate`).
+(`cargo test --test reborn_integration_suite_tools skill_activate::`).
 
 Implementations must not reuse a catalog/admin descriptor as a model selection
 descriptor, and must not reuse either descriptor as runtime skill context.

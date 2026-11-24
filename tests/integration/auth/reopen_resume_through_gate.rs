@@ -22,12 +22,7 @@
 //! store-level `approve_gate` path; real-dispatch gate resolution is owned by
 //! a parallel lane and is not duplicated here.
 
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_approvals::ApprovalStatus;
 use ironclaw_turns::TurnStatus;

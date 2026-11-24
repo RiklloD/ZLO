@@ -40,6 +40,7 @@ from journey_types import (
     ProviderWorld,
     PytestEvidence,
     SlackChannelFixture,
+    cargo_target_sources,
 )
 from provider_capability_inventory import EMULATE_SUPPORTED_TOOLS
 from provider_journey_google import require_single_google_account
@@ -663,9 +664,9 @@ def _assert_cargo_target(
         )
         target_path = target.get("path", f"tests/{evidence.target}.rs")
         expected_source = (manifest_path.parent / target_path).resolve()
-        assert expected_source == source_path.resolve(), (
+        assert source_path.resolve() in cargo_target_sources(expected_source), (
             f"{case_id}: Cargo target {evidence.target!r} points to "
-            f"{expected_source}, not {source_path}"
+            f"{expected_source}, which neither is nor mounts {source_path}"
         )
         return
 
@@ -1251,6 +1252,38 @@ def test_cargo_evidence_rejects_a_misdirected_target(tmp_path: Path):
             expected_source,
             root=tmp_path,
         )
+
+
+def test_cargo_evidence_accepts_a_suite_member_and_rejects_an_unmounted_file(
+    tmp_path: Path,
+):
+    """A suite target proves the member files its root mounts, and only those."""
+    (tmp_path / "tests/suite").mkdir(parents=True)
+    (tmp_path / "Cargo.toml").write_text(
+        '[[test]]\nname = "journey"\npath = "tests/suite/main.rs"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "tests/suite/main.rs").write_text(
+        '#[path = "../member.rs"]\nmod member;\n'
+        '// #[path = "../commented.rs"] mod commented;\n',
+        encoding="utf-8",
+    )
+    for name in ("member", "commented", "stray"):
+        (tmp_path / f"tests/{name}.rs").touch()
+    _assert_cargo_target(
+        "synthetic",
+        CargoEvidence(source="tests/member.rs", test="t", target="journey"),
+        tmp_path / "tests/member.rs",
+        root=tmp_path,
+    )
+    for name in ("commented", "stray"):
+        with pytest.raises(AssertionError, match="neither is nor mounts"):
+            _assert_cargo_target(
+                "synthetic",
+                CargoEvidence(source=f"tests/{name}.rs", test="t", target="journey"),
+                tmp_path / f"tests/{name}.rs",
+                root=tmp_path,
+            )
 
 
 @pytest.mark.parametrize(

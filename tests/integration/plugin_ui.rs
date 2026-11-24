@@ -10,12 +10,7 @@
 //! event, and reject trees that break the contract. A new bin because no
 //! other scenario wires a fixture first-party render handler.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use std::borrow::Cow;
 use std::sync::Arc;

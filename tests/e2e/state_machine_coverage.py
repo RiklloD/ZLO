@@ -349,7 +349,7 @@ STATE_MACHINE_COVERAGE_CASES = (
         evidence=_cargo(
             "tests/integration/lease_wedge.rs",
             "wedged_tool_call_is_reaped_by_lease_expiry_not_left_running_forever",
-            "reborn_integration_lease_wedge",
+            "reborn_integration_suite_tools",
         ),
     ),
     StateMachineCoverageCase(

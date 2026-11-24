@@ -24,12 +24,7 @@
 //! known, deliberately-excluded gap (the extension-lifecycle ids) that is
 //! visibility-blocked rather than papered over.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use std::collections::HashSet;
 

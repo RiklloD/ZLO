@@ -33,12 +33,7 @@
 //! (the #5647 seam) still keep the synthetic disclosure bridge when deferral is
 //! needed, while its catalog contents are filtered by that exact policy.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
 
 use ironclaw_host_api::capability_surface::CapabilitySurfacePolicy;
 use ironclaw_loop_contracts::BatchPolicyKind;

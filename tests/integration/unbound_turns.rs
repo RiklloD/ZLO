@@ -18,12 +18,8 @@
 //!   conversation UI reads — hidden by the prepared-context stamp, whether
 //!   the thread is ownerless or caller-owned.
 
-#[allow(dead_code)]
-#[path = "support/mod.rs"]
-mod reborn_support;
-#[allow(dead_code)]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::reborn_support;
+use crate::support;
 
 use std::sync::Arc;
 use std::time::Duration;

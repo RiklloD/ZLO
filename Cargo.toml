@@ -283,7 +283,7 @@ ironclaw_agent_loop = { path = "crates/loop/ironclaw_agent_loop", version = "0.1
 ironclaw_approvals = { path = "crates/kernel/ironclaw_approvals", version = "0.1.0", features = ["test-support"] }
 # Pull the auth crate's `test-support` feature in only for tests so the
 # `test_support::conformance` OAuth-flow suite (used by the
-# `reborn_integration_oauth_connect` test) doesn't ship in release binaries.
+# `reborn_integration_suite_extensions::oauth_connect` test) doesn't ship in release binaries.
 ironclaw_auth = { path = "crates/domains/ironclaw_auth", version = "0.1.0", features = ["test-support"] }
 # C-ATTACH: `InboundAttachment` for `submit_turn_with_image_attachment`.
 ironclaw_attachments = { path = "crates/domains/ironclaw_attachments", version = "0.1.0" }
@@ -332,7 +332,7 @@ ironclaw_loop_host = { path = "crates/loop/ironclaw_loop_host", features = ["tes
 # drives the bare router, not the `webui_v2_app` wrapper. The v2 route surface
 # merged into `ironclaw_webui` (as its public `webui_v2` module).
 ironclaw_webui = { path = "crates/product/ironclaw_webui", version = "0.1.0" }
-# `reborn_integration_operator_metrics` records a whole turn through the
+# `reborn_integration_suite_platform::operator_metrics` records a whole turn through the
 # operator-metrics decorators at their production positions.
 ironclaw_operator = { path = "crates/product/ironclaw_operator", version = "0.1.0" }
 # Direct dev-dep for the same reason as ironclaw_webui above: composition's
@@ -426,269 +426,34 @@ path = "tests/integration/generated_restart_sequences.rs"
 name = "reborn_group_journeys"
 path = "tests/integration/group_journeys/main.rs"
 
+# Flat-scenario suite binaries: each mounts a domain's single-thread
+# `tests/integration/<name>.rs` files as modules (one link per domain instead
+# of one per file). Membership is the `#[path]` list in each `main.rs`; the CI
+# inventory (`scripts/ci/lib/integration_test_inventory.py`) reads it to route
+# a changed member file to its suite's lane.
 [[test]]
-name = "reborn_integration_oauth_refresh"
-path = "tests/integration/auth/oauth_refresh.rs"
+name = "reborn_integration_suite_extensions"
+path = "tests/integration/suite_extensions/main.rs"
 
 [[test]]
-name = "reborn_integration_attach"
-path = "tests/integration/attach.rs"
+name = "reborn_integration_suite_platform"
+path = "tests/integration/suite_platform/main.rs"
 
 [[test]]
-name = "reborn_integration_document_edit"
-path = "tests/integration/document_edit.rs"
+name = "reborn_integration_suite_tools"
+path = "tests/integration/suite_tools/main.rs"
 
 [[test]]
-name = "reborn_integration_notification_inbox_user_isolation"
-path = "tests/integration/notification_inbox_user_isolation.rs"
+name = "reborn_integration_suite_turns"
+path = "tests/integration/suite_turns/main.rs"
 
 [[test]]
 name = "reborn_integration_sandbox_shell_turn"
 path = "tests/integration/reborn_sandbox_shell_turn.rs"
 
 [[test]]
-name = "reborn_integration_suggestions"
-path = "tests/integration/suggestions.rs"
-
-[[test]]
-name = "reborn_integration_unattended_surface"
-path = "tests/integration/unattended_surface.rs"
-
-[[test]]
-name = "reborn_integration_subagent_await_edge"
-path = "tests/integration/subagent_await_edge.rs"
-
-[[test]]
-name = "reborn_integration_unbound_turns"
-path = "tests/integration/unbound_turns.rs"
-
-[[test]]
-name = "reborn_integration_auth_failure"
-path = "tests/integration/auth/auth_failure.rs"
-
-[[test]]
-name = "reborn_integration_auth_gate"
-path = "tests/integration/auth/auth_gate.rs"
-
-[[test]]
-name = "reborn_integration_backend_matrix"
-path = "tests/integration/backend_matrix.rs"
-
-[[test]]
-name = "reborn_integration_budget"
-path = "tests/integration/budget.rs"
-
-[[test]]
-name = "reborn_integration_cancel"
-path = "tests/integration/cancel.rs"
-
-[[test]]
-name = "reborn_integration_steering"
-path = "tests/integration/steering.rs"
-
-[[test]]
-name = "reborn_integration_model_recovery"
-path = "tests/integration/model_recovery.rs"
-
-[[test]]
-name = "reborn_integration_terminal_warning"
-path = "tests/integration/terminal_warning.rs"
-
-[[test]]
-name = "reborn_integration_channel_connection_projection"
-path = "tests/integration/channel_connection_projection.rs"
-
-[[test]]
-name = "reborn_integration_comm_context"
-path = "tests/integration/comm_context.rs"
-
-[[test]]
-name = "reborn_integration_prompt_prefix_stability"
-path = "tests/integration/prompt_prefix_stability.rs"
-
-[[test]]
-name = "reborn_integration_durable"
-path = "tests/integration/durable.rs"
-
-[[test]]
-name = "reborn_integration_delivery_user_journeys"
-path = "tests/integration/delivery_user_journeys.rs"
-
-[[test]]
-name = "reborn_integration_extension_runtime"
-path = "tests/integration/extension_runtime.rs"
-
-[[test]]
-name = "reborn_integration_extension_ingress"
-path = "tests/integration/extension_ingress.rs"
-
-[[test]]
-name = "reborn_integration_environment_access"
-path = "tests/integration/environment_access.rs"
-
-[[test]]
-name = "reborn_integration_extension_delivery"
-path = "tests/integration/extension_delivery.rs"
-
-[[test]]
-name = "reborn_integration_extension_visibility"
-path = "tests/integration/extension_visibility.rs"
-
-[[test]]
-name = "reborn_integration_external_tool_gate_denied_resume"
-path = "tests/integration/external_tool_gate_denied_resume.rs"
-
-[[test]]
-name = "reborn_integration_extension_user_lifecycle_isolation"
-path = "tests/integration/extension_user_lifecycle_isolation.rs"
-
-[[test]]
-name = "reborn_integration_golden_payload"
-path = "tests/integration/golden_payload.rs"
-
-[[test]]
-name = "reborn_integration_greeting"
-path = "tests/integration/greeting.rs"
-
-[[test]]
-name = "reborn_integration_operator_metrics"
-path = "tests/integration/operator_metrics.rs"
-
-[[test]]
-name = "reborn_integration_hooks"
-path = "tests/integration/hooks.rs"
-
-[[test]]
-name = "reborn_integration_http_matcher"
-path = "tests/integration/http_matcher.rs"
-
-[[test]]
-name = "reborn_integration_idempotent_replay"
-path = "tests/integration/idempotent_replay.rs"
-
-[[test]]
-name = "reborn_integration_identity_resolution_smoke"
-path = "tests/integration/identity_resolution_smoke.rs"
-
-[[test]]
-name = "reborn_integration_lease_wedge"
-path = "tests/integration/lease_wedge.rs"
-
-[[test]]
-name = "reborn_integration_mcp"
-path = "tests/integration/mcp.rs"
-
-[[test]]
-name = "reborn_integration_hosted_mcp_registration"
-path = "tests/integration/hosted_mcp_registration.rs"
-
-[[test]]
-name = "reborn_integration_oauth_connect"
-path = "tests/integration/auth/oauth_connect.rs"
-
-[[test]]
-name = "reborn_integration_oauth_popup_journeys"
-path = "tests/integration/auth/oauth_popup_journeys.rs"
-
-[[test]]
-name = "reborn_integration_outbound_store_durability"
-path = "tests/integration/outbound_store_durability.rs"
-
-[[test]]
-name = "reborn_integration_outbound_target"
-path = "tests/integration/outbound_target.rs"
-
-[[test]]
-name = "reborn_integration_process_port"
-path = "tests/integration/process_port.rs"
-
-[[test]]
-name = "reborn_integration_profile"
-path = "tests/integration/profile.rs"
-
-[[test]]
-name = "reborn_integration_project_create"
-path = "tests/integration/project_create.rs"
-
-[[test]]
-name = "reborn_integration_real_egress_pipeline"
-path = "tests/integration/real_egress_pipeline.rs"
-
-[[test]]
-name = "reborn_integration_reopen_resume_through_gate"
-path = "tests/integration/auth/reopen_resume_through_gate.rs"
-
-[[test]]
-name = "reborn_integration_safety"
-path = "tests/integration/safety.rs"
-
-[[test]]
-name = "reborn_integration_secret_injection"
-path = "tests/integration/secret_injection.rs"
-
-[[test]]
-name = "reborn_integration_secrets"
-path = "tests/integration/secrets.rs"
-
-[[test]]
-name = "reborn_integration_skill_activate"
-path = "tests/integration/skill_activate.rs"
-
-[[test]]
-name = "reborn_integration_surface_disclosure"
-path = "tests/integration/surface_disclosure.rs"
-
-[[test]]
-name = "reborn_integration_tool_call"
-path = "tests/integration/tool_call.rs"
-
-[[test]]
-name = "reborn_integration_tool_disclosure"
-path = "tests/integration/tool_disclosure.rs"
-
-[[test]]
 name = "reborn_integration_trace_capture"
 path = "tests/integration/trace_capture.rs"
-
-[[test]]
-name = "reborn_integration_tracecap"
-path = "tests/integration/tracecap.rs"
-
-[[test]]
-name = "reborn_integration_triggered_submit"
-path = "tests/integration/triggered_submit.rs"
-
-[[test]]
-name = "reborn_integration_web_access"
-path = "tests/integration/web_access.rs"
-
-[[test]]
-name = "reborn_integration_config_reload"
-path = "tests/integration/config_reload.rs"
-
-[[test]]
-name = "reborn_integration_webui_v2_product_api"
-path = "tests/integration/webui_v2_product_api.rs"
-
-[[test]]
-name = "reborn_integration_plugin_ui"
-path = "tests/integration/plugin_ui.rs"
-
-[[test]]
-name = "reborn_integration_openai_compat_embeddings"
-path = "tests/integration/openai_compat_embeddings.rs"
-
-[[test]]
-name = "reborn_integration_webui_v2_router_smoke"
-path = "tests/integration/webui_v2_router_smoke.rs"
-
-[[test]]
-name = "reborn_integration_wiring_parity"
-path = "tests/integration/wiring_parity.rs"
-
-[[test]]
-name = "reborn_integration_run_artifact_timings"
-path = "tests/integration/run_artifact_timings.rs"
 
 [[test]]
 name = "reborn_integration_db_write_canonical"

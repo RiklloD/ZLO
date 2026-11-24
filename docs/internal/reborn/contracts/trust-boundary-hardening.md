@@ -192,7 +192,7 @@ asserts that the useful cause reaches the next model request while a credential
 token and text beyond the shared byte cap do not. Run:
 
 ```bash
-cargo test -p ironclaw_integration_tests --test reborn_integration_mcp mcp_tool_call_error_cause_is_scrubbed_and_bounded_in_next_model_request -- --exact
+cargo test -p ironclaw_integration_tests --test reborn_integration_suite_tools mcp::mcp_tool_call_error_cause_is_scrubbed_and_bounded_in_next_model_request -- --exact
 ```
 
 ---
