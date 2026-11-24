@@ -1,5 +1,4 @@
 use std::{
-    fmt::Write as FmtWrite,
     fs::File,
     io::{BufWriter, Write as IoWrite},
     time::Instant,
@@ -8,6 +7,7 @@ use std::{
 use serde::Serialize;
 use serde_json::json;
 
+use crate::report_text::ReportText;
 use crate::{Args, CliError, compare, run_once, sweep};
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -207,9 +207,8 @@ pub(crate) fn build_values(start: usize, max: usize, factor: usize) -> Vec<usize
 
 fn render_ramp_summary(axis: RampAxis, results: &[RampResult]) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "\nRamp summary");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nRamp summary"));
+    output.push_line(format_args!(
         "{:<14} {:>8} {:>9} {:>8} {:>10} {:>10} {:>10} {:>10} {:<12}",
         axis.as_str(),
         "attempts",
@@ -220,20 +219,18 @@ fn render_ramp_summary(axis: RampAxis, results: &[RampResult]) -> String {
         "cpu",
         "rss",
         "status"
-    );
-    let _ = writeln!(
-        output,
+    ));
+    output.push_line(format_args!(
         "{:-<14} {:->8} {:->9} {:->8} {:->10} {:->10} {:->10} {:->10} {:-<12}",
         "", "", "", "", "", "", "", "", ""
-    );
+    ));
     for result in results {
         let status = if result.threshold_error.is_some() {
             "threshold"
         } else {
             "ok"
         };
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<14} {:>8} {:>8.2}% {:>8.2} {:>10} {:>10} {:>10} {:>10} {:<12}",
             result.value,
             result.metrics.attempted,
@@ -244,18 +241,18 @@ fn render_ramp_summary(axis: RampAxis, results: &[RampResult]) -> String {
             format_optional_ms(result.metrics.cpu_ms),
             format_optional_kb(result.metrics.peak_rss_kb),
             status
-        );
+        ));
     }
     output
 }
 
 fn render_ramp_bottleneck_report(axis: RampAxis, results: &[RampResult]) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "\nRamp bottleneck analysis");
-    let _ = writeln!(output, "{:<22} evidence", "signal");
-    let _ = writeln!(output, "{:-<22} {:-<56}", "", "");
+    output.push_line(format_args!("\nRamp bottleneck analysis"));
+    output.push_line(format_args!("{:<22} evidence", "signal"));
+    output.push_line(format_args!("{:-<22} {:-<56}", "", ""));
     if results.is_empty() {
-        let _ = writeln!(output, "{:<22} no ramp points", "none");
+        output.push_line(format_args!("{:<22} no ramp points", "none"));
         return output;
     }
 
@@ -268,50 +265,46 @@ fn render_ramp_bottleneck_report(axis: RampAxis, results: &[RampResult]) -> Stri
         .find(|result| result.threshold_error.is_some());
     match (last_passing, first_failing) {
         (Some(last_passing), Some(first_failing)) => {
-            let _ = writeln!(
-                output,
+            output.push_line(format_args!(
                 "{:<22} last_passing_{}={} first_failing_{}={}",
                 "limit_found",
                 axis.as_str(),
                 last_passing.value,
                 axis.as_str(),
                 first_failing.value
-            );
+            ));
             if let Some(error) = &first_failing.threshold_error {
-                let _ = writeln!(output, "{:<22} {}", "threshold", error);
+                output.push_line(format_args!("{:<22} {}", "threshold", error));
             }
         }
         (None, Some(first_failing)) => {
-            let _ = writeln!(
-                output,
+            output.push_line(format_args!(
                 "{:<22} first point {}={} failed threshold",
                 "limit_below_start",
                 axis.as_str(),
                 first_failing.value
-            );
+            ));
         }
         (Some(last_passing), None) => {
-            let _ = writeln!(
-                output,
+            output.push_line(format_args!(
                 "{:<22} no threshold breach through {}={}",
                 "limit_not_found",
                 axis.as_str(),
                 last_passing.value
-            );
+            ));
         }
         (None, None) => {}
     }
 
     if let Some(result) = results.iter().max_by_key(|result| result.metrics.p95_us) {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {}={} p95={} p99={}",
             "worst_latency",
             axis.as_str(),
             result.value,
             format_latency_us(result.metrics.p95_us),
             format_latency_us(result.metrics.p99_us)
-        );
+        ));
     }
     if let Some(result) = results.iter().min_by(|left, right| {
         left.metrics
@@ -319,31 +312,23 @@ fn render_ramp_bottleneck_report(axis: RampAxis, results: &[RampResult]) -> Stri
             .partial_cmp(&right.metrics.throughput_ops_sec)
             .unwrap_or(std::cmp::Ordering::Equal)
     }) {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {}={} throughput={:.2} ops/sec",
             "lowest_throughput",
             axis.as_str(),
             result.value,
             result.metrics.throughput_ops_sec
-        );
+        ));
     }
 
-    let _ = writeln!(output, "\nNext probes");
+    output.push_line(format_args!("\nNext probes"));
     if first_failing.is_some() {
-        let _ = writeln!(
-            output,
-            "- Rerun the first failing point with --trace-jsonl and --bottleneck-report to inspect interval-level collapse."
-        );
-        let _ = writeln!(
-            output,
-            "- Rerun between the last passing and first failing values with a smaller starting point or lower --ramp-factor."
-        );
+        output.push_line(format_args!("- Rerun the first failing point with --trace-jsonl and --bottleneck-report to inspect interval-level collapse."));
+        output.push_line(format_args!("- Rerun between the last passing and first failing values with a smaller starting point or lower --ramp-factor."));
     } else {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "- Increase the ramp maximum or tighten thresholds; this run did not find the limit."
-        );
+        ));
     }
     output
 }

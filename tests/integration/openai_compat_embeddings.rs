@@ -444,6 +444,10 @@ impl StubEmbeddingServer {
                     "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
                     reply.len()
                 );
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "the client may hang up first; the test asserts on what the client received"
+                )]
                 let _ = socket.write_all(response.as_bytes()).await;
             }
         });

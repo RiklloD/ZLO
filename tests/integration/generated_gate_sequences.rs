@@ -176,12 +176,24 @@ async fn run_sequence(sequence: &[GateAction]) -> usize {
         // back to life, which `record` checks below.
         match action {
             GateAction::Approve => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "refusing an action that no longer applies is the contract under test; the run-state check below is the assertion"
+                )]
                 let _ = h.approve_gate(run_id, &gate_ref).await;
             }
             GateAction::Deny => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "refusing an action that no longer applies is the contract under test; the run-state check below is the assertion"
+                )]
                 let _ = h.deny_gate(run_id, &gate_ref).await;
             }
             GateAction::Cancel => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "refusing an action that no longer applies is the contract under test; the run-state check below is the assertion"
+                )]
                 let _ = h.cancel_run(run_id).await;
             }
         }
@@ -820,12 +832,24 @@ async fn generated_actions_on_one_actor_never_disturb_another() {
         // Act on A only.
         match action {
             GateAction::Approve => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "refusing an action that no longer applies is the contract under test; the run-state check below is the assertion"
+                )]
                 let _ = a.approve_gate(run_a, &gate_a).await;
             }
             GateAction::Deny => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "refusing an action that no longer applies is the contract under test; the run-state check below is the assertion"
+                )]
                 let _ = a.deny_gate(run_a, &gate_a).await;
             }
             GateAction::Cancel => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "refusing an action that no longer applies is the contract under test; the run-state check below is the assertion"
+                )]
                 let _ = a.cancel_run(run_a).await;
             }
         }
@@ -916,12 +940,24 @@ async fn concurrent_runs_resolve_independently() {
 
         match action {
             GateAction::Approve => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "refusing an action that no longer applies is the contract under test; the run-state check below is the assertion"
+                )]
                 let _ = first.approve_gate(run_one, &gate_one).await;
             }
             GateAction::Deny => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "refusing an action that no longer applies is the contract under test; the run-state check below is the assertion"
+                )]
                 let _ = first.deny_gate(run_one, &gate_one).await;
             }
             GateAction::Cancel => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "refusing an action that no longer applies is the contract under test; the run-state check below is the assertion"
+                )]
                 let _ = first.cancel_run(run_one).await;
             }
         }

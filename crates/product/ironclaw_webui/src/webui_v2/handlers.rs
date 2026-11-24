@@ -2797,7 +2797,7 @@ pub async fn install_extension(
     Json(body): Json<InstallExtensionBody>,
 ) -> Result<Json<RebornExtensionActionResponse>, WebUiV2HttpError> {
     let package_ref = extension_package_ref_for_request(
-        Ok::<LifecyclePackageRef, std::convert::Infallible>(body.package_ref),
+        Ok::<LifecyclePackageRef, !>(body.package_ref),
         "package_ref",
     )?;
     let client_action_id = parse_client_action_id(body.client_action_id)?;

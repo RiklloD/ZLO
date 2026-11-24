@@ -682,7 +682,7 @@ impl SubagentSpawnCapabilityPort {
 
     fn try_reserve_spawn_slot(&self) -> bool {
         self.spawned_this_turn
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if current < self.limits.max_spawn_per_turn {
                     current.checked_add(1)
                 } else {
@@ -702,7 +702,7 @@ impl SubagentSpawnCapabilityPort {
     fn release_spawn_slot(&self) {
         let previous =
             self.spawned_this_turn
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                     current.checked_sub(1)
                 });
         if previous.is_err() {

@@ -90,8 +90,10 @@ impl ProcessMetricsSampler {
 
     pub(crate) fn finish(mut self) -> ProcessMetrics {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+        if let Some(handle) = self.handle.take()
+            && handle.join().is_err()
+        {
+            eprintln!("process metrics sampler panicked; peaks may be incomplete");
         }
         let end = capture_snapshot();
         let peaks = match self.peaks.lock() {

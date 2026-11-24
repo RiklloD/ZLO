@@ -156,6 +156,10 @@ impl ParkingModelGate {
     /// Release the parked model call so it delegates to the inner trace.
     pub fn release(&self) {
         if let Some(tx) = lock(&self.0.release_tx).take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the parked call may already have been dropped (its run ended); nothing is left to release"
+            )]
             let _ = tx.send(());
         }
     }
@@ -170,6 +174,10 @@ impl ParkingModelGate {
             return;
         }
         if let Some(tx) = lock(&self.0.parked_tx).take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a test that never waits for the park drops the receiver; parking proceeds either way"
+            )]
             let _ = tx.send(());
         }
         let rx = lock(&self.0.release_rx).take();
@@ -300,7 +308,7 @@ fn scripted_primary_unavailable() -> LlmError {
 impl UnavailablePrimaryLlm {
     fn should_succeed(&self) -> bool {
         self.successful_calls_remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok()
@@ -969,7 +977,7 @@ impl RecoverableFailureLlm {
     fn consume_scheduled_failure(&self) -> bool {
         if self
             .successful_calls_remaining
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok()
@@ -977,7 +985,7 @@ impl RecoverableFailureLlm {
             return false;
         }
         self.failures_remaining
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok()

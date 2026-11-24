@@ -213,7 +213,7 @@ impl ProjectIdentitySource {
             IdentityApplicability::Always,
         );
         self.identities.write().await.insert(key.clone(), candidate);
-        let _ = self.identity_changed.send(());
+        self.identity_changed.send_replace(());
     }
 
     async fn seen_keys(&self) -> Vec<ProjectIdentityKey> {

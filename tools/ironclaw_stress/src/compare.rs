@@ -1,7 +1,8 @@
-use std::{collections::BTreeMap, fmt::Write, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use serde_json::{Value, json};
 
+use crate::report_text::ReportText;
 use crate::sweep::RunMetrics;
 
 pub(crate) fn render_comparison_report(
@@ -22,17 +23,15 @@ pub(crate) fn render_comparison_report(
     }
 
     let mut output = String::new();
-    let _ = writeln!(output, "\nComparison report");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nComparison report"));
+    output.push_line(format_args!(
         "{:<22} {:<14} {:>12} {:>12} {:>12}",
         "point", "metric", "baseline", "current", "delta"
-    );
-    let _ = writeln!(
-        output,
+    ));
+    output.push_line(format_args!(
         "{:-<22} {:-<14} {:->12} {:->12} {:->12}",
         "", "", "", "", ""
-    );
+    ));
 
     let mut missing_baseline = Vec::new();
     let mut missing_current = Vec::new();
@@ -48,26 +47,28 @@ pub(crate) fn render_comparison_report(
     }
 
     if !missing_baseline.is_empty() || !missing_current.is_empty() {
-        let _ = writeln!(output, "\nComparison gaps");
+        output.push_line(format_args!("\nComparison gaps"));
         if !missing_baseline.is_empty() {
-            let _ = writeln!(
-                output,
+            output.push_line(format_args!(
                 "missing_in_baseline {}",
                 missing_baseline.join(", ")
-            );
+            ));
         }
         if !missing_current.is_empty() {
-            let _ = writeln!(output, "missing_in_current {}", missing_current.join(", "));
+            output.push_line(format_args!(
+                "missing_in_current {}",
+                missing_current.join(", ")
+            ));
         }
     }
 
-    let _ = writeln!(output, "\nComparison signals");
+    output.push_line(format_args!("\nComparison signals"));
     let signals = comparison_signals(&baseline_runs, &current_runs);
     if signals.is_empty() {
-        let _ = writeln!(output, "- no threshold-level regression signal");
+        output.push_line(format_args!("- no threshold-level regression signal"));
     } else {
         for signal in signals {
-            let _ = writeln!(output, "- {signal}");
+            output.push_line(format_args!("- {signal}"));
         }
     }
     Ok(output)
@@ -305,15 +306,14 @@ fn push_row(
     current: String,
     delta: String,
 ) {
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!(
         "{:<22} {:<14} {:>12} {:>12} {:>12}",
         truncate(label, 22),
         metric,
         baseline,
         current,
         delta
-    );
+    ));
 }
 
 fn comparison_signals(

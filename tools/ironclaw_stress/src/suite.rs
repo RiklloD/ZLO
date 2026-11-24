@@ -1,5 +1,4 @@
 use std::{
-    fmt::Write as FmtWrite,
     fs::File,
     io::{BufWriter, Write as IoWrite},
     time::Instant,
@@ -8,6 +7,7 @@ use std::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::report_text::ReportText;
 use crate::{
     Args, CliError, ModelLatencyProfile, Scenario, StressPreset, StressSuite, compare, run_once,
     sweep,
@@ -421,9 +421,8 @@ fn top_operation_group(summary: &Value) -> Option<TopOperationGroup> {
 
 fn render_suite_summary(suite: StressSuite, results: &[SuiteResult]) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "\nSuite summary ({})", suite.as_str());
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nSuite summary ({})", suite.as_str()));
+    output.push_line(format_args!(
         "{:<24} {:<24} {:>9} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:<22} {:<22}",
         "case",
         "probe",
@@ -436,15 +435,13 @@ fn render_suite_summary(suite: StressSuite, results: &[SuiteResult]) -> String {
         "rss",
         "top_failure",
         "top_group"
-    );
-    let _ = writeln!(
-        output,
+    ));
+    output.push_line(format_args!(
         "{:-<24} {:-<24} {:->9} {:->8} {:->10} {:->10} {:->10} {:->10} {:->10} {:-<22} {:-<22}",
         "", "", "", "", "", "", "", "", "", "", ""
-    );
+    ));
     for result in results {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<24} {:<24} {:>9} {:>7.2}% {:>10.2} {:>10} {:>10} {:>10} {:>10} {:<22} {:<22}",
             truncate(result.label, 24),
             truncate(result.probe, 24),
@@ -456,19 +453,19 @@ fn render_suite_summary(suite: StressSuite, results: &[SuiteResult]) -> String {
             format_optional_ms(result.metrics.cpu_ms),
             format_optional_kb(result.metrics.peak_rss_kb),
             format_top_failure(result.top_failure_bucket.as_ref()),
-            format_top_group(result.top_operation_group.as_ref()),
-        );
+            format_top_group(result.top_operation_group.as_ref())
+        ));
     }
     output
 }
 
 fn render_suite_bottleneck_report(results: &[SuiteResult]) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "\nSuite bottleneck analysis");
-    let _ = writeln!(output, "{:<22} {:<20} evidence", "signal", "case");
-    let _ = writeln!(output, "{:-<22} {:-<20} {:-<56}", "", "", "");
+    output.push_line(format_args!("\nSuite bottleneck analysis"));
+    output.push_line(format_args!("{:<22} {:<20} evidence", "signal", "case"));
+    output.push_line(format_args!("{:-<22} {:-<20} {:-<56}", "", "", ""));
     if results.is_empty() {
-        let _ = writeln!(output, "{:<22} {:<20} no suite cases", "none", "-");
+        output.push_line(format_args!("{:<22} {:<20} no suite cases", "none", "-"));
         return output;
     }
 
@@ -478,15 +475,14 @@ fn render_suite_bottleneck_report(results: &[SuiteResult]) -> String {
             .unwrap_or(std::cmp::Ordering::Equal)
     }) && result.metrics.failed > 0
     {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<20} failed={} attempted={} fail_rate={:.2}%",
             "failure_ceiling",
             truncate(result.label, 20),
             result.metrics.failed,
             result.metrics.attempted,
             failure_rate(result.metrics) * 100.0
-        );
+        ));
     }
 
     if let Some(result) = results.iter().min_by(|left, right| {
@@ -495,49 +491,45 @@ fn render_suite_bottleneck_report(results: &[SuiteResult]) -> String {
             .partial_cmp(&right.metrics.throughput_ops_sec)
             .unwrap_or(std::cmp::Ordering::Equal)
     }) {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<20} throughput={:.2} ops/sec",
             "lowest_throughput",
             truncate(result.label, 20),
             result.metrics.throughput_ops_sec
-        );
+        ));
     }
 
     if let Some(result) = results.iter().max_by_key(|result| result.metrics.p95_us) {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<20} p95={} p99={} top_group={}",
             "highest_latency",
             truncate(result.label, 20),
             format_latency_us(result.metrics.p95_us),
             format_latency_us(result.metrics.p99_us),
             format_top_group(result.top_operation_group.as_ref())
-        );
+        ));
     }
 
     for result in results {
         if let Some(failure) = &result.top_failure_bucket {
-            let _ = writeln!(
-                output,
+            output.push_line(format_args!(
                 "{:<22} {:<20} top_failure={} count={} failed={}",
                 "case_failure",
                 truncate(result.label, 20),
                 truncate(&failure.bucket, 28),
                 failure.count,
                 result.metrics.failed
-            );
+            ));
         }
         if let Some(group) = &result.top_operation_group {
-            let _ = writeln!(
-                output,
+            output.push_line(format_args!(
                 "{:<22} {:<20} top_group={} p95={} count={}",
                 "case_operation_group",
                 truncate(result.label, 20),
                 truncate(&group.name, 28),
                 format_latency_us(group.p95_us),
                 group.count
-            );
+            ));
         }
     }
 
@@ -546,13 +538,12 @@ fn render_suite_bottleneck_report(results: &[SuiteResult]) -> String {
         .filter(|result| result.metrics.cpu_ms.is_some())
         .max_by_key(|result| result.metrics.cpu_ms)
     {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<20} cpu={}",
             "highest_cpu",
             truncate(result.label, 20),
             format_optional_ms(result.metrics.cpu_ms)
-        );
+        ));
     }
 
     if let Some(result) = results
@@ -560,24 +551,17 @@ fn render_suite_bottleneck_report(results: &[SuiteResult]) -> String {
         .filter(|result| result.metrics.peak_rss_kb.is_some())
         .max_by_key(|result| result.metrics.peak_rss_kb)
     {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<20} peak_rss={}",
             "highest_rss",
             truncate(result.label, 20),
             format_optional_kb(result.metrics.peak_rss_kb)
-        );
+        ));
     }
 
-    let _ = writeln!(output, "\nNext probes");
-    let _ = writeln!(
-        output,
-        "- Rerun the worst case with --trace-jsonl, --human-read, and --bottleneck-report for stage-level attribution."
-    );
-    let _ = writeln!(
-        output,
-        "- Use --suite as a broad scan, then switch to --preset, --sweep-*, or --ramp-* on the failing case."
-    );
+    output.push_line(format_args!("\nNext probes"));
+    output.push_line(format_args!("- Rerun the worst case with --trace-jsonl, --human-read, and --bottleneck-report for stage-level attribution."));
+    output.push_line(format_args!("- Use --suite as a broad scan, then switch to --preset, --sweep-*, or --ramp-* on the failing case."));
     output
 }
 

@@ -66,7 +66,7 @@ fn acme_signature(timestamp: &str, body: &str) -> String {
     use std::fmt::Write as _;
     let mut hex = String::new();
     for byte in digest {
-        let _ = write!(&mut hex, "{byte:02x}");
+        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
     }
     format!("v0={hex}")
 }

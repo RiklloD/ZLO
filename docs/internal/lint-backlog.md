@@ -3,43 +3,40 @@
 Lints that are enforced in only part of the workspace, and what is left before
 they can widen. Each entry names where the enforced scope is pinned.
 
-## `clippy::let_underscore_must_use`
+No lint is partially enforced today. (`clippy::map_err_ignore` is deferred, not
+partially enforced; its note lives in the root `Cargo.toml` under
+`[workspace.lints.rust]`.)
 
-Denied in 71 triaged crates (every package under `crates/`) via a crate-root
-`#![deny(...)]` in every target root; the list and its gate are
+## Retired
+
+### `clippy::let_underscore_must_use` — workspace-wide since 2026-11-24
+
+Denied by `[workspace.lints.clippy]` in the root `Cargo.toml`, which binds
+every package that inherits workspace lints. The members that do not inherit
+them deny it themselves: the root integration-suite package
+(`ironclaw_integration_tests`) with its own `[lints.clippy]` entry, and
+`ironclaw_assistant` / `ironclaw_webui` with a crate-root
+`#![deny(clippy::let_underscore_must_use)]` in every target root.
 `crates/app/ironclaw_architecture_tests/tests/reborn_let_underscore_scope.rs`
-(rationale in the root `Cargo.toml`, under `[workspace.lints.rust]`). The list
-holds crate *directory* names (`memory-native`, `slack`), as the gate resolves
-them; a crate needs a `src/lib.rs` or `src/main.rs` root (`ironclaw_cli` is
-binary-only). In a triaged crate a kept discard carries a statement-level
-`#[expect(clippy::let_underscore_must_use, reason = "...")]`; everything else
-was fixed (propagated, asserted, or traced at `debug!`).
+pins the workspace entry and checks every workspace member is covered one of
+those three ways. A kept discard carries a statement-level
+`#[expect(clippy::let_underscore_must_use, reason = "...")]`, so a stale
+exemption fails the build.
 
-History: 12 crates triaged on 2026-11-13; batch 1 (2026-11-15, branch
-`chore/triage-let-underscore-batch-1`) added 33 more and cleared 160 distinct
-sites; batch 2 (2026-11-19, branch `chore/triage-let-underscore-batch-2`)
-enrolled the 22 zero-site crates and triaged `ironclaw_llm` (91),
-`ironclaw_cli_providers` (56), `ironclaw_trace_commons` (75) and
-`ironclaw_cli` (80), 302 sites.
+Crates that inherit workspace lints still carry the per-root
+`#![deny(clippy::let_underscore_must_use)]` they gained while the lint was
+crate-scoped. It is now redundant there and harmless; drop it when touching a
+file, but there is no need for a sweep.
 
-Remaining on 2026-11-19: **360 distinct sites (file:line)**, all outside
-`crates/`. Count with
-`cargo clippy --all --benches --tests --examples --all-features -- -W clippy::let_underscore_must_use 2>&1 | grep 'non-binding .let. on'`
-and de-duplicate by file:line (lib and test targets are linted separately, so a
-site may count twice).
+History: 12 crates triaged on 2026-11-13; batch 1 (2026-11-15) added 33 and
+cleared 160 distinct sites; batch 2 (2026-11-19) enrolled the 22 zero-site
+crates and triaged `ironclaw_llm`, `ironclaw_cli_providers`,
+`ironclaw_trace_commons` and `ironclaw_cli` (302 sites). The last batch
+(2026-11-24, branch `t3/must-use-lint-promotion`) triaged the root integration
+suite (39 distinct sites; the 213 counted earlier included each `#[path]`-shared
+support file once per test binary) and `tools/ironclaw_stress` (147 sites, 132
+of them `let _ = writeln!(String, …)` report lines now routed through the one
+infallible `report_text::ReportText` helper), then promoted the lint.
 
-| Untriaged package | Distinct sites |
-| --- | --- |
-| root package `ironclaw_integration_tests` (`tests/`) | 213 |
-| `tools/ironclaw_stress` | 147 |
-
-Next batch: the root integration suite, then `tools/ironclaw_stress`. Both are
-test and tooling code and sit outside `crates/`, so enrolling them needs the
-gate's crate resolver extended first (it resolves only `crates/` directories).
-Once both are triaged the lint can move into `[workspace.lints.clippy]` and the
-per-root denies and `TRIAGED_CRATES` can retire.
-
-To retire a crate from the backlog: fix or `#[expect(..., reason = "...")]`
-each site, add the deny to its target roots, and add it to the gate's list.
-Check code behind `#[cfg(target_os = ...)]` by hand, since a lint run on one
-platform does not see the other's code.
+Check code behind `#[cfg(target_os = ...)]` by hand when adding code: a lint
+run on one platform does not see the other's code.
