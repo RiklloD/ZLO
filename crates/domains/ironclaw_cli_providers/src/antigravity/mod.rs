@@ -193,7 +193,7 @@ pub struct AntigravityRuntime {
     active: Slots<ActiveTurn>,
     primed: Arc<context::InlinePrimed>,
     /// What each thread's agent was sent, for the context meter.
-    sent: crate::context_meter::SentContexts,
+    sent: Arc<crate::context_meter::SentContexts>,
     /// Single flight for the background model-list refresh.
     refreshing: Arc<AtomicBool>,
     /// When the last refresh started (ms), for [`REFRESH_RETRY_MS`].
@@ -224,7 +224,7 @@ impl AntigravityRuntime {
             bridge,
             active: Slots::default(),
             primed: Arc::default(),
-            sent: Default::default(),
+            sent: Arc::default(),
             refreshing: Arc::new(AtomicBool::new(false)),
             last_refresh: Arc::new(std::sync::atomic::AtomicI64::new(i64::MIN)),
             write_timeout: rpc::WRITE_TIMEOUT,
@@ -341,14 +341,17 @@ impl AntigravityRuntime {
             &thread.thread_id,
             &run_id,
         );
-        self.sent.record(
+        // Recorded once the prompt is on the wire, like the inline notes: a
+        // turn that fails to launch keeps the thread's earlier record.
+        let delivery = self.sent.pending(
             &thread.thread_id,
-            Some(context.session.clone()),
-            context.turn.clone(),
+            Some(&context.session),
+            &context.turn,
             mcp.is_some(),
         );
         let turn = Turn {
             mcp,
+            delivery,
             config: Arc::clone(&self.config),
             key,
             model: thread.model.clone(),
@@ -603,6 +606,9 @@ struct Turn {
     run_id: String,
     /// ZLO's MCP server for this turn; revoked when the turn is dropped.
     mcp: Option<McpToken>,
+    /// What the turn sends, for the context meter; recorded once its first
+    /// prompt is on the wire.
+    delivery: crate::context_meter::Delivery,
     skills: Arc<crate::skill_listing::CliSkills>,
     /// Which shown skills' SKILL.md this turn read.
     skill_reads: Mutex<crate::skill_listing::SkillReadWatch>,
@@ -710,6 +716,7 @@ impl Turn {
                 if self.carries_inline(agent) {
                     self.context.inline_delivered();
                 }
+                self.delivery.delivered();
                 Some(pending)
             }
             Err(error) => {

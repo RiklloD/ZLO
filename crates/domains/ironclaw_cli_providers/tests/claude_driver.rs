@@ -2225,6 +2225,42 @@ async fn the_context_meter_counts_the_skills_as_the_turn_listed_them() {
     );
 }
 
+/// The context meter reports what a launched turn sent: a turn whose CLI
+/// never starts keeps the thread's earlier record, and a thread whose first
+/// launch fails has none (the meter shows the runtime's estimate).
+#[tokio::test]
+async fn a_failed_launch_keeps_the_context_meter_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    let (rt, _) = skills_runtime(dir.path(), &sink, skill_store(), None);
+    let launched = thread(&rt).await;
+    let mut turn = input();
+    turn.goal = Some("ship it".into());
+    rt.start_turn(&launched, turn).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+    let delivered = rt.injected_context(&launched.thread_id, None, None);
+
+    // The CLI is gone: the next launch fails before anything is sent.
+    std::fs::remove_file(dir.path().join("claude")).unwrap();
+    let mut failing = input();
+    failing.goal = Some("a much longer goal that never reached the CLI ".repeat(100));
+    assert!(rt.start_turn(&launched, failing.clone()).await.is_err());
+    assert_eq!(
+        rt.injected_context(&launched.thread_id, None, None),
+        delivered,
+        "the failed launch is not what the CLI holds"
+    );
+
+    let fresh = thread(&rt).await;
+    assert!(rt.start_turn(&fresh, failing).await.is_err());
+    let never = ThreadId::new("never-ran").unwrap();
+    assert_eq!(
+        rt.injected_context(&fresh.thread_id, None, None),
+        rt.injected_context(&never, None, None),
+        "no record: the estimate"
+    );
+}
+
 /// The shared store, except its first `import_ledger` fails.
 #[derive(Debug)]
 struct FailFirstImport {

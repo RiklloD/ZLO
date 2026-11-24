@@ -1156,6 +1156,67 @@ async fn antigravity_cli_rejection_feedback_steers_the_turn() {
     assert_eq!(rows.len(), 1, "{rows:?}");
 }
 
+/// The context meter reports what a delivered turn sent. `break_agent`
+/// makes the next launch fail before the prompt reaches the agent: that turn
+/// keeps the thread's earlier record, and a thread whose first launch fails
+/// has none (the meter shows the runtime's estimate).
+async fn a_failed_launch_keeps_the_context_meter_record(
+    rt: &dyn TurnRuntime,
+    recorder: &Recorder,
+    model: &str,
+    break_agent: impl FnOnce(),
+) {
+    let finished = || recorder.finished.lock().unwrap().len();
+    let launched = thread(rt, model).await;
+    let mut turn = input();
+    turn.goal = Some("ship it".into());
+    rt.start_turn(&launched, turn).await.unwrap();
+    wait_for(|| finished() == 1).await;
+    let delivered = rt.injected_context(&launched.thread_id, None, None);
+
+    break_agent();
+    let mut failing = input();
+    failing.goal = Some("a much longer goal that never reached the agent ".repeat(100));
+    let fail = |thread: ThreadRecord, input: TurnInput| async move {
+        let before = finished();
+        // Fails at spawn (an error) or before its prompt (a failed turn).
+        if rt.start_turn(&thread, input).await.is_ok() {
+            wait_for(|| finished() == before + 1).await;
+            let outcome = recorder.finished.lock().unwrap()[before].clone();
+            assert_eq!(outcome.status, TurnEndStatus::Failed, "{outcome:?}");
+        }
+    };
+    fail(launched.clone(), failing.clone()).await;
+    assert_eq!(
+        rt.injected_context(&launched.thread_id, None, None),
+        delivered,
+        "the failed launch is not what the agent holds"
+    );
+
+    let fresh = thread(rt, model).await;
+    fail(fresh.clone(), failing).await;
+    let never = ThreadId::new("never-ran").unwrap();
+    assert_eq!(
+        rt.injected_context(&fresh.thread_id, None, None),
+        rt.injected_context(&never, None, None),
+        "no record: the estimate"
+    );
+}
+
+/// An agent that exits before it answers anything.
+const DEAD_AGENT: &str = "#!/bin/sh\nexit 1\n";
+
+#[tokio::test]
+async fn antigravity_failed_launch_keeps_the_context_meter_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli(dir.path(), "plain", &recorder, None);
+    a_failed_launch_keeps_the_context_meter_record(&rt, &recorder, "gemini-a", || {
+        script(dir.path(), "agy", DEAD_AGENT);
+    })
+    .await;
+}
+
 // ── Muse Code ───────────────────────────────────────────────────────────────
 
 const MUSE: &str = r#"#!/bin/sh
@@ -1621,6 +1682,28 @@ fn codex_with(
         bridge,
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn codex_failed_launch_keeps_the_context_meter_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = codex(dir.path(), &recorder, None);
+    a_failed_launch_keeps_the_context_meter_record(&rt, &recorder, "gpt-a", || {
+        script(dir.path(), "codex", DEAD_AGENT);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn muse_failed_launch_keeps_the_context_meter_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = muse(dir.path(), None, &recorder, None);
+    a_failed_launch_keeps_the_context_meter_record(&rt, &recorder, "muse-spark-1.3", || {
+        script(dir.path(), "muse", DEAD_AGENT);
+    })
+    .await;
 }
 
 /// Without a bridge: read-only sandbox, nothing asked, every approval the

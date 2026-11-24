@@ -252,6 +252,7 @@ impl MuseRuntime {
         text: &str,
         context: Option<&str>,
         effort: Option<&str>,
+        delivery: crate::context_meter::Delivery,
     ) -> Result<String, RuntimeError> {
         let session_id = thread
             .native_session_id
@@ -307,7 +308,7 @@ impl MuseRuntime {
             .map(|c| c.rows.iter().map(|r| (r.id.clone(), r.clone())).collect())
             .unwrap_or_default(); // silent-ok: a busy catalog only drops the context-max and effort fallbacks
         let mcp = self.mcp_grant(&thread.thread_id, &run_id);
-        self.sent.set_mcp_tools(&thread.thread_id, mcp.is_some());
+        delivery.set_mcp_tools(mcp.is_some());
         let turn = Turn {
             config: Arc::clone(&self.config),
             session_id,
@@ -321,7 +322,7 @@ impl MuseRuntime {
             steer_timeout: self.steer_timeout,
             models,
             mcp: mcp.clone(),
-            sent: Arc::clone(&self.sent),
+            delivery,
             bridge: self.bridge.clone(),
             thread_id: thread.thread_id.clone(),
             run_id: run_id.clone(),
@@ -595,8 +596,9 @@ struct Turn {
     models: HashMap<String, ModelRow>,
     /// The orchestrator tools' route, when the bridge serves one.
     mcp: Option<McpGrant>,
-    /// The runtime's record of what each thread was sent.
-    sent: Arc<crate::context_meter::SentContexts>,
+    /// What the prompt carries for the context meter; recorded once Muse
+    /// admitted the turn.
+    delivery: crate::context_meter::Delivery,
     // arch-exempt: optional_arc, a host without the gateway denies every approval, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
@@ -730,6 +732,8 @@ impl Turn {
             }
         };
         fold.turn_id = Some(turn_id.clone());
+        // Muse took the prompt: what it carried is what the meter reports.
+        self.delivery.delivered();
         // Stop can interrupt the turn from here on, and steers (held ones
         // first, in order) go to it from the loop below.
         let live_turn = LiveTurn {
@@ -925,7 +929,7 @@ impl Turn {
             Some(mcp) if granted => Some(mcp.session_config()),
             Some(_) => {
                 tracing::debug!("muse: host lacks sessionMcp; orchestrator tools off");
-                self.sent.set_mcp_tools(&self.thread_id, false);
+                self.delivery.set_mcp_tools(false);
                 None
             }
             None => None,
@@ -1309,7 +1313,11 @@ impl TurnRuntime for MuseRuntime {
             .unwrap_or_default()
             .then(turn.clone())
             .text();
-        self.sent.record(&thread.thread_id, session, turn, false);
+        // Recorded once Muse took the prompt: a failed launch keeps the
+        // thread's earlier record.
+        let delivery = self
+            .sent
+            .pending(&thread.thread_id, session.as_ref(), &turn, false);
         let run_id = self
             .spawn_turn(
                 claim,
@@ -1317,6 +1325,7 @@ impl TurnRuntime for MuseRuntime {
                 &input.text,
                 context.as_deref(),
                 input.effort.as_deref(),
+                delivery,
             )
             .await?;
         Ok(TurnAdmission::Started {
@@ -1380,7 +1389,12 @@ impl TurnRuntime for MuseRuntime {
         let Some(claim) = self.claim(&thread.thread_id) else {
             return Ok(SteerOutcome::Rejected);
         };
-        self.spawn_turn(claim, thread, text, None, None).await?;
+        // The restarted host keeps the session's notes; this prompt has none.
+        let delivery = self
+            .sent
+            .pending(&thread.thread_id, None, &Default::default(), false);
+        self.spawn_turn(claim, thread, text, None, None, delivery)
+            .await?;
         Ok(SteerOutcome::Restarted)
     }
 

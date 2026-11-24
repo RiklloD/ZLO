@@ -81,9 +81,11 @@ const LIVE_FLUSH_EVERY: Duration = Duration::from_millis(400);
 
 /// What a turn sends Codex: a prompt (`turn/start`) or a review
 /// (`review/start`, findings as the answer).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum TurnKind {
-    Prompt,
+    /// What the prompt carries for the context meter, recorded once Codex
+    /// admitted the turn (`None`: the turn sends no notes).
+    Prompt(Option<crate::context_meter::Delivery>),
     Review(ironclaw_product_contracts::orchestration::ReviewTarget),
 }
 
@@ -687,7 +689,7 @@ impl Turn {
         };
         // What the person typed is kept even when Codex refuses it; a
         // review's request only once Codex admitted it.
-        if matches!(self.kind, TurnKind::Prompt) {
+        if matches!(self.kind, TurnKind::Prompt(_)) {
             journal::append(&transcript, std::slice::from_ref(&user_row)).await;
         }
 
@@ -716,6 +718,10 @@ impl Turn {
             }
         };
         fold.turn_id = Some(turn_id.clone());
+        // Codex took the prompt: what it carried is what the meter reports.
+        if let TurnKind::Prompt(Some(delivery)) = &self.kind {
+            delivery.delivered();
+        }
         // Which native turn this run is, and where it works: Review's
         // workspace check reads the root back.
         if let Err(error) = session::append(
@@ -727,7 +733,7 @@ impl Turn {
         {
             tracing::debug!(%error, "codex: turn not recorded");
         }
-        if !matches!(self.kind, TurnKind::Prompt) {
+        if !matches!(self.kind, TurnKind::Prompt(_)) {
             journal::append(&transcript, std::slice::from_ref(&user_row)).await;
         }
         // Stop can interrupt the turn from here on, and steers (held ones
@@ -1248,14 +1254,18 @@ impl TurnRuntime for CodexRuntime {
             .unwrap_or_default()
             .then(turn.clone())
             .text();
-        self.sent.record(&thread.thread_id, session, turn, false);
+        // Recorded once Codex took the prompt: a failed launch keeps the
+        // thread's earlier record.
+        let delivery = self
+            .sent
+            .pending(&thread.thread_id, session.as_ref(), &turn, false);
         let run_id = self
             .spawn_turn(
                 &thread,
                 &input.text,
                 context.as_deref(),
                 input.effort.as_deref(),
-                TurnKind::Prompt,
+                TurnKind::Prompt(Some(delivery)),
                 claim,
             )
             .await?;
@@ -1322,7 +1332,7 @@ impl TurnRuntime for CodexRuntime {
         let Some(claim) = self.admit(&thread.thread_id, "turn").await else {
             return Ok(SteerOutcome::Rejected);
         };
-        self.spawn_turn(thread, text, None, None, TurnKind::Prompt, claim)
+        self.spawn_turn(thread, text, None, None, TurnKind::Prompt(None), claim)
             .await?;
         Ok(SteerOutcome::Restarted)
     }

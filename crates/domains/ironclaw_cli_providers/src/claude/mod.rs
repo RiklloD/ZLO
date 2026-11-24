@@ -591,11 +591,13 @@ impl ClaudeCliRuntime {
         let run_id = uuid::Uuid::new_v4().to_string();
         let mcp = self.mcp_session(&thread.thread_id, &run_id).await;
         // The system note, plus the profile skills as the CLI lists them
-        // under this turn's `skillOverrides`.
-        self.sent.record(
+        // under this turn's `skillOverrides`; recorded once the CLI runs with
+        // them and took its first input, so a failed launch keeps the
+        // thread's earlier record.
+        let delivery = self.sent.pending(
             &thread.thread_id,
-            Some(plan.system_note().instructions(launch.listing.clone())),
-            crate::context_meter::Notes::default(),
+            Some(&plan.system_note().instructions(launch.listing.clone())),
+            &crate::context_meter::Notes::default(),
             mcp.is_some(),
         );
         let end_mcp = {
@@ -670,6 +672,7 @@ impl ClaudeCliRuntime {
                 "claude stdin: the CLI did not take its first input".into(),
             ));
         }
+        delivery.delivered();
         if bridged.is_none() {
             input.close(true);
         }
