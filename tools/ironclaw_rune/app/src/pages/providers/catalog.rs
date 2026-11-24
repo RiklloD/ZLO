@@ -109,7 +109,9 @@ pub const KNOWN_CLIS: &[KnownCli] = &[
         name: "Antigravity",
         blurb: "Google's agent over ACP, on your Google account.",
         install: None,
-        login: None,
+        // agy 1.5 keeps the Google sign-in in the OS keyring, which every
+        // profile shares: signing in once here serves ZLO's agent too.
+        login: Some("agy acp --login"),
         planned: false,
     },
     KnownCli {

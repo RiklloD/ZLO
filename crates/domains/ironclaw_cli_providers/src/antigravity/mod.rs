@@ -45,9 +45,11 @@ mod context;
 mod fold;
 pub mod launch;
 mod live;
+mod outcome;
 mod steer;
 mod store;
 mod superseded;
+mod wake;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -102,6 +104,9 @@ const STEER_ACK_TIMEOUT: Duration = Duration::from_secs(10);
 const HOLD_TICK: Duration = Duration::from_millis(250);
 const HOLD_SETTLE: Duration = Duration::from_secs(1);
 const HOLD_QUIET: Duration = Duration::from_secs(60);
+/// How long a wake agy queued may stay silent before the first token of its
+/// reply (t3code's open-reply quiet limit).
+const OPEN_REPLY_QUIET: Duration = Duration::from_secs(120);
 /// The transcript recap a fresh session gets when the thread's earlier
 /// session is gone: this many messages, at most this many characters.
 const RECAP_MESSAGES: usize = 40;
@@ -139,12 +144,6 @@ pub struct AntigravityConfig {
 }
 
 impl AntigravityConfig {
-    fn token_file(&self) -> PathBuf {
-        self.profile_dir
-            .join(launch::APP_DATA_DIR)
-            .join("acp_token.json")
-    }
-
     fn session_file(&self, key: &str) -> PathBuf {
         self.state_dir.join("sessions").join(key)
     }
@@ -730,6 +729,12 @@ impl Turn {
         let mut closed_by_usage = false;
         // Set when a held command never reported back within the bound.
         let mut unverified = false;
+        // The session's own log, for failures a clean stop hides.
+        let log = outcome::SessionLog::open(&self.config.profile_dir, &session_id).await;
+        let mut resumed = false;
+        // A wake agy queued but has not replied to yet (checked at most
+        // once per [`HOLD_SETTLE`]).
+        let (mut wake_pending, mut next_wake_check) = (false, Instant::now());
         loop {
             if prompt.is_none() {
                 let ended = self.cancelled.load(Ordering::SeqCst)
@@ -739,24 +744,64 @@ impl Turn {
                 if ended {
                     break;
                 }
-                if live.background_running() {
+                let finish = if live.background_running() {
                     held = true;
                     // ACP still connected but silent past the bound: the
-                    // command's end will not be reported; stop holding.
-                    if quiet_since.elapsed() >= self.config.background_hold {
+                    // command's end will not be reported; stop holding. A
+                    // scheduled wake reports nothing until it fires.
+                    if quiet_since.elapsed() >= self.config.background_hold
+                        && !live.schedule_pending()
+                    {
                         unverified = true;
                         break;
                     }
+                    false
                 } else if !held {
-                    break;
+                    true
                 } else {
                     // The command finished; the agent's own reply about it
                     // ends with a `usage_update`.
                     let idle = self.permissions.load(Ordering::SeqCst) == 0 && !live.busy();
                     let quiet = quiet_since.elapsed();
-                    if idle && ((closed_by_usage && quiet >= HOLD_SETTLE) || quiet >= HOLD_QUIET) {
+                    idle && ((closed_by_usage && quiet >= HOLD_SETTLE) || quiet >= HOLD_QUIET)
+                };
+                if finish {
+                    // A transient failure the session can carry on from
+                    // (a mid-turn 404): resend once before failing.
+                    if !resumed
+                        && agent.steers
+                        && let Some(text) = self.resume_prompt(log.as_ref(), &answer).await
+                    {
+                        resumed = true;
+                        let Some((pending, _written)) =
+                            self.send_locked(&client, &session_id, text)
+                        else {
+                            break;
+                        };
+                        tracing::debug!("antigravity: resuming after a transient failure");
+                        let entries: Vec<HistoryMessage> =
+                            fold.take_partial().into_iter().collect();
+                        if !entries.is_empty() {
+                            journal::append(&transcript, &entries).await;
+                        }
+                        live.steered();
+                        prompt = Some(pending);
+                        held = false;
+                        quiet_since = Instant::now();
+                        continue;
+                    }
+                    if quiet_since.elapsed() >= OPEN_REPLY_QUIET {
                         break;
                     }
+                    if Instant::now() >= next_wake_check {
+                        next_wake_check = Instant::now() + HOLD_SETTLE;
+                        wake_pending =
+                            wake::pending_reply(&self.config.profile_dir, &session_id).await;
+                    }
+                    if !wake_pending {
+                        break;
+                    }
+                    held = true;
                 }
             }
             tokio::select! {
@@ -892,6 +937,31 @@ impl Turn {
                 )
             };
         }
+        let stop = answer
+            .as_ref()
+            .ok()
+            .and_then(|r| r["stopReason"].as_str())
+            .map(str::to_string);
+        if !unverified
+            && !self.cancelled.load(Ordering::SeqCst)
+            && matches!(stop.as_deref(), Some("end_turn" | "refusal"))
+        {
+            let step = match &log {
+                Some(log) => log.last_step().await,
+                None => None,
+            };
+            if let Some(hidden) = outcome::hidden_failure(stop.as_deref(), step.as_ref(), now_ms())
+            {
+                if hidden.broken {
+                    store::retire_session(&self.config.session_file(&self.key)).await;
+                }
+                outcome = TurnOutcome {
+                    final_text: outcome.final_text.take(),
+                    usage: outcome.usage.take(),
+                    ..hidden.outcome
+                };
+            }
+        }
         let earlier = std::mem::take(&mut superseded.errors);
         if !self.cancelled.load(Ordering::SeqCst)
             && let Some(earlier_outcome) =
@@ -928,6 +998,41 @@ impl Turn {
         (outcome, telemetry)
     }
 
+    /// The prompt a failure hidden behind the last clean stop can be
+    /// resumed with, if any.
+    async fn resume_prompt(
+        &self,
+        log: Option<&outcome::SessionLog>,
+        answer: &Result<Value, RpcError>,
+    ) -> Option<&'static str> {
+        let stop = answer
+            .as_ref()
+            .ok()?
+            .get("stopReason")
+            .and_then(Value::as_str);
+        let step = log?.last_step().await;
+        outcome::hidden_failure(stop, step.as_ref(), now_ms())?.resume_with
+    }
+
+    /// Queue a prompt of ours under the session lock Stop takes for its
+    /// cancel: none goes out after a Stop.
+    fn send_locked(
+        &self,
+        client: &RpcClient,
+        session_id: &str,
+        text: &str,
+    ) -> Option<(PromptFuture, rpc::Written)> {
+        match self.session.lock() {
+            Ok(_guard) if self.cancelled.load(Ordering::SeqCst) => None,
+            Ok(_guard) => send_prompt(client, session_id, text)
+                .inspect_err(
+                    |e| tracing::debug!(error = %e.label(), "antigravity: prompt not sent"),
+                )
+                .ok(), // silent-ok: the turn ends with the failure it already has
+            Err(_) => None, // silent-ok: a poisoned lock only follows a panic elsewhere; the turn ends
+        }
+    }
+
     /// The first prompt as sent. An agent that appends to its system prompt
     /// got the context there; otherwise it goes ahead of the text, except
     /// for a native command (`/goal ...`), which must lead the prompt.
@@ -962,20 +1067,24 @@ impl Turn {
             steers: self.config.launch.may_steer() && launch::steers_with_prompt(&init),
             appends: launch::appends_system_prompt(&init),
         };
-        client
+        let authed = client
             .request(
                 "authenticate",
                 json!({"methodId": self.config.auth_method}),
                 self.config.auth_timeout,
             )
-            .await
-            .map_err(|e| match e {
-                RpcError::Timeout if self.config.uses_browser() => TurnOutcome::ended(
-                    TurnEndStatus::Failed,
-                    Some("antigravity: sign-in required (run the Antigravity login)".into()),
-                ),
-                other => fold::failed(&other),
-            })?;
+            .await;
+        match authed {
+            Ok(_) => store::note_sign_in(&self.config.state_dir, true).await,
+            Err(error) => {
+                let (outcome, signed_out) =
+                    fold::sign_in_failed(&error, self.config.uses_browser());
+                if signed_out {
+                    store::note_sign_in(&self.config.state_dir, false).await;
+                }
+                return Err(outcome);
+            }
+        }
 
         let cwd = self.config.work_dir.display().to_string();
         let meta = |extra: Option<&str>| -> Value {
@@ -1054,7 +1163,17 @@ impl Turn {
         self.apply_mode(client, &session_id, &options, result.get("modes"))
             .await
             .map_err(|e| fold::failed(&e))?;
-        if let Some(model) = self.model.as_deref().filter(|m| *m != DEFAULT_MODEL)
+        // A delegated `<model>-<level>` id is that model at that level
+        // (an explicit level wins).
+        let (model, effort) = match self
+            .model
+            .as_deref()
+            .and_then(|m| fold::split_effort(&options, m))
+        {
+            Some((family, level)) => (Some(family), self.effort.clone().or(Some(level))),
+            None => (self.model.clone(), self.effort.clone()),
+        };
+        if let Some(model) = model.as_deref().filter(|m| *m != DEFAULT_MODEL)
             && fold::current_model(&options).as_deref() != Some(model)
         {
             if fold::pick_model(&options, model) == fold::ModelPick::Unavailable {
@@ -1069,8 +1188,7 @@ impl Turn {
                 .set_option(client, &session_id, "model", model, options)
                 .await?;
         }
-        if let (Some(effort), Some(option)) =
-            (self.effort.as_deref(), fold::effort_option(&options))
+        if let (Some(effort), Some(option)) = (effort.as_deref(), fold::effort_option(&options))
             && option.get("currentValue").and_then(Value::as_str) != Some(effort)
             && fold::effort_options(&options).iter().any(|e| e == effort)
             && let Some(id) = option.get("id").and_then(Value::as_str).map(str::to_string)
@@ -1079,8 +1197,10 @@ impl Turn {
                 .set_option(client, &session_id, &id, effort, options)
                 .await?;
         }
-        fold.model = fold::current_model(&options).or_else(|| self.model.clone());
-        if let Some(model) = self.model.as_deref().filter(|m| *m != DEFAULT_MODEL)
+        // The model's own thinking levels, now that it is the session's.
+        store::save_models(&self.config.models_file(), &options).await;
+        fold.model = fold::current_model(&options).or_else(|| model.clone());
+        if let Some(model) = model.as_deref().filter(|m| *m != DEFAULT_MODEL)
             && fold::pick_model(&options, model) == fold::ModelPick::Legacy
         {
             fold.model = Some(model.to_string());
@@ -1181,6 +1301,16 @@ impl Turn {
                     return false;
                 }
                 let update = &params["update"];
+                // agy's checklist: the thread's plan, never a tool row.
+                if let Some(steps) = live.take_steps(update) {
+                    if let (Some(bridge), Some(plan)) = (
+                        self.bridge.as_deref(),
+                        steps.as_ref().and_then(interaction::acp_plan),
+                    ) {
+                        bridge.plan_updated(&self.thread_id, &self.run_id, plan);
+                    }
+                    return false;
+                }
                 if let Ok(mut reads) = self.skill_reads.lock() {
                     reads.push_acp(update);
                 }
@@ -1401,18 +1531,26 @@ async fn permission_answer(
 ) -> (Value, Option<DenialFeedback>, Receipt) {
     let call = &params["toolCall"];
     let cancelled = json!({"outcome": {"outcome": "cancelled"}});
+    // A call through `call_mcp_tool` asks about the MCP tool it runs.
+    let proxied = live::proxied_mcp(call);
     let request = PermissionRequest {
         runtime: runtime.to_string(),
         session_id: session_id.to_string(),
-        tool: ["name", "kind", "title"]
-            .iter()
-            .find_map(|k| call.get(*k).and_then(Value::as_str))
-            .unwrap_or("tool")
-            .to_string(),
-        subject: call
-            .get("title")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        tool: match &proxied {
+            Some(_) => "mcp".to_string(),
+            None => ["name", "kind", "title"]
+                .iter()
+                .find_map(|k| call.get(*k).and_then(Value::as_str))
+                .unwrap_or("tool")
+                .to_string(),
+        },
+        subject: match &proxied {
+            Some((server, tool)) => Some(format!("{server}: {tool}")),
+            None => call
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        },
         // ACP tool calls carry no justification; the bridge falls back to
         // what the model said before the call.
         reason: None,
@@ -1577,12 +1715,14 @@ impl TurnRuntime for AntigravityRuntime {
     }
 
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
-        let authenticated = tokio::fs::try_exists(self.config.token_file())
-            .await
-            .unwrap_or(false); // silent-ok: an unreadable token reads as signed out
-        // Signed out, a probe would wait on a browser sign-in nobody opens.
+        let authenticated = store::signed_in(&self.config).await;
+        // agy 1.5 keeps its sign-in in the OS keyring, where only a probe
+        // can see it, so the native CLI is asked even with no local
+        // evidence (one probe per [`REFRESH_RETRY_MS`]). A legacy runtime
+        // signed out would only wait on a browser sign-in nobody opens.
+        let probe = authenticated || matches!(self.config.launch, AgentLaunch::Cli { .. });
         let now = now_ms();
-        if authenticated
+        if probe
             && now.saturating_sub(self.last_refresh.load(Ordering::SeqCst)) >= REFRESH_RETRY_MS
             && store::models_stale(&self.config.models_file()).await
             && !self.refreshing.swap(true, Ordering::SeqCst)
@@ -1597,17 +1737,20 @@ impl TurnRuntime for AntigravityRuntime {
                 }
             });
         }
-        let (models, efforts) = store::cached_models(&self.config).await;
+        let cached = store::cached_models(&self.config).await;
+        // A probe may have just answered the sign-in question.
+        let authenticated = authenticated || store::signed_in(&self.config).await;
         Ok(vec![CatalogProvider {
             provider: self.config.runtime_id.clone(),
             name: self.config.display_name.clone(),
             authenticated,
             current: false,
-            models,
+            models: cached.models,
             // `agy` 1.5 offers a thinking level beside the model; 1.3 put
             // the level in each model's name (`-low`/`-high`) and has none.
-            efforts,
-            model_efforts: Default::default(),
+            // Each model keeps the levels it reported when last selected.
+            efforts: cached.efforts,
+            model_efforts: cached.model_efforts,
             brand: None,
         }])
     }

@@ -90,6 +90,9 @@ pub(super) fn agent_command(c: &AntigravityConfig) -> Command {
         .env("AGY_ACP_FORCE_FILE_STORAGE", "1")
         .env("PYTHONUNBUFFERED", "1")
         .env("ELECTRON_RUN_AS_NODE", "1")
+        // An `agy` that replaces itself in place mid-turn breaks the
+        // running agent (t3code #39363); the user updates it themselves.
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
         .env("TMPDIR", tmp)
         // A background turn never opens a browser on its own.
         .env("BROWSER", "/usr/bin/true");
@@ -163,19 +166,29 @@ async fn tighten(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The skill folders Antigravity reads for every project, relative to a
-/// Gemini directory.
-const USER_SKILL_DIRS: [&str; 2] = ["config/skills", "antigravity-cli/skills"];
+/// What Antigravity reads for every project, relative to a Gemini
+/// directory: the skill folders, the skill manifest (`config/skills.json`,
+/// t3code #39765) and the global rules (`AGENTS.md`, `GEMINI.md`, t3code
+/// #39531).
+const USER_CONFIG_ENTRIES: [&str; 5] = [
+    "config/skills",
+    "antigravity-cli/skills",
+    "config/skills.json",
+    "AGENTS.md",
+    "GEMINI.md",
+];
 
 /// The private profile isolates sign-in, hooks and MCP servers, so the
 /// user's own global skills (`~/.gemini/config/skills`,
-/// `~/.gemini/antigravity-cli/skills`) are linked into it. Only a missing
+/// `~/.gemini/antigravity-cli/skills`, `~/.gemini/config/skills.json`) and
+/// rules (`~/.gemini/AGENTS.md`, `~/.gemini/GEMINI.md`) are linked into it;
+/// a file the profile has of its own stays. Only a missing
 /// entry, an empty placeholder folder (the agent makes one on launch) or a
 /// link of ours (to exactly the managed target) is replaced; a folder with
 /// content and a link pointing anywhere else are the user's and stay. No
 /// symlinked folder inside the profile is followed on the way there.
 pub(super) async fn link_user_skills(profile: &Path, user_gemini: &Path) {
-    for rel in USER_SKILL_DIRS {
+    for rel in USER_CONFIG_ENTRIES {
         let (link, target) = (profile.join(rel), user_gemini.join(rel));
         if link == target {
             continue;
@@ -486,6 +499,49 @@ mod tests {
         assert!(
             std::fs::symlink_metadata(profile.join("config/skills")).is_err(),
             "dangling link removed"
+        );
+    }
+
+    /// t3code #39531 / #39765: the user's global rules and skills.json
+    /// are linked into the private profile; the profile's own file stays.
+    #[tokio::test]
+    async fn user_rules_and_skills_json_are_linked_and_the_profiles_own_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let (profile, user) = (dir.path().join("profile"), dir.path().join("gemini"));
+        std::fs::create_dir_all(user.join("config")).unwrap();
+        std::fs::write(user.join("AGENTS.md"), "global agents rule").unwrap();
+        std::fs::write(user.join("GEMINI.md"), "global gemini rule").unwrap();
+        std::fs::write(user.join("config/skills.json"), "{}").unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        link_user_skills(&profile, &user).await;
+        for rel in ["AGENTS.md", "GEMINI.md", "config/skills.json"] {
+            assert_eq!(
+                std::fs::read_link(profile.join(rel)).unwrap(),
+                user.join(rel),
+                "{rel}"
+            );
+        }
+        std::fs::remove_file(user.join("AGENTS.md")).unwrap();
+        std::fs::remove_file(profile.join("GEMINI.md")).unwrap();
+        std::fs::write(profile.join("GEMINI.md"), "profile's own rule").unwrap();
+        link_user_skills(&profile, &user).await;
+        assert!(std::fs::symlink_metadata(profile.join("AGENTS.md")).is_err());
+        assert_eq!(
+            std::fs::read_to_string(profile.join("GEMINI.md")).unwrap(),
+            "profile's own rule"
+        );
+    }
+
+    #[test]
+    fn the_agent_never_updates_itself_mid_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(dir.path().join("p"), dir.path().join("s"), None);
+        let command = agent_command(&config);
+        let env: Vec<_> = command.as_std().get_envs().collect();
+        assert!(
+            env.iter()
+                .any(|(k, v)| *k == "AGY_CLI_DISABLE_AUTO_UPDATE" && v.is_some_and(|v| v == "1")),
+            "{env:?}"
         );
     }
 

@@ -457,6 +457,8 @@ reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
 note() { printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-1","update":%s}}\n' "$1"; }
 chunk() { note "{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"$1\"}}"; }
 OPTS='[{"id":"model","type":"select","currentValue":"gemini-a","options":[{"value":"gemini-a"},{"value":"gemini-b"}]},{"id":"thought_level","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"low"},{"value":"high"}]},{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[]}]'
+DB="$GEMINI_HOME/antigravity-acp/conversations/acp-1.db"
+step() { sqlite3 "$DB" "INSERT INTO steps (step_type, step_payload) VALUES ($1, CAST('$2' AS BLOB));"; }
 CMD='"toolCallId":"c1","name":"run_command","kind":"execute","title":"sleep 1","rawInput":{"CommandLine":"sleep 1","WaitMsBeforeAsync":500}'
 P1=
 while IFS= read -r line; do
@@ -465,7 +467,10 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*) reply "$id" '{"protocolVersion":1,"agentCapabilities":{"_meta":{"antigravity":{"systemPrompt":{"append":true}}}},"agentInfo":{"name":"Antigravity ACP Server","version":"1.5.11"}}' ;;
     *'"method":"authenticate"'*) reply "$id" '{}' ;;
-    *'"method":"session/new"'*) reply "$id" "{\"sessionId\":\"acp-1\",\"configOptions\":$OPTS}" ;;
+    *'"method":"session/new"'*)
+      mkdir -p "$GEMINI_HOME/antigravity-acp/conversations"
+      sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS steps (idx integer PRIMARY KEY, step_type integer NOT NULL DEFAULT 0, step_payload blob);" 2>/dev/null
+      reply "$id" "{\"sessionId\":\"acp-1\",\"configOptions\":$OPTS}" ;;
     *'"method":"session/resume"'*)
       if [ "$MODE" = lost ]; then printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"session not found"}}\n' "$id"
       else reply "$id" "{\"configOptions\":$OPTS}"; fi ;;
@@ -505,6 +510,27 @@ while IFS= read -r line; do
         note "{\"sessionUpdate\":\"tool_call_update\",$CMD,\"status\":\"completed\",\"rawOutput\":{\"output\":\"finished\"}}"
         chunk "done"
         note '{"sessionUpdate":"usage_update","used":900,"size":1000}'
+      elif [ "$MODE" = e502 ]; then
+        step 14 hi; step 17 'Error 502, Message: Bad Gateway: Failed to connect to backend API, Status: 502 Bad Gateway, Details: []'
+        chunk "Sorry"; reply "$id" '{"stopReason":"end_turn"}'
+      elif [ "$MODE" = e404 ] || [ "$MODE" = e404twice ]; then
+        if [ -z "$N1" ] || [ "$MODE" = e404twice ]; then
+          N1=$id; step 15 working; step 17 'NOT_FOUND (code 404): Requested entity was not found.'
+          chunk "Sorry"; reply "$id" '{"stopReason":"end_turn"}'
+        else step 15 resumed; chunk "resumed"; reply "$id" '{"stopReason":"end_turn"}'; fi
+      elif [ "$MODE" = sched ]; then
+        note '{"sessionUpdate":"tool_call","toolCallId":"w1","kind":"other","title":"Run schedule","status":"in_progress","rawInput":{"DelaySeconds":1}}'
+        chunk "scheduled "
+        reply "$id" '{"stopReason":"end_turn"}'
+        sleep 2
+        note '{"sessionUpdate":"tool_call_update","toolCallId":"w1","status":"completed"}'
+        chunk "woke"
+        note '{"sessionUpdate":"usage_update","used":900,"size":1000}'
+      elif [ "$MODE" = steps ]; then
+        note '{"sessionUpdate":"tool_call","toolCallId":"u1","kind":"other","title":"Run update_steps","status":"in_progress","rawInput":{"steps":[{"title":"Create a.txt","status":"done"},{"title":"Create b.txt","status":"in_progress"}]}}'
+        note '{"sessionUpdate":"tool_call_update","toolCallId":"u1","status":"completed"}'
+        note '{"sessionUpdate":"tool_call","toolCallId":"m1","kind":"execute","title":"MCP Tool thread_list","status":"completed","rawInput":{"ServerName":"zlo","ToolName":"thread_list","Arguments":{}}}'
+        chunk "pong"; reply "$id" '{"stopReason":"end_turn"}'
       elif [ "$MODE" = bgstuck ]; then
         note "{\"sessionUpdate\":\"tool_call\",$CMD,\"status\":\"in_progress\"}"
         chunk "started "
@@ -2354,4 +2380,176 @@ async fn codex_with_a_bridge_asks_the_owner_and_accepts_once() {
         recorder.finished.lock().unwrap()[0].status,
         TurnEndStatus::Completed
     );
+}
+
+// ── Antigravity: t3code nightly 2026-11-24 ports ────────────────────────────
+
+fn has_sqlite3() -> bool {
+    std::path::Path::new("/usr/bin/sqlite3").is_file()
+}
+
+async fn one_turn(
+    rt: &AntigravityRuntime,
+    recorder: &Arc<Recorder>,
+) -> (ThreadRecord, TurnOutcome) {
+    let thread = thread(rt, "default").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+    let outcome = recorder.finished.lock().unwrap()[0].clone();
+    (thread, outcome)
+}
+
+/// t3code #33596: agy reports a 502 as a chat message and `end_turn`; its
+/// session log's error step fails the turn with the provider's words.
+#[tokio::test]
+async fn antigravity_cli_a_502_behind_end_turn_fails_with_the_real_error() {
+    if !has_sqlite3() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli(dir.path(), "e502", &recorder, None);
+    let (_, outcome) = one_turn(&rt, &recorder).await;
+    assert_eq!(outcome.status, TurnEndStatus::Failed, "{outcome:?}");
+    let error = outcome.error.unwrap();
+    assert!(
+        error.contains("Bad Gateway: Failed to connect to backend API"),
+        "{error}"
+    );
+}
+
+/// t3code #39869: a 404 after the model answered resumes the session once
+/// with "continue"; a second one fails the turn with its error.
+#[tokio::test]
+async fn antigravity_cli_a_mid_turn_404_resumes_once() {
+    if !has_sqlite3() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli(dir.path(), "e404", &recorder, None);
+    let (_, outcome) = one_turn(&rt, &recorder).await;
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.final_text.as_deref(), Some("resumed"));
+    let log = agy_log(dir.path());
+    assert!(
+        log.contains(r#""prompt":[{"text":"continue","type":"text"}]"#),
+        "{log}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli(dir.path(), "e404twice", &recorder, None);
+    let (_, outcome) = one_turn(&rt, &recorder).await;
+    assert_eq!(outcome.status, TurnEndStatus::Failed, "{outcome:?}");
+    assert!(
+        outcome
+            .error
+            .unwrap()
+            .contains("Requested entity was not found.")
+    );
+    assert_eq!(
+        agy_log(dir.path())
+            .matches(r#""method":"session/prompt""#)
+            .count(),
+        2,
+        "resumed once only"
+    );
+}
+
+/// t3code #39806/#40858: agy keeps its `schedule` call running until the
+/// wake fires and then replies by itself, so the turn stays open; unlike a
+/// command, the silent-hold bound does not end it.
+#[tokio::test]
+async fn antigravity_cli_a_scheduled_wake_keeps_the_turn_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli_held(
+        dir.path(),
+        "sched",
+        &recorder,
+        None,
+        Duration::from_millis(500),
+    );
+    let (_, outcome) = one_turn(&rt, &recorder).await;
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.final_text.as_deref(), Some("scheduled woke"));
+}
+
+/// t3code #41923 / #39474: agy's update_steps checklist fills the task list
+/// instead of drawing a tool row, and a call through call_mcp_tool shows
+/// the MCP tool it runs.
+#[tokio::test]
+async fn antigravity_cli_update_steps_is_the_plan_and_mcp_calls_name_their_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let rt = antigravity_cli(dir.path(), "steps", &recorder, Some(Arc::clone(&bridge)));
+    let mut events = bridge.subscribe();
+    let (_, outcome) = one_turn(&rt, &recorder).await;
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    let (mut tools, mut plans) = (Vec::new(), Vec::new());
+    while let Ok(event) = events.try_recv() {
+        match event {
+            ironclaw_cli_providers::bridge::LiveEvent::Tool { tool, .. } => {
+                tools.push((tool.tool_name, tool.subject))
+            }
+            ironclaw_cli_providers::bridge::LiveEvent::Plan { plan, .. } => plans.push(
+                plan.entries
+                    .iter()
+                    .map(|e| format!("{}:{:?}", e.content, e.status))
+                    .collect::<Vec<_>>(),
+            ),
+            _ => {}
+        }
+    }
+    assert!(
+        tools
+            .iter()
+            .all(|(name, _)| !name.contains("update_steps") && name != "other"),
+        "{tools:?}"
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|(name, subject)| name == "mcp" && subject.as_deref() == Some("zlo: thread_list")),
+        "{tools:?}"
+    );
+    assert_eq!(
+        plans.last().map(Vec::as_slice),
+        Some(
+            [
+                "Create a.txt:Completed".to_string(),
+                "Create b.txt:InProgress".to_string()
+            ]
+            .as_slice()
+        ),
+        "{plans:?}"
+    );
+}
+
+/// agy 1.5 keeps its Google sign-in in the OS keyring and never writes
+/// `acp_token.json`: a turn whose `authenticate` succeeded marks the
+/// account signed in, so the catalog stops reporting it signed out.
+#[tokio::test]
+async fn antigravity_cli_a_keyring_sign_in_reads_as_signed_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli(dir.path(), "pong", &recorder, None);
+    assert!(!rt.catalog(&scope()).await.unwrap()[0].authenticated);
+    let (_, outcome) = one_turn(&rt, &recorder).await;
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    assert!(rt.catalog(&scope()).await.unwrap()[0].authenticated);
+    // The CLI's own file sign-in counts too.
+    let other = tempfile::tempdir().unwrap();
+    let rt = antigravity_cli(other.path(), "pong", &recorder, None);
+    std::fs::create_dir_all(other.path().join("profile/antigravity-acp")).unwrap();
+    std::fs::write(
+        other
+            .path()
+            .join("profile/antigravity-acp/antigravity-oauth-token"),
+        "{}",
+    )
+    .unwrap();
+    assert!(rt.catalog(&scope()).await.unwrap()[0].authenticated);
 }

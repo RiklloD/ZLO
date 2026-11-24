@@ -385,3 +385,25 @@ fn antigravity_summary_names_shared_and_gemini_buckets() {
         ]
     );
 }
+
+/// t3code #38957: agy 1.5 writes no `acp_token.json`; its file sign-in
+/// (`antigravity-oauth-token`) holds an access token and its expiry, used
+/// as is until it expires (it carries no OAuth client to refresh it).
+#[tokio::test]
+async fn antigravity_reads_the_cli_sign_in_and_its_expiry() {
+    let home = tempfile::tempdir().unwrap();
+    let acp = home
+        .path()
+        .join(".ironclaw/antigravity/profile/antigravity-acp");
+    std::fs::create_dir_all(&acp).unwrap();
+    std::fs::write(
+        acp.join("antigravity-oauth-token"),
+        r#"{"token":{"access_token":"ya29.x","refresh_token":"r","expiry":"2026-11-24T12:00:00Z"}}"#,
+    )
+    .unwrap();
+    let login = crate::antigravity::AntigravityLogin::new(home.path());
+    let expiry = chrono::DateTime::parse_from_rfc3339("2026-11-24T12:00:00Z")
+        .unwrap()
+        .timestamp_millis();
+    assert_eq!(login.cli_access_expiry().await, Some(expiry));
+}

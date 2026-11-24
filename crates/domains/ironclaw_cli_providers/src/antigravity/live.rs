@@ -11,9 +11,17 @@
 //! `agy` 1.5 ends a prompt while a command it backgrounded still runs, then
 //! reports the command and replies on its own when it finishes; the driver
 //! keeps the turn open meanwhile ([`LiveFold::background_running`]). A
-//! daemon (`IsDaemon`) may never finish, so it never holds a turn.
+//! daemon (`IsDaemon`) may never finish, so it never holds a turn. agy's
+//! own `schedule` call stays in progress until its wake fires, then the
+//! agent replies by itself: it holds the turn too, without the silent-hold
+//! bound a command gets ([`LiveFold::schedule_pending`]).
+//!
+//! agy reports its `update_steps` checklist only as tool calls: they become
+//! the thread's plan, never tool rows ([`LiveFold::take_steps`]). A call
+//! through `call_mcp_tool` (titled `MCP Tool <tool>`, its input naming the
+//! server and tool) shows as that MCP tool ([`proxied_mcp`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ironclaw_host_api::ids::ThreadId;
 use serde_json::Value;
@@ -57,6 +65,8 @@ enum Status {
 struct Tool {
     execute: bool,
     daemon: bool,
+    /// agy's own `schedule` call: running until its wake fires.
+    schedule: bool,
     status: Status,
     /// Output already sent, to send only what an update adds.
     output: String,
@@ -73,6 +83,9 @@ enum Block {
 pub(crate) struct LiveFold {
     tools: HashMap<String, Tool>,
     last: Option<Block>,
+    /// `update_steps` calls seen, by call id (their later updates name
+    /// them by id only).
+    steps_calls: HashSet<String>,
 }
 
 /// The names Antigravity gives its own subagent calls.
@@ -96,6 +109,10 @@ const SUBAGENT_SUBJECT_FIELDS: [&str; 9] = [
     "Task",
     "toolSummary",
 ];
+/// The titles agy gives its own `schedule` call.
+const SCHEDULE_TITLES: [&str; 2] = ["Run schedule", "Running schedule"];
+/// The title of agy's `update_steps` checklist call.
+const STEPS_TITLE: &str = "Run update_steps";
 /// Input fields that hold a command line.
 const COMMAND_FIELDS: [&str; 4] = ["CommandLine", "command_line", "commandLine", "command"];
 
@@ -118,9 +135,26 @@ fn is_subagent(update: &Value) -> bool {
     by_name || by_title
 }
 
+/// The server and tool of a call through agy's `call_mcp_tool`: titled
+/// `MCP Tool <tool>`, its input naming that same tool and its server. Any
+/// other call's input is the tool's own arguments, which may hold fields of
+/// the same names.
+pub(crate) fn proxied_mcp(call: &Value) -> Option<(String, String)> {
+    let titled = s(call, "title")?
+        .strip_prefix("MCP Tool ")?
+        .trim_end_matches('?')
+        .to_string();
+    let input = &call["rawInput"];
+    let (server, tool) = (s(input, "ServerName")?, s(input, "ToolName")?);
+    (tool == titled).then(|| (server.to_string(), tool.to_string()))
+}
+
 /// The row's label and subject at its first sighting.
 fn describe(update: &Value) -> (String, Option<String>) {
     let input = &update["rawInput"];
+    if let Some((server, tool)) = proxied_mcp(update) {
+        return ("mcp".into(), Some(format!("{server}: {tool}")));
+    }
     if is_subagent(update) {
         let subject = SUBAGENT_SUBJECT_FIELDS
             .iter()
@@ -209,7 +243,8 @@ impl LiveFold {
                 });
                 self.last = Some(Block::Tool);
                 self.tools.entry(id.to_string()).or_insert(Tool {
-                    execute: s(update, "kind") == Some("execute"),
+                    execute: s(update, "kind") == Some("execute") && proxied_mcp(update).is_none(),
+                    schedule: false,
                     daemon: update["rawInput"]["IsDaemon"].as_bool() == Some(true),
                     status: Status::Pending,
                     output: String::new(),
@@ -218,6 +253,9 @@ impl LiveFold {
         };
         if tool.status == Status::Done {
             return steps;
+        }
+        if s(update, "title").is_some_and(|t| SCHEDULE_TITLES.contains(&t)) {
+            tool.schedule = true;
         }
         if let Some(text) = output_text(update)
             && text != tool.output
@@ -249,12 +287,63 @@ impl LiveFold {
         steps
     }
 
-    /// A command the agent backgrounded is still running: the agent will
-    /// report it and reply by itself, so the turn stays open.
+    /// A command the agent backgrounded, or a scheduled wake, is still
+    /// running: the agent will report it and reply by itself, so the turn
+    /// stays open.
     pub(crate) fn background_running(&self) -> bool {
         self.tools
             .values()
-            .any(|t| t.execute && !t.daemon && t.status == Status::Running)
+            .any(|t| t.status == Status::Running && (t.schedule || (t.execute && !t.daemon)))
+    }
+
+    /// A scheduled wake has not fired. Unlike a command it reports nothing
+    /// while it waits, so silence does not mean it was lost.
+    pub(crate) fn schedule_pending(&self) -> bool {
+        self.tools
+            .values()
+            .any(|t| t.schedule && t.status == Status::Running)
+    }
+
+    /// An `update_steps` update: `Some(plan)` for one that carries its
+    /// steps (an ACP `plan` update), `Some(None)` for one that only names
+    /// the call; `None` for any other update, which folds as usual.
+    pub(crate) fn take_steps(&mut self, update: &Value) -> Option<Option<Value>> {
+        if !matches!(
+            update.get("sessionUpdate").and_then(Value::as_str),
+            Some("tool_call" | "tool_call_update")
+        ) {
+            return None;
+        }
+        let id = s(update, "toolCallId")?;
+        if s(update, "title") == Some(STEPS_TITLE)
+            && matches!(s(update, "kind"), None | Some("other"))
+        {
+            self.steps_calls.insert(id.to_string());
+        }
+        if !self.steps_calls.contains(id) {
+            return None;
+        }
+        if matches!(s(update, "status"), Some("completed" | "failed")) {
+            self.steps_calls.remove(id);
+        }
+        let Some(steps) = update["rawInput"]["steps"].as_array() else {
+            return Some(None);
+        };
+        let entries: Vec<Value> = steps
+            .iter()
+            .filter_map(|step| {
+                let title = step.get("title").and_then(Value::as_str)?;
+                let status = match step.get("status").and_then(Value::as_str) {
+                    Some("done") => "completed",
+                    Some(other) => other,
+                    None => "pending",
+                };
+                Some(serde_json::json!({"content": title, "status": status, "priority": "medium"}))
+            })
+            .collect();
+        Some(Some(
+            serde_json::json!({"sessionUpdate": "plan", "entries": entries}),
+        ))
     }
 
     /// Some tool (a daemon aside) has not finished.
