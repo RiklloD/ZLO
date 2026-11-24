@@ -152,7 +152,8 @@ pub use skill_context::{
 pub use snapshot::{PersonalContextPolicy, ResolvedRunProfile};
 pub use snippet_ref::memory_snippet_display_ref;
 pub use system_inference::{
-    SystemInferenceContextMessage, SystemInferenceContextRole, SystemInferenceError,
-    SystemInferenceIdentity, SystemInferencePort, SystemInferenceRequest, SystemInferenceResponse,
-    SystemInferenceTaskId, SystemPromptId, SystemPromptSource, SystemTaskKind,
+    SystemInferenceCacheFork, SystemInferenceContextMessage, SystemInferenceContextRole,
+    SystemInferenceError, SystemInferenceIdentity, SystemInferencePort, SystemInferenceRequest,
+    SystemInferenceResponse, SystemInferenceTaskId, SystemInferenceWarmPrefixId, SystemPromptId,
+    SystemPromptSource, SystemTaskKind,
 };

@@ -159,6 +159,86 @@ pub enum SystemInferenceContextRole {
     Tool,
 }
 
+/// Opaque, host-minted id of one recorded live provider request prefix.
+///
+/// The id names an in-memory recording held by the host model gateway; it
+/// carries no prompt content and is meaningless outside the process that
+/// minted it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SystemInferenceWarmPrefixId(String);
+
+impl SystemInferenceWarmPrefixId {
+    fn validate(value: &str) -> Result<(), String> {
+        if value.is_empty() {
+            return Err("warm prefix id must not be empty".to_string());
+        }
+        if value.len() > 128 {
+            return Err("warm prefix id is too long".to_string());
+        }
+        if !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+        }) {
+            return Err("warm prefix id contains unsupported characters".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        Self::validate(&value)?;
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for SystemInferenceWarmPrefixId {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<SystemInferenceWarmPrefixId> for String {
+    fn from(id: SystemInferenceWarmPrefixId) -> Self {
+        id.0
+    }
+}
+
+impl std::fmt::Display for SystemInferenceWarmPrefixId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// Cache-fork replay of a live provider request prefix.
+///
+/// When present on a [`SystemInferenceRequest`], the implementation replays
+/// the recorded live request named by `prefix_id` unchanged — its `tools[]`
+/// definitions (tool invocation is never honoured: a tool call in the output
+/// is a failure), its system prompt, and its first `replayed_message_count`
+/// provider messages, including assistant tool calls and tool results with
+/// their original call ids — on the same model and prompt-cache key, and
+/// appends only `input_text` as one trailing user message. The provider can
+/// then serve the whole replayed prefix from its prompt cache.
+///
+/// `identity.system_prompt` and `context_messages` stay the scanned,
+/// role-preserving text view of that same prefix (and drive preflight token
+/// accounting). Implementations must reject the request with
+/// [`SystemInferenceError::Failed`] when the recording is unavailable, was
+/// made for another model or route, or no longer matches that view, so the
+/// caller can fall back to standalone inference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemInferenceCacheFork {
+    pub prefix_id: SystemInferenceWarmPrefixId,
+    /// Leading provider messages replayed, counting the system prompt.
+    pub replayed_message_count: u32,
+}
+
 /// Request to run bounded, host-owned inference outside the assistant loop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemInferenceRequest {
@@ -183,6 +263,11 @@ pub struct SystemInferenceRequest {
     /// structured-output finalization task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<OutputContract>,
+    /// Optional cache-fork replay of a live provider request prefix (see
+    /// [`SystemInferenceCacheFork`]). `None` keeps the standalone
+    /// system-prompt + context + input shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_fork: Option<SystemInferenceCacheFork>,
 }
 
 /// Successful system inference result.

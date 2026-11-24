@@ -33,7 +33,7 @@ use ironclaw_loop_host::{
     ModelGatewayBackedSystemInferencePort, RunCancellationFactory, RunStateLoopCancellationPort,
     StructuredOutputLoopPromptPort, SubagentLoopPromptPort, SubagentPromptComposer,
     ThreadBackedLoopContextPort, ThreadBackedLoopTranscriptPort, ThreadContextWindowCache,
-    active_task_compaction_prompt_id, host_managed_loop_compaction_port_with_prompt_id,
+    active_task_compaction_prompt_id,
 };
 use ironclaw_outbound::ReplyAttachmentIntentPort;
 use ironclaw_threads::{SessionThreadService, ThreadScope};
@@ -696,34 +696,65 @@ where
         &self,
         run_context: &LoopRunContext,
     ) -> Arc<dyn SystemInferencePort> {
-        let direct: Arc<dyn SystemInferencePort> =
+        self.build_guarded_system_inference_with_warm_prefix(run_context)
+            .0
+    }
+
+    /// The guarded system-inference port plus the warm-prefix cache of the
+    /// very gateway it dispatches through (resolved once): that gateway
+    /// recorded this run's live prefixes and is the only one that can replay
+    /// them for cache-forked compaction.
+    fn build_guarded_system_inference_with_warm_prefix(
+        &self,
+        run_context: &LoopRunContext,
+    ) -> (
+        Arc<dyn SystemInferencePort>,
+        Option<Arc<ironclaw_loop_host::WarmPrefixCache>>,
+    ) {
+        let (direct, warm_prefix_cache): (Arc<dyn SystemInferencePort>, _) =
             if let Some(gw) = self.model_gateway.resolve_for_scope(&run_context.scope) {
-                Arc::new(ModelGatewayBackedSystemInferencePort::new(
-                    gw,
-                    run_context.clone(),
-                ))
+                let warm_prefix_cache = gw.warm_prefix_cache();
+                (
+                    Arc::new(ModelGatewayBackedSystemInferencePort::new(
+                        gw,
+                        run_context.clone(),
+                    )),
+                    warm_prefix_cache,
+                )
             } else {
-                Arc::new(ModelGatewayBackedSystemInferencePort::new(
-                    Arc::clone(&self.model_gateway),
-                    run_context.clone(),
-                ))
+                (
+                    Arc::new(ModelGatewayBackedSystemInferencePort::new(
+                        Arc::clone(&self.model_gateway),
+                        run_context.clone(),
+                    )),
+                    self.model_gateway.warm_prefix_cache(),
+                )
             };
-        Arc::new(GuardedSystemInferencePort::new(
+        let guarded = Arc::new(GuardedSystemInferencePort::new(
             direct,
             run_context.clone(),
             Arc::clone(&self.model_accountant),
             Arc::clone(&self.model_policy_guard),
-        ))
+        ));
+        (guarded, warm_prefix_cache)
     }
 
     fn build_compaction_ports(&self, run_context: &LoopRunContext) -> Arc<dyn LoopCompactionPort> {
-        let system_inference = self.build_guarded_system_inference(run_context);
-        host_managed_loop_compaction_port_with_prompt_id(
+        let (system_inference, warm_prefix_cache) =
+            self.build_guarded_system_inference_with_warm_prefix(run_context);
+        let warm_prefix_source = warm_prefix_cache.map(|cache| {
+            Arc::new(ironclaw_loop_host::WarmPrefixCacheCompactionSource::new(
+                cache,
+                run_context.run_id,
+            )) as Arc<dyn ironclaw_loop_host::CompactionWarmPrefixSource>
+        });
+        ironclaw_loop_host::host_managed_loop_compaction_port_with_warm_prefix(
             system_inference,
             Arc::clone(&self.thread_service),
             self.effective_thread_scope(run_context),
             active_task_compaction_prompt_id(),
             ACTIVE_TASK_COMPACTION_SYSTEM_PROMPT,
+            warm_prefix_source,
         )
     }
 

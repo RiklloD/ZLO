@@ -172,6 +172,7 @@ where
                 max_input_tokens,
                 deadline_ms: FINALIZATION_DEADLINE_MS,
                 output_contract: Some(contract.clone()),
+                cache_fork: None,
             })
             .await
             .map_err(system_inference_error)?;

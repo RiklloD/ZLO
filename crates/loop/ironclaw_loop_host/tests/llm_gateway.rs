@@ -3504,6 +3504,7 @@ async fn response_cache_replay_is_budgeted_once_and_keeps_its_context_counts() {
         max_input_tokens: 100,
         deadline_ms: 5_000,
         output_contract: None,
+        cache_fork: None,
     };
 
     let served = port.call_system_inference(request.clone()).await.unwrap();
