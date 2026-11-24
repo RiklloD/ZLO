@@ -170,6 +170,8 @@ pub struct CodexRuntime {
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
     primed: crate::Primed,
+    /// What each thread's agent was sent, for the context meter.
+    sent: Arc<crate::context_meter::SentContexts>,
     /// How long a `turn/steer` waits for its answer ([`STEER_TIMEOUT`]).
     steer_timeout: Duration,
     /// How long one frame may take to go onto the server's stdin.
@@ -197,6 +199,7 @@ impl CodexRuntime {
             active: Arc::new(Mutex::new(HashMap::new())),
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
             primed: crate::Primed::default(),
+            sent: Arc::default(),
             steer_timeout: STEER_TIMEOUT,
             write_timeout: rpc::WRITE_TIMEOUT,
             compactor: Arc::default(),
@@ -1177,6 +1180,18 @@ impl TurnRuntime for CodexRuntime {
         self.id.clone()
     }
 
+    fn injected_context(
+        &self,
+        thread: &ThreadId,
+        profile: Option<&TurnProfile>,
+        goal: Option<&str>,
+    ) -> ironclaw_orchestrator::context_report::ContextSample {
+        self.sent.sample(thread, || {
+            let notes = crate::session_context(profile).then(crate::goal_notes(goal));
+            (notes, false)
+        })
+    }
+
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             native_fork: false,
@@ -1222,13 +1237,18 @@ impl TurnRuntime for CodexRuntime {
             .skills
             .listed_profile(&thread.thread_id, input.profile.as_ref(), &input.text)
             .await;
-        let context = crate::prompt_context(
-            crate::join_notes([
-                self.primed.take(&thread.thread_id, listed.profile.as_ref()),
-                listed.requested,
-            ]),
-            input.goal.as_deref(),
-        );
+        // The preamble goes once per session (this process); the skills this
+        // message asks for and the goal go with every turn that has them.
+        let session = self.primed.take(&thread.thread_id, listed.profile.as_ref());
+        let turn = crate::context_meter::Notes::default()
+            .instructions(listed.requested)
+            .then(crate::goal_notes(input.goal.as_deref()));
+        let context = session
+            .clone()
+            .unwrap_or_default()
+            .then(turn.clone())
+            .text();
+        self.sent.record(&thread.thread_id, session, turn, false);
         let run_id = self
             .spawn_turn(
                 &thread,

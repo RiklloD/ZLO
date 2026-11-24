@@ -73,9 +73,7 @@ use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
 use crate::slot::{Claim, GroupGuard, Slots};
-use context::{
-    AGY_SUBAGENT_DENIAL, AGY_SUBAGENT_TOOLS, ANTIGRAVITY_TOOLS_PROMPT, McpToken, TurnContext,
-};
+use context::{AGY_SUBAGENT_DENIAL, AGY_SUBAGENT_TOOLS, McpToken, TurnContext};
 use fold::PromptFold;
 use launch::AgentLaunch;
 use live::LiveFold;
@@ -194,6 +192,8 @@ pub struct AntigravityRuntime {
     bridge: Option<Arc<CliBridge>>,
     active: Slots<ActiveTurn>,
     primed: Arc<context::InlinePrimed>,
+    /// What each thread's agent was sent, for the context meter.
+    sent: crate::context_meter::SentContexts,
     /// Single flight for the background model-list refresh.
     refreshing: Arc<AtomicBool>,
     /// When the last refresh started (ms), for [`REFRESH_RETRY_MS`].
@@ -224,6 +224,7 @@ impl AntigravityRuntime {
             bridge,
             active: Slots::default(),
             primed: Arc::default(),
+            sent: Default::default(),
             refreshing: Arc::new(AtomicBool::new(false)),
             last_refresh: Arc::new(std::sync::atomic::AtomicI64::new(i64::MIN)),
             write_timeout: rpc::WRITE_TIMEOUT,
@@ -339,6 +340,12 @@ impl AntigravityRuntime {
             self.bridge.as_ref(),
             &thread.thread_id,
             &run_id,
+        );
+        self.sent.record(
+            &thread.thread_id,
+            Some(context.session.clone()),
+            context.turn.clone(),
+            mcp.is_some(),
         );
         let turn = Turn {
             mcp,
@@ -1436,15 +1443,15 @@ impl TurnRuntime for AntigravityRuntime {
 
     fn injected_context(
         &self,
+        thread: &ThreadId,
         profile: Option<&TurnProfile>,
         goal: Option<&str>,
     ) -> ironclaw_orchestrator::context_report::ContextSample {
-        let mut sample = crate::injected_context(profile, goal);
-        sample.add_text(
-            ironclaw_product_contracts::orchestration::ContextCategory::Instructions,
-            ANTIGRAVITY_TOOLS_PROMPT.trim(),
-        );
-        sample
+        self.sent.sample(thread, || {
+            let context = TurnContext::new(&Arc::default(), thread, profile, None, goal);
+            let mcp = McpToken::available(&self.config.launch, self.bridge.as_ref());
+            (context.session.then(context.turn), mcp)
+        })
     }
 
     fn capabilities(&self) -> RuntimeCapabilities {

@@ -980,6 +980,9 @@ async fn antigravity_cli_gets_the_zlo_mcp_server_and_notes_without_a_profile() {
         assert_has_zlo_notes(append);
     }
     assert_ne!(tokens[0], tokens[1], "one token per turn");
+    // The context meter counts the MCP server's tools this turn got.
+    let sample = rt.injected_context(&thread.thread_id, None, None);
+    assert_eq!(sample.tools.len(), 1, "{:?}", sample.tools);
     assert!(
         opened[0]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
             .as_str()
@@ -1006,6 +1009,12 @@ async fn antigravity_cli_offers_no_mcp_server_without_a_bridge() {
     let log = agy_log(dir.path());
     let new = &frames(&log, "session/new")[0];
     assert_eq!(new["params"]["mcpServers"], serde_json::json!([]), "{new}");
+    let sample = rt.injected_context(&thread.thread_id, None, None);
+    assert!(
+        sample.tools.is_empty(),
+        "no MCP server, so the context meter counts no orchestrator tools: {:?}",
+        sample.tools
+    );
     assert_has_zlo_notes(
         new["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
             .as_str()
@@ -1767,7 +1776,14 @@ async fn codex_profile_index_follows_the_skill_ledger_and_counts_reads() {
     turn.profile = Some(TurnProfile {
         skills: Some(ProfileSkills {
             plugin_dir: dir.path().join("profile"),
-            index: "unused: the runtime renders its own".into(),
+            // What an unmanaged turn sends; a managed one renders its own.
+            index: [
+                ("hot", "Used a lot"),
+                ("cold", "Rarely used"),
+                ("gone", "Pinned off"),
+            ]
+            .map(|(n, d)| format!("- {n}: {d} ({})", entry(n, d).skill_md.display()))
+            .join("\n"),
             entries: vec![
                 entry("hot", "Used a lot"),
                 entry("cold", "Rarely used"),
@@ -1776,13 +1792,37 @@ async fn codex_profile_index_follows_the_skill_ledger_and_counts_reads() {
         }),
         ..TurnProfile::default()
     });
+    let plain_dir = tempfile::tempdir().unwrap();
+    let plain_recorder = Arc::new(Recorder::default());
+    let plain = codex_with(plain_dir.path(), &plain_recorder, None, &body);
+    let plain_thread = thread(&plain, "gpt-b").await;
     let thread = thread(&rt, "gpt-b").await;
     let mut asks = turn.clone();
     asks.text = "now use $gone for this".into();
-    rt.start_turn(&thread, turn).await.unwrap();
+    let profile = turn.profile.clone();
+    rt.start_turn(&thread, turn.clone()).await.unwrap();
     wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+    // The context meter counts the index as this turn rendered it: the
+    // name-only line is short and the off skill is not there, so it is
+    // smaller than what an unmanaged runtime sends for the same profile.
+    let meter = |rt: &dyn TurnRuntime, thread: &ThreadRecord| {
+        rt.injected_context(&thread.thread_id, profile.as_ref(), None)
+            .tokens(ironclaw_product_contracts::orchestration::ContextCategory::Instructions)
+    };
+    let listed = meter(&rt, &thread);
+    plain.start_turn(&plain_thread, turn).await.unwrap();
+    wait_for(|| plain_recorder.finished.lock().unwrap().len() == 1).await;
+    let unlisted = meter(&plain, &plain_thread);
+    assert!(
+        listed > 0 && listed < unlisted,
+        "listed {listed}, unlisted {unlisted}"
+    );
     rt.start_turn(&thread, asks).await.unwrap();
     wait_for(|| recorder.finished.lock().unwrap().len() == 2).await;
+    assert!(
+        meter(&rt, &thread) > listed,
+        "the requested skill's note is counted on the turn that sent it"
+    );
 
     let log = std::fs::read_to_string(dir.path().join("codex.log")).unwrap();
     let starts: Vec<&str> = log

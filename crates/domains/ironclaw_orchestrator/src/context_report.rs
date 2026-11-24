@@ -348,7 +348,8 @@ impl Engine {
                         .await?
                         .filter(|g| g.status == GoalStatus::Active)
                         .map(|g| g.objective);
-                    let mut sample = runtime.injected_context(profile.as_ref(), goal.as_deref());
+                    let mut sample =
+                        runtime.injected_context(id, profile.as_ref(), goal.as_deref());
                     sample.add_history(
                         &self.history(thread).await?,
                         telemetry.context_used.is_some(),

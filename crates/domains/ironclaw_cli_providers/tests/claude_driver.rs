@@ -2128,6 +2128,97 @@ async fn a_requested_skill_launches_on_over_an_off_pin() {
     assert_eq!(overrides["cold"], "name-only", "{overrides}");
 }
 
+/// ZLO's context meter reports the profile skills as this turn listed them
+/// to the CLI: a name-only skill costs its name, an off one nothing, so the
+/// instruction tokens drop under the same profile; and without a bridge (no
+/// MCP server) no orchestrator tools are counted.
+#[tokio::test]
+async fn the_context_meter_counts_the_skills_as_the_turn_listed_them() {
+    use ironclaw_product_contracts::orchestration::ContextCategory;
+    let name = |s: &str| SkillUsageName::new(s).unwrap();
+    let long = "A very long description the model reads on every turn. ".repeat(60);
+    let meter = |managed: bool| {
+        let long = long.clone();
+        async move {
+            let dir = tempfile::tempdir().unwrap();
+            let sink = Arc::new(Recorder::default());
+            let store = skill_store();
+            let source = SkillUsageSource::cli_runtime("claude-cli").unwrap();
+            store
+                .record(
+                    &skill_owner(),
+                    &source,
+                    SkillUsageObservation {
+                        catalog: Some(vec![name("kept"), name("slim"), name("gone")]),
+                        used: Vec::new(),
+                    },
+                    1,
+                )
+                .await
+                .unwrap();
+            store
+                .set_pin(&skill_owner(), &name("slim"), Some(SkillPin::NameOnly))
+                .await
+                .unwrap();
+            store
+                .set_pin(&skill_owner(), &name("gone"), Some(SkillPin::Off))
+                .await
+                .unwrap();
+            let store: Arc<dyn SkillUsageStore> = if managed {
+                store
+            } else {
+                Arc::new(ironclaw_skills::usage::UnmanagedSkillUsage)
+            };
+            let plugin = dir.path().join("plugin");
+            std::fs::create_dir_all(plugin.join(".claude-plugin")).unwrap();
+            std::fs::write(
+                plugin.join(".claude-plugin/plugin.json"),
+                r#"{"name":"ironclaw"}"#,
+            )
+            .unwrap();
+            let (rt, args_log) = skills_runtime(dir.path(), &sink, store, None);
+            let thread = thread(&rt).await;
+            let entry = |n: &str| ProfileSkillEntry {
+                name: n.into(),
+                description: long.clone(),
+                skill_md: plugin.join(format!("skills/{n}/SKILL.md")),
+            };
+            let mut turn = input();
+            turn.profile = Some(TurnProfile {
+                skills: Some(ProfileSkills {
+                    plugin_dir: plugin.clone(),
+                    index: String::new(),
+                    entries: vec![entry("kept"), entry("slim"), entry("gone")],
+                }),
+                ..TurnProfile::default()
+            });
+            let profile = turn.profile.clone();
+            rt.start_turn(&thread, turn).await.unwrap();
+            wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+            if managed {
+                let overrides = &logged_overrides(&args_log)[0];
+                assert_eq!(overrides["ironclaw:slim"], "name-only", "{overrides}");
+                assert_eq!(overrides["ironclaw:gone"], "off", "{overrides}");
+            }
+            rt.injected_context(&thread.thread_id, profile.as_ref(), None)
+        }
+    };
+    let managed = meter(true).await;
+    let unmanaged = meter(false).await;
+    let description = ironclaw_orchestrator::context_report::estimate_tokens(&long);
+    let (m, u) = (
+        managed.tokens(ContextCategory::Instructions),
+        unmanaged.tokens(ContextCategory::Instructions),
+    );
+    // Unmanaged lists all three in full; managed keeps one description.
+    assert!(u >= m + 2 * description - 20, "managed {m}, unmanaged {u}");
+    assert!(m >= description, "the kept skill is still counted: {m}");
+    assert!(
+        managed.tools.is_empty() && unmanaged.tools.is_empty(),
+        "no MCP server"
+    );
+}
+
 /// The shared store, except its first `import_ledger` fails.
 #[derive(Debug)]
 struct FailFirstImport {

@@ -152,6 +152,8 @@ pub struct MuseRuntime {
     active: Slots,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
     primed: crate::Primed,
+    /// What each thread's agent was sent, for the context meter.
+    sent: Arc<crate::context_meter::SentContexts>,
     /// How long a `turn/steer` waits for its answer ([`STEER_TIMEOUT`]).
     steer_timeout: Duration,
     /// How the profile's skills are listed and their reads counted.
@@ -178,6 +180,7 @@ impl MuseRuntime {
             active: Slots::default(),
             catalog: Arc::new(tokio::sync::Mutex::new(Catalog::default())),
             primed: crate::Primed::default(),
+            sent: Arc::default(),
             steer_timeout: STEER_TIMEOUT,
             skills,
             #[cfg(test)]
@@ -304,6 +307,7 @@ impl MuseRuntime {
             .map(|c| c.rows.iter().map(|r| (r.id.clone(), r.clone())).collect())
             .unwrap_or_default(); // silent-ok: a busy catalog only drops the context-max and effort fallbacks
         let mcp = self.mcp_grant(&thread.thread_id, &run_id);
+        self.sent.set_mcp_tools(&thread.thread_id, mcp.is_some());
         let turn = Turn {
             config: Arc::clone(&self.config),
             session_id,
@@ -317,6 +321,7 @@ impl MuseRuntime {
             steer_timeout: self.steer_timeout,
             models,
             mcp: mcp.clone(),
+            sent: Arc::clone(&self.sent),
             bridge: self.bridge.clone(),
             thread_id: thread.thread_id.clone(),
             run_id: run_id.clone(),
@@ -590,6 +595,8 @@ struct Turn {
     models: HashMap<String, ModelRow>,
     /// The orchestrator tools' route, when the bridge serves one.
     mcp: Option<McpGrant>,
+    /// The runtime's record of what each thread was sent.
+    sent: Arc<crate::context_meter::SentContexts>,
     // arch-exempt: optional_arc, a host without the gateway denies every approval, plan #v3-cli-bridge
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
@@ -918,6 +925,7 @@ impl Turn {
             Some(mcp) if granted => Some(mcp.session_config()),
             Some(_) => {
                 tracing::debug!("muse: host lacks sessionMcp; orchestrator tools off");
+                self.sent.set_mcp_tools(&self.thread_id, false);
                 None
             }
             None => None,
@@ -1232,6 +1240,20 @@ impl TurnRuntime for MuseRuntime {
         self.id.clone()
     }
 
+    fn injected_context(
+        &self,
+        thread: &ThreadId,
+        profile: Option<&TurnProfile>,
+        goal: Option<&str>,
+    ) -> ironclaw_orchestrator::context_report::ContextSample {
+        self.sent.sample(thread, || {
+            let notes = crate::session_context(profile).then(crate::goal_notes(goal));
+            let mcp = self.config.orchestrator_tools
+                && self.bridge.as_ref().is_some_and(|b| b.mcp_url().is_some());
+            (notes, mcp)
+        })
+    }
+
     fn capabilities(&self) -> RuntimeCapabilities {
         RuntimeCapabilities {
             native_fork: false,
@@ -1276,13 +1298,18 @@ impl TurnRuntime for MuseRuntime {
             .skills
             .listed_profile(&thread.thread_id, input.profile.as_ref(), &input.text)
             .await;
-        let context = crate::prompt_context(
-            crate::join_notes([
-                self.primed.take(&thread.thread_id, listed.profile.as_ref()),
-                listed.requested,
-            ]),
-            input.goal.as_deref(),
-        );
+        // The preamble goes once per session (this process); the skills this
+        // message asks for and the goal go with every turn that has them.
+        let session = self.primed.take(&thread.thread_id, listed.profile.as_ref());
+        let turn = crate::context_meter::Notes::default()
+            .instructions(listed.requested)
+            .then(crate::goal_notes(input.goal.as_deref()));
+        let context = session
+            .clone()
+            .unwrap_or_default()
+            .then(turn.clone())
+            .text();
+        self.sent.record(&thread.thread_id, session, turn, false);
         let run_id = self
             .spawn_turn(
                 claim,

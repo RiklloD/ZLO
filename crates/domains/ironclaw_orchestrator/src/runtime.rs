@@ -580,11 +580,15 @@ pub trait TurnRuntime: Send + Sync {
         RuntimeCompaction::default()
     }
 
-    /// Estimated tokens of what the runtime puts in every prompt besides the
-    /// transcript (its system note, the profile's SOUL, the tools it adds),
-    /// for context reports. Empty when it adds nothing ZLO can measure.
+    /// Tokens of what the runtime put in `thread`'s prompts besides the
+    /// transcript on its latest turn (its system note, the profile's SOUL,
+    /// the skills as that turn listed them, the tools it added), for context
+    /// reports. `profile` and `goal` are the thread's now, for a runtime
+    /// that has no record of a turn. Empty when it adds nothing ZLO can
+    /// measure.
     fn injected_context(
         &self,
+        _thread: &ThreadId,
         _profile: Option<&TurnProfile>,
         _goal: Option<&str>,
     ) -> crate::context_report::ContextSample {
