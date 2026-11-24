@@ -346,6 +346,11 @@ pub fn has_tail(s: &State, id: &str) -> bool {
     o.tasks.iter().any(|t| t.status.is_live()) || (!c.goals.editing() && c.goals.goal.is_some())
 }
 
+/// Whether `id`'s chat runs its slow poll now.
+pub(crate) fn polling(s: &State, id: &str) -> bool {
+    crate::chat::chat_ref(s, id).is_some_and(|c| c.orchestration.polling)
+}
+
 /// Start the slow poll if something is moving. It stops by itself.
 pub fn ensure_poll(s: &mut State, id: &str) {
     let moving = needs_poll(s, id);

@@ -63,6 +63,21 @@ pub struct AgentsNav {
     /// Another refresh was asked for while one was in flight.
     stale: bool,
     polling: bool,
+    /// Turns the bounded parent reads so every parent gets read in time.
+    turn: usize,
+}
+
+impl AgentsNav {
+    /// A computer switch: the old computer's tasks and trail mean nothing
+    /// there, and a read in flight will never land (`jobs::run` drops it).
+    /// The refresh loop runs on; it stops by itself once the tab hides.
+    pub(crate) fn reset_for_switch(&mut self) {
+        let polling = self.polling;
+        *self = Self {
+            polling,
+            ..Self::default()
+        };
+    }
 }
 
 // ── family model ──
@@ -292,26 +307,51 @@ fn back_target(s: &State) -> Option<&str> {
 
 // ── refresh ──
 
-/// The tab is on screen for an open chat.
+/// The trail holds only while the tab's last click is the open thread:
+/// any other way of changing threads (sidebar, search) drops it, so a
+/// later return there does not bring an old Back row back. Cheap: the
+/// app's poll calls it.
+pub(crate) fn sync_trail(s: &mut State) {
+    let open = open_id(s).map(str::to_string);
+    let nav = &mut s.workspace.agents;
+    if nav.landed.is_some() && nav.landed != open {
+        nav.landed = None;
+        nav.trail.clear();
+    }
+}
+
+/// The tab is on screen for an open chat, with the window in front and
+/// the battery saver off: only then does it keep itself fresh.
 fn visible(s: &State) -> bool {
     s.chat.is_some()
+        && s.page == crate::state::Page::Chat
+        && crate::workspace::window_active(s)
+        && !crate::design::look::saving(s)
         && super::dock_open(s, Dock::Side)
         && super::dock_tab(s, Dock::Side) == Tab::Agents
 }
 
 /// The tab was shown: read now, and keep reading while it shows.
 pub(super) fn load(s: &mut State) {
-    refresh(s);
-    ensure_poll(s);
+    if s.workspace.agents.polling {
+        crate::workspace::refresh_inbox(s);
+        refresh(s);
+    } else {
+        // Starting the loop reads at once.
+        ensure_poll(s);
+    }
 }
 
 /// Start the tab's refresh loop if it shows and none runs. It stops once
-/// the tab is hidden. Cheap: the app's poll calls it.
+/// the tab hides, the window goes behind or the battery saver holds; the
+/// app's poll calls this, so coming back restarts it with a read at once.
 pub(crate) fn ensure_poll(s: &mut State) {
     if s.workspace.agents.polling || !visible(s) {
         return;
     }
     s.workspace.agents.polling = true;
+    crate::workspace::refresh_inbox(s);
+    refresh(s);
     schedule_tick(s);
 }
 
@@ -329,10 +369,10 @@ fn schedule_tick(s: &State) {
             s.workspace.agents.polling = false;
             return false;
         }
-        // In the background nothing is watching; the next tick catches up.
-        if crate::workspace::window_active(s) {
-            refresh(s);
-        }
+        // The inbox's own poll stops when nothing it lists works; a
+        // sibling started elsewhere must still show up here.
+        crate::workspace::refresh_inbox(s);
+        refresh(s);
         schedule_tick(s);
         false
     });
@@ -344,7 +384,11 @@ pub(crate) fn refresh(s: &mut State) {
     let Some(open) = open_id(s).map(str::to_string) else {
         return;
     };
-    crate::chat::orchestration::refresh(s, &open);
+    // The open chat polls its own tasks while anything moves; read them
+    // here only when it does not, so the two never double up.
+    if !crate::chat::orchestration::polling(s, &open) {
+        crate::chat::orchestration::refresh(s, &open);
+    }
     // Parents to read: the open thread's delegators, and every family
     // member the inbox says delegated something — except the open thread,
     // whose chat reads its own.
@@ -362,11 +406,23 @@ pub(crate) fn refresh(s: &mut State) {
             parents.push(t);
         }
     }
-    parents.truncate(MAX_FETCH);
     let nav = &mut s.workspace.agents;
     if parents.is_empty() {
         return;
     }
+    // Bounded: parents never read come first, then the rest in turns, so
+    // a large family's every parent is read within a few ticks.
+    let (mut fresh, mut known): (Vec<String>, Vec<String>) = parents
+        .into_iter()
+        .partition(|p| !nav.tasks.contains_key(p));
+    if !known.is_empty() {
+        let at = nav.turn % known.len();
+        known.rotate_left(at);
+    }
+    nav.turn = nav.turn.wrapping_add(MAX_FETCH);
+    fresh.append(&mut known);
+    let mut parents = fresh;
+    parents.truncate(MAX_FETCH);
     if nav.loading {
         nav.stale = true;
         return;
@@ -425,8 +481,10 @@ fn cancel(s: &mut State, parent: String, task_id: String) {
         move |c| async move { c.cancel_task(&task_id).await },
         |s, result, tx| {
             tx.animated();
-            if let Err(e) = result {
-                tracing::debug!(error = %e, "subagent cancel failed");
+            if let Err(e) = result
+                && let Some(open) = open_id(s).map(str::to_string)
+            {
+                crate::chat::report_error(s, &open, format!("Couldn't cancel the subagent: {e}"));
             }
             refresh(s);
         },
@@ -453,25 +511,23 @@ fn status(
     task: Option<&TaskView>,
 ) -> (&'static str, Color, bool) {
     let p = &s.palette;
+    // The inbox says what the thread is doing now (a follow-up in a
+    // subagent's chat can fail after its task completed); the task's
+    // outcome speaks only while the inbox has nothing to say.
     let shown = row.and_then(|r| s.workspace.inbox.shown_status(r));
-    match shown {
-        Some(InboxStatus::NeedsInput) => return ("Needs you", p.warning, true),
-        Some(InboxStatus::Working) => return ("Working", p.accent, true),
-        Some(InboxStatus::Background) => return ("Waiting on its subagents", p.accent, true),
-        _ => {}
-    }
-    if let Some(t) = task {
-        return (
+    match (shown, task) {
+        (Some(InboxStatus::NeedsInput), _) => ("Needs you", p.warning, true),
+        (Some(InboxStatus::Working), _) => ("Working", p.accent, true),
+        (Some(InboxStatus::Background), _) => ("Waiting on its subagents", p.accent, true),
+        (Some(InboxStatus::Limited), _) => ("Usage limit", p.warning, false),
+        (Some(InboxStatus::Interrupted), _) => ("Interrupted", p.danger, false),
+        (Some(InboxStatus::Failed), _) => ("Failed", p.danger, false),
+        (Some(InboxStatus::Stopped), _) => ("Stopped", p.text_faint, false),
+        (_, Some(t)) => (
             t.status.label(),
             task_color(t.status, p),
             t.status.is_live(),
-        );
-    }
-    match shown {
-        Some(InboxStatus::Limited) => ("Usage limit", p.warning, false),
-        Some(InboxStatus::Interrupted) => ("Interrupted", p.danger, false),
-        Some(InboxStatus::Failed) => ("Failed", p.danger, false),
-        Some(InboxStatus::Stopped) => ("Stopped", p.text_faint, false),
+        ),
         _ => ("Idle", p.text_faint, false),
     }
 }
@@ -575,13 +631,14 @@ fn card(s: &State, k: &Kit, m: &Member<'_>, open: Option<&str>) -> El {
     } else if live && let Some(ms) = m.row.and_then(|r| r.working_since) {
         meta.push(span((Utc::now().timestamp_millis() - ms) / 1000));
     }
+    let name = title(s, m);
     let mut head = row()
         .gap(8.)
         .items_center()
         .child(status_dot(color, live))
         .child(
             ui::line(
-                title(s, m),
+                name.clone(),
                 if m.depth == 0 { sm_med() } else { sm() },
                 p.text,
             )
@@ -646,6 +703,9 @@ fn card(s: &State, k: &Kit, m: &Member<'_>, open: Option<&str>) -> El {
     }
     match opens {
         Some(thread) => card
+            .role("button")
+            .label(format!("Open {name}"))
+            .focusable(true)
             .hover(p.hover)
             .press(p.hover)
             .press_scale(crate::design::motion::PRESS_CARD)
@@ -889,6 +949,40 @@ mod tests {
         go(&mut s, "main");
         assert_eq!(back_target(&s), None);
         assert!(s.workspace.agents.trail.is_empty());
+    }
+
+    #[test]
+    fn a_failed_follow_up_outranks_a_completed_task() {
+        let mut s = state("main");
+        s.workspace.inbox.list.rows[1].status = Some(InboxStatus::Failed);
+        let t = task("t1", "main", Some("a"), "completed", "Done thing");
+        let (word, _, live) = status(&s, s.workspace.inbox.row("a"), Some(&t));
+        assert_eq!((word, live), ("Failed", false));
+    }
+
+    #[test]
+    fn a_sidebar_detour_does_not_revive_the_trail() {
+        let mut s = state("main");
+        go(&mut s, "a");
+        // The sidebar goes to b, then back to a.
+        s.chat = Some(crate::chat::ChatState::new("b".into()));
+        sync_trail(&mut s);
+        s.chat = Some(crate::chat::ChatState::new("a".into()));
+        sync_trail(&mut s);
+        assert_eq!(back_target(&s), None);
+    }
+
+    #[test]
+    fn a_computer_switch_forgets_tasks_and_unblocks_reads() {
+        let mut s = state("a");
+        go(&mut s, "b");
+        let nav = &mut s.workspace.agents;
+        nav.loading = true;
+        nav.polling = true;
+        nav.tasks.insert("main".into(), Vec::new());
+        nav.reset_for_switch();
+        assert!(!nav.loading && nav.tasks.is_empty() && nav.trail.is_empty());
+        assert!(nav.polling, "the live loop keeps its flag and ends itself");
     }
 
     #[test]

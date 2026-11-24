@@ -551,6 +551,7 @@ pub fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let page = browser::poll(s, tx);
     // The Agents tab keeps itself fresh while shown, however it came up
     // (a tab click, a thread switch, the pane reopened).
+    agents::sync_trail(s);
     agents::ensure_poll(s);
     let open = [dock_open(s, Dock::Work), dock_open(s, Dock::Side)];
     let Some(x) = side_mut(s) else { return false };
