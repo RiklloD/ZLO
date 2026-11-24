@@ -2,7 +2,8 @@
 
 Target-architecture entry: PROPOSAL §6.4.10, `families/domains.md`.
 
-Turn a file's bytes into plain text by format. One `src/lib.rs`, no I/O, no
+Turn a file's bytes into plain text by format. `src/lib.rs` (dispatch, PDF,
+RTF, legacy Office, UTF-8) plus `src/ooxml.rs` (the ZIP-based formats), no I/O, no
 async, no knowledge of where the bytes came from — the same three functions
 serve chat attachments (`ironclaw_attachments`), capability download output
 (`ironclaw_host_runtime`), and the `read_file` coding tool
@@ -74,7 +75,8 @@ ZIP-reading path that bypasses it.
 
 ## Tests
 
-All in `src/lib.rs`. `cargo test -p ironclaw_extractors`. The consumers own
+All in `src/lib.rs`'s `tests` module (it reaches `ooxml` items through
+`crate::ooxml::*`). `cargo test -p ironclaw_extractors`. The consumers own
 their own rendering tests; if you change what an extractor returns, check
 `ironclaw_attachments::inbound`, `ironclaw_host_runtime::document_output`, and
 `ironclaw_extension_support::coding::file` — those are the three callers, and

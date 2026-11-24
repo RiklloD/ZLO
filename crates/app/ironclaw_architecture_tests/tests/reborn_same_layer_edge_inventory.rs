@@ -277,13 +277,6 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
         decided_in: "WS3",
     },
     SameLayerEdge {
-        crate_name: "ironclaw_capabilities",
-        dependency_name: "ironclaw_turns",
-        layer: "kernel",
-        owner: "kernel/",
-        decided_in: "WS3",
-    },
-    SameLayerEdge {
         crate_name: "ironclaw_host_runtime",
         dependency_name: "ironclaw_approvals",
         layer: "kernel",
@@ -841,7 +834,10 @@ const SAME_LAYER_EDGE_INVENTORY: &[SameLayerEdge] = &[
 // its skills from `ironclaw_skills::usage` — the one ledger, pin set and
 // listing policy the harness uses — instead of keeping its own copy of the
 // policy and an ad-hoc state file off the persistence plane.
-const SAME_LAYER_EDGE_BASELINE: usize = 82;
+// 82 -> 81 (workspace dep centralization, 2026-11-24): `ironclaw_capabilities`
+// declared `ironclaw_turns` but named nothing from it (cargo-shear); the
+// unused edge is removed.
+const SAME_LAYER_EDGE_BASELINE: usize = 81;
 
 /// Sanity floors for the metadata walk. A gate that scans nothing must never
 /// read as success; these are deliberately far below the live values (✎ **65**

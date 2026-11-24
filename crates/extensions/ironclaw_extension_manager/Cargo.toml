@@ -1,13 +1,12 @@
 [package]
 name = "ironclaw_extension_manager"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Product face of extensions: lifecycle commands/capabilities, the lifecycle product service, admin/operator capability handlers, and the extension hub for IronClaw Reborn"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -32,10 +31,10 @@ test-support = [
 ]
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 base64 = { workspace = true }
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
-futures = "0.3"
+chrono = { workspace = true, features = ["clock", "serde", "std"] }
+futures = { workspace = true }
 ironclaw_approvals = { path = "../../kernel/ironclaw_approvals" }
 ironclaw_auth = { path = "../../domains/ironclaw_auth" }
 # The optional crates below are used only by the `test_support` lifecycle
@@ -62,17 +61,16 @@ ironclaw_skills = { path = "../../domains/ironclaw_skills" }
 ironclaw_triggers = { path = "../../domains/ironclaw_triggers", optional = true }
 ironclaw_trust = { path = "../../kernel/ironclaw_trust", optional = true }
 ed25519-dalek = "2.2.0"
-hex = "0.4.3"
-hmac = "0.13"
-percent-encoding = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.11"
-thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
-toml = "1.1"
-tracing = "0.1"
-url = "2"
+hex = { workspace = true }
+hmac = { workspace = true }
+percent-encoding = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 ironclaw_auth = { path = "../../domains/ironclaw_auth", features = ["test-support"] }
@@ -90,14 +88,14 @@ ironclaw_resources = { path = "../../kernel/ironclaw_resources", features = ["te
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 ironclaw_triggers = { path = "../../domains/ironclaw_triggers" }
 ironclaw_trust = { path = "../../kernel/ironclaw_trust" }
-secrecy = "0.10"
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+secrecy = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 # `tracing` short-circuits on the null dispatcher, so a plain unit test cannot
 # tell "logged the cause" apart from "dropped it" — and the sanitized 503 body
 # makes that distinction the whole point of the lifecycle warning. Installing a
 # scoped subscriber is the only way to assert the diagnostic actually survives.
-tracing-subscriber = "0.3"
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

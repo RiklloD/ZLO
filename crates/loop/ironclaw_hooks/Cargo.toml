@@ -1,7 +1,10 @@
 [package]
 name = "ironclaw_hooks"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -34,35 +37,35 @@ test-support = []
 integration = []
 
 [dependencies]
-async-trait = "0.1"
-blake3 = "1"
-chrono = { version = "0.4", features = ["serde"] }
-deadpool-postgres = "0.14"
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true, default-features = true, features = ["serde"] }
+deadpool-postgres = { workspace = true }
 libsql = { workspace = true, features = ["remote", "tls"] }
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
-futures = "0.3"
+tokio-postgres = { workspace = true, features = ["with-chrono-0_4"] }
+futures = { workspace = true }
 ironclaw_event_log = { path = "../../events/ironclaw_event_log" }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 ironclaw_prompt_envelope = { path = "../../contracts/ironclaw_prompt_envelope" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
 ironclaw_wasm_limiter = { path = "../../lanes/ironclaw_wasm_limiter" }
 lru = "0.18"
-rust_decimal = { version = "1", features = ["serde", "serde-with-str", "db-tokio-postgres"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["time", "rt", "sync"] }
-tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
+rust_decimal = { workspace = true, features = ["serde", "serde-with-str", "db-tokio-postgres"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time", "rt", "sync"] }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 wasmtime = { workspace = true }
 
 [dev-dependencies]
 # `test-util` powers `#[tokio::test(start_paused = true)]`, so the 5s
 # after_turn dispatch budget is exercised without 5s of wall clock.
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "test-util", "time"] }
-tempfile = "3"
-toml = "1.1"
-wat = "1"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util", "time"] }
+tempfile = { workspace = true }
+toml = { workspace = true }
+wat = { workspace = true }
 
 # Durable-backend test suites folded in from the former
 # `ironclaw_hooks_{postgres,libsql}` / `ironclaw_hooks_parity` crates. The

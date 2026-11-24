@@ -1,13 +1,12 @@
 [package]
 name = "ironclaw_observability"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Low-level observability helpers for IronClaw"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -17,7 +16,7 @@ layer = "substrates"
 # One dependency, deliberately. The macros expand to `tracing`; anything that
 # would add a second dependency here is a measurement that belongs to its
 # producer, not to this crate. See AGENTS.md.
-tracing = "0.1"
+tracing = { workspace = true }
 
 [lints]
 workspace = true

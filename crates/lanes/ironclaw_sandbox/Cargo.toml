@@ -1,7 +1,10 @@
 [package]
 name = "ironclaw_sandbox"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -12,12 +15,12 @@ layer = "runtimes"
 # is the reason this crate exists (PROPOSAL §6.6.4).
 bollard = "0.18"
 rcgen = "0.14"
-libc = "0.2"
+libc = { workspace = true }
 time = { version = "0.3", default-features = false }
-async-trait = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
-hex = "0.4"
-futures-util = "0.3"
+async-trait = { workspace = true }
+chrono = { workspace = true, default-features = true, features = ["serde"] }
+hex = { workspace = true }
+futures-util = { workspace = true, default-features = true }
 fs2 = "0.4"
 ironclaw_extension_contracts = { path = "../../contracts/ironclaw_extension_contracts", version = "0.1.0" }
 ironclaw_common = { path = "../../contracts/ironclaw_common" }
@@ -25,18 +28,18 @@ ironclaw_host_api = { path = "../../contracts/ironclaw_host_api", version = "0.1
 ironclaw_network = { path = "../../substrates/ironclaw_network" }
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 ironclaw_secrets = { path = "../../substrates/ironclaw_secrets" }
-serde = { version = "1", features = ["derive"] }
-sha2 = "0.11"
-secrecy = "0.10"
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
+secrecy = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = "0.9"
-thiserror = "2"
-tempfile = "3"
-tokio = { version = "1", features = ["io-util", "process", "rt", "sync", "time"] }
-tracing = "0.1"
-url = "2"
-zeroize = { version = "1", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process", "rt", "sync", "time"] }
+tracing = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
 # Lane tests build a real ExtensionPackage and project the three inputs the
@@ -51,8 +54,7 @@ ironclaw_extension_registry = { path = "../../extensions/ironclaw_extension_regi
 # denial the kernel actually produced rather than one a lane-local fake made
 # up. Do not re-add this under `[dependencies]`.
 ironclaw_resources = { path = "../../kernel/ironclaw_resources" }
-rust_decimal_macros = "1"
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 x509-parser = { version = "0.18", features = ["verify"] }
 
 [lints]

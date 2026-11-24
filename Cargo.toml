@@ -108,10 +108,77 @@ exclude = [
 edition = "2024"
 rust-version = "1.100"
 license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
 repository = "https://github.com/nearai/ironclaw"
 
 [workspace.dependencies]
+# Every external crate declared by three or more workspace members is pinned
+# here once and referenced from members as `{ workspace = true }` (members keep
+# their own `features = [...]` / `optional = true`). Enforced by
+# `crates/app/ironclaw_architecture_tests/tests/reborn_workspace_dep_centralization.rs`.
+#
+# Entries carry only the version requirement (plus `default-features = false`
+# when any member builds the crate without its defaults); features are opted
+# into per member.
+# With `default-features = false` here, a member that needs the crate's
+# defaults says `default-features = true` explicitly (chrono, futures-util).
+# tokio's default feature set is empty, so disabling it here changes nothing.
+#
+# Keep this table sorted by crate name.
+anyhow = "1"
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.23"
+blake3 = "1"
+chrono = { version = "0.4", default-features = false }
+chrono-tz = "0.10"
+deadpool-postgres = "0.14"
+dirs = "6"
+futures = "0.3"
+futures-util = { version = "0.3", default-features = false }
+hex = "0.4.3"
+hmac = "0.13"
+http = "1"
+http-body-util = "0.1"
+jsonschema = { version = "0.49", default-features = false }
+libc = "0.2"
+# libSQL driver. Members add `remote` + `tls` when they open Turso/remote
+# databases (`Builder::new_remote`). `replication` (embedded replicas,
+# `Builder::new_remote_replica`) is deliberately NOT enabled: nothing in the
+# workspace uses it, and it alone pulls tonic 0.11 → axum 0.6 / tower-http 0.4.
+# The remaining legacy transport (hyper 0.14 / http 0.2 / h2 0.3 /
+# hyper-rustls 0.25 → rustls 0.22) is still pinned by `remote` + `tls` in
+# every published libsql release up to and including 0.10.0 — see deny.toml.
+libsql = { version = "0.9", default-features = false, features = ["core"] }
+parking_lot = "0.12"
+percent-encoding = "2"
+proptest = "1"
+rand = "0.10"
+regex = "1"
+# HTTP client. Members opt into TLS (`rustls`, which verifies against the OS
+# trust store via rustls-platform-verifier) and body features explicitly.
+reqwest = { version = "0.13", default-features = false }
+rust_decimal = "1"
+rust_decimal_macros = "1"
+secrecy = "0.10"
+serde = "1"
+serde_json = "1"
+sha2 = "0.11"
+static_assertions = "1"
+subtle = "2"
+tempfile = "3"
+testcontainers-modules = "0.12"
+thiserror = "2"
+tokio = { version = "1", default-features = false }
+tokio-postgres = "0.7"
+tokio-util = "0.7"
+toml = "1.1"
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-test = "0.2"
+url = "2"
+urlencoding = "2"
+uuid = "1"
 # WASM sandbox for untrusted tool execution.
 # Floor 47.0.4: minimum current major patch containing the fixes for the
 # Wasmtime advisories RUSTSEC-2026-0149, RUSTSEC-2026-0188,
@@ -121,19 +188,17 @@ wasmtime = { version = "49.0.7", features = ["component-model"] }
 # defaults off avoids compiling unused p0/p1 WITX proc macros under remote CI
 # sccache workers, where registry sidecar WITX files are not present.
 wasmtime-wasi = { version = "49.0.7", default-features = false, features = ["p2"] }
-
-# libSQL driver. Members add `remote` + `tls` when they open Turso/remote
-# databases (`Builder::new_remote`). `replication` (embedded replicas,
-# `Builder::new_remote_replica`) is deliberately NOT enabled: nothing in the
-# workspace uses it, and it alone pulls tonic 0.11 → axum 0.6 / tower-http 0.4.
-# The remaining legacy transport (hyper 0.14 / http 0.2 / h2 0.3 /
-# hyper-rustls 0.25 → rustls 0.22) is still pinned by `remote` + `tls` in
-# every published libsql release up to and including 0.10.0 — see deny.toml.
-libsql = { version = "0.9", default-features = false, features = ["core"] }
-base64 = "0.23"
-# HTTP client. Members opt into TLS (`rustls`, which verifies against the OS
-# trust store via rustls-platform-verifier) and body features explicitly.
-reqwest = { version = "0.13", default-features = false }
+# WebAssembly text + component tooling used by the WASM lane tests to build
+# fixture components. All three stay on the wasm-tools 0.258 line that
+# wasmtime 49 itself links (`wasm-encoder`/`wasmparser`/`wit-parser` 0.258), so
+# the lockfile carries one copy of each; `wat` is capped with `~` because a
+# bare "1.x" floats to the newest wasm-tools release and re-adds the duplicates.
+# Move all three together with wasmtime.
+wat = "~1.258.3"
+wit-component = "0.258.3"
+wit-parser = "0.258.3"
+zeroize = "1"
+zip = { version = "9", default-features = false }
 
 # Maintainability guardrails against dead/speculative public API
 # (the "Theme 1" anti-pattern from the maintainability audit: accessors,
@@ -206,11 +271,10 @@ unused_must_use = "deny"
 name = "ironclaw_integration_tests"
 publish = false
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 
 [package.metadata.ironclaw]
 layer = "app"
@@ -223,27 +287,27 @@ dist = false
 # `tests/reborn_*.rs`) reference directly — previously satisfied via the now-
 # deleted v1 `[dependencies]` block, since regular deps were visible to test
 # binaries too.
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-async-trait = "0.1"
-thiserror = "2"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
-secrecy = { version = "0.10", features = ["serde"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-axum = "0.8"
-tower = { version = "0.5", features = ["util"] }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true, default-features = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "v5", "serde"] }
+secrecy = { workspace = true, features = ["serde"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+axum = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 reqwest = { workspace = true, features = ["json", "multipart", "rustls", "stream"] }
 base64 = { workspace = true }
-rust_decimal = { version = "1", features = ["serde", "serde-with-str"] }
-regex = "1"
-sha2 = "0.11"
-hex = "0.4"
-url = "2"
-toml = "1.1"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+rust_decimal = { workspace = true, features = ["serde", "serde-with-str"] }
+regex = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+url = { workspace = true }
+toml = { workspace = true }
+zip = { workspace = true, features = ["deflate"] }
 libsql = { workspace = true, features = ["remote", "tls"] }
 # `test-support` exposes the witness-gated protocol-auth test seam and the
 # messaging conformance helpers used by the integration fixtures. Declared
@@ -264,17 +328,14 @@ ironclaw_trace_commons = { path = "crates/domains/ironclaw_trace_commons", versi
 # feature lane (StorageMode::Postgres skips at runtime when unavailable), so
 # the pool deps are unconditional dev-dependencies (the `postgres` feature is
 # a marker with no dependency gating).
-deadpool-postgres = "0.14"
-tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
+deadpool-postgres = { workspace = true }
+tokio-postgres = { workspace = true, features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
 # The generic-extension ingress/delivery integration suites verify webhook
 # HMAC recipes and collect axum response bodies.
-hmac = "0.13"
-http-body-util = "0.1"
-tokio-test = "0.4"
-tracing-test = "0.2"
-testcontainers-modules = { version = "0.12", features = ["postgres"] }
-pretty_assertions = "1"
-tempfile = "3"
+hmac = { workspace = true }
+http-body-util = { workspace = true }
+testcontainers-modules = { workspace = true, features = ["postgres"] }
+tempfile = { workspace = true }
 insta = { version = "1.46.3", features = ["yaml"] }
 # Pull the LLM crate's `testing` feature in only for tests so `StubLlm` and
 # fault-injection helpers don't ship in release binaries.

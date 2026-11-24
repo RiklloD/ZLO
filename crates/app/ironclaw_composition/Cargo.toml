@@ -1,13 +1,12 @@
 [package]
 name = "ironclaw_composition"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Composition-root production composition root for IronClaw Reborn"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -39,11 +38,11 @@ test-support = [
     "ironclaw_turn_runner/test-support",
 ]
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 base64 = { workspace = true }
-chrono = "0.4"
-deadpool-postgres = "0.14"
-futures = "0.3"
+chrono = { workspace = true, default-features = true }
+deadpool-postgres = { workspace = true }
+futures = { workspace = true }
 ironclaw_auth = { path = "../../domains/ironclaw_auth" }
 ironclaw_common = { path = "../../contracts/ironclaw_common" }
 ironclaw_capabilities = { path = "../../kernel/ironclaw_capabilities" }
@@ -106,22 +105,22 @@ ironclaw_turns = { path = "../../kernel/ironclaw_turns" }
 # WebUI v2 route surface + static SPA bundle merged up into
 # `ironclaw_webui`; no longer a composition dependency.
 libsql = { workspace = true, features = ["remote", "tls"] }
-axum = { version = "0.8" }
-tower = { version = "0.5" }
-rand = "0.10"
-rust_decimal = { version = "1", features = ["serde", "serde-with-str"] }
-secrecy = "0.10"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.11"
-tempfile = "3"
-thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-toml = "1.1"
-tracing = "0.1"
-url = "2"
-uuid = { version = "1", features = ["v4"] }
+axum = { workspace = true }
+tower = { workspace = true }
+rand = { workspace = true }
+rust_decimal = { workspace = true, features = ["serde", "serde-with-str"] }
+secrecy = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-util = { workspace = true, features = ["rt"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 ironclaw_auth = { path = "../../domains/ironclaw_auth", features = ["test-support"] }
@@ -132,9 +131,8 @@ ironclaw_extension_manager = { path = "../../extensions/ironclaw_extension_manag
 # own unit/integration tests (and the test-support inventory helper) can build
 # the catalog and trust policy without the binary.
 ironclaw_extension_support = { path = "../../extensions/ironclaw_extension_support" }
-async-trait = "0.1"
-chrono = "0.4"
-hmac = "0.13"
+async-trait = { workspace = true }
+chrono = { workspace = true, default-features = true }
 # Enables the in-memory-backed outbound-state store constructor for tests only.
 ironclaw_outbound = { path = "../../domains/ironclaw_outbound", features = ["test-support"] }
 # Enables the in-memory-backed approval store constructors for tests only.
@@ -149,12 +147,11 @@ ironclaw_resources = { path = "../../kernel/ironclaw_resources", features = ["te
 # Enables the `FaultInjecting` backend decorator so store fault paths are tested
 # through the real filesystem-backed store instead of a whole-trait fake.
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features = ["test-support"] }
-http = "1"
-http-body-util = "0.1"
+http-body-util = { workspace = true }
 # Admin-user-management e2e test drives the composed app with a real session
 # authenticator so a minted API token can be validated (login-with-token).
 ironclaw_webui = { path = "../../product/ironclaw_webui" }
-secrecy = { version = "0.10", features = ["serde"] }
+secrecy = { workspace = true, features = ["serde"] }
 ironclaw_common = { path = "../../contracts/ironclaw_common" }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 ironclaw_host_runtime = { path = "../../kernel/ironclaw_host_runtime", features = ["test-support"] }
@@ -170,23 +167,23 @@ ironclaw_assistant = { path = "../../product/ironclaw_assistant", features = ["t
 # Channel-host E2E suites drive Slack's existing concrete provider fixture.
 # Cross-provider parity belongs in the root integration-test package.
 ironclaw_slack_extension = { path = "../../extensions/packages/slack" }
-rust_decimal = { version = "1", features = ["serde", "serde-with-str"] }
-rust_decimal_macros = "1"
-sha2 = "0.11"
-tempfile = "3"
+rust_decimal = { workspace = true, features = ["serde", "serde-with-str"] }
+rust_decimal_macros = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
 # Package hooks/settings E2E builds its WASM tool component and hook module
 # from WAT at test time (same pattern as ironclaw_host_runtime's tests).
 ironclaw_wasm = { path = "../../lanes/ironclaw_wasm" }
-wat = "1.245.1"
-wit-component = "0.254.0"
-wit-parser = "0.254.0"
-testcontainers-modules = { version = "0.12", features = ["postgres"] }
-tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
-tower = { version = "0.5", features = ["util"] }
+wat = { workspace = true }
+wit-component = { workspace = true }
+wit-parser = { workspace = true }
+testcontainers-modules = { workspace = true, features = ["postgres"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
+tower = { workspace = true, features = ["util"] }
 # `no-env-filter` captures every event regardless of its metadata target —
 # the observer test asserts a `target: "ironclaw::reborn::…"` warning, which
 # the default `{crate}=trace` filter would drop.
-tracing-test = { version = "0.2", features = ["no-env-filter"] }
+tracing-test = { workspace = true, features = ["no-env-filter"] }
 
 [[test]]
 name = "production_runtime_automations"

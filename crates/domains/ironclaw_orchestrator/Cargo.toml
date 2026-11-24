@@ -1,17 +1,18 @@
 [package]
 name = "ironclaw_orchestrator"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Thread orchestration engine for IronClaw: durable queue, delegation tree, forks, restart and usage-limit recovery"
-license = "MIT OR Apache-2.0"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
 layer = "substrates"
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 # Profile settings are persisted in their wire shape (`profiles::ProfileSettings`).
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
@@ -20,25 +21,25 @@ ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contract
 # (parent/child trees, ordered queues, conditional status transitions).
 ironclaw_libsql_runtime = { path = "../../substrates/ironclaw_libsql_runtime" }
 libsql = { workspace = true, features = ["remote", "tls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 # Webhook schedules: optional HMAC-SHA256 request signatures.
 base64 = { workspace = true }
-hex = "0.4.3"
-secrecy = "0.10"
-hmac = "0.13"
-sha2 = "0.11"
-subtle = "2"
-thiserror = "2"
+hex = { workspace = true }
+secrecy = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
 # `.zlo/worktree.toml`, the project's worktree setup commands.
-toml = "1.1"
-tokio = { version = "1", features = ["rt", "sync", "time", "macros", "fs"] }
-tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
+toml = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "fs"] }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process", "fs"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "process", "fs"] }
 
 [lints]
 workspace = true

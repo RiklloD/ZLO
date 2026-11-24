@@ -1,13 +1,12 @@
 [package]
 name = "ironclaw_turn_runner"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Reborn runner control plane and loop-driver adapters for IronClaw"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -26,14 +25,14 @@ layer = "loops"
 test-support = ["ironclaw_turns/test-support"]
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 # Scope-roster shard-prefix hashing only (§4.5) — same version already used
 # by `ironclaw_filesystem` for the identical stable-hex-from-key pattern
 # (`db.rs`'s index-name collision suffixing); not a `[workspace.dependencies]`
 # entry, so this crate needs its own line.
-blake3 = "1"
-chrono = "0.4"
-futures-util = { version = "0.3", default-features = false }
+blake3 = { workspace = true }
+chrono = { workspace = true, default-features = true }
+futures-util = { workspace = true }
 ironclaw_agent_loop = { path = "../ironclaw_agent_loop", version = "0.1.0" }
 ironclaw_event_log = { path = "../../events/ironclaw_event_log", version = "0.1.0" }
 ironclaw_hooks = { path = "../ironclaw_hooks", version = "0.1.0" }
@@ -45,7 +44,6 @@ ironclaw_observability = { path = "../../substrates/ironclaw_observability" }
 ironclaw_outbound = { path = "../../domains/ironclaw_outbound", version = "0.1.0" }
 ironclaw_processes = { path = "../../kernel/ironclaw_processes", version = "0.1.0" }
 ironclaw_approvals = { path = "../../kernel/ironclaw_approvals", version = "0.1.0" }
-ironclaw_safety = { path = "../../substrates/ironclaw_safety", version = "0.2.2" }
 ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", version = "0.1.0" }
 ironclaw_threads = { path = "../../domains/ironclaw_threads", version = "0.1.0" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
@@ -54,42 +52,26 @@ ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", ve
 # hands it to `ironclaw_trace_commons::capture`, which owns the pipeline.
 ironclaw_trace_commons = { path = "../../domains/ironclaw_trace_commons", version = "0.1.0" }
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", version = "0.1.0" }
-libsql = { workspace = true, features = ["remote", "tls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 # Message ids for the captured-transcript adaptation in `trace_capture`.
-uuid = { version = "1", features = ["v4"] }
-tracing = "0.1"
+uuid = { workspace = true, features = ["v4"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 ironclaw_turn_runner = { path = ".", features = ["test-support"] }
 ironclaw_loop_host = { path = "../ironclaw_loop_host", features = ["test-support"] }
-chrono = "0.4"
-http = "1"
+chrono = { workspace = true, default-features = true }
 ironclaw_agent_loop = { path = "../ironclaw_agent_loop", version = "0.1.0", features = ["test-support"] }
-ironclaw_authorization = { path = "../../kernel/ironclaw_authorization", version = "0.1.0" }
-ironclaw_event_projections = { path = "../../events/ironclaw_event_projections", version = "0.1.0" }
-ironclaw_extension_registry = { path = "../../extensions/ironclaw_extension_registry", version = "0.1.0" }
-ironclaw_memory_native = { path = "../../extensions/packages/memory-native", version = "0.1.0" }
 ironclaw_processes = { path = "../../kernel/ironclaw_processes", version = "0.1.0", features = ["test-support"] }
 ironclaw_event_store = { path = "../../events/ironclaw_event_store", version = "0.1.0" }
-ironclaw_resources = { path = "../../kernel/ironclaw_resources", version = "0.1.0" }
-ironclaw_sandbox = { path = "../../lanes/ironclaw_sandbox", version = "0.1.0" }
-ironclaw_skills = { path = "../../domains/ironclaw_skills", version = "0.3.0", default-features = false }
-ironclaw_trust = { path = "../../kernel/ironclaw_trust", version = "0.1.0" }
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", version = "0.1.0", features = ["test-support"] }
-rust_decimal = "1"
-reqwest = { workspace = true, features = ["json"] }
-serde = "1"
-serde_json = "1"
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-wat = "1.245.1"
-tracing-test = { version = "0.2", features = ["no-env-filter"] }
-tracing-subscriber = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tracing-test = { workspace = true, features = ["no-env-filter"] }
 
 
 [lints]

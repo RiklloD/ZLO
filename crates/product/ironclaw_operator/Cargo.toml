@@ -1,22 +1,21 @@
 [package]
 name = "ironclaw_operator"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Host/operator control-plane services for IronClaw Reborn"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
 layer = "products"
 
 [dependencies]
-async-trait = "0.1"
-axum = "0.8"
-chrono = { version = "0.4", features = ["serde"] }
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true, default-features = true, features = ["serde"] }
 ironclaw_common = { path = "../../contracts/ironclaw_common" }
 # Operator metrics (`src/metrics/`) fold two durable facts they observe through
 # decorators: the redacted runtime events handed to the durable event sink
@@ -37,20 +36,19 @@ ironclaw_config = { path = "../../app/ironclaw_config" }
 ironclaw_safety = { path = "../../substrates/ironclaw_safety" }
 # `LlmProvider::cost_per_token` returns `Decimal`; the metrics provider
 # decorator (`src/metrics/llm.rs`) delegates the whole trait.
-rust_decimal = "1"
+rust_decimal = { workspace = true }
 nix = { version = "0.31", default-features = false, features = ["process"] }
-libc = "0.2"
-secrecy = "0.10"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tempfile = "3"
-thiserror = "2"
-tokio = { version = "1", features = ["fs", "macros", "rt", "sync", "time"] }
-toml = "1.1"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-url = "2"
-uuid = { version = "1", features = ["v4"] }
+libc = { workspace = true }
+secrecy = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "macros", "rt", "sync", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 # Metrics decorator tests drive the production approval store over its
@@ -65,9 +63,9 @@ ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem", features 
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts", features = [
     "test-support",
 ] }
-rust_decimal = "1"
-tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
+rust_decimal = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true

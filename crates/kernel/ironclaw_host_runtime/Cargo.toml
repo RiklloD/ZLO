@@ -1,7 +1,10 @@
 [package]
 name = "ironclaw_host_runtime"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -11,17 +14,16 @@ layer = "kernel"
 test-support = []
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 # ES256 signing for the RFC 8292 `vapid_authorization` egress credential
 # injection (Web Push). Already in the lockfile via jsonwebtoken's
 # aws_lc_rs backend; no new lockfile entry.
 aws-lc-rs = "1"
 base64 = { workspace = true }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-chrono-tz = "0.10"
-futures-util = "0.3"
-dirs = "6"
-hex = "0.4"
+chrono = { workspace = true, features = ["clock"] }
+chrono-tz = { workspace = true }
+futures-util = { workspace = true, default-features = true }
+dirs = { workspace = true }
 ironclaw_approvals = { path = "../ironclaw_approvals" }
 ironclaw_attachments = { path = "../../domains/ironclaw_attachments" }
 ironclaw_authorization = { path = "../ironclaw_authorization" }
@@ -59,25 +61,24 @@ ironclaw_trust = { path = "../ironclaw_trust" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
 ironclaw_turns = { path = "../ironclaw_turns" }
 ironclaw_wasm = { path = "../../lanes/ironclaw_wasm" }
-libsql = { workspace = true, features = ["remote", "tls"] }
-jsonschema = { version = "0.49", default-features = false }
-libc = "0.2"
-rust_decimal = { version = "1", features = ["serde", "serde-with-str"] }
-secrecy = "0.10"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.11"
-static_assertions = "1"
-thiserror = "2"
+jsonschema = { workspace = true }
+libc = { workspace = true }
+rust_decimal = { workspace = true, features = ["serde", "serde-with-str"] }
+secrecy = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+static_assertions = { workspace = true }
+thiserror = { workspace = true }
 # — needed directly to compute the CA's leaf-cert validity window.
-tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
-tracing = "0.1"
-url = "2"
-uuid = { version = "1", features = ["v4"] }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-axum = { version = "0.8", features = ["json"] }
-hex = "0.4"
+libsql = { workspace = true, features = ["remote", "tls"] }
+axum = { workspace = true, features = ["json"] }
+hex = { workspace = true }
 # Test-only since WS3: the skill-install bundle limits these tests exercise are
 # owned by `ironclaw_skills`, but the executor that enforces them now lives in
 # `ironclaw_extension_support::skills` — a normal dep here would re-open the
@@ -85,7 +86,7 @@ hex = "0.4"
 ironclaw_skills = { path = "../../domains/ironclaw_skills" }
 # Test-only since WS3: the ZIP-bundle fixtures these tests build stay here; the
 # extractor moved to `ironclaw_extension_support::skills::url_install`.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { workspace = true, features = ["deflate"] }
 # Enables the in-memory-backed approval store constructors for tests only.
 ironclaw_approvals = { path = "../ironclaw_approvals", features = ["test-support"] }
 # Enables the in-memory-backed capability-lease store constructor for tests only.
@@ -102,17 +103,15 @@ ironclaw_outbound = { path = "../../domains/ironclaw_outbound", features = ["tes
 # Enables the in-memory-backed process store constructors for tests only.
 ironclaw_processes = { path = "../ironclaw_processes", features = ["test-support"] }
 # Enables the in-memory-backed run-state/approval store constructors for tests only.
-sha2 = "0.11"
-parking_lot = "0.12"
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
-tokio-postgres = "0.7"
-tracing-subscriber = "0.3"
-tracing-test = { version = "0.2", features = ["no-env-filter"] }
-zeroize = "1"
-wat = "1.245.1"
-wit-component = "0.258.3"
-wit-parser = "0.258.3"
+sha2 = { workspace = true }
+parking_lot = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing-test = { workspace = true, features = ["no-env-filter"] }
+zeroize = { workspace = true }
+wat = { workspace = true }
+wit-component = { workspace = true }
+wit-parser = { workspace = true }
 # tests (chain-of-trust, SAN, validity window) without hand-rolling ASN.1.
 
 [lints]

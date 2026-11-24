@@ -1,13 +1,12 @@
 [package]
 name = "ironclaw_webui"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Host-owned listener binding + serve loop for the Reborn WebChat v2 HTTP gateway"
 authors = ["NEAR AI <support@near.ai>"]
-license = "MIT OR Apache-2.0"
-homepage = "https://github.com/nearai/ironclaw"
-repository = "https://github.com/nearai/ironclaw"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -21,13 +20,13 @@ test-support = []
 
 [dependencies]
 async-stream = "0.3"
-async-trait = "0.1"
-axum = "0.8"
+async-trait = { workspace = true }
+axum = { workspace = true }
 base64 = { workspace = true }
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
-futures = "0.3"
-hex = "0.4.3"
-hmac = "0.13"
+chrono = { workspace = true, features = ["clock", "serde", "std"] }
+futures = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts", version = "0.1.0" }
 ironclaw_extension_contracts = { path = "../../contracts/ironclaw_extension_contracts", version = "0.1.0" }
@@ -69,30 +68,30 @@ tower-http = { version = "0.7", features = [
     "compression-gzip",
 ] }
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
-parking_lot = "0.12"
-rand = "0.10"
+parking_lot = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls"] }
-secrecy = "0.10"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.11"
-subtle = "2"
-thiserror = "2"
-tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
-tower = { version = "0.5", features = ["util"] }
-tracing = "0.1"
-url = "2"
-urlencoding = "2"
+secrecy = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+tower = { workspace = true, features = ["util"] }
+tracing = { workspace = true }
+url = { workspace = true }
+urlencoding = { workspace = true }
 # `uuid` is consumed by the signed session token store and library tests.
-uuid = { version = "1", features = ["v4"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [build-dependencies]
-sha2 = "0.11"
+sha2 = { workspace = true }
 
 [dev-dependencies]
-axum = { version = "0.8", features = ["macros"] }
-http = "1"
-http-body-util = "0.1"
+axum = { workspace = true, features = ["macros"] }
+http = { workspace = true }
+http-body-util = { workspace = true }
 # End-to-end session test (`tests/session_round_trip.rs`) drives the
 # composed `webui_v2_app` with a minimal `ProductSurface` stub so
 # the assertion covers SessionAuthenticator + the v2 route surface
@@ -101,18 +100,14 @@ http-body-util = "0.1"
 ironclaw_assistant = { path = "../ironclaw_assistant", features = ["test-support"] }
 ironclaw_auth = { path = "../../domains/ironclaw_auth", features = ["test-support"] }
 ironclaw_secrets = { path = "../../substrates/ironclaw_secrets" }
-# Handler contract test (moved from ironclaw_webui_v2) constructs
-# `ProductOutboundEnvelope` fixtures through the product facade re-export.
-ironclaw_loop_host = { path = "../../loop/ironclaw_loop_host" }
-tempfile = "3"
 ironclaw_threads = { path = "../../domains/ironclaw_threads" }
 ironclaw_turns = { path = "../../kernel/ironclaw_turns" }
 # Generate test RSA keypairs at test time so the OIDC e2e test can
 # mint real signed JWTs without relying on a checked-in private key.
 rsa = { version = "0.9", features = ["sha2"] }
-rand = "0.10"
+rand = { workspace = true }
 rand_core = { version = "0.6", features = ["getrandom"] }
 base64 = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls"] }
-serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "time", "io-util", "sync", "test-util"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "time", "io-util", "sync", "test-util"] }

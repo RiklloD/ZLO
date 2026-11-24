@@ -1,22 +1,23 @@
 [package]
 name = "ironclaw_cli_providers"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
 description = "Coding-agent CLI drivers (Claude CLI, Antigravity, Muse Code) as ironclaw_orchestrator turn runtimes"
-license = "MIT OR Apache-2.0"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
 layer = "substrates"
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 # Attached pictures go to Claude and Codex inline, base64-encoded.
 base64 = { workspace = true }
 # Plan updates carry their wall-clock time; session import reads transcript
 # and rollout timestamps (RFC 3339).
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { workspace = true, features = ["clock", "std"] }
 # Wire types for the CLI's stream-json protocol. Pinned exactly to the CLI
 # version the driver is tested against (`claude::EXPECTED_CLI_VERSION`); bump
 # both together, on purpose. Types only: the driver owns process handling.
@@ -37,16 +38,16 @@ ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contract
 # `fs`: session import opens transcripts with O_NOFOLLOW | O_NONBLOCK.
 nix = { version = "0.31", default-features = false, features = ["signal", "fs"] }
 # Question records are stored as typed JSON.
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 # Session import: digests of a checkpoint's preceding bytes and message keys.
-sha2 = "0.11"
-thiserror = "2"
-tokio = { version = "1", features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
-tracing = "0.1"
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "process", "io-util", "fs"] }
+tracing = { workspace = true }
 # v7: Muse command and session ids are UUIDv7. v5: imported sessions get a
 # stable thread id per caller and session.
-uuid = { version = "1", features = ["v4", "v5", "v7"] }
+uuid = { workspace = true, features = ["v4", "v5", "v7"] }
 
 [dev-dependencies]
 # The skill-listing driver tests run the shared usage store over memory.
@@ -54,8 +55,8 @@ ironclaw_filesystem = { path = "../../substrates/ironclaw_filesystem" }
 # The approval-record test opens the orchestrator store over a real libSQL file.
 ironclaw_libsql_runtime = { path = "../../substrates/ironclaw_libsql_runtime" }
 libsql = { workspace = true }
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "process"] }
 
 [lints]
 workspace = true

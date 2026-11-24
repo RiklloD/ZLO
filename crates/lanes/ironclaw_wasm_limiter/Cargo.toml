@@ -1,7 +1,10 @@
 [package]
 name = "ironclaw_wasm_limiter"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [package.metadata.ironclaw]
@@ -16,7 +19,7 @@ layer = "runtimes"
 # two consumers without a visible build break.
 
 [dependencies]
-tracing = "0.1"
+tracing = { workspace = true }
 wasmtime = { workspace = true }
 
 [lints]
