@@ -1,9 +1,13 @@
 //! Paced streaming, after MonoCode's `reveal.rs` `PacedText` (MIT, see
 //! `THIRD_PARTY_NOTICES.md`). The gateway delivers a reply in bursts; the
-//! reader sees it at a steady rate instead: at least 90 characters a second,
-//! catching up on a backlog within about 220 ms, always ending on a whole
-//! word. Markdown's word reveal then lights each word up as it lands, so a
-//! burst reads as words arriving one after another.
+//! reader sees it at a steady rate instead: at least 120 characters a
+//! second, catching up on a backlog within about 120 ms, always ending on a
+//! whole word. Markdown's word reveal then lights each word up as it lands,
+//! so a burst reads as words arriving one after another.
+//!
+//! The answer and the thought being written are paced alike: a live
+//! thought's words come in at the same rate instead of whenever the
+//! gateway's next burst lands.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -11,12 +15,14 @@ use std::time::{Duration, Instant};
 
 use zlo_client::transcript::Row;
 
-/// Commit steps are at least this far apart, matching the 30 Hz clock.
-const STEP: Duration = Duration::from_millis(30);
+/// Commit steps are at least this far apart: just under one 60 Hz frame,
+/// so a step lands on every display frame the caller's tick asks for
+/// (`chat::pace_tick`) and a frame that comes a little early is not skipped.
+const STEP: Duration = Duration::from_millis(14);
 /// A word still being typed is held back this long before it shows.
-const HOLD: Duration = Duration::from_millis(150);
-const FLOOR_CHARS_PER_SEC: f64 = 90.;
-const CATCH_UP_SECS: f64 = 0.22;
+const HOLD: Duration = Duration::from_millis(90);
+const FLOOR_CHARS_PER_SEC: f64 = 120.;
+const CATCH_UP_SECS: f64 = 0.12;
 
 struct Paced {
     target: String,
@@ -49,6 +55,16 @@ impl Paced {
         } else {
             self.target.push_str(&text[self.target.len()..]);
         }
+        self.burst = now;
+    }
+
+    /// Everything in `text` counts as shown (the reader saw it whole), and
+    /// the step clock restarts so the next words pace in from `now`.
+    fn show_all(&mut self, text: &str, now: Instant) {
+        self.target = text.to_string();
+        self.shown = text.len();
+        self.position = text.len() as f64;
+        self.last = now;
         self.burst = now;
     }
 
@@ -91,68 +107,110 @@ impl Paced {
     }
 }
 
-/// Paced text for every assistant reply that is streaming or still
-/// catching up. History never enters it, so a reopened thread shows at once.
+/// Paced text for every assistant reply and thought that is being written
+/// or still catching up. History never enters it, so a reopened thread
+/// shows at once.
 #[derive(Default)]
 pub(super) struct Pacer {
     replies: HashMap<String, Paced>,
 }
 
+/// The text of a row the pacer reveals, and whether it is still being
+/// written. A thought carries no flag of its own: the one being written is
+/// the live run's last row.
+fn paceable(row: &Row, tail_live: bool) -> Option<(&str, &str, bool)> {
+    match row {
+        Row::Assistant {
+            key,
+            text,
+            streaming,
+        } => Some((key, text, *streaming)),
+        Row::Thinking { key, text } => Some((key, text, tail_live)),
+        _ => None,
+    }
+}
+
+/// `row` with its text cut to what the reader sees now.
+fn with_text(row: &Row, shown: String) -> Row {
+    match row {
+        Row::Assistant { key, .. } => Row::Assistant {
+            key: key.clone(),
+            text: shown,
+            streaming: true,
+        },
+        Row::Thinking { key, .. } => Row::Thinking {
+            key: key.clone(),
+            text: shown,
+        },
+        other => other.clone(),
+    }
+}
+
 impl Pacer {
-    /// Rows as the reader should see them now, and whether any reply is
-    /// still behind (the caller keeps frames coming while it is).
+    /// Rows as the reader should see them now, and whether any text is
+    /// still behind (the caller keeps frames coming while it is). `live`:
+    /// a run is in flight, so its last row may be a thought being written.
     pub(super) fn apply<'a>(
         &mut self,
         rows: &'a [Row],
+        live: bool,
         now: Instant,
         reduced: bool,
     ) -> (Cow<'a, [Row]>, bool) {
+        let last = rows.len().saturating_sub(1);
         if reduced {
-            self.replies.clear();
+            // Nobody watches it type: the text lands whole. What is being
+            // written is kept as shown in full, so coming back to the window
+            // paces only the words that arrive after, instead of blanking
+            // and re-typing everything.
+            let mut writing = Vec::new();
+            for (ix, row) in rows.iter().enumerate() {
+                let Some((key, text, true)) = paceable(row, live && ix == last) else {
+                    continue;
+                };
+                let paced = self
+                    .replies
+                    .entry(key.to_string())
+                    .or_insert_with(|| Paced::new(now));
+                paced.show_all(text, now);
+                writing.push(key.to_string());
+            }
+            self.replies.retain(|key, _| writing.contains(key));
             return (Cow::Borrowed(rows), false);
         }
         let mut out: Option<Vec<Row>> = None;
         let mut behind = false;
         let mut seen = Vec::new();
+        let mut writing = Vec::new();
         for (ix, row) in rows.iter().enumerate() {
-            let Row::Assistant {
-                key,
-                text,
-                streaming,
-            } = row
-            else {
+            let Some((key, text, streaming)) = paceable(row, live && ix == last) else {
                 continue;
             };
-            if !*streaming && !self.replies.contains_key(key) {
+            if !streaming && !self.replies.contains_key(key) {
                 continue;
             }
             let paced = self
                 .replies
-                .entry(key.clone())
+                .entry(key.to_string())
                 .or_insert_with(|| Paced::new(now));
             paced.update(text, now);
-            paced.step(now, *streaming);
-            seen.push(key.clone());
-            if !*streaming && !paced.behind() {
+            paced.step(now, streaming);
+            seen.push(key.to_string());
+            if streaming {
+                writing.push(key.to_string());
+            }
+            if !streaming && !paced.behind() {
                 continue;
             }
             behind |= paced.behind();
             let shown = paced.target[..paced.shown].to_string();
-            out.get_or_insert_with(|| rows.to_vec())[ix] = Row::Assistant {
-                key: key.clone(),
-                text: shown,
-                streaming: true,
-            };
+            let out = out.get_or_insert_with(|| rows.to_vec());
+            out[ix] = with_text(row, shown);
         }
-        self.replies.retain(|key, paced| {
-            seen.contains(key) && (paced.behind() || rows.iter().any(|r| is_streaming(r, key)))
-        });
+        self.replies
+            .retain(|key, paced| seen.contains(key) && (paced.behind() || writing.contains(key)));
         (out.map_or(Cow::Borrowed(rows), Cow::Owned), behind)
     }
-}
-
-fn is_streaming(row: &Row, key: &str) -> bool {
-    matches!(row, Row::Assistant { key: k, streaming: true, .. } if k == key)
 }
 
 #[cfg(test)]
@@ -179,10 +237,10 @@ mod tests {
         let mut pacer = Pacer::default();
         let t0 = Instant::now();
         let rows = reply("one two three four five six seven eight nine ten", true);
-        let (first, behind) = pacer.apply(&rows, t0, false);
+        let (first, behind) = pacer.apply(&rows, true, t0, false);
         assert!(behind);
         assert_eq!(shown(&first), "");
-        let (mid, _) = pacer.apply(&rows, t0 + Duration::from_millis(60), false);
+        let (mid, _) = pacer.apply(&rows, true, t0 + Duration::from_millis(60), false);
         let mid = shown(&mid).to_string();
         assert!(!mid.is_empty() && mid.len() < 48, "{mid:?}");
         let full = "one two three four five six seven eight nine ten";
@@ -194,11 +252,11 @@ mod tests {
         let mut t = t0 + Duration::from_millis(60);
         for _ in 0..100 {
             t += Duration::from_millis(33);
-            if !pacer.apply(&done, t, false).1 {
+            if !pacer.apply(&done, false, t, false).1 {
                 break;
             }
         }
-        let (last, behind) = pacer.apply(&done, t + Duration::from_millis(33), false);
+        let (last, behind) = pacer.apply(&done, false, t + Duration::from_millis(33), false);
         assert!(!behind);
         assert!(
             matches!(last, Cow::Borrowed(_)),
@@ -210,8 +268,159 @@ mod tests {
     fn history_is_never_paced() {
         let mut pacer = Pacer::default();
         let rows = reply("an old answer", false);
-        let (out, behind) = pacer.apply(&rows, Instant::now(), false);
+        let (out, behind) = pacer.apply(&rows, false, Instant::now(), false);
         assert!(!behind);
         assert_eq!(shown(&out), "an old answer");
+    }
+
+    fn thought(text: &str) -> Row {
+        Row::Thinking {
+            key: "t".into(),
+            text: text.into(),
+        }
+    }
+
+    fn text_of(row: &Row) -> &str {
+        match row {
+            Row::Assistant { text, .. } | Row::Thinking { text, .. } => text,
+            _ => "",
+        }
+    }
+
+    /// Tokens of `chunk` bytes every `every`, stepped once per 60 Hz frame
+    /// for `secs`: the worst time any byte waited between arriving and
+    /// showing, for the row `pick` takes out of each frame's rows.
+    fn worst_wait(
+        rows_for: impl Fn(&str) -> Vec<Row>,
+        live: bool,
+        pick: usize,
+        every: Duration,
+        secs: f64,
+    ) -> Duration {
+        let mut pacer = Pacer::default();
+        let t0 = Instant::now();
+        let frame = Duration::from_micros(16_667);
+        let mut target = String::new();
+        let mut arrived: Vec<Instant> = Vec::new();
+        let mut next_token = t0;
+        let mut worst = Duration::ZERO;
+        let mut shown_len = 0usize;
+        let mut t = t0;
+        while t.duration_since(t0).as_secs_f64() < secs {
+            while next_token <= t {
+                let word = format!("w{} ", arrived.len() % 10);
+                for _ in 0..word.len() {
+                    arrived.push(next_token);
+                }
+                target.push_str(&word);
+                next_token += every;
+            }
+            let rows = rows_for(&target);
+            let (out, _) = pacer.apply(&rows, live, t, false);
+            let now_len = text_of(&out[pick]).len();
+            for at in &arrived[shown_len..now_len] {
+                worst = worst.max(t.duration_since(*at));
+            }
+            shown_len = shown_len.max(now_len);
+            t += frame;
+        }
+        worst
+    }
+
+    #[test]
+    fn a_steady_stream_shows_each_word_within_a_few_frames() {
+        // ~100 tokens a second in 33 ms bursts (what the gateway now sends).
+        let worst = worst_wait(
+            |text| reply(text, true),
+            true,
+            0,
+            Duration::from_millis(10),
+            2.0,
+        );
+        eprintln!("steady stream: worst arrival-to-shown wait {worst:?}");
+        assert!(
+            worst <= Duration::from_millis(200),
+            "a word waited {worst:?} between arriving and showing"
+        );
+    }
+
+    #[test]
+    fn the_thought_being_written_is_paced_like_the_answer() {
+        let mut pacer = Pacer::default();
+        let t0 = Instant::now();
+        let rows = vec![thought("one two three four five six seven eight nine ten")];
+        let (first, behind) = pacer.apply(&rows, true, t0, false);
+        assert!(behind, "a live thought's burst is revealed, not dropped in");
+        assert_eq!(text_of(&first[0]), "");
+        let (mid, _) = pacer.apply(&rows, true, t0 + Duration::from_millis(40), false);
+        let mid = text_of(&mid[0]).to_string();
+        assert!(!mid.is_empty() && mid.len() < 48, "{mid:?}");
+        // The thought ends (a tool row follows): it finishes its reveal,
+        // then renders as is.
+        let mut after = rows.clone();
+        after.push(Row::System {
+            key: "s".into(),
+            text: "next".into(),
+        });
+        let mut t = t0 + Duration::from_millis(40);
+        for _ in 0..100 {
+            t += Duration::from_millis(16);
+            if !pacer.apply(&after, true, t, false).1 {
+                break;
+            }
+        }
+        let (last, behind) = pacer.apply(&after, true, t + Duration::from_millis(16), false);
+        assert!(!behind);
+        assert!(matches!(last, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn a_finished_thought_is_never_revealed_again() {
+        let mut pacer = Pacer::default();
+        let rows = vec![
+            thought("an old thought"),
+            Row::System {
+                key: "s".into(),
+                text: "after".into(),
+            },
+        ];
+        let (out, behind) = pacer.apply(&rows, true, Instant::now(), false);
+        assert!(!behind);
+        assert_eq!(text_of(&out[0]), "an old thought");
+        // Nor when no run is live, even as the last row.
+        let done = [thought("done")];
+        let (out, behind) = pacer.apply(&done, false, Instant::now(), false);
+        assert!(!behind);
+        assert_eq!(text_of(&out[0]), "done");
+    }
+
+    #[test]
+    fn coming_back_from_the_background_paces_only_what_is_new() {
+        let mut pacer = Pacer::default();
+        let t0 = Instant::now();
+        let early = "one two three four five six seven eight nine ten";
+        // Streaming starts in front, then the window goes to the background
+        // (reduced): the text lands whole while nobody watches.
+        let rows = reply(early, true);
+        let _ = pacer.apply(&rows, true, t0, false);
+        let (out, behind) = pacer.apply(&rows, true, t0, true);
+        assert!(!behind);
+        assert_eq!(shown(&out), early);
+        // Back in front: what already showed stays; only new words pace in.
+        let later = format!("{early} eleven twelve thirteen fourteen");
+        let rows = reply(&later, true);
+        let (out, behind) = pacer.apply(&rows, true, t0 + Duration::from_millis(16), false);
+        assert!(behind, "the new words are paced");
+        assert!(
+            shown(&out).starts_with(early),
+            "refocus must not blank and re-type the reply: {:?}",
+            shown(&out)
+        );
+        // The same for a thought being written.
+        let mut pacer = Pacer::default();
+        let thinking = vec![thought(early)];
+        let _ = pacer.apply(&thinking, true, t0, true);
+        let (out, _) = pacer.apply(&thinking, true, t0 + Duration::from_millis(16), false);
+        assert_eq!(text_of(&out[0]), early);
     }
 }

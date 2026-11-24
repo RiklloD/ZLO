@@ -236,7 +236,15 @@ the store in one write (`open_reply_publication` creates attempt + substate
 together — a plain attempt row is a different aggregate). Worker: one tokio
 task per `(run, exact target)`, woken by the projection; it always publishes
 the latest snapshot (natural coalescing) under `min_progress_interval`
-pacing for `Progress` and never delays `ControlCritical`/`Terminal`. The
+pacing for `Progress` and never delays `ControlCritical`/`Terminal`
+(✎ 2026-11-24: the deployment's session channel, whose sink feeds the
+in-process live projection rather than a rate-limited provider, also hears
+the newest document *from memory* every `session_push_interval` — 33 ms —
+between its durable reconciles: no claim, no store write, no revision moved,
+the sink's newest checkpoint carried into the next durable reconcile. The
+durable claim/advance keeps the 250 ms cadence, so one streaming reply costs
+~12 publication writes per second instead of ~84 at display-rate durable
+pacing, and a reconnect still rebuilds from durable state). The
 answer's *first* visible text is itself control-critical (a fast run reaches
 its terminal commit inside the pacing window, and pacing the first text away
 would jump a stream from "working" straight to the finalized answer), and

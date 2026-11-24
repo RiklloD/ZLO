@@ -59,6 +59,24 @@ struct Published {
     /// until the first row read. Every wake is planned against this mirror;
     /// the row itself is read only when a reconcile is due.
     revision: Option<u64>,
+    /// Memory pushes to the session sink between durable reconciles
+    /// (`ReplyPublication::memory_push_interval`). They never move a
+    /// revision; only the durable path does.
+    pushed: Pushed,
+}
+
+/// What the session sink heard from memory since the last durable apply.
+#[derive(Default)]
+struct Pushed {
+    at: Option<tokio::time::Instant>,
+    /// The newest snapshot revision pushed; a push is due only past it.
+    revision: u64,
+    /// The sink's newest checkpoint from this worker's last applied
+    /// reconcile, durable or pushed. Pushes build on it, and the next durable
+    /// reconcile hands it to the sink instead of the row's (older, after
+    /// pushes), so nothing the pushes showed is republished. Cleared when
+    /// another owner moved the row: the row's checkpoint is then the truth.
+    checkpoint: Option<ReplySinkCheckpoint>,
 }
 
 pub(super) async fn run_target(publication: Arc<ReplyPublication>, target: Arc<TargetState>) {
@@ -151,14 +169,39 @@ pub(super) async fn run_target(publication: Arc<ReplyPublication>, target: Arc<T
             && let Some(last) = published.at
         {
             let elapsed = last.elapsed();
-            if elapsed < publication.settings.min_progress_interval {
+            let window = publication.settings.min_progress_interval;
+            if elapsed < window {
+                // Inside the durable pacing window the session sink may still
+                // hear the newest document from memory (no claim, no write).
+                let mut wait = window - elapsed;
+                if let Some(every) = publication.memory_push_interval(&target)
+                    && snapshot.revision > published_revision.max(published.pushed.revision)
+                {
+                    let since = published
+                        .pushed
+                        .at
+                        .map_or(elapsed, |at| at.elapsed().min(elapsed));
+                    if since >= every {
+                        push_from_memory(
+                            &publication,
+                            &coordinator,
+                            &target,
+                            &run_key,
+                            &snapshot,
+                            &mut published,
+                        )
+                        .await;
+                        continue;
+                    }
+                    wait = wait.min(every - since);
+                }
                 // Stay wake-responsive inside the pacing window: a revision
                 // arriving mid-window may be control-critical (the answer's
                 // first text, an attention transition, the terminal) and must
                 // re-evaluate immediately; ordinary progress falls back into
                 // the remainder of the window on the next pass.
                 tokio::select! {
-                    _ = tokio::time::sleep(publication.settings.min_progress_interval - elapsed) => {}
+                    _ = tokio::time::sleep(wait) => {}
                     _ = target.wake.notified() => {}
                 }
                 continue;
@@ -227,6 +270,7 @@ pub(super) async fn run_target(publication: Arc<ReplyPublication>, target: Arc<T
         }
         if record.publication.published_revision != published_revision {
             published.revision = Some(record.publication.published_revision);
+            published.pushed = Pushed::default();
             continue;
         }
         // 4. Own the publication — the atomic claim immediately before
@@ -306,8 +350,23 @@ pub(super) async fn run_target(publication: Arc<ReplyPublication>, target: Arc<T
                 } else {
                     record
                 };
-                // 6. Reconcile, bounded within the lease just claimed.
-                let step = reconcile(&publication, &snapshot, &record, point, prepared).await;
+                // 6. Reconcile, bounded within the lease just claimed. After
+                // memory pushes the sink's own newest checkpoint stands in for
+                // the row's (it already showed those revisions).
+                let checkpoint = published
+                    .pushed
+                    .checkpoint
+                    .clone()
+                    .or_else(|| record.publication.checkpoint.clone());
+                let step = reconcile(
+                    &publication,
+                    &snapshot,
+                    &record,
+                    checkpoint,
+                    point,
+                    prepared,
+                )
+                .await;
                 (record, step)
             }
             Err(step) => (record, step),
@@ -515,6 +574,11 @@ async fn handle_step(context: StepContext<'_>, step: Step) -> LoopStep {
             published.has_text = !snapshot.document.answer.text.as_str().is_empty();
             published.at = Some(tokio::time::Instant::now());
             published.revision = Some(snapshot.revision);
+            published.pushed = Pushed {
+                at: None,
+                revision: snapshot.revision,
+                checkpoint: report.checkpoint.clone(),
+            };
             *attempts = 0;
             if terminal {
                 settle(
@@ -634,6 +698,76 @@ async fn handle_step(context: StepContext<'_>, step: Step) -> LoopStep {
     }
 }
 
+/// Push the newest document to the session sink from memory, between two
+/// durable reconciles: no claim, no store write, no revision moved. The sink
+/// is the in-process live projection, so there is no provider call for a
+/// lease to cover; anything but an applied outcome is left for the next
+/// durable reconcile, which republishes from the newest checkpoint.
+async fn push_from_memory(
+    publication: &Arc<ReplyPublication>,
+    coordinator: &Arc<DeliveryCoordinator>,
+    target: &TargetState,
+    run_key: &RunKey,
+    snapshot: &ReplySnapshot,
+    published: &mut Published,
+) {
+    published.pushed.at = Some(tokio::time::Instant::now());
+    published.pushed.revision = snapshot.revision;
+    let Ok(prepared) = prepare(
+        publication,
+        coordinator,
+        target,
+        run_key,
+        snapshot,
+        ReplyReconcilePoint::Progress,
+    )
+    .await
+    else {
+        return;
+    };
+    let PreparedReconcile {
+        channel,
+        reply_context,
+        document,
+        reply_target,
+        materialized_attachments,
+    } = prepared;
+    let Some(sink) = channel.reply.clone() else {
+        return;
+    };
+    let request = ReplyReconcileRequest {
+        revision: ReplyRevision {
+            revision: snapshot.revision,
+            document,
+        },
+        point: ReplyReconcilePoint::Progress,
+        target: reply_target,
+        reply_context,
+        checkpoint: published.pushed.checkpoint.clone(),
+        extension_generation: channel.generation,
+        materialized_attachments,
+    };
+    let pushed = tokio::time::timeout(
+        publication.settings.reconcile_timeout,
+        sink.reconcile(request, channel.egress.as_ref()),
+    )
+    .await;
+    match pushed {
+        Ok(Ok(report)) if matches!(report.outcome, ReplySinkOutcome::Applied) => {
+            published.pushed.checkpoint = report.checkpoint;
+        }
+        Ok(Ok(report)) => {
+            tracing::debug!(target: LOG_TARGET, outcome = ?report.outcome, "memory push to the session sink not applied; the durable reconcile follows");
+        }
+        Ok(Err(error)) => {
+            tracing::debug!(target: LOG_TARGET, %error, "memory push to the session sink failed; the durable reconcile follows");
+        }
+        Err(_elapsed) => {
+            tracing::debug!(target: LOG_TARGET, "memory push to the session sink timed out; the durable reconcile follows");
+        }
+    }
+}
+
 /// Everything a reconcile needs that does not require publication ownership.
 struct PreparedReconcile {
     channel: ResolvedChannelDelivery,
@@ -716,6 +850,7 @@ async fn reconcile(
     publication: &Arc<ReplyPublication>,
     snapshot: &ReplySnapshot,
     record: &ReplyPublicationRecord,
+    checkpoint: Option<ReplySinkCheckpoint>,
     point: ReplyReconcilePoint,
     prepared: PreparedReconcile,
 ) -> Step {
@@ -748,7 +883,7 @@ async fn reconcile(
         point,
         target: reply_target,
         reply_context,
-        checkpoint: record.publication.checkpoint.clone(),
+        checkpoint,
         extension_generation: generation,
         materialized_attachments,
     };

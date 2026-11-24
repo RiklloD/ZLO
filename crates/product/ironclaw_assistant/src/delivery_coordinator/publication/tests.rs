@@ -222,11 +222,11 @@ impl TurnCoordinator for FakeTurnKernel {
     }
 }
 
-struct Harness {
+pub(super) struct Harness {
     store: Arc<dyn OutboundStateStorePort>,
-    coordinator: Arc<DeliveryCoordinator>,
+    pub(super) coordinator: Arc<DeliveryCoordinator>,
     projection: Arc<ReplyProjection>,
-    sink: Arc<RecordingReplySink>,
+    pub(super) sink: Arc<RecordingReplySink>,
     resolver: Arc<SinkResolver>,
     kernel: Arc<FakeTurnKernel>,
     threads: Arc<InMemorySessionThreadService>,
@@ -235,10 +235,11 @@ struct Harness {
     run_id: TurnRunId,
 }
 
-fn settings() -> ReplyPublicationSettings {
+pub(super) fn settings() -> ReplyPublicationSettings {
     ReplyPublicationSettings {
         lease_ttl: Duration::from_millis(400),
         min_progress_interval: Duration::ZERO,
+        session_push_interval: Duration::ZERO,
         retry_backoff: Duration::from_millis(5),
         max_retry_backoff: Duration::from_millis(20),
         terminal_attempt_budget: 3,
@@ -252,15 +253,7 @@ fn harness(label: &str, transport: ReplyTransport, session_channel: Option<&str>
     harness_with(label, transport, session_channel, settings())
 }
 
-fn harness_with_settings(
-    label: &str,
-    transport: ReplyTransport,
-    settings: ReplyPublicationSettings,
-) -> Harness {
-    harness_with(label, transport, None, settings)
-}
-
-fn harness_with(
+pub(super) fn harness_with(
     label: &str,
     transport: ReplyTransport,
     session_channel: Option<&str>,
@@ -359,7 +352,7 @@ fn harness_over_store(
 }
 
 impl Harness {
-    fn registration(&self, audience: ReplyAudience) -> ReplyTargetRegistration {
+    pub(super) fn registration(&self, audience: ReplyAudience) -> ReplyTargetRegistration {
         ReplyTargetRegistration {
             scope: self.scope.clone(),
             actor: self.actor.clone(),
@@ -385,7 +378,7 @@ impl Harness {
         }
     }
 
-    fn text(&self, text: &str) {
+    pub(super) fn text(&self, text: &str) {
         self.projection
             .observe_milestone(&self.milestone(LoopHostMilestoneKind::ModelTextDelta {
                 safe_text: text.to_string(),
@@ -1174,7 +1167,7 @@ async fn a_channel_that_cannot_reply_is_refused_at_registration() {
 async fn an_idle_stream_target_is_reconciled_at_the_heartbeat_point_but_a_message_target_is_not() {
     let mut fast = settings();
     fast.heartbeat_interval = Duration::from_millis(30);
-    let harness = harness_with_settings("heartbeat", ReplyTransport::Stream, fast);
+    let harness = harness_with("heartbeat", ReplyTransport::Stream, None, fast);
     harness
         .coordinator
         .register_reply_target(harness.registration(ReplyAudience::Private))
@@ -1205,7 +1198,7 @@ async fn an_idle_stream_target_is_reconciled_at_the_heartbeat_point_but_a_messag
     assert!(record.publication.status.is_active());
     assert_eq!(record.publication.published_revision, 1);
 
-    let quiet = harness_with_settings("heartbeat-message", ReplyTransport::Message, fast);
+    let quiet = harness_with("heartbeat-message", ReplyTransport::Message, None, fast);
     quiet
         .coordinator
         .register_reply_target(quiet.registration(ReplyAudience::Private))
@@ -1254,7 +1247,7 @@ async fn a_checkpoint_returned_with_a_retryable_outcome_is_persisted_for_the_ret
 async fn a_text_microburst_coalesces_and_the_latest_text_precedes_tool_activity() {
     let mut paced = settings();
     paced.min_progress_interval = Duration::from_millis(15);
-    let harness = harness_with_settings("microburst", ReplyTransport::Stream, paced);
+    let harness = harness_with("microburst", ReplyTransport::Stream, None, paced);
     harness
         .coordinator
         .register_reply_target(harness.registration(ReplyAudience::Private))
