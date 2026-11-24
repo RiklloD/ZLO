@@ -1038,7 +1038,7 @@ mod tests {
         ) -> Result<Vec<ClaimedProcess>, Self::Error> {
             if self
                 .claim_errors_remaining
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                     remaining.checked_sub(1)
                 })
                 .is_ok()
@@ -1059,7 +1059,7 @@ mod tests {
                 HeartbeatFault::SlowThenHealthy => {
                     if self
                         .slow_heartbeats_remaining
-                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                             remaining.checked_sub(1)
                         })
                         .is_ok()
@@ -1077,7 +1077,7 @@ mod tests {
         ) -> Result<crate::RecoverExpiredProcessLeasesResponse, Self::Error> {
             if self
                 .recover_errors_remaining
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                     remaining.checked_sub(1)
                 })
                 .is_ok()
@@ -1119,7 +1119,7 @@ mod tests {
                 .push(request.clone());
             if self
                 .fail_errors_remaining
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                     remaining.checked_sub(1)
                 })
                 .is_ok()

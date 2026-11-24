@@ -268,11 +268,7 @@ fn is_recoverable_tool_call_segment(
     let first_line_prefix = &text[first_line_start..start];
     let last_line_suffix = &text[end..last_line_end];
 
-    if !first_line_prefix.trim().is_empty() || !last_line_suffix.trim().is_empty() {
-        return false;
-    }
-
-    true
+    first_line_prefix.trim().is_empty() && last_line_suffix.trim().is_empty()
 }
 
 pub fn recover_codex_text_tool_calls_from_tool_names(
