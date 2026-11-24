@@ -350,6 +350,7 @@ impl HostManagedModelGateway for PluginGateway {
                 name: tool.name,
                 arguments: json!({}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))
@@ -987,6 +988,7 @@ impl HostManagedModelGateway for SwapGateway {
                 name: tool.name,
                 arguments: json!({}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))

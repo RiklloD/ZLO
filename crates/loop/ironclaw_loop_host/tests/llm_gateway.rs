@@ -282,6 +282,7 @@ async fn gateway_redacts_every_message_role_before_plain_provider_dispatch() {
                 "message": "hello"
             }),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }),
@@ -313,6 +314,7 @@ async fn gateway_redacts_every_message_role_before_plain_provider_dispatch() {
             capability_id: CapabilityId::new("demo.character_dump_secret").unwrap(),
             arguments: serde_json::json!({"message": "hello"}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }),
@@ -2439,6 +2441,7 @@ async fn gateway_reconstructs_provider_tool_roundtrip_from_tool_result_reference
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"hello"}),
         response_reasoning: Some("provider reasoning".to_string()),
+        response_text: None,
         reasoning: Some("provider reasoning".to_string()),
         signature: Some("sig-1".to_string()),
     };
@@ -2516,6 +2519,7 @@ async fn gateway_replays_model_observation_from_tool_result_reference_before_saf
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"hello"}),
         response_reasoning: Some("provider reasoning".to_string()),
+        response_text: None,
         reasoning: Some("provider reasoning".to_string()),
         signature: Some("sig-1".to_string()),
     };
@@ -2544,6 +2548,101 @@ async fn gateway_replays_model_observation_from_tool_result_reference_before_saf
     assert!(!tool_result.content.contains("tool failed"));
 }
 
+/// Regression (ZLO "seven preambles"): the assistant text a model emits
+/// alongside a tool-call batch must survive into the next round's prompt.
+/// Before, the replayed assistant turn carried `None` content, so GPT never
+/// saw that it had already said "I'll launch two subagents…" and said it
+/// again on every tool round.
+#[tokio::test]
+async fn gateway_records_and_replays_pre_tool_commentary_across_tool_rounds() {
+    let commentary = "I'll launch two subagents with fresh puzzles you can watch.";
+    let provider = Arc::new(ToolAwareProvider::tool_response(ToolCompletionResponse {
+        content: Some(format!("  {commentary}\n")),
+        tool_calls: vec![ToolCall {
+            id: "call_1".to_string(),
+            name: "demo__echo".to_string(),
+            arguments: serde_json::json!({"message":"hello"}),
+            reasoning: None,
+            signature: None,
+            arguments_parse_error: None,
+        }],
+        input_tokens: 1,
+        output_tokens: 1,
+        finish_reason: FinishReason::ToolUse,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        reasoning: None,
+        reasoning_details: None,
+    }));
+    let gateway = LlmProviderModelGateway::with_provider_identity(
+        STATIC_PROVIDER_ID,
+        provider.clone(),
+        LlmModelProfilePolicy::new()
+            .allow_model_profile(interactive_model(), Some("host-selected-model".to_string())),
+    );
+    let capabilities = Arc::new(GatewayCapabilityPort::with_tool_surface());
+
+    // Round 1: the commentary is recorded on the call's replay metadata.
+    let response = gateway
+        .stream_model_with_capabilities(model_request(interactive_model()), capabilities)
+        .await
+        .unwrap();
+    let ParentLoopOutput::CapabilityCalls(calls) = response.output else {
+        panic!("expected capability calls");
+    };
+    let replay = calls[0]
+        .provider_replay
+        .clone()
+        .expect("provider replay metadata");
+    assert_eq!(replay.response_text.as_deref(), Some(commentary));
+
+    // Round 2: the durable envelope replays it on the assistant tool-call turn.
+    let provider = Arc::new(ToolAwareProvider::plain_reply("done"));
+    let gateway = LlmProviderModelGateway::with_provider_identity(
+        STATIC_PROVIDER_ID,
+        provider.clone(),
+        LlmModelProfilePolicy::new()
+            .allow_model_profile(interactive_model(), Some("host-selected-model".to_string())),
+    );
+    let envelope = ToolResultReferenceEnvelope::new(
+        "result:demo-tool",
+        ToolResultSafeSummary::new("echoed").unwrap(),
+    )
+    .unwrap();
+    let provider_call = ProviderToolCallReferenceEnvelope {
+        provider_id: replay.provider_id,
+        provider_model_id: replay.provider_model_id,
+        provider_turn_id: replay.provider_turn_id,
+        provider_call_id: replay.provider_call_id,
+        provider_tool_name: replay.provider_tool_name,
+        capability_id: CapabilityId::new("demo.echo").unwrap(),
+        arguments: replay.arguments,
+        response_reasoning: replay.response_reasoning,
+        response_text: replay.response_text,
+        reasoning: replay.reasoning,
+        signature: replay.signature,
+    };
+    let mut request = model_request(interactive_model());
+    request.messages = vec![HostManagedModelMessage {
+        role: HostManagedModelMessageRole::ToolResult,
+        content: serde_json::to_string(&envelope).unwrap(),
+        content_ref: LoopMessageRef::new("msg:33333333-3333-3333-3333-33333333333a").unwrap(),
+        tool_result_provider_call: Some(provider_call),
+        tool_result_content: tool_result_reference_content(&envelope),
+        image_parts: Vec::new(),
+    }];
+
+    gateway.stream_model(request).await.unwrap();
+
+    let requests = provider.complete_requests.lock().unwrap();
+    let assistant = requests[0]
+        .messages
+        .iter()
+        .find(|message| message.role == Role::Assistant && message.tool_calls.is_some())
+        .expect("replayed assistant tool-call turn");
+    assert_eq!(assistant.content, commentary);
+}
+
 #[tokio::test]
 async fn gateway_falls_back_to_safe_summary_for_invalid_model_observation() {
     let provider = Arc::new(ToolAwareProvider::plain_reply("assistant response"));
@@ -2570,6 +2669,7 @@ async fn gateway_falls_back_to_safe_summary_for_invalid_model_observation() {
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"hello"}),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     };
@@ -2612,6 +2712,7 @@ async fn gateway_replays_resolved_tool_result_content_instead_of_summary() {
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"hello"}),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     };
@@ -2778,6 +2879,7 @@ async fn gateway_reconstructs_multi_tool_provider_turn_from_grouped_result_refer
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"first"}),
         response_reasoning: Some("provider reasoning".to_string()),
+        response_text: None,
         reasoning: Some("provider reasoning".to_string()),
         signature: Some("sig-1".to_string()),
     };
@@ -2790,6 +2892,7 @@ async fn gateway_reconstructs_multi_tool_provider_turn_from_grouped_result_refer
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"second"}),
         response_reasoning: Some("provider reasoning".to_string()),
+        response_text: None,
         reasoning: None,
         signature: None,
     };
@@ -2866,6 +2969,7 @@ async fn gateway_deduplicates_identical_tool_result_replay_but_keeps_distinct_ca
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"shared"}),
         response_reasoning: Some("provider reasoning".to_string()),
+        response_text: None,
         reasoning: Some("provider reasoning".to_string()),
         signature: Some("sig-1".to_string()),
     };
@@ -2946,6 +3050,7 @@ async fn gateway_splits_adjacent_provider_tool_results_from_different_turns() {
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"first"}),
         response_reasoning: Some("first provider reasoning".to_string()),
+        response_text: None,
         reasoning: Some("first call reasoning".to_string()),
         signature: Some("sig-1".to_string()),
     };
@@ -2958,6 +3063,7 @@ async fn gateway_splits_adjacent_provider_tool_results_from_different_turns() {
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"second"}),
         response_reasoning: Some("second provider reasoning".to_string()),
+        response_text: None,
         reasoning: Some("second call reasoning".to_string()),
         signature: Some("sig-2".to_string()),
     };
@@ -3063,6 +3169,7 @@ async fn gateway_keeps_same_turn_provider_roundtrip_when_plain_tool_result_is_in
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"first"}),
         response_reasoning: Some("provider reasoning".to_string()),
+        response_text: None,
         reasoning: Some("provider reasoning".to_string()),
         signature: Some("sig-1".to_string()),
     };
@@ -3075,6 +3182,7 @@ async fn gateway_keeps_same_turn_provider_roundtrip_when_plain_tool_result_is_in
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"second"}),
         response_reasoning: Some("provider reasoning".to_string()),
+        response_text: None,
         reasoning: None,
         signature: None,
     };
@@ -3157,6 +3265,7 @@ async fn gateway_degrades_provider_tool_replay_from_different_provider_route_to_
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"hello"}),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     };
@@ -3205,6 +3314,7 @@ async fn gateway_degrades_resolved_provider_mismatch_to_safe_summary() {
         capability_id: CapabilityId::new("demo.echo").unwrap(),
         arguments: serde_json::json!({"message":"hello"}),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     };
@@ -6166,6 +6276,7 @@ impl LoopCapabilityPort for GatewayCapabilityPort {
                     provider_tool_name: tool_call.name,
                     arguments: tool_call.arguments,
                     response_reasoning: tool_call.response_reasoning,
+                    response_text: tool_call.response_text,
                     reasoning: tool_call.reasoning,
                     signature: tool_call.signature,
                 }),

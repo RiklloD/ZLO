@@ -869,6 +869,7 @@ async fn standalone_adapter_registers_provider_tool_calls_as_run_scoped_inputs()
         name: tool_definition.name,
         arguments: serde_json::json!({ "message": "hello from provider tool" }),
         response_reasoning: Some("model selected echo".to_string()),
+        response_text: None,
         reasoning: None,
         signature: Some("sig-provider-tool".to_string()),
     };

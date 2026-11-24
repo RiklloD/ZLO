@@ -1378,6 +1378,7 @@ impl ToolDisclosureCapabilityPort {
             name: target.name.clone(),
             arguments,
             response_reasoning: tool_call.response_reasoning.clone(),
+            response_text: tool_call.response_text.clone(),
             reasoning: tool_call.reasoning.clone(),
             signature: tool_call.signature.clone(),
         }
@@ -1571,6 +1572,7 @@ fn provider_replay_for(
         provider_tool_name,
         arguments: tool_call.arguments.clone(),
         response_reasoning: tool_call.response_reasoning.clone(),
+        response_text: tool_call.response_text.clone(),
         reasoning: tool_call.reasoning.clone(),
         signature: tool_call.signature.clone(),
     }
@@ -4398,6 +4400,7 @@ mod tests {
             name: ProviderToolName::new(name).expect("valid provider tool name"),
             arguments,
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }

@@ -422,6 +422,7 @@ mod tests {
             capability_id: CapabilityId::new("builtin.read_file").expect("capability"),
             arguments: json!({"path": "/Users/alice/private.txt", "api_key": "secret-value"}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         };

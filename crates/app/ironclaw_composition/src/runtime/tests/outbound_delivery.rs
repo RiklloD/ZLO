@@ -39,6 +39,7 @@ fn provider_tool_call(
         name: tool.name.clone(),
         arguments,
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     }

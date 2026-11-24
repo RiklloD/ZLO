@@ -216,6 +216,7 @@ fn sanitize_result_ref_suffix_handles_empty_special_chars_and_truncation() {
             provider_tool_name: ProviderToolName::new("demo__echo").expect("provider tool name"),
             arguments: serde_json::json!({}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }),

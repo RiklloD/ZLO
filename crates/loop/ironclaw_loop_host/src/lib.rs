@@ -3726,6 +3726,7 @@ fn provider_call_reference_to_envelope(
         capability_id,
         arguments: replay.arguments,
         response_reasoning: replay.response_reasoning,
+        response_text: replay.response_text,
         reasoning: replay.reasoning,
         signature: replay.signature,
     }

@@ -160,6 +160,7 @@ mod tests {
             name: provider_name("demo__echo"),
             arguments: serde_json::json!({"message":"hello"}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }

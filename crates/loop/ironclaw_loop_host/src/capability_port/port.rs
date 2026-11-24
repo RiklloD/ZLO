@@ -676,6 +676,7 @@ impl HostRuntimeLoopCapabilityPort {
                 provider_tool_name: tool_call.name,
                 arguments: tool_call.arguments,
                 response_reasoning: tool_call.response_reasoning,
+                response_text: tool_call.response_text,
                 reasoning: tool_call.reasoning,
                 signature: tool_call.signature,
             }),

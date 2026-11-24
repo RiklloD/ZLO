@@ -157,6 +157,10 @@ pub struct ProviderToolCallReferenceEnvelope {
     pub arguments: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_reasoning: Option<String>,
+    /// Assistant text emitted alongside the tool-call batch, replayed ahead
+    /// of the calls on the next provider round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,6 +183,11 @@ impl ProviderToolCallReferenceEnvelope {
         validate_optional_provider_text(
             &self.response_reasoning,
             "provider response reasoning",
+            PROVIDER_METADATA_TEXT_MAX_BYTES,
+        )?;
+        validate_optional_provider_text(
+            &self.response_text,
+            "provider response text",
             PROVIDER_METADATA_TEXT_MAX_BYTES,
         )?;
         validate_optional_provider_text(
@@ -2581,6 +2590,7 @@ mod tests {
             capability_id: CapabilityId::new("demo.echo").expect("capability id"),
             arguments: serde_json::json!({"message":"hello"}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }

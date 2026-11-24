@@ -1059,6 +1059,7 @@ fn provider_tool_call(name: &str) -> ProviderToolCall {
             "task": "investigate"
         }),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     }
