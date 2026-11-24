@@ -306,6 +306,15 @@ fn fold_turn(
             } else {
                 hidden.iter().flat_map(|&i| item_keys(&body[i])).collect()
             };
+            // A shut turn's subagents sit above its fold (t3code), so each
+            // opens without opening the turn.
+            let hoisted = |i: usize| !open && matches!(body[i], Item::Row(Row::Subagent { .. }));
+            out.extend(
+                segment
+                    .clone()
+                    .filter(|&i| hoisted(i))
+                    .map(|i| body[i].clone()),
+            );
             out.push(Item::TurnFold {
                 key: fold_key.clone(),
                 label: label.clone(),
@@ -313,7 +322,7 @@ fn fold_turn(
                 hidden: keys,
             });
             for i in segment {
-                if open || !hidden.contains(&i) {
+                if (open || !hidden.contains(&i)) && !hoisted(i) {
                     out.push(body[i].clone());
                 }
             }

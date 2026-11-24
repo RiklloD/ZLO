@@ -34,6 +34,9 @@ use crate::wire::{
 
 mod attached;
 mod reason;
+mod subagents;
+
+pub use subagents::{plain_line, preview as subagent_preview, subagent_key};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -169,6 +172,12 @@ pub enum Row {
         form: QuestionForm,
         state: QuestionState,
     },
+    /// A delegated task, where its turn launched it (t3code's subagent
+    /// row): it takes the place of the `t3_delegate` call that started it.
+    Subagent {
+        key: String,
+        task: Box<crate::orchestration::TaskView>,
+    },
 }
 
 /// A steer's marker on its row.
@@ -212,7 +221,8 @@ impl Row {
             | Row::SteerNotice { key, .. }
             | Row::Command { key, .. }
             | Row::Plan { key, .. }
-            | Row::Question { key, .. } => key,
+            | Row::Question { key, .. }
+            | Row::Subagent { key, .. } => key,
         }
     }
 }
@@ -325,6 +335,8 @@ pub struct Transcript {
     /// invocation, the latest turn diff and review. Live-only, kept while
     /// the view is open.
     cli: CliDetails,
+    /// The thread's delegated tasks, drawn inline (`subagents`).
+    tasks: Vec<crate::orchestration::TaskView>,
 }
 
 /// A bounded live body; `truncated` when the agent's text was cut.
@@ -1779,7 +1791,7 @@ impl Transcript {
             }
         }
         mark_steer_runs(&mut rows);
-        rows
+        self.place_subagents(rows)
     }
 
     /// Activity for one run. Unless the durable reply already exists, the

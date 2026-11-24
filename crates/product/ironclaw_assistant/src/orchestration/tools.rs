@@ -114,6 +114,8 @@ impl SyntheticCapabilityHandler for OrchestratorToolHandler {
             scope,
             provider: route.as_ref().and_then(|t| t.provider.clone()),
             model: route.and_then(|t| t.model),
+            // A subagent this call starts is drawn under this run's turn.
+            run_id: Some(run.run_id.to_string()),
         };
         let output = self
             .engine

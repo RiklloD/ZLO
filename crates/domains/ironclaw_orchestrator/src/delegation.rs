@@ -437,6 +437,8 @@ impl Engine {
             delivered_at: None,
             cancel_requested: false,
             limit_reset_at: None,
+            // A caller that does not name its run: the parent's running turn.
+            parent_run_id: ctx.run_id.clone().or_else(|| parent.active_run_id.clone()),
         };
         self.store.insert_task(&task).await?;
         if req.peer_origin.is_some() {
@@ -736,6 +738,7 @@ impl Engine {
             "summary": if t.status.is_terminal() { t.result.clone() } else { None },
             "error": t.error, "delivery": t.delivery.as_str(), "limitResetAt": t.limit_reset_at,
             "cancelRequested": t.cancel_requested, "pendingChildren": pending_children,
+            "parentRunId": t.parent_run_id,
         });
         if let Some(timed_out) = wait_timed_out {
             view["waitTimedOut"] = json!(timed_out);
@@ -780,10 +783,19 @@ impl Engine {
             .filter_map(|m| m.at)
             .max()
             .or(thread.turn_started_at);
+        // The child's newest words, whichever run said them: the parent's
+        // subagent row previews them on one line.
+        let latest_output = messages
+            .iter()
+            .rev()
+            .filter(|m| m.role == crate::runtime::HistoryRole::Assistant && !m.hidden)
+            .map(|m| one_line(&m.text, LATEST_OUTPUT_CHARS))
+            .find(|line| !line.is_empty());
         let progress = json!({
             "running": thread.is_running(),
             "toolCount": tools.len(),
             "lastTool": tools.last(),
+            "latestOutput": latest_output,
             "lastActivityAt": last_at,
             "silentSeconds": last_at.map(|at| (now_ms() - at).max(0) / 1000),
         });
@@ -958,4 +970,59 @@ pub(crate) fn brief_paths(text: &str) -> Vec<std::path::PathBuf> {
         }
     }
     out
+}
+
+/// How much of a child's newest words its progress carries.
+const LATEST_OUTPUT_CHARS: usize = 180;
+
+impl crate::store::Store {
+    /// A task's launching run (`parent_run_id`), added to older databases.
+    pub(crate) async fn upgrade_tasks_schema(&self) -> Result<()> {
+        self.add_column_once("orch_tasks", "parent_run_id", "TEXT")
+            .await
+    }
+}
+
+/// Markdown as one plain line (t3code's `plainDetail`): link targets,
+/// code ticks and list bullets dropped, whitespace collapsed, at most
+/// `max` characters.
+pub(crate) fn one_line(text: &str, max: usize) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut rest = text;
+    // `[label](target)` keeps its label.
+    while let Some((before, after)) = rest.split_once('[') {
+        plain.push_str(before);
+        let link = after
+            .split_once("](")
+            .filter(|(label, _)| !label.contains('['))
+            .and_then(|(label, tail)| tail.split_once(')').map(|(_, next)| (label, next)));
+        match link {
+            Some((label, next)) => {
+                plain.push_str(label);
+                rest = next;
+            }
+            None => {
+                plain.push('[');
+                rest = after;
+            }
+        }
+    }
+    plain.push_str(rest);
+    let joined = plain
+        .lines()
+        .map(|line| {
+            let line = line.trim_start();
+            line.strip_prefix("- ")
+                .or_else(|| line.strip_prefix("* "))
+                .unwrap_or(line)
+        })
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('`', "");
+    if joined.chars().count() <= max {
+        return joined;
+    }
+    let cut: String = joined.chars().take(max).collect();
+    format!("{}…", cut.trim_end())
 }

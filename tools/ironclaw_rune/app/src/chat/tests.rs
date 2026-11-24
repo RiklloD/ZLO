@@ -566,3 +566,59 @@ fn a_search_hit_inside_a_shut_fold_opens_it() {
     );
     assert!(c.reveal.is_none(), "the hit was found");
 }
+
+/// A subagent row (t3code's) is never folded into the work: a shut turn
+/// shows it above "Worked for …", where it can be opened without opening
+/// the turn; an open turn keeps it where the call launched it, between
+/// the tool groups it split.
+#[test]
+fn a_subagent_row_stays_in_view_above_a_shut_turn() {
+    let subagent = |id: &str| Row::Subagent {
+        key: format!("subagent:{id}"),
+        task: Box::new(
+            serde_json::from_value(serde_json::json!({
+                "taskId": id, "title": id, "status": "completed"
+            }))
+            .expect("task decodes"),
+        ),
+    };
+    let rows = vec![
+        user("p"),
+        tool("t1", "cli.read"),
+        subagent("a"),
+        tool("t2", "cli.bash"),
+        answer("ans"),
+    ];
+    let spans = HashMap::from([("p".to_string(), 154_000)]);
+    let shut = super::flow::fold(
+        &rows,
+        false,
+        false,
+        false,
+        false,
+        &ctx(&spans, &HashMap::new()),
+    );
+    assert_eq!(
+        shape(&shut),
+        ["p", "subagent:a", "fold:Worked for 2m 34s", "ans"]
+    );
+    let toggles = HashMap::from([("fold-p".to_string(), true)]);
+    let open = super::flow::fold(&rows, false, false, false, false, &ctx(&spans, &toggles));
+    assert_eq!(
+        shape(&open),
+        [
+            "p",
+            "fold:Worked for 2m 34s:open",
+            "act:t1",
+            "subagent:a",
+            "act:t2",
+            "ans"
+        ]
+    );
+    // Live, it sits where it was launched, under the working line.
+    let live = fold(&rows[..4], true, false, false, false);
+    assert_eq!(
+        shape(&live),
+        ["p", "working", "act:t1", "subagent:a", "act:t2:live"]
+    );
+}

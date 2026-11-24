@@ -1,5 +1,5 @@
-//! Orchestration around the open thread: the subagent frame above the
-//! composer, the context strip (delegated from, forked from with Merge back,
+//! Orchestration around the open thread: subagent rows inline in the
+//! transcript (each where its turn launched it), the context strip (delegated from, forked from with Merge back,
 //! usage-limit countdown, paused after Stop, interrupted with Continue,
 //! queued follow-ups), the queue panel and the Fork action. The views are in
 //! `orchestration/view.rs`.
@@ -38,7 +38,7 @@ use zlo_client::orchestration::{ForkOptions, Lineage, QueueAction, QueueDoc, Tas
 use crate::jobs;
 use crate::state::State;
 
-pub use view::{composer, tail};
+pub use view::{composer, subagent_row, tail};
 
 /// Poll period while something is moving. Also the granularity of elapsed
 /// and countdown labels, which only repaint when data arrives.
@@ -57,6 +57,9 @@ pub struct OrchestrationState {
     /// When Stop was pressed: the button in its place waits out
     /// `steer::STOP_CLICK_GUARD` before it takes a click.
     pub(crate) stopped_at: Option<std::time::Instant>,
+    /// Delegate calls the transcript saw finish, as last counted: a new
+    /// one re-reads the tasks at once (`chat::refresh_rows`).
+    pub(crate) delegate_calls: usize,
     /// A mutation is in flight; its buttons wait for it.
     pub(crate) busy: bool,
     /// Merge-back outcome, shown in the strip until the next action.
@@ -243,6 +246,8 @@ fn apply_snapshot(s: &mut State, asked: &str, instance: jobs::Instance, snap: Sn
         related.push(from.source_thread.clone());
     }
     let stale = std::mem::take(&mut o.stale);
+    let tasks = o.tasks.clone();
+    crate::chat::set_tasks(s, asked, tasks);
     crate::workspace::titles_ensure(s, related);
     if load_prefix {
         load_fork_prefix(s, asked);
@@ -334,16 +339,15 @@ fn needs_poll(s: &State, id: &str) -> bool {
         || c.goals.check_in_flight()
 }
 
-/// Whether [`tail`] has anything to show for `id`'s chat: live subagents
-/// or the goal (when its editor is closed). Queued messages sit above the
-/// composer. The chat folds
-/// a tail row into its transcript while this holds.
+/// Whether [`tail`] has anything to show for `id`'s chat: the goal (when
+/// its editor is closed). Subagents are inline rows, queued messages sit
+/// above the composer. The chat folds a tail row into its transcript while
+/// this holds.
 pub fn has_tail(s: &State, id: &str) -> bool {
     let Some(c) = crate::chat::chat_ref(s, id) else {
         return false;
     };
-    let o = &c.orchestration;
-    o.tasks.iter().any(|t| t.status.is_live()) || (!c.goals.editing() && c.goals.goal.is_some())
+    !c.goals.editing() && c.goals.goal.is_some()
 }
 
 /// Whether `id`'s chat runs its slow poll now.
@@ -576,6 +580,21 @@ pub fn fixture() -> OrchestrationState {
         "childThreadId": "t9",
         "createdAt": now - 200_000,
         "startedAt": now - 185_000,
+        "progress": {"running": true, "toolCount": 4, "lastTool": "Read(git.rs)",
+                     "latestOutput": "Porting the diff view: staged and unstaged hunks render, the file list is next."},
+    }));
+    let finished: Option<TaskView> = fixture_value(serde_json::json!({
+        "taskId": "task-3",
+        "title": "Review: Smooth B1 wasted frames",
+        "status": "completed",
+        "runtime": "codex",
+        "provider": "openai",
+        "parentThreadId": "t1",
+        "childThreadId": "t8",
+        "createdAt": now - 400_000,
+        "startedAt": now - 395_000,
+        "finishedAt": now - 240_000,
+        "summary": "**Should-fix — elapsed time stays stale in accessibility.** `pending.rs:82` switches the timer to a live text that VoiceOver never re-reads.",
     }));
     let waiting: Option<TaskView> = fixture_value(serde_json::json!({
         "taskId": "task-2",
@@ -607,7 +626,7 @@ pub fn fixture() -> OrchestrationState {
     }))
     .unwrap_or_default();
     OrchestrationState {
-        tasks: [task, waiting].into_iter().flatten().collect(),
+        tasks: [finished, task, waiting].into_iter().flatten().collect(),
         queue,
         lineage,
         lineage_loaded: true,
@@ -621,14 +640,33 @@ fn fixture_value<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Option
         .ok()
 }
 
-/// Scene `orchestration`: a fork with live subagents, a held queue and its
-/// panel open, plus the goal.
+/// Scene `orchestration`: a fork whose last turn launched three subagents
+/// (one finished, one running, one waiting out a usage limit), drawn
+/// inline above that turn's fold; a held queue and its panel open, plus
+/// the goal.
 pub fn scene(s: &mut State) {
     crate::scenes::chat(s);
     s.workspace.titles.remember("t9", "Port the side pane");
     if let Some(c) = s.chat.as_mut() {
         c.orchestration = fixture();
         c.goals = crate::chat::goals::fixture();
+        // The last turn launched them: before its answer, as the
+        // transcript places a task whose call row is not drawn.
+        let mut rows = (*c.rows).clone();
+        let at = rows
+            .iter()
+            .rposition(|r| matches!(r, zlo_client::transcript::Row::Assistant { .. }))
+            .unwrap_or(rows.len());
+        for (n, task) in c.orchestration.tasks.iter().enumerate() {
+            rows.insert(
+                at + n,
+                zlo_client::transcript::Row::Subagent {
+                    key: zlo_client::transcript::subagent_key(&task.task_id),
+                    task: Box::new(task.clone()),
+                },
+            );
+        }
+        c.rows = std::rc::Rc::new(rows);
     }
     crate::chat::fixtures::refold(s);
 }
@@ -681,6 +719,86 @@ mod tests {
         close_side_chat(&mut s);
         queue_action(&mut s, "sc2", QueueAction::Hold);
         assert!(chat_ref(&s, "t1").is_some_and(|c| !c.orchestration.busy));
+    }
+
+    /// The poll's tasks reach the transcript: each becomes a subagent row
+    /// there (the rows rebuild on the next update), and an unchanged poll
+    /// leaves nothing to rebuild.
+    #[test]
+    fn a_polled_task_becomes_a_row_in_the_transcript() {
+        let mut s = test_state();
+        crate::chat::fixtures::chat(&mut s);
+        let inst = instance(&mut s, "t1");
+        let mut snap = snapshot();
+        snap.tasks = Ok(fixture().tasks);
+        apply_snapshot(&mut s, "t1", inst, snap);
+        let keys: Vec<String> = chat_ref(&s, "t1").map_or_else(Vec::new, |c| {
+            c.transcript
+                .rows()
+                .iter()
+                .map(|r| r.key().to_string())
+                .filter(|k| k.starts_with("subagent:"))
+                .collect()
+        });
+        assert_eq!(
+            keys,
+            ["subagent:task-2", "subagent:task-3", "subagent:task-1"],
+            "oldest first, each once"
+        );
+        let changed =
+            crate::chat::chat_for(&mut s, "t1").map(|c| c.transcript.set_tasks(fixture().tasks));
+        assert_eq!(changed, Some(false), "the same tasks change nothing");
+    }
+
+    /// Scene `orchestration`: the subagents are rows in the transcript, not
+    /// a box over the composer; a row opens its child's thread, and its
+    /// Cancel cancels without opening it.
+    #[test]
+    fn subagents_draw_inline_and_open_their_thread() {
+        use rune::{App, AppSpec, Env, Runtime};
+        fn no_init() -> crate::state::State {
+            unreachable!("tests build the state themselves")
+        }
+        let app = App::new(AppSpec::new(
+            "ZLO test",
+            (1280., 820.),
+            no_init,
+            crate::view,
+        ));
+        let mut s = crate::state::State::new(crate::jobs::Rt::new(app.handle()));
+        scene(&mut s);
+        let mut rt = Runtime::new(s, crate::view, (1280., 820.), Env::new(true, 1.));
+        let mut t = 0.;
+        for _ in 0..30 {
+            t += 1. / 60.;
+            rt.frame(t);
+        }
+        assert!(rt.find("subagents").is_none(), "no box above the composer");
+        for id in ["task-1", "task-2", "task-3"] {
+            assert!(rt.find(&format!("subagent-{id}")).is_some(), "{id} inline");
+        }
+        assert!(rt.find("subagent-preview-task-1").is_some(), "live words");
+        assert!(rt.find("subagent-preview-task-3").is_some(), "the result");
+        // Cancel is the live row's own button: the thread stays.
+        let (x, y) = rt
+            .find("cancel-task-1")
+            .expect("a live row can be cancelled");
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        t += 1. / 60.;
+        rt.frame(t);
+        assert_eq!(crate::workspace::active_id(&rt.state), Some("t1"));
+        assert!(
+            rt.find("cancel-task-3").is_none(),
+            "a finished one has none"
+        );
+        let (x, y) = rt.find("subagent-task-3").expect("the finished row");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        t += 1. / 60.;
+        rt.frame(t);
+        assert_eq!(crate::workspace::active_id(&rt.state), Some("t8"));
     }
 
     #[test]

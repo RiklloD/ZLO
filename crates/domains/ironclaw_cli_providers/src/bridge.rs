@@ -1481,6 +1481,7 @@ async fn call_tool(
         scope: thread.scope.clone(),
         provider: thread.provider.clone(),
         model: thread.model.clone(),
+        run_id: Some(grant.run_id.clone()),
     };
     let arguments = match params.get("arguments") {
         Some(Value::Null) | None => json!({}),

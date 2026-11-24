@@ -249,6 +249,7 @@ pub(crate) fn ctx(thread: &str) -> CallContext {
         scope: scope(),
         provider: None,
         model: None,
+        run_id: None,
     }
 }
 
@@ -1561,6 +1562,7 @@ async fn an_effort_pick_rides_the_route_and_a_switch_keeps_only_its_own() {
 }
 
 mod schedule_desktop;
+mod subagent_anchor;
 #[tokio::test]
 async fn cli_context_reports_sum_to_the_provider_count_and_reuse_the_turns_estimate() {
     use crate::telemetry::TurnTelemetry;

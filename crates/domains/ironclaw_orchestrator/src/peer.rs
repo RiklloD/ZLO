@@ -600,6 +600,7 @@ impl Engine {
             delivered_at: None,
             cancel_requested: false,
             limit_reset_at: None,
+            parent_run_id: ctx.run_id.clone().or_else(|| parent.active_run_id.clone()),
         };
         let key = remote_request_key(
             &caller_key(&ctx.thread_id),
@@ -1039,6 +1040,7 @@ impl PeerReceiver {
             thread_id: link_thread.clone(),
             scope: self.scope.clone(),
             provider: None,
+            run_id: None,
             model: None,
         };
         let operate = caller.access >= PeerLinkAccess::Operate;
