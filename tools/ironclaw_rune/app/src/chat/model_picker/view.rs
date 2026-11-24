@@ -289,6 +289,9 @@ fn step_thinking(s: &mut State, slot: &Slot, forward: bool) {
 }
 
 fn model_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
+    if s.prefs.signal_matrix_picker {
+        return super::matrix::matrix_popover(s, m, slot, k);
+    }
     let p = &s.palette;
     let order = &s.prefs.provider_order;
     let recent = &s.prefs.recent_models;
@@ -667,9 +670,9 @@ const TICK_H: f32 = 4.;
 /// and the top level a solid block.
 const BAYER: [u8; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 /// The cursor settling on a level: quick, with a small overshoot.
-const SETTLE: Spring = Spring::new(0.34, 0.18);
+pub(super) const SETTLE: Spring = Spring::new(0.34, 0.18);
 /// The cursor following the pointer: near-instant, so it never trails.
-const FOLLOW: Spring = Spring::new(0.06, 0.);
+pub(super) const FOLLOW: Spring = Spring::new(0.06, 0.);
 /// A bright pulse sweeping the lit columns left to right.
 static PULSE: [(f32, f32); 4] = [(0., 0.5), (0.08, 1.), (0.24, 0.5), (1., 0.5)];
 
@@ -695,7 +698,7 @@ fn resting_dots(color: Color) -> El {
 /// sweeps them, quicker the more the model thinks. Picking a level keeps
 /// the popover open; Tab / Shift+Tab in the search field step it from the
 /// keyboard. `None` when the model has no levels.
-fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option<El> {
+pub(super) fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option<El> {
     let choices = thinking_choices(m);
     if choices.len() < 2 {
         return None;
@@ -857,7 +860,7 @@ fn thinking_row(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> Option
 }
 
 /// Auto, then the current model's levels: the slider's stops.
-fn thinking_choices(m: &ModelPickerState) -> Vec<Option<String>> {
+pub(super) fn thinking_choices(m: &ModelPickerState) -> Vec<Option<String>> {
     let model = m.current_model().unwrap_or("default");
     std::iter::once(None)
         .chain(

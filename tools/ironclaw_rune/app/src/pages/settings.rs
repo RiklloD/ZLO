@@ -244,14 +244,32 @@ fn render_follow_ups(s: &State, k: &Kit) -> El {
         };
         s.update_prefs(|p| p.follow_ups = pick);
     });
+    let matrix = switch(
+        k,
+        s.prefs.signal_matrix_picker,
+        false,
+        "Signal Matrix model picker",
+        |s: &mut State| s.update_prefs(|p| p.signal_matrix_picker = !p.signal_matrix_picker),
+    );
     rows_card(
         p,
-        [setting_row(
-            p,
-            "Follow-ups",
-            Some(crate::chat::FOLLOW_UPS_HELP),
-            control.key("follow-ups"),
-        )],
+        [
+            setting_row(
+                p,
+                "Follow-ups",
+                Some(crate::chat::FOLLOW_UPS_HELP),
+                control.key("follow-ups"),
+            ),
+            setting_row(
+                p,
+                "Signal Matrix model picker",
+                Some(
+                    "Plot connected models on a 2D Intelligence × Price/Speed matrix with a \
+                     Pareto frontier instead of a list.",
+                ),
+                matrix.key("signal-matrix-picker"),
+            ),
+        ],
     )
 }
 

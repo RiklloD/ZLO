@@ -231,6 +231,14 @@ pub const SCENES: &[Scene] = &[
     ("model-picker-effort", |s| {
         crate::chat::model_picker::scene(s, true)
     }),
+    (
+        "model-picker-matrix",
+        crate::chat::model_picker::scene_matrix,
+    ),
+    ("model-picker-matrix-light", |s| {
+        crate::chat::model_picker::scene_matrix(s);
+        light_theme(s);
+    }),
     ("notifications", |s| {
         page_with(s, Page::Notifications, crate::pages::notifications::fixture)
     }),

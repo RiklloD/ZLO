@@ -47,6 +47,7 @@
 //!   catalog_thread)` and renders it with `view::pills_for(s, Slot { .. }, ..)`;
 //!   `pending()`, `pending_effort()`, `set_profile(..)` read and steer it.
 
+mod matrix;
 mod slot;
 mod view;
 
@@ -127,6 +128,8 @@ pub struct ModelPickerState {
     /// A rail icon being dragged to reorder: its provider and the pointer's
     /// vertical travel.
     pub(crate) rail_drag: Option<(String, f32)>,
+    /// The `(provider, model)` snapped to while dragging on the Signal Matrix.
+    pub(crate) matrix_drag: Option<(String, String)>,
     /// Invalidates replies from before a rebind.
     generation: Generation,
 }
@@ -180,6 +183,7 @@ impl ModelPickerState {
     pub fn close(&mut self) {
         self.open = false;
         self.cmd_held = false;
+        self.matrix_drag = None;
     }
 
     pub fn set_compact(&mut self, compact: bool) {
@@ -189,6 +193,7 @@ impl ModelPickerState {
     pub fn toggle(&mut self) {
         self.open = !self.open;
         self.cmd_held = false;
+        self.matrix_drag = None;
         if self.open {
             self.search.replace_text("");
             self.search.focused = true;
@@ -626,6 +631,7 @@ pub(crate) fn pick(s: &mut State, slot: Slot, provider: String, model: String) {
     let Some(p) = slot.get_mut(s) else { return };
     p.open = false;
     p.cmd_held = false;
+    p.matrix_drag = None;
     p.effort_seq += 1;
     // The effort carries over when the new model takes the same level.
     let effort = p
@@ -864,6 +870,104 @@ pub fn scene(s: &mut State, effort: bool) {
         if !effort {
             c.model_picker.effort = None;
         }
+        c.model_picker.toggle();
+    }
+}
+
+/// Richer fixture for the Signal Matrix scenes & tests: multiple connected
+/// providers (Claude, Codex, Gemini) plus an unauthenticated OpenRouter entry
+/// that must remain excluded.
+pub fn fixture_matrix() -> ModelPickerState {
+    use zlo_client::orchestration::PickerModel;
+    let provider =
+        |id: &str, name: &str, runtime: &str, authed: bool, models: &[&str], efforts: &[&str]| {
+            RouteProvider {
+                provider: id.into(),
+                name: name.into(),
+                runtime: runtime.into(),
+                authenticated: authed,
+                models: models.iter().map(|m| m.to_string()).collect(),
+                efforts: efforts.iter().map(|m| m.to_string()).collect(),
+                model_efforts: Default::default(),
+                brand: None,
+                launch: None,
+            }
+        };
+    let route = ThreadRoute {
+        thread_id: "t1".into(),
+        runtime: "claude-cli".into(),
+        provider: Some("anthropic".into()),
+        model: Some("claude-fable-5-2".into()),
+        effort: Some("high".into()),
+        fresh: false,
+        providers: vec![
+            provider(
+                NATIVE,
+                "IronClaw",
+                NATIVE,
+                true,
+                &["claude-sonnet-5-5", "gpt-6.1-terra"],
+                &[],
+            ),
+            provider(
+                "anthropic",
+                "Claude",
+                "claude-cli",
+                true,
+                &[
+                    "claude-fable-5-2",
+                    "claude-opus-5-5",
+                    "claude-sonnet-5-5",
+                    "claude-haiku-5-5",
+                ],
+                &["low", "medium", "high", "xhigh", "max"],
+            ),
+            provider(
+                "codex",
+                "Codex",
+                "codex",
+                true,
+                &["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-mini"],
+                &["low", "medium", "high", "xhigh"],
+            ),
+            provider(
+                "gemini",
+                "Gemini",
+                "gemini",
+                true,
+                &["gemini-4-carbon", "gemini-4-hydrogen"],
+                &["low", "medium", "high"],
+            ),
+            provider("zai", "Z.ai", NATIVE, true, &["glm-5.4"], &[]),
+            provider(
+                "openrouter",
+                "OpenRouter",
+                NATIVE,
+                false,
+                &["deepseek/deepseek-v4"],
+                &[],
+            ),
+        ],
+        picker: PickerPrefs {
+            hidden_providers: Vec::new(),
+            hidden_models: vec![PickerModel::new("codex", "gpt-6.1-mini")],
+            favorites: Vec::new(),
+        },
+    };
+    let mut p = ModelPickerState::new(Some("t1".into()), None);
+    p.current = route_pick(&route);
+    p.effort = route.effort.clone();
+    p.prefs = route.picker.clone();
+    p.route = Some(route);
+    p
+}
+
+/// Scene `model-picker-matrix`: open chat with Signal Matrix enabled in prefs.
+pub fn scene_matrix(s: &mut State) {
+    crate::scenes::chat(s);
+    s.prefs.signal_matrix_picker = true;
+    if let Some(c) = s.chat.as_mut() {
+        c.model_picker = fixture_matrix();
         c.model_picker.toggle();
     }
 }

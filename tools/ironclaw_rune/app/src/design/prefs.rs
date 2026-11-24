@@ -116,6 +116,9 @@ pub struct Prefs {
     /// their own worktree and branch, made from `main` (Settings → General
     /// → Worktrees). Off: they work in the profile's folder.
     pub thread_worktrees: bool,
+    /// Use the 2D Signal Matrix model picker (with Pareto frontier over
+    /// connected providers) instead of the list (Settings → General).
+    pub signal_matrix_picker: bool,
 }
 
 impl Default for Prefs {
@@ -154,6 +157,7 @@ impl Default for Prefs {
             thread_details_items: Default::default(),
             open_in_editor: String::new(),
             thread_worktrees: false,
+            signal_matrix_picker: false,
         }
     }
 }
