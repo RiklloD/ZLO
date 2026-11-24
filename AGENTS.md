@@ -8,10 +8,16 @@ All product work belongs in the Reborn workspace under `crates/`; the shipping b
 
 ## Build, run, debug
 
+Prefer the unified `justfile` verbs locally (`just --list`), or run Cargo directly:
+
 ```bash
-cargo fmt                                                       # format
-cargo clippy --all --benches --tests --examples --all-features -- -D warnings  # lint (zero warnings; CI denies warnings — an unflagged run exits 0 with them)
-cargo test                                                      # unit + integration suites (Postgres legs self-provision testcontainers; skipped without Docker)
+just fmt                                                        # cargo fmt
+just lint                                                       # cargo clippy --all --benches --tests --examples --all-features -- -D warnings
+just test                                                       # nextest (when installed) or cargo test
+just test-arch                                                  # architecture boundary & ratchet tests
+just gate                                                       # full local preflight gate (scripts/preflight-gates.sh)
+just deny                                                       # cargo deny check (advisories, licenses, bans, sources)
+just gc                                                         # reclaim disk from stale worktrees & target/ dirs
 RUST_LOG=ironclaw=debug cargo run -p ironclaw -- serve          # run the serve binary, `zlo` (add tower_http=debug for HTTP logging)
 ```
 
@@ -19,30 +25,7 @@ The workspace-root `integration` feature is empty with zero consumers — a bare
 
 **Cargo features are a last resort.** A feature is a second build of the workspace, compiled and tested forever. Add one only for a heavy optional dependency, a build shape that ships with it OFF, a CI lane selector, a dev-only seam (always named `test-support`), or a privilege boundary — and say which in the manifest comment. Deployment shape belongs in `DeploymentConfig` and `[storage]`, not `#[cfg]`. Full bar: `.claude/rules/cargo-features.md`.
 
-**Toolchain pin.** The Rust version lives in two synchronized places:
-`rust-toolchain.toml`'s `channel` (what local `cargo`/`clippy` resolve) and
-`.github/actions/setup-rust`'s `toolchain` input default (what CI installs).
-`scripts/ci/lib/rust_toolchain_contracts.py` enforces that they are equal — it
-does not make either one derive from the other, so a bump edits both in the
-same PR or the gate fails. 35 CI jobs across 11 workflow files need a toolchain
-and all 35 reach the composite today, with no allowlist — re-check with
-`python3 scripts/ci/ws12_workflow_contracts.py`, whose
-`validate_rust_jobs_reach_the_composite` fails the build on a job that runs
-cargo, or a hermetic runner, without it. That count covers `.github/workflows`
-only; the cargo-dist release lane is outside it, because no job there names
-`cargo` (it shells out to `dist build`). There, the composite runs for
-container matrix entries only — hosted-runner entries resolve the pin from
-`rust-toolchain.toml` themselves but get no mold and no explicit
-`RUSTUP_TOOLCHAIN` export. That condition is itself pinned, in both the
-generated workflow and `.github/dist-build-setup.yml`. The two `nightly-2025-11-01` coverage
-lanes pass an explicit `toolchain:` input, and Docker builds are the one path
-outside this contract
-(the build context excludes `rust-toolchain.toml`, so images stay on their
-base-image toolchain). The same module also fails the build on a direct
-`dtolnay/rust-toolchain` call, any other bootstrap, a release lane whose
-`build-local-artifacts` job installs no Rust, and a `RUSTFLAGS` env key that
-would shadow the composite's export. Precedence rules and the bump checklist
-are in `rust-toolchain.toml`'s own header.
+**Toolchain pin.** The Rust toolchain version is pinned in two synchronized places: `rust-toolchain.toml` (`channel`) and `.github/actions/setup-rust` (`toolchain` default), enforced equal by `scripts/ci/lib/rust_toolchain_contracts.py` (`python3 scripts/ci/ws12_workflow_contracts.py`). Precedence rules and the full bump checklist live in `rust-toolchain.toml`'s header.
 
 ## Discover code before changing it
 

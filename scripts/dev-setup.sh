@@ -38,51 +38,35 @@ else
     cargo install wasm-tools --locked
 fi
 
-# 4. Verify the project compiles
-echo "[4/6] Running cargo check..."
-cargo check
-
-# 5. Run tests using libsql temp DB (no Docker/external DB needed)
-echo "[5/6] Running tests (no external DB required)..."
-cargo test
-
-# 6. Install git hooks
-echo "[6/6] Installing git hooks..."
-HOOKS_DIR=$(git rev-parse --git-path hooks 2>/dev/null) || true
-if [ -n "$HOOKS_DIR" ]; then
-    mkdir -p "$HOOKS_DIR"
-    SCRIPTS_ABS="$(cd "$(dirname "$0")" && pwd)"
-    ln -sf "$SCRIPTS_ABS/commit-msg-regression.sh" "$HOOKS_DIR/commit-msg"
-    echo "  commit-msg hook installed (regression test enforcement)"
-    ln -sf "$SCRIPTS_ABS/pre-commit-safety.sh" "$HOOKS_DIR/pre-commit"
-    echo "  pre-commit hook installed (UTF-8, case-sensitivity, /tmp, redaction, composition-mass ratchet)"
-    REPO_ROOT="$(git rev-parse --show-toplevel)"
-    ln -sf "$REPO_ROOT/.githooks/pre-push" "$HOOKS_DIR/pre-push"
-    echo "  pre-push hook installed (merge check + CI-parity quality gate + Reborn coverage ratchet + WebUI provider replay + optional delta lint)"
+# 4. Configure git hooks via core.hooksPath (shared across all worktrees)
+echo "[4/6] Configuring git hooks (core.hooksPath = .githooks)..."
+if git rev-parse --git-dir &>/dev/null; then
+    git config core.hooksPath .githooks
+    echo "  core.hooksPath set to .githooks (pre-commit safety + WIT version check, commit-msg, local-first pre-push)"
 else
     echo "  Skipped: not a git repository"
 fi
 
-echo ""
-# Codebase knowledge graph (codebase-memory MCP) — powers agent code discovery.
-# Single static binary, no deps, no API keys, 100% local. See CLAUDE.md -> "Code Discovery".
-if command -v codebase-memory-mcp &>/dev/null; then
-    echo "[graph] codebase-memory-mcp found: $(command -v codebase-memory-mcp)"
-else
-    echo "[graph] Installing codebase-memory-mcp (agent code-discovery graph)..."
-    if curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash; then
-        echo "  installed. The repo's .mcp.json wires it into Claude Code automatically."
+# 5. Check recommended local-first developer tools
+echo "[5/6] Checking recommended local tools (sccache, cargo-nextest, just, cargo-deny, cargo-shear)..."
+for tool in sccache cargo-nextest just cargo-deny cargo-shear; do
+    if command -v "$tool" &>/dev/null; then
+        echo "  ok: $tool"
     else
-        echo "  WARN: install failed — agents will fall back to grep."
-        echo "        Install manually: https://github.com/DeusData/codebase-memory-mcp"
+        echo "  missing (recommended): $tool  (macOS: brew install $tool)"
     fi
-fi
+done
+
+# 6. Verify workspace check
+echo "[6/6] Running cargo check..."
+cargo check
 
 echo ""
 echo "=== Setup complete ==="
 echo ""
-echo "Quick start:"
-echo "  cargo run                            # Run the default build"
-echo "  cargo test                           # Test suite"
-echo "  cargo test --all-features            # Full test suite (requires Node.js 22 + Corepack/pnpm for WebUI bundle)"
-echo "  cargo clippy --all-features          # Lint all code (requires Node.js 22 + Corepack/pnpm for WebUI bundle)"
+echo "Quick start (see `just --list` for all local-first commands):"
+echo "  just check          # Fast workspace check"
+echo "  just lint           # Clippy (all targets, all features, -D warnings)"
+echo "  just test           # Nextest/cargo test suite"
+echo "  just gate           # Full local preflight gate"
+echo "  just gc             # Reclaim disk from stale worktrees & target/ dirs"

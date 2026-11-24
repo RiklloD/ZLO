@@ -1029,11 +1029,11 @@ class RebornPrTestPlanTests(unittest.TestCase):
         for path in (
             "clippy.toml",
             "deny.toml",
-            "release-plz.toml",
+            ".editorconfig",
             ".gitattributes",
             ".coderabbit.yaml",
             ".mcp.json",
-            ".node-version",
+            "justfile",
             ".nvmrc",
             ".sqlfluff",
             "Dockerfile.process-sandbox",

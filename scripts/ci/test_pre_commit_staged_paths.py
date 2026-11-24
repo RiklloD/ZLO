@@ -46,7 +46,7 @@ def wit_prefix() -> str:
 
 # The alternation branches are directory prefixes, so each must name a real
 # directory. Anchors and the trailing slash are stripped to get the path.
-GATED_PREFIXES = (wit_prefix(), "channels-src/", "tools-src/")
+GATED_PREFIXES = (wit_prefix(),)
 
 
 def selector_pattern() -> str:
@@ -103,14 +103,14 @@ class PreCommitStagedPathSelectorTests(unittest.TestCase):
         )
 
     def test_vestigial_prefixes_are_recorded(self) -> None:
-        """Pins which gated prefixes are known-missing, so a *new* dead prefix
-        fails here instead of joining the list silently."""
+        """Pins that every gated prefix names a real directory, so a dead path
+        literal fails here instead of silently stopping the check."""
         missing = {p for p in GATED_PREFIXES if not (REPO_ROOT / p).is_dir()}
         self.assertEqual(
             missing,
-            {"channels-src/", "tools-src/"},
-            "the set of gated-but-missing prefixes changed; a gate either "
-            "gained a dead path literal or an old one was cleaned up",
+            set(),
+            "the set of gated-but-missing prefixes changed; a gate gained a "
+            "dead path literal",
         )
 
     def test_selector_is_anchored_and_ignores_unrelated_paths(self) -> None:

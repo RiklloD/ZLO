@@ -1,5 +1,9 @@
 packages:
   - "."
 
+# Supply-chain cooldown (pnpm 11+): require newly published npm packages to be
+# at least 7 days (10,080 minutes) old before resolution/updates.
+minimumReleaseAge: 10080
+
 allowBuilds:
   esbuild: true

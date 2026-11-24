@@ -20,17 +20,15 @@ The rest of this file is Claude-specific.
 
 ## Codebase knowledge graph (MCP)
 
-The `codebase-memory` MCP server indexes `crates/` into a knowledge graph;
-prefer it over `Grep` for *code structure* (cross-crate call chains are
-invisible to text search). `.codebase-memory/graph.db.zst` is the committed
-bootstrap snapshot; local databases and
-`.codebase-memory/artifact.json` <!-- check-guidance: path-ok --> stay
-git-ignored (per-environment state, deliberately untracked). Check
-freshness first: `bash scripts/codebase-graph.sh status`.
+When the optional `codebase-memory` MCP server is installed locally, it indexes
+`crates/` into a local knowledge graph (per-environment state in
+`.codebase-memory/`, deliberately git-ignored so compressed SQLite blobs do not
+bloat git history). Check freshness first: `bash scripts/codebase-graph.sh status`.
 
-- Missing → `index_repository(repo_path=".", persistence=true)` once.
+- Missing → `index_repository(repo_path=".", persistence=true)` once (or fall
+  back to `crates/AGENTS.md` + targeted `rg`).
 - Stale → `detect_changes(since="<indexed-commit>")`, or re-run
-  `index_repository` to refresh the shared snapshot.
+  `index_repository`.
 - Where is a symbol → `search_graph(name_pattern=…)`, then
   `get_code_snippet(qualified_name=…)`.
 - Who calls X / what X calls → `trace_path(function_name=…, mode="calls")`;
@@ -41,8 +39,8 @@ freshness first: `bash scripts/codebase-graph.sh status`.
 
 The graph is a point-in-time index — verify anything it asserts against live
 code before acting. `Grep`/`Glob`/`Read` remain correct for text, config, and
-non-code files. For narrative *what/why* orientation, read the relevant
-`openwiki/` page (generated — never hand-edit).
+non-code files. `openwiki/` is generated prose (never hand-edit) and may lag
+recent code — verify claims against live symbols.
 
 ## REPL/TUI logging rule
 
