@@ -22,7 +22,7 @@ ironclaw_common = { path = "../../contracts/ironclaw_common", version = "0.4.1" 
 ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 ironclaw_llm = { path = "../ironclaw_llm", version = "0.1.0" }
 ironclaw_safety = { path = "../../substrates/ironclaw_safety", version = "0.2.2" }
-jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12", features = ["aws_lc_rs"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 regex = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart", "rustls", "stream"] }
