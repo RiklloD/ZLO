@@ -5,6 +5,18 @@
 //! (`remainingFraction`, `resetTime`, a `5h` / `weekly` window), with
 //! `fetchAvailableModels` as the fallback for older accounts. The refreshed
 //! access token stays in memory; the file is never written.
+//!
+//! agy 1.5 writes no `acp_token.json`: a file sign-in of its own
+//! (`antigravity-acp/antigravity-oauth-token`) holds an access token and its
+//! expiry but no OAuth client, so it is used as is until it expires (t3code
+//! #38957).
+//!
+//! By default agy 1.5 keeps the sign-in in one OS keyring entry instead
+//! (go-keyring: service `gemini`, account `antigravity`; the same entry the
+//! Antigravity driver in `ironclaw_cli_providers` looks up). Its secret is
+//! never read: reading it would show the keychain's access prompt. The
+//! entry is only looked up by its attributes, so a keyring-only sign-in
+//! reads as signed in with its quota unavailable, never as signed out.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -23,13 +35,38 @@ const QUOTA_HOSTS: &[&str] = &[
 ];
 const USER_AGENT: &str = "antigravity/hub/1.0.0 (aidev_client; os_type=darwin; cl=963137146)";
 
+/// agy's go-keyring entry (`ironclaw_cli_providers`' `signin` names the same;
+/// the two crates are peers, so each test pins the exact lookup to one
+/// literal instead of sharing code).
+const KEYRING_SERVICE: &str = "gemini";
+const KEYRING_ACCOUNT: &str = "antigravity";
+const KEYRING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+pub(crate) const KEYRING_SIGN_IN: &str = "Signed in to Antigravity through the system keychain. \
+     Quota lookup is unavailable for keychain sign-ins: ZLO never reads keychain secrets.";
+
 pub struct AntigravityLogin {
-    token_files: Vec<PathBuf>,
+    /// Each profile's `antigravity-acp` folder, in order.
+    pub(crate) sign_in_dirs: Vec<PathBuf>,
     /// `(fingerprint of the refresh token, access token, expiry millis)`.
-    access: Mutex<Option<(String, SecretString, i64)>>,
+    pub(crate) access: Mutex<Option<(String, SecretString, i64)>>,
+    /// The tool that looks agy's keyring entry up without reading it
+    /// (`/usr/bin/security` on macOS); `None` checks no keyring.
+    pub(crate) keyring_tool: Option<PathBuf>,
 }
 
-struct SignIn {
+/// What a profile's sign-in buys a quota read with.
+pub(crate) enum Credential {
+    /// The legacy runtime's refreshable sign-in.
+    Refreshable(SignIn),
+    /// agy 1.5's stored access token, usable until it expires.
+    Access {
+        token: SecretString,
+        expires_ms: i64,
+    },
+}
+
+pub(crate) struct SignIn {
     client_id: String,
     client_secret: SecretString,
     refresh_token: SecretString,
@@ -41,27 +78,84 @@ impl AntigravityLogin {
     /// Hermes's profile first (IronClaw's driver signs in there when it
     /// exists), then IronClaw's own.
     pub fn new(home: &Path) -> Self {
-        let file = |dir: PathBuf| dir.join("antigravity-acp").join("acp_token.json");
+        let acp = |dir: PathBuf| dir.join("antigravity-acp");
         Self {
-            token_files: vec![
-                file(home.join(".hermes/plugin-data/t3code/antigravity/profile")),
-                file(home.join(".ironclaw/antigravity/profile")),
+            sign_in_dirs: vec![
+                acp(home.join(".hermes/plugin-data/t3code/antigravity/profile")),
+                acp(home.join(".ironclaw/antigravity/profile")),
             ],
             access: Mutex::new(None),
+            keyring_tool: Some(PathBuf::from("/usr/bin/security"))
+                .filter(|tool| cfg!(target_os = "macos") && tool.is_file()),
+        }
+    }
+
+    /// Whether agy's keyring entry exists, looked up by its attributes
+    /// alone (no `-g`/`-w`: the secret, and its access prompt, stay out).
+    async fn keyring_signed_in(&self) -> bool {
+        let Some(tool) = &self.keyring_tool else {
+            return false;
+        };
+        let mut command = tokio::process::Command::new(tool);
+        command
+            .args([
+                "find-generic-password",
+                "-s",
+                KEYRING_SERVICE,
+                "-a",
+                KEYRING_ACCOUNT,
+            ])
+            .env_clear()
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        for key in ["HOME", "USER", "LOGNAME", "PATH"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        match tokio::time::timeout(KEYRING_TIMEOUT, command.status()).await {
+            Ok(Ok(status)) => status.success(),
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "antigravity keyring lookup did not start");
+                false
+            }
+            Err(_elapsed) => {
+                tracing::debug!("antigravity keyring lookup timed out");
+                false
+            }
         }
     }
 
     pub(crate) async fn fetch(&self, egress: &dyn NetworkHttpEgress, now_ms: i64) -> Fetched {
-        let Some(sign_in) = self.sign_in().await else {
+        let Some(credential) = self.credential().await else {
+            if self.keyring_signed_in().await {
+                return Fetched::NotConfigured(KEYRING_SIGN_IN.to_string());
+            }
             return Fetched::NotConfigured(
                 "Sign in to Antigravity once to see its limits.".to_string(),
             );
         };
-        let access = match self.access_token(egress, &sign_in, now_ms).await {
-            Ok(access) => access,
-            Err(fetched) => return fetched,
+        let (access, project_id) = match credential {
+            Credential::Refreshable(sign_in) => {
+                match self.access_token(egress, &sign_in, now_ms).await {
+                    Ok(access) => (access, sign_in.project_id),
+                    Err(fetched) => return fetched,
+                }
+            }
+            Credential::Access { token, expires_ms } if expires_ms > now_ms + 60_000 => {
+                (token, None)
+            }
+            Credential::Access { .. } => {
+                return Fetched::Unauthorized(
+                    "Antigravity's saved sign-in has expired. Start an Antigravity turn \
+                     to renew it, then refresh."
+                        .to_string(),
+                );
+            }
         };
-        let body = match &sign_in.project_id {
+        let body = match &project_id {
             Some(project) => json!({"project": project}),
             None => json!({}),
         }
@@ -110,39 +204,72 @@ impl AntigravityLogin {
         last
     }
 
-    async fn sign_in(&self) -> Option<SignIn> {
-        for path in &self.token_files {
-            let Ok(bytes) = tokio::fs::read(path).await else {
-                continue; // silent-ok: that profile never signed in
-            };
-            let Ok(doc) = serde_json::from_slice::<Value>(&bytes) else {
-                tracing::debug!(path = %path.display(), "antigravity token file is not JSON");
-                continue;
-            };
-            let field = |key: &str| {
-                doc.get(key)
-                    .and_then(Value::as_str)
-                    .filter(|v| !v.is_empty())
-                    .map(str::to_string)
-            };
-            if let (Some(client_id), Some(secret), Some(refresh), Some(token_uri)) = (
-                field("client_id"),
-                field("client_secret"),
-                field("refresh_token"),
-                field("token_uri"),
-            ) {
-                return Some(SignIn {
-                    client_id,
-                    client_secret: SecretString::from(secret),
-                    refresh_token: SecretString::from(refresh),
-                    token_uri,
-                    project_id: field("project_id"),
-                });
+    /// The first profile's sign-in: the legacy refreshable token, else
+    /// agy 1.5's stored access token.
+    async fn credential(&self) -> Option<Credential> {
+        for dir in &self.sign_in_dirs {
+            if let Some(sign_in) = refreshable(&dir.join("acp_token.json")).await {
+                return Some(Credential::Refreshable(sign_in));
+            }
+            if let Some(access) = cli_access(&dir.join("antigravity-oauth-token")).await {
+                return Some(access);
             }
         }
         None
     }
+}
 
+/// agy 1.5's file sign-in: `{"token": {"access_token", "expiry"}}`.
+pub(crate) async fn cli_access(path: &Path) -> Option<Credential> {
+    let bytes = tokio::fs::read(path).await.ok()?; // silent-ok: that profile has no file sign-in
+    let Ok(doc) = serde_json::from_slice::<Value>(&bytes) else {
+        tracing::debug!(path = %path.display(), "antigravity CLI token file is not JSON");
+        return None;
+    };
+    let token = doc["token"]["access_token"]
+        .as_str()
+        .filter(|t| !t.is_empty())?;
+    let expires_ms = doc["token"]["expiry"]
+        .as_str()
+        .and_then(|e| chrono::DateTime::parse_from_rfc3339(e).ok()) // silent-ok: no expiry reads as expired
+        .map_or(0, |at| at.timestamp_millis());
+    Some(Credential::Access {
+        token: SecretString::from(token.to_string()),
+        expires_ms,
+    })
+}
+
+/// The legacy runtime's `acp_token.json`, when complete.
+async fn refreshable(path: &Path) -> Option<SignIn> {
+    let bytes = tokio::fs::read(path).await.ok()?; // silent-ok: that profile never signed in
+    let Ok(doc) = serde_json::from_slice::<Value>(&bytes) else {
+        tracing::debug!(path = %path.display(), "antigravity token file is not JSON");
+        return None;
+    };
+    let field = |key: &str| {
+        doc.get(key)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let (Some(client_id), Some(secret), Some(refresh), Some(token_uri)) = (
+        field("client_id"),
+        field("client_secret"),
+        field("refresh_token"),
+        field("token_uri"),
+    ) else {
+        return None;
+    };
+    Some(SignIn {
+        client_id,
+        client_secret: SecretString::from(secret),
+        refresh_token: SecretString::from(refresh),
+        token_uri,
+        project_id: field("project_id"),
+    })
+}
+
+impl AntigravityLogin {
     async fn access_token(
         &self,
         egress: &dyn NetworkHttpEgress,

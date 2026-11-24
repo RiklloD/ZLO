@@ -2,7 +2,7 @@
 //! stands in for the network, so nothing reaches the real endpoints.
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -383,5 +383,93 @@ fn antigravity_summary_names_shared_and_gemini_buckets() {
             ("Claude & GPT 5-hour", 50.0, Some(300)),
             ("Claude & GPT Weekly", 0.0, Some(10_080))
         ]
+    );
+}
+
+/// t3code #38957: agy 1.5 writes no `acp_token.json`; its file sign-in
+/// (`antigravity-oauth-token`) holds an access token and its expiry, used
+/// as is until it expires (it carries no OAuth client to refresh it).
+#[tokio::test]
+async fn antigravity_reads_the_cli_sign_in_and_its_expiry() {
+    let home = tempfile::tempdir().unwrap();
+    let acp = home
+        .path()
+        .join(".ironclaw/antigravity/profile/antigravity-acp");
+    std::fs::create_dir_all(&acp).unwrap();
+    std::fs::write(
+        acp.join("antigravity-oauth-token"),
+        r#"{"token":{"access_token":"ya29.x","refresh_token":"r","expiry":"2026-11-24T12:00:00Z"}}"#,
+    )
+    .unwrap();
+    let expiry = chrono::DateTime::parse_from_rfc3339("2026-11-24T12:00:00Z")
+        .unwrap()
+        .timestamp_millis();
+    match crate::antigravity::cli_access(&acp.join("antigravity-oauth-token")).await {
+        Some(crate::antigravity::Credential::Access { expires_ms, .. }) => {
+            assert_eq!(expires_ms, expiry)
+        }
+        _ => panic!("the CLI sign-in was not read"),
+    }
+}
+
+/// Review P3: a sign-in agy keeps only in the OS keyring reads as signed in
+/// with its quota unavailable, never as "sign in"; the keyring entry is
+/// looked up by its attributes alone, and no provider is called.
+#[tokio::test]
+async fn antigravity_keyring_sign_in_is_not_reported_signed_out() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let args = dir.path().join("args");
+    let tool = |name: &str, code: i32| {
+        let path = dir.path().join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit {code}\n",
+                args.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let report = |keyring_tool: Option<PathBuf>| {
+        let egress = Arc::new(RecordingEgress::default());
+        let login = crate::antigravity::AntigravityLogin {
+            sign_in_dirs: vec![dir.path().join("profile/antigravity-acp")],
+            access: Mutex::new(None),
+            keyring_tool,
+        };
+        async move {
+            let monitor =
+                UsageMonitor::with_sources(egress.clone(), vec![UsageSource::Antigravity(login)]);
+            let answer = monitor.report().await.providers.remove(0);
+            assert!(egress.calls().is_empty(), "no provider call");
+            answer
+        }
+    };
+    let signed_in = report(Some(tool("present", 0))).await;
+    assert_eq!(signed_in.status, UsageStatus::NotConfigured);
+    let message = signed_in.message.unwrap();
+    assert_eq!(message, crate::antigravity::KEYRING_SIGN_IN);
+    assert!(!message.contains("Sign in to"), "{message}");
+    let signed_out = report(Some(tool("absent", 44))).await;
+    assert!(
+        signed_out
+            .message
+            .unwrap()
+            .contains("Sign in to Antigravity"),
+        "no keyring entry: still asked to sign in"
+    );
+    // The same lookup, word for word, as `ironclaw_cli_providers`'
+    // `signin::keyring` (its test `production_lookup_matches_the_usage_monitor`
+    // pins this literal too): both crates must ask about one entry.
+    let lookups = std::fs::read_to_string(&args).unwrap();
+    assert!(
+        !lookups.is_empty()
+            && lookups
+                .lines()
+                .all(|l| l == "find-generic-password -s gemini -a antigravity"),
+        "{lookups}"
     );
 }

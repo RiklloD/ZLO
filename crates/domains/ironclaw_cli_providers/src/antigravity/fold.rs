@@ -32,7 +32,7 @@ pub(crate) fn stamped(
 const GOAL_COMPLETE_MARKER: &str = "<!-- GOAL_COMPLETE -->";
 
 /// What the model says about a thinking block whose signature was lost.
-const INVALID_THINKING_SIGNATURE: [&str; 2] = [
+pub(crate) const INVALID_THINKING_SIGNATURE: [&str; 2] = [
     ".thinking.signature: Field required",
     "Invalid `signature` in `thinking` block",
 ];
@@ -214,6 +214,40 @@ impl PromptFold {
     }
 }
 
+/// What a turn that needs an account sign-in says. agy 1.5 keeps the sign-in
+/// in the OS keyring, so signing in once with the CLI serves ZLO too.
+pub(crate) const SIGN_IN_REQUIRED: &str =
+    "antigravity: sign-in required (run `agy` in a terminal and sign in)";
+
+/// A failed `authenticate` as the turn's failure, and whether it shows the
+/// account signed out. A crash is named as one, not blamed on the sign-in
+/// (t3code #28355); a quota stays a quota.
+pub(crate) fn sign_in_failed(error: &RpcError, uses_browser: bool) -> (TurnOutcome, bool) {
+    let text = error.message();
+    match error {
+        RpcError::Closed => (
+            TurnOutcome::ended(
+                TurnEndStatus::Failed,
+                Some("antigravity: the agent exited during sign-in; send the message again".into()),
+            ),
+            false,
+        ),
+        RpcError::Timeout if !uses_browser => (failed(error), false),
+        _ if text.contains("SUBSCRIPTION_REQUIRED") => (
+            TurnOutcome::ended(
+                TurnEndStatus::Failed,
+                Some("antigravity: this account needs an eligible Antigravity subscription".into()),
+            ),
+            false,
+        ),
+        _ if journal::mentions_usage_limit(text) => (failed(error), false),
+        _ => (
+            TurnOutcome::ended(TurnEndStatus::Failed, Some(SIGN_IN_REQUIRED.into())),
+            true,
+        ),
+    }
+}
+
 /// A request error as a sanitized turn failure. Raw agent messages can carry
 /// paths or provider bodies, so only codes and classes leave this function.
 pub(crate) fn failed(error: &RpcError) -> TurnOutcome {
@@ -224,7 +258,7 @@ pub(crate) fn failed(error: &RpcError) -> TurnOutcome {
     let message = if matches!(error, RpcError::Remote { code: -32000, .. })
         || text.to_ascii_lowercase().contains("auth")
     {
-        "antigravity: sign-in required (run the Antigravity login)".to_string()
+        SIGN_IN_REQUIRED.to_string()
     } else {
         format!("antigravity error ({})", error.label())
     };
@@ -232,7 +266,7 @@ pub(crate) fn failed(error: &RpcError) -> TurnOutcome {
 }
 
 /// A quota failure; `resets_at` arms the engine's automatic resume.
-fn usage_limited(resets_at: Option<i64>) -> TurnOutcome {
+pub(crate) fn usage_limited(resets_at: Option<i64>) -> TurnOutcome {
     TurnOutcome {
         usage_limit_resets_at: resets_at,
         ..TurnOutcome::ended(
@@ -246,23 +280,52 @@ fn usage_limited(resets_at: Option<i64>) -> TurnOutcome {
 /// (RFC 3339), else a `quotaResetDelay` or `retryDelay` Go duration from
 /// `now` (ms).
 pub(crate) fn reset_at(text: &str, now: i64) -> Option<i64> {
-    let field = |key: &str| {
-        let start = text.find(key)? + key.len();
-        let rest = &text[start..];
-        let end = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, ']' | ',' | '"' | '}'))
-            .unwrap_or(rest.len());
-        Some(&rest[..end])
-    };
-    if let Some(stamp) = field("quotaResetTimeStamp:")
-        && let Ok(at) = chrono::DateTime::parse_from_rfc3339(stamp)
-    {
-        return Some(at.timestamp_millis());
+    if let Some(at) = reset_stamp(text) {
+        return Some(at);
     }
-    let delay = field("quotaResetDelay:").or_else(|| field("retryDelay:"))?;
+    let delay = reset_field(text, "quotaResetDelay:")
+        .or_else(|| reset_field(text, "retryDelay:"))
+        .or_else(|| resets_in(text))?;
     go_duration_ms(delay)
         .filter(|ms| *ms > 0.0)
         .map(|ms| now.saturating_add(ms.round() as i64))
+}
+
+/// The value after `key`, up to the next delimiter.
+fn reset_field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    let start = text.find(key)? + key.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, ']' | ',' | '"' | '}'))
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// The provider's own `quotaResetTimeStamp` (RFC 3339), which needs no
+/// anchor: a failure read long after it happened keeps only this.
+pub(crate) fn reset_stamp(text: &str) -> Option<i64> {
+    let stamp = reset_field(text, "quotaResetTimeStamp:")?;
+    chrono::DateTime::parse_from_rfc3339(stamp)
+        .ok() // silent-ok: an unparsable stamp falls back to the delay
+        .map(|at| at.timestamp_millis())
+}
+
+/// The Go duration of agy 1.5's "... Resets in 4m42s." message: digits, dots
+/// and unit letters, a sentence's closing dot excluded; a duration glued to
+/// another word is none.
+fn resets_in(text: &str) -> Option<&str> {
+    const KEY: &str = "Resets in ";
+    let start = text.find(KEY)? + KEY.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || "nsuµμmh".contains(c)))
+        .unwrap_or(rest.len());
+    if rest[end..].starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    // A dot not followed by a digit closes the sentence.
+    let duration = rest.get(..end)?.trim_end_matches('.');
+    Some(duration).filter(|d| !d.is_empty())
 }
 
 /// A Go duration (`1h2m3.5s`, `250ms`) in milliseconds.
@@ -372,6 +435,20 @@ pub(crate) fn pick_model(config_options: &Value, model: &str) -> ModelPick {
     }
 }
 
+/// A model id that appends a thinking level the session offers to a listed
+/// model (`gemini-4-neon-high`, as a delegating agent may write it): that
+/// model and that level. A listed id is never split.
+pub(crate) fn split_effort(config_options: &Value, model: &str) -> Option<(String, String)> {
+    let listed = model_options(config_options);
+    if listed.iter().any(|m| m == model) {
+        return None;
+    }
+    let (family, level) = model.rsplit_once('-')?;
+    (listed.iter().any(|m| m == family)
+        && effort_options(config_options).iter().any(|e| e == level))
+    .then(|| (family.to_string(), level.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +482,13 @@ mod tests {
             Some(1_795_132_800_000)
         );
         assert_eq!(reset_at("no reset here", now), None);
+        // agy 1.5 may state the reset only in its message (t3code #42339).
+        assert_eq!(
+            reset_at("You have exhausted your capacity. Resets in 4m42s.", now),
+            Some(now + 282_000)
+        );
+        assert_eq!(reset_at("Resets in 1.5h", now), Some(now + 5_400_000));
+        assert_eq!(reset_at("Resets in 4m42sx", now), None);
         let error = RpcError::Remote {
             code: -32603,
             message: "RESOURCE_EXHAUSTED quota [quotaResetDelay:30s]".into(),
@@ -419,6 +503,36 @@ mod tests {
         // A `refusal` stop is the agent's quota stop.
         let refused = PromptFold::default().outcome(false, &Ok(json!({"stopReason": "refusal"})));
         assert!(refused.error.unwrap().starts_with("usage_limit"));
+    }
+
+    #[test]
+    fn sign_in_failures_say_what_happened() {
+        let (crashed, signed_out) = sign_in_failed(&RpcError::Closed, true);
+        assert!(!signed_out);
+        assert!(crashed.error.unwrap().contains("exited during sign-in"));
+        let (timeout, signed_out) = sign_in_failed(&RpcError::Timeout, true);
+        assert!(signed_out);
+        assert_eq!(timeout.error.as_deref(), Some(SIGN_IN_REQUIRED));
+        let remote = |message: &str| RpcError::Remote {
+            code: -32603,
+            message: message.into(),
+            data: None,
+        };
+        // agy 1.5 with no sign-in and no browser it can use.
+        let (no_browser, signed_out) = sign_in_failed(
+            &remote("No browser is available here. Run `agy acp --login`"),
+            true,
+        );
+        assert!(signed_out);
+        assert_eq!(no_browser.error.as_deref(), Some(SIGN_IN_REQUIRED));
+        let (plan, signed_out) =
+            sign_in_failed(&remote("SUBSCRIPTION_REQUIRED for /Users/x"), true);
+        assert!(!signed_out);
+        let plan = plan.error.unwrap();
+        assert!(
+            plan.contains("subscription") && !plan.contains("/Users"),
+            "{plan}"
+        );
     }
 
     #[test]
@@ -452,6 +566,14 @@ mod tests {
             ModelPick::Legacy
         );
         assert_eq!(pick_model(&options, "gemini-3.8"), ModelPick::Unavailable);
+        // t3code #39413: a delegated id that appends a level the session
+        // offers is that model at that level.
+        assert_eq!(
+            split_effort(&options, "gemini-4-neon-high"),
+            Some(("gemini-4-neon".to_string(), "high".to_string()))
+        );
+        assert_eq!(split_effort(&options, "gemini-4-neon-ultra"), None);
+        assert_eq!(split_effort(&options, "gemini-4-neon"), None);
     }
 
     #[test]

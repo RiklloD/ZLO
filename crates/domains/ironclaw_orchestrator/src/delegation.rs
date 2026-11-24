@@ -81,6 +81,71 @@ pub struct Target {
     pub profile: Option<String>,
 }
 
+/// Where a target resolved to. `effort` is the reasoning level a
+/// `<model>-<level>` id carried, split off at the routing boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Route {
+    pub(crate) runtime: RuntimeId,
+    pub(crate) provider: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) effort: Option<String>,
+}
+
+/// `model` as `p` advertises it: the id itself, or a `<model>-<level>` id
+/// (some agents put the thinking level in the model name, t3code #39413)
+/// split into an advertised model and one of that model's reasoning levels.
+fn advertised(p: &CatalogProvider, model: &str) -> Option<(String, Option<String>)> {
+    if p.models.iter().any(|m| m == model) {
+        return Some((model.to_string(), None));
+    }
+    let (family, level) = model.rsplit_once('-')?;
+    if !p.models.iter().any(|m| m == family) {
+        return None;
+    }
+    let levels = p.model_efforts.get(family).unwrap_or(&p.efforts);
+    levels
+        .iter()
+        .any(|l| l == level)
+        .then(|| (family.to_string(), Some(level.to_string())))
+}
+
+/// How a delegated child starts: the parent's conversation it inherits, its
+/// folder, and its reasoning level.
+struct ChildSetup<'a> {
+    context: Option<&'a str>,
+    worktree: &'a ChildFolder,
+    effort: Option<&'a str>,
+}
+
+/// What a target says about the reasoning level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EffortPick {
+    /// Nothing said: a `<model>-<level>` id's level applies.
+    Unset,
+    /// `default`: no level, not even the one a model id carries.
+    Clear,
+    Level(String),
+}
+
+impl EffortPick {
+    pub(crate) fn of(target: &Target) -> Self {
+        match trimmed(&target.reasoning_effort) {
+            None => Self::Unset,
+            Some(e) if e == "default" => Self::Clear,
+            Some(e) => Self::Level(e),
+        }
+    }
+
+    /// The level to use, given the one the route's model id carried.
+    pub(crate) fn or_route(self, route: Option<String>) -> Option<String> {
+        match self {
+            Self::Unset => route,
+            Self::Clear => None,
+            Self::Level(level) => Some(level),
+        }
+    }
+}
+
 fn trimmed(v: &Option<String>) -> Option<String> {
     v.as_deref()
         .map(str::trim)
@@ -117,27 +182,33 @@ impl Engine {
         }
     }
 
-    /// Resolve a target to (runtime, provider, model). An empty target
-    /// inherits the caller's route on the default runtime.
+    /// Resolve a target to a [`Route`]. An empty target inherits the
+    /// caller's route on the default runtime.
     pub(crate) async fn resolve_target(
         &self,
         target: &Target,
         ctx: &CallContext,
         inherit_runtime: &RuntimeId,
-    ) -> Result<(RuntimeId, Option<String>, Option<String>)> {
+    ) -> Result<Route> {
         let provider = trimmed(&target.provider);
         let model = trimmed(&target.model);
         if provider.is_none() && model.is_none() {
-            return Ok((
-                inherit_runtime.clone(),
-                ctx.provider.clone(),
-                ctx.model.clone(),
-            ));
+            return Ok(Route {
+                runtime: inherit_runtime.clone(),
+                provider: ctx.provider.clone(),
+                model: ctx.model.clone(),
+                effort: None,
+            });
         }
         let catalog = self.catalog(&ctx.scope).await;
         if catalog.is_empty() {
             // The runtime advertises no catalog: pass the hint through.
-            return Ok((inherit_runtime.clone(), provider, model));
+            return Ok(Route {
+                runtime: inherit_runtime.clone(),
+                provider,
+                model,
+                effort: None,
+            });
         }
         if let Some(provider) = provider {
             let Some((rt, p)) = catalog.iter().find(|(_, p)| p.provider == provider) else {
@@ -156,26 +227,34 @@ impl Engine {
                     format!("Provider '{provider}' is not authenticated."),
                 ));
             }
-            let model = match model {
-                Some(m) if !p.models.is_empty() && !p.models.contains(&m) => {
+            let (model, effort) = match model {
+                Some(m) if p.models.is_empty() => (m, None),
+                Some(m) => advertised(p, &m).ok_or_else(|| {
                     let sample: Vec<&str> = p.models.iter().take(12).map(String::as_str).collect();
-                    return Err(OrchestratorError::request(
+                    OrchestratorError::request(
                         "model_unavailable",
                         format!(
                             "Model '{m}' is not advertised by '{provider}'. Try: {}",
                             sample.join(", ")
                         ),
-                    ));
-                }
-                Some(m) => m,
-                None => p.models.first().cloned().ok_or_else(|| {
-                    OrchestratorError::request(
-                        "model_unavailable",
-                        format!("Provider '{provider}' advertises no models."),
                     )
                 })?,
+                None => (
+                    p.models.first().cloned().ok_or_else(|| {
+                        OrchestratorError::request(
+                            "model_unavailable",
+                            format!("Provider '{provider}' advertises no models."),
+                        )
+                    })?,
+                    None,
+                ),
             };
-            return Ok((rt.clone(), Some(provider), Some(model)));
+            return Ok(Route {
+                runtime: rt.clone(),
+                provider: Some(provider),
+                model: Some(model),
+                effort,
+            });
         }
         // Model only: prefer the caller's provider, then the current one.
         let model = model.unwrap_or_default();
@@ -183,8 +262,15 @@ impl Engine {
         ordered.sort_by_key(|(_, p)| (Some(&p.provider) != ctx.provider.as_ref(), !p.current));
         ordered
             .into_iter()
-            .find(|(_, p)| p.authenticated && p.models.contains(&model))
-            .map(|(rt, p)| (rt.clone(), Some(p.provider.clone()), Some(model.clone())))
+            .filter(|(_, p)| p.authenticated)
+            .find_map(|(rt, p)| {
+                advertised(p, &model).map(|(model, effort)| Route {
+                    runtime: rt.clone(),
+                    provider: Some(p.provider.clone()),
+                    model: Some(model),
+                    effort,
+                })
+            })
             .ok_or_else(|| {
                 OrchestratorError::request(
                     "model_unavailable",
@@ -360,21 +446,29 @@ impl Engine {
             }
             _ => None,
         };
-        let (runtime_id, provider, model) = match profile_route {
-            Some(route) => route,
+        let (runtime_id, provider, model, route_effort) = match profile_route {
+            Some((rt, provider, model)) => (rt, provider, model, None),
             None => {
-                let (rt, provider, model) = self
+                let route = self
                     .resolve_target(&target, ctx, &parent.runtime_id)
                     .await?;
                 // On IronClaw's loop the profile's model is a per-turn hint.
                 let hint = profile.as_ref().and_then(|p| {
-                    (trimmed(&target.model).is_none() && rt == self.default_runtime)
+                    (trimmed(&target.model).is_none() && route.runtime == self.default_runtime)
                         .then(|| p.settings.default_model.clone())
                         .flatten()
                 });
-                (rt, provider, hint.or(model))
+                (
+                    route.runtime,
+                    route.provider,
+                    hint.or(route.model),
+                    route.effort,
+                )
             }
         };
+        // The child's reasoning level: an explicit one, else the level its
+        // model id carried.
+        let child_effort = EffortPick::of(&target).or_route(route_effort);
         let profile_id = profile
             .map(|p| p.profile_id)
             .or_else(|| parent.profile_id.clone());
@@ -455,8 +549,11 @@ impl Engine {
                 &parent,
                 &runtime,
                 &settings,
-                inherited.as_deref(),
-                &worktree,
+                ChildSetup {
+                    context: inherited.as_deref(),
+                    worktree: &worktree,
+                    effort: child_effort.as_deref(),
+                },
             )
             .await
         {
@@ -527,9 +624,13 @@ impl Engine {
         parent: &ThreadRecord,
         runtime: &std::sync::Arc<dyn TurnRuntime>,
         settings: &Settings,
-        context: Option<&str>,
-        worktree: &ChildFolder,
+        setup: ChildSetup<'_>,
     ) -> Result<()> {
+        let ChildSetup {
+            context,
+            worktree,
+            effort,
+        } = setup;
         let created = runtime
             .create_thread(CreateThread {
                 scope: parent.scope.clone(),
@@ -550,6 +651,12 @@ impl Engine {
         child.title = Some(format!("↳ {}", task.title));
         child.native_session_id = created.native_session_id.clone();
         self.store.ensure_thread(&child).await?;
+        if effort.is_some() {
+            // Read by the child's first turn.
+            self.store
+                .set_thread_effort(&child.thread_id, effort)
+                .await?;
+        }
         self.store
             .set_task_child(
                 &task.id,
