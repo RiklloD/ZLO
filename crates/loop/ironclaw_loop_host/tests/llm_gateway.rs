@@ -650,9 +650,9 @@ async fn gateway_stream_model_with_progress_uses_provider_streaming_and_sanitize
         Some("host-selected-model")
     );
     // Both raw provider deltas land well inside a single coalescing window
-    // (64 deltas / 2 KiB / 100 ms — see `ProviderStreamSink`), so under
+    // (64 deltas / 2 KiB / 33 ms — see `ProviderStreamSink`), so under
     // normal scheduling the sink observes only the final flush. But the
-    // 100 ms interval threshold is evaluated on wall-clock elapsed time, not
+    // 33 ms interval threshold is evaluated on wall-clock elapsed time, not
     // a mocked clock: a descheduled CI runner can cross it between sink
     // construction and the first delta, emitting the first delta
     // immediately and leaving the flush to emit again — a second, harmless
@@ -695,7 +695,7 @@ async fn gateway_stream_model_with_progress_coalesces_many_provider_deltas() {
         .unwrap();
 
     let updates = sink.updates();
-    // The 100 ms coalescing interval is wall-clock, not a mocked clock: a
+    // The 33 ms coalescing interval is wall-clock, not a mocked clock: a
     // descheduled CI runner can cross it between individual deltas and
     // force extra threshold-driven emits, so no fixed upper bound derived
     // from the count/byte thresholds alone can be proven to "never break"

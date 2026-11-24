@@ -151,14 +151,15 @@ pub(super) async fn run_target(publication: Arc<ReplyPublication>, target: Arc<T
             && let Some(last) = published.at
         {
             let elapsed = last.elapsed();
-            if elapsed < publication.settings.min_progress_interval {
+            let min_progress_interval = publication.progress_interval(&target);
+            if elapsed < min_progress_interval {
                 // Stay wake-responsive inside the pacing window: a revision
                 // arriving mid-window may be control-critical (the answer's
                 // first text, an attention transition, the terminal) and must
                 // re-evaluate immediately; ordinary progress falls back into
                 // the remainder of the window on the next pass.
                 tokio::select! {
-                    _ = tokio::time::sleep(publication.settings.min_progress_interval - elapsed) => {}
+                    _ = tokio::time::sleep(min_progress_interval - elapsed) => {}
                     _ = target.wake.notified() => {}
                 }
                 continue;

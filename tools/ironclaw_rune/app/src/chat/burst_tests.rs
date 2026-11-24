@@ -101,11 +101,12 @@ fn burst(turns: usize, frames: u32, per_frame: u32) -> Burst {
     rt.update(|s, tx| {
         super::refresh_rows(s, "t1", tx);
     });
+    // `Runtime::frame` takes the frame's step, not the clock: a growing
+    // "step" is a coarse headless catch-up that polls (and may rebuild the
+    // view) at every timer deadline inside it, which is not one frame.
     let dt = 1. / 120.;
-    let mut t = 0.;
     for _ in 0..10 {
-        t += dt;
-        rt.frame(t);
+        rt.frame(dt);
     }
     let generation = rt.state.chat.as_ref().map(|c| c.stream_gen).expect("chat");
     let rows_before = rt.state.chat.as_ref().map(|c| c.rows_gen).expect("chat");
@@ -128,8 +129,7 @@ fn burst(turns: usize, frames: u32, per_frame: u32) -> Burst {
             rt.update_if(move |s, tx| super::on_stream(s, "t1", generation, batch, tx));
         }
         updates += start.elapsed();
-        t += dt;
-        rt.frame(t);
+        rt.frame(dt);
         ui.push(start.elapsed());
     }
     eprintln!(

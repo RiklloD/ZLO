@@ -27,7 +27,7 @@ use ironclaw_threads::{MessageContent, SessionThreadService};
 use ironclaw_turns::TurnCoordinator;
 
 use super::{
-    DenyAllEgress, FakeTurnKernel, FixedReplyContext, SinkResolver, harness, harness_with_settings,
+    DenyAllEgress, FakeTurnKernel, FixedReplyContext, SinkResolver, harness, harness_with,
     settings, wait_until,
 };
 use crate::delivery_coordinator::publication::{ReplyPublicationSettings, ReplyPublicationWiring};
@@ -830,9 +830,10 @@ async fn a_recovery_required_terminal_commit_also_resumes_the_publication() {
 async fn the_answers_first_text_is_not_delayed_by_the_progress_pacing_window() {
     let mut paced = settings();
     paced.min_progress_interval = Duration::from_secs(120);
-    let harness = harness_with_settings(
+    let harness = harness_with(
         "first-text-immediate",
         ironclaw_extension_contracts::channel::ReplyTransport::Stream,
+        None,
         paced,
     );
     harness

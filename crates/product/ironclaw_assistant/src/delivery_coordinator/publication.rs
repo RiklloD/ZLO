@@ -72,6 +72,8 @@ mod kernel_ports;
 mod worker;
 
 #[cfg(test)]
+mod pacing_tests;
+#[cfg(test)]
 mod tests;
 
 /// Why a target could not be registered or a publication could not proceed.
@@ -105,8 +107,15 @@ pub struct ReplyPublicationSettings {
     /// valid for the entire provider operation.
     pub lease_ttl: Duration,
     /// Minimum gap between two `Progress` reconciles of one target; control
-    /// -critical and terminal reconciles are never delayed by it.
+    /// -critical and terminal reconciles are never delayed by it. Paces
+    /// vendor channels, whose sinks call a rate-limited provider API.
     pub min_progress_interval: Duration,
+    /// The same gap for the deployment's session channel. Its sink publishes
+    /// into the in-process live projection the WebUI/desktop stream tails —
+    /// no provider, no rate limit — so it is paced at display rate (about
+    /// 30 Hz) instead: a streamed answer or thought reaches the reader in
+    /// frame-sized steps, not quarter-second blocks.
+    pub session_progress_interval: Duration,
     /// First retry delay when a sink asks for a retry without a hint; doubles
     /// up to `max_retry_backoff`.
     pub retry_backoff: Duration,
@@ -131,6 +140,7 @@ impl Default for ReplyPublicationSettings {
         Self {
             lease_ttl: Duration::from_secs(60),
             min_progress_interval: Duration::from_millis(250),
+            session_progress_interval: Duration::from_millis(33),
             retry_backoff: Duration::from_millis(500),
             max_retry_backoff: Duration::from_secs(30),
             terminal_attempt_budget: 8,
@@ -618,6 +628,16 @@ impl ProcessJournalCommitObserver for DeliveryCoordinator {
 impl ReplyPublication {
     /// The owning coordinator, while it is alive. `None` only during process
     /// teardown; callers treat it as "stop quietly".
+    /// The `Progress` pacing window for one target: display rate for the
+    /// session channel, the provider-safe interval for every other channel.
+    pub(crate) fn progress_interval(&self, target: &TargetState) -> Duration {
+        if self.session_channel.as_ref() == Some(&target.registration.extension_id) {
+            self.settings.session_progress_interval
+        } else {
+            self.settings.min_progress_interval
+        }
+    }
+
     pub(crate) fn coordinator(&self) -> Option<Arc<DeliveryCoordinator>> {
         self.coordinator.upgrade()
     }

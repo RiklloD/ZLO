@@ -98,10 +98,21 @@ pub(crate) fn fold_now(c: &mut ChatState, tx: &mut Tx) {
 /// How long past [`COPIED_FOR`] the poll waits before clearing a copy check
 /// whose revert timer never came (`rows::mark_copied`).
 const COPIED_GRACE: Duration = Duration::from_millis(500);
-/// The pacer's step. MonoCode stepped at 30 Hz; each step here rebuilds the
-/// view, and Rune's word reveal already staggers a step's words in one after
-/// another, so 20 Hz reads the same at two thirds of the work.
-const PACE_TICK: Duration = Duration::from_millis(50);
+/// The pacer's step while someone is at the window: one 60 Hz frame, so a
+/// streaming reply or thought grows on every frame Rune draws once input
+/// rests (`rune::cap_ambient_motion` holds ambient motion at 60 Hz) — never
+/// faster, so a ProMotion display is not kept at 120 Hz by text.
+const PACE_TICK: Duration = Duration::from_micros(16_667);
+/// The pacer's step under the battery saver (idle for 30 s): each step
+/// rebuilds the view, and Rune's word reveal staggers a step's words in one
+/// after another, so 20 Hz still reads as words arriving, at a third of the
+/// work. In the background the pacer is off (`sync_items`).
+const PACE_TICK_SAVING: Duration = Duration::from_millis(50);
+
+/// The pacer's step for the battery saver's state.
+pub(crate) fn pace_tick(saving: bool) -> Duration {
+    if saving { PACE_TICK_SAVING } else { PACE_TICK }
+}
 
 /// Zeron's reading column; Appearance → Conversation width moves it.
 pub fn content_width(s: &State) -> f32 {
@@ -189,7 +200,7 @@ pub struct ChatState {
     pub(crate) pacing: bool,
     /// When the pacer's next step is due. The poll runs on every frame of
     /// any animation; folding the rows (and rebuilding the view) only when a
-    /// step is due keeps the pacer at its 30 Hz however fast frames come.
+    /// step is due keeps the pacer at its tick (`pace_tick`) however fast frames come.
     pace_due: Option<Instant>,
     pub(crate) outline: outline::OutlineState,
     /// Whether the transcript ends with the tail row (work, goal, queue).
@@ -688,13 +699,14 @@ pub(crate) fn refresh_rows(s: &mut State, id: &str, tx: &mut Tx) -> bool {
 /// pending row while a run is live, the tail and the reserve.
 ///
 /// While the pacer runs and its next step is not due, new rows wait for that
-/// step (at most [`PACE_TICK`]) instead of folding now: the reply grows at
+/// step (at most [`pace_tick`]) instead of folding now: the reply grows at
 /// the pacer's rate either way, and the view rebuilds once, not twice.
 /// Returns true when it deferred like that.
 pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     // The pacer is motion too: off with "Reduce motion" and while the window
     // is in the background (nobody watches it type; the text lands whole).
     let reduced = s.prefs.reduce_motion == "on" || s.look.battery.background();
+    let tick = pace_tick(s.look.battery.saving());
     let has_tail = orchestration::has_tail(s, id);
     let Some(c) = chat_for(s, id) else {
         return false;
@@ -732,12 +744,12 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     c.folded = Some(inputs);
     crate::energy::hit(crate::energy::C::ItemsFolded);
     let rows = c.rows.clone();
-    let (rows, pacing) = c.pacer.apply(&rows, Instant::now(), reduced);
+    let (rows, pacing) = c.pacer.apply(&rows, live, Instant::now(), reduced);
     c.pacing = pacing;
-    c.pace_due = pacing.then(|| Instant::now() + PACE_TICK);
+    c.pace_due = pacing.then(|| Instant::now() + tick);
     if pacing {
         crate::energy::hit(crate::energy::C::PacerStep);
-        tx.wake_after(PACE_TICK);
+        tx.wake_after(tick);
     }
     let new_items = flow::fold(
         &rows,

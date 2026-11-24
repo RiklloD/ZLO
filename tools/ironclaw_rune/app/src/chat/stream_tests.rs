@@ -476,3 +476,95 @@ fn a_late_answer_longer_than_the_room_is_followed() {
         "the list follows the answer's end: reply ends at {reply_end:.1}, list at {list_end:.1}"
     );
 }
+
+/// The `chat-running` scene with its live turn ending on a thought being
+/// written (no answer yet).
+fn thinking(s: &mut State) {
+    super::fixtures::running(s);
+    if let Some(c) = s.chat.as_mut() {
+        let mut rows = (*c.rows).clone();
+        rows.retain(|r| {
+            !matches!(
+                r,
+                Row::Assistant {
+                    streaming: true,
+                    ..
+                }
+            )
+        });
+        c.rows = Rc::new(rows);
+        c.rows_gen += 1;
+    }
+}
+
+/// Grow the live thought by `words` words, as a stream delta would.
+fn think(rt: &mut Runtime<State>, words: &[&str]) {
+    let words: Vec<String> = words.iter().map(|w| (*w).to_string()).collect();
+    rt.update(move |s, tx| {
+        let Some(c) = s.chat.as_mut() else { return };
+        let mut rows = (*c.rows).clone();
+        if let Some(Row::Thinking { text, .. }) = rows.last_mut() {
+            for word in &words {
+                text.push(' ');
+                text.push_str(word);
+            }
+        }
+        c.rows = Rc::new(rows);
+        c.rows_gen += 1;
+        sync_items(s, "t1", tx);
+    });
+}
+
+fn labels(rt: &Runtime<State>) -> Vec<String> {
+    rt.elements()
+        .into_iter()
+        .filter(|e| !e.exiting)
+        .filter_map(|e| e.label.or(e.text))
+        .collect()
+}
+
+#[test]
+fn a_live_thought_streams_its_newest_words_on_the_thinking_line() {
+    let app = App::new(AppSpec::new(
+        "ZLO test",
+        (1000., 760.),
+        no_init,
+        crate::view,
+    ));
+    let mut s = State::new(crate::jobs::Rt::new(app.handle()));
+    thinking(&mut s);
+    let mut rt = Runtime::new(s, crate::view, (1000., 760.), Env::new(true, 1.));
+    // The app's poll steps the pacer.
+    rt.poll = Some(crate::poll);
+    let dt = 1. / 60.;
+    rt.frame(0.);
+    rt.update(|s, tx| {
+        sync_items(s, "t1", tx);
+    });
+    for _ in 0..30 {
+        rt.frame(dt);
+    }
+    think(
+        &mut rt,
+        &["Next", "the", "clippy", "warnings", "in", "burst_tests."],
+    );
+    // The pacer reveals the new words over a few frames of real time.
+    let shown = |rt: &Runtime<State>| {
+        labels(rt)
+            .iter()
+            .any(|l| l.starts_with("Thinking") && l.contains("clippy warnings"))
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !shown(&rt) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(8));
+        rt.frame(dt);
+    }
+    assert!(
+        shown(&rt),
+        "the live thought's words show while it is written: {:?}",
+        labels(&rt)
+            .into_iter()
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+    );
+}
