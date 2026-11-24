@@ -246,8 +246,9 @@ async fn golden_gated_turn_approve() {
         .expect("final reply matches exactly");
 }
 
-// (e) Compaction: NOT implemented — blocked. The byte-cap-overflow force-
-// compaction path (`ByteCapStrategy` / `PostCapabilityStage`) sets
+// (e) Compaction: NOT implemented — blocked. The capability-bytes force-
+// compaction path (`BudgetFractionStrategy`, which replaced the retired
+// fixed-cap `ByteCapStrategy`, via `PostCapabilityStage`) sets
 // `state.compaction_state.force_compact_on_next_iteration`, but Reborn's
 // `DefaultPlanner` wires `PromptCompactionStep` to
 // `ActiveTaskPreservingCompactionStrategy::should_compact`

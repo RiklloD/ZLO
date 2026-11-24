@@ -396,14 +396,22 @@ pub(super) async fn assemble_runtime(
                     )),
                 ),
             });
+    // Explorer/planner subagents run on the configured cheap model
+    // (`LLM_CHEAP_MODEL`); unset falls back to the live active model.
+    let cheap_model = crate::model_gateway_assembly::boot_cheap_model(
+        llm.as_ref().map(|resolved| resolved.config()),
+    )?;
     #[cfg(any(test, feature = "test-support"))]
     let (model_gateway, llm_cost_table, llm_reload) = match model_gateway_override {
         Some(override_gateway) => (override_gateway, None, None),
-        None => build_production_model_gateway(boot_provider_factory, provider_routes).await?,
+        None => {
+            build_production_model_gateway(boot_provider_factory, provider_routes, cheap_model)
+                .await?
+        }
     };
     #[cfg(not(any(test, feature = "test-support")))]
     let (model_gateway, llm_cost_table, llm_reload) =
-        build_production_model_gateway(boot_provider_factory, provider_routes).await?;
+        build_production_model_gateway(boot_provider_factory, provider_routes, cheap_model).await?;
     let live_llm_default = crate::model_gateway_assembly::live_llm_default(
         boot.as_ref(),
         llm_reload.as_ref(),
