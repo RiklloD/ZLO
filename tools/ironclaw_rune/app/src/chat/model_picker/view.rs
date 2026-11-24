@@ -54,7 +54,7 @@ pub fn pills(s: &State, thread_id: &str, cx: &mut Cx<State>, k: &Kit, layer: &mu
 /// levels, one control opening one popover.
 pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let Some(m) = slot.get(s) else { return el() };
-    if m.route.as_ref().is_none_or(|r| r.providers.is_empty()) && m.current.is_none() {
+    if !m.shows_pill() {
         return el();
     }
     let p = &s.palette;
@@ -139,7 +139,13 @@ pub fn pills_for(s: &State, slot: Slot, cx: &mut Cx<State>, k: &Kit, layer: &mut
         let popover = model_popover(s, m, &slot, k);
         layer.push(anchor(k, popover, &slot.key("model-pill"), placement, gap));
     }
-    row().key(slot.key("model-pills")).center_y().child(pill)
+    // Eases in where the composer first shows it, once the catalog is in
+    // (the load's reply asks for motion only for that first appearance).
+    row()
+        .key(slot.key("model-pills"))
+        .center_y()
+        .transition(design::motion::pop(4.))
+        .child(pill)
 }
 
 /// A pill label at the pill's size whose changed characters roll.

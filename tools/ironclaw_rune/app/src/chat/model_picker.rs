@@ -271,6 +271,12 @@ impl ModelPickerState {
             .or_else(|| Some((NATIVE.into(), self.profile_model()?.to_string())))
     }
 
+    /// Whether the composer shows the pill: the catalog is in, or a model
+    /// is already picked.
+    pub(crate) fn shows_pill(&self) -> bool {
+        self.route.as_ref().is_some_and(|r| !r.providers.is_empty()) || self.current.is_some()
+    }
+
     pub(crate) fn label(&self) -> (String, Option<String>) {
         let provider = self.current.as_ref().map_or(NATIVE, |(p, _)| p.as_str());
         let name = match self.current_model() {
@@ -471,28 +477,44 @@ pub fn load(s: &mut State, slot: Slot) {
                 }),
             }
         },
-        move |s, result, _| {
-            let recent = s.prefs.recent_models.clone();
-            let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else {
-                return;
-            };
-            // silent-ok: an older gateway has no route; the pill stays hidden.
-            let Ok(route) = result else { return };
-            if own {
-                p.current = route_pick(&route);
-                p.effort = route.effort.clone();
-            }
-            p.prefs = route.picker.clone();
-            if !p.prefs.favorites.is_empty() {
-                p.rail = Rail::Favorites;
-            }
-            p.route = Some(route);
-            // A draft re-picks once the catalog is in: the profile may have loaded first.
-            if p.current.is_none() || (!own && !p.touched) {
-                p.current = p.default_pick(&recent);
-            }
-        },
+        move |s, result, tx| route_loaded(s, &slot, generation, own, result, tx),
     );
+}
+
+/// The route `load` asked for came back: take its pick, catalog and
+/// preferences. The pill appearing for the first time eases in (it asks
+/// for motion; any other refresh lands as it is).
+fn route_loaded(
+    s: &mut State,
+    slot: &Slot,
+    generation: Generation,
+    own: bool,
+    result: Result<ThreadRoute, zlo_client::ClientError>,
+    tx: &mut rune::Tx,
+) {
+    let recent = s.prefs.recent_models.clone();
+    let Some(p) = slot.get_mut(s).filter(|p| p.generation == generation) else {
+        return;
+    };
+    // silent-ok: an older gateway has no route; the pill stays hidden.
+    let Ok(route) = result else { return };
+    let hidden = !p.shows_pill();
+    if own {
+        p.current = route_pick(&route);
+        p.effort = route.effort.clone();
+    }
+    p.prefs = route.picker.clone();
+    if !p.prefs.favorites.is_empty() {
+        p.rail = Rail::Favorites;
+    }
+    p.route = Some(route);
+    // A draft re-picks once the catalog is in: the profile may have loaded first.
+    if p.current.is_none() || (!own && !p.touched) {
+        p.current = p.default_pick(&recent);
+    }
+    if hidden && p.shows_pill() {
+        tx.animated();
+    }
 }
 
 /// The new-thread screen's profile: show its default model unless the user
@@ -505,7 +527,7 @@ pub fn set_profile(s: &mut State, slot: Slot, profile_id: String) {
         s,
         "model picker",
         move |c| async move { c.profile(&profile_id).await },
-        move |s, result, _| {
+        move |s, result, tx| {
             let recent = s.prefs.recent_models.clone();
             let Some(p) = slot.get_mut(s) else { return };
             // Opening the draft asks for the last-used profile, then the
@@ -519,8 +541,13 @@ pub fn set_profile(s: &mut State, slot: Slot, profile_id: String) {
             p.profile_pick = st
                 .default_provider
                 .map(|pv| (pv, st.default_model.unwrap_or_default()));
+            let hidden = !p.shows_pill();
             if !p.touched {
                 p.current = p.default_pick(&recent);
+            }
+            // The pill's first appearance eases in, as in `route_loaded`.
+            if hidden && p.shows_pill() {
+                tx.animated();
             }
         },
     );
@@ -883,6 +910,53 @@ pub fn pending_effort(picker: &ModelPickerState) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{effort_label, pretty_model};
+
+    /// The pill shows up once the route comes back: that first appearance
+    /// eases in (the reply asks for motion), and a later refresh, with the
+    /// pill already there, lands as it is.
+    #[test]
+    fn the_pill_eases_in_when_the_route_first_loads() {
+        use rune::{Env, Runtime, Tx};
+        let mut s = crate::chat::fixtures::test_state();
+        super::scene(&mut s, false);
+        let slot = super::Slot::chat("t1");
+        let (route, generation) = {
+            let m = slot.get_mut(&mut s).expect("picker");
+            m.open = false;
+            m.current = None;
+            (m.route.take().expect("fixture route"), m.generation)
+        };
+        let mut rt = Runtime::new(s, crate::view, (1440., 900.), Env::new(true, 1.));
+        for _ in 0..30 {
+            rt.frame(1. / 60.);
+        }
+        let key = slot.key("model-pills");
+        assert!(rt.presented(&key).is_none(), "no pill before the route");
+        let first = route.clone();
+        rt.update(|s, tx| {
+            super::route_loaded(s, &slot, generation, true, Ok(first), tx);
+        });
+        rt.frame(1. / 60.);
+        rt.frame(1. / 60.);
+        let pill = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(key.as_str()))
+            .expect("pill drawn");
+        assert!(
+            pill.opacity < 0.99 && pill.scale < 0.999,
+            "the pill eases in: opacity {}, scale {}",
+            pill.opacity,
+            pill.scale
+        );
+
+        let mut tx = Tx::default();
+        super::route_loaded(&mut rt.state, &slot, generation, true, Ok(route), &mut tx);
+        assert!(
+            !crate::workspace::asked_motion(&tx),
+            "a refresh with the pill shown lands as it is"
+        );
+    }
 
     /// In a thread the panel opens above the composer and clears the whole
     /// card: hung off the pill alone, it covered the text being typed.
