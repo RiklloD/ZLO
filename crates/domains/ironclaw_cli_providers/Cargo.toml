@@ -36,7 +36,7 @@ ironclaw_skills = { path = "../ironclaw_skills" }
 ironclaw_product_contracts = { path = "../../contracts/ironclaw_product_contracts" }
 # Stop kills the CLI's whole process group (tool subprocesses included).
 # `fs`: session import opens transcripts with O_NOFOLLOW | O_NONBLOCK.
-nix = { version = "0.31", default-features = false, features = ["signal", "fs"] }
+nix = { version = "0.32", default-features = false, features = ["signal", "fs"] }
 # Question records are stored as typed JSON.
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

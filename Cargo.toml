@@ -132,14 +132,14 @@ blake3 = "1"
 chrono = { version = "0.4", default-features = false }
 chrono-tz = "0.10"
 deadpool-postgres = "0.14"
-dirs = "6"
+dirs = "7"
 futures = "0.3"
 futures-util = { version = "0.3", default-features = false }
 hex = "0.4.3"
 hmac = "0.13"
 http = "1"
 http-body-util = "0.1"
-jsonschema = { version = "0.49", default-features = false }
+jsonschema = { version = "0.61", default-features = false }
 libc = "0.2"
 # libSQL driver. Members add `remote` + `tls` when they open Turso/remote
 # databases (`Builder::new_remote`). `replication` (embedded replicas,
@@ -149,7 +149,7 @@ libc = "0.2"
 # hyper-rustls 0.25 → rustls 0.22) is still pinned by `remote` + `tls` in
 # every published libsql release up to and including 0.10.0 — see deny.toml.
 libsql = { version = "0.9", default-features = false, features = ["core"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 percent-encoding = "2"
 proptest = "1"
 rand = "0.10"
