@@ -309,6 +309,7 @@ pub(super) async fn mutate(
                 scope: scope.clone(),
                 provider: home.provider.clone(),
                 model: home.model.clone(),
+                run_id: None,
             };
             let mut args = json!({
                 "action": action,

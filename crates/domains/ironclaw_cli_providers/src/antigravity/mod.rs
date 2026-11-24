@@ -655,6 +655,7 @@ impl Turn {
                     journal::message(HistoryRole::System, not_confirmed(&steer.text), Vec::new())
                 })
                 .collect();
+            let notices = fold::stamped(&self.run_id, notices);
             journal::append(&self.config.transcript(&self.key), &notices).await;
         }
         if let Ok(mut slot) = self.session.lock() {
@@ -686,15 +687,8 @@ impl Turn {
             return (TurnOutcome::ended(TurnEndStatus::Cancelled, None), None);
         }
         let transcript = self.config.transcript(&self.key);
-        journal::append(
-            &transcript,
-            &[journal::message(
-                HistoryRole::User,
-                self.text.clone(),
-                Vec::new(),
-            )],
-        )
-        .await;
+        let prompt = journal::message(HistoryRole::User, self.text.clone(), Vec::new());
+        journal::append(&transcript, &fold::stamped(&self.run_id, [prompt])).await;
 
         let first = self.prompt_text(agent, recap.as_deref());
         let mut answer: Result<Value, RpcError> = Err(RpcError::Closed);
@@ -858,7 +852,7 @@ impl Turn {
                         }
                     }
                     if !entries.is_empty() {
-                        journal::append(&transcript, &entries).await;
+                        journal::append(&transcript, &fold::stamped(&self.run_id, entries)).await;
                     }
                 }
                 () = superseded.settle(), if !superseded.is_empty() => {}
@@ -922,7 +916,7 @@ impl Turn {
             );
         }
         if let Some(entry) = fold.assistant_message() {
-            journal::append(&transcript, &[entry]).await;
+            journal::append(&transcript, &fold::stamped(&self.run_id, [entry])).await;
         }
         let telemetry = fold.telemetry(&self.config.runtime_id, answer.as_ref().ok());
         (outcome, telemetry)

@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS orch_tasks (
   delivery TEXT NOT NULL DEFAULT 'none',
   delivered_at INTEGER,
   cancel_requested INTEGER NOT NULL DEFAULT 0,
-  limit_reset_at INTEGER
+  limit_reset_at INTEGER,
+  parent_run_id TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS orch_tasks_request ON orch_tasks(parent_thread, client_request_id)
   WHERE client_request_id IS NOT NULL;
@@ -300,7 +301,7 @@ pub(crate) fn insert_thread_sql(record: &ThreadRecord) -> (String, Vec<Value>) {
 
 const TASK_COLS: &str = "id, parent_thread, child_thread, root_thread, depth, profile_id, parent_profile_id, \
     title, role, runtime_id, provider, model, prompt, status, result, error, progress, usage, created_at, \
-    started_at, finished_at, client_request_id, delivery, delivered_at, cancel_requested, limit_reset_at";
+    started_at, finished_at, client_request_id, delivery, delivered_at, cancel_requested, limit_reset_at, parent_run_id";
 
 fn task_row(row: &libsql::Row) -> Result<TaskRecord> {
     let mut c = Cols::new(row);
@@ -331,6 +332,7 @@ fn task_row(row: &libsql::Row) -> Result<TaskRecord> {
         delivered_at: c.oint()?,
         cancel_requested: c.int()? != 0,
         limit_reset_at: c.oint()?,
+        parent_run_id: c.otext()?,
     })
 }
 
@@ -522,6 +524,7 @@ impl Store {
         self.upgrade_goals_schema().await?;
         self.upgrade_worktree_schema().await?;
         self.upgrade_queue_schema().await?;
+        self.upgrade_tasks_schema().await?;
         self.close_interrupted_cli_approvals(crate::model::now_ms())
             .await?;
         self.import_legacy_threads(legacy_runtime).await
@@ -811,7 +814,7 @@ impl Store {
         self.exec(
             &format!(
                 "INSERT INTO orch_tasks ({TASK_COLS}) VALUES \
-                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)"
+                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)"
             ),
             vec![
                 s(t.id.as_str()),
@@ -840,6 +843,7 @@ impl Store {
                 opt(t.delivered_at),
                 i64::from(t.cancel_requested).into(),
                 opt(t.limit_reset_at),
+                opt(t.parent_run_id.clone()),
             ],
         )
         .await?;

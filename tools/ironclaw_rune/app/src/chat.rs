@@ -75,8 +75,8 @@ use crate::state::State;
 pub use flow::Item;
 pub use hooks::{
     active_run, approval_mode_changed, embedded, focus_composer, focus_composer_of, open_error,
-    reload_timeline, set_composer_text, set_fork_prefix, set_merges, stage_snapshot, stop_run,
-    voice_composer, voice_composer_mut, voice_press_enter, with_tx,
+    reload_timeline, set_composer_text, set_fork_prefix, set_merges, set_tasks, stage_snapshot,
+    stop_run, voice_composer, voice_composer_mut, voice_press_enter, with_tx,
 };
 pub use view::view;
 
@@ -681,6 +681,15 @@ pub(crate) fn refresh_rows(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     c.spans = Rc::new(c.transcript.turn_spans());
     c.rows_gen += 1;
     question_form::sync_drafts(c);
+    // A delegate call just finished in a working turn: read the task it
+    // started now, so its subagent row replaces the call without waiting
+    // for the slow poll.
+    let calls = c.transcript.settled_delegate_calls();
+    let started = calls > c.orchestration.delegate_calls && c.running_run().is_some();
+    c.orchestration.delegate_calls = calls;
+    if started {
+        orchestration::refresh(s, id);
+    }
     sync_items(s, id, tx)
 }
 

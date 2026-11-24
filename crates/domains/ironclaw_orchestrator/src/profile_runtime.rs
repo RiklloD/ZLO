@@ -351,6 +351,7 @@ impl Engine {
             scope: thread.scope.clone(),
             provider: thread.provider.clone(),
             model: thread.model.clone(),
+            run_id: None,
         };
         let wants_default = target.model.as_deref().map(str::trim) == Some("default");
         // "Default" exists only on IronClaw's loop.

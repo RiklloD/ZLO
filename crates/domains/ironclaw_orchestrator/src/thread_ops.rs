@@ -291,6 +291,7 @@ impl Engine {
             scope: source.scope.clone(),
             provider: source.provider.clone(),
             model: source.model.clone(),
+            run_id: None,
         };
         if target.is_some_and(|t| t.profile.as_deref().is_some_and(|p| !p.trim().is_empty())) {
             return Err(OrchestratorError::request(

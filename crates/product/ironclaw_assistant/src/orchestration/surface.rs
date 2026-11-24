@@ -347,6 +347,7 @@ impl OrchestratedProductSurface {
             scope: scope.clone(),
             provider: thread.provider.clone(),
             model: thread.model.clone(),
+            run_id: None,
         }
     }
 

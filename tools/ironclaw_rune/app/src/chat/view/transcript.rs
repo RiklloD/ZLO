@@ -190,6 +190,15 @@ impl Rows {
                 rows::render_row(s, chat, row_, k),
                 k,
             ),
+            // A subagent row changes only with its task: keep it built.
+            Item::Row(row_ @ Row::Subagent { task, preview, .. }) => memo(
+                format!("subagent-{}", task.task_id),
+                (
+                    super::super::orchestration::subagent_version(task, preview.as_deref()),
+                    self.look,
+                ),
+                || rows::render_row(s, chat, row_, k),
+            ),
             // Commentary: subdued, never answer-weight. The bubble's own key,
             // so text that turns into commentary keeps its element and
             // neither re-parses nor fades in again.

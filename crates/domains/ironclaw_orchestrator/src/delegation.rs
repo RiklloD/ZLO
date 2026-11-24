@@ -437,6 +437,8 @@ impl Engine {
             delivered_at: None,
             cancel_requested: false,
             limit_reset_at: None,
+            // A caller that does not name its run: the parent's running turn.
+            parent_run_id: ctx.run_id.clone().or_else(|| parent.active_run_id.clone()),
         };
         self.store.insert_task(&task).await?;
         if req.peer_origin.is_some() {
@@ -480,10 +482,11 @@ impl Engine {
                     },
                 )
                 .await?;
-            return Err(OrchestratorError::request(
-                "orchestration_error",
-                format!("Could not start the child agent: {message}"),
-            ));
+            return Err(OrchestratorError::StartFailed {
+                code: "orchestration_error",
+                message: format!("Could not start the child agent: {message}"),
+                task_id: task.id.clone(),
+            });
         }
         if let (Some(origin), Some(child)) = (&req.peer_origin, &task.child_thread) {
             self.store.put_link_origin(child, origin).await?;
@@ -736,6 +739,7 @@ impl Engine {
             "summary": if t.status.is_terminal() { t.result.clone() } else { None },
             "error": t.error, "delivery": t.delivery.as_str(), "limitResetAt": t.limit_reset_at,
             "cancelRequested": t.cancel_requested, "pendingChildren": pending_children,
+            "parentRunId": t.parent_run_id,
         });
         if let Some(timed_out) = wait_timed_out {
             view["waitTimedOut"] = json!(timed_out);
@@ -780,10 +784,20 @@ impl Engine {
             .filter_map(|m| m.at)
             .max()
             .or(thread.turn_started_at);
+        // The child's newest words, whichever run said them, bounded: the
+        // parent's subagent row flattens them to one line.
+        let latest_output = messages
+            .iter()
+            .rev()
+            .filter(|m| m.role == crate::runtime::HistoryRole::Assistant && !m.hidden)
+            .map(|m| m.text.trim())
+            .find(|text| !text.is_empty())
+            .map(|text| clip(text, LATEST_OUTPUT_CHARS));
         let progress = json!({
             "running": thread.is_running(),
             "toolCount": tools.len(),
             "lastTool": tools.last(),
+            "latestOutput": latest_output,
             "lastActivityAt": last_at,
             "silentSeconds": last_at.map(|at| (now_ms() - at).max(0) / 1000),
         });
@@ -958,4 +972,15 @@ pub(crate) fn brief_paths(text: &str) -> Vec<std::path::PathBuf> {
         }
     }
     out
+}
+
+/// How much of a child's newest words its progress carries.
+const LATEST_OUTPUT_CHARS: usize = 400;
+
+impl crate::store::Store {
+    /// A task's launching run (`parent_run_id`), added to older databases.
+    pub(crate) async fn upgrade_tasks_schema(&self) -> Result<()> {
+        self.add_column_once("orch_tasks", "parent_run_id", "TEXT")
+            .await
+    }
 }

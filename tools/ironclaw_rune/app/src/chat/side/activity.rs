@@ -55,7 +55,11 @@ fn turns(rows: &[Row]) -> Vec<Turn<'_>> {
                 prompt: text,
                 steps: Vec::new(),
             }),
-            Row::Tool { .. } | Row::Gate { .. } | Row::RunNotice { .. } | Row::Skills { .. } => {
+            Row::Tool { .. }
+            | Row::Gate { .. }
+            | Row::RunNotice { .. }
+            | Row::Skills { .. }
+            | Row::Subagent { .. } => {
                 if out.is_empty() {
                     out.push(Turn {
                         key: "",
@@ -399,6 +403,21 @@ fn step_row(s: &State, row_: &Row) -> El {
             format!("Skills: {}", names.join(", ")),
             None,
         ),
+        // The delegate call it took the place of, as its subagent.
+        Row::Subagent { key, task, preview } => (
+            key,
+            mark(
+                &icons::BOT,
+                match task.status {
+                    status if status.is_live() => p.accent,
+                    zlo_client::orchestration::TaskStatus::Failed
+                    | zlo_client::orchestration::TaskStatus::Interrupted => p.danger,
+                    _ => p.text_faint,
+                },
+            ),
+            format!("Subagent: {}", task.title),
+            preview.clone(),
+        ),
         _ => return el(),
     };
     let open = side(s).is_some_and(|x| x.activity.open.contains(key));
@@ -478,5 +497,29 @@ mod tests {
         assert_eq!(t.len(), 3);
         assert_eq!(t[0].prompt, "c");
         assert_eq!(t[2].prompt, "");
+    }
+
+    /// A delegate call drawn as its subagent row stays a step of its turn
+    /// (review 8).
+    #[test]
+    fn a_launched_subagent_is_a_step_of_its_turn() {
+        let subagent = Row::Subagent {
+            key: "subagent:a".into(),
+            task: Box::new(
+                serde_json::from_value(serde_json::json!({
+                    "taskId": "a", "title": "Look around", "status": "running"
+                }))
+                .expect("task decodes"),
+            ),
+            preview: Some("Reading flow.rs".into()),
+        };
+        let rows = [user("p"), tool("t1"), subagent];
+        let t = turns(&rows);
+        assert_eq!(t.len(), 1);
+        assert_eq!(
+            t[0].steps.len(),
+            2,
+            "the call is still listed, as its subagent"
+        );
     }
 }

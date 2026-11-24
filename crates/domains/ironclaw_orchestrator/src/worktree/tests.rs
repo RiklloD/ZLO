@@ -237,6 +237,7 @@ fn ctx(thread: &str) -> CallContext {
         thread_id: ThreadId::new(thread).unwrap(),
         scope: scope(),
         provider: None,
+        run_id: None,
         model: None,
     }
 }

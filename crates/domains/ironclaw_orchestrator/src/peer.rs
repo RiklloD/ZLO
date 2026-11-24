@@ -600,6 +600,7 @@ impl Engine {
             delivered_at: None,
             cancel_requested: false,
             limit_reset_at: None,
+            parent_run_id: ctx.run_id.clone().or_else(|| parent.active_run_id.clone()),
         };
         let key = remote_request_key(
             &caller_key(&ctx.thread_id),
@@ -650,10 +651,11 @@ impl Engine {
                     &format!("could not start on {}: {message}", link.label),
                 )
                 .await?;
-                return Err(OrchestratorError::request(
-                    error.code(),
-                    format!("Could not start the task on {}: {message}", link.label),
-                ));
+                return Err(OrchestratorError::StartFailed {
+                    code: error.code(),
+                    message: format!("Could not start the task on {}: {message}", link.label),
+                    task_id: task.id.clone(),
+                });
             }
             // Retried by the follower with the same key.
             self.store
@@ -1039,6 +1041,7 @@ impl PeerReceiver {
             thread_id: link_thread.clone(),
             scope: self.scope.clone(),
             provider: None,
+            run_id: None,
             model: None,
         };
         let operate = caller.access >= PeerLinkAccess::Operate;

@@ -697,3 +697,83 @@ fn a_turn_without_an_answer_keeps_its_last_words_in_view() {
         "{shown:?}"
     );
 }
+
+/// A subagent row (t3code's) is never folded into the work: a shut turn
+/// shows it above "Worked for …", where it can be opened without opening
+/// the turn; an open turn keeps it where the call launched it, between
+/// the tool groups it split.
+#[test]
+fn a_subagent_row_stays_in_view_above_a_shut_turn() {
+    let subagent = |id: &str| Row::Subagent {
+        key: format!("subagent:{id}"),
+        task: Box::new(
+            serde_json::from_value(serde_json::json!({
+                "taskId": id, "title": id, "status": "completed"
+            }))
+            .expect("task decodes"),
+        ),
+        preview: None,
+    };
+    let rows = vec![
+        user("p"),
+        tool("t1", "cli.read"),
+        subagent("a"),
+        tool("t2", "cli.bash"),
+        answer("ans"),
+    ];
+    let spans = HashMap::from([("p".to_string(), 154_000)]);
+    let shut = super::flow::fold(
+        &rows,
+        false,
+        false,
+        false,
+        false,
+        &ctx(&spans, &HashMap::new()),
+    );
+    assert_eq!(
+        shape(&shut),
+        ["p", "subagent:a", "fold:Worked for 2m 34s", "ans"]
+    );
+    let toggles = HashMap::from([("fold-p".to_string(), true)]);
+    let open = super::flow::fold(&rows, false, false, false, false, &ctx(&spans, &toggles));
+    assert_eq!(
+        shape(&open),
+        [
+            "p",
+            "fold:Worked for 2m 34s:open",
+            "act:t1",
+            "subagent:a",
+            "act:t2",
+            "ans"
+        ]
+    );
+    // A delegated result opens the next turn's work: its subagent is not
+    // lifted above it into this turn (review 2).
+    let handed = vec![
+        user("p"),
+        tool("t1", "cli.read"),
+        Row::Delegated {
+            key: "d".into(),
+            title: "Delegated work finished".into(),
+            body: String::new(),
+        },
+        subagent("b"),
+        answer("ans"),
+    ];
+    let shut = super::flow::fold(
+        &handed,
+        false,
+        false,
+        false,
+        false,
+        &ctx(&spans, &HashMap::new()),
+    );
+    let at = |k: &str| shape(&shut).iter().position(|s| s == k);
+    assert!(at("subagent:b") > at("d"), "{:?}", shape(&shut));
+    // Live, it sits where it was launched, under the working line.
+    let live = fold(&rows[..4], true, false, false, false);
+    assert_eq!(
+        shape(&live),
+        ["p", "working", "act:t1", "subagent:a", "act:t2:live"]
+    );
+}

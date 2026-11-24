@@ -96,6 +96,8 @@ mod tests {
     use ironclaw_host_api::ids::{TenantId, ThreadId, UserId};
     use ironclaw_orchestrator::model::{RuntimeId, ThreadScope};
 
+    use ironclaw_orchestrator::runtime::RuntimeError;
+
     use super::*;
     use crate::bridge::{DEFAULT_APPROVAL_TIMEOUT, SESSION_TOKEN_TTL, serve_mcp};
 
@@ -197,5 +199,104 @@ mod tests {
             calls,
             vec![("cli-1".to_string(), json!({"query": "deploy"}))]
         );
+    }
+
+    /// A runtime whose threads never start.
+    struct NoStart;
+
+    #[async_trait]
+    impl ironclaw_orchestrator::runtime::TurnRuntime for NoStart {
+        fn id(&self) -> RuntimeId {
+            RuntimeId::new("claude-cli").unwrap()
+        }
+        fn capabilities(&self) -> ironclaw_orchestrator::runtime::RuntimeCapabilities {
+            Default::default()
+        }
+        async fn create_thread(
+            &self,
+            _request: ironclaw_orchestrator::runtime::CreateThread,
+        ) -> Result<ironclaw_orchestrator::runtime::CreatedThread, RuntimeError> {
+            Err(RuntimeError::Unavailable("down".into()))
+        }
+        async fn start_turn(
+            &self,
+            _thread: &ThreadRecord,
+            _input: ironclaw_orchestrator::runtime::TurnInput,
+        ) -> Result<ironclaw_orchestrator::runtime::TurnAdmission, RuntimeError> {
+            Err(RuntimeError::Unavailable("down".into()))
+        }
+        async fn steer(
+            &self,
+            _thread: &ThreadRecord,
+            _text: &str,
+            _how: ironclaw_orchestrator::runtime::SteerHow,
+        ) -> Result<ironclaw_orchestrator::runtime::SteerOutcome, RuntimeError> {
+            Err(RuntimeError::Unavailable("down".into()))
+        }
+        async fn cancel(&self, _thread: &ThreadRecord, _reason: &str) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+        async fn history(
+            &self,
+            _thread: &ThreadRecord,
+            _limit: usize,
+        ) -> Result<Vec<ironclaw_orchestrator::runtime::HistoryMessage>, RuntimeError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// A CLI's `t3_delegate` over the loopback route records the CLI turn's
+    /// run on the task (the parent transcript's anchor), and a child that
+    /// could not start still names its task in the tool body.
+    #[tokio::test]
+    async fn a_cli_delegate_call_anchors_its_task_to_the_cli_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(
+            libsql::Builder::new_local(dir.path().join("o.db"))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+        let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+        // The child is recorded, then its runtime cannot make its thread.
+        engine.register_runtime(Arc::new(NoStart));
+        let thread = ThreadId::new("cli-anchor").unwrap();
+        engine
+            .store()
+            .ensure_thread(&ThreadRecord::new(
+                thread.clone(),
+                ThreadScope {
+                    tenant_id: TenantId::new("t").unwrap(),
+                    user_id: UserId::new("u").unwrap(),
+                    agent_id: None,
+                    project_id: None,
+                },
+                RuntimeId::new("claude-cli").unwrap(),
+            ))
+            .await
+            .unwrap();
+        let grant = SessionGrant {
+            thread_id: thread.clone(),
+            run_id: "run-cli-7".into(),
+        };
+        let answer = handle_mcp(
+            &engine,
+            &grant,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "t3_delegate", "arguments": {"task": "look around"}}}),
+        )
+        .await
+        .unwrap();
+        let body: Value =
+            serde_json::from_str(answer["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        let tasks = engine
+            .store()
+            .tasks_for_parent(&thread, false)
+            .await
+            .unwrap();
+        assert_eq!(tasks.len(), 1, "{body}");
+        assert_eq!(tasks[0].parent_run_id.as_deref(), Some("run-cli-7"));
+        assert_eq!(body["taskId"], tasks[0].id.as_str(), "{body}");
     }
 }

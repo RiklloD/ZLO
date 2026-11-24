@@ -59,7 +59,7 @@ impl TaskStatus {
 }
 
 /// One delegated child task (`TaskView`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskView {
     pub task_id: String,
@@ -92,6 +92,26 @@ pub struct TaskView {
     pub cancel_requested: bool,
     #[serde(default)]
     pub pending_children: u32,
+    /// The parent's run that launched it: its transcript draws the
+    /// subagent there. Absent from older engines and older tasks.
+    #[serde(default)]
+    pub parent_run_id: Option<String>,
+    /// What a live child is doing, read from its transcript.
+    #[serde(default)]
+    pub progress: Option<TaskProgress>,
+}
+
+/// A live child's progress (`progress` on a task view). Only what the
+/// subagent row shows: the per-poll counters stay out, so an idle child's
+/// row does not change every poll.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProgress {
+    #[serde(default)]
+    pub last_tool: Option<String>,
+    /// The child's newest words, as one plain line.
+    #[serde(default)]
+    pub latest_output: Option<String>,
 }
 
 impl TaskView {
@@ -646,6 +666,24 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_task_reads_its_anchor_and_progress_and_older_engines_default() {
+        let task: TaskView = serde_json::from_value(json!({
+            "taskId": "task-1", "status": "running", "parentRunId": "run-9",
+            "progress": {"running": true, "toolCount": 3, "lastTool": "Read(a)",
+                         "latestOutput": "Reading a", "silentSeconds": 4}
+        }))
+        .unwrap();
+        assert_eq!(task.parent_run_id.as_deref(), Some("run-9"));
+        let progress = task.progress.expect("progress decodes");
+        assert_eq!(progress.latest_output.as_deref(), Some("Reading a"));
+        assert_eq!(progress.last_tool.as_deref(), Some("Read(a)"));
+        let older: TaskView =
+            serde_json::from_value(json!({"taskId": "task-0", "status": "completed"})).unwrap();
+        assert_eq!(older.parent_run_id, None);
+        assert_eq!(older.progress, None);
+    }
 
     #[test]
     fn a_worktree_reads_the_engine_document_and_a_missing_one_is_refused() {
