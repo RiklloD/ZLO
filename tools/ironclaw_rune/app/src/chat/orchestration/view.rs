@@ -412,14 +412,19 @@ fn strip(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
 /// it said or found, its status and time, and a chevron to its thread.
 /// Cancel shows under the pointer while it is live. Flat on the
 /// transcript's plane; a poll's update lands as it is (no motion).
-pub fn subagent_row(s: &State, chat: &ChatState, task: &TaskView, k: &Kit) -> El {
+pub fn subagent_row(
+    s: &State,
+    chat: &ChatState,
+    task: &TaskView,
+    preview: Option<&str>,
+    k: &Kit,
+) -> El {
     let p = &s.palette;
     let id = task.task_id.as_str();
     let live = task.status.is_live();
     let failed = matches!(task.status, TaskStatus::Failed | TaskStatus::Interrupted);
     let now = Utc::now().timestamp_millis();
     let status = subagent_status(task, now);
-    let preview = zlo_client::transcript::subagent_preview(task);
     let ink = if failed { p.danger } else { p.text_muted };
     let small = flow::type_at(s, 12., 16., 400.);
     let mut middle = col().grow(1.).min_w(0.).gap(1.).child(
@@ -431,7 +436,7 @@ pub fn subagent_row(s: &State, chat: &ChatState, task: &TaskView, k: &Kit) -> El
     );
     if let Some(line) = preview {
         middle = middle.child(
-            text(line)
+            text(line.to_string())
                 .key(format!("subagent-preview-{id}"))
                 .font(small)
                 .color(ink)
@@ -441,7 +446,7 @@ pub fn subagent_row(s: &State, chat: &ChatState, task: &TaskView, k: &Kit) -> El
     let mut right = row()
         .gap(8.)
         .center_y()
-        .child(text(status).font(small).color(ink));
+        .child(text(status.clone()).font(small).color(ink));
     if let Some(at) = subagent_time(task) {
         right = right.child(text(at).font(small).color(p.text_faint));
     }
@@ -473,7 +478,7 @@ pub fn subagent_row(s: &State, chat: &ChatState, task: &TaskView, k: &Kit) -> El
         .center_y()
         .radius(design::ROW_RADIUS)
         .hover_group()
-        .label(format!("Subagent {}, {}", task.title, task.status.label()))
+        .label(format!("Subagent {}, {status}", task.title))
         .child(subagent_avatar(s, task))
         .child(middle)
         .child(right);
@@ -533,6 +538,31 @@ fn subagent_avatar(s: &State, task: &TaskView) -> El {
         .child(mark)
 }
 
+/// What a subagent row shows, hashed: the row is rebuilt only when one of
+/// these moves (a countdown by the minute, a time label by the day).
+pub(crate) fn subagent_version(task: &TaskView, preview: Option<&str>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let now = Utc::now().timestamp_millis();
+    (
+        &task.task_id,
+        &task.title,
+        task.status.label(),
+        preview,
+        task.cancel_requested,
+        &task.child_thread_id,
+        (&task.provider, &task.runtime, &task.model),
+        (task.created_at, task.started_at, task.finished_at),
+        (task.limit_reset_at, task.pending_children),
+    )
+        .hash(&mut h);
+    (task.status == TaskStatus::Waiting)
+        .then_some(now / 60_000)
+        .hash(&mut h);
+    Local::now().date_naive().hash(&mut h);
+    h.finish()
+}
+
 /// The row's status word: why a waiting task waits, else its state.
 pub(crate) fn subagent_status(task: &TaskView, now: i64) -> String {
     match (task.status, task.limit_reset_at) {
@@ -554,6 +584,10 @@ pub(crate) fn subagent_time(task: &TaskView) -> Option<String> {
     } else {
         task.finished_at?
     };
+    // An engine that sent no time (0) has none to show.
+    if at <= 0 {
+        return None;
+    }
     let t = Local.timestamp_millis_opt(at).single()?;
     Some(if t.date_naive() == Local::now().date_naive() {
         t.format("%H:%M").to_string()

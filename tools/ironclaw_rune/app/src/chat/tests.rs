@@ -581,6 +581,7 @@ fn a_subagent_row_stays_in_view_above_a_shut_turn() {
             }))
             .expect("task decodes"),
         ),
+        preview: None,
     };
     let rows = vec![
         user("p"),
@@ -615,6 +616,29 @@ fn a_subagent_row_stays_in_view_above_a_shut_turn() {
             "ans"
         ]
     );
+    // A delegated result opens the next turn's work: its subagent is not
+    // lifted above it into this turn (review 2).
+    let handed = vec![
+        user("p"),
+        tool("t1", "cli.read"),
+        Row::Delegated {
+            key: "d".into(),
+            title: "Delegated work finished".into(),
+            body: String::new(),
+        },
+        subagent("b"),
+        answer("ans"),
+    ];
+    let shut = super::flow::fold(
+        &handed,
+        false,
+        false,
+        false,
+        false,
+        &ctx(&spans, &HashMap::new()),
+    );
+    let at = |k: &str| shape(&shut).iter().position(|s| s == k);
+    assert!(at("subagent:b") > at("d"), "{:?}", shape(&shut));
     // Live, it sits where it was launched, under the working line.
     let live = fold(&rows[..4], true, false, false, false);
     assert_eq!(

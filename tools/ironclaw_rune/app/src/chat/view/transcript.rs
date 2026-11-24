@@ -192,6 +192,15 @@ impl Rows {
             ),
             // The bubble's own key: text that turns into narration keeps its
             // element, so it neither re-parses nor fades in again.
+            // A subagent row changes only with its task: keep it built.
+            Item::Row(row_ @ Row::Subagent { task, preview, .. }) => memo(
+                format!("subagent-{}", task.task_id),
+                (
+                    super::super::orchestration::subagent_version(task, preview.as_deref()),
+                    self.look,
+                ),
+                || rows::render_row(s, chat, row_, k),
+            ),
             Item::Row(Row::Narration { text, .. }) => {
                 super::super::visual::prose(s, id, item.key(), text, false, k)
             }

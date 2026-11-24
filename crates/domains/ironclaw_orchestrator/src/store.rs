@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS orch_tasks (
   delivery TEXT NOT NULL DEFAULT 'none',
   delivered_at INTEGER,
   cancel_requested INTEGER NOT NULL DEFAULT 0,
-  limit_reset_at INTEGER
+  limit_reset_at INTEGER,
+  parent_run_id TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS orch_tasks_request ON orch_tasks(parent_thread, client_request_id)
   WHERE client_request_id IS NOT NULL;

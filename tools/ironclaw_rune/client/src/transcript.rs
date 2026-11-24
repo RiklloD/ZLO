@@ -177,6 +177,8 @@ pub enum Row {
     Subagent {
         key: String,
         task: Box<crate::orchestration::TaskView>,
+        /// Its one-line preview (`subagent_preview`), worked out once.
+        preview: Option<String>,
     },
 }
 
@@ -337,6 +339,8 @@ pub struct Transcript {
     cli: CliDetails,
     /// The thread's delegated tasks, drawn inline (`subagents`).
     tasks: Vec<crate::orchestration::TaskView>,
+    /// Delegate call rows whose result was seen: the task each named.
+    delegate_results: HashMap<String, Option<String>>,
 }
 
 /// A bounded live body; `truncated` when the agent's text was cut.
@@ -639,6 +643,11 @@ impl Transcript {
             return;
         }
         let key = format!("tool:{invocation}");
+        self.note_delegate_result(
+            key.clone(),
+            &field("capability_id").unwrap_or_default(),
+            field("output_preview").as_deref(),
+        );
         let status = match field("status").as_deref() {
             Some("completed") => ToolStatus::Completed,
             Some("failed" | "killed") => ToolStatus::Failed,
@@ -1057,6 +1066,7 @@ impl Transcript {
                 match kind {
                     CliDetailKind::ToolOutput => {
                         if let Some(invocation) = invocation_id {
+                            self.note_delegate_result(format!("tool:{invocation}"), "", Some(body));
                             self.cli.put_output(format!("tool:{invocation}"), detail);
                         }
                     }
@@ -1218,6 +1228,11 @@ impl Transcript {
             return;
         }
         let detail = p.output_summary.clone().or_else(|| p.input_summary.clone());
+        self.note_delegate_result(
+            format!("tool:{}", p.invocation_id),
+            p.capability_id.as_str(),
+            p.output_preview.as_deref(),
+        );
         self.upsert_tool(
             p.invocation_id.to_string(),
             p.turn_run_id.map(|r| r.to_string()),

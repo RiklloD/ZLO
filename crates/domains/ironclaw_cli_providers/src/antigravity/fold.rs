@@ -13,6 +13,21 @@ use ironclaw_orchestrator::model::now_ms;
 use crate::journal;
 use crate::rpc::RpcError;
 
+/// `entries` as this turn's run journals them (as Codex and Muse do): the
+/// parent transcript anchors turns and their subagents by run.
+pub(crate) fn stamped(
+    run_id: &str,
+    entries: impl IntoIterator<Item = ironclaw_orchestrator::runtime::HistoryMessage>,
+) -> Vec<ironclaw_orchestrator::runtime::HistoryMessage> {
+    entries
+        .into_iter()
+        .map(|mut entry| {
+            entry.run_id = Some(run_id.to_string());
+            entry
+        })
+        .collect()
+}
+
 /// The marker a native `/goal` run leaves at the end of its reply.
 const GOAL_COMPLETE_MARKER: &str = "<!-- GOAL_COMPLETE -->";
 

@@ -38,6 +38,7 @@ use zlo_client::orchestration::{ForkOptions, Lineage, QueueAction, QueueDoc, Tas
 use crate::jobs;
 use crate::state::State;
 
+pub(crate) use view::subagent_version;
 pub use view::{composer, subagent_row, tail};
 
 /// Poll period while something is moving. Also the granularity of elapsed
@@ -436,22 +437,39 @@ pub fn cancel_task(s: &mut State, id: &str, task_id: String) {
         s,
         "orchestration",
         move |c| async move { c.cancel_task(&task_id).await },
-        move |s, result, tx| {
-            // The person's own action: its result moves (a reply lands at once otherwise).
-            tx.animated();
-            let Some(o) = slot_of(s, &thread_id, instance) else {
-                return;
-            };
-            match result {
-                Ok(view) => {
-                    if let Some(task) = o.tasks.iter_mut().find(|t| t.task_id == view.task_id) {
-                        *task = view;
-                    }
-                }
-                Err(e) => crate::chat::report_error(s, &thread_id, e.to_string()),
-            }
-        },
+        move |s, result, tx| cancelled(s, &thread_id, instance, result, tx),
     );
+}
+
+/// Cancel's reply: the task as the engine left it, in the strip's list and
+/// on its inline row at once (a terminal answer ends the poll that would
+/// otherwise have brought it).
+fn cancelled(
+    s: &mut State,
+    thread_id: &str,
+    instance: jobs::Instance,
+    result: Result<TaskView, ClientError>,
+    tx: &mut rune::Tx,
+) {
+    // The person's own action: its result moves (a reply lands at once otherwise).
+    tx.animated();
+    let Some(o) = slot_of(s, thread_id, instance) else {
+        return;
+    };
+    match result {
+        Ok(view) => {
+            if let Some(task) = o.tasks.iter_mut().find(|t| t.task_id == view.task_id) {
+                *task = view;
+            }
+            let tasks = o.tasks.clone();
+            if let Some(c) = crate::chat::chat_for(s, thread_id)
+                && c.transcript.set_tasks(tasks)
+            {
+                crate::chat::refresh_rows(s, thread_id, tx);
+            }
+        }
+        Err(e) => crate::chat::report_error(s, thread_id, e.to_string()),
+    }
 }
 
 /// Fork the thread into a new one. `at_run`: keep only the history up to
@@ -663,6 +681,7 @@ pub fn scene(s: &mut State) {
                 zlo_client::transcript::Row::Subagent {
                     key: zlo_client::transcript::subagent_key(&task.task_id),
                     task: Box::new(task.clone()),
+                    preview: zlo_client::transcript::subagent_preview(task),
                 },
             );
         }
@@ -730,7 +749,8 @@ mod tests {
         crate::chat::fixtures::chat(&mut s);
         let inst = instance(&mut s, "t1");
         let mut snap = snapshot();
-        snap.tasks = Ok(fixture().tasks);
+        let tasks = fixture().tasks;
+        snap.tasks = Ok(tasks.clone());
         apply_snapshot(&mut s, "t1", inst, snap);
         let keys: Vec<String> = chat_ref(&s, "t1").map_or_else(Vec::new, |c| {
             c.transcript
@@ -745,9 +765,54 @@ mod tests {
             ["subagent:task-2", "subagent:task-3", "subagent:task-1"],
             "oldest first, each once"
         );
-        let changed =
-            crate::chat::chat_for(&mut s, "t1").map(|c| c.transcript.set_tasks(fixture().tasks));
+        let changed = crate::chat::chat_for(&mut s, "t1").map(|c| c.transcript.set_tasks(tasks));
         assert_eq!(changed, Some(false), "the same tasks change nothing");
+    }
+
+    /// Cancel's reply reaches the inline row at once: the engine's
+    /// terminal answer ends the poll that would otherwise have brought it
+    /// (review 1).
+    #[test]
+    fn a_cancelled_task_shows_on_its_row_at_once() {
+        use rune::{App, AppSpec, Env, Runtime};
+        use zlo_client::orchestration::TaskStatus;
+        fn no_init() -> crate::state::State {
+            unreachable!("tests build the state themselves")
+        }
+        let app = App::new(AppSpec::new("ZLO test", (900., 700.), no_init, crate::view));
+        let mut s = crate::state::State::new(crate::jobs::Rt::new(app.handle()));
+        crate::chat::fixtures::chat(&mut s);
+        let tasks = fixture().tasks;
+        if let Some(c) = crate::chat::chat_for(&mut s, "t1") {
+            c.orchestration.tasks = tasks.clone();
+            c.transcript.set_tasks(tasks.clone());
+        }
+        let mut rt = Runtime::new(s, crate::view, (900., 700.), Env::new(true, 1.));
+        rt.frame(0.);
+        let status = |rt: &Runtime<crate::state::State>| {
+            chat_ref(&rt.state, "t1").and_then(|c| {
+                c.rows.iter().find_map(|r| match r {
+                    zlo_client::transcript::Row::Subagent { task, .. }
+                        if task.task_id == "task-1" =>
+                    {
+                        Some(task.status)
+                    }
+                    _ => None,
+                })
+            })
+        };
+        rt.update(|s, tx| {
+            crate::chat::refresh_rows(s, "t1", tx);
+        });
+        assert_eq!(status(&rt), Some(TaskStatus::Running));
+        let mut gone = tasks[1].clone();
+        gone.status = TaskStatus::Cancelled;
+        gone.finished_at = Some(gone.created_at + 1);
+        rt.update(move |s, tx| {
+            let inst = slot(s, "t1").map(|o| o.instance).unwrap_or_default();
+            super::cancelled(s, "t1", inst, Ok(gone), tx);
+        });
+        assert_eq!(status(&rt), Some(TaskStatus::Cancelled));
     }
 
     /// Scene `orchestration`: the subagents are rows in the transcript, not

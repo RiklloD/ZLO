@@ -235,7 +235,9 @@ pub(crate) fn render_row(s: &State, chat: &ChatState, row_: &Row, k: &Kit) -> El
             text: words,
             streaming,
         } => visual::reply(s, thread, key, words, *streaming, k),
-        Row::Subagent { task, .. } => super::orchestration::subagent_row(s, chat, task, k),
+        Row::Subagent { task, preview, .. } => {
+            super::orchestration::subagent_row(s, chat, task, preview.as_deref(), k)
+        }
         Row::System { text: words, .. } if words.starts_with("Switched to ") => {
             switch_marker(s, words)
         }

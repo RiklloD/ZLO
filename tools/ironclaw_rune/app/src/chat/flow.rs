@@ -308,7 +308,15 @@ fn fold_turn(
             };
             // A shut turn's subagents sit above its fold (t3code), so each
             // opens without opening the turn.
-            let hoisted = |i: usize| !open && matches!(body[i], Item::Row(Row::Subagent { .. }));
+            // Not past a delegated result: what follows it is the next turn's.
+            let handed_back = segment
+                .clone()
+                .find(|&i| matches!(body[i], Item::Row(Row::Delegated { .. })));
+            let hoisted = |i: usize| {
+                !open
+                    && matches!(body[i], Item::Row(Row::Subagent { .. }))
+                    && handed_back.is_none_or(|d| i < d)
+            };
             out.extend(
                 segment
                     .clone()

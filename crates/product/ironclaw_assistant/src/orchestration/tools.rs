@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ironclaw_host_api::{
+    dispatch::CapabilityDisplayOutputPreview,
     ids::{InvocationId, UserId},
     resolution::Resolution,
 };
@@ -139,10 +140,12 @@ impl SyntheticCapabilityHandler for OrchestratorToolHandler {
                     .approval_resume
                     .as_ref()
                     .map_or(&invocation.request.input_ref, |resume| &resume.input_ref),
-                invocation_id: InvocationId::new(),
+                // The call's own activity id: the identity its tool row has,
+                // so the stored preview (and a delegate's task) is that row's.
+                invocation_id: InvocationId::from_uuid(invocation.request.activity_id.as_uuid()),
                 capability_id: &invocation.request.capability_id,
+                display_preview: (self.name == "t3_delegate").then(|| delegate_preview(&output)),
                 output,
-                display_preview: None,
                 durable_persistence: DurablePersistence::Persist,
             })
             .await?;
@@ -157,3 +160,33 @@ impl SyntheticCapabilityHandler for OrchestratorToolHandler {
         ))
     }
 }
+
+/// A `t3_delegate` result on its tool row: the task it started (`taskId`,
+/// which the transcript pairs with that task's subagent row) or why it
+/// started none.
+fn delegate_preview(output: &serde_json::Value) -> CapabilityDisplayOutputPreview {
+    let failed = output.get("ok") == Some(&serde_json::Value::Bool(false));
+    let summary = if failed {
+        output["message"]
+            .as_str()
+            .unwrap_or("The subagent did not start")
+    } else {
+        output["title"].as_str().unwrap_or("Subagent started")
+    };
+    CapabilityDisplayOutputPreview {
+        output_summary: Some(summary.to_string()),
+        output_preview: serde_json::json!({
+            "ok": !failed,
+            "taskId": output.get("taskId"),
+            "childThreadId": output.get("childThreadId"),
+        })
+        .to_string(),
+        output_kind: "json".to_string(),
+        subtitle: None,
+        truncated: false,
+    }
+}
+
+#[cfg(test)]
+#[path = "tools_tests.rs"]
+mod tests;

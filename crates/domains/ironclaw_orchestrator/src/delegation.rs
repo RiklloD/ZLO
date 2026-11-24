@@ -482,10 +482,11 @@ impl Engine {
                     },
                 )
                 .await?;
-            return Err(OrchestratorError::request(
-                "orchestration_error",
-                format!("Could not start the child agent: {message}"),
-            ));
+            return Err(OrchestratorError::StartFailed {
+                code: "orchestration_error",
+                message: format!("Could not start the child agent: {message}"),
+                task_id: task.id.clone(),
+            });
         }
         if let (Some(origin), Some(child)) = (&req.peer_origin, &task.child_thread) {
             self.store.put_link_origin(child, origin).await?;
@@ -783,14 +784,15 @@ impl Engine {
             .filter_map(|m| m.at)
             .max()
             .or(thread.turn_started_at);
-        // The child's newest words, whichever run said them: the parent's
-        // subagent row previews them on one line.
+        // The child's newest words, whichever run said them, bounded: the
+        // parent's subagent row flattens them to one line.
         let latest_output = messages
             .iter()
             .rev()
             .filter(|m| m.role == crate::runtime::HistoryRole::Assistant && !m.hidden)
-            .map(|m| one_line(&m.text, LATEST_OUTPUT_CHARS))
-            .find(|line| !line.is_empty());
+            .map(|m| m.text.trim())
+            .find(|text| !text.is_empty())
+            .map(|text| clip(text, LATEST_OUTPUT_CHARS));
         let progress = json!({
             "running": thread.is_running(),
             "toolCount": tools.len(),
@@ -973,7 +975,7 @@ pub(crate) fn brief_paths(text: &str) -> Vec<std::path::PathBuf> {
 }
 
 /// How much of a child's newest words its progress carries.
-const LATEST_OUTPUT_CHARS: usize = 180;
+const LATEST_OUTPUT_CHARS: usize = 400;
 
 impl crate::store::Store {
     /// A task's launching run (`parent_run_id`), added to older databases.
@@ -981,48 +983,4 @@ impl crate::store::Store {
         self.add_column_once("orch_tasks", "parent_run_id", "TEXT")
             .await
     }
-}
-
-/// Markdown as one plain line (t3code's `plainDetail`): link targets,
-/// code ticks and list bullets dropped, whitespace collapsed, at most
-/// `max` characters.
-pub(crate) fn one_line(text: &str, max: usize) -> String {
-    let mut plain = String::with_capacity(text.len());
-    let mut rest = text;
-    // `[label](target)` keeps its label.
-    while let Some((before, after)) = rest.split_once('[') {
-        plain.push_str(before);
-        let link = after
-            .split_once("](")
-            .filter(|(label, _)| !label.contains('['))
-            .and_then(|(label, tail)| tail.split_once(')').map(|(_, next)| (label, next)));
-        match link {
-            Some((label, next)) => {
-                plain.push_str(label);
-                rest = next;
-            }
-            None => {
-                plain.push('[');
-                rest = after;
-            }
-        }
-    }
-    plain.push_str(rest);
-    let joined = plain
-        .lines()
-        .map(|line| {
-            let line = line.trim_start();
-            line.strip_prefix("- ")
-                .or_else(|| line.strip_prefix("* "))
-                .unwrap_or(line)
-        })
-        .flat_map(str::split_whitespace)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace('`', "");
-    if joined.chars().count() <= max {
-        return joined;
-    }
-    let cut: String = joined.chars().take(max).collect();
-    format!("{}…", cut.trim_end())
 }

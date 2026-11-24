@@ -70,7 +70,7 @@ async fn a_task_keeps_its_launching_run_and_reports_the_childs_latest_words() {
         .find(|t| t["taskId"] == first["taskId"])
         .expect("the first task is listed");
     assert_eq!(
-        view["progress"]["latestOutput"], "Reading flow.rs and the spec now",
+        view["progress"]["latestOutput"], "- Reading `flow.rs`\n  and [the spec](docs/spec.md) now",
         "{view}"
     );
 
@@ -79,17 +79,6 @@ async fn a_task_keeps_its_launching_run_and_reports_the_childs_latest_words() {
     let id = TaskId::new(first["taskId"].as_str().unwrap()).unwrap();
     let stored = reopened.store().task(&id).await.unwrap().unwrap();
     assert_eq!(stored.parent_run_id.as_deref(), Some("run-launch"));
-}
-
-#[test]
-fn markdown_flattens_to_one_capped_line() {
-    use crate::delegation::one_line;
-    assert_eq!(
-        one_line("- Read `a.rs`\n* see [docs](x/y.md) and [b] ok", 100),
-        "Read a.rs see docs and [b] ok"
-    );
-    assert_eq!(one_line("ééééé", 3), "ééé…");
-    assert_eq!(one_line("   \n ", 10), "");
 }
 
 /// A database from before the anchor column gains it on open, and its old

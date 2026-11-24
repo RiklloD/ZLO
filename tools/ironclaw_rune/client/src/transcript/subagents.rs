@@ -2,23 +2,25 @@
 //! each delegated task of the thread becomes a [`Row::Subagent`] in the
 //! turn that started it, instead of a box above the composer.
 //!
-//! A task names the parent run that launched it (`parentRunId`). Within a
-//! run, its tasks pair up in order with the run's `t3_delegate` calls (one
-//! call starts one task), and each paired call's tool row gives way to the
-//! subagent row, so the launch shows once. A call that failed started
-//! nothing and keeps its row. A task with no call left to take goes at the
-//! end of its turn's work, above the turn's answer; a task from before the
-//! anchor existed goes to the turn whose prompt came last before it.
+//! A `t3_delegate` call's result names the task it started (`taskId`, in
+//! the loop's stored preview or a CLI's tool output), and that call's tool
+//! row gives way to the task's subagent row, so the launch shows once. A
+//! call whose result this view never saw pairs with its run's remaining
+//! tasks in order; a call whose result named no task (a refusal) keeps its
+//! row. A task with no call left goes at the end of its turn's work, above
+//! the answer and before any steer sent after it; a task from before runs
+//! were recorded goes to the turn whose prompt came last before it; one
+//! older than the loaded history waits until that history loads.
 //!
 //! Tasks come from the orchestration poll ([`Transcript::set_tasks`]), so
 //! the rows are rebuilt from stored data after a restart and follow the
 //! child's status and newest words as the poll brings them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{Live, Row, ToolStatus, Transcript};
 use crate::orchestration::{TaskStatus, TaskView};
-use crate::wire::MessageKind;
+use crate::wire::{MessageKind, MessageStatus};
 
 /// What a CLI or the loop names the delegate call: `t3_delegate`,
 /// `builtin.t3_delegate`, `mcp__ironclaw__t3_delegate`, ….
@@ -30,9 +32,35 @@ fn is_delegate_call(title: &str) -> bool {
         .is_some_and(|name| name.ends_with("t3_delegate"))
 }
 
+/// The task id a delegate call's result names, in a JSON body or a CLI's
+/// escaped copy of one: `"taskId":"task_…"`.
+fn task_id_in(text: &str) -> Option<String> {
+    let (_, after) = text.split_once("taskId")?;
+    let id: String = after
+        .trim_start_matches(['\\', '"', ':', ' '])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        .collect();
+    (!id.is_empty()).then_some(id)
+}
+
 /// The row key of a task's subagent row.
 pub fn subagent_key(task_id: &str) -> String {
     format!("subagent:{task_id}")
+}
+
+/// A delegate call row: its key, its run, and the task its result named
+/// (`Some(None)`: a result that named none; `None`: no result seen).
+type Call<'a> = (&'a str, Option<&'a str>, Option<Option<&'a str>>);
+
+/// Where a task's row goes.
+enum Anchor {
+    /// In the turn its prompt row (or delegated-result row) starts.
+    Turn(String),
+    /// After everything shown (its turn's prompt is not among the rows).
+    End,
+    /// Nowhere yet: it belongs to history older than what is loaded.
+    Unloaded,
 }
 
 impl Transcript {
@@ -49,6 +77,22 @@ impl Transcript {
         true
     }
 
+    /// A tool's result reached this view: for a delegate call, note the
+    /// task it names (or that it named none).
+    pub(super) fn note_delegate_result(
+        &mut self,
+        key: String,
+        capability: &str,
+        text: Option<&str>,
+    ) {
+        let delegate = is_delegate_call(capability)
+            || matches!(self.live.get(&key).map(|e| &e.item),
+                Some(Live::Tool { title, .. }) if is_delegate_call(title));
+        if delegate && let Some(text) = text {
+            self.delegate_results.insert(key, task_id_in(text));
+        }
+    }
+
     /// Delegate calls this view saw finish. When the count grows while a
     /// run works, a task was just started: the app reads the tasks then,
     /// not at its next poll, so the subagent row takes the call's place
@@ -63,21 +107,67 @@ impl Transcript {
             .count()
     }
 
-    /// The run a task belongs to: its anchor, or for a task from before
-    /// anchors, the run of the last prompt sent before it.
-    fn task_run(&self, task: &TaskView) -> Option<String> {
-        if task.parent_run_id.is_some() {
-            return task.parent_run_id.clone();
+    /// Each live entry's run as [`Transcript::rows`] groups it: a frame
+    /// without a run id belongs to the newest run seen before it.
+    fn entry_runs(&self) -> HashMap<&str, Option<&str>> {
+        let mut seen: Vec<Option<&str>> = Vec::new();
+        let mut runs = HashMap::new();
+        for key in &self.order {
+            let run = self.live[key].run.as_deref();
+            if run.is_none()
+                && let Some(last) = seen.last()
+            {
+                runs.insert(key.as_str(), *last);
+                continue;
+            }
+            if !seen.contains(&run) {
+                seen.push(run);
+            }
+            runs.insert(key.as_str(), run);
         }
-        self.durable
+        runs
+    }
+
+    /// Where `task` goes when no call row takes it.
+    fn anchor(&self, task: &TaskView, drawn: &HashSet<String>) -> Anchor {
+        let shown = |m: &&crate::wire::TimelineMessage| {
+            m.kind == MessageKind::User
+                && m.is_visible()
+                && !matches!(
+                    m.status,
+                    MessageStatus::Queued | MessageStatus::RejectedBusy
+                )
+                && drawn.contains(&self.key_of_message(&m.message_id))
+        };
+        let prompt = match &task.parent_run_id {
+            Some(run) => self
+                .durable
+                .iter()
+                .filter(shown)
+                .find(|m| m.turn_run_id.as_deref() == Some(run.as_str())),
+            // From before runs were recorded: the last prompt sent before it.
+            None => self
+                .durable
+                .iter()
+                .filter(shown)
+                .rfind(|m| {
+                    m.created_at
+                        .is_some_and(|at| at.timestamp_millis() <= task.created_at)
+                }),
+        };
+        if let Some(m) = prompt {
+            return Anchor::Turn(self.key_of_message(&m.message_id));
+        }
+        let oldest = self
+            .durable
             .iter()
-            .filter(|m| m.kind == MessageKind::User && m.is_visible())
-            .filter(|m| {
-                m.created_at
-                    .is_some_and(|at| at.timestamp_millis() <= task.created_at)
-            })
-            .filter_map(|m| m.turn_run_id.clone())
-            .next_back()
+            .filter_map(|m| m.created_at)
+            .map(|at| at.timestamp_millis())
+            .min();
+        match oldest {
+            Some(oldest) if task.created_at < oldest => Anchor::Unloaded,
+            _ => Anchor::End,
+        }
     }
 
     /// `rows` with every task drawn as its subagent row.
@@ -85,103 +175,160 @@ impl Transcript {
         if self.tasks.is_empty() {
             return rows;
         }
-        let drawn: HashSet<&str> = rows.iter().map(Row::key).collect();
-        // Each run's delegate calls that started a task, in call order.
-        let calls: Vec<(String, Option<&str>)> = self
+        let runs = self.entry_runs();
+        let drawn: HashSet<String> = rows.iter().map(|r| r.key().to_string()).collect();
+        // Delegate call rows in call order: key, run, and the task its
+        // result named (`Some(None)`: a result that named none).
+        let calls: Vec<Call<'_>> = self
             .order
             .iter()
-            .filter(|key| drawn.contains(key.as_str()))
-            .filter_map(|key| {
-                let entry = &self.live[key];
-                match &entry.item {
-                    Live::Tool { title, status, .. }
-                        if *status != ToolStatus::Failed && is_delegate_call(title) =>
-                    {
-                        Some((key.clone(), entry.run.as_deref()))
-                    }
-                    _ => None,
+            .filter(|key| drawn.contains(*key))
+            .filter_map(|key| match &self.live[key].item {
+                Live::Tool { title, status, .. } if is_delegate_call(title) => {
+                    let named = self.delegate_results.get(key).map(Option::as_deref);
+                    // A failed call whose result this view never saw
+                    // started nothing it can show.
+                    (named.is_some() || *status != ToolStatus::Failed).then(|| {
+                        (
+                            key.as_str(),
+                            runs.get(key.as_str()).copied().flatten(),
+                            named,
+                        )
+                    })
                 }
+                _ => None,
             })
             .collect();
         let mut taken: HashSet<usize> = HashSet::new();
-        let mut unplaced: Vec<(Option<String>, Row)> = Vec::new();
+        let mut slot: HashMap<&str, &str> = HashMap::new();
+        // The call that names a task takes it.
         for task in &self.tasks {
-            let row = Row::Subagent {
-                key: subagent_key(&task.task_id),
-                task: Box::new(task.clone()),
-            };
-            let run = self.task_run(task);
-            let call = calls
-                .iter()
-                .enumerate()
-                .find(|(ix, (_, r))| !taken.contains(ix) && run.is_some() && *r == run.as_deref());
-            match call {
-                Some((ix, (key, _))) => {
-                    taken.insert(ix);
-                    if let Some(slot) = rows.iter_mut().find(|r| r.key() == key) {
-                        *slot = row;
-                    }
-                }
-                None => unplaced.push((run, row)),
+            if let Some((ix, (key, ..))) = calls.iter().enumerate().find(|(ix, (_, _, named))| {
+                !taken.contains(ix) && *named == Some(Some(task.task_id.as_str()))
+            }) {
+                taken.insert(ix);
+                slot.insert(task.task_id.as_str(), key);
             }
         }
-        for (run, row) in unplaced {
-            let at = self.turn_end(&rows, run.as_deref());
-            rows.insert(at, row);
+        // A call whose result this view never saw: its run's next task.
+        for task in &self.tasks {
+            if slot.contains_key(task.task_id.as_str()) {
+                continue;
+            }
+            let Some(run) = task.parent_run_id.as_deref() else {
+                continue;
+            };
+            if let Some((ix, (key, ..))) = calls.iter().enumerate().find(|(ix, (_, r, named))| {
+                !taken.contains(ix) && named.is_none() && *r == Some(run)
+            }) {
+                taken.insert(ix);
+                slot.insert(task.task_id.as_str(), key);
+            }
+        }
+        let mut unplaced: Vec<(&TaskView, Anchor)> = Vec::new();
+        for task in &self.tasks {
+            let row = subagent_row(task);
+            match slot.get(task.task_id.as_str()) {
+                Some(key) => {
+                    if let Some(at) = rows.iter_mut().find(|r| r.key() == *key) {
+                        *at = row;
+                    }
+                }
+                None => unplaced.push((task, self.anchor(task, &drawn))),
+            }
+        }
+        let sent: HashMap<String, i64> = self
+            .durable
+            .iter()
+            .filter(|m| m.kind == MessageKind::User)
+            .filter_map(|m| {
+                Some((
+                    self.key_of_message(&m.message_id),
+                    m.created_at?.timestamp_millis(),
+                ))
+            })
+            .collect();
+        for (task, anchor) in unplaced {
+            let at = match anchor {
+                Anchor::Unloaded => continue,
+                Anchor::End => rows.len(),
+                Anchor::Turn(prompt) => turn_end(&rows, &prompt, task.created_at, &sent),
+            };
+            rows.insert(at, subagent_row(task));
         }
         rows
     }
+}
 
-    /// Where a task with no call row goes: after its turn's work, above the
-    /// turn's answer; the end when the turn's prompt is not among the rows.
-    fn turn_end(&self, rows: &[Row], run: Option<&str>) -> usize {
-        let prompt = run.and_then(|run| {
-            self.durable
-                .iter()
-                .find(|m| m.kind == MessageKind::User && m.turn_run_id.as_deref() == Some(run))
-                .map(|m| self.key_of_message(&m.message_id))
-        });
-        let Some(start) = prompt.and_then(|key| rows.iter().position(|r| r.key() == key)) else {
-            return rows.len();
-        };
-        let end = rows[start + 1..]
-            .iter()
-            .position(|r| matches!(r, Row::User { steer: None, .. }))
-            .map_or(rows.len(), |n| start + 1 + n);
-        // Above the answer, and below any subagent already placed there.
-        rows[start + 1..end]
-            .iter()
-            .rposition(|r| matches!(r, Row::Assistant { .. }))
-            .map_or(end, |n| start + 1 + n)
+/// A task's row, its preview worked out once here rather than per frame.
+fn subagent_row(task: &TaskView) -> Row {
+    Row::Subagent {
+        key: subagent_key(&task.task_id),
+        task: Box::new(task.clone()),
+        preview: preview(task),
     }
+}
+
+/// Where a task with no call row goes in the turn `prompt` starts: after
+/// the work, above the answer, and before any steer sent after the task
+/// started; the end when the prompt is not among the rows.
+fn turn_end(rows: &[Row], prompt: &str, created_at: i64, sent: &HashMap<String, i64>) -> usize {
+    let Some(start) = rows.iter().position(|r| r.key() == prompt) else {
+        return rows.len();
+    };
+    let body = start + 1;
+    let mut end = rows[body..]
+        .iter()
+        .position(|r| matches!(r, Row::User { steer: None, .. } | Row::Delegated { .. }))
+        .map_or(rows.len(), |n| body + n);
+    if let Some(n) = rows[body..end].iter().position(|r| {
+        matches!(r, Row::User { key, steer: Some(_), .. }
+            if sent.get(key).is_some_and(|at| *at > created_at))
+    }) {
+        end = body + n;
+    }
+    rows[body..end]
+        .iter()
+        .rposition(|r| matches!(r, Row::Assistant { .. }))
+        .map_or(end, |n| body + n)
 }
 
 /// The server's placeholder when a child ends without output; the status
 /// already says it.
 const GENERIC_END: &str = "child task ended with status";
 
+/// How long a subagent's preview line gets: one truncated line's worth.
+const PREVIEW_CHARS: usize = 240;
+
 /// A subagent row's second line (t3code's subagent detail): why it failed,
 /// what it found once finished, else what it is saying or doing now.
 pub fn preview(task: &TaskView) -> Option<String> {
     let raw = match task.status {
         TaskStatus::Failed | TaskStatus::Interrupted => {
-            task.error.clone().or_else(|| task.summary.clone())
+            task.error.as_deref().or(task.summary.as_deref())
         }
-        status if !status.is_live() => task.summary.clone(),
+        status if !status.is_live() => task.summary.as_deref(),
         _ => task.progress.as_ref().and_then(|p| {
             p.latest_output
-                .clone()
+                .as_deref()
                 .filter(|s| !s.trim().is_empty())
-                .or_else(|| p.last_tool.clone())
+                .or(p.last_tool.as_deref())
         }),
     }?;
-    let line = plain_line(&raw);
+    let line = plain_line(raw, PREVIEW_CHARS);
     (!line.is_empty() && !line.to_ascii_lowercase().starts_with(GENERIC_END)).then_some(line)
 }
 
-/// Markdown as one plain line: link targets, code ticks and list bullets
-/// dropped, whitespace collapsed (t3code's `plainDetail`).
-pub fn plain_line(text: &str) -> String {
+/// Markdown as one plain line of at most `max` characters: link targets,
+/// code ticks and list bullets dropped, whitespace collapsed (t3code's
+/// `plainDetail`). Reads only as much of `text` as the line can show.
+pub fn plain_line(text: &str, max: usize) -> String {
+    // Markup and runs of whitespace collapse, so a few times the line's
+    // length always fills it.
+    let text = match text.char_indices().nth(max * 4) {
+        Some((cut, _)) => text.get(..cut).unwrap_or(text),
+        None => text,
+    };
     let mut plain = String::with_capacity(text.len());
     let mut rest = text;
     while let Some((before, after)) = rest.split_once('[') {
@@ -202,7 +349,7 @@ pub fn plain_line(text: &str) -> String {
         }
     }
     plain.push_str(rest);
-    plain
+    let line = plain
         .lines()
         .map(|line| {
             let line = line.trim_start();
@@ -213,7 +360,12 @@ pub fn plain_line(text: &str) -> String {
         .flat_map(str::split_whitespace)
         .collect::<Vec<_>>()
         .join(" ")
-        .replace('`', "")
+        .replace('`', "");
+    if line.chars().count() <= max {
+        return line;
+    }
+    let cut: String = line.chars().take(max).collect();
+    format!("{}…", cut.trim_end())
 }
 
 #[cfg(test)]
@@ -356,5 +508,167 @@ mod tests {
         assert_eq!(preview(&live), None);
         assert!(is_delegate_call("mcp_ironclaw_t3_delegate"));
         assert!(!is_delegate_call("t3_task"));
+    }
+
+    /// The delegate call a stored or streamed result names takes its own
+    /// task, whatever the order the tasks were made in (review 3): a
+    /// refusal keeps its row and takes no task, an idempotent retry names
+    /// a task already shown and keeps its row, a child that never started
+    /// shows as its failed task in its own call's place.
+    #[test]
+    fn a_call_takes_the_task_its_result_names() {
+        let mut t = Transcript::default();
+        t.set_timeline(page(vec![
+            message("u1", 1, "user", "run-1", 1_000, "Go"),
+            message("a1", 9, "assistant", "run-1", 9_000, "Done."),
+        ]));
+        let results = [
+            (
+                "1",
+                ToolStatus::Completed,
+                r#"{"ok":true,"taskId":"task_b"}"#,
+            ),
+            (
+                "2",
+                ToolStatus::Completed,
+                r#"{"ok":false,"error":"too_many_tasks"}"#,
+            ),
+            (
+                "3",
+                ToolStatus::Completed,
+                r#"{"ok":true,"taskId":"task_a"}"#,
+            ),
+            (
+                "4",
+                ToolStatus::Completed,
+                r#"{"ok":true,"taskId":"task_a"}"#,
+            ),
+            // A CLI's escaped copy of a failed start's body.
+            (
+                "5",
+                ToolStatus::Failed,
+                r#"{\"ok\":false,\"taskId\":\"task_c\"}"#,
+            ),
+        ];
+        for (inv, status, body) in results {
+            t.upsert_tool(
+                inv.into(),
+                Some("run-1".into()),
+                "t3_delegate".into(),
+                None,
+                status,
+            );
+            if let Some(entry) = t.live.get_mut(&format!("tool:{inv}")) {
+                entry.at = 2_000;
+            }
+            t.note_delegate_result(format!("tool:{inv}"), "builtin.t3_delegate", Some(body));
+        }
+        t.set_tasks(vec![
+            task("task_a", Some("run-1"), 3_000, "running"),
+            task("task_b", Some("run-1"), 3_000, "completed"),
+            task("task_c", Some("run-1"), 3_000, "failed"),
+        ]);
+        assert_eq!(
+            keys(&t.rows()),
+            vec![
+                "msg:u1",
+                "subagent:task_b",
+                "tool:2",
+                "subagent:task_a",
+                "tool:4",
+                "subagent:task_c",
+                "msg:a1",
+            ]
+        );
+    }
+
+    /// A live tool frame without a run id belongs to the run it arrived in,
+    /// as the rows group it: its task takes it rather than showing twice
+    /// (review 6).
+    #[test]
+    fn a_bare_delegate_frame_pairs_with_its_runs_task() {
+        let mut t = Transcript::default();
+        t.upsert_tool(
+            "1".into(),
+            Some("run-1".into()),
+            "Read".into(),
+            None,
+            ToolStatus::Completed,
+        );
+        t.upsert_tool(
+            "2".into(),
+            None,
+            "t3_delegate".into(),
+            None,
+            ToolStatus::Completed,
+        );
+        if let Some(entry) = t.live.get_mut("tool:2") {
+            entry.run = None;
+        }
+        t.set_tasks(vec![task("a", Some("run-1"), 3_000, "running")]);
+        assert_eq!(keys(&t.rows()), vec!["tool:1", "subagent:a"]);
+    }
+
+    /// Turns end at a delegated result as well as at a prompt (review 2);
+    /// a task is drawn before a steer sent after it started (review 7);
+    /// one older than the loaded history waits for it (review 5).
+    #[test]
+    fn a_task_stays_in_its_own_turn() {
+        let mut t = Transcript::default();
+        let mut steer = message("s1", 3, "user", "run-1", 4_000, "Also check B");
+        steer["steer"] = json!({"id": "st1", "state": "read"});
+        t.set_timeline(page(vec![
+            message("u1", 1, "user", "run-1", 1_000, "Check A"),
+            message("a0", 2, "assistant", "run-1", 2_000, "Looking."),
+            steer,
+            message("a1", 4, "assistant", "run-1", 5_000, "Both fine."),
+            message(
+                "d1",
+                5,
+                "user",
+                "run-2",
+                6_000,
+                "Delegated work finished.\n[T3 delegated task \"Look\"] done",
+            ),
+            message("a2", 6, "assistant", "run-2", 7_000, "Noted."),
+        ]));
+        let rows = keys(&t.rows());
+        assert!(rows.contains(&"msg:d1".to_string()), "{rows:?}");
+        t.set_tasks(vec![
+            task("early", Some("run-1"), 1_500, "completed"),
+            task("late", Some("run-1"), 4_500, "running"),
+            task("old", Some("run-0"), 500, "completed"),
+        ]);
+        let rows = keys(&t.rows());
+        let at = |k: &str| rows.iter().position(|r| r == k);
+        assert!(
+            at("subagent:old").is_none(),
+            "older than what is loaded: {rows:?}"
+        );
+        assert!(
+            at("subagent:early") < at("msg:s1"),
+            "before the later steer: {rows:?}"
+        );
+        assert!(at("subagent:late") > at("msg:s1"), "{rows:?}");
+        assert!(
+            at("subagent:late") < at("msg:d1"),
+            "inside its own turn: {rows:?}"
+        );
+    }
+
+    /// The preview reads only what one line shows (review 4).
+    #[test]
+    fn a_long_result_previews_one_bounded_line() {
+        let mut done = task("d", None, 0, "completed");
+        done.summary = Some("word ".repeat(20_000));
+        let line = preview(&done).expect("a line");
+        assert!(line.chars().count() <= PREVIEW_CHARS + 1, "{}", line.len());
+        assert!(line.ends_with('…'));
+        assert_eq!(plain_line("a  b", 10), "a b");
+        assert_eq!(
+            task_id_in(r#"{"taskId": "task_9f"}"#).as_deref(),
+            Some("task_9f")
+        );
+        assert_eq!(task_id_in(r#"{"ok":false}"#), None);
     }
 }

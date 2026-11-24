@@ -651,10 +651,11 @@ impl Engine {
                     &format!("could not start on {}: {message}", link.label),
                 )
                 .await?;
-                return Err(OrchestratorError::request(
-                    error.code(),
-                    format!("Could not start the task on {}: {message}", link.label),
-                ));
+                return Err(OrchestratorError::StartFailed {
+                    code: error.code(),
+                    message: format!("Could not start the task on {}: {message}", link.label),
+                    task_id: task.id.clone(),
+                });
             }
             // Retried by the follower with the same key.
             self.store
