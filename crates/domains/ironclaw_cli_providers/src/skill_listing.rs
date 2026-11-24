@@ -23,10 +23,10 @@ use std::sync::{Arc, Mutex};
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_orchestrator::runtime::{ProfileSkills, TurnProfile};
 use ironclaw_skills::usage::{
-    SKILL_USAGE_ADVISORY_TIMEOUT, SkillLedger, SkillListing, SkillListingPolicy,
+    SKILL_USAGE_ADVISORY_TIMEOUT, SharedSkillUsage, SkillLedger, SkillListing, SkillListingPolicy,
     SkillListingRequest, SkillListingState, SkillUsageDocument, SkillUsageError, SkillUsageName,
-    SkillUsageObservation, SkillUsageOwner, SkillUsageSource, SkillUsageStore, UnmanagedSkillUsage,
-    bounded, force_requested, listing, requested_skills,
+    SkillUsageObservation, SkillUsageOwner, SkillUsageSource, bounded, force_requested, listing,
+    requested_skills,
 };
 use serde_json::Value;
 
@@ -34,7 +34,7 @@ use serde_json::Value;
 /// (the deployment's owner: CLI runtimes run for the local person).
 #[derive(Debug, Clone)]
 pub struct CliSkillUsage {
-    store: Arc<dyn SkillUsageStore>,
+    store: SharedSkillUsage,
     owner: Option<SkillUsageOwner>,
 }
 
@@ -42,14 +42,14 @@ impl Default for CliSkillUsage {
     /// Manages nothing: every runtime lists its skills as before.
     fn default() -> Self {
         Self {
-            store: Arc::new(UnmanagedSkillUsage),
+            store: SharedSkillUsage::default(),
             owner: None,
         }
     }
 }
 
 impl CliSkillUsage {
-    pub fn new(store: Arc<dyn SkillUsageStore>, owner: SkillUsageOwner) -> Self {
+    pub fn new(store: SharedSkillUsage, owner: SkillUsageOwner) -> Self {
         Self {
             store,
             owner: Some(owner),
@@ -60,7 +60,7 @@ impl CliSkillUsage {
     /// store failed or stalled (then nothing changes).
     pub(crate) async fn document(&self) -> Option<SkillUsageDocument> {
         let owner = self.owner.as_ref()?;
-        match bounded(SKILL_USAGE_ADVISORY_TIMEOUT, self.store.load(owner)).await {
+        match bounded(SKILL_USAGE_ADVISORY_TIMEOUT, self.store.store().load(owner)).await {
             Ok(document) => document,
             Err(error) => {
                 tracing::debug!(%error, "cli skills: usage not read; listing all skills");
@@ -82,7 +82,9 @@ impl CliSkillUsage {
         }
         if let Err(error) = bounded(
             SKILL_USAGE_ADVISORY_TIMEOUT,
-            self.store.record(owner, source, observation, now_ms()),
+            self.store
+                .store()
+                .record(owner, source, observation, now_ms()),
         )
         .await
         {
@@ -105,7 +107,7 @@ impl CliSkillUsage {
         };
         bounded(
             SKILL_USAGE_ADVISORY_TIMEOUT,
-            self.store.import_ledger(owner, source, ledger),
+            self.store.store().import_ledger(owner, source, ledger),
         )
         .await
     }

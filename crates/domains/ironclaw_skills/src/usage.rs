@@ -724,6 +724,28 @@ impl SkillUsageStore for UnmanagedSkillUsage {
     }
 }
 
+/// The deployment's one skill usage store, as every consumer holds it: the
+/// harness listing, each CLI runtime and the Skills page share one handle.
+/// The default manages nothing ([`UnmanagedSkillUsage`]).
+#[derive(Debug, Clone)]
+pub struct SharedSkillUsage(std::sync::Arc<dyn SkillUsageStore>);
+
+impl SharedSkillUsage {
+    pub fn new(store: std::sync::Arc<dyn SkillUsageStore>) -> Self {
+        Self(store)
+    }
+
+    pub fn store(&self) -> &dyn SkillUsageStore {
+        self.0.as_ref()
+    }
+}
+
+impl Default for SharedSkillUsage {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(UnmanagedSkillUsage))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

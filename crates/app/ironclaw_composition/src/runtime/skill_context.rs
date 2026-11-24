@@ -203,7 +203,7 @@ pub(super) fn filesystem_skill_context_source(
             Arc::clone(workspace_filesystem),
             staging_filesystem,
             Arc::clone(skill_auto_activate_learned),
-            Arc::clone(&runtime.skill_usage),
+            runtime.skill_usage.clone(),
         ),
         // No writable workspace (hosted multi-tenant today) -- skills still activate, and a body that
         // promises execution gets the "cannot execute processes" note instead of a staged path.
@@ -211,7 +211,7 @@ pub(super) fn filesystem_skill_context_source(
             selector_config,
             Arc::clone(workspace_filesystem),
             Arc::clone(skill_auto_activate_learned),
-            Arc::clone(&runtime.skill_usage),
+            runtime.skill_usage.clone(),
         ),
     };
     let bundle_source = extension.bundle_source();

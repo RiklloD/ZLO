@@ -84,7 +84,12 @@ pub fn refold_chat(s: &mut State, id: &str) {
     };
     let live = c.fixture_run.is_some();
     c.has_tail = has_tail;
-    c.items = Rc::new(flow::fold(&c.rows, live, false, has_tail, false));
+    let ctx = flow::Folding {
+        spans: &c.spans,
+        toggles: &c.toggles,
+        prompt_shown: true,
+    };
+    c.items = Rc::new(flow::fold(&c.rows, live, false, has_tail, false, &ctx));
 }
 
 /// Put `rows` into `chat` the way a timeline load folds them; `live` adds a
@@ -94,7 +99,23 @@ pub fn fill(chat: &mut ChatState, rows: Vec<Row>, live: bool) {
         chat.fixture_run = Some("run-2".into());
         chat.run_started = Some(Instant::now() - Duration::from_secs(14));
     }
-    chat.items = Rc::new(flow::fold(&rows, live, false, false, false));
+    // Every settled turn of a scene worked 2m 14s.
+    chat.spans = Rc::new(
+        rows.iter()
+            .filter_map(|r| match r {
+                Row::User {
+                    key, steer: None, ..
+                } => Some((key.clone(), 134_000)),
+                _ => None,
+            })
+            .collect(),
+    );
+    let ctx = flow::Folding {
+        spans: &chat.spans,
+        toggles: &chat.toggles,
+        prompt_shown: true,
+    };
+    chat.items = Rc::new(flow::fold(&rows, live, false, false, false, &ctx));
     chat.outline.set(super::outline::prompts(&chat.items));
     chat.rows = Rc::new(rows);
     question_form::sync_drafts(chat);
@@ -209,6 +230,92 @@ pub fn running(s: &mut State) {
     if let Some(c) = s.chat.as_mut() {
         c.composer.replace_text("also check clippy");
     }
+}
+
+/// A long CLI turn, t3code's timeline: the agent's words between its tool
+/// groups. `live` keeps the run going (a command still running at the
+/// end); settled, the turn folds under "Worked for" over the answer, and
+/// `open` opens that fold.
+fn cli_turn(live: bool) -> Vec<Row> {
+    let say = |key: &str, text: &str| Row::Narration {
+        key: key.into(),
+        text: text.into(),
+    };
+    let edit = |key: &str, path: &str| tool(key, "cli.write", path, ToolStatus::Completed);
+    let mut rows = vec![
+        user("msg:c1", "Build the web2 auto-battler from the roadmap."),
+        Row::Thinking {
+            key: "think:c1".into(),
+            text: "Start from the decision record, then the engine.".into(),
+        },
+        tool("t:c1", "cli.bash", "ls -la", ToolStatus::Completed),
+        tool(
+            "t:c2",
+            "cli.read",
+            "chroniques-du-rift-roadmap.md",
+            ToolStatus::Completed,
+        ),
+        tool("t:c3", "cli.bash", "bun --version", ToolStatus::Failed),
+        say(
+            "say:c1",
+            "First, the decision record. It's the contract that everything else follows.",
+        ),
+        edit("t:c4", "docs/ARCHITECTURE.md"),
+        say("say:c2", "Now the engine contract: types, RNG and balance."),
+        edit("t:c5", "engine/src/types.ts"),
+        edit("t:c6", "engine/src/rng.ts"),
+        edit("t:c7", "engine/src/balance.ts"),
+        say("say:c3", "Engine tests:"),
+        tool("t:c8", "cli.bash", "bun test engine", ToolStatus::Completed),
+        say(
+            "say:c4",
+            "All 10 tests pass on the first run. Next I'll write the soak test, which doubles as a balance probe.",
+        ),
+        edit("t:c9", "engine/test/soak.ts"),
+    ];
+    if live {
+        rows.push(tool(
+            "t:c10",
+            "cli.bash",
+            "bun run soak --matches 500",
+            ToolStatus::Running,
+        ));
+    } else {
+        rows.push(tool(
+            "t:c10",
+            "cli.bash",
+            "bun run soak --matches 500",
+            ToolStatus::Completed,
+        ));
+        rows.push(reply(
+            "msg:c2",
+            "Chroniques du Rift is playable in the browser now: guest accounts with just a name, solo practice against bots, private lobbies and a public 2v2 queue.\n\n\
+             **What I tested**\n\n\
+             - Engine tests: 10/10 pass, and replays come out identical.\n\
+             - Headless bot matches: 0 crashes across 500.",
+            false,
+        ));
+    }
+    rows
+}
+
+/// [`cli_turn`] settled: one "Worked for" line over the answer.
+pub fn cli_turn_settled(s: &mut State) {
+    shell_with(s, cli_turn(false), false);
+}
+
+/// [`cli_turn`] settled, its fold opened.
+pub fn cli_turn_open(s: &mut State) {
+    shell_with(s, cli_turn(false), false);
+    if let Some(c) = s.chat.as_mut() {
+        c.toggles.insert("fold-msg:c1".into(), true);
+    }
+    refold(s);
+}
+
+/// [`cli_turn`] still running.
+pub fn cli_turn_live(s: &mut State) {
+    shell_with(s, cli_turn(true), true);
 }
 
 /// Mid-turn steering (t3code's): a finished run with a steer, the work

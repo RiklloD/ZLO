@@ -10,6 +10,7 @@ fn capability_provider_contracts() -> ironclaw_extension_registry::HostApiContra
 }
 use super::*;
 use async_trait::async_trait;
+use ironclaw_assistant::skill_listing_page::{set_skill_listing_pin, skill_listing_response};
 use ironclaw_assistant::{
     EXTENSION_INSTALL_CAPABILITY, EXTENSION_REMOVE_CAPABILITY, OPERATOR_SERVICE_LIFECYCLE_COMMAND,
     ProductCapabilityDescriptor,
@@ -25,8 +26,7 @@ use ironclaw_filesystem::{DiskFilesystem, InMemoryBackend};
 use ironclaw_host_api::{
     host_port::HostPortCatalog,
     ids::{ActivityId, ExtensionId, TenantId, UserId},
-    mount::{MountGrant, MountPermissions, MountView},
-    path::{HostPath, MountAlias, VirtualPath},
+    path::VirtualPath,
     resolution::{Blocked, Resolution},
     result_meta::FailureKind,
 };
@@ -37,9 +37,13 @@ use ironclaw_product_contracts::inspector::{
 use ironclaw_product_contracts::operator_tools::{
     RebornOperatorToolCatalog, RebornOperatorToolInfo,
 };
+use ironclaw_product_contracts::skill_listing::{
+    RebornSkillListingPinRequest, RebornSkillListingState,
+};
 use ironclaw_product_contracts::surface::{
     ProductSurface, ProductSurfaceCaller, ProductSurfaceError,
 };
+use ironclaw_skills::usage::{SkillUsageName, SkillUsageObservation, SkillUsageSource};
 use std::time::Duration;
 
 use ironclaw_extension_host::extension_lifecycle::RebornLocalExtensionManagementPort;
@@ -643,211 +647,6 @@ async fn readiness_operator_status_keeps_info_diagnostics_ready() {
     assert_eq!(readiness_check.severity, RebornOperatorStatusSeverity::Info);
 }
 
-#[tokio::test]
-async fn skills_product_service_surfaces_shared_auto_activate_learned_flag() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("standalone");
-    std::fs::create_dir_all(&storage_root).expect("storage root");
-
-    let mut filesystem = DiskFilesystem::new();
-    filesystem
-        .mount_local(
-            VirtualPath::new("/projects").expect("valid virtual path"),
-            HostPath::from_path_buf(storage_root.clone()),
-        )
-        .expect("mount storage root");
-    let filesystem: Arc<dyn ironclaw_filesystem::RootFilesystem> = Arc::new(filesystem);
-    let skill_management = Arc::new(ScopedSkillManagementPort::new_with_mount_resolver(
-        UserId::new("runtime-owner").expect("user"),
-        filesystem,
-        Arc::new(scoped_skill_mounts),
-    ));
-    // Share the flag the way production composition does: the activation
-    // selector holds the same `Arc`, so a toggle here must be observable on
-    // that handle (that is the whole point of the live master switch).
-    let flag = Arc::new(AtomicBool::new(true));
-    let service = LocalSkillsProductService::new(
-        skill_management,
-        Some(Arc::clone(&flag)),
-        Arc::new(ironclaw_skills::usage::UnmanagedSkillUsage),
-    );
-    let owner = caller("runtime-owner");
-
-    let listed = service.list_skills(owner.clone()).await.expect("list");
-    assert!(
-        listed.auto_activate_learned,
-        "default master switch must report on"
-    );
-
-    flag.store(false, Ordering::Relaxed);
-    assert!(
-        !flag.load(Ordering::Relaxed),
-        "test setup must flip the shared selector flag to false"
-    );
-    let listed = service.list_skills(owner.clone()).await.expect("list");
-    assert!(
-        !listed.auto_activate_learned,
-        "list must report the master switch as off after disabling"
-    );
-
-    flag.store(true, Ordering::Relaxed);
-    assert!(
-        flag.load(Ordering::Relaxed),
-        "test setup must flip the shared selector flag back to true"
-    );
-    let listed = service.list_skills(owner).await.expect("list");
-    assert!(
-        listed.auto_activate_learned,
-        "list must report the master switch as on after re-enabling"
-    );
-}
-
-#[tokio::test]
-async fn skills_product_service_defaults_auto_activate_learned_when_no_selector_is_wired() {
-    // Production assembly mounts the read service but wires no standalone
-    // flag-reading selector. The list still renders with a sane default
-    // rather than erroring; writes go through the first-party capability.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("standalone");
-    std::fs::create_dir_all(&storage_root).expect("storage root");
-
-    let mut filesystem = DiskFilesystem::new();
-    filesystem
-        .mount_local(
-            VirtualPath::new("/projects").expect("valid virtual path"),
-            HostPath::from_path_buf(storage_root.clone()),
-        )
-        .expect("mount storage root");
-    let filesystem: Arc<dyn ironclaw_filesystem::RootFilesystem> = Arc::new(filesystem);
-    let skill_management = Arc::new(ScopedSkillManagementPort::new_with_mount_resolver(
-        UserId::new("runtime-owner").expect("user"),
-        filesystem,
-        Arc::new(scoped_skill_mounts),
-    ));
-    let service = LocalSkillsProductService::new(
-        skill_management,
-        None,
-        Arc::new(ironclaw_skills::usage::UnmanagedSkillUsage),
-    );
-    let owner = caller("runtime-owner");
-
-    let listed = service.list_skills(owner).await.expect("list");
-    assert!(
-        listed.auto_activate_learned,
-        "list defaults to on when no selector flag is wired"
-    );
-}
-
-#[tokio::test]
-async fn skills_product_service_hides_owner_user_skills_from_other_callers() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("standalone");
-    std::fs::create_dir_all(&storage_root).expect("storage root");
-    std::fs::create_dir_all(storage_root.join("system/skills/system-helper"))
-        .expect("system skill dir");
-    std::fs::write(
-        storage_root.join("system/skills/system-helper/SKILL.md"),
-        skill_content("system-helper", "system skill"),
-    )
-    .expect("system skill");
-
-    let mut filesystem = DiskFilesystem::new();
-    filesystem
-        .mount_local(
-            VirtualPath::new("/projects").expect("valid virtual path"),
-            HostPath::from_path_buf(storage_root.clone()),
-        )
-        .expect("mount storage root");
-    let filesystem: Arc<dyn ironclaw_filesystem::RootFilesystem> = Arc::new(filesystem);
-    let skill_management = Arc::new(ScopedSkillManagementPort::new_with_mount_resolver(
-        UserId::new("runtime-owner").expect("user"),
-        filesystem,
-        Arc::new(scoped_skill_mounts),
-    ));
-    let service = LocalSkillsProductService::new(
-        Arc::clone(&skill_management),
-        Some(Arc::new(AtomicBool::new(true))),
-        Arc::new(ironclaw_skills::usage::UnmanagedSkillUsage),
-    );
-    let owner = caller("runtime-owner");
-    let bob = caller("bob");
-    let other_tenant_owner = caller_in_tenant("tenant-beta", "runtime-owner");
-
-    skill_management
-        .install_for_scope(
-            caller_skill_scope(owner.clone()),
-            Some("shared-name"),
-            &skill_content("shared-name", "alice skill"),
-        )
-        .await
-        .expect("owner installs skill");
-
-    let owner_skills = service
-        .list_skills(owner)
-        .await
-        .expect("owner lists skills")
-        .skills;
-    assert!(owner_skills.iter().any(|skill| skill.name == "shared-name"));
-    let bob_skills = service
-        .list_skills(bob.clone())
-        .await
-        .expect("bob lists skills")
-        .skills;
-    assert!(!bob_skills.iter().any(|skill| skill.name == "shared-name"));
-    assert!(bob_skills.iter().any(|skill| skill.name == "system-helper"));
-    let other_tenant_skills = service
-        .list_skills(other_tenant_owner.clone())
-        .await
-        .expect("same user id in another tenant lists skills")
-        .skills;
-    assert!(
-        !other_tenant_skills
-            .iter()
-            .any(|skill| skill.name == "shared-name")
-    );
-
-    let bob_read = service
-        .read_skill_content(bob.clone(), "shared-name".to_string())
-        .await
-        .expect_err("bob must not read the owner skill root");
-    assert_eq!(bob_read.status_code, 404);
-    let other_tenant_read = service
-        .read_skill_content(other_tenant_owner.clone(), "shared-name".to_string())
-        .await
-        .expect_err("same user id in another tenant must not read the owner skill root");
-    assert_eq!(other_tenant_read.status_code, 404);
-
-    skill_management
-        .install_for_scope(
-            caller_skill_scope(bob.clone()),
-            Some("bob-skill"),
-            &skill_content("bob-skill", "bob skill"),
-        )
-        .await
-        .expect("bob installs own skill");
-    let bob_content = service
-        .read_skill_content(bob.clone(), "bob-skill".to_string())
-        .await
-        .expect("bob reads own skill");
-    assert!(bob_content.content.contains("bob skill"));
-    let owner_cannot_read_bob = service
-        .read_skill_content(caller("runtime-owner"), "bob-skill".to_string())
-        .await
-        .expect_err("owner must not read bob skill root");
-    assert_eq!(owner_cannot_read_bob.status_code, 404);
-
-    assert!(
-        storage_root
-            .join("tenants/tenant-alpha/users/runtime-owner/skills/shared-name/SKILL.md")
-            .exists()
-    );
-    assert!(
-        storage_root
-            .join("tenants/tenant-alpha/users/bob/skills/bob-skill/SKILL.md")
-            .exists()
-    );
-}
-
 fn caller(user_id: &str) -> ProductSurfaceCaller {
     caller_in_tenant("tenant-alpha", user_id)
 }
@@ -923,32 +722,6 @@ fn caller_in_tenant(tenant_id: &str, user_id: &str) -> ProductSurfaceCaller {
         None,
         None,
     )
-}
-
-fn scoped_skill_mounts(
-    scope: &ResourceScope,
-) -> Result<MountView, ironclaw_host_api::error::HostApiError> {
-    let user_skills = format!(
-        "/projects/tenants/{}/users/{}/skills",
-        scope.tenant_id.as_str(),
-        scope.user_id.as_str()
-    );
-    MountView::new(vec![
-        MountGrant::new(
-            MountAlias::new("/skills")?,
-            VirtualPath::new(user_skills)?,
-            MountPermissions::read_write_list_delete(),
-        ),
-        MountGrant::new(
-            MountAlias::new("/system/skills")?,
-            VirtualPath::new("/projects/system/skills")?,
-            MountPermissions::read_only(),
-        ),
-    ])
-}
-
-fn skill_content(name: &str, description: &str) -> String {
-    format!("---\nname: {name}\ndescription: {description}\n---\nUse this skill.\n")
 }
 
 /// Live-repro regression (demo-stack defect): removing an installed CHANNEL
@@ -1182,5 +955,69 @@ async fn runtime_product_surface_serves_the_memory_page_and_hook_catalog() {
             .hooks
             .iter()
             .any(|hook| hook.id == "memory.scheduled_ops.after_turn")
+    );
+}
+
+fn skill_usage_owner() -> ironclaw_skills::usage::SkillUsageOwner {
+    ironclaw_skills::usage::SkillUsageOwner {
+        tenant_id: TenantId::new("tenant-a").unwrap(),
+        user_id: UserId::new("user-a").unwrap(),
+    }
+}
+
+/// The production mount view: the store writes under the caller's own
+/// `/skill-usage`, and a pin reads back through the listing.
+#[tokio::test]
+async fn a_skill_listing_pin_reads_back_in_the_listing_over_the_production_mount() {
+    let root = Arc::new(InMemoryBackend::new());
+    let store = ironclaw_skills::usage::FilesystemSkillUsageStore::shared(crate::wrap_scoped(
+        Arc::clone(&root),
+    ));
+    store
+        .store()
+        .record(
+            &skill_usage_owner(),
+            &SkillUsageSource::cli_runtime("codex").unwrap(),
+            SkillUsageObservation {
+                catalog: Some(vec![SkillUsageName::new("pdf").unwrap()]),
+                used: Vec::new(),
+            },
+            1,
+        )
+        .await
+        .unwrap();
+    let before = skill_listing_response(store.store(), &skill_usage_owner())
+        .await
+        .unwrap();
+    assert!(before.managed);
+    assert_eq!(before.skills[0].listing, RebornSkillListingState::NameOnly);
+    assert_eq!(before.skills[0].sources, ["cli:codex"]);
+
+    let written = set_skill_listing_pin(
+        store.store(),
+        &skill_usage_owner(),
+        RebornSkillListingPinRequest {
+            name: "pdf".into(),
+            pin: Some(RebornSkillListingState::Full),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(written.skills[0].listing, RebornSkillListingState::Full);
+    assert_eq!(written.skills[0].pin, Some(RebornSkillListingState::Full));
+    let read_back = skill_listing_response(store.store(), &skill_usage_owner())
+        .await
+        .unwrap();
+    assert_eq!(read_back, written);
+    let path = ironclaw_host_api::path::VirtualPath::new(
+        "/tenants/tenant-a/users/user-a/skill-usage/listing.json",
+    )
+    .unwrap();
+    assert!(
+        ironclaw_filesystem::RootFilesystem::get(root.as_ref(), &path)
+            .await
+            .unwrap()
+            .is_some(),
+        "the document lives under the caller's own mount"
     );
 }

@@ -138,6 +138,9 @@ pub struct ChatState {
     pub items: Rc<Vec<Item>>,
     /// Activity groups (and tree rows) the reader opened or closed by hand.
     pub(crate) toggles: HashMap<String, bool>,
+    /// How long each settled turn worked, by its prompt's row key
+    /// (`Transcript::turn_spans`): the "Worked for" of its fold.
+    pub(crate) spans: Rc<HashMap<String, i64>>,
     /// The open "Reject with feedback…" field under an approval card.
     pub(crate) reject: Option<reject_feedback::RejectEditor>,
     /// When the live run began, for the pending row's seconds.
@@ -254,6 +257,7 @@ impl ChatState {
             folded: None,
             items: Rc::new(Vec::new()),
             toggles: HashMap::new(),
+            spans: Rc::default(),
             reject: None,
             run_started: None,
             clock_secs: None,
@@ -318,8 +322,8 @@ impl ChatState {
     }
 
     /// Whether the activity group `key` is drawn open.
-    pub(crate) fn activity_open(&self, key: &str, live: bool) -> bool {
-        flow::is_open(key, live, &self.toggles)
+    pub(crate) fn activity_open(&self, key: &str) -> bool {
+        flow::is_open(key, &self.toggles)
     }
 
     /// The composer's key for voice and focus: one per thread.
@@ -674,6 +678,7 @@ pub(crate) fn refresh_rows(s: &mut State, id: &str, tx: &mut Tx) -> bool {
     crate::energy::hit(crate::energy::C::RowsRebuilt);
     c.rows_stale = None;
     c.rows = Rc::new(c.transcript.rows());
+    c.spans = Rc::new(c.transcript.turn_spans());
     c.rows_gen += 1;
     question_form::sync_drafts(c);
     sync_items(s, id, tx)
@@ -734,7 +739,18 @@ pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
         crate::energy::hit(crate::energy::C::PacerStep);
         tx.wake_after(PACE_TICK);
     }
-    let new_items = flow::fold(&rows, live, stopping, c.has_tail, c.reserve.is_some());
+    let new_items = flow::fold(
+        &rows,
+        live,
+        stopping,
+        c.has_tail,
+        c.reserve.is_some(),
+        &flow::Folding {
+            spans: &c.spans,
+            toggles: &c.toggles,
+            prompt_shown: c.transcript.shows_running_prompt(),
+        },
+    );
     if *c.items == new_items && !c.pin_next {
         return false;
     }
@@ -790,9 +806,38 @@ fn try_reveal(s: &mut State, id: &str, tx: &mut Tx) {
     let Some(target) = c.reveal.clone() else {
         return;
     };
-    // A message sent from this view keeps its bubble's key.
+    // A message sent from this view keeps its bubble's key, and a reply
+    // keeps the key of the live text it replaced: find that row by its
+    // stored text.
     let sent = c.transcript.key_of_message(&target);
-    let hit = |key: &str| key.ends_with(&target) || key == sent;
+    let kept = c.transcript.message_text(&target).and_then(|text| {
+        let text = text.trim();
+        c.rows.iter().find_map(|r| match r {
+            Row::Assistant { key, text: t, .. } | Row::Narration { key, text: t }
+                if !text.is_empty() && t.trim() == text =>
+            {
+                Some(key.clone())
+            }
+            _ => None,
+        })
+    });
+    let hit = |key: &str| key.ends_with(&target) || key == sent || kept.as_deref() == Some(key);
+    // A hit inside a settled turn's shut fold opens the fold first.
+    let folded = c.items.iter().find_map(|item| match item {
+        Item::TurnFold {
+            key,
+            hidden,
+            open: false,
+            ..
+        } if hidden.iter().any(|k| hit(k)) => Some(key.clone()),
+        _ => None,
+    });
+    if let Some(fold) = folded {
+        c.toggles.insert(fold, true);
+        c.folded = None;
+        sync_items(s, id, tx);
+    }
+    let Some(c) = chat_for(s, id) else { return };
     let found = c.items.iter().find_map(|item| match item {
         Item::Activity { rows, key, .. } => rows.iter().any(|r| hit(r.key())).then(|| key.clone()),
         other => hit(other.key()).then(|| other.key().to_string()),

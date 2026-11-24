@@ -19,7 +19,7 @@ use futures::{StreamExt, TryStreamExt, stream};
 use ironclaw_loop_contracts::{
     LOOP_CONTEXT_SNIPPET_MODEL_CONTENT_MAX_BYTES, LoopRunContext, SkillVisibility,
 };
-use ironclaw_skills::usage::{SkillListing, SkillUsageStore, UnmanagedSkillUsage};
+use ironclaw_skills::usage::{SharedSkillUsage, SkillListing};
 use ironclaw_skills::{
     LoadedSkill, SkillSelectionOptions, SkillSource, SkillTrust, explicit_skill_mention_names,
     extract_skill_mentions, parse_skill_md, prefilter_skills_with_options, skill_token_cost,
@@ -375,9 +375,9 @@ where
     activation_observer: Mutex<Option<Arc<dyn SkillActivationObserver>>>,
     /// The per-user skill usage ledger and pins (`ironclaw_skills::usage`):
     /// decides which listed skills keep their description, and counts every
-    /// skill whose body reaches the model. [`UnmanagedSkillUsage`] (the
-    /// default) lists every skill in full, as before.
-    skill_usage: Arc<dyn SkillUsageStore>,
+    /// skill whose body reaches the model. The default (unmanaged) lists
+    /// every skill in full, as before.
+    skill_usage: SharedSkillUsage,
     messages_by_run: Mutex<HashMap<SkillActivationMessageKey, SkillActivationMessage>>,
     activation_cache: Mutex<HashMap<ActivationCandidateCacheKey, CachedActivationCandidate>>,
     system_activation_cache:
@@ -409,7 +409,7 @@ where
             bundle_stager: None,
             staged_bundles: Mutex::new(HashMap::new()),
             activation_observer: Mutex::new(None),
-            skill_usage: Arc::new(UnmanagedSkillUsage),
+            skill_usage: SharedSkillUsage::default(),
             messages_by_run: Mutex::new(HashMap::new()),
             activation_cache: Mutex::new(HashMap::new()),
             system_activation_cache: Mutex::new(HashMap::new()),
@@ -430,7 +430,7 @@ where
     /// Manage the listing from the per-user usage ledger: rarely used skills
     /// are listed by name only, pinned-off skills not at all, and every
     /// loaded skill counts as a use.
-    pub fn with_skill_usage_store(mut self, store: Arc<dyn SkillUsageStore>) -> Self {
+    pub fn with_skill_usage_store(mut self, store: SharedSkillUsage) -> Self {
         self.skill_usage = store;
         self
     }
@@ -662,7 +662,7 @@ where
         )?;
         // Model-selected skills always load their body.
         super::usage::record_harness_use(
-            self.skill_usage.as_ref(),
+            self.skill_usage.store(),
             run_context,
             selection.activations.iter().map(|a| a.name.as_str()),
         )
@@ -777,7 +777,7 @@ where
                 .resolve_required_skill_selection(run_context, &required_names)
                 .await?;
             super::usage::record_harness_use(
-                self.skill_usage.as_ref(),
+                self.skill_usage.store(),
                 run_context,
                 selection.activations.iter().map(|a| a.name.as_str()),
             )
@@ -805,7 +805,7 @@ where
         // activation under `Full`, explicit and model-selected ones under
         // `Listing` (criteria matches there only rank the listing).
         super::usage::record_harness_use(
-            self.skill_usage.as_ref(),
+            self.skill_usage.store(),
             run_context,
             plan.selection
                 .activations
@@ -889,7 +889,7 @@ where
             .map(String::as_str)
             .chain(entries.iter().map(|entry| entry.name.as_str()));
         let Some(listed) =
-            super::usage::harness_listing(self.skill_usage.as_ref(), run_context, catalog).await
+            super::usage::harness_listing(self.skill_usage.store(), run_context, catalog).await
         else {
             return entries;
         };

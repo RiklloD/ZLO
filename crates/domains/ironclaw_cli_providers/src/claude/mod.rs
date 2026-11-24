@@ -159,6 +159,8 @@ pub struct ClaudeCliRuntime {
     work_dirs: Mutex<HashMap<ThreadId, PathBuf>>,
     /// Idle `/compact` timers, one per thread (see `compact.rs`).
     compactor: Arc<compact::IdleCompactor>,
+    /// What each thread's CLI was sent, for the context meter.
+    sent: Arc<crate::context_meter::SentContexts>,
     /// How long after the result an unacknowledged steer may hold stdin.
     steer_ack_timeout: Duration,
     /// How long the CLI may stay silent after the result while steers it
@@ -183,6 +185,14 @@ struct TurnPlan<'a> {
     settings: Option<&'a str>,
 }
 
+impl TurnPlan<'_> {
+    /// `--append-system-prompt`: SOUL.md, the delegation and visuals notes
+    /// and the goal.
+    fn system_note(&self) -> crate::context_meter::Notes {
+        crate::system_note(self.profile, self.goal)
+    }
+}
+
 /// A turn's per-process MCP grant: the token and the 0600 config file.
 struct McpSession {
     token: String,
@@ -205,6 +215,7 @@ impl ClaudeCliRuntime {
             profiles: Mutex::new(HashMap::new()),
             work_dirs: Mutex::new(HashMap::new()),
             compactor: Arc::default(),
+            sent: Arc::default(),
             steer_ack_timeout: steer::ACK_TIMEOUT,
             steer_idle_timeout: steer::IDLE_TIMEOUT,
             tool_busy_bound: TOOL_BUSY_BOUND,
@@ -446,7 +457,7 @@ impl ClaudeCliRuntime {
         if let Some(tokens) = self.config.autocompact {
             cmd.arg("--autocompact").arg(tokens.to_string());
         }
-        if let Some(note) = crate::system_note(plan.profile, plan.goal) {
+        if let Some(note) = plan.system_note().text() {
             cmd.arg("--append-system-prompt").arg(note);
         }
         // The profile's skills load as a plugin, so they are native skills.
@@ -579,6 +590,16 @@ impl ClaudeCliRuntime {
         self.follow_session(&session_id, &plan.dir).await?;
         let run_id = uuid::Uuid::new_v4().to_string();
         let mcp = self.mcp_session(&thread.thread_id, &run_id).await;
+        // The system note, plus the profile skills as the CLI lists them
+        // under this turn's `skillOverrides`; recorded once the CLI runs with
+        // them and took its first input, so a failed launch keeps the
+        // thread's earlier record.
+        let delivery = self.sent.pending(
+            &thread.thread_id,
+            Some(&plan.system_note().instructions(launch.listing.clone())),
+            &crate::context_meter::Notes::default(),
+            mcp.is_some(),
+        );
         let end_mcp = {
             let bridge = self.bridge.clone();
             move |mcp: Option<McpSession>| async move {
@@ -651,6 +672,7 @@ impl ClaudeCliRuntime {
                 "claude stdin: the CLI did not take its first input".into(),
             ));
         }
+        delivery.delivered();
         if bridged.is_none() {
             input.close(true);
         }
@@ -1040,10 +1062,15 @@ impl TurnRuntime for ClaudeCliRuntime {
 
     fn injected_context(
         &self,
+        thread: &ThreadId,
         profile: Option<&TurnProfile>,
         goal: Option<&str>,
     ) -> ironclaw_orchestrator::context_report::ContextSample {
-        crate::injected_context(profile, goal)
+        self.sent.sample(thread, || {
+            let listing = skills::unmanaged_listing(profile.and_then(|p| p.skills.as_ref()));
+            let mcp = self.bridge.as_ref().is_some_and(|b| b.mcp_url().is_some());
+            (crate::system_note(profile, goal).instructions(listing), mcp)
+        })
     }
 
     fn capabilities(&self) -> RuntimeCapabilities {

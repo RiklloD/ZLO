@@ -1200,7 +1200,7 @@ async fn skill_reads_are_available_as_product_views() {
 #[tokio::test]
 async fn skill_listing_view_and_pin_capability_reach_the_skills_service() {
     use ironclaw_product_contracts::skill_listing::{
-        RebornSkillListingPinRequest, RebornSkillListingResponse, RebornSkillPin,
+        RebornSkillListingPinRequest, RebornSkillListingResponse, RebornSkillListingState,
     };
     let skills = Arc::new(RecordingSkillsService::default());
     let services = session_services(
@@ -1228,7 +1228,7 @@ async fn skill_listing_view_and_pin_capability_reach_the_skills_service() {
             caller().user_id.as_str().to_string(),
             RebornSkillListingPinRequest {
                 name: "pdf".into(),
-                pin: Some(RebornSkillPin::NameOnly),
+                pin: Some(RebornSkillListingState::NameOnly),
             }
         )]
     );

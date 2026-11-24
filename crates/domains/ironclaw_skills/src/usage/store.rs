@@ -51,6 +51,15 @@ where
         Self { filesystem }
     }
 
+    /// The deployment's shared handle over `filesystem` (composition mounts
+    /// `/skill-usage` per user on it).
+    pub fn shared(filesystem: Arc<ScopedFilesystem<F>>) -> super::SharedSkillUsage
+    where
+        F: 'static,
+    {
+        super::SharedSkillUsage::new(Arc::new(Self::new(filesystem)))
+    }
+
     /// One read-modify-write of the owner's document. `apply` returns
     /// whether it changed the document; an unchanged one is not written.
     async fn update<A>(

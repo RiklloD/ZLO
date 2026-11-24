@@ -24,9 +24,9 @@ use ironclaw_orchestrator::engine::{Engine, TurnCompletedListener};
 use ironclaw_orchestrator::model::ThreadRecord;
 use ironclaw_orchestrator::profiles::ProfileOwner;
 use ironclaw_threads::{
-    ExternalThreadSummary, ExternalTranscriptCursorRequest, ExternalTranscriptMessage,
-    ExternalTranscriptSource, SearchHitRole, SessionThreadService, ThreadMessageId, ThreadScope,
-    UpsertExternalTranscriptRequest, visible_user_text,
+    ExternalThreadSummary, ExternalTranscriptCursor, ExternalTranscriptCursorRequest,
+    ExternalTranscriptMessage, ExternalTranscriptSource, SearchHitRole, SessionThreadService,
+    ThreadMessageId, ThreadScope, UpsertExternalTranscriptRequest, visible_user_text,
 };
 
 use super::external::{TimelineRow, segment_message_id, timeline_rows};
@@ -85,13 +85,29 @@ fn projection(
 fn anchor_of(rows: &[TimelineRow], through: u64) -> Option<String> {
     let at = usize::try_from(through).ok()?.checked_sub(2)?;
     let row = rows.get(at)?;
-    Some(
-        uuid::Uuid::new_v5(
-            &uuid::Uuid::NAMESPACE_OID,
-            format!("{}\u{0}{}", row.kind, row.text).as_bytes(),
-        )
-        .to_string(),
-    )
+    let id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_OID,
+        format!("{}\u{0}{}", row.kind, row.text).as_bytes(),
+    );
+    Some(format!("{ROWS_SHAPE}{id}"))
+}
+
+/// How `external::timeline_rows` cuts a transcript, stamped on every
+/// anchor. Bump it when the cut changes (v2: a run's text splits at its
+/// tool calls instead of joining into one reply): a source ingested in an
+/// older shape no longer matches its anchor and is re-ingested once as a
+/// new generation, a closed one included.
+const ROWS_SHAPE: &str = "rows-v2:";
+
+/// Whether a closed source's cursor is fully ingested in the current row
+/// shape, so it need not be read again. A source too short to anchor has
+/// no joined rows to redo.
+fn closed_source_current(cursor: &ExternalTranscriptCursor) -> bool {
+    cursor.complete
+        && cursor
+            .anchor
+            .as_deref()
+            .is_none_or(|a| a.starts_with(ROWS_SHAPE))
 }
 
 /// Ingest `thread`'s external transcripts. Returns rows written.
@@ -142,9 +158,9 @@ pub(crate) async fn ingest_thread(
             })
             .await
             .map_err(|e| e.to_string())?;
-        // A closed segment never changes: once fully ingested it is not
-        // read again.
-        if plan.closed() && cursor.complete {
+        // A closed segment never changes: once fully ingested (in this row
+        // shape) it is not read again.
+        if plan.closed() && closed_source_current(&cursor) {
             continue;
         }
         let source = engine
@@ -160,7 +176,8 @@ pub(crate) async fn ingest_thread(
                 .as_deref()
                 .is_some_and(|a| anchor_of(&rows, cursor.ingested_through).as_deref() != Some(a));
         // Otherwise only new rows, plus the last ingested one, which may
-        // have grown since (a run's later assistant steps join it).
+        // have changed since (a step still being written); re-upserting it
+        // is idempotent.
         let from = if rewritten {
             0
         } else {
@@ -459,5 +476,43 @@ impl TurnCompletedListener for IngestOnCompletion {
     /// Indexing never holds a thread's title or badges back.
     fn busy(&self, _thread: &ThreadId) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    fn row(kind: &'static str, text: &str) -> TimelineRow {
+        TimelineRow {
+            message_id: uuid::Uuid::nil(),
+            index: 0,
+            kind,
+            text: text.into(),
+            run_id: None,
+            at: None,
+            steer_id: None,
+        }
+    }
+
+    /// A closed source ingested before the row shape changed (its anchor
+    /// carries no shape stamp) is read again, once; one ingested in the
+    /// current shape, or too short to anchor, is not.
+    #[test]
+    fn closed_sources_from_an_older_row_shape_are_read_again() {
+        let rows = [row("user", "hi"), row("assistant", "Let me look.")];
+        let current = anchor_of(&rows, 2).expect("an anchor");
+        assert!(current.starts_with(ROWS_SHAPE));
+        let cursor = |anchor: Option<&str>, complete| ExternalTranscriptCursor {
+            ingested_through: 2,
+            generation: 0,
+            anchor: anchor.map(str::to_string),
+            complete,
+        };
+        assert!(closed_source_current(&cursor(Some(&current), true)));
+        assert!(closed_source_current(&cursor(None, true)));
+        let old = current.trim_start_matches(ROWS_SHAPE);
+        assert!(!closed_source_current(&cursor(Some(old), true)));
+        assert!(!closed_source_current(&cursor(Some(&current), false)));
     }
 }

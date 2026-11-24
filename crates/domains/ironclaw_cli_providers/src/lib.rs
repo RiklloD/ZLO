@@ -13,6 +13,7 @@ mod attachments;
 pub mod bridge;
 pub mod bridge_tools;
 pub mod claude;
+mod context_meter;
 
 pub mod antigravity;
 pub mod codex;
@@ -37,14 +38,14 @@ use ironclaw_orchestrator::engine::Engine;
 use ironclaw_orchestrator::runtime::{TurnEventSink, TurnProfile};
 use ironclaw_orchestrator::tools::DELEGATION_PROMPT;
 
+use crate::context_meter::Notes;
+
 /// How a thread's goal reaches a CLI agent: added to the system prompt, or
 /// put ahead of the prompt where the protocol has no system prompt.
 pub(crate) fn goal_note(goal: &str) -> String {
     format!("The user set this goal for the thread; keep working toward it: {goal}")
 }
 
-/// What a CLI agent with a system prompt flag gets there: the profile's
-/// SOUL.md, the visuals format, then the thread goal.
 /// The CLI agents' own subagent and agent-team tools. They are switched
 /// off (launch flags, and denied by the approval hook as a backstop): every
 /// subagent is an orchestrator thread (`t3_delegate`) the person can see.
@@ -65,31 +66,40 @@ pub fn is_builtin_subagent_tool(tool: &str) -> bool {
     BUILTIN_SUBAGENT_TOOLS.contains(&tool)
 }
 
-pub(crate) fn system_note(profile: Option<&TurnProfile>, goal: Option<&str>) -> Option<String> {
-    let soul = profile
+/// What a CLI agent with a system prompt flag gets there: the profile's
+/// SOUL.md, the delegation and visuals notes, then the thread goal.
+pub(crate) fn system_note(profile: Option<&TurnProfile>, goal: Option<&str>) -> Notes {
+    Notes::default()
+        .system_prompt(soul(profile))
+        .then(common_notes())
+        .then(goal_notes(goal))
+}
+
+/// The profile's SOUL.md, when it has one.
+fn soul(profile: Option<&TurnProfile>) -> Option<String> {
+    profile
         .map(|p| p.soul.trim())
         .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    join_notes([soul, delegation(), visuals(), goal.map(goal_note)])
+        .map(str::to_string)
 }
 
-/// Subagents go through the orchestrator only.
-fn delegation() -> Option<String> {
-    Some(DELEGATION_PROMPT.trim().to_string())
+/// What every session gets: subagents go through the orchestrator only,
+/// and how to put a chart, table or stat tiles in a reply (ZLO draws them).
+fn common_notes() -> Notes {
+    Notes::default()
+        .instructions(Some(DELEGATION_PROMPT.trim().to_string()))
+        .instructions(Some(REPLY_VISUALS_PROMPT.trim().to_string()))
 }
 
-/// How to put a chart, table or stat tiles in a reply (ZLO draws them).
-fn visuals() -> Option<String> {
-    Some(REPLY_VISUALS_PROMPT.trim().to_string())
+/// The thread goal's note, when the thread has an active goal.
+pub(crate) fn goal_notes(goal: Option<&str>) -> Notes {
+    Notes::default().instructions(goal.map(goal_note))
 }
 
 /// The profile context for agents without a system prompt or a skill
 /// system, sent ahead of a session's first prompt: SOUL.md plus the index
-/// of the profile's skills.
-pub(crate) fn session_preamble(profile: &TurnProfile) -> Option<String> {
-    let soul = Some(profile.soul.trim())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+/// of the profile's skills (as the turn's listing rendered it).
+pub(crate) fn session_preamble(profile: &TurnProfile) -> Notes {
     let skills = profile
         .skills
         .as_ref()
@@ -100,60 +110,24 @@ pub(crate) fn session_preamble(profile: &TurnProfile) -> Option<String> {
                 s.index.trim()
             )
         });
-    join_notes([soul, delegation(), visuals(), skills])
+    Notes::default()
+        .system_prompt(soul(Some(profile)))
+        .then(common_notes())
+        .instructions(skills)
 }
 
 /// [`session_preamble`] for a turn with or without a profile: without
 /// one, still the delegation and visuals notes every session needs.
-pub(crate) fn session_context(profile: Option<&TurnProfile>) -> Option<String> {
+pub(crate) fn session_context(profile: Option<&TurnProfile>) -> Notes {
     match profile {
         Some(profile) => session_preamble(profile),
-        None => join_notes([delegation(), visuals()]),
+        None => common_notes(),
     }
-}
-
-/// Estimated tokens of what a CLI agent with a system prompt flag gets
-/// from ZLO besides the transcript: the [`system_note`] pieces, the
-/// profile's skill index, and the orchestrator tools of the loopback MCP
-/// server. The CLI's own system prompt and tools are not ZLO's to measure.
-pub(crate) fn injected_context(
-    profile: Option<&TurnProfile>,
-    goal: Option<&str>,
-) -> ironclaw_orchestrator::context_report::ContextSample {
-    use ironclaw_product_contracts::orchestration::ContextCategory;
-    let mut sample = ironclaw_orchestrator::context_report::ContextSample::default();
-    if let Some(profile) = profile {
-        sample.add_text(ContextCategory::SystemPrompt, profile.soul.trim());
-        if let Some(skills) = &profile.skills {
-            sample.add_text(ContextCategory::Instructions, &skills.index);
-        }
-    }
-    for note in [delegation(), visuals(), goal.map(goal_note)]
-        .into_iter()
-        .flatten()
-    {
-        sample.add_text(ContextCategory::Instructions, &note);
-    }
-    for tool in &ironclaw_orchestrator::tools::TOOLS {
-        let chars = tool.name.len() + tool.description.len() + (tool.schema)().to_string().len();
-        sample.add_tool(
-            &format!("mcp-{}.{}", bridge::MCP_SERVER_NAME, tool.name),
-            u64::try_from(chars).unwrap_or(u64::MAX),
-        );
-    }
-    sample
 }
 
 pub(crate) fn join_notes(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {
     let parts: Vec<String> = parts.into_iter().flatten().collect();
     (!parts.is_empty()).then(|| parts.join("\n\n"))
-}
-
-/// What goes ahead of the prompt for agents without a system prompt flag:
-/// the profile preamble (first turn this process runs for the thread), then
-/// the goal.
-pub(crate) fn prompt_context(preamble: Option<String>, goal: Option<&str>) -> Option<String> {
-    join_notes([preamble, goal.map(goal_note)])
 }
 
 /// The prompt as sent on the wire, with its context ahead of it.
@@ -171,8 +145,8 @@ pub(crate) struct Primed(std::sync::Mutex<std::collections::HashSet<ThreadId>>);
 
 impl Primed {
     /// The preamble to send now: `Some` only the first time per thread.
-    pub(crate) fn take(&self, thread: &ThreadId, profile: Option<&TurnProfile>) -> Option<String> {
-        let preamble = session_preamble(profile?)?;
+    pub(crate) fn take(&self, thread: &ThreadId, profile: Option<&TurnProfile>) -> Option<Notes> {
+        let preamble = session_preamble(profile?);
         self.first(thread).then_some(preamble)
     }
 
@@ -339,36 +313,5 @@ pub fn register_muse_runtime(
             tracing::debug!(%error, "muse runtime id rejected");
             0
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use ironclaw_product_contracts::orchestration::{ContextCategory, ContextToolOwner};
-
-    use super::*;
-
-    #[test]
-    fn injected_context_counts_the_soul_the_notes_and_the_orchestrator_tools() {
-        let profile = TurnProfile {
-            soul: "You are a careful engineer. ".repeat(20),
-            ..TurnProfile::default()
-        };
-        let bare = injected_context(None, None);
-        let full = injected_context(Some(&profile), Some("ship the meter"));
-        assert_eq!(bare.tokens(ContextCategory::SystemPrompt), 0);
-        assert!(full.tokens(ContextCategory::SystemPrompt) > 100);
-        assert!(
-            full.tokens(ContextCategory::Instructions) > bare.tokens(ContextCategory::Instructions)
-        );
-        assert_eq!(full.tools.len(), 1);
-        assert_eq!(
-            full.tools[0].owner,
-            ContextToolOwner::Mcp("ironclaw".into())
-        );
-        assert_eq!(
-            full.tools[0].tools as usize,
-            ironclaw_orchestrator::tools::TOOLS.len()
-        );
     }
 }

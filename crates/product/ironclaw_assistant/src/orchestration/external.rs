@@ -140,11 +140,6 @@ pub(super) fn cancel_response(raw_run: &str) -> RebornCancelRunResponse {
     }
 }
 
-/// The runtime's history as timeline rows, newest `limit`. Ids are stable
-/// per position so a reload does not re-key the transcript. A run's
-/// assistant text (one journal row per text block, split by tool calls) is
-/// one reply, joined like the live stream joins it, so the streamed bubble
-/// and the durable reply match.
 /// The timeline envelope of a CLI thread the orchestrator created itself (a
 /// fork or a delegated child), which the session thread store never saw:
 /// the thread header from the orchestrator's record, messages filled in by
@@ -181,9 +176,13 @@ pub(super) fn bare_timeline(thread: &ThreadRecord) -> Option<ProductSurfaceQuery
     })
 }
 
-/// One row a CLI thread's timeline renders: consecutive assistant steps of
-/// a run are joined, tool-call-only steps and hidden rows dropped. History
-/// search ingests exactly these rows, so a hit navigates to the row's id.
+/// One row a CLI thread's timeline renders: a run's text is cut into rows
+/// at its tool calls, exactly like the live segments it streamed as (text
+/// blocks with no call between them join with a blank line), so clients
+/// fold the run's commentary and show its last row as the answer;
+/// tool-call-only steps and hidden rows are dropped. Ids are stable per position so a reload does not
+/// re-key the transcript. History search ingests exactly these rows, so a
+/// hit navigates to the row's id.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TimelineRow {
     pub(crate) message_id: Uuid,
@@ -214,31 +213,38 @@ pub(crate) fn segment_message_id(thread: &ThreadId, segment: usize, base: Uuid) 
 
 pub(crate) fn timeline_rows(thread: &ThreadId, history: &[HistoryMessage]) -> Vec<TimelineRow> {
     let mut rows: Vec<TimelineRow> = Vec::new();
+    // Whether a tool call came since the last row: text after it starts a
+    // new row, as the live stream starts a new segment at each call.
+    let mut cut = true;
     for (i, m) in history.iter().enumerate().filter(|(_, m)| !m.hidden) {
         let kind = match m.role {
             HistoryRole::User => "user",
             HistoryRole::Assistant => "assistant",
             HistoryRole::System => "system",
-            HistoryRole::Tool => continue,
+            HistoryRole::Tool => {
+                cut = true;
+                continue;
+            }
         };
+        // Text blocks with no call between them are one live segment, so
+        // they are one row too, joined the way the segment joins them.
         if kind == "assistant"
+            && !cut
+            && !m.text.is_empty()
             && m.run_id.is_some()
             && let Some(last) = rows.last_mut()
             && last.kind == "assistant"
             && last.run_id.as_deref() == m.run_id.as_deref()
         {
-            if !m.text.is_empty() {
-                last.text = if last.text.is_empty() {
-                    m.text.clone()
-                } else {
-                    format!("{}\n\n{}", last.text, m.text)
-                };
-            }
+            last.text = format!("{}\n\n{}", last.text, m.text);
+            cut = !m.tool_calls.is_empty();
             continue;
         }
         if kind == "assistant" && m.text.is_empty() {
+            cut |= !m.tool_calls.is_empty();
             continue; // a tool-call-only step; its text, if any, follows
         }
+        cut = kind != "assistant" || !m.tool_calls.is_empty();
         rows.push(TimelineRow {
             message_id: timeline_message_id(thread, i),
             index: i,
@@ -959,10 +965,12 @@ mod tests {
         assert_eq!(after[0]["plan"]["plan"]["entries"][0]["content"], "Look");
     }
 
-    /// The streamed bubble joins text blocks with a blank line; the durable
-    /// reply must come out identical so the client keeps one copy.
+    /// A run's text is cut into rows at its tool calls, in journal order,
+    /// exactly like the live segments it streamed as: clients fold the
+    /// commentary under the turn and show the last row as the answer
+    /// (t3code).
     #[test]
-    fn a_runs_assistant_steps_become_one_reply() {
+    fn a_runs_text_splits_into_rows_at_its_tool_calls() {
         let thread = ThreadId::new("t").unwrap();
         let history = [
             msg(HistoryRole::User, "hi", "r1"),
@@ -970,6 +978,7 @@ mod tests {
             msg(HistoryRole::Tool, "", "r1"),
             msg(HistoryRole::Assistant, "", "r1"),
             msg(HistoryRole::Assistant, "Done.", "r1"),
+            msg(HistoryRole::Assistant, "Tested too.", "r1"),
             msg(HistoryRole::User, "again", "r2"),
             msg(HistoryRole::Assistant, "Sure.", "r2"),
         ];
@@ -988,7 +997,9 @@ mod tests {
             shape,
             [
                 ("user", "r1", "hi"),
-                ("assistant", "r1", "Let me look.\n\nDone."),
+                ("assistant", "r1", "Let me look."),
+                // No call between two blocks: one live segment, one row.
+                ("assistant", "r1", "Done.\n\nTested too."),
                 ("user", "r2", "again"),
                 ("assistant", "r2", "Sure."),
             ]

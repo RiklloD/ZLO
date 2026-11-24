@@ -30,6 +30,7 @@ pub mod repo_calls;
 pub mod review;
 pub mod schedules;
 mod settings;
+mod skill_listing_calls;
 pub mod ssh;
 mod stream;
 pub mod tailnet;

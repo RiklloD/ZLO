@@ -179,7 +179,7 @@ use ironclaw_product_contracts::product_wire::{
     RebornNotificationSetupMutationRequest, RebornNotificationSetupStatusResponse,
 };
 use ironclaw_product_contracts::skill_listing::{
-    RebornSkillListingPinRequest, RebornSkillListingResponse, RebornSkillPin,
+    RebornSkillListingPinRequest, RebornSkillListingResponse, RebornSkillListingState,
 };
 use ironclaw_product_contracts::views::{RebornViewDescriptor, RebornViewPage, RebornViewQuery};
 use ironclaw_product_contracts::workspace_views::{
@@ -2746,8 +2746,8 @@ pub async fn get_skill_listing(
     Ok(Json(response))
 }
 
-/// `PUT /api/webchat/v2/skill-listing/{name}/pin` — body `{"pin": "always_full" |
-/// "name_only" | "off" | null}`; answers with the listing read back after the write.
+/// `PUT /api/webchat/v2/skill-listing/{name}/pin` — body `{"pin": "full" |
+/// "name_only" | "off" | null}` (`always_full` is still read as `full`); answers with the listing read back after the write.
 pub async fn set_skill_listing_pin(
     State(state): State<WebUiV2State>,
     Extension(caller): Extension<ProductSurfaceCaller>,
@@ -4536,7 +4536,7 @@ pub struct SetSkillAutoActivateBody {
 #[serde(deny_unknown_fields)]
 pub struct SetSkillListingPinBody {
     #[serde(default)]
-    pub pin: Option<RebornSkillPin>,
+    pub pin: Option<RebornSkillListingState>,
 }
 
 fn extension_package_ref_for_request(

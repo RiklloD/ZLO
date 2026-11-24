@@ -1726,7 +1726,16 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `ironclaw_skills::usage`; the projection in
         // `ironclaw_assistant::skill_listing_page`. Count read from this
         // test's failure message.
-        ("ironclaw_product_contracts", 17_171),
+        // 17_171 -> 16_991 (2026-11-24, context-meter-and-ceilings): the
+        // skill listing wire was trimmed to what its clients read — one
+        // `RebornSkillListingState` serves as listing and pin (the pin enum
+        // and the basis enum, both derivable, are gone) and a source is its
+        // id — 85 -> 53 lines. The tree measures 17_141. The pre-merge pin
+        // 16_976 already sat 110 lines under its own tree (17_086, inside
+        // the working slack), so 53 lines of wire do not fit under it: the
+        // pin is the minimum that passes, +15 over 16_976. Measured with
+        // `scripts/ci/lib/production_loc.py loc` on this tree.
+        ("ironclaw_product_contracts", 16_991),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

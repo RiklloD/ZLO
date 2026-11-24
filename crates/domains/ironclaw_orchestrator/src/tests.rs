@@ -193,6 +193,7 @@ impl TurnRuntime for FakeRuntime {
     }
     fn injected_context(
         &self,
+        _thread: &ThreadId,
         _profile: Option<&TurnProfile>,
         _goal: Option<&str>,
     ) -> crate::context_report::ContextSample {

@@ -134,6 +134,7 @@ impl IdleArm {
             // Compaction runs with the captured plan dir, never this map.
             work_dirs: Mutex::new(HashMap::new()),
             compactor: Arc::clone(&rt.compactor),
+            sent: Arc::clone(&rt.sent),
             steer_ack_timeout: rt.steer_ack_timeout,
             steer_idle_timeout: rt.steer_idle_timeout,
             tool_busy_bound: rt.tool_busy_bound,
