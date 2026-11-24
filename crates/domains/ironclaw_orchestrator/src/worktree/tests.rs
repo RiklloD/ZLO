@@ -134,6 +134,7 @@ impl TurnRuntime for PlainRuntime {
             efforts: vec![],
             model_efforts: Default::default(),
             brand: None,
+            launch: None,
         }])
     }
     fn capabilities(&self) -> RuntimeCapabilities {

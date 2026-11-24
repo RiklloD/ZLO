@@ -92,10 +92,6 @@ const CONFIG_TIMEOUT: Duration = Duration::from_secs(60);
 /// next, so an expired sign-in or no network never relaunches the agent on
 /// every catalog read.
 const REFRESH_RETRY_MS: i64 = 10 * 60 * 1000;
-/// Signed out, how often a catalog read may check again whether the agent
-/// signs in on its own (a keychain sign-in made in Terminal, say). Short,
-/// so setup's agents list turns Ready soon after; each check is bounded.
-const SIGN_IN_RETRY_MS: i64 = 15 * 1000;
 /// A prompt runs as long as the agent works on it; Stop ends it sooner.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
 /// How long a steer waits for the running turn to take it.
@@ -147,11 +143,6 @@ impl AntigravityConfig {
         self.profile_dir
             .join(launch::APP_DATA_DIR)
             .join("acp_token.json")
-    }
-
-    /// The mark of an `authenticate` that answered (`store::mark_signed_in`).
-    fn signed_in_file(&self) -> PathBuf {
-        self.state_dir.join("signed-in")
     }
 
     fn session_file(&self, key: &str) -> PathBuf {
@@ -971,27 +962,20 @@ impl Turn {
             steers: self.config.launch.may_steer() && launch::steers_with_prompt(&init),
             appends: launch::appends_system_prompt(&init),
         };
-        let auth = client
+        client
             .request(
                 "authenticate",
                 json!({"methodId": self.config.auth_method}),
                 self.config.auth_timeout,
             )
-            .await;
-        match &auth {
-            Ok(_) => store::mark_signed_in(&self.config, true).await,
-            Err(RpcError::Timeout) if self.config.uses_browser() => {
-                store::mark_signed_in(&self.config, false).await
-            }
-            Err(_) => {}
-        }
-        auth.map_err(|e| match e {
-            RpcError::Timeout if self.config.uses_browser() => TurnOutcome::ended(
-                TurnEndStatus::Failed,
-                Some("antigravity: sign-in required (run the Antigravity login)".into()),
-            ),
-            other => fold::failed(&other),
-        })?;
+            .await
+            .map_err(|e| match e {
+                RpcError::Timeout if self.config.uses_browser() => TurnOutcome::ended(
+                    TurnEndStatus::Failed,
+                    Some("antigravity: sign-in required (run the Antigravity login)".into()),
+                ),
+                other => fold::failed(&other),
+            })?;
 
         let cwd = self.config.work_dir.display().to_string();
         let meta = |extra: Option<&str>| -> Value {
@@ -1593,30 +1577,23 @@ impl TurnRuntime for AntigravityRuntime {
     }
 
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
-        let authenticated = store::signed_in(&self.config).await;
+        let authenticated = tokio::fs::try_exists(self.config.token_file())
+            .await
+            .unwrap_or(false); // silent-ok: an unreadable token reads as signed out
+        // Signed out, a probe would wait on a browser sign-in nobody opens.
         let now = now_ms();
-        let since = now.saturating_sub(self.last_refresh.load(Ordering::SeqCst));
-        // Signed in: refresh a stale model list. Signed out: check, without
-        // a browser, whether the agent signs in on its own now; a full
-        // refresh would wait on a browser sign-in nobody opens.
-        let due = if authenticated {
-            since >= REFRESH_RETRY_MS && store::models_stale(&self.config.models_file()).await
-        } else {
-            since >= SIGN_IN_RETRY_MS
-        };
-        if due && !self.refreshing.swap(true, Ordering::SeqCst) {
+        if authenticated
+            && now.saturating_sub(self.last_refresh.load(Ordering::SeqCst)) >= REFRESH_RETRY_MS
+            && store::models_stale(&self.config.models_file()).await
+            && !self.refreshing.swap(true, Ordering::SeqCst)
+        {
             self.last_refresh.store(now, Ordering::SeqCst);
             let config = Arc::clone(&self.config);
             let flag = store::RefreshFlag(Arc::clone(&self.refreshing));
             tokio::spawn(async move {
                 let _flag = flag; // cleared on every exit, a panic included
-                let done = if authenticated {
-                    store::refresh_models(&config).await
-                } else {
-                    store::check_sign_in(&config).await
-                };
-                if let Err(error) = done {
-                    tracing::debug!(%error, authenticated, "antigravity: background check failed");
+                if let Err(error) = store::refresh_models(&config).await {
+                    tracing::debug!(%error, "antigravity: model list refresh failed");
                 }
             });
         }
@@ -1632,6 +1609,12 @@ impl TurnRuntime for AntigravityRuntime {
             efforts,
             model_efforts: Default::default(),
             brand: None,
+            // Setup offers what the program found supports: the legacy
+            // runtime has no sign-in command of its own.
+            launch: Some(match self.config.launch {
+                AgentLaunch::Cli { .. } => CatalogLaunch::Native,
+                AgentLaunch::Runtime { .. } => CatalogLaunch::Legacy,
+            }),
         }])
     }
 }

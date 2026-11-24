@@ -328,7 +328,7 @@ fn group_header(
                 .hide_label()
                 .disabled(busy)
                 .on_toggle(move |s: &mut State| set_keys(s, toggle_keys.clone(), !all))
-                .build(k)
+                .build(&crate::design::kit::checkbox_kit(&s.palette, k))
                 .key(format!("group-check-{key}")),
         )
         .child(
@@ -434,7 +434,7 @@ fn candidate_row(
                 .label(project.title.clone())
                 .hide_label()
                 .disabled(s.onboarding.projects.importing)
-                .build(k)
+                .build(&crate::design::kit::checkbox_kit(&s.palette, k))
                 .key(format!("project-check-{}", project.path)),
         )
         .child(text_part)

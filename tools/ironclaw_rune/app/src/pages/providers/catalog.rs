@@ -118,10 +118,10 @@ pub const KNOWN_CLIS: &[KnownCli] = &[
         binary: "agy",
         // antigravity.google/docs/getting-started (macOS and Linux).
         install: Some("curl -fsSL https://antigravity.google/cli/install.sh | bash"),
-        // Its first launch signs in in the browser and keeps the sign-in in
-        // the system keychain, which `agy acp` shares
-        // (antigravity.google/docs/install, "Antigravity CLI").
-        login: Some("agy"),
+        // Signs in with Google in the browser, then exits (`agy acp
+        // --help`: "ACP terminal auth"). agy 1.5 keeps the sign-in in the OS
+        // keyring, which `agy acp` shares whatever profile it runs on.
+        login: Some("agy acp --login"),
         planned: false,
     },
     KnownCli {
@@ -144,6 +144,23 @@ pub const KNOWN_CLIS: &[KnownCli] = &[
     },
 ];
 
+/// What a found CLI row offers next, as (button label, shell command):
+/// nothing once signed in; installing the CLI when the runtime found has
+/// no sign-in command of its own (Antigravity's legacy ACP runtime);
+/// else its sign-in.
+pub fn next_step(
+    known: &KnownCli,
+    route: &zlo_client::orchestration::RouteProvider,
+) -> Option<(&'static str, &'static str)> {
+    if route.authenticated {
+        None
+    } else if route.needs_native_cli() {
+        known.install.map(|c| ("Install", c))
+    } else {
+        known.login.map(|c| ("Sign in", c))
+    }
+}
+
 /// The known CLI whose runtime id `runtime` starts with.
 pub fn known_cli(runtime: &str) -> Option<&'static KnownCli> {
     KNOWN_CLIS.iter().find(|k| runtime.starts_with(k.runtime))
@@ -152,6 +169,35 @@ pub fn known_cli(runtime: &str) -> Option<&'static KnownCli> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_legacy_runtime_offers_the_cli_install_not_its_sign_in() {
+        use zlo_client::orchestration::{CatalogLaunch, RouteProvider};
+        let agy = known_cli("antigravity").unwrap();
+        let route = |authenticated, launch| RouteProvider {
+            provider: "antigravity".into(),
+            runtime: "antigravity".into(),
+            authenticated,
+            launch,
+            ..RouteProvider::default()
+        };
+        assert_eq!(
+            next_step(agy, &route(false, Some(CatalogLaunch::Legacy))),
+            Some(("Install", agy.install.unwrap()))
+        );
+        assert_eq!(
+            next_step(agy, &route(false, Some(CatalogLaunch::Native))),
+            Some(("Sign in", "agy acp --login"))
+        );
+        assert_eq!(
+            next_step(agy, &route(false, None)),
+            Some(("Sign in", "agy acp --login"))
+        );
+        assert_eq!(
+            next_step(agy, &route(true, Some(CatalogLaunch::Legacy))),
+            None
+        );
+    }
 
     #[test]
     fn names_and_kinds() {

@@ -98,10 +98,6 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
     let body = col()
         .key(format!("onboarding-step-body-{:?}", o.step))
         .w_full()
-        .transition(step_transition(o.direction))
-        // The old step mostly gone before the new one starts in, so the
-        // two don't read as one muddle.
-        .enter_delay(STEP_HANDOFF)
         .child(step.body);
     let mut content = col().w_full().px(PAD_X).pt(20.).pb(24.).child(body);
     if let Some(e) = &o.finish_error {
@@ -115,16 +111,22 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 .transition(motion::reveal()),
         );
     }
-    // The one scroll viewport: it takes what the stepper and the footer
-    // leave, and shrinks below its content when the window is short.
+    // The step's scroll viewport: it takes what the stepper and the footer
+    // leave, and shrinks below its content when the window is short. Each
+    // step has its own, so a step opens at its top whatever the last one
+    // was scrolled to; the viewport carries the step's transition.
     let scroll = col()
-        .key("onboarding-scroll")
+        .key(format!("onboarding-scroll-{:?}", o.step))
         .w_full()
         .shrink()
         .min_h(0.)
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
         })
+        .transition(step_transition(o.direction))
+        // The old step mostly gone before the new one starts in, so the
+        // two don't read as one muddle.
+        .enter_delay(STEP_HANDOFF)
         .child(content);
     let panel = col()
         .key("onboarding-dialog")
@@ -233,6 +235,7 @@ pub fn step_shell(s: &State, title: &str, description: &str) -> El {
         .w_full()
         .child(
             text(title.to_string())
+                .key("step-title")
                 .font(rune::TextStyle::new(22., 600.))
                 .color(p.text),
         )
@@ -433,7 +436,7 @@ fn connect_step(s: &State, k: &Kit) -> StepView {
                     .label(choice.label.clone())
                     .hide_label()
                     .on_toggle(move |s: &mut State| pick(s, check_target.clone()))
-                    .build(k)
+                    .build(&crate::design::kit::checkbox_kit(&s.palette, k))
                     .key(format!("computer-check-{}", choice.key)),
             )
             .child(rune::icon(&crate::icons::MONITOR, 16.).color(p.text_muted));

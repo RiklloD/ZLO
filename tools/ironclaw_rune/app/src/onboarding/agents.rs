@@ -106,6 +106,10 @@ pub enum AgentState {
     Checking,
     Disabled,
     Install,
+    /// Found only through a runtime with no sign-in command of its own
+    /// (Antigravity's legacy ACP runtime): installing the CLI is the way
+    /// to sign in.
+    NeedsCli,
     SignIn,
     Ready,
 }
@@ -129,11 +133,14 @@ pub fn agent_state(
     if found.iter().all(|r| hidden.contains(&r.provider)) {
         return AgentState::Disabled;
     }
-    if found
+    let shown: Vec<&&RouteProvider> = found
         .iter()
-        .any(|r| r.authenticated && !hidden.contains(&r.provider))
-    {
+        .filter(|r| !hidden.contains(&r.provider))
+        .collect();
+    if shown.iter().any(|r| r.authenticated) {
         AgentState::Ready
+    } else if shown.iter().all(|r| r.needs_native_cli()) && driver.install().is_some() {
+        AgentState::NeedsCli
     } else {
         AgentState::SignIn
     }
@@ -169,6 +176,11 @@ pub struct AgentsState {
     pub terminal: Option<AgentTerminal>,
     /// The gateway restarts to find a CLI installed just now.
     pub restarting: bool,
+    /// The agent whose sign-in setup watches for, after its sign-in panel
+    /// closed ([`watch_sign_in`]).
+    pub watching: Option<Driver>,
+    /// Bumped per sign-in watch, and when the computer changes.
+    watch_gen: Generation,
     /// What happened to an install, under the agents.
     pub agent_notice: Option<String>,
     /// "Connect a provider instead" is open.
@@ -183,6 +195,8 @@ pub fn reset(s: &mut State) {
     let a = &mut s.onboarding.agents;
     a.refresh_gen.bump();
     a.restart_gen.bump();
+    a.watch_gen.bump();
+    a.watching = None;
     a.catalog = None;
     a.hidden.clear();
     a.catalog_error = None;
@@ -336,11 +350,13 @@ fn close_terminal(s: &mut State) {
         return;
     };
     // Only this Mac's own CLI and gateway are looked at or restarted here.
-    if !t.install || crate::remote::backend_is_remote(s) || s.fixture {
+    if !t.install {
         refresh_shown(s, true);
-        if !t.install && !s.fixture {
-            recheck_sign_in(s, t.driver);
-        }
+        watch_sign_in(s, t.driver);
+        return;
+    }
+    if crate::remote::backend_is_remote(s) || s.fixture {
+        refresh_shown(s, true);
         return;
     }
     // Only a CLI that is really there now is worth a restart: closing a
@@ -379,30 +395,93 @@ fn close_terminal(s: &mut State) {
     );
 }
 
-/// When to look again after a sign-in panel closes. The gateway learns of
-/// a sign-in some agents keep in the system keychain (Antigravity's) from a
-/// check it runs in the background, bounded to about ten seconds, so the
-/// first look may come too early.
-const SIGN_IN_RECHECKS: [std::time::Duration; 2] = [
-    std::time::Duration::from_secs(6),
-    std::time::Duration::from_secs(14),
-];
+/// How often setup looks again while it waits for a sign-in, and for how
+/// long. However late the gateway learns of a sign-in (some agents keep it
+/// where it can only check now and then), a look lands within a poll of
+/// it, as long as it learns within the window; the window also covers a
+/// sign-in finished a while after the panel closed.
+const SIGN_IN_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+const SIGN_IN_WATCH: std::time::Duration = std::time::Duration::from_secs(90);
 
-/// Look again at the agents a little later while `driver` still asks to
-/// sign in. Quiet: no one pressed anything just then.
-fn recheck_sign_in(s: &mut State, driver: Driver) {
-    for delay in SIGN_IN_RECHECKS {
-        jobs::after(s, delay, move |s, _| {
-            let a = &s.onboarding.agents;
-            let waiting = super::wizard_shown(s)
-                && s.onboarding.step == super::Step::Agents
-                && !a.restarting
-                && agent_state(a.catalog.as_deref(), &a.hidden, driver) == AgentState::SignIn;
-            if waiting {
-                refresh(s);
+/// After `driver`'s sign-in panel closed: look at the agents again every
+/// [`SIGN_IN_POLL`], quietly (no one pressed anything just then), until
+/// it is Ready, the step or the computer changes, or [`SIGN_IN_WATCH`]
+/// is over.
+fn watch_sign_in(s: &mut State, driver: Driver) {
+    let a = &mut s.onboarding.agents;
+    a.watching = Some(driver);
+    let generation = a.watch_gen.bump();
+    poll_sign_in(
+        s,
+        driver,
+        generation,
+        std::time::Instant::now() + SIGN_IN_WATCH,
+    );
+}
+
+/// Whether the sign-in watch `generation` still has a reason to look.
+fn keeps_watching(s: &State, driver: Driver, generation: Generation, before: bool) -> bool {
+    let a = &s.onboarding.agents;
+    before
+        && a.watch_gen == generation
+        && a.watching == Some(driver)
+        && super::wizard_shown(s)
+        && s.onboarding.step == super::Step::Agents
+        && !a.restarting
+        && matches!(
+            agent_state(a.catalog.as_deref(), &a.hidden, driver),
+            AgentState::SignIn | AgentState::Checking
+        )
+}
+
+fn poll_sign_in(
+    s: &mut State,
+    driver: Driver,
+    generation: Generation,
+    deadline: std::time::Instant,
+) {
+    jobs::after(s, SIGN_IN_POLL, move |s, _| {
+        let before = std::time::Instant::now() < deadline;
+        if !keeps_watching(s, driver, generation, before) {
+            if s.onboarding.agents.watch_gen == generation {
+                s.onboarding.agents.watching = None;
             }
-        });
-    }
+            return;
+        }
+        let asked = s.onboarding.agents.refresh_gen.bump();
+        jobs::run(
+            s,
+            "onboarding",
+            |c| async move { c.providers().await },
+            move |s, result, tx| {
+                let a = &mut s.onboarding.agents;
+                if a.watch_gen != generation {
+                    return;
+                }
+                if a.refresh_gen == asked {
+                    match result {
+                        Ok(catalog) => {
+                            let ready = agent_state(Some(&catalog.providers), &a.hidden, driver)
+                                == AgentState::Ready;
+                            a.hidden = catalog.picker.hidden_providers.clone();
+                            a.catalog = Some(catalog.providers);
+                            a.catalog_error = None;
+                            if ready {
+                                // The sign-in the person just made lands.
+                                tx.animated();
+                            }
+                        }
+                        // The gateway went away: stop asking it.
+                        Err(e) => {
+                            a.catalog = Some(Vec::new());
+                            a.catalog_error = Some(e.to_string());
+                        }
+                    }
+                }
+                poll_sign_in(s, driver, generation, deadline);
+            },
+        );
+    });
 }
 
 /// The CLI's binary is on the login shell's PATH (where its installer
@@ -566,6 +645,9 @@ fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
         AgentState::Checking => "Checking…",
         AgentState::Disabled => "Removed from ZLO. Add it back in Settings → Providers.",
         AgentState::Install => "Not installed on this computer.",
+        AgentState::NeedsCli => {
+            "Found an older runtime with no sign-in. Install the CLI to sign in."
+        }
         AgentState::SignIn => "Installed. Sign in to use your plan.",
     };
     let terminal_open = a.terminal.is_some();
@@ -623,7 +705,7 @@ fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
             "Removed",
             Tone::Secondary,
         )),
-        AgentState::Install => action(true),
+        AgentState::Install | AgentState::NeedsCli => action(true),
         AgentState::SignIn => action(false),
     };
     list_row(
@@ -790,9 +872,94 @@ mod tests {
             Driver::Antigravity.install(),
             Some("curl -fsSL https://antigravity.google/cli/install.sh | bash")
         );
-        assert_eq!(Driver::Antigravity.login(), Some("agy"));
+        assert_eq!(Driver::Antigravity.login(), Some("agy acp --login"));
         assert_eq!(Driver::Antigravity.binary(), "agy");
         assert_eq!(Driver::Muse.install(), None);
+    }
+
+    fn state() -> State {
+        let spec = rune::AppSpec::new("test", (100., 100.), unreachable_main, |_: &State, _| {
+            rune::el()
+        });
+        let handle = rune::App::new(spec).handle();
+        State::new(crate::jobs::Rt::new(handle))
+    }
+
+    fn unreachable_main() -> State {
+        unreachable!("tests build their own state")
+    }
+
+    /// Review P2: closing a sign-in panel watches for the sign-in instead
+    /// of looking twice at fixed times: it keeps looking while the agent
+    /// still asks to sign in, and stops once it is Ready, setup moved on,
+    /// the computer changed, or the window is over.
+    #[test]
+    fn closing_a_sign_in_watches_until_ready_or_setup_moves_on() {
+        let mut s = state();
+        super::super::fixtures::agents_long(&mut s);
+        let driver = Driver::Antigravity;
+        assert!(
+            matches!(&s.onboarding.agents.terminal, Some(t) if t.driver == driver && !t.install)
+        );
+        close_terminal(&mut s);
+        assert_eq!(s.onboarding.agents.watching, Some(driver));
+        let watch = s.onboarding.agents.watch_gen;
+        let signed_out = vec![route("antigravity", "antigravity", false)];
+        s.onboarding.agents.catalog = Some(signed_out.clone());
+        assert!(keeps_watching(&s, driver, watch, true));
+        assert!(
+            !keeps_watching(&s, driver, watch, false),
+            "the window is over"
+        );
+
+        s.onboarding.agents.catalog = Some(vec![route("antigravity", "antigravity", true)]);
+        assert!(!keeps_watching(&s, driver, watch, true), "Ready: done");
+
+        s.onboarding.agents.catalog = Some(signed_out.clone());
+        s.onboarding.step = super::super::Step::Projects;
+        assert!(!keeps_watching(&s, driver, watch, true), "setup moved on");
+        s.onboarding.step = super::super::Step::Agents;
+        assert!(keeps_watching(&s, driver, watch, true));
+
+        // The gateway stopped answering: the catalog reads empty.
+        s.onboarding.agents.catalog = Some(Vec::new());
+        assert!(
+            !keeps_watching(&s, driver, watch, true),
+            "the connection went away"
+        );
+        s.onboarding.agents.catalog = Some(signed_out);
+
+        reset(&mut s);
+        assert!(!keeps_watching(&s, driver, watch, true), "another computer");
+        assert_eq!(s.onboarding.agents.watching, None);
+    }
+
+    /// Review P2: Antigravity found only through its legacy ACP runtime
+    /// has no `agy` to sign in with: setup offers installing the CLI.
+    #[test]
+    fn a_legacy_only_antigravity_offers_the_cli_install() {
+        use zlo_client::orchestration::CatalogLaunch;
+        let legacy = |authenticated| RouteProvider {
+            launch: Some(CatalogLaunch::Legacy),
+            ..route("antigravity", "antigravity", authenticated)
+        };
+        assert_eq!(
+            agent_state(Some(&[legacy(false)]), &[], Driver::Antigravity),
+            AgentState::NeedsCli
+        );
+        assert_eq!(
+            agent_state(Some(&[legacy(true)]), &[], Driver::Antigravity),
+            AgentState::Ready,
+            "a legacy sign-in still runs"
+        );
+        let native = RouteProvider {
+            launch: Some(CatalogLaunch::Native),
+            ..route("antigravity", "antigravity", false)
+        };
+        assert_eq!(
+            agent_state(Some(&[native]), &[], Driver::Antigravity),
+            AgentState::SignIn
+        );
     }
 
     #[test]

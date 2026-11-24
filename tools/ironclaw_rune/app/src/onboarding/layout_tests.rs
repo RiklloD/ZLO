@@ -82,7 +82,10 @@ fn the_card_fits_the_window_with_the_stepper_and_actions_in_view() {
                     "{name} at {w}x{h}: {pinned} {r:?} is inside the card {card:?}"
                 );
             }
-            let body = rect(&rt, "onboarding-scroll");
+            let body = rect(
+                &rt,
+                &format!("onboarding-scroll-{:?}", rt.state.onboarding.step),
+            );
             assert!(
                 body[3] > 80.,
                 "{name} at {w}x{h}: the body keeps room to read ({body:?})"
@@ -96,7 +99,10 @@ fn the_card_fits_the_window_with_the_stepper_and_actions_in_view() {
 #[test]
 fn the_step_body_scrolls_by_wheel_under_a_pinned_stepper_and_footer() {
     let mut rt = runtime(fixtures::agents_long, (800., 600.));
-    let viewport = rect(&rt, "onboarding-scroll");
+    let viewport = rect(
+        &rt,
+        &format!("onboarding-scroll-{:?}", rt.state.onboarding.step),
+    );
     let last = "agents-all-providers";
     assert!(
         bottom(rect(&rt, last)) > bottom(viewport) + 1.,
@@ -116,7 +122,13 @@ fn the_step_body_scrolls_by_wheel_under_a_pinned_stepper_and_footer() {
     settle(&mut rt);
     let shown = rect(&rt, last);
     assert!(
-        inside(shown, rect(&rt, "onboarding-scroll")),
+        inside(
+            shown,
+            rect(
+                &rt,
+                &format!("onboarding-scroll-{:?}", rt.state.onboarding.step)
+            )
+        ),
         "scrolled to the end, {last} {shown:?} is in view"
     );
     assert_eq!(
@@ -131,7 +143,10 @@ fn the_step_body_scrolls_by_wheel_under_a_pinned_stepper_and_footer() {
 fn keyboard_focus_scrolls_the_focused_control_into_view() {
     let mut rt = runtime(fixtures::agents_long, (800., 600.));
     let target = "agents-all-providers";
-    let viewport = rect(&rt, "onboarding-scroll");
+    let viewport = rect(
+        &rt,
+        &format!("onboarding-scroll-{:?}", rt.state.onboarding.step),
+    );
     assert!(bottom(rect(&rt, target)) > bottom(viewport) + 1.);
     let mut reached = false;
     for _ in 0..80 {
@@ -149,8 +164,44 @@ fn keyboard_focus_scrolls_the_focused_control_into_view() {
     settle(&mut rt);
     let shown = rect(&rt, target);
     assert!(
-        inside(shown, rect(&rt, "onboarding-scroll")),
+        inside(
+            shown,
+            rect(
+                &rt,
+                &format!("onboarding-scroll-{:?}", rt.state.onboarding.step)
+            )
+        ),
         "the focused {target} {shown:?} is scrolled into view"
+    );
+}
+
+/// Review P3: each step opens at its top. Scrolled to the end of a long
+/// project list on a small window, going back to Agents shows the Agents
+/// heading, not the Projects offset.
+#[test]
+fn a_new_step_opens_scrolled_to_its_top() {
+    let mut rt = runtime(fixtures::projects_long, (720., 480.));
+    let viewport = rect(&rt, "onboarding-scroll-Projects");
+    let (x, y) = (
+        viewport[0] + viewport[2] / 2.,
+        viewport[1] + viewport[3] / 2.,
+    );
+    for _ in 0..60 {
+        rt.wheel(x, y, -120.);
+        rt.frame(1. / 60.);
+    }
+    settle(&mut rt);
+    assert!(
+        rect(&rt, "step-title")[1] < viewport[1] - 1.,
+        "the Projects heading scrolled out of view"
+    );
+    rt.update(|s, _| super::go_to(s, Step::Agents));
+    settle(&mut rt);
+    let viewport = rect(&rt, "onboarding-scroll-Agents");
+    let title = rect(&rt, "step-title");
+    assert!(
+        inside(title, viewport),
+        "the Agents heading {title:?} is in view in {viewport:?}"
     );
 }
 

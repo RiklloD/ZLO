@@ -265,48 +265,6 @@ async fn antigravity_resumes_its_session_denies_permissions_and_reports_telemetr
     assert_eq!(catalog[0].models, ["gemini-a", "gemini-b"]);
 }
 
-/// `agy`'s own sign-in (its first launch, as setup's "Sign in" runs it)
-/// keeps the account in the system keychain, which `agy acp` shares, and
-/// writes no `acp_token.json`. A signed-out catalog read checks in the
-/// background with `initialize` + `authenticate` only, so such a sign-in
-/// shows as signed in without a turn, and the agent is never prompted or
-/// given a session.
-#[tokio::test]
-async fn antigravity_catalog_finds_a_keychain_sign_in_without_a_token_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let recorder = Arc::new(Recorder::default());
-    let rt = antigravity(dir.path(), None, &recorder);
-    assert!(
-        !rt.catalog(&scope()).await.unwrap()[0].authenticated,
-        "the read answers at once, before the check"
-    );
-    let mut signed_in = false;
-    for _ in 0..200 {
-        signed_in = rt.catalog(&scope()).await.unwrap()[0].authenticated;
-        if signed_in {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert!(signed_in, "the keychain sign-in is found");
-    assert!(
-        !dir.path()
-            .join("profile/antigravity-acp/acp_token.json")
-            .exists(),
-        "no token file is made up"
-    );
-    let log = std::fs::read_to_string(dir.path().join("agy.log")).unwrap();
-    assert!(log.contains(r#""method":"authenticate""#), "{log}");
-    assert!(
-        !log.contains("session/new") && !log.contains("session/prompt"),
-        "{log}"
-    );
-    assert!(
-        log.contains("BROWSER=/usr/bin/true"),
-        "never a browser: {log}"
-    );
-}
-
 /// A new model shipped to the account (Gemini 4 Hydrogen, say) reaches the
 /// picker without a turn: a signed-in catalog read with a missing or stale
 /// model list asks the agent in the background — `session/new` for the
@@ -426,31 +384,38 @@ async fn antigravity_failed_refresh_backs_off() {
     );
 }
 
-/// Signed out, the catalog starts the agent only to check the sign-in
-/// (`initialize` + `authenticate`, no browser, bounded), never for a
-/// session or the model list, and not again on every read.
+/// Review P4: the catalog says which agent program it found, so setup can
+/// offer a legacy-runtime-only install the CLI (that runtime has no sign-in
+/// command of its own) instead of a sign-in command it lacks.
 #[tokio::test]
-async fn antigravity_catalog_only_checks_the_sign_in_while_signed_out() {
+async fn antigravity_catalog_names_the_agent_program_it_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let legacy = antigravity(dir.path(), None, &recorder);
+    assert_eq!(
+        legacy.catalog(&scope()).await.unwrap()[0].launch,
+        Some(CatalogLaunch::Legacy)
+    );
+    let cli = antigravity_cli(dir.path(), "perm", &recorder, None);
+    assert_eq!(
+        cli.catalog(&scope()).await.unwrap()[0].launch,
+        Some(CatalogLaunch::Native)
+    );
+}
+
+/// Signed out, the catalog never starts the agent: a sign-in would wait on a
+/// browser nobody opens.
+#[tokio::test]
+async fn antigravity_catalog_does_not_probe_while_signed_out() {
     let dir = tempfile::tempdir().unwrap();
     let recorder = Arc::new(Recorder::default());
     let rt = antigravity(dir.path(), None, &recorder);
     let catalog = rt.catalog(&scope()).await.unwrap();
     assert!(!catalog[0].authenticated);
-    let log = dir.path().join("agy.log");
-    wait_for(|| std::fs::read_to_string(&log).is_ok_and(|l| l.contains("authenticate"))).await;
-    for _ in 0..5 {
-        rt.catalog(&scope()).await.unwrap();
-    }
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let log = std::fs::read_to_string(&log).unwrap();
-    assert_eq!(
-        log.matches("env GEMINI_HOME").count(),
-        1,
-        "one check: {log}"
-    );
     assert!(
-        !log.contains("session/"),
-        "no session while signed out: {log}"
+        !dir.path().join("agy.log").exists(),
+        "agent started while signed out"
     );
 }
 

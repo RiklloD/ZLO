@@ -515,6 +515,7 @@ impl TurnRuntime for AgentLoopRuntime {
             efforts,
             model_efforts,
             brand,
+            launch: None,
         }];
         if let Some(routes) = &self.routes {
             providers.extend(routes.routes().await.into_iter().map(|r| CatalogProvider {
@@ -526,6 +527,7 @@ impl TurnRuntime for AgentLoopRuntime {
                 efforts: r.efforts,
                 model_efforts: r.model_efforts,
                 brand: None,
+                launch: None,
             }));
         }
         Ok(providers)

@@ -161,13 +161,12 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                     Tone::Success,
                     format!("Ready · {} models", r.models.len()),
                 )
+            } else if r.needs_native_cli() {
+                outlined_tag(p, Tone::Warning, "Needs the CLI to sign in")
             } else {
                 outlined_tag(p, Tone::Warning, "Not signed in")
             };
-            let command = (!r.authenticated)
-                .then_some(known.login)
-                .flatten()
-                .map(|c| ("Sign in", c));
+            let command = super::catalog::next_step(known, r);
             rows.push(cli_row(
                 s,
                 k,
