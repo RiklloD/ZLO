@@ -654,6 +654,7 @@ pub(crate) fn reset_for_switch(s: &mut State) {
     s.workspace.draft = None;
     s.workspace.telemetry = None;
     s.workspace.titles = Default::default();
+    s.workspace.agents.reset_for_switch();
     s.workspace.run_clock = Default::default();
     s.workspace.confirm_delete = None;
     s.workspace.unread = 0;
