@@ -313,7 +313,22 @@ fn needs_poll(s: &State, id: &str) -> bool {
         return false;
     };
     let o = &c.orchestration;
-    crate::chat::active_run(s, id).is_some()
+    // The inbox's word covers the gaps the chat's own state misses: a
+    // parent idle while its subagents run (Background), and a run the
+    // stream has not reported yet. Without it the tasks went unread until
+    // the subagents finished.
+    let inbox_live = s.workspace.inbox.row(id).is_some_and(|r| {
+        matches!(
+            s.workspace.inbox.shown_status(r),
+            Some(
+                zlo_client::inbox::InboxStatus::Working
+                    | zlo_client::inbox::InboxStatus::Background
+                    | zlo_client::inbox::InboxStatus::NeedsInput
+            )
+        )
+    });
+    inbox_live
+        || crate::chat::active_run(s, id).is_some()
         || o.queue.external_run().is_some()
         || o.tasks.iter().any(|t| t.status.is_live())
         || c.goals.check_in_flight()
