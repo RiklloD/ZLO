@@ -45,7 +45,7 @@ regex = { workspace = true }
 reqwest = { workspace = true, features = ["form", "json", "multipart", "rustls", "stream", "system-proxy"] }
 # Rig 0.36 preserves non-streaming OpenAI-compatible `reasoning_content`.
 # Older releases classify valid reasoning-only Qwen responses as empty.
-rig-core = { version = "0.46", default-features = false, features = ["reqwest", "rustls"] }
+rig-core = { version = "0.36", default-features = false, features = ["reqwest", "rustls"] }
 rust_decimal = { workspace = true, features = ["serde", "serde-with-str", "maths"] }
 rust_decimal_macros = { workspace = true }
 secrecy = { workspace = true, features = ["serde"] }
