@@ -567,6 +567,36 @@ fn a_search_hit_inside_a_shut_fold_opens_it() {
     assert!(c.reveal.is_none(), "the hit was found");
 }
 
+/// A search hit on a repeated commentary line the fold dropped lands on
+/// the line it repeats, instead of paging back for a row never drawn.
+#[test]
+fn a_search_hit_on_a_dropped_repeat_reveals_the_kept_line() {
+    let mut s = super::fixtures::test_state();
+    super::fixtures::commentary_live(&mut s);
+    let repeat = "I'll launch two fresh subagents with different puzzles you can watch.";
+    if let Some(c) = s.chat.as_mut() {
+        let page = serde_json::from_value(serde_json::json!({
+            "thread": { "thread_id": "t1" },
+            "messages": [{ "message_id": "m-repeat", "sequence": 3, "kind": "assistant",
+                           "status": "finalized", "content": repeat }]
+        }))
+        .expect("timeline decodes");
+        c.transcript.set_timeline(page);
+        assert!(
+            !c.items.iter().any(|i| i.key() == "say:p1"),
+            "the repeat is dropped"
+        );
+        assert!(
+            c.items.iter().any(|i| i.key() == "say:p0"),
+            "the first is drawn"
+        );
+    }
+    let mut tx = rune::Tx::default();
+    super::reveal_message(&mut s, "m-repeat".into(), &mut tx);
+    let c = s.chat.as_ref().expect("chat");
+    assert!(c.reveal.is_none(), "the hit was found at the kept line");
+}
+
 /// Regression (2026-11-24): a model re-announcing its plan before every
 /// call drew each rephrasing as its own line. Live or settled and opened,
 /// the turn keeps the first; a distinct line stays.
@@ -629,4 +659,41 @@ fn a_live_thought_previews_its_newest_words() {
     );
     assert!(tail.chars().count() <= 281);
     assert!(!tail.contains("older wor ") && !tail.starts_with("…ords"));
+}
+
+/// A long token cut at the preview's head stays (minus nothing): only a
+/// short cut word is skipped to start on a word.
+#[test]
+fn a_thought_tail_keeps_a_long_cut_token() {
+    let token = "x".repeat(400);
+    let tail = super::flow::thought_tail(&format!("{token} then the end"));
+    assert!(tail.ends_with("then the end"), "{tail}");
+    assert!(
+        tail.chars().count() > 200,
+        "the preview kept its words: {tail}"
+    );
+}
+
+/// Review regression: a settled turn whose only words are commentary (a
+/// run that ended on a call) keeps its last line in view; the earlier
+/// commentary folds.
+#[test]
+fn a_turn_without_an_answer_keeps_its_last_words_in_view() {
+    let rows = vec![
+        user("u"),
+        said("Running the suite."),
+        tool("t1", "cli.bash"),
+        said("Two failures; fixing them now."),
+        tool("t2", "cli.write"),
+    ];
+    let items = fold(&rows, false, false, false, false);
+    let shown = shape(&items);
+    assert!(
+        shown.contains(&"Two failures; fixing them now.".to_string()),
+        "{shown:?}"
+    );
+    assert!(
+        !shown.contains(&"Running the suite.".to_string()),
+        "{shown:?}"
+    );
 }

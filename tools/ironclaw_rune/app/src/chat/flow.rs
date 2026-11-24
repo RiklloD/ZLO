@@ -29,7 +29,7 @@ pub const SPACE_LG: f32 = 16.;
 const TREE_ROW_HEIGHT: f32 = 24.;
 
 #[path = "flow/commentary.rs"]
-mod commentary;
+pub(crate) mod commentary;
 #[path = "flow/timeline.rs"]
 mod timeline;
 /// The icon's column at the head of a work line.
@@ -168,7 +168,7 @@ pub fn fold(
     // A model that re-announces its plan before every call says it once.
     let rows = commentary::collapse(rows);
     let mut grouped: Vec<Item> = Vec::with_capacity(rows.len() + 2);
-    for row in &rows {
+    for row in rows {
         if is_activity(row) {
             if let Some(Item::Activity { rows, .. }) = grouped.last_mut() {
                 rows.push(row.clone());
@@ -257,9 +257,15 @@ fn fold_turn(
         out.extend_from_slice(body);
         return;
     }
+    // A turn with no answer row (every reply flagged commentary, or the
+    // run ended on a call) keeps its last words in view as the answer.
     let answer = body
         .iter()
-        .rposition(|i| matches!(i, Item::Row(Row::Assistant { .. })));
+        .rposition(|i| matches!(i, Item::Row(Row::Assistant { .. })))
+        .or_else(|| {
+            body.iter()
+                .rposition(|i| matches!(i, Item::Row(Row::Narration { .. })))
+        });
     let hides = |ix: usize, item: &Item| {
         let after = answer.is_some_and(|a| ix > a);
         match item {
@@ -277,7 +283,7 @@ fn fold_turn(
                         )
                     })
             }
-            Item::Row(Row::Narration { .. }) => !after,
+            Item::Row(Row::Narration { .. }) => Some(ix) != answer && !after,
             Item::Row(Row::Assistant { .. }) => Some(ix) != answer && !after,
             _ => false,
         }
@@ -585,6 +591,8 @@ struct Leaf {
 
 /// Characters of a live thought its preview keeps: about three lines.
 const THOUGHT_PREVIEW_CHARS: usize = 280;
+/// Characters of a cut first word the preview drops to start on a word.
+const THOUGHT_WORD_SKIP: usize = 24;
 
 /// The newest words of a thought being written, on one line: what the
 /// preview under a live group's "Thinking" shows. Cut at a word, with an
@@ -596,7 +604,12 @@ pub(crate) fn thought_tail(text: &str) -> String {
         return line;
     }
     let tail: String = line.chars().skip(count - THOUGHT_PREVIEW_CHARS).collect();
-    let tail = tail.split_once(' ').map_or(tail.as_str(), |(_, rest)| rest);
+    // Skip the cut word only when a space comes soon: a long token (a URL,
+    // a hash) must not take the whole preview with it.
+    let tail = match tail.char_indices().find(|(_, c)| *c == ' ') {
+        Some((at, _)) if tail[..at].chars().count() <= THOUGHT_WORD_SKIP => &tail[at + 1..],
+        _ => tail.as_str(),
+    };
     format!("…{tail}")
 }
 

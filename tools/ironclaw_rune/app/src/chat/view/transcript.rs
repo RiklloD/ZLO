@@ -193,9 +193,13 @@ impl Rows {
             // Commentary: subdued, never answer-weight. The bubble's own key,
             // so text that turns into commentary keeps its element and
             // neither re-parses nor fades in again.
-            Item::Row(Row::Narration { text, .. }) => {
-                super::super::visual::commentary(s, id, item.key(), text, k)
-            }
+            // Commentary only changes with its text and the look: keep its
+            // parsed Markdown across the pacer's re-folds.
+            Item::Row(Row::Narration { key, text }) => memo(
+                format!("{key}-commentary"),
+                (text.as_str(), self.look),
+                || super::super::visual::commentary(s, id, key, text, k),
+            ),
             Item::Row(Row::Question {
                 key,
                 run_id,

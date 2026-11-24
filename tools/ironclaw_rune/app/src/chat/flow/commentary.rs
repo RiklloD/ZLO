@@ -1,18 +1,32 @@
 //! Commentary: what the agent says between its tool calls ("I'll launch two
 //! subagents…"). It is work, not the answer: drawn subdued and folded with
-//! the turn's work once it settles. A model that announces the same plan
+//! the turn's work once it settles. A model that re-announces the same plan
 //! before every tool call would stack near-identical lines, so a turn keeps
-//! only the first of each run of look-alikes.
+//! the first phrasing and drops later ones that say the same thing.
+//!
+//! "The same thing" is deliberately narrow: a distinct step must never
+//! vanish. Two lines match when they read the same, or when they do the
+//! same kind of action (launch ~ start, but read ≠ edit ≠ fix ≠ run) to the
+//! same object and share most of their remaining words. A line that names a
+//! path or code identifier only matches an identical line.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use zlo_client::transcript::Row;
 
-/// Content words two lines must both have before they are compared loosely;
-/// shorter lines collapse only when they read the same.
+/// Content words both lines need before they are compared loosely; shorter
+/// lines collapse only when they read the same.
 const MIN_WORDS: usize = 4;
-/// Shared share of content words (Jaccard) at which two lines say the same.
+/// Shared content words (of the shorter line's) at which two lines whose
+/// action and object agree say the same.
 const SAME_PLAN: f32 = 0.5;
+/// Kept lines of the turn a new line is compared with, newest first.
+const RECENT: usize = 3;
+/// Lines whose features stay cached between folds (the pacer re-folds
+/// every tick while a reply streams).
+const CACHE_LIMIT: usize = 512;
 
 /// Words that carry no plan: pronouns, articles, glue.
 const GLUE: &[&str] = &[
@@ -22,32 +36,244 @@ const GLUE: &[&str] = &[
     "well", "will", "with", "you", "your",
 ];
 
-/// `rows` with each turn's near-duplicate commentary dropped. A line is
-/// dropped when it says what any earlier commentary line of the same turn
-/// (kept or dropped) already said; a person's message starts a new turn. The first phrasing
-/// stays, so a streaming turn never swaps a line it already drew.
-pub(super) fn collapse(rows: &[Row]) -> Vec<Row> {
-    let mut seen: Vec<(String, HashSet<String>)> = Vec::new();
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
+/// Words between a verb and its object that name no object.
+const MODIFIERS: &[&str] = &[
+    "two",
+    "three",
+    "four",
+    "one",
+    "more",
+    "new",
+    "fresh",
+    "another",
+    "some",
+    "all",
+    "both",
+    "few",
+    "quick",
+    "different",
+    "separate",
+    "other",
+    "parallel",
+    "up",
+    "off",
+    "again",
+];
+
+/// Action verbs by kind: lines of different kinds are different steps.
+const ACTIONS: &[(&str, &[&str])] = &[
+    (
+        "start",
+        &[
+            "launch",
+            "launching",
+            "start",
+            "starting",
+            "spin",
+            "spinning",
+            "spawn",
+            "spawning",
+            "kick",
+            "kicking",
+            "begin",
+            "beginning",
+            "delegate",
+            "delegating",
+        ],
+    ),
+    (
+        "read",
+        &[
+            "read",
+            "reading",
+            "look",
+            "looking",
+            "inspect",
+            "inspecting",
+            "open",
+            "opening",
+            "check",
+            "checking",
+            "view",
+            "viewing",
+            "review",
+            "reviewing",
+            "scan",
+            "scanning",
+            "explore",
+            "exploring",
+        ],
+    ),
+    (
+        "search",
+        &["search", "searching", "grep", "grepping", "find", "finding"],
+    ),
+    (
+        "edit",
+        &[
+            "edit",
+            "editing",
+            "update",
+            "updating",
+            "change",
+            "changing",
+            "write",
+            "writing",
+            "modify",
+            "modifying",
+            "patch",
+            "patching",
+            "add",
+            "adding",
+            "refactor",
+            "refactoring",
+            "rename",
+            "renaming",
+            "remove",
+            "removing",
+            "delete",
+            "deleting",
+        ],
+    ),
+    (
+        "fix",
+        &["fix", "fixing", "repair", "repairing", "debug", "debugging"],
+    ),
+    (
+        "run",
+        &[
+            "run",
+            "running",
+            "execute",
+            "executing",
+            "build",
+            "building",
+            "rerun",
+            "rerunning",
+        ],
+    ),
+];
+
+/// What a line says, for comparing.
+struct Said {
+    plain: String,
+    words: HashSet<String>,
+    action: Option<&'static str>,
+    object: Option<String>,
+    /// Names a path or code identifier: only an identical line matches.
+    specific: bool,
+}
+
+thread_local! {
+    static CACHE: RefCell<HashMap<String, Rc<Said>>> = RefCell::default();
+}
+
+/// `rows` without each turn's repeated commentary (see the module docs),
+/// borrowed: the fold clones what it keeps once. A person's message starts
+/// a new turn. The first phrasing stays, so a streaming turn never swaps a
+/// line it already drew.
+pub(super) fn collapse(rows: &[Row]) -> Vec<&Row> {
+    let absorbed = absorbed_by(rows);
+    rows.iter()
+        .zip(absorbed)
+        .filter_map(|(row, by)| by.is_none().then_some(row))
+        .collect()
+}
+
+/// The key of the kept commentary row that `key` was folded into, when the
+/// collapse dropped it: a search hit on a dropped line reveals that row.
+pub(crate) fn kept_key<'a>(rows: &'a [Row], key: &str) -> Option<&'a str> {
+    let at = rows.iter().position(|r| r.key() == key)?;
+    absorbed_by(rows)[at].map(|kept| rows[kept].key())
+}
+
+/// For each row, the index of the kept row it repeats (None: kept).
+fn absorbed_by(rows: &[Row]) -> Vec<Option<usize>> {
+    let mut out = vec![None; rows.len()];
+    // Two lines are needed before anything can repeat.
+    if rows
+        .iter()
+        .filter(|r| matches!(r, Row::Narration { .. }))
+        .nth(1)
+        .is_none()
+    {
+        return out;
+    }
+    let mut kept: Vec<(usize, Rc<Said>)> = Vec::new();
+    for (ix, row) in rows.iter().enumerate() {
         match row {
-            Row::User { .. } => seen.clear(),
+            Row::User { .. } => kept.clear(),
             Row::Narration { text, .. } => {
-                let plain = normalized(text);
-                let words = content_words(&plain);
-                let repeat = seen.iter().any(|(p, w)| same_plan(p, w, &plain, &words));
-                // A dropped line still names the plan: later look-alikes
-                // of it are repeats too, even where the kept one differs.
-                seen.push((plain, words));
-                if repeat {
-                    continue;
+                let said = said(text);
+                let repeat = kept
+                    .iter()
+                    .rev()
+                    .take(RECENT)
+                    .find(|(_, k)| same_plan(k, &said))
+                    .map(|(at, _)| *at);
+                match repeat {
+                    Some(at) => out[ix] = Some(at),
+                    None => kept.push((ix, said)),
                 }
             }
             _ => {}
         }
-        out.push(row.clone());
     }
     out
+}
+
+fn said(text: &str) -> Rc<Said> {
+    if let Some(hit) = CACHE.with(|c| c.borrow().get(text).cloned()) {
+        return hit;
+    }
+    let plain = normalized(text);
+    let specific = text.split_whitespace().any(|w| {
+        let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+        w.contains(['/', '_', '`', ':', '.'])
+    }) || text.contains('`');
+    let mut action = None;
+    let mut object = None;
+    let mut words = HashSet::new();
+    for w in plain
+        .split(' ')
+        .filter(|w| !w.is_empty() && !GLUE.contains(w))
+    {
+        let kind = ACTIONS
+            .iter()
+            .find(|(_, forms)| forms.contains(&w))
+            .map(|(kind, _)| *kind);
+        match kind {
+            Some(kind) => {
+                action.get_or_insert(kind);
+                words.insert(kind.to_string());
+            }
+            None => {
+                let stem = stem(w);
+                if object.is_none()
+                    && !MODIFIERS.contains(&w)
+                    && !w.chars().all(|c| c.is_ascii_digit())
+                {
+                    object = Some(stem.clone());
+                }
+                words.insert(stem);
+            }
+        }
+    }
+    let said = Rc::new(Said {
+        plain,
+        words,
+        action,
+        object,
+        specific,
+    });
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= CACHE_LIMIT {
+            c.clear();
+        }
+        c.insert(text.to_string(), said.clone());
+    });
+    said
 }
 
 fn normalized(text: &str) -> String {
@@ -66,28 +292,27 @@ fn normalized(text: &str) -> String {
         .join(" ")
 }
 
-/// Content words, plural `s` trimmed so "puzzle" and "puzzles" meet.
-fn content_words(plain: &str) -> HashSet<String> {
-    plain
-        .split(' ')
-        .filter(|w| !w.is_empty() && !GLUE.contains(w))
-        .map(|w| match w.strip_suffix('s') {
-            Some(stem) if stem.len() > 2 && !stem.ends_with('s') => stem.to_string(),
-            _ => w.to_string(),
-        })
-        .collect()
+/// Plural `s` trimmed so "puzzle" and "puzzles" meet.
+fn stem(w: &str) -> String {
+    match w.strip_suffix('s') {
+        Some(stem) if stem.len() > 2 && !stem.ends_with('s') => stem.to_string(),
+        _ => w.to_string(),
+    }
 }
 
-fn same_plan(a: &str, aw: &HashSet<String>, b: &str, bw: &HashSet<String>) -> bool {
-    if a == b {
+fn same_plan(a: &Said, b: &Said) -> bool {
+    if a.plain == b.plain {
         return true;
     }
-    if aw.len() < MIN_WORDS || bw.len() < MIN_WORDS {
+    if a.specific || b.specific || a.action != b.action || a.object != b.object {
         return false;
     }
-    let shared = aw.intersection(bw).count() as f32;
-    let all = aw.union(bw).count() as f32;
-    shared / all >= SAME_PLAN
+    if a.words.len() < MIN_WORDS || b.words.len() < MIN_WORDS {
+        return false;
+    }
+    let shared = a.words.intersection(&b.words).count();
+    let shorter = a.words.len().min(b.words.len());
+    shared >= MIN_WORDS && shared as f32 / shorter as f32 >= SAME_PLAN
 }
 
 #[cfg(test)]
@@ -101,7 +326,7 @@ mod tests {
         }
     }
 
-    fn texts(rows: &[Row]) -> Vec<&str> {
+    fn texts<'a>(rows: &[&'a Row]) -> Vec<&'a str> {
         rows.iter()
             .filter_map(|r| match r {
                 Row::Narration { text, .. } => Some(text.as_str()),
@@ -165,5 +390,83 @@ mod tests {
                 "Engine tests:",
             ]
         );
+    }
+
+    /// Review regressions: distinct steps on the same subject never fold,
+    /// whether they differ in action, object or a named file.
+    #[test]
+    fn distinct_steps_on_the_same_subject_are_kept() {
+        let pairs = [
+            (
+                "Reading src/auth/session.rs to check token refresh",
+                "Editing src/auth/session.rs to fix token refresh",
+            ),
+            (
+                "Reading the session module to check token refresh handling",
+                "Editing the session module to fix token refresh handling",
+            ),
+            (
+                "Running the database migration tests now",
+                "Fixing the database migration tests now",
+            ),
+            (
+                "I'll update the parser to handle trailing commas",
+                "I'll update the lexer to handle trailing commas",
+            ),
+            (
+                "Checking `Pacer::apply` for the hold timing",
+                "Checking `Pacer::step` for the hold timing",
+            ),
+        ];
+        for (a, b) in pairs {
+            let rows = vec![said("a", a), said("b", b)];
+            assert_eq!(texts(&collapse(&rows)), vec![a, b], "{a} / {b}");
+        }
+    }
+
+    /// A line is compared with kept lines only: a chain of small drifts
+    /// does not swallow a line unlike the one kept.
+    #[test]
+    fn repeats_do_not_chain_through_dropped_lines() {
+        let rows = vec![
+            said(
+                "a",
+                "I'll launch two subagents with fresh puzzles you can watch.",
+            ),
+            said(
+                "b",
+                "I'll launch two subagents with fresh puzzles for the benchmark run.",
+            ),
+            said(
+                "c",
+                "I'll launch subagents for the benchmark run on the nightly cluster.",
+            ),
+        ];
+        assert_eq!(
+            texts(&collapse(&rows)),
+            vec![
+                "I'll launch two subagents with fresh puzzles you can watch.",
+                "I'll launch subagents for the benchmark run on the nightly cluster.",
+            ]
+        );
+    }
+
+    /// A search hit on a dropped line reveals the line it folded into.
+    #[test]
+    fn a_dropped_line_aliases_to_the_kept_one() {
+        let rows = vec![
+            said(
+                "a",
+                "I'll launch two more subagents with fresh puzzles you can watch.",
+            ),
+            said(
+                "b",
+                "I'll launch two fresh subagents with different puzzles you can watch.",
+            ),
+            said("c", "Both are running."),
+        ];
+        assert_eq!(kept_key(&rows, "b"), Some("a"));
+        assert_eq!(kept_key(&rows, "a"), None);
+        assert_eq!(kept_key(&rows, "c"), None);
     }
 }
