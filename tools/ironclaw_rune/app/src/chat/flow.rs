@@ -579,40 +579,18 @@ struct Leaf {
     running: bool,
 }
 
-/// The tail thought of a live group: a "Thinking" label and the newest words
-/// of the (paced) thought on the same muted line, so the thought streams in
-/// as it is written instead of landing whole when it ends. Plain text, one
-/// line; the whole thought folds under "Thought" once it ends.
-fn live_thought(text: &str) -> Leaf {
+/// The tail thought of a live group, as Zeron draws it: a "Thinking" label
+/// and nothing more. Its words show once it ends, folded under "Thought".
+fn live_thought() -> Leaf {
     Leaf {
         icon: &icons::BOT,
         label: "Thinking".into(),
-        detail: thought_tail(text),
+        detail: String::new(),
         body: None,
         output: None,
         failed: false,
         running: true,
     }
-}
-
-/// How much of a live thought its line shows: about a line's worth.
-const THOUGHT_TAIL_CHARS: usize = 96;
-
-/// The newest words of a thought on one line, cut at a word start with a
-/// leading ellipsis when the thought is longer than the line.
-pub(super) fn thought_tail(text: &str) -> String {
-    let line = one_line(text);
-    let count = line.chars().count();
-    if count <= THOUGHT_TAIL_CHARS {
-        return line;
-    }
-    let start = line
-        .char_indices()
-        .nth(count - THOUGHT_TAIL_CHARS)
-        .map_or(0, |(at, _)| at);
-    let tail = &line[start..];
-    let tail = tail.split_once(' ').map_or(tail, |(_, rest)| rest);
-    format!("…{tail}")
 }
 
 fn one_line(text: &str) -> String {
@@ -887,13 +865,10 @@ pub fn render_activity(
     for (ix, (row, mut leaf)) in parts.into_iter().enumerate() {
         let row_key = row.key();
         let open_key = format!("leaf:{row_key}");
-        // The thought being written reads "Thinking" and its newest words;
-        // the whole of it folds under "Thought" once it ends.
-        if live
-            && ix + 1 == count
-            && let Row::Thinking { text, .. } = row
-        {
-            leaf = live_thought(text);
+        // The thought being written reads "Thinking"; its words show once
+        // it ends, under "Thought".
+        if live && ix + 1 == count && matches!(row, Row::Thinking { .. }) {
+            leaf = live_thought();
         }
         if matches!(row, Row::Tool { .. }) {
             leaf.output = outputs

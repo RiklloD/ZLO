@@ -38,6 +38,19 @@ mod speakable;
 mod transcript;
 mod turn;
 pub mod ui;
+
+/// macOS's Reduce motion accessibility setting, for app code outside a view
+/// (a view reads `Cx::system_reduced_motion`). Always off elsewhere.
+pub(crate) fn system_reduced_motion() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        apple::system_reduced_motion()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
 mod wake;
 #[cfg(test)]
 mod wave_tests;

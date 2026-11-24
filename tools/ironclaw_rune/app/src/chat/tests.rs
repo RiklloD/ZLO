@@ -566,17 +566,3 @@ fn a_search_hit_inside_a_shut_fold_opens_it() {
     );
     assert!(c.reveal.is_none(), "the hit was found");
 }
-
-#[test]
-fn a_live_thought_line_shows_its_newest_words_cut_at_a_word() {
-    use super::flow::thought_tail;
-    assert_eq!(thought_tail("Short\nthought."), "Short thought.");
-    let long = "Überlegung über ünïcödé wörter ".repeat(10) + "and the newest words";
-    let tail = thought_tail(&long);
-    assert!(tail.starts_with('…'), "{tail:?}");
-    assert!(tail.ends_with("and the newest words"), "{tail:?}");
-    assert!(tail.chars().count() <= 97, "{tail:?}");
-    // Starts on a whole word.
-    let first = tail.trim_start_matches('…').split(' ').next().unwrap_or("");
-    assert!(long.split(' ').any(|w| w == first), "{tail:?}");
-}

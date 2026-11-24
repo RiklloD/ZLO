@@ -17,30 +17,36 @@ fn production_pacing() -> ReplyPublicationSettings {
     let defaults = ReplyPublicationSettings::default();
     ReplyPublicationSettings {
         min_progress_interval: defaults.min_progress_interval,
-        session_progress_interval: defaults.session_progress_interval,
+        session_push_interval: defaults.session_push_interval,
         ..settings()
     }
 }
 
 /// Stream `count` growing answers `every` apart and return how many
-/// `Progress` reconciles the sink heard while they streamed.
+/// `Progress` reconciles each kind of target heard while they streamed:
+/// `(session, vendor)`. The session target has no vendor conversation.
 async fn progress_reconciles_while_streaming(
     harness: &Harness,
     count: usize,
     every: Duration,
-) -> usize {
+) -> (usize, usize) {
     let mut text = String::new();
     for index in 0..count {
         text.push_str(&format!("word{index} "));
         harness.text(&text);
         tokio::time::sleep(every).await;
     }
-    harness
+    let progress: Vec<_> = harness
         .sink
         .requests()
-        .iter()
+        .into_iter()
         .filter(|r| r.point == ReplyReconcilePoint::Progress)
-        .count()
+        .collect();
+    let session = progress
+        .iter()
+        .filter(|r| r.target.conversation.is_none())
+        .count();
+    (session, progress.len() - session)
 }
 
 #[tokio::test]
@@ -54,22 +60,24 @@ async fn the_session_channel_streams_progress_at_display_rate() {
         Some("web-app"),
         production_pacing(),
     );
-    let progress =
+    let (session, _) =
         progress_reconciles_while_streaming(&harness, 16, Duration::from_millis(30)).await;
     // ~480 ms of streaming: 250 ms pacing allows at most 2-3 progress
-    // reconciles, display-rate pacing about a dozen.
+    // reconciles, display-rate pushes about a dozen.
     assert!(
-        progress >= 6,
-        "the session channel reconciled only {progress} progress revisions in ~480 ms"
+        session >= 6,
+        "the session channel heard only {session} progress revisions in ~480 ms"
     );
 }
 
 #[tokio::test]
 async fn vendor_channels_keep_the_provider_safe_progress_interval() {
+    // Beside a session channel streaming at display rate, a vendor target
+    // of the same run stays at the provider-safe interval.
     let harness = harness_with(
         "vendor-rate",
         ReplyTransport::Stream,
-        None,
+        Some("web-app"),
         production_pacing(),
     );
     harness
@@ -77,10 +85,11 @@ async fn vendor_channels_keep_the_provider_safe_progress_interval() {
         .register_reply_target(harness.registration(ReplyAudience::Private))
         .await
         .unwrap();
-    let progress =
+    let (session, vendor) =
         progress_reconciles_while_streaming(&harness, 16, Duration::from_millis(30)).await;
+    assert!(session >= 6, "the session channel heard {session} updates");
     assert!(
-        progress <= 3,
-        "a vendor channel must stay paced at the provider-safe interval, got {progress} progress reconciles in ~480 ms"
+        vendor <= 3,
+        "a vendor channel must stay paced at the provider-safe interval, got {vendor} progress reconciles in ~480 ms"
     );
 }

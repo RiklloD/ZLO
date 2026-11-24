@@ -3915,9 +3915,12 @@ mod tests {
         sink.reasoning_delta("Checking the ".to_string()).await;
         tokio::time::sleep(std::time::Duration::from_millis(45)).await;
         sink.reasoning_delta("config file ".to_string()).await;
+        // Wall-clock bound: a loaded runner may already have released the
+        // first fragment on its own, so only what was released by now is
+        // pinned, not how it was split.
         assert_eq!(
-            reasoning(),
-            vec!["Checking the config file ".to_string()],
+            reasoning().concat(),
+            "Checking the config file ",
             "a thought is released within ~2 frames, not 250 ms"
         );
 

@@ -239,7 +239,7 @@ pub(super) fn settings() -> ReplyPublicationSettings {
     ReplyPublicationSettings {
         lease_ttl: Duration::from_millis(400),
         min_progress_interval: Duration::ZERO,
-        session_progress_interval: Duration::ZERO,
+        session_push_interval: Duration::ZERO,
         retry_backoff: Duration::from_millis(5),
         max_retry_backoff: Duration::from_millis(20),
         terminal_attempt_budget: 3,

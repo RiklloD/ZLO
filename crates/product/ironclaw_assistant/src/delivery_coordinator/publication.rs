@@ -110,12 +110,16 @@ pub struct ReplyPublicationSettings {
     /// -critical and terminal reconciles are never delayed by it. Paces
     /// vendor channels, whose sinks call a rate-limited provider API.
     pub min_progress_interval: Duration,
-    /// The same gap for the deployment's session channel. Its sink publishes
-    /// into the in-process live projection the WebUI/desktop stream tails —
-    /// no provider, no rate limit — so it is paced at display rate (about
-    /// 30 Hz) instead: a streamed answer or thought reaches the reader in
-    /// frame-sized steps, not quarter-second blocks.
-    pub session_progress_interval: Duration,
+    /// How often the deployment's session channel hears the newest document
+    /// between two durable `Progress` reconciles. Its sink publishes into the
+    /// in-process live projection the WebUI/desktop stream tails — no
+    /// provider, no rate limit — so it is pushed from memory at display rate
+    /// (about 30 Hz): a streamed answer or thought reaches the reader in
+    /// frame-sized steps, not quarter-second blocks. A push takes no claim
+    /// and writes nothing; the durable claim/advance keeps the
+    /// `min_progress_interval` cadence, so the store sees the same writes per
+    /// second as a vendor channel and reconnects rebuild from durable state.
+    pub session_push_interval: Duration,
     /// First retry delay when a sink asks for a retry without a hint; doubles
     /// up to `max_retry_backoff`.
     pub retry_backoff: Duration,
@@ -140,7 +144,7 @@ impl Default for ReplyPublicationSettings {
         Self {
             lease_ttl: Duration::from_secs(60),
             min_progress_interval: Duration::from_millis(250),
-            session_progress_interval: Duration::from_millis(33),
+            session_push_interval: Duration::from_millis(33),
             retry_backoff: Duration::from_millis(500),
             max_retry_backoff: Duration::from_secs(30),
             terminal_attempt_budget: 8,
@@ -626,18 +630,19 @@ impl ProcessJournalCommitObserver for DeliveryCoordinator {
 // ── Publication internals ────────────────────────────────────────────────
 
 impl ReplyPublication {
-    /// The owning coordinator, while it is alive. `None` only during process
-    /// teardown; callers treat it as "stop quietly".
-    /// The `Progress` pacing window for one target: display rate for the
-    /// session channel, the provider-safe interval for every other channel.
-    pub(crate) fn progress_interval(&self, target: &TargetState) -> Duration {
-        if self.session_channel.as_ref() == Some(&target.registration.extension_id) {
-            self.settings.session_progress_interval
-        } else {
-            self.settings.min_progress_interval
-        }
+    /// How often `target` hears the newest document from memory between
+    /// durable `Progress` reconciles: the session channel only (its sink is
+    /// the in-process live projection), and only when that is sooner than
+    /// the durable cadence. `None` for every vendor channel.
+    pub(crate) fn memory_push_interval(&self, target: &TargetState) -> Option<Duration> {
+        let every = self.settings.session_push_interval;
+        (self.session_channel.as_ref() == Some(&target.registration.extension_id)
+            && every < self.settings.min_progress_interval)
+            .then_some(every)
     }
 
+    /// The owning coordinator, while it is alive. `None` only during process
+    /// teardown; callers treat it as "stop quietly".
     pub(crate) fn coordinator(&self) -> Option<Arc<DeliveryCoordinator>> {
         self.coordinator.upgrade()
     }

@@ -109,6 +109,21 @@ const PACE_TICK: Duration = Duration::from_micros(16_667);
 /// work. In the background the pacer is off (`sync_items`).
 const PACE_TICK_SAVING: Duration = Duration::from_millis(50);
 
+/// Whether the pacer is off and streamed text lands whole. The pacer is
+/// motion too, so it follows Appearance → Reduce motion the way
+/// `design::battery::reduced` does ("On" always, "System" while macOS
+/// reduces motion, "Off" never), and it is off while the window is in the
+/// background (nobody watches it type). Unlike other motion, the idle
+/// battery saver does not stop it; it only slows its tick (`pace_tick`).
+fn pacer_off(pref: &str, background: bool, system_reduced: impl FnOnce() -> bool) -> bool {
+    background
+        || match pref {
+            "on" => true,
+            "off" => false,
+            _ => system_reduced(),
+        }
+}
+
 /// The pacer's step for the battery saver's state.
 pub(crate) fn pace_tick(saving: bool) -> Duration {
     if saving { PACE_TICK_SAVING } else { PACE_TICK }
@@ -703,9 +718,11 @@ pub(crate) fn refresh_rows(s: &mut State, id: &str, tx: &mut Tx) -> bool {
 /// the pacer's rate either way, and the view rebuilds once, not twice.
 /// Returns true when it deferred like that.
 pub(crate) fn sync_items(s: &mut State, id: &str, tx: &mut Tx) -> bool {
-    // The pacer is motion too: off with "Reduce motion" and while the window
-    // is in the background (nobody watches it type; the text lands whole).
-    let reduced = s.prefs.reduce_motion == "on" || s.look.battery.background();
+    let reduced = pacer_off(
+        &s.prefs.reduce_motion,
+        s.look.battery.background(),
+        crate::voice::system_reduced_motion,
+    );
     let tick = pace_tick(s.look.battery.saving());
     let has_tail = orchestration::has_tail(s, id);
     let Some(c) = chat_for(s, id) else {
@@ -945,8 +962,13 @@ fn poll_chat(s: &mut State, id: &str, input_waiting: bool, tx: &mut Tx) -> bool 
                 tx.wake_after(Duration::ZERO);
             }
             _ => {
+                // A step during the word hold reveals nothing: the fold then
+                // keeps the same items, and the view need not rebuild.
+                let before = Rc::as_ptr(&c.items);
                 sync_items(s, id, tx);
-                changed = crate::energy::polled(crate::energy::C::PollChatPace, true);
+                let moved =
+                    chat_ref(s, id).is_some_and(|c| !std::ptr::eq(Rc::as_ptr(&c.items), before));
+                changed |= crate::energy::polled(crate::energy::C::PollChatPace, moved);
             }
         }
     }

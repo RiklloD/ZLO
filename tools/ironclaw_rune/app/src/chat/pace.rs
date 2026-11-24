@@ -58,6 +58,16 @@ impl Paced {
         self.burst = now;
     }
 
+    /// Everything in `text` counts as shown (the reader saw it whole), and
+    /// the step clock restarts so the next words pace in from `now`.
+    fn show_all(&mut self, text: &str, now: Instant) {
+        self.target = text.to_string();
+        self.shown = text.len();
+        self.position = text.len() as f64;
+        self.last = now;
+        self.burst = now;
+    }
+
     fn behind(&self) -> bool {
         self.shown < self.target.len()
     }
@@ -147,15 +157,31 @@ impl Pacer {
         now: Instant,
         reduced: bool,
     ) -> (Cow<'a, [Row]>, bool) {
+        let last = rows.len().saturating_sub(1);
         if reduced {
-            self.replies.clear();
+            // Nobody watches it type: the text lands whole. What is being
+            // written is kept as shown in full, so coming back to the window
+            // paces only the words that arrive after, instead of blanking
+            // and re-typing everything.
+            let mut writing = Vec::new();
+            for (ix, row) in rows.iter().enumerate() {
+                let Some((key, text, true)) = paceable(row, live && ix == last) else {
+                    continue;
+                };
+                let paced = self
+                    .replies
+                    .entry(key.to_string())
+                    .or_insert_with(|| Paced::new(now));
+                paced.show_all(text, now);
+                writing.push(key.to_string());
+            }
+            self.replies.retain(|key, _| writing.contains(key));
             return (Cow::Borrowed(rows), false);
         }
         let mut out: Option<Vec<Row>> = None;
         let mut behind = false;
         let mut seen = Vec::new();
         let mut writing = Vec::new();
-        let last = rows.len().saturating_sub(1);
         for (ix, row) in rows.iter().enumerate() {
             let Some((key, text, streaming)) = paceable(row, live && ix == last) else {
                 continue;
@@ -366,5 +392,35 @@ mod tests {
         let (out, behind) = pacer.apply(&done, false, Instant::now(), false);
         assert!(!behind);
         assert_eq!(text_of(&out[0]), "done");
+    }
+
+    #[test]
+    fn coming_back_from_the_background_paces_only_what_is_new() {
+        let mut pacer = Pacer::default();
+        let t0 = Instant::now();
+        let early = "one two three four five six seven eight nine ten";
+        // Streaming starts in front, then the window goes to the background
+        // (reduced): the text lands whole while nobody watches.
+        let rows = reply(early, true);
+        let _ = pacer.apply(&rows, true, t0, false);
+        let (out, behind) = pacer.apply(&rows, true, t0, true);
+        assert!(!behind);
+        assert_eq!(shown(&out), early);
+        // Back in front: what already showed stays; only new words pace in.
+        let later = format!("{early} eleven twelve thirteen fourteen");
+        let rows = reply(&later, true);
+        let (out, behind) = pacer.apply(&rows, true, t0 + Duration::from_millis(16), false);
+        assert!(behind, "the new words are paced");
+        assert!(
+            shown(&out).starts_with(early),
+            "refocus must not blank and re-type the reply: {:?}",
+            shown(&out)
+        );
+        // The same for a thought being written.
+        let mut pacer = Pacer::default();
+        let thinking = vec![thought(early)];
+        let _ = pacer.apply(&thinking, true, t0, true);
+        let (out, _) = pacer.apply(&thinking, true, t0 + Duration::from_millis(16), false);
+        assert_eq!(text_of(&out[0]), early);
     }
 }

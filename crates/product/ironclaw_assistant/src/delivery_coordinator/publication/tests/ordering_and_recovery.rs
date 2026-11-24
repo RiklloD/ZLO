@@ -923,6 +923,8 @@ struct ProbeStore {
     inner: Arc<dyn OutboundStateStorePort>,
     loads: std::sync::atomic::AtomicUsize,
     lists: std::sync::atomic::AtomicUsize,
+    /// Publication-row writes: claims, advances, settlements, releases.
+    writes: std::sync::atomic::AtomicUsize,
     advance_delay: Mutex<Duration>,
 }
 
@@ -934,6 +936,7 @@ impl ProbeStore {
             ),
             loads: std::sync::atomic::AtomicUsize::new(0),
             lists: std::sync::atomic::AtomicUsize::new(0),
+            writes: std::sync::atomic::AtomicUsize::new(0),
             advance_delay: Mutex::new(Duration::ZERO),
         })
     }
@@ -944,6 +947,15 @@ impl ProbeStore {
 
     fn lists(&self) -> usize {
         self.lists.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn writes(&self) -> usize {
+        self.writes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn wrote(&self) {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -992,6 +1004,7 @@ impl OutboundStateStorePort for ProbeStore {
         &self,
         request: ironclaw_outbound::ClaimReplyPublicationLeaseRequest,
     ) -> Result<ironclaw_outbound::ReplyPublicationClaim, ironclaw_outbound::OutboundError> {
+        self.wrote();
         self.inner.claim_reply_publication_lease(request).await
     }
     async fn advance_reply_publication(
@@ -1002,18 +1015,21 @@ impl OutboundStateStorePort for ProbeStore {
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
+        self.wrote();
         self.inner.advance_reply_publication(request).await
     }
     async fn settle_reply_publication(
         &self,
         request: ironclaw_outbound::SettleReplyPublicationRequest,
     ) -> Result<ironclaw_outbound::ReplyPublicationRecord, ironclaw_outbound::OutboundError> {
+        self.wrote();
         self.inner.settle_reply_publication(request).await
     }
     async fn release_reply_publication_lease(
         &self,
         request: ironclaw_outbound::ReleaseReplyPublicationLeaseRequest,
     ) -> Result<(), ironclaw_outbound::OutboundError> {
+        self.wrote();
         self.inner.release_reply_publication_lease(request).await
     }
     async fn load_reply_publication(
@@ -1379,4 +1395,53 @@ async fn the_descriptor_persists_the_validated_reply_context_not_the_raw_bytes()
         "an over-bound context is dropped at registration, never persisted raw"
     );
     coordinator.shutdown_reply_publication().await;
+}
+
+/// The session channel's pushes come from memory: a streaming reply keeps
+/// the durable claim/advance at the vendor cadence (a few writes per
+/// `min_progress_interval`) while its sink still hears ~33 ms updates.
+/// Durable writes at display rate were ~80–90 per second per reply on
+/// libSQL's single writer.
+#[tokio::test]
+async fn a_streaming_session_reply_writes_at_the_durable_cadence_but_streams_at_display_rate() {
+    let defaults = ReplyPublicationSettings::default();
+    let production = ReplyPublicationSettings {
+        min_progress_interval: defaults.min_progress_interval,
+        session_push_interval: defaults.session_push_interval,
+        lease_ttl: Duration::from_secs(5),
+        ..settings()
+    };
+    let probe = ProbeStore::new();
+    let harness = super::harness_over_store(
+        "session-writes",
+        ReplyTransport::Stream,
+        Some("web-app"),
+        production,
+        Arc::new(crate::NoProjectFilesystem),
+        Arc::clone(&probe) as Arc<dyn OutboundStateStorePort>,
+    );
+    harness.text("first ");
+    wait_until(|| async { (!harness.sink.requests().is_empty()).then_some(()) }).await;
+    let (writes_before, heard_before) = (probe.writes(), harness.sink.requests().len());
+    let mut text = String::from("first ");
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(1) {
+        text.push_str("word ");
+        harness.text(&text);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let writes = probe.writes() - writes_before;
+    let heard = harness.sink.requests().len() - heard_before;
+    eprintln!("streaming session reply, 1 s: {writes} publication writes, {heard} sink updates");
+    assert!(
+        writes <= 14,
+        "{writes} durable publication writes in 1 s of streaming; the session channel must not write at display rate"
+    );
+    assert!(
+        heard >= 15,
+        "the session sink heard only {heard} updates in 1 s; memory pushes must keep it near 30 Hz"
+    );
+    // Every streamed word still reached the sink, and the row caught up.
+    let last = harness.sink.requests().last().cloned().unwrap();
+    assert!(text.starts_with(last.revision.document.answer.text.as_str()));
 }
