@@ -199,13 +199,13 @@ impl PromptFold {
     }
 }
 
-/// What a turn that needs a Google sign-in says. agy 1.5 keeps the sign-in
+/// What a turn that needs an account sign-in says. agy 1.5 keeps the sign-in
 /// in the OS keyring, so signing in once with the CLI serves ZLO too.
 pub(crate) const SIGN_IN_REQUIRED: &str =
-    "antigravity: sign-in required (run `agy` in a terminal and sign in with Google)";
+    "antigravity: sign-in required (run `agy` in a terminal and sign in)";
 
 /// A failed `authenticate` as the turn's failure, and whether it shows the
-/// account signed out. A crash is named as one, not blamed on Google
+/// account signed out. A crash is named as one, not blamed on the sign-in
 /// (t3code #28355); a quota stays a quota.
 pub(crate) fn sign_in_failed(error: &RpcError, uses_browser: bool) -> (TurnOutcome, bool) {
     let text = error.message();
@@ -221,11 +221,7 @@ pub(crate) fn sign_in_failed(error: &RpcError, uses_browser: bool) -> (TurnOutco
         _ if text.contains("SUBSCRIPTION_REQUIRED") => (
             TurnOutcome::ended(
                 TurnEndStatus::Failed,
-                Some(
-                    "antigravity: Google requires an eligible Antigravity subscription \
-                     for this account"
-                        .into(),
-                ),
+                Some("antigravity: this account needs an eligible Antigravity subscription".into()),
             ),
             false,
         ),

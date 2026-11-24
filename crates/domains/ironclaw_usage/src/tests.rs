@@ -401,9 +401,13 @@ async fn antigravity_reads_the_cli_sign_in_and_its_expiry() {
         r#"{"token":{"access_token":"ya29.x","refresh_token":"r","expiry":"2026-11-24T12:00:00Z"}}"#,
     )
     .unwrap();
-    let login = crate::antigravity::AntigravityLogin::new(home.path());
     let expiry = chrono::DateTime::parse_from_rfc3339("2026-11-24T12:00:00Z")
         .unwrap()
         .timestamp_millis();
-    assert_eq!(login.cli_access_expiry().await, Some(expiry));
+    match crate::antigravity::cli_access(&acp.join("antigravity-oauth-token")).await {
+        Some(crate::antigravity::Credential::Access { expires_ms, .. }) => {
+            assert_eq!(expires_ms, expiry)
+        }
+        _ => panic!("the CLI sign-in was not read"),
+    }
 }

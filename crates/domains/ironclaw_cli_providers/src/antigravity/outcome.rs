@@ -126,7 +126,7 @@ pub(super) fn hidden_failure(
     })
 }
 
-/// A Google API error as agy's harness renders it.
+/// An upstream API error as agy's harness renders it.
 #[derive(Debug, PartialEq, Eq)]
 struct ApiError<'a> {
     http: u16,
@@ -191,7 +191,7 @@ fn api_error(text: &str) -> Option<ApiError<'_>> {
     None
 }
 
-/// agy 1.5 with a Google account: `STATUS (code NNN): message`.
+/// agy 1.5 with a personal account: `STATUS (code NNN): message`.
 fn status_error(text: &str) -> Option<ApiError<'_>> {
     const CODE: &str = " (code ";
     for (at, _) in text.match_indices(CODE) {
@@ -410,9 +410,9 @@ mod tests {
         );
         let classic =
             "Error 404, Message: Requested entity was not found., Status: NOT_FOUND, Details: []";
-        let google =
+        let personal =
             "\u{12}7NOT_FOUND (code 404): Requested entity was not found.\u{1a}\u{80}\u{1}HTTP 404";
-        for payload in [classic, google] {
+        for payload in [classic, personal] {
             let late =
                 hidden_failure(Some("end_turn"), Some(&step(17, payload, true)), NOW).unwrap();
             assert_eq!(late.resume_with, Some(RESUME_PROMPT), "{payload}");

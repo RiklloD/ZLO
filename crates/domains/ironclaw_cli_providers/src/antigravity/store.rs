@@ -190,7 +190,7 @@ pub(super) async fn cached_models(config: &AntigravityConfig) -> CachedModels {
 }
 
 /// Where the driver notes that `authenticate` last succeeded. agy 1.5
-/// keeps a Google sign-in in the OS keyring and writes no token file, so a
+/// keeps an account sign-in in the OS keyring and writes no token file, so a
 /// successful sign-in is the only local evidence of one.
 fn signed_in_file(state_dir: &Path) -> std::path::PathBuf {
     state_dir.join("signed-in")

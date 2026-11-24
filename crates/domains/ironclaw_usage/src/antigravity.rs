@@ -36,7 +36,7 @@ pub struct AntigravityLogin {
 }
 
 /// What a profile's sign-in buys a quota read with.
-enum Credential {
+pub(crate) enum Credential {
     /// The legacy runtime's refreshable sign-in.
     Refreshable(SignIn),
     /// agy 1.5's stored access token, usable until it expires.
@@ -46,7 +46,7 @@ enum Credential {
     },
 }
 
-struct SignIn {
+pub(crate) struct SignIn {
     client_id: String,
     client_secret: SecretString,
     refresh_token: SecretString,
@@ -141,15 +141,6 @@ impl AntigravityLogin {
         last
     }
 
-    /// The expiry of agy 1.5's stored sign-in, for tests.
-    #[cfg(test)]
-    pub(crate) async fn cli_access_expiry(&self) -> Option<i64> {
-        match self.credential().await? {
-            Credential::Access { expires_ms, .. } => Some(expires_ms),
-            Credential::Refreshable(_) => None,
-        }
-    }
-
     /// The first profile's sign-in: the legacy refreshable token, else
     /// agy 1.5's stored access token.
     async fn credential(&self) -> Option<Credential> {
@@ -166,7 +157,7 @@ impl AntigravityLogin {
 }
 
 /// agy 1.5's file sign-in: `{"token": {"access_token", "expiry"}}`.
-async fn cli_access(path: &Path) -> Option<Credential> {
+pub(crate) async fn cli_access(path: &Path) -> Option<Credential> {
     let bytes = tokio::fs::read(path).await.ok()?; // silent-ok: that profile has no file sign-in
     let Ok(doc) = serde_json::from_slice::<Value>(&bytes) else {
         tracing::debug!(path = %path.display(), "antigravity CLI token file is not JSON");
