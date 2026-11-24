@@ -219,7 +219,7 @@ impl TenantIdentitySource {
             },
             candidate,
         );
-        let _ = self.identity_changed.send(());
+        self.identity_changed.send_replace(());
     }
 
     async fn seen_keys(&self) -> Vec<TenantIdentityKey> {

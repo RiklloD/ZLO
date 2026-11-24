@@ -10,8 +10,8 @@ mod process_metrics;
 mod process_pressure;
 mod progress;
 mod ramp;
-mod redaction;
 mod report;
+mod report_text;
 mod resource_ops;
 mod scripted;
 mod secret_ops;
@@ -37,14 +37,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::redaction::redact_postgres_url;
 use crate::{
     api_capacity::ApiCapacitySummary,
     capture::CapturedRun,
     child_io::{join_child_stderr_reader, spawn_child_stderr_reader},
     process_metrics::{ProcessMetrics, ProcessMetricsSampler},
     progress::{ProgressCounters, spawn_progress_reporter, stop_progress_reporter},
-    redaction::redact_libsql_path,
     secret_ops::{build_secret_consume_workload, run_secret_consume_tasks},
     summary::{
         FailureCause, FailureCauseSummary, LatencySummary, latency_summary,
@@ -69,6 +67,7 @@ use ironclaw_stress::db_probe::{
     DbProbeError, DbProbeSummary, DbWriteMeasurement, StatsScope, summarize as summarize_db_probe,
     summarize_measurement,
 };
+use ironclaw_stress::redaction::{redact_libsql_path, redact_postgres_url};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Parser)]
@@ -2582,10 +2581,16 @@ pub(crate) async fn cleanup_generated_libsql_path(path: &Path) {
 
 fn terminate_children(children: &mut Vec<(usize, Child, Option<JoinHandle<()>>)>) {
     for (_, child, _) in children.iter_mut() {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "kill fails only when the child already exited; the wait below reaps it either way"
+        )]
         let _ = child.kill();
     }
     for (child_index, mut child, stderr_reader) in children.drain(..) {
-        let _ = child.wait();
+        if let Err(error) = child.wait() {
+            eprintln!("failed to reap child process {child_index}: {error}");
+        }
         join_child_stderr_reader(child_index, stderr_reader);
     }
 }

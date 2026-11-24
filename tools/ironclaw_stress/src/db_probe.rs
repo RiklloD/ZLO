@@ -424,7 +424,9 @@ pub async fn begin(config: &DbProbeConfig) -> Result<DbProbeSnapshot, DbProbeErr
                 reset_measurement_stats(&client, url).await?;
             }
             drop(client);
-            let _ = connection_handle.await;
+            if let Err(error) = connection_handle.await {
+                eprintln!("[ironclaw-stress] postgres probe connection task failed: {error}");
+            }
             capture(config).await
         }
     }
@@ -777,7 +779,9 @@ async fn try_capture_postgres(
         capture_postgres_write_stats(&client, &mut snapshot).await?;
     }
     drop(client);
-    let _ = connection_handle.await;
+    if let Err(error) = connection_handle.await {
+        eprintln!("[ironclaw-stress] postgres probe connection task failed: {error}");
+    }
     Ok(normalize_snapshot(snapshot))
 }
 

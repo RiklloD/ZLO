@@ -18,6 +18,9 @@ ignored = ["rust_decimal"]
 [package.metadata.ironclaw]
 layer = "app"
 
+[lints]
+workspace = true
+
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true, default-features = true, features = ["serde"] }

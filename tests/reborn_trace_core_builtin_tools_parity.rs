@@ -229,7 +229,9 @@ impl LiveHttpServer {
             .route("/v1/items", get(live_items))
             .with_state(state);
         let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
+            axum::serve(listener, app)
+                .await
+                .expect("live loopback HTTP server");
         });
 
         Self {

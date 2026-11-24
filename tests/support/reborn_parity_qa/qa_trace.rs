@@ -1400,6 +1400,10 @@ pub async fn record_qa_phrase(fixture_name: &str, phrase: &str) {
     // Surface runtime diagnostics (e.g. the real cause behind a sanitized
     // `host_stage_unavailable_capability`) when `RUST_LOG` is set. `try_init`
     // is a no-op if a subscriber is already installed.
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "try_init fails only when a subscriber is already installed, which is the intended no-op"
+    )]
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -1485,7 +1489,11 @@ pub async fn record_qa_phrase(fixture_name: &str, phrase: &str) {
             // Flush whatever the model did before the failure so the partial
             // trace is inspectable (e.g. a RunTimeout mid-task shows how far the
             // agent got and which tools it called). This is NOT a valid fixture.
-            let _ = runtime.shutdown().await;
+            if let Err(shutdown_error) = runtime.shutdown().await {
+                eprintln!(
+                    "[RebornQaTrace] runtime shutdown after the failed drive also failed: {shutdown_error}"
+                );
+            }
             match recorder.flush().await {
                 Ok(()) => eprintln!(
                     "[RebornQaTrace] drive failed ({error}); flushed PARTIAL trace to {} for \

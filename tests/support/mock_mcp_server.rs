@@ -131,10 +131,14 @@ impl MockMcpServer {
     /// Shut down the server.
     pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the server may already have stopped and dropped its receiver"
+            )]
             let _ = tx.send(());
         }
         if let Some(h) = self.handle.take() {
-            let _ = h.await;
+            h.await.expect("mock MCP server task");
         }
     }
 }
@@ -142,6 +146,10 @@ impl MockMcpServer {
 impl Drop for MockMcpServer {
     fn drop(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the server may already have stopped and dropped its receiver"
+            )]
             let _ = tx.send(());
         }
         if let Some(h) = self.handle.take() {
@@ -265,6 +273,10 @@ pub async fn start_mock_mcp_server(tool_responses: Vec<MockToolResponse>) -> Moc
     let handle = tokio::spawn(async move {
         axum::serve(listener, app)
             .with_graceful_shutdown(async {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "a dropped sender (the handle went away) means shut down too"
+                )]
                 let _ = shutdown_rx.await;
             })
             .await
@@ -347,6 +359,10 @@ pub async fn start_mock_mcp_server_with_specs(specs: Vec<MockToolSpec>) -> MockM
     let handle = tokio::spawn(async move {
         axum::serve(listener, app)
             .with_graceful_shutdown(async {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "a dropped sender (the handle went away) means shut down too"
+                )]
                 let _ = shutdown_rx.await;
             })
             .await

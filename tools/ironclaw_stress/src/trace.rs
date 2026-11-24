@@ -197,6 +197,10 @@ fn emit_trace_sample(
 
 pub(crate) fn stop_trace_reporter(trace_reporter: Option<TraceReporter>) {
     if let Some(trace_reporter) = trace_reporter {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the reporter thread may already have exited; its join below reports a panic"
+        )]
         let _ = trace_reporter.stop_sender.send(());
         if let Err(payload) = trace_reporter.handle.join() {
             eprintln!(

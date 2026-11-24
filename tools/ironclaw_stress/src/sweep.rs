@@ -1,5 +1,4 @@
 use std::{
-    fmt::Write as FmtWrite,
     fs::File,
     io::{BufWriter, Write as IoWrite},
     time::Instant,
@@ -8,6 +7,7 @@ use std::{
 use serde::Serialize;
 use serde_json::json;
 
+use crate::report_text::ReportText;
 use crate::{Args, CliError, compare, run_once};
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -411,10 +411,8 @@ fn build_cases(args: &Args) -> Vec<SweepCase> {
 
 fn render_sweep_summary(results: &[SweepResult]) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "\nSweep summary");
-    let _ = writeln!(
-        output,
-        "{:<18} {:<8} {:>5} {:>6} {:>5} {:>8} {:>6} {:>6} {:>5} {:>5} {:>5} {:>6} {:>9} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+    output.push_line(format_args!("\nSweep summary"));
+    output.push_line(format_args!("{:<18} {:<8} {:>5} {:>6} {:>5} {:>8} {:>6} {:>6} {:>5} {:>5} {:>5} {:>6} {:>9} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
         "label",
         "run",
         "conc",
@@ -434,18 +432,12 @@ fn render_sweep_summary(results: &[SweepResult]) -> String {
         "p99",
         "max",
         "cpu",
-        "rss"
-    );
-    let _ = writeln!(
-        output,
-        "{:-<18} {:-<8} {:->5} {:->6} {:->5} {:->8} {:->6} {:->6} {:->5} {:->5} {:->5} {:->6} {:->9} {:->8} {:->10} {:->10} {:->10} {:->10} {:->10} {:->10}",
-        "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""
-    );
+        "rss"));
+    output.push_line(format_args!("{:-<18} {:-<8} {:->5} {:->6} {:->5} {:->8} {:->6} {:->6} {:->5} {:->5} {:->5} {:->6} {:->9} {:->8} {:->10} {:->10} {:->10} {:->10} {:->10} {:->10}",
+        "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""));
     for result in results {
         let short_run_id = result.run_id.chars().take(8).collect::<String>();
-        let _ = writeln!(
-            output,
-            "{:<18} {:<8} {:>5} {:>6} {:>5} {:>8} {:>6} {:>6} {:>5} {:>5} {:>5} {:>6} {:>9} {:>7.2}% {:>10.2} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        output.push_line(format_args!("{:<18} {:<8} {:>5} {:>6} {:>5} {:>8} {:>6} {:>6} {:>5} {:>5} {:>5} {:>6} {:>9} {:>7.2}% {:>10.2} {:>10} {:>10} {:>10} {:>10} {:>10}",
             truncate(&result.label, 18),
             short_run_id,
             result.case.concurrency,
@@ -465,19 +457,18 @@ fn render_sweep_summary(results: &[SweepResult]) -> String {
             format_latency_us(result.metrics.p99_us),
             format_latency_us(result.metrics.max_us),
             format_optional_ms(result.metrics.cpu_ms),
-            format_optional_kb(result.metrics.peak_rss_kb),
-        );
+            format_optional_kb(result.metrics.peak_rss_kb)));
     }
     output
 }
 
 fn render_sweep_bottleneck_report(results: &[SweepResult]) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "\nSweep bottleneck analysis");
-    let _ = writeln!(output, "{:<22} {:<18} evidence", "signal", "point");
-    let _ = writeln!(output, "{:-<22} {:-<18} {:-<56}", "", "", "");
+    output.push_line(format_args!("\nSweep bottleneck analysis"));
+    output.push_line(format_args!("{:<22} {:<18} evidence", "signal", "point"));
+    output.push_line(format_args!("{:-<22} {:-<18} {:-<56}", "", "", ""));
     if results.is_empty() {
-        let _ = writeln!(output, "{:<22} {:<18} no sweep points", "none", "-");
+        output.push_line(format_args!("{:<22} {:<18} no sweep points", "none", "-"));
         return output;
     }
 
@@ -488,15 +479,14 @@ fn render_sweep_bottleneck_report(results: &[SweepResult]) -> String {
             .unwrap_or(std::cmp::Ordering::Equal)
     }) && result.metrics.failed > 0
     {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<18} failed={} attempted={} fail_rate={:.2}%",
             "failure_ceiling",
             truncate(&result.label, 18),
             result.metrics.failed,
             result.metrics.attempted,
             result.metrics.failure_rate() * 100.0
-        );
+        ));
     }
 
     if let Some(result) = results.iter().min_by(|left, right| {
@@ -505,24 +495,22 @@ fn render_sweep_bottleneck_report(results: &[SweepResult]) -> String {
             .partial_cmp(&right.metrics.throughput_ops_sec)
             .unwrap_or(std::cmp::Ordering::Equal)
     }) {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<18} throughput={:.2} ops/sec",
             "lowest_throughput",
             truncate(&result.label, 18),
             result.metrics.throughput_ops_sec
-        );
+        ));
     }
 
     if let Some(result) = results.iter().max_by_key(|result| result.metrics.p95_us) {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<18} p95={} p99={}",
             "highest_latency",
             truncate(&result.label, 18),
             format_latency_us(result.metrics.p95_us),
             format_latency_us(result.metrics.p99_us)
-        );
+        ));
     }
 
     if let Some(result) = results
@@ -530,13 +518,12 @@ fn render_sweep_bottleneck_report(results: &[SweepResult]) -> String {
         .filter(|result| result.metrics.cpu_ms.is_some())
         .max_by_key(|result| result.metrics.cpu_ms)
     {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<18} cpu={}",
             "highest_cpu",
             truncate(&result.label, 18),
             format_optional_ms(result.metrics.cpu_ms)
-        );
+        ));
     }
 
     if let Some(result) = results
@@ -544,24 +531,17 @@ fn render_sweep_bottleneck_report(results: &[SweepResult]) -> String {
         .filter(|result| result.metrics.peak_rss_kb.is_some())
         .max_by_key(|result| result.metrics.peak_rss_kb)
     {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<22} {:<18} peak_rss={}",
             "highest_rss",
             truncate(&result.label, 18),
             format_optional_kb(result.metrics.peak_rss_kb)
-        );
+        ));
     }
 
-    let _ = writeln!(output, "\nNext probes");
-    let _ = writeln!(
-        output,
-        "- Rerun the worst latency/throughput point with --trace-jsonl and --bottleneck-report to capture interval collapse."
-    );
-    let _ = writeln!(
-        output,
-        "- Add one dimension at a time to distinguish user fanout, concurrency, model latency, and storage growth."
-    );
+    output.push_line(format_args!("\nNext probes"));
+    output.push_line(format_args!("- Rerun the worst latency/throughput point with --trace-jsonl and --bottleneck-report to capture interval collapse."));
+    output.push_line(format_args!("- Add one dimension at a time to distinguish user fanout, concurrency, model latency, and storage growth."));
     output
 }
 

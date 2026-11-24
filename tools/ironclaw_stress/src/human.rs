@@ -1,6 +1,7 @@
 use ironclaw_stress::db_probe::{DbProbeDelta, DbProbeSnapshot, DbProbeSummary};
-use std::{collections::BTreeMap, fmt::Write};
+use std::collections::BTreeMap;
 
+use crate::report_text::ReportText;
 use crate::{
     Args, RunSummary,
     process_metrics::{ProcessMetrics, aggregate_process_metrics},
@@ -269,35 +270,32 @@ pub(crate) fn render_parent_summary(args: &Args, run_id: &str, summaries: &[RunS
 }
 
 fn push_overview(output: &mut String, title: &str, rows: &[(&str, String)]) {
-    let _ = writeln!(output, "\n{title}");
-    let _ = writeln!(output, "{:<24} value", "field");
-    let _ = writeln!(output, "{:-<24} {:-<32}", "", "");
+    output.push_line(format_args!("\n{title}"));
+    output.push_line(format_args!("{:<24} value", "field"));
+    output.push_line(format_args!("{:-<24} {:-<32}", "", ""));
     for (field, value) in rows {
-        let _ = writeln!(output, "{field:<24} {value}");
+        output.push_line(format_args!("{field:<24} {value}"));
     }
 }
 
 fn push_latency_table(output: &mut String, title: &str, rows: &[(&str, u64, &LatencySummary)]) {
-    let _ = writeln!(output, "\n{title}");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\n{title}"));
+    output.push_line(format_args!(
         "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10}",
         "name", "count", "p50", "p95", "p99", "max"
-    );
-    let _ = writeln!(
-        output,
+    ));
+    output.push_line(format_args!(
         "{:-<24} {:->8} {:->10} {:->10} {:->10} {:->10}",
         "", "", "", "", "", ""
-    );
+    ));
     for (name, count, latency) in rows {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{name:<24} {count:>8} {:>10} {:>10} {:>10} {:>10}",
             format_latency_us(latency.p50_us),
             format_latency_us(latency.p95_us),
             format_latency_us(latency.p99_us),
-            format_latency_us(latency.max_us),
-        );
+            format_latency_us(latency.max_us)
+        ));
     }
 }
 
@@ -396,19 +394,16 @@ fn push_api_capacity_table(
 }
 
 fn push_prefill_table(output: &mut String, prefill: &crate::user_turn::PrefillSummary) {
-    let _ = writeln!(output, "\nPrefill");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nPrefill"));
+    output.push_line(format_args!(
         "{:<12} {:>8} {:>8} {:>8} {:>10} {:>10} {:>10} {:>10}",
         "threads", "turns", "ok", "failed", "duration", "ops/sec", "p95", "max"
-    );
-    let _ = writeln!(
-        output,
+    ));
+    output.push_line(format_args!(
         "{:-<12} {:->8} {:->8} {:->8} {:->10} {:->10} {:->10} {:->10}",
         "", "", "", "", "", "", "", ""
-    );
-    let _ = writeln!(
-        output,
+    ));
+    output.push_line(format_args!(
         "{:<12} {:>8} {:>8} {:>8} {:>10} {:>10.2} {:>10} {:>10}",
         prefill.threads,
         prefill.turns_per_thread,
@@ -417,14 +412,14 @@ fn push_prefill_table(output: &mut String, prefill: &crate::user_turn::PrefillSu
         format_duration_ms(prefill.duration_ms),
         prefill.throughput_ops_sec,
         format_latency_us(prefill.latency.p95_us),
-        format_latency_us(prefill.latency.max_us),
-    );
+        format_latency_us(prefill.latency.max_us)
+    ));
 }
 
 fn push_process_table(output: &mut String, process: &ProcessMetrics) {
-    let _ = writeln!(output, "\nProcess metrics");
-    let _ = writeln!(output, "{:<24} {:>12}", "metric", "value");
-    let _ = writeln!(output, "{:-<24} {:->12}", "", "");
+    output.push_line(format_args!("\nProcess metrics"));
+    output.push_line(format_args!("{:<24} {:>12}", "metric", "value"));
+    output.push_line(format_args!("{:-<24} {:->12}", "", ""));
     push_metric(
         output,
         "cpu_total",
@@ -454,13 +449,15 @@ fn push_process_table(output: &mut String, process: &ProcessMetrics) {
 }
 
 fn push_db_probe_table(output: &mut String, db_probe: &DbProbeSummary) {
-    let _ = writeln!(output, "\nDB probe");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nDB probe"));
+    output.push_line(format_args!(
         "{:<36} {:>12} {:>12} {:>12}",
         "metric", "before", "after", "delta"
-    );
-    let _ = writeln!(output, "{:-<36} {:->12} {:->12} {:->12}", "", "", "", "");
+    ));
+    output.push_line(format_args!(
+        "{:-<36} {:->12} {:->12} {:->12}",
+        "", "", "", ""
+    ));
     push_db_size_metric(
         output,
         "libsql_file",
@@ -510,7 +507,7 @@ fn push_db_probe_table(output: &mut String, db_probe: &DbProbeSummary) {
     push_db_probe_error(output, "before_error", &db_probe.before);
     push_db_probe_error(output, "after_error", &db_probe.after);
     if let Some(measurement) = &db_probe.measurement {
-        let _ = writeln!(output, "\nDB write measurement");
+        output.push_line(format_args!("\nDB write measurement"));
         push_metric(output, "workload", measurement.workload.clone());
         push_metric(
             output,
@@ -559,13 +556,15 @@ fn push_db_probe_table(output: &mut String, db_probe: &DbProbeSummary) {
 }
 
 fn push_libsql_table_write_table(output: &mut String, db_probe: &DbProbeSummary) {
-    let _ = writeln!(output, "\nlibSQL instrumented table writes");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nlibSQL instrumented table writes"));
+    output.push_line(format_args!(
         "{:<40} {:>10} {:>10} {:>10}",
         "counter", "before", "after", "delta"
-    );
-    let _ = writeln!(output, "{:-<40} {:->10} {:->10} {:->10}", "", "", "", "");
+    ));
+    output.push_line(format_args!(
+        "{:-<40} {:->10} {:->10} {:->10}",
+        "", "", "", ""
+    ));
     for delta in &db_probe.delta.libsql_table_writes {
         let before = db_probe
             .before
@@ -597,59 +596,56 @@ fn push_libsql_table_write_table(output: &mut String, db_probe: &DbProbeSummary)
                 delta.deletes,
             ),
         ] {
-            let _ = writeln!(
-                output,
+            output.push_line(format_args!(
                 "{:<40} {:>10} {:>10} {:>+10}",
                 truncate(&format!("{}.{}", delta.table, name), 40),
                 format_optional(before),
                 format_optional(after),
-                change,
-            );
+                change
+            ));
         }
     }
     let total = &db_probe.delta.libsql_table_writes_total;
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!(
         "{:<40} {:>10} {:>10} {:>+10}",
         "TOTAL.rows",
         db_probe.before.libsql_table_writes_total.total(),
         db_probe.after.libsql_table_writes_total.total(),
-        total.total(),
-    );
-    let _ = writeln!(
-        output,
+        total.total()
+    ));
+    output.push_line(format_args!(
         "Note: counter-trigger writes are excluded above but included in DB/WAL byte growth."
-    );
+    ));
 }
 
 fn push_libsql_idle_tables(output: &mut String, idle: &DbProbeDelta) {
-    let _ = writeln!(output, "\nlibSQL idle instrumented table writes");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nlibSQL idle instrumented table writes"));
+    output.push_line(format_args!(
         "{:<40} {:>10} {:>10} {:>10} {:>10}",
         "table", "inserts", "updates", "deletes", "total"
-    );
+    ));
     for table in &idle.libsql_table_writes {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<40} {:>+10} {:>+10} {:>+10} {:>+10}",
             truncate(&table.table, 40),
             table.inserts,
             table.updates,
             table.deletes,
-            table.inserts + table.updates + table.deletes,
-        );
+            table.inserts + table.updates + table.deletes
+        ));
     }
 }
 
 fn push_postgres_table_write_table(output: &mut String, db_probe: &DbProbeSummary) {
-    let _ = writeln!(output, "\nPostgres table writes");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nPostgres table writes"));
+    output.push_line(format_args!(
         "{:<40} {:>10} {:>10} {:>10}",
         "counter", "before", "after", "delta"
-    );
-    let _ = writeln!(output, "{:-<40} {:->10} {:->10} {:->10}", "", "", "", "");
+    ));
+    output.push_line(format_args!(
+        "{:-<40} {:->10} {:->10} {:->10}",
+        "", "", "", ""
+    ));
     for table_delta in &db_probe.delta.postgres_table_writes {
         let before = db_probe
             .before
@@ -681,39 +677,35 @@ fn push_postgres_table_write_table(output: &mut String, db_probe: &DbProbeSummar
                 table_delta.deletes,
             ),
         ] {
-            let _ = writeln!(
-                output,
+            output.push_line(format_args!(
                 "{:<40} {:>10} {:>10} {:>+10}",
                 truncate(&format!("{}.{}", table_delta.table, name), 40),
                 format_optional(before),
                 format_optional(after),
-                counter_delta,
-            );
+                counter_delta
+            ));
         }
     }
     let total = &db_probe.delta.postgres_table_writes_total;
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!(
         "{:<40} {:>10} {:>10} {:>+10}",
         "TOTAL.rows",
         db_probe.before.postgres_table_writes_total.total(),
         db_probe.after.postgres_table_writes_total.total(),
-        total.total(),
-    );
+        total.total()
+    ));
 }
 
 fn push_postgres_statement_table(output: &mut String, db_probe: &DbProbeSummary) {
-    let _ = writeln!(output, "\nPostgres normalized statement calls");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nPostgres normalized statement calls"));
+    output.push_line(format_args!(
         "{:<18} {:<8} {:<30} {:>9} {:>9} {:>9}",
         "query_id", "op", "tables", "before", "after", "delta"
-    );
-    let _ = writeln!(
-        output,
+    ));
+    output.push_line(format_args!(
         "{:-<18} {:-<8} {:-<30} {:->9} {:->9} {:->9}",
         "", "", "", "", "", ""
-    );
+    ));
     for delta in &db_probe.delta.postgres_statement_calls {
         let before = db_probe
             .before
@@ -729,70 +721,64 @@ fn push_postgres_statement_table(output: &mut String, db_probe: &DbProbeSummary)
             .find(|statement| statement.query_id == delta.query_id)
             .map(|statement| statement.calls)
             .unwrap_or(0);
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<18} {:<8} {:<30} {:>9} {:>9} {:>+9}",
             delta.query_id,
             delta.operation,
             truncate(&delta.tables.join(","), 30),
             before,
             after,
-            delta.calls,
-        );
+            delta.calls
+        ));
     }
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!(
         "{:<18} {:<8} {:<30} {:>9} {:>9} {:>+9}",
         "TOTAL",
         "",
         "",
         db_probe.before.postgres_statement_calls_total,
         db_probe.after.postgres_statement_calls_total,
-        db_probe.delta.postgres_statement_calls_total,
-    );
-    let _ = writeln!(output, "\nPostgres statement calls by table");
+        db_probe.delta.postgres_statement_calls_total
+    ));
+    output.push_line(format_args!("\nPostgres statement calls by table"));
     for table in &db_probe.delta.postgres_statement_calls_by_table {
-        let _ = writeln!(output, "{:<40} {:>+10}", table.table, table.calls);
+        output.push_line(format_args!("{:<40} {:>+10}", table.table, table.calls));
     }
 }
 
 fn push_postgres_idle_tables(output: &mut String, idle: &DbProbeDelta) {
-    let _ = writeln!(output, "\nPostgres idle table writes");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nPostgres idle table writes"));
+    output.push_line(format_args!(
         "{:<40} {:>10} {:>10} {:>10} {:>10}",
         "table", "inserts", "updates", "deletes", "total"
-    );
+    ));
     for table in &idle.postgres_table_writes {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<40} {:>+10} {:>+10} {:>+10} {:>+10}",
             truncate(&table.table, 40),
             table.inserts,
             table.updates,
             table.deletes,
-            table.inserts + table.updates + table.deletes,
-        );
+            table.inserts + table.updates + table.deletes
+        ));
     }
 }
 
 fn push_postgres_idle_statements(output: &mut String, idle: &DbProbeDelta) {
-    let _ = writeln!(output, "\nPostgres idle normalized statement calls");
+    output.push_line(format_args!("\nPostgres idle normalized statement calls"));
     for statement in &idle.postgres_statement_calls {
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<18} {:<8} {:<30} {:>+9}",
             statement.query_id,
             statement.operation,
             truncate(&statement.tables.join(","), 30),
-            statement.calls,
-        );
+            statement.calls
+        ));
     }
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!(
         "{:<18} {:<8} {:<30} {:>+9}",
-        "TOTAL", "", "", idle.postgres_statement_calls_total,
-    );
+        "TOTAL", "", "", idle.postgres_statement_calls_total
+    ));
 }
 
 fn push_db_size_metric(
@@ -805,26 +791,24 @@ fn push_db_size_metric(
     if before.is_none() && after.is_none() && delta.is_none() {
         return;
     }
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!(
         "{name:<36} {:>12} {:>12} {:>12}",
         format_optional_bytes(before),
         format_optional_bytes(after),
-        format_optional_byte_delta(delta),
-    );
+        format_optional_byte_delta(delta)
+    ));
 }
 
 fn push_db_count_metric(output: &mut String, name: &str, before: Option<u64>, after: Option<u64>) {
     if before.is_none() && after.is_none() {
         return;
     }
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!(
         "{name:<36} {:>12} {:>12} {:>12}",
         format_optional(before),
         format_optional(after),
         "-"
-    );
+    ));
 }
 
 fn push_db_probe_error(output: &mut String, name: &str, snapshot: &DbProbeSnapshot) {
@@ -834,40 +818,36 @@ fn push_db_probe_error(output: &mut String, name: &str, snapshot: &DbProbeSnapsh
             "after_error" => ("-".to_string(), truncate(error, 48)),
             _ => ("-".to_string(), truncate(error, 48)),
         };
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{name:<36} {:>12} {:>12} {:>12}",
             before, after, "-"
-        );
+        ));
     }
 }
 
 fn push_metric(output: &mut String, name: &str, value: String) {
-    let _ = writeln!(output, "{name:<24} {value:>12}");
+    output.push_line(format_args!("{name:<24} {value:>12}"));
 }
 
 fn push_child_table(output: &mut String, summaries: &[RunSummary]) {
     if summaries.len() < 2 {
         return;
     }
-    let _ = writeln!(output, "\nChild summaries");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nChild summaries"));
+    output.push_line(format_args!(
         "{:<8} {:>9} {:>9} {:>9} {:>10} {:>10} {:>10} {:>10}",
         "child", "attempted", "succeeded", "failed", "duration", "p95", "p99", "max"
-    );
-    let _ = writeln!(
-        output,
+    ));
+    output.push_line(format_args!(
         "{:-<8} {:->9} {:->9} {:->9} {:->10} {:->10} {:->10} {:->10}",
         "", "", "", "", "", "", "", ""
-    );
+    ));
     for summary in summaries {
         let child = summary
             .child_index
             .map(|index| index.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{child:<8} {:>9} {:>9} {:>9} {:>10} {:>10} {:>10} {:>10}",
             summary.attempted,
             summary.succeeded,
@@ -875,8 +855,8 @@ fn push_child_table(output: &mut String, summaries: &[RunSummary]) {
             format_duration_ms(summary.duration_ms),
             format_latency_us(summary.latency.p95_us),
             format_latency_us(summary.latency.p99_us),
-            format_latency_us(summary.latency.max_us),
-        );
+            format_latency_us(summary.latency.max_us)
+        ));
     }
 }
 
@@ -884,11 +864,11 @@ fn push_errors_table(output: &mut String, errors: &BTreeMap<String, u64>) {
     if errors.is_empty() {
         return;
     }
-    let _ = writeln!(output, "\nErrors");
-    let _ = writeln!(output, "{:<36} {:>8}", "bucket", "count");
-    let _ = writeln!(output, "{:-<36} {:->8}", "", "");
+    output.push_line(format_args!("\nErrors"));
+    output.push_line(format_args!("{:<36} {:>8}", "bucket", "count"));
+    output.push_line(format_args!("{:-<36} {:->8}", "", ""));
     for (bucket, count) in errors {
-        let _ = writeln!(output, "{:<36} {:>8}", truncate(bucket, 36), count);
+        output.push_line(format_args!("{:<36} {:>8}", truncate(bucket, 36), count));
     }
 }
 
@@ -899,13 +879,15 @@ fn push_failure_causes_table(
     if failure_causes.is_empty() {
         return;
     }
-    let _ = writeln!(output, "\nFailure causes");
-    let _ = writeln!(
-        output,
+    output.push_line(format_args!("\nFailure causes"));
+    output.push_line(format_args!(
         "{:<32} {:>8} {:<36} sample_detail",
         "bucket", "count", "stages"
-    );
-    let _ = writeln!(output, "{:-<32} {:->8} {:-<36} {:-<32}", "", "", "", "");
+    ));
+    output.push_line(format_args!(
+        "{:-<32} {:->8} {:-<36} {:-<32}",
+        "", "", "", ""
+    ));
     for (bucket, cause) in failure_causes {
         let stages = cause
             .stages
@@ -913,14 +895,13 @@ fn push_failure_causes_table(
             .map(|(stage, count)| format!("{stage}:{count}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let _ = writeln!(
-            output,
+        output.push_line(format_args!(
             "{:<32} {:>8} {:<36} {}",
             truncate(bucket, 32),
             cause.count,
             truncate(&stages, 36),
-            truncate(&cause.sample_detail, 72),
-        );
+            truncate(&cause.sample_detail, 72)
+        ));
     }
 }
 

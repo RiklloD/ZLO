@@ -286,6 +286,10 @@ impl MockLlmHandle {
 impl Drop for MockLlmHandle {
     fn drop(&mut self) {
         if let Some(sender) = self.stop_sender.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "the accept loop may already have exited; there is nothing left to stop"
+            )]
             let _ = sender.send(());
         }
     }
@@ -2530,6 +2534,10 @@ async fn start_mock_llm(args: &Args) -> Result<Option<MockLlmHandle>, String> {
                         Ok((stream, _)) => {
                             let state = Arc::clone(&accept_state);
                             tokio::spawn(async move {
+                                #[expect(
+                                    clippy::let_underscore_must_use,
+                                    reason = "a failed mock connection (peer reset mid-request) ends only that connection; the load generator records the request failure on its side"
+                                )]
                                 let _ = handle_mock_llm_connection(stream, state).await;
                             });
                         }
