@@ -108,6 +108,50 @@ pub(super) fn agent_command(c: &AntigravityConfig) -> Command {
     cmd
 }
 
+/// The folder of `open` and `xdg-open` stubs that fail, under the state
+/// folder, (re)written for an agent ZLO starts on its own. agy finds the
+/// browser opener on PATH (it names no absolute `/usr/bin/open`), so with
+/// this folder first on PATH a sign-in that wants a browser fails instead
+/// of opening one. Each stub is written beside its final name and renamed
+/// over it, so a concurrent start never sees a torn file.
+pub(super) async fn browser_stubs(config: &AntigravityConfig) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    const STUB: &str =
+        "#!/bin/sh\n# ZLO: an agent started in the background never opens a browser.\nexit 1\n";
+    let dir = config.state_dir.join("no-browser");
+    private_dir_all(&dir).await?;
+    for name in ["open", "xdg-open"] {
+        let path = dir.join(name);
+        let current = tokio::fs::symlink_metadata(&path).await.ok(); // silent-ok: missing is rewritten
+        let intact = match current {
+            Some(meta) if meta.is_file() && meta.permissions().mode() & 0o777 == 0o700 => {
+                tokio::fs::read_to_string(&path).await.ok().as_deref() == Some(STUB) // silent-ok: unreadable is rewritten
+            }
+            _ => false,
+        };
+        if intact {
+            continue;
+        }
+        let tmp = dir.join(format!(".{name}.{}", uuid::Uuid::new_v4()));
+        tokio::fs::write(&tmp, STUB).await?;
+        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).await?;
+        tokio::fs::rename(&tmp, &path).await?;
+    }
+    Ok(dir)
+}
+
+/// Put the [`browser_stubs`] folder first on the agent's PATH.
+pub(super) fn without_browser(cmd: &mut Command, stubs: &Path) -> Result<(), String> {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(std::iter::once(stubs.to_path_buf()).chain(
+        // An empty entry would mean the agent's working folder.
+        std::env::split_paths(&inherited).filter(|p| !p.as_os_str().is_empty()),
+    ))
+    .map_err(|e| format!("browser stubs on PATH: {e}"))?;
+    cmd.env("PATH", path);
+    Ok(())
+}
+
 /// Profile folders, the work folder and the session map. The auth method
 /// goes in the profile's `settings.json` (never a credential); an existing
 /// file (a shared profile) is left alone.

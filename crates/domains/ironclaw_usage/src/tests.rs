@@ -461,11 +461,15 @@ async fn antigravity_keyring_sign_in_is_not_reported_signed_out() {
             .contains("Sign in to Antigravity"),
         "no keyring entry: still asked to sign in"
     );
+    // The same lookup, word for word, as `ironclaw_cli_providers`'
+    // `signin::keyring` (its test `production_lookup_matches_the_usage_monitor`
+    // pins this literal too): both crates must ask about one entry.
     let lookups = std::fs::read_to_string(&args).unwrap();
     assert!(
-        lookups
-            .lines()
-            .all(|l| l == "find-generic-password -s gemini -a antigravity"),
+        !lookups.is_empty()
+            && lookups
+                .lines()
+                .all(|l| l == "find-generic-password -s gemini -a antigravity"),
         "{lookups}"
     );
 }

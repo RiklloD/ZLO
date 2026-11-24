@@ -307,7 +307,7 @@ impl Engine {
         } = self
             .resolve_target(&target, &source_ctx, &source.runtime_id)
             .await?;
-        let fork_effort = crate::delegation::explicit_effort(&target).or(route_effort);
+        let fork_effort = crate::delegation::EffortPick::of(&target).or_route(route_effort);
         let runtime = self.runtime(&runtime_id)?;
         let source_title = source.title.clone().unwrap_or_else(|| "thread".into());
         let name = match title.map(str::trim).filter(|t| !t.is_empty()) {

@@ -211,11 +211,15 @@ pub(super) async fn refresh_models(
     launch::private_dir_all(&probe_dir)
         .await
         .map_err(|e| format!("probe dir: {}", e.kind()))?;
+    // ZLO starts this agent on its own: it gets no way to a browser.
+    let stubs = launch::browser_stubs(config)
+        .await
+        .map_err(|e| format!("browser stubs: {}", e.kind()))?;
     let probe = AntigravityConfig {
         work_dir: probe_dir.clone(),
         ..config.clone()
     };
-    let asked = probe_models(&probe, status).await;
+    let asked = probe_models(&probe, &stubs, status).await;
     if let Err(error) = tokio::fs::remove_dir_all(&probe_dir).await {
         tracing::debug!(%error, "antigravity: probe folder not removed");
     }
@@ -224,9 +228,12 @@ pub(super) async fn refresh_models(
 
 async fn probe_models(
     config: &AntigravityConfig,
+    stubs: &Path,
     status: &signin::StatusCache,
 ) -> Result<(), String> {
-    let mut child = launch::agent_command(config)
+    let mut command = launch::agent_command(config);
+    launch::without_browser(&mut command, stubs)?;
+    let mut child = command
         .spawn()
         .map_err(|e| format!("spawn: {}", e.kind()))?;
     let pgid = rpc::group_of(&child).ok_or("exited at spawn")?;
@@ -258,13 +265,14 @@ async fn probe_models(
                 config.auth_timeout,
             )
             .await;
-        match &authed {
-            Ok(_) => signin::note(&config.state_dir, attempt, true).await,
+        let noted = match &authed {
+            Ok(_) => signin::Attempt::SignedIn,
             Err(error) if fold::sign_in_failed(error, config.uses_browser()).1 => {
-                signin::note(&config.state_dir, attempt, false).await
+                signin::Attempt::SignedOut
             }
-            Err(_) => {}
-        }
+            Err(_) => signin::Attempt::Failed,
+        };
+        signin::note(&config.state_dir, attempt, noted).await;
         status.invalidate();
         authed?;
         let cwd = config.work_dir.display().to_string();
@@ -522,8 +530,10 @@ mod tests {
         let profile = dir.path().join("profile");
         std::fs::create_dir_all(profile.join(APP_DATA_DIR)).unwrap();
         std::fs::write(
-            profile.join(APP_DATA_DIR).join("acp_token.json"),
-            r#"{"refresh_token":"r"}"#,
+            // agy's own file sign-in: native agy never reads the legacy
+            // `acp_token.json`.
+            profile.join(APP_DATA_DIR).join("antigravity-oauth-token"),
+            r#"{"token":{"access_token":"a","refresh_token":"r"}}"#,
         )
         .unwrap();
         let config = AntigravityConfig {

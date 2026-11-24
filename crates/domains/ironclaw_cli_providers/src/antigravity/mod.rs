@@ -159,6 +159,15 @@ pub struct AntigravityConfig {
     /// How long a running prompt may stay silent before its session log is
     /// checked for a failure agy logged but never reported; one found ends
     /// the turn with it ([`DEFAULT_PROMPT_SILENCE`]).
+    ///
+    /// This includes a transient failure agy is still retrying on its own:
+    /// once its last logged step is an error (a 502, a quota or overload
+    /// error) and the prompt then stays silent this long while agy retries
+    /// quietly, the prompt is cancelled (`session/cancel`) and the turn ends
+    /// with that error, even if a later retry would have succeeded. This
+    /// matches t3code's watchdog (#33596): a retry that says nothing for
+    /// this long is treated as a failed turn rather than an unbounded wait.
+    /// A pending permission request pauses the check.
     pub prompt_silence: Duration,
     /// agy's OS keyring sign-in, looked up (never read) to tell whether the
     /// account is signed in without starting the agent
@@ -310,6 +319,7 @@ impl AntigravityRuntime {
             );
             return Ok(run_id);
         }
+        // A turn the user started may sign in, browser included.
         let mut child = launch::agent_command(&self.config)
             .spawn()
             .map_err(|e| RuntimeError::Unavailable(format!("spawn antigravity: {}", e.kind())))?;
@@ -1206,15 +1216,18 @@ impl Turn {
             .await;
         let failed = match authed {
             Ok(_) => {
-                signin::note(&self.config.state_dir, attempt, true).await;
+                signin::note(&self.config.state_dir, attempt, signin::Attempt::SignedIn).await;
                 None
             }
             Err(error) => {
                 let (outcome, signed_out) =
                     fold::sign_in_failed(&error, self.config.uses_browser());
-                if signed_out {
-                    signin::note(&self.config.state_dir, attempt, false).await;
-                }
+                let noted = if signed_out {
+                    signin::Attempt::SignedOut
+                } else {
+                    signin::Attempt::Failed
+                };
+                signin::note(&self.config.state_dir, attempt, noted).await;
                 Some(outcome)
             }
         };

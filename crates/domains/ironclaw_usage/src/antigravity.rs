@@ -35,7 +35,9 @@ const QUOTA_HOSTS: &[&str] = &[
 ];
 const USER_AGENT: &str = "antigravity/hub/1.0.0 (aidev_client; os_type=darwin; cl=963137146)";
 
-/// agy's go-keyring entry (`ironclaw_cli_providers`' `signin` names the same).
+/// agy's go-keyring entry (`ironclaw_cli_providers`' `signin` names the same;
+/// the two crates are peers, so each test pins the exact lookup to one
+/// literal instead of sharing code).
 const KEYRING_SERVICE: &str = "gemini";
 const KEYRING_ACCOUNT: &str = "antigravity";
 const KEYRING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);

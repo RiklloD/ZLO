@@ -117,9 +117,33 @@ struct ChildSetup<'a> {
     effort: Option<&'a str>,
 }
 
-/// An explicit effort, `default` meaning none.
-pub(crate) fn explicit_effort(target: &Target) -> Option<String> {
-    trimmed(&target.reasoning_effort).filter(|e| e != "default")
+/// What a target says about the reasoning level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EffortPick {
+    /// Nothing said: a `<model>-<level>` id's level applies.
+    Unset,
+    /// `default`: no level, not even the one a model id carries.
+    Clear,
+    Level(String),
+}
+
+impl EffortPick {
+    pub(crate) fn of(target: &Target) -> Self {
+        match trimmed(&target.reasoning_effort) {
+            None => Self::Unset,
+            Some(e) if e == "default" => Self::Clear,
+            Some(e) => Self::Level(e),
+        }
+    }
+
+    /// The level to use, given the one the route's model id carried.
+    pub(crate) fn or_route(self, route: Option<String>) -> Option<String> {
+        match self {
+            Self::Unset => route,
+            Self::Clear => None,
+            Self::Level(level) => Some(level),
+        }
+    }
 }
 
 fn trimmed(v: &Option<String>) -> Option<String> {
@@ -444,7 +468,7 @@ impl Engine {
         };
         // The child's reasoning level: an explicit one, else the level its
         // model id carried.
-        let child_effort = explicit_effort(&target).or(route_effort);
+        let child_effort = EffortPick::of(&target).or_route(route_effort);
         let profile_id = profile
             .map(|p| p.profile_id)
             .or_else(|| parent.profile_id.clone());

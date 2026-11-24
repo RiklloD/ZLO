@@ -306,14 +306,10 @@ impl Engine {
     /// turns. An effort alone (`default` clears it) changes nothing else; a
     /// switch keeps only the effort it carries.
     pub async fn set_route(&self, thread: &ThreadRecord, target: &Target) -> Result<Value> {
-        let effort = target
-            .reasoning_effort
-            .as_deref()
-            .map(str::trim)
-            .filter(|e| !e.is_empty() && *e != "default")
-            .map(str::to_string);
+        let pick = crate::delegation::EffortPick::of(target);
         if target.reasoning_effort.is_some() && target.provider.is_none() && target.model.is_none()
         {
+            let effort = pick.or_route(None);
             self.store
                 .set_thread_effort(&thread.thread_id, effort.as_deref())
                 .await?;
@@ -324,8 +320,9 @@ impl Engine {
             }));
         }
         let (mut out, route_effort) = self.switch_route(thread, target).await?;
-        // A `<model>-<level>` id carries its level when none is explicit.
-        let effort = effort.or(route_effort);
+        // A `<model>-<level>` id carries its level when none is explicit;
+        // `default` clears even that.
+        let effort = pick.or_route(route_effort);
         if out["ok"] == json!(true) {
             self.store
                 .set_thread_effort(&thread.thread_id, effort.as_deref())

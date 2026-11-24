@@ -40,9 +40,14 @@ pub(super) async fn owned_by(profile: &Path, id: &str, cwd: &Path) -> bool {
     else {
         return false;
     };
+    // Rows are counted before the size filter: an oversized second row
+    // still makes the record ambiguous. Exactly one row, small enough to
+    // read, comes back as `1|<hex>`.
     let sql = format!(
-        "SELECT hex(data) FROM trajectory_metadata_blob \
-         WHERE length(data) <= {MAX_METADATA_BYTES} LIMIT 2;"
+        "SELECT count(*), \
+         (SELECT hex(data) FROM trajectory_metadata_blob \
+          WHERE length(data) <= {MAX_METADATA_BYTES} LIMIT 1) \
+         FROM trajectory_metadata_blob;"
     );
     let rows = match sqlite::query(&path, &sql).await {
         Ok(out) => out,
@@ -51,8 +56,12 @@ pub(super) async fn owned_by(profile: &Path, id: &str, cwd: &Path) -> bool {
             return false;
         }
     };
-    let rows: Vec<&str> = rows.lines().filter(|l| !l.trim().is_empty()).collect();
-    let [row] = rows.as_slice() else {
+    let Some(row) = rows
+        .trim()
+        .split_once('|')
+        .and_then(|(count, hex)| (count == "1").then_some(hex))
+        .filter(|hex| !hex.is_empty())
+    else {
         return false;
     };
     let Some(record) = unhex(row.trim()).and_then(|blob| trajectory(&blob)) else {
@@ -255,5 +264,45 @@ mod tests {
         assert_eq!(file_uri_path("file://host/x"), None);
         // Truncated: malformed, never "no workspaces".
         assert_eq!(trajectory(&blob[..blob.len() - 2]), None);
+    }
+
+    /// Review P3: rows are counted before the size filter, so a record
+    /// table holding an oversized row beside the probe's reads ambiguous.
+    #[tokio::test]
+    async fn a_second_record_row_is_never_owned_even_when_oversized() {
+        let Some(sqlite) = sqlite::tool() else {
+            return; // no sqlite3 on this host
+        };
+        for (extra, owned) in [(None, true), (Some("zeroblob(1048577)"), false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let profile = dir.path().join("profile");
+            let cwd = dir.path().join("probe");
+            std::fs::create_dir_all(&cwd).unwrap();
+            let conversations = profile.join(APP_DATA_DIR).join("conversations");
+            std::fs::create_dir_all(&conversations).unwrap();
+            let uri = format!("file://{}", canonical(&cwd).await.display());
+            let hex: String = test_blob(&[&uri], Some("s-1"))
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect();
+            let mut sql = format!(
+                "CREATE TABLE trajectory_metadata_blob (data blob); \
+                 INSERT INTO trajectory_metadata_blob VALUES (X'{hex}');"
+            );
+            if let Some(extra) = extra {
+                sql.push_str(&format!(
+                    "INSERT INTO trajectory_metadata_blob VALUES ({extra});"
+                ));
+            }
+            assert!(
+                std::process::Command::new(&sqlite)
+                    .arg(conversations.join("s-1.db"))
+                    .arg(&sql)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert_eq!(owned_by(&profile, "s-1", &cwd).await, owned, "{extra:?}");
+        }
     }
 }

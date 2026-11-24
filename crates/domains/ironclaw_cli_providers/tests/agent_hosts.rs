@@ -456,6 +456,8 @@ const AGY_CLI: &str = r#"#!/bin/sh
 LOG=__LOG__
 MODE=__MODE__
 printf 'args %s\n' "$*" >> "$LOG"
+printf 'path %s\n' "$PATH" >> "$LOG"
+printf 'open %s\n' "$(command -v open)" >> "$LOG"
 id_of() { printf '%s' "$1" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p'; }
 reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
 note() { printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-1","update":%s}}\n' "$1"; }
@@ -474,7 +476,9 @@ while IFS= read -r line; do
   id=$(id_of "$line")
   case "$line" in
     *'"method":"initialize"'*) reply "$id" '{"protocolVersion":1,"agentCapabilities":{"_meta":{"antigravity":{"systemPrompt":{"append":true}}}},"agentInfo":{"name":"Antigravity ACP Server","version":"1.5.11"}}' ;;
-    *'"method":"authenticate"'*) reply "$id" '{}' ;;
+    *'"method":"authenticate"'*)
+      if [ "$MODE" = authfail ]; then printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"oauth2: invalid_grant: Token has been expired or revoked."}}\n' "$id"
+      else reply "$id" '{}'; fi ;;
     *'"method":"session/new"'*)
       mkdir -p "$GEMINI_HOME/antigravity-acp/conversations"
       sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS steps (idx integer PRIMARY KEY, step_type integer NOT NULL DEFAULT 0, step_payload blob);" 2>/dev/null
@@ -2643,15 +2647,26 @@ async fn antigravity_cli_catalog_reads_never_sign_in_while_signed_out() {
         "keyring absent",
         "expired file",
         "stale note",
+        // Review P1: the shared Hermes profile's legacy runtime token is no
+        // sign-in for native agy, which never reads it.
+        "legacy token, keyring absent",
+        "legacy token, no keyring tool",
     ] {
         let dir = tempfile::tempdir().unwrap();
         let recorder = Arc::new(Recorder::default());
-        let keyring = (case != "no keyring tool").then(|| fake_keyring(dir.path(), false));
+        let keyring = (!case.ends_with("no keyring tool")).then(|| fake_keyring(dir.path(), false));
         let rt = antigravity_cli_with(dir.path(), "pong", &recorder, None, |c| {
             c.keyring = keyring;
         });
         let acp = dir.path().join("profile/antigravity-acp");
         std::fs::create_dir_all(&acp).unwrap();
+        if case.starts_with("legacy token") {
+            std::fs::write(
+                acp.join("acp_token.json"),
+                r#"{"access_token":"a","refresh_token":"r","expiry":"2001-01-01T00:00:00Z"}"#,
+            )
+            .unwrap();
+        }
         if case == "expired file" {
             std::fs::write(
                 acp.join("antigravity-oauth-token"),
@@ -2681,7 +2696,7 @@ async fn antigravity_cli_catalog_reads_never_sign_in_while_signed_out() {
             "{case}: {log}"
         );
         assert!(log.is_empty(), "{case}: the agent started: {log}");
-        if case != "no keyring tool" {
+        if !case.ends_with("no keyring tool") {
             let lookups = std::fs::read_to_string(dir.path().join("security.log")).unwrap();
             assert!(
                 lookups
@@ -2727,6 +2742,96 @@ async fn antigravity_cli_a_keyring_sign_in_refreshes_the_model_list() {
         "the probe runs in its own folder: {log}"
     );
     wait_for(|| probes.read_dir().is_ok_and(|mut d| d.next().is_none())).await;
+}
+
+/// Review P2: a keyring entry does not prove `authenticate` cannot ask for
+/// a browser (a revoked refresh token falls back to one). Once a sign-in
+/// attempt failed after the last success, catalog reads stop probing until
+/// a turn the user started signs in again.
+#[tokio::test]
+async fn antigravity_cli_a_failed_sign_in_stops_catalog_probes_until_a_turn_signs_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let authenticates = || {
+        agy_log(dir.path())
+            .matches(r#""method":"authenticate""#)
+            .count()
+    };
+    let with_keyring = |mode: &str| {
+        let keyring = fake_keyring(dir.path(), true);
+        antigravity_cli_with(dir.path(), mode, &recorder, None, |c| {
+            c.keyring = Some(keyring);
+        })
+    };
+    // The probe's `authenticate` fails (invalid_grant).
+    let rt = with_keyring("authfail");
+    assert!(rt.catalog(&scope()).await.unwrap()[0].authenticated);
+    wait_for(|| authenticates() == 1).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // A fresh runtime (its retry clock reset) still never probes again.
+    let rt = with_keyring("authfail");
+    for _ in 0..5 {
+        rt.catalog(&scope()).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(authenticates(), 1, "{}", agy_log(dir.path()));
+    // The user's own turn signs in: probes may run again.
+    let rt = with_keyring("pong");
+    let (_, outcome) = one_turn(&rt, &recorder).await;
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    assert_eq!(authenticates(), 2);
+    std::fs::remove_file(dir.path().join("state/models.json")).unwrap();
+    let rt = with_keyring("pong");
+    rt.catalog(&scope()).await.unwrap();
+    wait_for(|| authenticates() == 3).await;
+}
+
+/// Review P2 backstop: an agent ZLO starts on its own (the model-list
+/// probe) finds `open` and `xdg-open` stubs that fail first on its PATH,
+/// so a browser sign-in cannot open the system browser; a turn the user
+/// started keeps the user's PATH.
+#[tokio::test]
+async fn antigravity_cli_only_background_agents_get_the_browser_stubs() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let keyring = fake_keyring(dir.path(), true);
+    let rt = antigravity_cli_with(dir.path(), "pong", &recorder, None, |c| {
+        c.keyring = Some(keyring);
+    });
+    rt.catalog(&scope()).await.unwrap();
+    wait_for(|| agy_log(dir.path()).contains(r#""method":"session/close""#)).await;
+    let log = agy_log(dir.path());
+    let path = |log: &str, nth: usize| {
+        log.lines()
+            .filter_map(|l| l.strip_prefix("path "))
+            .nth(nth)
+            .unwrap()
+            .to_string()
+    };
+    let probe_path = path(&log, 0);
+    let stubs = std::path::PathBuf::from(probe_path.split(':').next().unwrap());
+    assert!(stubs.starts_with(dir.path().join("state")), "{probe_path}");
+    for name in ["open", "xdg-open"] {
+        let stub = stubs.join(name);
+        let status = std::process::Command::new(&stub)
+            .arg("https://accounts.google.com/")
+            .status()
+            .unwrap();
+        assert!(!status.success(), "{name} must fail");
+    }
+    assert!(
+        log.lines()
+            .any(|l| l == format!("open {}", stubs.join("open").display())),
+        "the probe's `open` resolves to the stub: {log}"
+    );
+    // The rest of the user's PATH follows the stubs.
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    assert!(probe_path.ends_with(&inherited), "{probe_path}");
+
+    let (_, outcome) = one_turn(&rt, &recorder).await;
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    let turn_path = path(&agy_log(dir.path()), 1);
+    assert_eq!(turn_path, inherited);
 }
 
 /// Review P1: the probe's cleanup trusts no session id. Its own session

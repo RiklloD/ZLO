@@ -1553,6 +1553,12 @@ async fn delegation_accepts_a_model_id_carrying_its_level() {
         .await
         .unwrap();
     assert_eq!(child_effort(&task).await.as_deref(), Some("low"));
+    // Review P3: `default` clears the level, the suffix's included.
+    let task =
+        delegate(json!({"provider": "cli", "model": "m1-high", "reasoning_effort": "default"}))
+            .await
+            .unwrap();
+    assert_eq!(child_effort(&task).await, None);
     // m2 offers only `low`; `turbo` is no level at all.
     for model in ["m2-high", "m1-turbo", "m9-high"] {
         let err = delegate(json!({"provider": "cli", "model": model}))
@@ -1616,6 +1622,25 @@ async fn an_effort_pick_rides_the_route_and_a_switch_keeps_only_its_own() {
         .set_route(&thread, &effort("default"))
         .await
         .unwrap();
+    assert_eq!(store.thread_effort(&a).await.unwrap(), None);
+    // Review P3: `default` beside a `<model>-<level>` switch clears the
+    // level instead of taking the suffix's.
+    let thread = store.thread(&a).await.unwrap().unwrap();
+    let r = h
+        .engine
+        .set_route(
+            &thread,
+            &crate::delegation::Target {
+                provider: Some("cli".into()),
+                model: Some("m1-high".into()),
+                reasoning_effort: Some("default".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["effort"], serde_json::Value::Null, "{r}");
     assert_eq!(store.thread_effort(&a).await.unwrap(), None);
 }
 

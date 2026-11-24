@@ -15,11 +15,25 @@
 //! matches on attributes, which needs no access to the secret and so never
 //! shows the keychain's access prompt. The secret stays agy's.
 //!
+//! Which of them counts depends on the agent that runs: the legacy
+//! runtime's token is evidence only for [`AgentLaunch::Runtime`]; native
+//! agy never reads it (a shared Hermes profile keeps an old one long after
+//! `agy logout`), so for [`AgentLaunch::Cli`] only agy's own file sign-in
+//! or keyring entry counts, and a keyring checked and absent outweighs
+//! every file.
+//!
 //! Only this positive evidence lets a passive read (the catalog's model
 //! refresh) send `authenticate`: native agy ignores `BROWSER` for its ACP
 //! sign-in and opens the system browser itself, so an `authenticate` on a
 //! signed-out profile pops a sign-in page whenever the picker, Settings or
 //! onboarding is opened. A turn the user started may still sign in.
+//!
+//! Evidence is not proof: a keyring entry whose refresh token was revoked
+//! (`invalid_grant`) still sends agy to the browser. So once an
+//! `authenticate` failed after the last success, passive reads stop
+//! probing until a turn the user started signs in again; and every agent
+//! ZLO starts on its own runs with failing `open`/`xdg-open` stubs first on
+//! its PATH ([`super::launch::browser_stubs`]).
 //!
 //! The driver's own note of how the last `authenticate` went is a
 //! fallback for display where no credential store can be checked (no
@@ -205,8 +219,23 @@ struct Note {
     /// When that attempt started (ms).
     attempt: i64,
     signed_in: bool,
-    /// When it was noted (ms).
+    /// When `signed_in` was learned (ms).
     at: i64,
+    /// The latest attempt failed: passive reads may not probe until a
+    /// later one succeeds.
+    failed: bool,
+}
+
+/// How one `authenticate` went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Attempt {
+    SignedIn,
+    /// It failed because the account is signed out.
+    SignedOut,
+    /// It failed for another reason (timeout, crash, a revoked token the
+    /// agent did not call a sign-out): what was known stays, but passive
+    /// probes stop.
+    Failed,
 }
 
 fn note_file(state_dir: &Path) -> PathBuf {
@@ -220,6 +249,7 @@ fn parse_note(raw: &str) -> Option<Note> {
             attempt: at,
             signed_in: true,
             at,
+            failed: false,
         });
     }
     let doc: Value = serde_json::from_str(raw).ok()?; // silent-ok: a torn note proves nothing
@@ -227,6 +257,7 @@ fn parse_note(raw: &str) -> Option<Note> {
         attempt: doc["attempt"].as_i64()?,
         signed_in: doc["signed_in"].as_bool()?,
         at: doc["at"].as_i64()?,
+        failed: doc["failed"].as_bool().unwrap_or(false),
     })
 }
 
@@ -238,15 +269,24 @@ async fn read_note(state_dir: &Path) -> Option<Note> {
 /// Note how the `authenticate` started at `attempt` (ms) went. An attempt
 /// that started before the noted one finished late and is dropped, so an
 /// overlapping sign-in or sign-out cannot be overwritten by a stale one.
-pub(super) async fn note(state_dir: &Path, attempt: i64, signed_in: bool) {
+pub(super) async fn note(state_dir: &Path, attempt: i64, outcome: Attempt) {
     let noted = locked::update(note_file(state_dir), move |current| {
-        if current
-            .and_then(parse_note)
-            .is_some_and(|before| before.attempt > attempt)
-        {
+        let before = current.and_then(parse_note);
+        if before.is_some_and(|before| before.attempt > attempt) {
             return None;
         }
-        Some(json!({"attempt": attempt, "signed_in": signed_in, "at": now_ms()}).to_string())
+        let now = now_ms();
+        let (signed_in, at) = match outcome {
+            Attempt::SignedIn => (true, now),
+            Attempt::SignedOut => (false, now),
+            // Nothing new learned about the account.
+            Attempt::Failed => before.map_or((false, now), |b| (b.signed_in, b.at)),
+        };
+        let failed = outcome != Attempt::SignedIn;
+        Some(
+            json!({"attempt": attempt, "signed_in": signed_in, "at": at, "failed": failed})
+                .to_string(),
+        )
     })
     .await;
     match noted {
@@ -269,35 +309,41 @@ pub(super) async fn status(config: &AntigravityConfig, now: i64) -> SignIn {
             .as_ref(),
         now,
     );
-    if legacy == Token::Valid || cli == Token::Valid {
+    let note = read_note(&config.state_dir).await;
+    // A failed attempt newer than the last success: credentials on hand
+    // did not sign in without asking, so a passive read must not try.
+    let unproven = config.uses_browser() && note.is_some_and(|n| n.failed);
+    let evidence = match config.launch {
+        // The legacy runtime reads its own token (and the file sign-in).
+        AgentLaunch::Runtime { .. } => legacy == Token::Valid || cli == Token::Valid,
+        // Native agy never reads `acp_token.json`.
+        AgentLaunch::Cli { .. } => {
+            let keyring = if config.uses_browser() {
+                keyring(config.keyring.as_ref()).await
+            } else {
+                Keyring::Unknown
+            };
+            match keyring {
+                // Checked and gone (a logout elsewhere): no file and no
+                // older note of a success outweighs that.
+                Keyring::Absent => {
+                    return SignIn {
+                        signed_in: false,
+                        may_probe: false,
+                    };
+                }
+                Keyring::Present => true,
+                Keyring::Unknown => cli == Token::Valid,
+            }
+        }
+    };
+    if evidence {
         return SignIn {
             signed_in: true,
-            may_probe: true,
+            may_probe: !unproven,
         };
     }
-    let native = matches!(config.launch, AgentLaunch::Cli { .. });
-    if native && config.uses_browser() {
-        match keyring(config.keyring.as_ref()).await {
-            Keyring::Present => {
-                return SignIn {
-                    signed_in: true,
-                    may_probe: true,
-                };
-            }
-            // Checked and gone (a logout elsewhere): no older note of a
-            // success outweighs that.
-            Keyring::Absent => {
-                return SignIn {
-                    signed_in: false,
-                    may_probe: false,
-                };
-            }
-            Keyring::Unknown => {}
-        }
-    }
-    let noted = read_note(&config.state_dir)
-        .await
-        .is_some_and(|n| n.signed_in && now.saturating_sub(n.at) < NOTE_TTL_MS);
+    let noted = note.is_some_and(|n| n.signed_in && now.saturating_sub(n.at) < NOTE_TTL_MS);
     SignIn {
         // An expired file sign-in is not outweighed by an older note.
         signed_in: noted && cli != Token::Expired,
@@ -382,19 +428,31 @@ mod tests {
     #[tokio::test]
     async fn a_stale_attempt_never_overwrites_a_later_one() {
         let dir = tempfile::tempdir().unwrap();
-        note(dir.path(), 200, false).await;
-        note(dir.path(), 100, true).await;
+        note(dir.path(), 200, Attempt::SignedOut).await;
+        note(dir.path(), 100, Attempt::SignedIn).await;
         let noted = read_note(dir.path()).await.unwrap();
         assert_eq!((noted.attempt, noted.signed_in), (200, false));
-        note(dir.path(), 300, true).await;
-        assert!(read_note(dir.path()).await.unwrap().signed_in);
+        note(dir.path(), 300, Attempt::SignedIn).await;
+        let noted = read_note(dir.path()).await.unwrap();
+        assert!(noted.signed_in && !noted.failed);
+        // A failure that proves no sign-out keeps what was known, but
+        // marks the latest attempt failed until a later success.
+        note(dir.path(), 400, Attempt::Failed).await;
+        let failed = read_note(dir.path()).await.unwrap();
+        assert_eq!(
+            (failed.signed_in, failed.at, failed.failed),
+            (true, noted.at, true)
+        );
+        note(dir.path(), 500, Attempt::SignedIn).await;
+        assert!(!read_note(dir.path()).await.unwrap().failed);
         // The unsequenced note of older builds still reads.
         assert_eq!(
             parse_note("12345"),
             Some(Note {
                 attempt: 12345,
                 signed_in: true,
-                at: 12345
+                at: 12345,
+                failed: false,
             })
         );
         assert_eq!(parse_note("{}"), None);
@@ -424,11 +482,44 @@ mod tests {
         assert_eq!(keyring(Some(&entry("gone"))).await, Keyring::Absent);
         assert_eq!(keyring(None).await, Keyring::Unknown);
         let args = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(args.lines().count(), 2, "{args}");
         assert!(
             args.lines()
                 .all(|l| l.starts_with("find-generic-password -s ")
                     && l.split_whitespace().all(|a| a != "-w" && a != "-g")),
             "{args}"
+        );
+    }
+
+    /// Review P3: `ironclaw_usage` looks agy's entry up on its own (the
+    /// crates are peers); both tests pin the exact same lookup literal.
+    #[tokio::test]
+    async fn production_lookup_matches_the_usage_monitor() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("args");
+        let tool = dir.path().join("security");
+        std::fs::write(
+            &tool,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let entry = KeyringEntry {
+            tool,
+            ..KeyringEntry::agy().unwrap_or(KeyringEntry {
+                tool: PathBuf::new(),
+                service: AGY_KEYRING_SERVICE.into(),
+                account: AGY_KEYRING_ACCOUNT.into(),
+            })
+        };
+        assert_eq!(keyring(Some(&entry)).await, Keyring::Present);
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "find-generic-password -s gemini -a antigravity\n"
         );
     }
 }
