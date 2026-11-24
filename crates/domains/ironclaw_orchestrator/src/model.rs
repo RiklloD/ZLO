@@ -399,6 +399,9 @@ pub struct TaskRecord {
     pub delivered_at: Option<Millis>,
     pub cancel_requested: bool,
     pub limit_reset_at: Option<Millis>,
+    /// The parent's run that launched it (`t3_delegate` in that turn), so
+    /// the parent's transcript draws the subagent where it started.
+    pub parent_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

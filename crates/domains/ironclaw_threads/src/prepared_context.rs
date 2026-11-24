@@ -501,6 +501,7 @@ fn seeded_tool_result_row_parts(
         response_reasoning: pending.reasoning.map(|text| {
             truncated_at_char_boundary(&text, PREPARED_SEED_REASONING_MAX_BYTES).to_string()
         }),
+        response_text: None,
         reasoning: None,
         signature: None,
     };

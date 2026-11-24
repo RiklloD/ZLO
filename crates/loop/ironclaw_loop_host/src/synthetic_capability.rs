@@ -352,6 +352,7 @@ impl SyntheticCapabilityPort {
                 provider_tool_name: tool_call.name,
                 arguments: tool_call.arguments,
                 response_reasoning: tool_call.response_reasoning,
+                response_text: tool_call.response_text,
                 reasoning: tool_call.reasoning,
                 signature: tool_call.signature,
             }),
@@ -953,6 +954,7 @@ mod tests {
             name: ProviderToolName::new(TEST_PROVIDER_TOOL_NAME).expect("provider tool name"),
             arguments: serde_json::json!({"message": "hello"}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }

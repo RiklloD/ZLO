@@ -59,7 +59,7 @@ impl TaskStatus {
 }
 
 /// One delegated child task (`TaskView`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskView {
     pub task_id: String,
@@ -92,6 +92,26 @@ pub struct TaskView {
     pub cancel_requested: bool,
     #[serde(default)]
     pub pending_children: u32,
+    /// The parent's run that launched it: its transcript draws the
+    /// subagent there. Absent from older engines and older tasks.
+    #[serde(default)]
+    pub parent_run_id: Option<String>,
+    /// What a live child is doing, read from its transcript.
+    #[serde(default)]
+    pub progress: Option<TaskProgress>,
+}
+
+/// A live child's progress (`progress` on a task view). Only what the
+/// subagent row shows: the per-poll counters stay out, so an idle child's
+/// row does not change every poll.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProgress {
+    #[serde(default)]
+    pub last_tool: Option<String>,
+    /// The child's newest words, as one plain line.
+    #[serde(default)]
+    pub latest_output: Option<String>,
 }
 
 impl TaskView {
@@ -648,6 +668,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_task_reads_its_anchor_and_progress_and_older_engines_default() {
+        let task: TaskView = serde_json::from_value(json!({
+            "taskId": "task-1", "status": "running", "parentRunId": "run-9",
+            "progress": {"running": true, "toolCount": 3, "lastTool": "Read(a)",
+                         "latestOutput": "Reading a", "silentSeconds": 4}
+        }))
+        .unwrap();
+        assert_eq!(task.parent_run_id.as_deref(), Some("run-9"));
+        let progress = task.progress.expect("progress decodes");
+        assert_eq!(progress.latest_output.as_deref(), Some("Reading a"));
+        assert_eq!(progress.last_tool.as_deref(), Some("Read(a)"));
+        let older: TaskView =
+            serde_json::from_value(json!({"taskId": "task-0", "status": "completed"})).unwrap();
+        assert_eq!(older.parent_run_id, None);
+        assert_eq!(older.progress, None);
+    }
+
+    #[test]
     fn a_worktree_reads_the_engine_document_and_a_missing_one_is_refused() {
         let view: WorktreeView = decode(json!({
             "threadId": "t", "path": "/w/fix-1", "branch": "zlo/fix-1", "baseCommit": "abc1234",
@@ -758,6 +796,32 @@ mod tests {
             .unwrap();
         assert!(doc.compacting && doc.items[0].is_sending());
     }
+
+    #[test]
+    fn route_providers_carry_the_launch_kind() {
+        let legacy: RouteProvider = serde_json::from_value(
+            json!({"provider": "antigravity", "runtime": "antigravity", "authenticated": false, "launch": "legacy"}),
+        )
+        .unwrap();
+        assert_eq!(legacy.launch, Some(CatalogLaunch::Legacy));
+        assert!(legacy.needs_native_cli());
+        let native: RouteProvider =
+            serde_json::from_value(json!({"provider": "antigravity", "launch": "native"})).unwrap();
+        assert!(!native.needs_native_cli());
+        let unknown: RouteProvider =
+            serde_json::from_value(json!({"provider": "x", "launch": "something-new"})).unwrap();
+        assert_eq!(unknown.launch, Some(CatalogLaunch::Other));
+        let none: RouteProvider = serde_json::from_value(json!({"provider": "x"})).unwrap();
+        assert_eq!(none.launch, None);
+        // An older gateway sends no launch kind: not known either way.
+        assert!(none.launch_unknown() && unknown.launch_unknown());
+        assert!(!native.launch_unknown() && !legacy.launch_unknown());
+        let signed_in = RouteProvider {
+            authenticated: true,
+            ..none
+        };
+        assert!(!signed_in.launch_unknown());
+    }
 }
 
 /// One provider a thread can switch to (`GET /threads/{id}/route`).
@@ -777,9 +841,44 @@ pub struct RouteProvider {
     /// The vendor behind a runtime row (IronClaw's loop on ChatGPT): its
     /// logo stands for the row.
     pub brand: Option<String>,
+    /// Which agent program a CLI runtime found, when it can be one of
+    /// several (Antigravity's `agy` or its legacy ACP runtime).
+    pub launch: Option<CatalogLaunch>,
+}
+
+/// The agent program behind a CLI runtime row (the gateway's
+/// `CatalogLaunch`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogLaunch {
+    /// The vendor's own CLI: its sign-in command signs it in.
+    Native,
+    /// A standalone runtime another app installed: it has no sign-in
+    /// command; installing the vendor's CLI is the way to sign in.
+    Legacy,
+    /// A program this client does not know yet.
+    #[serde(other)]
+    Other,
 }
 
 impl RouteProvider {
+    /// Signed out on a runtime that has no sign-in command of its own.
+    pub fn needs_native_cli(&self) -> bool {
+        !self.authenticated && self.launch == Some(CatalogLaunch::Legacy)
+    }
+
+    /// Signed out, and the gateway did not say which program it found (an
+    /// older gateway sends no `launch`; a newer one may send a kind this
+    /// client does not know): for a CLI that can be found through a legacy
+    /// runtime, its sign-in may not exist.
+    pub fn launch_unknown(&self) -> bool {
+        !self.authenticated
+            && !matches!(
+                self.launch,
+                Some(CatalogLaunch::Native | CatalogLaunch::Legacy)
+            )
+    }
+
     /// The efforts `model` takes; `"default"` is the provider's default.
     pub fn efforts_for(&self, model: &str) -> &[String] {
         self.model_efforts.get(model).unwrap_or(&self.efforts)

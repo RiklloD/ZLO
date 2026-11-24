@@ -1,21 +1,20 @@
 //! Orchestration's views.
 
-use chrono::Utc;
-use rune::{El, Icon, col, el, row};
+use chrono::{Local, TimeZone, Utc};
+use rune::{El, Icon, col, el, row, text};
 use rune_kit::{ButtonVariant, Kit};
 use zlo_client::orchestration::{
     HoldReason, QueueAction, QueueItem, QueueItemKind, TaskStatus, TaskView,
 };
 
-use super::{
-    OrchestrationState, cancel_task, countdown, delegation, duration, merge_back, queue_action,
-};
+use super::{OrchestrationState, cancel_task, countdown, delegation, merge_back, queue_action};
 use crate::chat::ChatState;
 use crate::chat::dispatch;
+use crate::chat::flow;
 use crate::design::kit::compact::{
-    ICON_XS, SM, XS, ghost_button, ghost_icon, ghost_icon_tx, ico, spinner, txt, txt_medium,
-    variant_button,
+    ICON_XS, SM, XS, ghost_button, ghost_icon, ghost_icon_tx, ico, spinner, txt, variant_button,
 };
+use crate::design::kit::loops::{BREATH_35, breathe};
 use crate::design::{self, Palette, motion};
 use crate::icons;
 use crate::state::State;
@@ -64,26 +63,13 @@ pub fn composer(s: &State, chat: &ChatState, k: &Kit, plan: Option<El>) -> Optio
     )
 }
 
-/// The transcript's last row, in T3's order: live subagents (work that may
-/// need you), then the goal.
+/// The transcript's last row: the goal. Subagents are drawn inline, in the
+/// turn that launched each one ([`subagent_row`]).
 pub fn tail(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
-    let o = &chat.orchestration;
-    let id = chat.thread_id.as_str();
-    let frame = frame(&s.palette, id, o, k);
     let goal = (!chat.goals.editing())
         .then(|| crate::chat::goals::view(s, chat, k))
-        .flatten();
-    if frame.is_none() && goal.is_none() {
-        return None;
-    }
-    Some(
-        col()
-            .key("orchestration-tail")
-            .w_full()
-            .gap(8.)
-            .children(frame)
-            .children(goal),
-    )
+        .flatten()?;
+    Some(col().key("orchestration-tail").w_full().gap(8.).child(goal))
 }
 
 /// The queued messages above the composer, t3code's QueuedRunsControl:
@@ -421,99 +407,193 @@ fn strip(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
     })
 }
 
-/// Live delegated children: title, engine, status, elapsed, open, cancel.
-fn frame(p: &Palette, thread: &str, o: &OrchestrationState, k: &Kit) -> Option<El> {
-    let live: Vec<&TaskView> = o.tasks.iter().filter(|t| t.status.is_live()).collect();
-    if live.is_empty() {
-        return None;
-    }
+/// A delegated task inline where its turn launched it (t3code's subagent
+/// row): the engine's logo with a status dot, the title, one line of what
+/// it said or found, its status and time, and a chevron to its thread.
+/// Cancel shows under the pointer while it is live. Flat on the
+/// transcript's plane; a poll's update lands as it is (no motion).
+pub fn subagent_row(
+    s: &State,
+    chat: &ChatState,
+    task: &TaskView,
+    preview: Option<&str>,
+    k: &Kit,
+) -> El {
+    let p = &s.palette;
+    let id = task.task_id.as_str();
+    let live = task.status.is_live();
+    let failed = matches!(task.status, TaskStatus::Failed | TaskStatus::Interrupted);
     let now = Utc::now().timestamp_millis();
-    let mut rows = col()
-        .key("subagents")
-        .padding(4.)
-        .radius(design::PANEL_RADIUS)
-        .border(1., p.border)
-        .child(
-            el().px(8.)
-                .pt(4.)
-                .child(txt("Working in the background", XS, p.text_muted)),
+    let status = subagent_status(task, now);
+    let ink = if failed { p.danger } else { p.text_muted };
+    let small = flow::type_at(s, 12., 16., 400.);
+    let mut middle = col().grow(1.).min_w(0.).gap(1.).child(
+        text(task.title.clone())
+            .key(format!("subagent-title-{id}"))
+            .font(flow::type_at(s, 13., 18., 500.))
+            .color(p.text)
+            .truncate(),
+    );
+    if let Some(line) = preview {
+        middle = middle.child(
+            text(line.to_string())
+                .key(format!("subagent-preview-{id}"))
+                .font(small)
+                .color(ink)
+                .truncate(),
         );
-    for task in live {
-        let status = match (task.status, task.limit_reset_at) {
-            (TaskStatus::Waiting, Some(at)) => {
-                format!("Usage limit, resumes {}", countdown(at, now))
-            }
-            (TaskStatus::WaitingChildren, _) if task.pending_children > 0 => {
-                format!("Waiting for {} subagent(s)", task.pending_children)
-            }
-            (status, _) => status.label().to_string(),
-        };
-        let elapsed = task.started_at.map(|st| duration((now - st).max(0) / 1000));
-        let cancelling = task.cancel_requested;
-        let icon = match task.status {
-            TaskStatus::Running | TaskStatus::Starting => spinner(k, ICON_XS, p.text),
-            _ => ico(&icons::PAUSE, ICON_XS, p.text),
-        };
-        let (task_id, chat) = (task.task_id.clone(), thread.to_string());
-        let tip = if cancelling {
-            "Cancelling"
-        } else {
-            "Cancel this subagent and everything it delegated"
-        };
-        // Keyed apart, so Cancel gives way to the spinner with a fade.
-        let cancel = if cancelling {
+    }
+    let mut right = row()
+        .gap(8.)
+        .center_y()
+        .child(text(status.clone()).font(small).color(ink));
+    if let Some(at) = subagent_time(task) {
+        right = right.child(text(at).font(small).color(p.text_faint));
+    }
+    if live {
+        let (task_id, thread) = (task.task_id.clone(), chat.thread_id.clone());
+        let cancel = if task.cancel_requested {
             spinner(k, ICON_XS, p.text_muted)
-                .help(tip)
-                .key(format!("cancelling-{}", task.task_id))
-                .transition(motion::fade())
+                .help("Cancelling")
+                .key(format!("cancelling-{id}"))
         } else {
             ghost_icon(
                 k,
-                format!("cancel-{}", task.task_id),
+                format!("cancel-{id}"),
                 &icons::CLOSE,
-                tip,
-                move |s| cancel_task(s, &chat, task_id.clone()),
+                "Cancel this subagent and everything it delegated",
+                move |s| cancel_task(s, &thread, task_id.clone()),
             )
             .label("Cancel subagent")
-            .transition(motion::fade())
+            .group_opacity(0., 1.)
         };
-        let mut r = row()
-            .key(format!("subagent-{}", task.task_id))
-            .gap(8.)
-            .px(8.)
-            .py(4.)
-            .center_y()
-            .radius(design::ROW_RADIUS)
-            .transition(motion::reveal())
-            .child(icon)
-            .child(
-                txt_medium(task.title.clone(), SM, p.text)
-                    .truncate()
-                    .grow(1.)
-                    .min_w(0.),
-            )
-            .child(txt(task.engine_label(), XS, p.text_muted))
-            .child(txt(
-                match elapsed {
-                    Some(e) => format!("{status} · {e}"),
-                    None => status,
-                },
-                XS,
-                p.text_muted,
-            ))
-            .child(cancel);
-        if let Some(child) = task.child_thread_id.clone() {
-            r = r
-                .hover(p.hover)
-                .hover_motion(motion::HOVER, motion::HOVER)
-                .cursor(rune::Cursor::Pointer)
-                .role("button")
-                .on_press(move |s: &mut State| crate::workspace::open_thread(s, child.clone()))
-                .press_scale(motion::PRESS_CARD);
-        }
-        rows = rows.child(r);
+        right = right.child(cancel);
     }
-    Some(rows)
+    let mut line = row()
+        .key(format!("subagent-{id}"))
+        .w_full()
+        .gap(10.)
+        .px(8.)
+        .py(6.)
+        .center_y()
+        .radius(design::ROW_RADIUS)
+        .hover_group()
+        .label(format!("Subagent {}, {status}", task.title))
+        .child(subagent_avatar(s, task))
+        .child(middle)
+        .child(right);
+    if let Some(child) = task.child_thread_id.clone() {
+        line = line
+            .child(ico(&icons::CHEVRON_RIGHT, ICON_XS, p.text_faint).group_color(p.text_muted))
+            .hover(p.hover)
+            .hover_motion(motion::HOVER, motion::HOVER)
+            .cursor(rune::Cursor::Pointer)
+            .role("button")
+            .on_press(move |s: &mut State| crate::workspace::open_thread(s, child.clone()))
+            .press_scale(motion::PRESS_CARD);
+    }
+    line
+}
+
+/// The engine's logo in a round hairline tile, its status as a dot at the
+/// corner: accent while it works (breathing at 15 fps), success, danger,
+/// faint once stopped.
+fn subagent_avatar(s: &State, task: &TaskView) -> El {
+    let p = &s.palette;
+    let ids: Vec<&str> = [
+        task.provider.as_deref(),
+        Some(task.runtime.as_str()),
+        task.model.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|id| !id.is_empty())
+    .collect();
+    let dot = match task.status {
+        status if status.is_live() => p.accent,
+        TaskStatus::Completed => p.success,
+        TaskStatus::Failed | TaskStatus::Interrupted => p.danger,
+        _ => p.text_faint,
+    };
+    let mut mark = el()
+        .key(format!("subagent-dot-{}", task.task_id))
+        .absolute(15., 15.)
+        .size(9., 9.)
+        .radius(4.5)
+        .border(1.5, p.bg)
+        .fill(dot)
+        .a11y_hidden();
+    if matches!(task.status, TaskStatus::Running | TaskStatus::Starting) {
+        mark = mark.cycle(breathe(1.2, 0., &BREATH_35));
+    }
+    el().size(24., 24.)
+        .radius(12.)
+        .border(1., p.border)
+        .center()
+        .child(if ids.is_empty() {
+            ico(&icons::BOT, 14., p.text_muted)
+        } else {
+            design::brands::provider_logo(s, &ids, 14.)
+        })
+        .child(mark)
+}
+
+/// What a subagent row shows, hashed: the row is rebuilt only when one of
+/// these moves (a countdown by the minute, a time label by the day).
+pub(crate) fn subagent_version(task: &TaskView, preview: Option<&str>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let now = Utc::now().timestamp_millis();
+    (
+        &task.task_id,
+        &task.title,
+        task.status.label(),
+        preview,
+        task.cancel_requested,
+        &task.child_thread_id,
+        (&task.provider, &task.runtime, &task.model),
+        (task.created_at, task.started_at, task.finished_at),
+        (task.limit_reset_at, task.pending_children),
+    )
+        .hash(&mut h);
+    (task.status == TaskStatus::Waiting)
+        .then_some(now / 60_000)
+        .hash(&mut h);
+    Local::now().date_naive().hash(&mut h);
+    h.finish()
+}
+
+/// The row's status word: why a waiting task waits, else its state.
+pub(crate) fn subagent_status(task: &TaskView, now: i64) -> String {
+    match (task.status, task.limit_reset_at) {
+        (TaskStatus::Waiting, Some(at)) => format!("Usage limit, resumes {}", countdown(at, now)),
+        (TaskStatus::WaitingChildren, _) if task.pending_children > 0 => {
+            format!("Waiting for {} subagent(s)", task.pending_children)
+        }
+        (TaskStatus::Completed, _) => "Finished".into(),
+        (TaskStatus::Cancelled, _) => "Stopped".into(),
+        (status, _) => status.label().to_string(),
+    }
+}
+
+/// When it finished, or started while it works: "13:03", "Tue 09:00"
+/// for another day.
+pub(crate) fn subagent_time(task: &TaskView) -> Option<String> {
+    let at = if task.status.is_live() {
+        task.started_at.unwrap_or(task.created_at)
+    } else {
+        task.finished_at?
+    };
+    // An engine that sent no time (0) has none to show.
+    if at <= 0 {
+        return None;
+    }
+    let t = Local.timestamp_millis_opt(at).single()?;
+    Some(if t.date_naive() == Local::now().date_naive() {
+        t.format("%H:%M").to_string()
+    } else {
+        t.format("%a %H:%M").to_string()
+    })
 }
 
 #[cfg(test)]

@@ -299,6 +299,49 @@ fn cli_turn(live: bool) -> Vec<Row> {
     rows
 }
 
+/// The 2026-11-24 bug turn: a model re-announcing its plan before each of
+/// its tool calls ("I'll launch two subagents…" seven ways), mid-thought.
+/// The preamble draws once, subdued; the thought previews its newest
+/// words under "Thinking".
+fn commentary_turn() -> Vec<Row> {
+    let say = |key: &str, text: &str| Row::Narration {
+        key: key.into(),
+        text: text.into(),
+    };
+    let lines = [
+        "I'll launch two more subagents with fresh puzzles you can watch.",
+        "I'll launch two fresh subagents with different puzzles you can watch.",
+        "I'll launch two new subagents in parallel with different puzzle tasks.",
+        "I'll launch two more subagents with fresh puzzles to work through.",
+        "I'll start two fresh subagents and give each a different puzzle.",
+        "I'll launch two new subagents on separate puzzles you can watch.",
+        "I'll launch two fresh subagents with puzzles you can watch them work through.",
+    ];
+    let mut rows = vec![user("msg:p1", "spin up 2 again")];
+    for (i, line) in lines.iter().enumerate() {
+        rows.push(say(&format!("say:p{i}"), line));
+        rows.push(tool(
+            &format!("t:p{i}"),
+            "t3_delegate",
+            "puzzle subagent",
+            ToolStatus::Completed,
+        ));
+    }
+    rows.push(Row::Thinking {
+        key: "think:p1".into(),
+        text: "Both delegations returned task ids. The sudoku investigator is running and \
+               the domino one is still starting, so I should tell the person they can open \
+               either thread, and that the results come back here when they finish."
+            .into(),
+    });
+    rows
+}
+
+/// [`commentary_turn`] live.
+pub fn commentary_live(s: &mut State) {
+    shell_with(s, commentary_turn(), true);
+}
+
 /// [`cli_turn`] settled: one "Worked for" line over the answer.
 pub fn cli_turn_settled(s: &mut State) {
     shell_with(s, cli_turn(false), false);

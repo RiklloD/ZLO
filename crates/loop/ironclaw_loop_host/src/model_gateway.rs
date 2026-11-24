@@ -54,7 +54,8 @@ use ironclaw_loop_contracts::{
 };
 use ironclaw_observability::live_latency_started_at;
 use ironclaw_safety::{
-    is_provider_arguments_too_large_summary, provider_arguments_exceed_max_bytes,
+    PROVIDER_METADATA_TEXT_MAX_BYTES, is_provider_arguments_too_large_summary,
+    provider_arguments_exceed_max_bytes, validate_optional_provider_metadata_text,
 };
 use ironclaw_threads::{ProviderToolCallReferenceEnvelope, SessionThreadService, ThreadScope};
 use ironclaw_turns::HostManagedLoopPromptPort;
@@ -1750,20 +1751,25 @@ const STREAM_COALESCE_MAX_DELTAS: u32 = 64;
 // 2 KiB of new text: caps the amount of re-sanitized/re-sent text per UI
 // update independent of chunk count (some providers send few, large chunks).
 const STREAM_COALESCE_MAX_BYTES: usize = 2048;
-// 100 ms: while deltas keep arriving, caps perceived staleness of streamed
-// text in the UI even for many small chunks below the size/count
-// thresholds. This bound is evaluated only on delta arrival — there is no
-// background timer — so it does not fire during a mid-stream provider
-// pause; a pause between deltas can leave up to STREAM_COALESCE_MAX_BYTES
-// of already-received text unemitted until the provider sends its next
-// delta (which re-checks the elapsed time) or the streaming call returns
-// and `flush()` runs.
-const STREAM_COALESCE_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
-// Reasoning goes out as appended fragments, each one a milestone. A line
-// break, 1 KiB or 250 ms releases what is buffered, cut at the last
-// whitespace so the per-token redactor never sees half a token.
-const REASONING_COALESCE_MAX_BYTES: usize = 1024;
-const REASONING_COALESCE_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+// 33 ms (about two display frames): while deltas keep arriving, caps
+// perceived staleness of streamed text in the UI even for many small chunks
+// below the size/count thresholds, so a reply grows in frame-sized steps
+// rather than tenth-of-a-second blocks. At a typical 50–100 tokens/s that is
+// two or three tokens per update; the count/byte caps above still bound the
+// work for providers that send faster. This bound is evaluated only on delta
+// arrival — there is no background timer — so it does not fire during a
+// mid-stream provider pause; a pause between deltas can leave the text that
+// arrived within the last interval unemitted until the provider sends its
+// next delta (which re-checks the elapsed time) or the streaming call
+// returns and `flush()` runs.
+const STREAM_COALESCE_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+// Reasoning goes out as appended fragments, each one a milestone (live
+// progress only — reasoning deltas never become durable events). A line
+// break, 256 bytes or 33 ms releases what is buffered, cut at the last
+// whitespace so the per-token redactor never sees half a token; a thought
+// streams in word-sized steps instead of quarter-second paragraphs.
+const REASONING_COALESCE_MAX_BYTES: usize = 256;
+const REASONING_COALESCE_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
 struct ProviderStreamSinkState {
     accumulated_text: String,
@@ -1933,7 +1939,7 @@ impl CompletionStreamSink for ProviderStreamSink {
             // The first delta of a retry/failover replacement must emit
             // immediately, bypassing the coalescing window: the UI is still
             // showing the previous (failed) attempt's stale text, and
-            // buffering the swap for up to 64 deltas / 2 KiB / 100 ms would
+            // buffering the swap for up to 64 deltas / 2 KiB / 33 ms would
             // leave that stale text visible for the whole window.
             let should_emit = is_first_delta_after_replacement
                 || guard.pending_deltas >= STREAM_COALESCE_MAX_DELTAS
@@ -2544,6 +2550,7 @@ async fn tool_response_to_host(
         // Anchored on the first call, so a call announced while the response
         // still streamed (`streamed_tool_calls`) derives this same id.
         let provider_turn_id = provider_turn_id(provider_turn_scope, &response.tool_calls[0]);
+        let response_text = replayable_response_text(response.content.as_deref());
         let provider_calls = match response
             .tool_calls
             .iter()
@@ -2551,6 +2558,7 @@ async fn tool_response_to_host(
                 provider_tool_call_from_llm(
                     tool_call.clone(),
                     response.reasoning.clone(),
+                    response_text.clone(),
                     provider_turn_id.clone(),
                     replay_identity,
                 )
@@ -2720,9 +2728,44 @@ fn provider_calls_are_advertised_or_resolvable(
     true
 }
 
+/// The assistant text a tool-call response carried, shaped so it always
+/// passes provider-metadata validation: sanitized, trimmed, control
+/// characters dropped, capped on a char boundary. Text that still fails (a
+/// leak-detector hit) is not replayed rather than rejecting the whole batch.
+fn replayable_response_text(content: Option<&str>) -> Option<String> {
+    let sanitized = sanitize_model_visible_text(content?.to_string());
+    let mut text: String = sanitized
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+        .collect();
+    if text.is_empty() {
+        return None;
+    }
+    if text.len() > PROVIDER_METADATA_TEXT_MAX_BYTES {
+        let mut end = PROVIDER_METADATA_TEXT_MAX_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    match validate_optional_provider_metadata_text(
+        Some(&text),
+        "provider response text",
+        PROVIDER_METADATA_TEXT_MAX_BYTES,
+    ) {
+        Ok(()) => Some(text),
+        Err(error) => {
+            debug!(%error, "pre-tool assistant text is not replayable; dropping it from replay");
+            None
+        }
+    }
+}
+
 fn provider_tool_call_from_llm(
     tool_call: ToolCall,
     response_reasoning: Option<String>,
+    response_text: Option<String>,
     provider_turn_id: String,
     replay_identity: &ProviderReplayIdentity,
 ) -> Result<ProviderToolCall, HostManagedModelError> {
@@ -2754,6 +2797,7 @@ fn provider_tool_call_from_llm(
         name,
         arguments: tool_call.arguments,
         response_reasoning,
+        response_text,
         reasoning: tool_call.reasoning,
         signature: tool_call.signature,
     })
@@ -3504,8 +3548,13 @@ fn provider_tool_roundtrip_messages(
     let reasoning = provider_results
         .iter()
         .find_map(|(provider_call, _, _)| provider_call.response_reasoning.clone());
+    // The pre-tool commentary the model emitted with this batch. Replaying
+    // it keeps the model from re-announcing the same plan every tool round.
+    let response_text = provider_results
+        .iter()
+        .find_map(|(provider_call, _, _)| provider_call.response_text.clone());
     let assistant = ChatMessage::assistant_with_tool_calls(
-        None,
+        response_text,
         provider_results
             .iter()
             .map(|(provider_call, _, _)| provider_tool_call_from_reference(provider_call))
@@ -3727,6 +3776,32 @@ fn is_legacy_credit_exhaustion_error(error: &LlmError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The replayed pre-tool text always passes provider-metadata
+    /// validation: controls are stripped, a multibyte cap lands on a char
+    /// boundary, and a leak-detector hit drops the text instead of failing
+    /// the tool batch.
+    #[test]
+    fn replayable_response_text_is_shaped_to_pass_validation() {
+        assert_eq!(replayable_response_text(None), None);
+        assert_eq!(replayable_response_text(Some("  \n ")), None);
+        assert_eq!(
+            replayable_response_text(Some(" Line\u{0001} one\n\tLine two ")).as_deref(),
+            Some("Line one\n\tLine two")
+        );
+        let long = "é".repeat(PROVIDER_METADATA_TEXT_MAX_BYTES);
+        let capped = replayable_response_text(Some(&long)).expect("capped text");
+        assert!(capped.len() <= PROVIDER_METADATA_TEXT_MAX_BYTES);
+        assert!(capped.len() >= PROVIDER_METADATA_TEXT_MAX_BYTES - 1);
+        assert!(capped.chars().all(|c| c == 'é'));
+        // A token the sanitizer leaves but the leak detector rejects: the
+        // text is not replayed, rather than failing the whole tool batch.
+        let leak = format!(
+            "Posting with xoxb-1234567890-{}",
+            "abcdefghijABCDEFGHIJ1234"
+        );
+        assert_eq!(replayable_response_text(Some(&leak)), None);
+    }
     use std::time::Duration;
 
     #[test]
@@ -3884,6 +3959,53 @@ mod tests {
         assert_eq!(reasoning().len(), 2, "nothing left to flush");
     }
 
+    #[tokio::test]
+    async fn provider_stream_sink_releases_text_and_reasoning_within_a_display_frame_or_two() {
+        // A UI that wants the stream to read smoothly needs updates at
+        // display-ish cadence, not in 100 ms (text) / 250 ms (reasoning)
+        // blocks. Two deltas 45 ms apart must each be released by the time
+        // the second lands, with no line break and far below the byte caps.
+        let inner = Arc::new(RecordingSafeTextSink::default());
+        let sink = ProviderStreamSink::new(inner.clone());
+        let reasoning = || {
+            inner
+                .reasoning
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        };
+        let updates = || {
+            inner
+                .updates
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        };
+
+        sink.reasoning_delta("Checking the ".to_string()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(45)).await;
+        sink.reasoning_delta("config file ".to_string()).await;
+        // Wall-clock bound: a loaded runner may already have released the
+        // first fragment on its own, so only what was released by now is
+        // pinned, not how it was split.
+        assert_eq!(
+            reasoning().concat(),
+            "Checking the config file ",
+            "a thought is released within ~2 frames, not 250 ms"
+        );
+
+        sink.text_delta("Here ".to_string()).await;
+        let after_first = updates().len();
+        tokio::time::sleep(std::time::Duration::from_millis(45)).await;
+        sink.text_delta("is it".to_string()).await;
+        let updates = updates();
+        assert!(
+            updates.len() > after_first,
+            "the answer is released within ~2 frames, not 100 ms"
+        );
+        assert_eq!(updates.last().map(String::as_str), Some("Here is it"));
+    }
+
     struct DiscardingSafeTextSink;
 
     #[async_trait]
@@ -3930,7 +4052,7 @@ mod tests {
         // production access pattern: `complete_model_request` only calls
         // `flush()` once, after the whole provider call returns. Whether
         // these land in the sink before the replacement depends on the
-        // 100 ms interval threshold and wall-clock scheduling, which a
+        // 33 ms interval threshold and wall-clock scheduling, which a
         // loaded CI runner can cross even this early — so the property
         // under test is NOT "the sink is empty before the replacement";
         // it's "the replacement delta emits immediately, on its own,
@@ -4038,12 +4160,12 @@ mod tests {
 
         // 64 deltas / 2 KiB coalescing bounds ~1000 sixteen-byte deltas to
         // roughly 1000/64 ≈ 16 forced emissions purely from the count/byte
-        // thresholds. The 100 ms interval threshold could in principle add
-        // more (an adversarial "every single delta arrives >100 ms after
+        // thresholds. The 33 ms interval threshold could in principle add
+        // more (an adversarial "every single delta arrives >33 ms after
         // the last" stream would degenerate to ~1000 emits, one per delta
         // — there is no bound below the raw delta count that survives
         // that literal scenario). That is not the realistic CI-jitter
-        // failure mode though: it would take a separate, sustained >100 ms
+        // failure mode though: it would take a separate, sustained >33 ms
         // stall between *each* of many loop iterations, not the single
         // one-time scheduling delay between sink construction and the
         // first delta that flaked the replacement test above. 64 is a

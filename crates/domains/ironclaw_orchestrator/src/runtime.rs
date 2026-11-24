@@ -464,6 +464,22 @@ pub struct CatalogProvider {
     /// active provider): clients draw this provider's logo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brand: Option<String>,
+    /// Which agent program a CLI runtime found, when it can be one of
+    /// several: setup offers the next step that program supports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<CatalogLaunch>,
+}
+
+/// The agent program behind a CLI runtime's catalog entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogLaunch {
+    /// The vendor's own CLI (`agy`): it signs in itself.
+    Native,
+    /// A standalone runtime another app installed (Antigravity's legacy ACP
+    /// runtime): it has no sign-in command of its own; installing the
+    /// native CLI is the way to sign in.
+    Legacy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

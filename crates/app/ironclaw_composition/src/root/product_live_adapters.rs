@@ -949,6 +949,7 @@ mod tests {
             name: ProviderToolName::new("read_file").expect("provider tool name"),
             arguments: serde_json::json!({"path": "src/main.rs", "api_key": "sk-secret"}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         };
@@ -1011,6 +1012,7 @@ mod tests {
             name: ProviderToolName::new("nearai__web_search").expect("provider tool name"),
             arguments: serde_json::json!({"query": "deploy status"}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         };

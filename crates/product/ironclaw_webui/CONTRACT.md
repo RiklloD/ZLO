@@ -484,7 +484,11 @@ documents. A correctable failure (`invalid_request`, `too_many_tasks`,
 `TaskView` = `{taskId, title, role, status, workState, runtime, provider,
 model, parentThreadId, childThreadId, profile, depth, createdAt, startedAt,
 finishedAt, durationSeconds, progress, usage, summary, error, delivery,
-limitResetAt, cancelRequested, pendingChildren}`. Status is one of
+limitResetAt, cancelRequested, pendingChildren, parentRunId}`. `parentRunId`
+is the parent's run that launched the task (absent on tasks from before it was
+recorded), so a client draws the subagent in that turn; a live task's
+`progress` carries `latestOutput`, the child's newest words as one plain
+line (at most 180 characters). Status is one of
 `starting, running, waiting, waiting_children, completed, failed, cancelled,
 interrupted`. A fork on IronClaw's agent loop is a new thread that receives a
 portable context handoff as its first turn; merge-back arrives in the target

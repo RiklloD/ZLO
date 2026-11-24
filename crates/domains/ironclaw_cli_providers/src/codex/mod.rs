@@ -1372,6 +1372,7 @@ impl TurnRuntime for CodexRuntime {
                 .to_vec(),
             model_efforts: Default::default(),
             brand: None,
+            launch: None,
         }])
     }
 

@@ -41,6 +41,9 @@ pub struct CallContext {
     /// The caller thread's current route, inherited by delegated children.
     pub provider: Option<String>,
     pub model: Option<String>,
+    /// The caller's run, when the call comes from a turn (a model's
+    /// `t3_delegate`): a delegated task records it as its anchor.
+    pub run_id: Option<String>,
 }
 
 pub struct Engine {

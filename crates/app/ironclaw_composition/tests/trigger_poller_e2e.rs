@@ -263,6 +263,7 @@ impl HostManagedModelGateway for DeliveryJourneyGateway {
             name: ProviderToolName::new(tool_name).expect("provider tool name"),
             arguments,
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         };
@@ -474,6 +475,7 @@ impl TriggerMutatorAttemptGateway {
                     .expect("mutator provider tool name is valid"),
                     arguments,
                     response_reasoning: None,
+                    response_text: None,
                     reasoning: None,
                     signature: None,
                 },
@@ -600,6 +602,7 @@ impl HostManagedModelGateway for CapabilityProbeGateway {
             .expect("trigger-list provider tool name"),
             arguments: json!({}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         };

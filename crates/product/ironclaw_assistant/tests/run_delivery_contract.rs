@@ -6113,6 +6113,7 @@ fn start_test_reply_publication(
         settings: ReplyPublicationSettings {
             lease_ttl: Duration::from_secs(5),
             min_progress_interval: Duration::ZERO,
+            session_push_interval: Duration::ZERO,
             retry_backoff: Duration::from_millis(5),
             max_retry_backoff: Duration::from_millis(50),
             terminal_attempt_budget: 3,

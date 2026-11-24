@@ -1438,6 +1438,7 @@ impl TurnRuntime for MuseRuntime {
             efforts: FALLBACK_EFFORTS.map(str::to_string).to_vec(),
             model_efforts,
             brand: None,
+            launch: None,
         }])
     }
 

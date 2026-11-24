@@ -1055,6 +1055,7 @@ impl HostManagedModelGateway for SingleWriteApprovalGateway {
                 name: write_tool.name,
                 arguments: json!({"path": "/workspace/coordinator-spy.txt", "content": "spy write"}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))

@@ -869,12 +869,29 @@ fn convert_message(msg: &ChatMessage, index: usize) -> Vec<serde_json::Value> {
         Role::Assistant => {
             // Check if this message has tool calls
             if let Some(ref tool_calls) = msg.tool_calls {
-                // The turn's reasoning items first, then one function_call
-                // item per tool call.
+                // The turn's reasoning items first, then the pre-tool
+                // commentary (the Responses API's own output order), then one
+                // function_call item per tool call. Dropping the commentary
+                // hides from the model what it already told the user, so it
+                // repeats the same preamble on every tool round.
                 let reasoning = tool_calls
                     .iter()
                     .flat_map(|tc| reasoning_items_from_signature(tc.signature.as_deref()));
+                let commentary = (!msg.content.trim().is_empty()).then(|| {
+                    serde_json::json!({
+                        "type": "message",
+                        "role": "assistant",
+                        "id": format!("msg_{index}"),
+                        "status": "completed",
+                        "content": [{
+                            "type": "output_text",
+                            "text": msg.content,
+                            "annotations": [],
+                        }],
+                    })
+                });
                 reasoning
+                    .chain(commentary)
                     .chain(tool_calls.iter().map(|tc| {
                         let args_str = if tc.arguments.is_string() {
                             tc.arguments.as_str().unwrap_or("{}").to_string()
@@ -1760,12 +1777,62 @@ mod tests {
         let msg =
             ChatMessage::assistant_with_tool_calls(Some("Let me check".to_string()), tool_calls);
         let items = convert_message(&msg, 0);
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0]["type"], "function_call");
-        assert_eq!(items[0]["call_id"], "call_1");
-        assert_eq!(items[0]["name"], "search");
+        // Regression: the pre-tool commentary must replay as an assistant
+        // message ahead of the calls, or the model never sees what it
+        // already told the user and repeats its preamble every tool round.
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["type"], "message");
+        assert_eq!(items[0]["role"], "assistant");
+        assert_eq!(items[0]["content"][0]["type"], "output_text");
+        assert_eq!(items[0]["content"][0]["text"], "Let me check");
         assert_eq!(items[1]["type"], "function_call");
-        assert_eq!(items[1]["call_id"], "call_2");
+        assert_eq!(items[1]["call_id"], "call_1");
+        assert_eq!(items[1]["name"], "search");
+        assert_eq!(items[2]["type"], "function_call");
+        assert_eq!(items[2]["call_id"], "call_2");
+    }
+
+    /// The Responses API's own output order survives replay: the turn's
+    /// reasoning items, then the pre-tool text, then the calls.
+    #[test]
+    fn convert_assistant_orders_reasoning_then_text_then_calls() {
+        let signature = serde_json::json!({
+            REASONING_SIGNATURE_KEY: [{"type": "reasoning", "id": "rs_1", "encrypted_content": "blob"}]
+        })
+        .to_string();
+        let call = ToolCall {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({}),
+            reasoning: None,
+            signature: Some(signature),
+            arguments_parse_error: None,
+        };
+        let msg =
+            ChatMessage::assistant_with_tool_calls(Some("Searching.".to_string()), vec![call]);
+        let kinds: Vec<String> = convert_message(&msg, 0)
+            .iter()
+            .map(|item| item["type"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(kinds, ["reasoning", "message", "function_call"]);
+    }
+
+    #[test]
+    fn convert_assistant_tool_calls_without_text_emits_no_message_item() {
+        let call = ToolCall {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({}),
+            reasoning: None,
+            signature: None,
+            arguments_parse_error: None,
+        };
+        for content in [None, Some("   ".to_string())] {
+            let msg = ChatMessage::assistant_with_tool_calls(content, vec![call.clone()]);
+            let items = convert_message(&msg, 0);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0]["type"], "function_call");
+        }
     }
 
     #[test]

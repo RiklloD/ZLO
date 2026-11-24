@@ -431,6 +431,13 @@ pub fn lands(s: &State, tag: &ConnTag) -> bool {
     s.remote.tag == *tag
 }
 
+/// A completion asked on `tag` came from the computer still in use, over
+/// a connection since replaced by another of its routes (a route refresh
+/// keeps the environment and takes a new generation, `connect::adopt`).
+pub fn same_computer(s: &State, tag: &ConnTag) -> bool {
+    s.remote.tag.environment == tag.environment && s.remote.tag.generation != tag.generation
+}
+
 fn active_key(active: &Active) -> String {
     match active {
         Active::ThisMac => environments::THIS_MAC.to_string(),

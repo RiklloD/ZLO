@@ -492,6 +492,7 @@ mod shape_tests {
             run_id: None,
             at: None,
             steer_id: None,
+            commentary: false,
         }
     }
 

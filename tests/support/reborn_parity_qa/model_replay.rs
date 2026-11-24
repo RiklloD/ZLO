@@ -567,6 +567,7 @@ async fn provider_tool_calls_response(
             name: definition.name.clone(),
             arguments: call.arguments,
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         };
@@ -698,6 +699,7 @@ pub(crate) fn capability_call_from_trace_with_surface(
             provider_tool_name,
             arguments: call.arguments,
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }),

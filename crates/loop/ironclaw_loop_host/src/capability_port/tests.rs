@@ -134,6 +134,7 @@ fn provider_tool_call() -> ProviderToolCall {
         name: ProviderToolName::new("demo__echo").expect("provider tool name"),
         arguments: serde_json::json!({"message":"hello"}),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     }

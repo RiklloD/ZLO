@@ -25,7 +25,7 @@ struct CliRow {
     name: String,
     blurb: String,
     status: El,
-    command: Option<(&'static str, &'static str)>,
+    commands: Vec<(&'static str, &'static str)>,
     remove: Option<(String, bool)>,
     /// The agent's models in the picker, while it is ready.
     models: Option<El>,
@@ -40,7 +40,13 @@ fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
         .min_w(0.)
         .child(text(r.name).font(body_semibold()).color(p.text))
         .child(text(r.blurb).font(xs()).color(p.text_muted).wrap());
-    if let Some((label, cmd)) = r.command {
+    for (i, (label, cmd)) in r.commands.into_iter().enumerate() {
+        // The first command's copy button keeps the row's own key.
+        let copy_id = if i == 0 {
+            r.id.clone()
+        } else {
+            format!("{}-{i}", r.id)
+        };
         info = info.child(
             row()
                 .pt(4.)
@@ -48,7 +54,7 @@ fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
                 .center_y()
                 .child(text(label).font(xs()).color(p.text_muted))
                 .child(text(cmd).font(MONO_XS).color(p.text).selectable(true))
-                .child(copy_button(s, k, &r.id, cmd)),
+                .child(copy_button(s, k, &copy_id, cmd)),
         );
     }
     let mut line = row()
@@ -141,7 +147,7 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                     name: known.name.to_string(),
                     blurb: known.blurb.to_string(),
                     status,
-                    command: known.install.map(|c| ("Install", c)),
+                    commands: known.install.map(|c| ("Install", c)).into_iter().collect(),
                     remove: None,
                     models: None,
                 },
@@ -161,13 +167,12 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                     Tone::Success,
                     format!("Ready · {} models", r.models.len()),
                 )
+            } else if r.needs_native_cli() {
+                outlined_tag(p, Tone::Warning, "Needs the CLI to sign in")
             } else {
                 outlined_tag(p, Tone::Warning, "Not signed in")
             };
-            let command = (!r.authenticated)
-                .then_some(known.login)
-                .flatten()
-                .map(|c| ("Sign in", c));
+            let commands = super::catalog::next_steps(known, r);
             rows.push(cli_row(
                 s,
                 k,
@@ -177,7 +182,7 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                     name: r.name.clone(),
                     blurb: known.blurb.to_string(),
                     status,
-                    command,
+                    commands,
                     remove: ps.picker.is_some().then(|| (r.provider.clone(), hidden)),
                     models: (!hidden && r.authenticated && !r.models.is_empty())
                         .then(|| super::view::render_picker_models(s, k, r)),

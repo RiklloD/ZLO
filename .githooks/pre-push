@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Hermetic git env. Git exports GIT_DIR (in a linked worktree: that worktree's
+# admin dir) to hooks, and test fixtures that run `git -C <tempdir> init|config|
+# commit` then act on THIS repository. On 2026-11-24 a pre-push gate run from
+# the worktree holding `main` committed fixtures onto `main` (deleting the tree)
+# and wrote core.bare=true, a fake identity and an include.path into .git/config.
+# The hook's cwd is the worktree root, so its own git calls still resolve.
+# Pinned by scripts/ci/test_hooks_hermetic_git_env.py.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX GIT_NAMESPACE
 # Pre-push hook: runs quality gate before pushing
 # Skip with: git push --no-verify
 

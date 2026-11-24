@@ -381,6 +381,11 @@ pub(super) fn apply(s: &mut State, list: InboxListResponse) {
     }
     reveal_active_subagent(s);
     ensure_poll(s);
+    // The open chat follows its tasks while the inbox says it (or a
+    // subagent of it) works, even when its own stream went quiet.
+    if let Some(open) = s.chat.as_ref().map(|c| c.thread_id.clone()) {
+        crate::chat::orchestration::ensure_poll(s, &open);
+    }
     schedule_wake(s);
     ensure_tick(s);
 }

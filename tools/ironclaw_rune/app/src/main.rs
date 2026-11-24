@@ -34,6 +34,8 @@ mod scenes;
 mod service;
 mod snapshot;
 mod state;
+#[cfg(test)]
+mod test_gateway;
 mod titles;
 mod voice;
 mod window_state;

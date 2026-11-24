@@ -178,6 +178,11 @@ pub struct TimelineMessage {
     /// The steer this row is (CLI threads), when the engine knows it.
     #[serde(default)]
     pub steer_id: Option<String>,
+    /// An assistant row the run moved on from (text before a tool call or
+    /// a later reply): commentary, drawn subdued and folded into the
+    /// turn's work. Absent on older gateways and on final answers.
+    #[serde(default)]
+    pub commentary: bool,
 }
 
 /// `RebornTimelineSteerMark`: steer annotations of one message, keyed by

@@ -34,6 +34,9 @@ use crate::wire::{
 
 mod attached;
 mod reason;
+mod subagents;
+
+pub use subagents::{plain_line, preview as subagent_preview, subagent_key};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -169,6 +172,14 @@ pub enum Row {
         form: QuestionForm,
         state: QuestionState,
     },
+    /// A delegated task, where its turn launched it (t3code's subagent
+    /// row): it takes the place of the `t3_delegate` call that started it.
+    Subagent {
+        key: String,
+        task: Box<crate::orchestration::TaskView>,
+        /// Its one-line preview (`subagent_preview`), worked out once.
+        preview: Option<String>,
+    },
 }
 
 /// A steer's marker on its row.
@@ -212,7 +223,8 @@ impl Row {
             | Row::SteerNotice { key, .. }
             | Row::Command { key, .. }
             | Row::Plan { key, .. }
-            | Row::Question { key, .. } => key,
+            | Row::Question { key, .. }
+            | Row::Subagent { key, .. } => key,
         }
     }
 }
@@ -325,6 +337,10 @@ pub struct Transcript {
     /// invocation, the latest turn diff and review. Live-only, kept while
     /// the view is open.
     cli: CliDetails,
+    /// The thread's delegated tasks, drawn inline (`subagents`).
+    tasks: Vec<crate::orchestration::TaskView>,
+    /// Delegate call rows whose result was seen: the task each named.
+    delegate_results: HashMap<String, Option<String>>,
 }
 
 /// A bounded live body; `truncated` when the agent's text was cut.
@@ -522,6 +538,7 @@ fn borrowed_rows(messages: &[TimelineMessage], prefix: &str, rows: &mut Vec<Row>
                 attachments: Vec::new(),
                 steer: None,
             },
+            MessageKind::Assistant if message.commentary => Row::Narration { key, text },
             MessageKind::Assistant => Row::Assistant {
                 key,
                 text,
@@ -627,6 +644,11 @@ impl Transcript {
             return;
         }
         let key = format!("tool:{invocation}");
+        self.note_delegate_result(
+            key.clone(),
+            &field("capability_id").unwrap_or_default(),
+            field("output_preview").as_deref(),
+        );
         let status = match field("status").as_deref() {
             Some("completed") => ToolStatus::Completed,
             Some("failed" | "killed") => ToolStatus::Failed,
@@ -1045,6 +1067,7 @@ impl Transcript {
                 match kind {
                     CliDetailKind::ToolOutput => {
                         if let Some(invocation) = invocation_id {
+                            self.note_delegate_result(format!("tool:{invocation}"), "", Some(body));
                             self.cli.put_output(format!("tool:{invocation}"), detail);
                         }
                     }
@@ -1206,6 +1229,11 @@ impl Transcript {
             return;
         }
         let detail = p.output_summary.clone().or_else(|| p.input_summary.clone());
+        self.note_delegate_result(
+            format!("tool:{}", p.invocation_id),
+            p.capability_id.as_str(),
+            p.output_preview.as_deref(),
+        );
         self.upsert_tool(
             p.invocation_id.to_string(),
             p.turn_run_id.map(|r| r.to_string()),
@@ -1708,10 +1736,16 @@ impl Transcript {
                         }
                         None => key,
                     };
-                    rows.push(Row::Assistant {
-                        key,
-                        text,
-                        streaming: false,
+                    // Text the run moved on from is commentary: subdued,
+                    // folded with the work, never the answer.
+                    rows.push(if message.commentary {
+                        Row::Narration { key, text }
+                    } else {
+                        Row::Assistant {
+                            key,
+                            text,
+                            streaming: false,
+                        }
                     });
                     // The run's notice goes once, under its last row.
                     if let Some(r) = run.as_deref()
@@ -1779,7 +1813,7 @@ impl Transcript {
             }
         }
         mark_steer_runs(&mut rows);
-        rows
+        self.place_subagents(rows)
     }
 
     /// Activity for one run. Unless the durable reply already exists, the
@@ -2227,6 +2261,28 @@ mod tests {
                 "tool:bun test",
             ]
         );
+    }
+
+    /// A stored row the gateway flags `commentary` (text the run moved on
+    /// from) is narration, never an answer bubble: it draws subdued and
+    /// folds with the work. The run's last row stays the answer.
+    #[test]
+    fn stored_commentary_rows_are_narration_and_the_answer_stays_a_reply() {
+        let mut t = Transcript::default();
+        t.set_timeline(page(serde_json::json!([
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "spin up 2" },
+            { "message_id": "m2", "sequence": 2, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "I'll launch two subagents.", "commentary": true },
+            { "message_id": "m3", "sequence": 3, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "Both are running." },
+        ])));
+        let rows = t.rows();
+        assert!(
+            matches!(&rows[1], Row::Narration { text, .. } if text == "I'll launch two subagents."),
+            "{rows:?}"
+        );
+        assert!(matches!(&rows[2], Row::Assistant { text, .. } if text == "Both are running."));
     }
 
     /// The running turn's prompt is shown once a message of the person's

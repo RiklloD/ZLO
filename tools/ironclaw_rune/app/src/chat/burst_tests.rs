@@ -101,11 +101,12 @@ fn burst(turns: usize, frames: u32, per_frame: u32) -> Burst {
     rt.update(|s, tx| {
         super::refresh_rows(s, "t1", tx);
     });
+    // `Runtime::frame` takes the frame's step, not the clock: a growing
+    // "step" is a coarse headless catch-up that polls (and may rebuild the
+    // view) at every timer deadline inside it, which is not one frame.
     let dt = 1. / 120.;
-    let mut t = 0.;
     for _ in 0..10 {
-        t += dt;
-        rt.frame(t);
+        rt.frame(dt);
     }
     let generation = rt.state.chat.as_ref().map(|c| c.stream_gen).expect("chat");
     let rows_before = rt.state.chat.as_ref().map(|c| c.rows_gen).expect("chat");
@@ -128,8 +129,7 @@ fn burst(turns: usize, frames: u32, per_frame: u32) -> Burst {
             rt.update_if(move |s, tx| super::on_stream(s, "t1", generation, batch, tx));
         }
         updates += start.elapsed();
-        t += dt;
-        rt.frame(t);
+        rt.frame(dt);
         ui.push(start.elapsed());
     }
     eprintln!(
@@ -256,4 +256,70 @@ fn work_yields_to_input_only_while_it_is_fresh() {
         now - super::INPUT_YIELD_MAX,
         now
     ));
+}
+
+/// While the pacer holds a half-typed word back, its steps reveal nothing:
+/// such a step must not report a change (which rebuilds the whole view on
+/// every frame of the hold).
+#[test]
+fn a_pacer_step_that_reveals_nothing_is_not_a_change() {
+    let mut rt = Runtime::new(
+        long_thread(4),
+        counted_view,
+        (1000., 760.),
+        Env::new(true, 1.),
+    );
+    rt.update(|s, tx| {
+        super::refresh_rows(s, "t1", tx);
+    });
+    rt.frame(0.);
+    let generation = rt.state.chat.as_ref().map(|c| c.stream_gen).expect("chat");
+    // "partial" has no space after it yet: it is held for the hold window.
+    rt.update_if(move |s, tx| super::on_stream(s, "t1", generation, vec![delta("ok partial")], tx));
+    rt.update_if(|s, tx| super::poll_chat(s, "t1", false, tx));
+    let items = |rt: &Runtime<State>| {
+        rt.state
+            .chat
+            .as_ref()
+            .map(|c| std::rc::Rc::as_ptr(&c.items))
+            .expect("chat")
+    };
+    let pacing = |rt: &Runtime<State>| rt.state.chat.as_ref().is_some_and(|c| c.pacing);
+    let (mut idle_steps, mut idle_changes) = (0, 0);
+    let until = Instant::now() + Duration::from_millis(600);
+    while pacing(&rt) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(17));
+        let before = items(&rt);
+        let changed = rt.update_if(|s, tx| super::poll_chat(s, "t1", false, tx));
+        if items(&rt) == before {
+            idle_steps += 1;
+            idle_changes += usize::from(changed);
+        }
+    }
+    eprintln!("hold: {idle_steps} steps revealed nothing, {idle_changes} reported a change");
+    assert!(
+        idle_steps >= 1,
+        "the hold window produced no idle step to check"
+    );
+    // (A working-line seconds repaint may coincide with one of them.)
+    assert!(
+        idle_changes < idle_steps,
+        "{idle_changes} of {idle_steps} pacer steps that revealed nothing reported a change"
+    );
+}
+
+#[test]
+fn the_pacer_follows_reduce_motion_like_the_rest_of_the_app() {
+    let system_on = || true;
+    let system_off = || false;
+    // "System" (the default) follows macOS's Reduce motion.
+    assert!(super::pacer_off("system", false, system_on));
+    assert!(!super::pacer_off("system", false, system_off));
+    // "On" always, "Off" never — whatever macOS says.
+    assert!(super::pacer_off("on", false, system_off));
+    assert!(!super::pacer_off("off", false, system_on));
+    // Nobody watches a background window type.
+    assert!(super::pacer_off("off", true, system_off));
+    // The idle battery saver only slows the tick.
+    assert!(super::pace_tick(true) > super::pace_tick(false));
 }

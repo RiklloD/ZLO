@@ -833,6 +833,7 @@ async fn mixed_status_group_updates_each_result_resumes_once_and_consumes_every_
                         .expect("capability"),
                     arguments: serde_json::json!({"task": label}),
                     response_reasoning: None,
+                    response_text: None,
                     reasoning: None,
                     signature: None,
                 }),

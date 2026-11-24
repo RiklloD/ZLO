@@ -710,6 +710,48 @@ fn test_normalized_tool_call_id_different_inputs_differ() {
     );
 }
 
+/// Regression (pre-tool text replay): an assistant turn that carries text,
+/// reasoning and tool calls rebuilds as [Reasoning, Text, ToolCall].
+/// Anthropic with extended thinking rejects a turn whose thinking block is
+/// not first; the replayed pre-tool commentary made [Text, Reasoning, …]
+/// reachable. The same order holds for a reasoning turn with no calls.
+#[test]
+fn reasoning_precedes_text_in_rebuilt_assistant_turns() {
+    let call = crate::ToolCall {
+        id: "call_1".to_string(),
+        name: "search".to_string(),
+        arguments: serde_json::json!({}),
+        reasoning: None,
+        signature: None,
+        arguments_parse_error: None,
+    };
+    let kinds = |message: ChatMessage| -> Vec<&'static str> {
+        let (_preamble, history) = convert_messages(&[ChatMessage::user("hi"), message]);
+        let Some(RigMessage::Assistant { content, .. }) = history
+            .into_iter()
+            .find(|m| matches!(m, RigMessage::Assistant { .. }))
+        else {
+            panic!("assistant message");
+        };
+        content
+            .iter()
+            .map(|c| match c {
+                AssistantContent::Reasoning(_) => "reasoning",
+                AssistantContent::Text(_) => "text",
+                AssistantContent::ToolCall(_) => "tool_call",
+                _ => "other",
+            })
+            .collect()
+    };
+    let with_calls =
+        ChatMessage::assistant_with_tool_calls(Some("I'll search for it.".to_string()), vec![call])
+            .with_reasoning(Some("Need a search first.".to_string()));
+    assert_eq!(kinds(with_calls), ["reasoning", "text", "tool_call"]);
+    let reply = ChatMessage::assistant("Found it.")
+        .with_reasoning(Some("The search answered it.".to_string()));
+    assert_eq!(kinds(reply), ["reasoning", "text"]);
+}
+
 /// Regression for #3201 / #3225 (the high-severity gap in PR #3326):
 /// the dedicated rig-core DeepSeek/Gemini/OpenRouter clients only fix the
 /// reasoning round-trip *inside* rig-core. IronClaw's RigAdapter sits

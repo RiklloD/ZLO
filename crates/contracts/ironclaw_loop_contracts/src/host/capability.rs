@@ -58,6 +58,11 @@ pub struct ProviderToolCallReplay {
     /// Provider response-level reasoning attached to the tool-call batch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_reasoning: Option<String>,
+    /// Assistant text the model emitted alongside the tool-call batch (its
+    /// pre-tool commentary). Replay metadata: the next tool round must show
+    /// the model what it already said, or it repeats the same preamble.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_text: Option<String>,
     /// Provider call-level reasoning attached to this tool call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
@@ -76,6 +81,7 @@ impl ProviderToolCallReplay {
             provider_tool_name: tool_call.name,
             arguments: tool_call.arguments,
             response_reasoning: tool_call.response_reasoning,
+            response_text: tool_call.response_text,
             reasoning: tool_call.reasoning,
             signature: tool_call.signature,
         }
@@ -200,6 +206,11 @@ pub struct ProviderToolCall {
     /// Provider response-level reasoning attached to the tool-call batch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_reasoning: Option<String>,
+    /// Assistant text the model emitted alongside the tool-call batch (its
+    /// pre-tool commentary). Replay metadata: the next tool round must show
+    /// the model what it already said, or it repeats the same preamble.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_text: Option<String>,
     /// Provider call-level reasoning attached to this tool call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
@@ -225,6 +236,7 @@ impl ProviderToolCall {
             name: ProviderToolName::new(name.into()).map_err(provider_tool_name_error)?,
             arguments,
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         })
@@ -650,6 +662,7 @@ mod tests {
             name: ProviderToolName::new(name).expect("provider tool name"),
             arguments: serde_json::json!({}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }

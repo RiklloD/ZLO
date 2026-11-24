@@ -148,6 +148,19 @@ pub fn set_merges(s: &mut State, id: &str, merges: Vec<MergedFork>) {
     });
 }
 
+/// The thread's delegated tasks (the orchestration poll): each draws as a
+/// subagent row in the turn that launched it. Rows rebuild only when a
+/// task changed what its row shows.
+pub fn set_tasks(s: &mut State, id: &str, tasks: Vec<zlo_client::orchestration::TaskView>) {
+    let Some(c) = chat_for(s, id) else { return };
+    if !c.transcript.set_tasks(tasks) {
+        return;
+    }
+    with_tx(s, id, |s, id, tx| {
+        refresh_rows(s, id, tx);
+    });
+}
+
 /// Stop `id`'s turn (computer use's Stop does this too).
 pub fn stop_run(s: &mut State, id: &str) {
     with_tx(s, id, actions::stop);

@@ -66,6 +66,7 @@ fn provider_call_reference(call_id: &str) -> ProviderToolCallReferenceEnvelope {
         capability_id: CapabilityId::new("builtin.result_read").unwrap(),
         arguments: serde_json::json!({"offset": 0}),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     }

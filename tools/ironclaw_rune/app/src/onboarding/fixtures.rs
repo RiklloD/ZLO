@@ -1,6 +1,7 @@
 //! Fixture data for the setup scenes (`--scene onboarding-connect`,
 //! `onboarding-pairing`, `onboarding-agents`, `onboarding-providers`,
-//! `onboarding-projects`, `onboarding-projects-loading`, `onboarding-toast`).
+//! `onboarding-projects`, `onboarding-projects-loading`, `onboarding-toast`,
+//! and the long-list `onboarding-agents-long`, `onboarding-projects-long`).
 
 use zlo_client::orchestration::RouteProvider;
 use zlo_client::session_import::{SessionImportGit, SessionImportProject, SessionImportProjects};
@@ -59,10 +60,31 @@ pub fn agents(s: &mut State) {
     a.catalog = Some(vec![route("claude-cli", "Claude Code", false)]);
     a.terminal = Some(AgentTerminal {
         driver: Driver::ClaudeCode,
-        command: Driver::ClaudeCode.login(),
+        command: Driver::ClaudeCode.login().unwrap_or_default(),
         install: false,
         state: TerminalState::Ready,
     });
+}
+
+/// A 13-inch window's worst case: every agent in a different state, the
+/// Terminal panel open, and the provider list unfolded with a key editor.
+pub fn agents_long(s: &mut State) {
+    base(s, Step::Agents);
+    let a = &mut s.onboarding.agents;
+    a.catalog = Some(vec![
+        route("claude-cli", "Claude Code", true),
+        route("antigravity", "Antigravity", false),
+    ]);
+    a.terminal = Some(AgentTerminal {
+        driver: Driver::Antigravity,
+        command: Driver::Antigravity.login().unwrap_or_default(),
+        install: false,
+        state: TerminalState::Ready,
+    });
+    a.providers_open = true;
+    let p = &mut s.pages.providers;
+    p.key_editor = Some("openai".into());
+    p.key_input = rune::TextEdit::new("").secure();
 }
 
 pub fn providers(s: &mut State) {
@@ -136,6 +158,22 @@ pub fn projects(s: &mut State) {
         ],
         truncated: false,
     }));
+}
+
+/// More folders than any window shows at once.
+pub fn projects_long(s: &mut State) {
+    projects(s);
+    if let Some(Scan::Ready(scan)) = &mut s.onboarding.projects.scan {
+        for ix in 0..18 {
+            scan.projects.push(project(
+                &format!("/Users/me/scratch/experiment-{ix:02}"),
+                None,
+                &["codex"],
+                1 + ix as u32 % 4,
+                24 * (2 + ix as i64),
+            ));
+        }
+    }
 }
 
 pub fn projects_loading(s: &mut State) {

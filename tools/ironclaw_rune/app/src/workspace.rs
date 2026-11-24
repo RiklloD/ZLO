@@ -101,6 +101,9 @@ pub struct WorkspaceState {
     pub unread: usize,
     pub alerts: Alerts,
     pub titles: crate::titles::Titles,
+    /// The right pane's Agents tab: the delegation family's tasks and the
+    /// trail of agents opened from it. Kept across thread switches.
+    pub agents: crate::chat::side::agents::AgentsNav,
     pub run_clock: crate::run_clock::RunClock,
     pub drafts: crate::drafts::Store,
     /// The new-thread screen, kept while its draft lives.
@@ -157,6 +160,7 @@ impl Default for WorkspaceState {
             unread: 0,
             alerts: Alerts::default(),
             titles: Default::default(),
+            agents: Default::default(),
             run_clock: Default::default(),
             drafts: Default::default(),
             draft: None,

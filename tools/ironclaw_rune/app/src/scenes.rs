@@ -138,6 +138,10 @@ pub const SCENES: &[Scene] = &[
     ("chat-cli-turn", crate::chat::fixtures::cli_turn_settled),
     ("chat-cli-turn-open", crate::chat::fixtures::cli_turn_open),
     ("chat-cli-turn-live", crate::chat::fixtures::cli_turn_live),
+    (
+        "chat-commentary-live",
+        crate::chat::fixtures::commentary_live,
+    ),
     ("chat-steering", crate::chat::fixtures::steering),
     ("chat-steering-queue-default", |s| {
         crate::chat::fixtures::steering(s);
@@ -255,9 +259,17 @@ pub const SCENES: &[Scene] = &[
         page_with(s, Page::Projects, crate::pages::projects::fixture)
     }),
     ("onboarding-agents", crate::onboarding::fixtures::agents),
+    (
+        "onboarding-agents-long",
+        crate::onboarding::fixtures::agents_long,
+    ),
     ("onboarding-connect", crate::onboarding::fixtures::connect),
     ("onboarding-pairing", crate::onboarding::fixtures::pairing),
     ("onboarding-projects", crate::onboarding::fixtures::projects),
+    (
+        "onboarding-projects-long",
+        crate::onboarding::fixtures::projects_long,
+    ),
     (
         "onboarding-projects-loading",
         crate::onboarding::fixtures::projects_loading,

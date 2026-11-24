@@ -146,10 +146,11 @@ impl StreamedToolCallBridge {
         call: ToolCall,
         provider_turn_id: String,
     ) -> Option<CapabilityCallCandidate> {
-        // `response_reasoning` is unknown mid-stream; it is replay metadata,
+        // `response_reasoning`/`response_text` are unknown mid-stream; it is replay metadata,
         // not part of the input ref, so the final candidate still matches.
         let provider_call = match provider_tool_call_from_llm(
             call,
+            None,
             None,
             provider_turn_id,
             &self.replay_identity,

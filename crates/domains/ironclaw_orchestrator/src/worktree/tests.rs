@@ -134,6 +134,7 @@ impl TurnRuntime for PlainRuntime {
             efforts: vec![],
             model_efforts: Default::default(),
             brand: None,
+            launch: None,
         }])
     }
     fn capabilities(&self) -> RuntimeCapabilities {
@@ -237,6 +238,7 @@ fn ctx(thread: &str) -> CallContext {
         thread_id: ThreadId::new(thread).unwrap(),
         scope: scope(),
         provider: None,
+        run_id: None,
         model: None,
     }
 }

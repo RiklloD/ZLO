@@ -295,6 +295,7 @@ impl Gate {
                     name: ProviderToolName::new(TOOL).unwrap(),
                     arguments: json!({"app": "Calculator"}),
                     response_reasoning: None,
+                    response_text: None,
                     reasoning: None,
                     signature: None,
                 },
