@@ -10,8 +10,8 @@ use rune_kit::{Checkbox, IconButtonVariant, Kit};
 use crate::design::{kit as zkit, motion};
 
 use crate::pages::common::controls::{Look, Size, button_sized, icon_button_sized};
-use crate::pages::common::pressable;
 use crate::pages::common::ts::{MONO_XS, sm, sm_medium, xs};
+use crate::pages::common::{pressable, rows_card};
 use crate::state::{Conn, State};
 
 use super::{Finish, Step, Toast};
@@ -19,6 +19,35 @@ use crate::remote::EnvState;
 use zlo_client::environments::Active;
 
 const WIDTH: f32 = 720.;
+
+/// The card's inset from the window's sides.
+pub(super) const EDGE_X: f32 = 16.;
+/// The card's inset from the window's top and bottom: clear of the
+/// titlebar's traffic lights, and the same below so the card sits centred.
+pub(super) const EDGE_Y: f32 = 40.;
+/// The card's side padding, shared by the header, body and footer.
+const PAD_X: f32 = 24.;
+
+/// What a step shows: its scrolling body and its pinned actions.
+pub struct StepView {
+    pub body: El,
+    /// The step's buttons, right-aligned in the footer under the body.
+    pub actions: Vec<El>,
+}
+
+impl StepView {
+    pub fn new(body: El) -> Self {
+        StepView {
+            body,
+            actions: Vec::new(),
+        }
+    }
+
+    pub fn action(mut self, action: El) -> Self {
+        self.actions.push(action);
+        self
+    }
+}
 
 /// How far a step's body travels as it arrives: a nudge toward where the
 /// person is going, not a full-width push.
@@ -55,10 +84,13 @@ fn close(s: &mut State) {
     );
 }
 
+/// The wizard: the stepper on top and the step's actions at the bottom stay
+/// put while the step's body scrolls between them, and the card never
+/// outgrows the window (it shrinks to it, [`EDGE_Y`] in from each edge).
 pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
     let p = &s.palette;
     let o = &s.onboarding;
-    let body = match o.step {
+    let step = match o.step {
         Step::Connect => connect_step(s, k),
         Step::Agents => super::agents::view(s, k),
         Step::Projects => super::projects::view(s, k),
@@ -70,10 +102,10 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
         // The old step mostly gone before the new one starts in, so the
         // two don't read as one muddle.
         .enter_delay(STEP_HANDOFF)
-        .child(body);
-    let mut panel_body = col().w_full().child(body);
+        .child(step.body);
+    let mut content = col().w_full().px(PAD_X).pt(20.).pb(24.).child(body);
     if let Some(e) = &o.finish_error {
-        panel_body = panel_body.child(
+        content = content.child(
             text(format!("Could not finish setup. {e}"))
                 .key("onboarding-finish-error")
                 .font(sm())
@@ -83,29 +115,42 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 .transition(motion::reveal()),
         );
     }
+    // The one scroll viewport: it takes what the stepper and the footer
+    // leave, and shrinks below its content when the window is short.
+    let scroll = col()
+        .key("onboarding-scroll")
+        .w_full()
+        .shrink()
+        .min_h(0.)
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
+        .child(content);
     let panel = col()
         .key("onboarding-dialog")
         .role("dialog")
         .label("Set up ZLO")
         .w_full()
         .max_w(WIDTH)
-        .radius(12.)
+        .shrink()
+        .min_h(0.)
+        .radius(crate::design::PANEL_RADIUS)
+        .continuous_corners()
         .fill(p.surface_overlay)
         .border(1., p.border_strong)
-        .child(header(s, k))
-        .child(
-            col()
-                .key("onboarding-panel")
-                .w_full()
-                .px(24.)
-                .py(20.)
-                .fill(p.bg.alpha(0.5))
-                .border(1., p.border)
-                // While the panel springs to the next step's height, the
-                // step fading out must not spill past its edge.
-                .clip_rounded(0.)
-                .child(panel_body),
+        .shadow(
+            12.,
+            32.,
+            rune::Color::BLACK.alpha(if p.light { 0.1 } else { 0.4 }),
         )
+        // While the card springs to the next step's height, the step
+        // fading out must not spill past its edge.
+        .clip_rounded(crate::design::PANEL_RADIUS)
+        .child(header(s, k))
+        .child(rule(p))
+        .child(scroll)
+        .child(rule(p))
+        .child(footer(step.actions))
         .token_motion(k.motion.overlay)
         .transition(motion::pop(8.))
         .modal(false, close);
@@ -117,14 +162,33 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
             .transition(motion::fade()),
     );
     layer.push(
-        el().key("onboarding-layer")
+        col()
+            .key("onboarding-layer")
             .absolute(0.0, 0.0)
             .w_full()
             .h_full()
-            .padding(16.)
+            .px(EDGE_X)
+            .py(EDGE_Y)
             .center()
             .child(panel),
     );
+}
+
+fn rule(p: &crate::design::Palette) -> El {
+    el().w_full().h(1.).fill(p.border).a11y_hidden()
+}
+
+/// The pinned footer: the step's actions, on the right.
+fn footer(actions: Vec<El>) -> El {
+    row()
+        .key("onboarding-footer")
+        .w_full()
+        .px(PAD_X)
+        .py(14.)
+        .gap(12.)
+        .center_y()
+        .justify_end()
+        .children(actions)
 }
 
 /// t3code `WizardHeader`: the wordmark, the steps, and Close.
@@ -134,10 +198,10 @@ fn header(s: &State, k: &Kit) -> El {
     col()
         .key("onboarding-header")
         .w_full()
-        .px(24.)
-        .pt(20.)
+        .px(PAD_X)
+        .pt(18.)
         .pb(16.)
-        .gap(16.)
+        .gap(14.)
         .child(
             row()
                 .w_full()
@@ -146,8 +210,8 @@ fn header(s: &State, k: &Kit) -> El {
                 .child(super::stepper::mark(s))
                 .child(
                     text("ZLO")
-                        .font(rune::TextStyle::new(22., 600.))
-                        .color(p.text_muted)
+                        .font(rune::TextStyle::new(18., 600.))
+                        .color(p.text)
                         .grow(1.),
                 )
                 .child(
@@ -177,8 +241,56 @@ pub fn step_shell(s: &State, title: &str, description: &str) -> El {
                 .font(sm())
                 .color(p.text_muted)
                 .wrap()
-                .pt(10.),
+                .pt(6.),
         )
+}
+
+/// A labelled group of rows, as Settings draws them: the label, then one
+/// block on the wash fill with hairlines between its rows.
+pub fn section(s: &State, key: &str, title: Option<&str>, rows: Vec<El>) -> El {
+    let p = &s.palette;
+    let mut c = col().key(key.to_string()).w_full().pt(20.);
+    if let Some(title) = title {
+        c = c.child(
+            text(title.to_string())
+                .font(sm_medium())
+                .color(p.text)
+                .pb(8.),
+        );
+    }
+    c.child(rows_card(p, rows))
+}
+
+/// One row of a [`section`]: a leading mark, a title over a muted line, and
+/// the row's status or action on the right (Settings' `setting_row`).
+pub fn list_row(
+    s: &State,
+    key: String,
+    lead: El,
+    title: &str,
+    line: Option<El>,
+    trailing: El,
+) -> El {
+    let p = &s.palette;
+    let mut info = col()
+        .grow(1.)
+        .min_w(0.)
+        .gap(1.)
+        .child(text(title.to_string()).font(sm_medium()).color(p.text));
+    if let Some(line) = line {
+        info = info.child(line);
+    }
+    row()
+        .key(key)
+        .w_full()
+        .min_h(56.)
+        .px(16.)
+        .py(10.)
+        .gap(12.)
+        .center_y()
+        .child(lead)
+        .child(info)
+        .child(trailing)
 }
 
 /// t3code `CommandBlock`: `$ command` with a copy button.
@@ -188,11 +300,13 @@ pub fn command_block(s: &State, k: &Kit, command: &'static str, key: &str) -> El
         .key(key.to_string())
         .w_full()
         .gap(12.)
-        .px(12.)
-        .py(10.)
-        .radius(8.)
+        .pl(12.)
+        .pr(4.)
+        .py(4.)
+        .radius(crate::design::CONTROL_RADIUS)
+        .continuous_corners()
         .center_y()
-        .fill(p.hover)
+        .fill(p.bg)
         .border(1., p.border)
         .child(
             row()
@@ -279,76 +393,74 @@ fn pick(s: &mut State, choice: Active) {
     crate::remote::switch_to(s, choice);
 }
 
-fn connect_step(s: &State, k: &Kit) -> El {
+fn connect_step(s: &State, k: &Kit) -> StepView {
     let p = &s.palette;
     let active = s.onboarding.computer.key();
     let ready = matches!(s.conn, Conn::Ready) && s.remote.switching.is_none();
-    let mut list = col().key("computers").w_full().gap(8.).pt(20.);
+    let mut rows = Vec::new();
     for choice in computers(s) {
         let on = choice.key == active;
-        let status = status_of(s, &choice.key);
-        let mut info = col().grow(1.).min_w(0.).child(
-            row()
-                .w_full()
-                .gap(12.)
-                .child(
-                    text(choice.label.clone())
-                        .font(sm_medium())
-                        .color(p.text)
-                        .grow(1.)
-                        .min_w(0.)
-                        .wrap(),
-                )
-                .child({
-                    let status_line = text(status).key("status").font(xs()).color(p.text_muted);
-                    // Breathes on the loaders' 15 fps clock only while it
-                    // connects; still under Reduce Motion.
-                    if matches!(
-                        crate::remote::state_of(s, &choice.key),
-                        EnvState::Connecting
-                    ) {
-                        status_line.cycle(zkit::loops::breathe(1.6, 0., &zkit::loops::BREATH_55))
-                    } else {
-                        status_line
-                    }
-                }),
-        );
+        let state = crate::remote::state_of(s, &choice.key);
+        let mut line = col().w_full().gap(1.);
         if let Some(caption) = &choice.caption {
-            info = info.child(text(caption.clone()).font(xs()).color(p.text_muted).pt(2.));
+            line = line.child(
+                text(caption.clone())
+                    .font(xs())
+                    .color(p.text_muted)
+                    .truncate(),
+            );
         }
-        if let EnvState::Blocked(why) = crate::remote::state_of(s, &choice.key) {
-            info = info.child(text(why).font(xs()).color(p.danger).wrap().pt(2.));
+        if let EnvState::Blocked(why) = &state {
+            line = line.child(text(why.clone()).font(xs()).color(p.danger).wrap());
         }
+        let status_line = text(status_of(s, &choice.key))
+            .key("status")
+            .font(xs())
+            .color(p.text_muted);
+        // Breathes on the loaders' 15 fps clock only while it connects;
+        // still under Reduce Motion.
+        let status_line = if matches!(state, EnvState::Connecting) {
+            status_line.cycle(zkit::loops::breathe(1.6, 0., &zkit::loops::BREATH_55))
+        } else {
+            status_line
+        };
         let (row_target, check_target) = (choice.active.clone(), choice.active.clone());
-        list = list.child(
-            row()
-                .key(format!("computer-{}", choice.key))
-                .w_full()
-                .gap(12.)
-                .px(12.)
-                .py(12.)
-                .radius(8.)
-                .center_y()
-                .border(1., if on { p.accent.alpha(0.5) } else { p.border })
-                .fill(p.bg)
-                .cursor(rune::Cursor::Pointer)
-                .press_scale(motion::PRESS_CARD)
-                .on_press(move |s: &mut State| pick(s, row_target.clone()))
-                .child(
-                    Checkbox::new(on)
-                        .label(choice.label.clone())
-                        .hide_label()
-                        .on_toggle(move |s: &mut State| pick(s, check_target.clone()))
-                        .build(k)
-                        .key(format!("computer-check-{}", choice.key)),
-                )
-                .child(rune::icon(&crate::icons::MONITOR, 16.).color(p.text_muted))
-                .child(info),
+        let lead = row()
+            .gap(12.)
+            .center_y()
+            .child(
+                Checkbox::new(on)
+                    .label(choice.label.clone())
+                    .hide_label()
+                    .on_toggle(move |s: &mut State| pick(s, check_target.clone()))
+                    .build(k)
+                    .key(format!("computer-check-{}", choice.key)),
+            )
+            .child(rune::icon(&crate::icons::MONITOR, 16.).color(p.text_muted));
+        rows.push(
+            list_row(
+                s,
+                format!("computer-{}", choice.key),
+                lead,
+                &choice.label,
+                (choice.caption.is_some() || matches!(state, EnvState::Blocked(_))).then_some(line),
+                status_line,
+            )
+            .cursor(rune::Cursor::Pointer)
+            .hover(p.hover)
+            .hover_motion(motion::HOVER, motion::HOVER)
+            .on_press(move |s: &mut State| pick(s, row_target.clone())),
         );
     }
-    list = list.child(pairing(s, k));
+    let mut body = step_shell(
+        s,
+        "Connect your computer",
+        "Choose the computer with your code. We'll set up agents and projects on it.",
+    )
+    .child(section(s, "computers", None, rows))
+    .child(pairing(s, k));
     if matches!(s.conn, Conn::Failed { .. }) {
-        list = list.child(
+        body = body.child(
             text(format!(
                 "Not connected, so setup cannot go on with {}. Pick another computer, or start IronClaw there.",
                 s.onboarding.computer.label()
@@ -356,26 +468,18 @@ fn connect_step(s: &State, k: &Kit) -> El {
             .font(xs())
             .color(p.text_muted)
             .wrap()
-            .pt(8.),
+            .pt(12.),
         );
     }
-    step_shell(
-        s,
-        "Connect your computer",
-        "Choose the computer with your code. We'll set up agents and projects on it.",
-    )
-    .child(list)
-    .child(
-        row().w_full().pt(24.).justify_end().child(
-            pressable(
-                button_sized("Continue", Look::Primary, Size::Small)
-                    .icon(&crate::icons::ARROW_RIGHT)
-                    .disabled(!ready || s.remote.page.busy.is_some())
-                    .on_press(|s: &mut State| super::go_to(s, Step::Agents))
-                    .build(k),
-            )
-            .key("connect-continue"),
-        ),
+    StepView::new(body).action(
+        pressable(
+            button_sized("Continue", Look::Primary, Size::Small)
+                .icon(&crate::icons::ARROW_RIGHT)
+                .disabled(!ready || s.remote.page.busy.is_some())
+                .on_press(|s: &mut State| super::go_to(s, Step::Agents))
+                .build(k),
+        )
+        .key("connect-continue"),
     )
 }
 
@@ -390,54 +494,49 @@ fn pairing(s: &State, k: &Kit) -> El {
         16.,
         p.text_muted,
     );
-    let card = col()
-        .key("pairing")
-        .w_full()
-        .radius(8.)
-        .border(1., p.border)
-        .fill(p.bg)
-        .child(
-            row()
-                .key("pairing-toggle")
-                .w_full()
-                .min_h(52.)
-                .px(12.)
-                .gap(10.)
-                .center_y()
-                .role("button")
-                .focusable(true)
-                .label("Add a computer")
-                .cursor(rune::Cursor::Pointer)
-                .hover(p.hover)
-                .hover_motion(motion::HOVER, motion::HOVER)
-                .press_scale(motion::PRESS_CARD)
-                .on_press(|s: &mut State| {
-                    if s.remote.page.busy.is_some() {
-                        return;
-                    }
-                    let c = &mut s.onboarding.connect;
-                    c.pairing_open = !c.pairing_open;
-                    s.remote.page.input.focused = c.pairing_open;
-                    if c.pairing_open {
-                        crate::remote::pairing::discover(s);
-                    }
-                })
-                .child(rune::icon(&crate::icons::GLOBE, 16.).color(p.text_muted))
-                .child(text("Add a computer").font(sm()).color(p.text).grow(1.))
-                .child(chevron),
-        );
-    if !open {
-        return card;
-    }
-    card.child(
-        col()
-            .key("pairing-drawer")
-            .w_full()
-            .px(12.)
-            .pb(12.)
-            .transition(motion::reveal())
-            .child(crate::pages::computers::add_computer(s, k)),
+    let toggle = list_row(
+        s,
+        "pairing-toggle".into(),
+        rune::icon(&crate::icons::GLOBE, 16.).color(p.text_muted),
+        "Add a computer",
+        Some(
+            text("Pair another computer by its link or code, or find one on your tailnet.")
+                .font(xs())
+                .color(p.text_muted)
+                .wrap(),
+        ),
+        chevron,
     )
+    .role("button")
+    .focusable(true)
+    .label("Add a computer")
+    .cursor(rune::Cursor::Pointer)
+    .hover(p.hover)
+    .hover_motion(motion::HOVER, motion::HOVER)
+    .on_press(|s: &mut State| {
+        if s.remote.page.busy.is_some() {
+            return;
+        }
+        let c = &mut s.onboarding.connect;
+        c.pairing_open = !c.pairing_open;
+        s.remote.page.input.focused = c.pairing_open;
+        if c.pairing_open {
+            crate::remote::pairing::discover(s);
+        }
+    });
+    let mut rows = vec![toggle];
+    if open {
+        rows.push(
+            col()
+                .key("pairing-drawer")
+                .w_full()
+                .px(16.)
+                .py(12.)
+                .transition(motion::reveal())
+                .child(crate::pages::computers::add_computer(s, k)),
+        );
+    }
+    section(s, "pairing", None, rows).pt(8.)
 }
 
 /// The note after setup (t3code's toast), bottom right.

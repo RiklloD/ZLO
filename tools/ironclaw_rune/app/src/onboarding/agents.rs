@@ -1,5 +1,6 @@
 //! Setup's "Connect your agents" (t3code `AgentsStep`): the computer's
-//! coding-agent CLIs, Codex and Claude Code, each Ready, Checking, Disabled,
+//! coding-agent CLIs (Codex, Claude Code, Antigravity; Muse Code once the
+//! computer has it), each Ready, Checking, Disabled,
 //! or a button to Install or Sign in. t3code types the command into its own
 //! terminal for the person to review and run; ZLO opens Terminal with the
 //! command shown and run only once Enter is pressed. A CLI installed after
@@ -12,19 +13,20 @@
 
 mod providers;
 
-use rune::{El, col, el, row, text};
+use rune::{El, col, row, text};
 use rune_kit::Kit;
 use zlo_client::orchestration::RouteProvider;
 
 use crate::design::brands::provider_logo;
 use crate::design::motion;
 use crate::jobs::{self, Generation};
-use crate::pages::common::card;
 use crate::pages::common::controls::{Look, Size, button_sized, muted, spinner_line};
-use crate::pages::common::ts::{sm_medium, xs};
+use crate::pages::common::ts::xs;
+use crate::pages::common::{Tone, tag};
+use crate::pages::providers::catalog::{KnownCli, known_cli};
 use crate::state::State;
 
-use super::view::{command_block, step_shell};
+use super::view::{StepView, command_block, list_row, section, step_shell};
 
 /// How long a restarted gateway gets to answer again.
 const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -32,14 +34,25 @@ const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// supervisor waits at least a second before starting it again).
 const RESTART_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// t3code `PRIMARY_AGENT_DRIVERS`, in its order.
+/// The coding-agent CLIs setup offers: t3code's `PRIMARY_AGENT_DRIVERS`
+/// (Codex, Claude Code), then the others ZLO's CLI manager runs. Names,
+/// commands and binaries come from the one list Settings → Providers reads
+/// ([`KNOWN_CLIS`](crate::pages::providers::catalog::KNOWN_CLIS)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Driver {
     Codex,
     ClaudeCode,
+    Antigravity,
+    /// Shown only once the computer has it: it has no public installer.
+    Muse,
 }
 
-pub const DRIVERS: [Driver; 2] = [Driver::Codex, Driver::ClaudeCode];
+pub const DRIVERS: [Driver; 4] = [
+    Driver::Codex,
+    Driver::ClaudeCode,
+    Driver::Antigravity,
+    Driver::Muse,
+];
 
 impl Driver {
     /// The runtime id prefix the gateway registers (`claude-cli-2`).
@@ -47,30 +60,42 @@ impl Driver {
         match self {
             Driver::Codex => "codex",
             Driver::ClaudeCode => "claude-cli",
+            Driver::Antigravity => "antigravity",
+            Driver::Muse => "muse",
         }
+    }
+
+    fn known(self) -> Option<&'static KnownCli> {
+        known_cli(self.runtime())
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            // t3code's short name; Settings says "Codex CLI".
             Driver::Codex => "Codex",
-            Driver::ClaudeCode => "Claude Code",
+            _ => self.known().map_or(self.runtime(), |k| k.name),
         }
     }
 
-    /// t3code `NATIVE_INSTALL_COMMANDS` (no Node or npm needed).
-    pub fn install(self) -> &'static str {
-        match self {
-            Driver::Codex => "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
-            Driver::ClaudeCode => "curl -fsSL https://claude.ai/install.sh | bash",
-        }
+    /// The installer, when there is a public one.
+    pub fn install(self) -> Option<&'static str> {
+        self.known().and_then(|k| k.install)
     }
 
-    /// t3code `resolveOnboardingProviderLoginCommand`.
-    pub fn login(self) -> &'static str {
-        match self {
-            Driver::Codex => "codex login",
-            Driver::ClaudeCode => "claude auth login",
-        }
+    /// The sign-in command (t3code `resolveOnboardingProviderLoginCommand`).
+    pub fn login(self) -> Option<&'static str> {
+        self.known().and_then(|k| k.login)
+    }
+
+    /// The program its installer puts on the login shell's PATH.
+    fn binary(self) -> &'static str {
+        self.known().map_or(self.runtime(), |k| k.binary)
+    }
+
+    /// Listed even when the computer does not have it: it can be installed
+    /// from here.
+    fn offered(self) -> bool {
+        self.install().is_some()
     }
 }
 
@@ -227,6 +252,9 @@ pub(super) fn open_terminal(s: &mut State, driver: Driver, install: bool) {
     } else {
         driver.login()
     };
+    let Some(command) = command else {
+        return;
+    };
     // An agent of another computer is set up there: show the command for
     // that computer, never run it on this Mac.
     if crate::remote::backend_is_remote(s) {
@@ -310,6 +338,9 @@ fn close_terminal(s: &mut State) {
     // Only this Mac's own CLI and gateway are looked at or restarted here.
     if !t.install || crate::remote::backend_is_remote(s) || s.fixture {
         refresh_shown(s, true);
+        if !t.install && !s.fixture {
+            recheck_sign_in(s, t.driver);
+        }
         return;
     }
     // Only a CLI that is really there now is worth a restart: closing a
@@ -348,13 +379,36 @@ fn close_terminal(s: &mut State) {
     );
 }
 
+/// When to look again after a sign-in panel closes. The gateway learns of
+/// a sign-in some agents keep in the system keychain (Antigravity's) from a
+/// check it runs in the background, bounded to about ten seconds, so the
+/// first look may come too early.
+const SIGN_IN_RECHECKS: [std::time::Duration; 2] = [
+    std::time::Duration::from_secs(6),
+    std::time::Duration::from_secs(14),
+];
+
+/// Look again at the agents a little later while `driver` still asks to
+/// sign in. Quiet: no one pressed anything just then.
+fn recheck_sign_in(s: &mut State, driver: Driver) {
+    for delay in SIGN_IN_RECHECKS {
+        jobs::after(s, delay, move |s, _| {
+            let a = &s.onboarding.agents;
+            let waiting = super::wizard_shown(s)
+                && s.onboarding.step == super::Step::Agents
+                && !a.restarting
+                && agent_state(a.catalog.as_deref(), &a.hidden, driver) == AgentState::SignIn;
+            if waiting {
+                refresh(s);
+            }
+        });
+    }
+}
+
 /// The CLI's binary is on the login shell's PATH (where its installer
 /// puts it).
 fn cli_installed(driver: Driver) -> bool {
-    let binary = match driver {
-        Driver::Codex => "codex",
-        Driver::ClaudeCode => "claude",
-    };
+    let binary = driver.binary();
     std::process::Command::new("/bin/zsh")
         .args(["-lc", &format!("command -v {binary}")])
         .stdout(std::process::Stdio::null())
@@ -437,75 +491,69 @@ fn restarted(
     }
 }
 
-pub fn view(s: &State, k: &Kit) -> El {
+/// The agents listed: those with an installer, and any other the computer
+/// already has.
+fn listed(catalog: Option<&[RouteProvider]>) -> Vec<Driver> {
+    DRIVERS
+        .into_iter()
+        .filter(|d| {
+            d.offered()
+                || catalog.is_some_and(|c| c.iter().any(|r| r.runtime.starts_with(d.runtime())))
+        })
+        .collect()
+}
+
+pub fn view(s: &State, k: &Kit) -> StepView {
     let p = &s.palette;
     let a = &s.onboarding.agents;
     let computer = s.onboarding.computer.clone();
-    let mut section = col().key("agents-computer").w_full().gap(6.).child(
-        text(computer.label())
-            .font(sm_medium())
-            .color(p.text)
-            .pb(2.),
-    );
-    for driver in DRIVERS {
-        section = section.child(agent_card(s, k, driver));
-    }
-    if let Some(t) = &a.terminal {
-        section = section.child(terminal_panel(s, k, t));
-    }
-    if a.restarting {
-        section = section.child(
-            spinner_line(p, k, "Restarting IronClaw so it finds the new agent…")
-                .key("agents-restarting")
-                .transition(motion::reveal()),
-        );
-    } else if let Some(e) = &a.catalog_error {
-        section = section.child(
-            muted(p, format!("Could not check the agents: {e}"))
-                .key("agents-catalog-error")
-                .transition(motion::reveal()),
-        );
-    }
-    if let Some(n) = &a.agent_notice {
-        section = section.child(
-            muted(p, n.clone())
-                .key("agents-notice")
-                .transition(motion::reveal()),
-        );
-    }
-    let body = col()
-        .w_full()
-        .gap(16.)
-        .pt(20.)
-        .child(section)
-        .child(providers::section(s, k));
-    step_shell(
+    let rows = listed(a.catalog.as_deref())
+        .into_iter()
+        .map(|driver| agent_row(s, k, driver))
+        .collect();
+    let mut body = step_shell(
         s,
         "Connect your agents",
         "Choose an agent to start coding. You can add more later.",
     )
-    .child(
-        el().key("agents-scroll")
-            .w_full()
-            .max_h(440.)
-            .scroll(rune::ScrollSpec {
-                stick_bottom: false,
-            })
-            .child(body.pr(12.)),
-    )
-    .child(
-        row().w_full().pt(24.).justify_end().child(
-            button_sized("Continue", Look::Primary, Size::Small)
-                .icon(&crate::icons::ARROW_RIGHT)
-                .on_press(|s: &mut State| super::go_to(s, super::Step::Projects))
-                .build(k)
-                .key("agents-continue")
-                .press_scale(motion::PRESS),
-        ),
+    .child(section(s, "agents-computer", Some(&computer.label()), rows));
+    if let Some(t) = &a.terminal {
+        body = body.child(terminal_panel(s, k, t));
+    }
+    if a.restarting {
+        body = body.child(
+            spinner_line(p, k, "Restarting IronClaw so it finds the new agent…")
+                .key("agents-restarting")
+                .pt(10.)
+                .transition(motion::reveal()),
+        );
+    } else if let Some(e) = &a.catalog_error {
+        body = body.child(
+            muted(p, format!("Could not check the agents: {e}"))
+                .key("agents-catalog-error")
+                .pt(10.)
+                .transition(motion::reveal()),
+        );
+    }
+    if let Some(n) = &a.agent_notice {
+        body = body.child(
+            muted(p, n.clone())
+                .key("agents-notice")
+                .pt(10.)
+                .transition(motion::reveal()),
+        );
+    }
+    StepView::new(body.child(providers::section(s, k))).action(
+        button_sized("Continue", Look::Primary, Size::Small)
+            .icon(&crate::icons::ARROW_RIGHT)
+            .on_press(|s: &mut State| super::go_to(s, super::Step::Projects))
+            .build(k)
+            .key("agents-continue")
+            .press_scale(motion::PRESS),
     )
 }
 
-fn agent_card(s: &State, k: &Kit, driver: Driver) -> El {
+fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
     let p = &s.palette;
     let a = &s.onboarding.agents;
     let state = if a.restarting {
@@ -523,6 +571,35 @@ fn agent_card(s: &State, k: &Kit, driver: Driver) -> El {
     let terminal_open = a.terminal.is_some();
     // Each state's trailing part is its own keyed element, so a change
     // (Checking… → Ready) fades one out as the next comes in.
+    let action = |install: bool| {
+        let command = if install {
+            driver.install()
+        } else {
+            driver.login()
+        };
+        let label = if install { "Install" } else { "Sign in" };
+        match command {
+            Some(_) => row().key("action").transition(motion::fade()).child(
+                button_sized(label, Look::Outline, Size::Small)
+                    .icon(&crate::icons::SQUARE_TERMINAL)
+                    .disabled(terminal_open)
+                    .on_press(move |s: &mut State| open_terminal(s, driver, install))
+                    .build(k)
+                    .key(format!("agent-action-{}", driver.runtime()))
+                    .press_scale(motion::PRESS),
+            ),
+            // No command to run: Settings → Providers says how.
+            None => row().key("action").transition(motion::fade()).child(tag(
+                p,
+                if install {
+                    "Not installed"
+                } else {
+                    "Not signed in"
+                },
+                Tone::Warning,
+            )),
+        }
+    };
     let trailing = match state {
         AgentState::Ready => row()
             .key("ready")
@@ -541,41 +618,21 @@ fn agent_card(s: &State, k: &Kit, driver: Driver) -> El {
                 crate::design::kit::loops::breathe(1.6, 0., &crate::design::kit::loops::BREATH_55),
             ),
         ),
-        AgentState::Disabled => row()
-            .key("disabled")
-            .transition(motion::fade())
-            .child(text("Disabled").font(xs()).color(p.text_muted)),
-        AgentState::Install | AgentState::SignIn => {
-            let install = state == AgentState::Install;
-            row().key("action").transition(motion::fade()).child(
-                button_sized(
-                    if install { "Install" } else { "Sign in" },
-                    Look::Ghost,
-                    Size::Small,
-                )
-                .icon(&crate::icons::SQUARE_TERMINAL)
-                .disabled(terminal_open)
-                .on_press(move |s: &mut State| open_terminal(s, driver, install))
-                .build(k)
-                .key(format!("agent-action-{}", driver.runtime()))
-                .press_scale(motion::PRESS),
-            )
-        }
+        AgentState::Disabled => row().key("disabled").transition(motion::fade()).child(tag(
+            p,
+            "Removed",
+            Tone::Secondary,
+        )),
+        AgentState::Install => action(true),
+        AgentState::SignIn => action(false),
     };
-    card(p).key(format!("agent-{}", driver.runtime())).child(
-        row()
-            .w_full()
-            .gap(12.)
-            .center_y()
-            .child(provider_logo(s, &[driver.runtime()], 20.))
-            .child(
-                col()
-                    .grow(1.)
-                    .min_w(0.)
-                    .child(text(driver.name()).font(sm_medium()).color(p.text))
-                    .child(text(headline).font(xs()).color(p.text_muted).wrap()),
-            )
-            .child(trailing),
+    list_row(
+        s,
+        format!("agent-{}", driver.runtime()),
+        provider_logo(s, &[driver.runtime()], 20.),
+        driver.name(),
+        Some(text(headline).font(xs()).color(p.text_muted).wrap()),
+        trailing,
     )
 }
 
@@ -623,7 +680,8 @@ fn terminal_panel(s: &State, k: &Kit, t: &AgentTerminal) -> El {
         .font(xs())
         .color(p.text_muted)
         .wrap()
-        .grow(1.);
+        .grow(1.)
+        .min_w(0.);
     if opening {
         // Waiting on Terminal: the loaders' 15 fps breath, still under
         // Reduce Motion, gone once Terminal answers.
@@ -633,30 +691,30 @@ fn terminal_panel(s: &State, k: &Kit, t: &AgentTerminal) -> El {
             &crate::design::kit::loops::BREATH_55,
         ));
     }
-    col()
-        .key("agent-terminal")
-        .w_full()
-        .mt(10.)
-        .transition(motion::reveal())
-        .radius(8.)
-        .border(1., p.border)
-        .child(
-            row()
-                .w_full()
-                .px(12.)
-                .py(6.)
-                .gap(8.)
-                .center_y()
-                .child(caption)
-                .child(actions),
-        )
-        .child(el().w_full().h(1.).fill(p.border))
-        .child(
+    section(
+        s,
+        "agent-terminal",
+        None,
+        vec![
             col()
+                .key("agent-terminal-body")
                 .w_full()
-                .padding(12.)
+                .px(16.)
+                .py(12.)
+                .gap(10.)
+                .child(
+                    row()
+                        .w_full()
+                        .gap(8.)
+                        .center_y()
+                        .child(caption)
+                        .child(actions),
+                )
                 .child(command_block(s, k, t.command, "agent-command")),
-        )
+        ],
+    )
+    .pt(8.)
+    .transition(motion::reveal())
 }
 
 #[cfg(test)]
@@ -706,6 +764,38 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_is_offered_and_muse_only_once_found() {
+        let none: &[RouteProvider] = &[];
+        assert_eq!(
+            listed(Some(none)),
+            vec![Driver::Codex, Driver::ClaudeCode, Driver::Antigravity],
+            "every agent with an installer, before the gateway answers too"
+        );
+        assert_eq!(listed(None), listed(Some(none)));
+        let found = vec![route("muse", "muse", true)];
+        assert_eq!(listed(Some(&found)).last(), Some(&Driver::Muse));
+        // Antigravity's states come from the gateway's catalog, as the
+        // others' do.
+        let catalog = vec![route("antigravity", "antigravity", false)];
+        assert_eq!(
+            agent_state(Some(&catalog), &[], Driver::Antigravity),
+            AgentState::SignIn
+        );
+        assert_eq!(
+            agent_state(Some(none), &[], Driver::Antigravity),
+            AgentState::Install
+        );
+        // Its commands are the ones Settings → Providers shows.
+        assert_eq!(
+            Driver::Antigravity.install(),
+            Some("curl -fsSL https://antigravity.google/cli/install.sh | bash")
+        );
+        assert_eq!(Driver::Antigravity.login(), Some("agy"));
+        assert_eq!(Driver::Antigravity.binary(), "agy");
+        assert_eq!(Driver::Muse.install(), None);
+    }
+
+    #[test]
     fn a_restart_counts_only_once_the_old_gateway_went_away() {
         // The old gateway still answers while it shuts down: keep waiting.
         assert_eq!(
@@ -725,6 +815,7 @@ mod tests {
 
     #[test]
     fn terminal_shows_the_command_and_waits_for_enter() {
+        assert_eq!(Driver::ClaudeCode.login(), Some("claude auth login"));
         let line = terminal_script("claude auth login");
         assert!(line.contains("'claude auth login'"));
         assert!(line.ends_with("read _ && claude auth login"));

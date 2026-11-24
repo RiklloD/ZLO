@@ -153,6 +153,71 @@ pub(super) async fn cached_models(config: &AntigravityConfig) -> (Vec<String>, V
 /// list), save the list, `session/close`, then end the process group. The
 /// session is bound to no thread and never prompted.
 pub(super) async fn refresh_models(config: &AntigravityConfig) -> Result<(), String> {
+    ask_agent(config, config.auth_timeout, true).await
+}
+
+/// Whether the agent signs in on its own, without a browser: `initialize`
+/// and `authenticate` only, no session. Finds a sign-in `agy` keeps in the
+/// system keychain (its own first launch makes one), which writes no
+/// `acp_token.json`. A signed-out agent waits on a browser nobody opens, so
+/// the wait is short.
+pub(super) async fn check_sign_in(config: &AntigravityConfig) -> Result<(), String> {
+    ask_agent(
+        config,
+        config.auth_timeout.min(SIGN_IN_CHECK_TIMEOUT),
+        false,
+    )
+    .await
+}
+
+/// How long [`check_sign_in`] waits for `authenticate`.
+const SIGN_IN_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Record what the agent last said about its sign-in: an `authenticate`
+/// that answered marks the account signed in; one that waited for a browser
+/// clears the mark. The token file, when the agent writes one, counts too
+/// ([`signed_in`]).
+pub(super) async fn mark_signed_in(config: &AntigravityConfig, on: bool) {
+    let file = config.signed_in_file();
+    let done = if on {
+        async {
+            tokio::fs::create_dir_all(&config.state_dir).await?;
+            tokio::fs::write(&file, now_ms().to_string()).await
+        }
+        .await
+    } else {
+        match tokio::fs::remove_file(&file).await {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
+    };
+    if let Err(error) = done {
+        tracing::debug!(%error, on, "antigravity: sign-in mark not saved");
+    }
+}
+
+/// Whether the account is signed in: the agent's token file, or the mark
+/// of an `authenticate` that answered ([`mark_signed_in`]).
+pub(super) async fn signed_in(config: &AntigravityConfig) -> bool {
+    for file in [config.token_file(), config.signed_in_file()] {
+        // silent-ok: an unreadable file reads as signed out
+        if tokio::fs::try_exists(&file).await.unwrap_or(false) {
+            return true;
+        }
+    }
+    false
+}
+
+/// One background conversation with the agent, never prompted: start it,
+/// `initialize`, `authenticate` within `auth_timeout` (the outcome is
+/// recorded with [`mark_signed_in`]), and with `models` also open a session
+/// to save the account's model list and close it again. The process group
+/// always ends.
+async fn ask_agent(
+    config: &AntigravityConfig,
+    auth_timeout: Duration,
+    models: bool,
+) -> Result<(), String> {
     launch::prepare_dirs(config)
         .await
         .map_err(|e| format!("dirs: {}", e.kind()))?;
@@ -177,13 +242,23 @@ pub(super) async fn refresh_models(config: &AntigravityConfig) -> Result<(), Str
         client
             .request("initialize", initialize_params(), INIT_TIMEOUT)
             .await?;
-        client
+        let auth = client
             .request(
                 "authenticate",
                 json!({"methodId": config.auth_method}),
-                config.auth_timeout,
+                auth_timeout,
             )
-            .await?;
+            .await;
+        match &auth {
+            Ok(_) => mark_signed_in(config, true).await,
+            // Waiting on a browser sign-in: signed out.
+            Err(RpcError::Timeout) if config.uses_browser() => mark_signed_in(config, false).await,
+            Err(_) => {}
+        }
+        auth?;
+        if !models {
+            return Ok(());
+        }
         let cwd = config.work_dir.display().to_string();
         let result = client
             .request(

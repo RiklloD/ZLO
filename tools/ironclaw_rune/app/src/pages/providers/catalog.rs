@@ -81,13 +81,19 @@ pub fn display_name(id: &str) -> String {
         .join(" ")
 }
 
-/// A coding-agent CLI the orchestrator can run threads on.
+/// A coding-agent CLI the orchestrator can run threads on. The one list
+/// of them: Settings → Providers → CLI agents and setup's "Connect your
+/// agents" both read it.
 pub struct KnownCli {
     /// Runtime id prefix the gateway registers (`claude-cli`, `claude-cli-2`).
     pub runtime: &'static str,
     pub name: &'static str,
     pub blurb: &'static str,
-    /// Shell command that installs it, when there is a public one.
+    /// The program its installer puts on the login shell's PATH.
+    pub binary: &'static str,
+    /// Shell command that installs it, when there is a public one. The
+    /// native installers (t3code `NATIVE_INSTALL_COMMANDS`): no Node or npm
+    /// needed.
     pub install: Option<&'static str>,
     /// Shell command that signs it in.
     pub login: Option<&'static str>,
@@ -100,22 +106,29 @@ pub const KNOWN_CLIS: &[KnownCli] = &[
         runtime: "claude-cli",
         name: "Claude Code",
         blurb: "Anthropic's agent on your Claude Pro or Max plan.",
-        install: Some("npm install -g @anthropic-ai/claude-code"),
-        login: Some("claude /login"),
+        binary: "claude",
+        install: Some("curl -fsSL https://claude.ai/install.sh | bash"),
+        login: Some("claude auth login"),
         planned: false,
     },
     KnownCli {
         runtime: "antigravity",
         name: "Antigravity",
         blurb: "Google's agent over ACP, on your Google account.",
-        install: None,
-        login: None,
+        binary: "agy",
+        // antigravity.google/docs/getting-started (macOS and Linux).
+        install: Some("curl -fsSL https://antigravity.google/cli/install.sh | bash"),
+        // Its first launch signs in in the browser and keeps the sign-in in
+        // the system keychain, which `agy acp` shares
+        // (antigravity.google/docs/install, "Antigravity CLI").
+        login: Some("agy"),
         planned: false,
     },
     KnownCli {
         runtime: "muse",
         name: "Muse Code",
         blurb: "Meta's coding agent.",
+        binary: "muse",
         install: None,
         login: None,
         planned: false,
@@ -124,11 +137,17 @@ pub const KNOWN_CLIS: &[KnownCli] = &[
         runtime: "codex",
         name: "Codex CLI",
         blurb: "OpenAI's agent on your ChatGPT plan, in its own harness.",
-        install: Some("npm install -g @openai/codex"),
+        binary: "codex",
+        install: Some("curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
         login: Some("codex login"),
         planned: false,
     },
 ];
+
+/// The known CLI whose runtime id `runtime` starts with.
+pub fn known_cli(runtime: &str) -> Option<&'static KnownCli> {
+    KNOWN_CLIS.iter().find(|k| runtime.starts_with(k.runtime))
+}
 
 #[cfg(test)]
 mod tests {

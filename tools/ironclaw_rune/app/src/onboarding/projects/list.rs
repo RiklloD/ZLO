@@ -13,19 +13,19 @@ use crate::pages::common::controls::{Look, Size, button_sized, muted, spinner};
 use crate::pages::common::ts::{MONO_XS, sm, sm_medium, xs};
 use crate::state::State;
 
-use super::super::view::step_shell;
+use super::super::view::{StepView, step_shell};
 use super::{
     SCAN_LIMIT_MESSAGE, Scan, group, listed, run_import, scan, selected, set_keys, short_age, skip,
     split_path,
 };
 
-pub(super) fn view(s: &State, k: &Kit) -> El {
+pub(super) fn view(s: &State, k: &Kit) -> StepView {
     let p = &s.palette;
     let ps = &s.onboarding.projects;
     let busy = ps.importing;
     match &ps.scan {
         None | Some(Scan::Pending) => {
-            return col()
+            let body = col()
                 .key("projects-loading")
                 .w_full()
                 .min_h(160.)
@@ -47,8 +47,8 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                                 .font(sm())
                                 .color(p.text_muted),
                         ),
-                )
-                .child(row().w_full().justify_end().child(skip_button(k, busy)));
+                );
+            return StepView::new(body).action(skip_button(k, busy));
         }
         _ => {}
     }
@@ -101,7 +101,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 ),
         );
     }
-    let mut list = col().w_full().gap(2.).pr(12.);
+    let mut list = col().w_full().gap(2.);
     match &ps.scan {
         Some(Scan::Failed(e)) => {
             list = list.child(
@@ -147,16 +147,8 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         }
         _ => {}
     }
-    body = body.child(
-        el().key("projects-scroll")
-            .w_full()
-            .pt(8.)
-            .max_h(320.)
-            .scroll(rune::ScrollSpec {
-                stick_bottom: false,
-            })
-            .child(list),
-    );
+    // The card's body scrolls as one (`view::wizard`); no inner scroller.
+    body = body.child(col().key("projects-list").w_full().pt(8.).child(list));
     if let Some(e) = &ps.error {
         body = body.child(
             text(e.clone())
@@ -169,40 +161,34 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         );
     }
     let n = pick.len();
-    body.child(
-        row()
-            .w_full()
-            .pt(24.)
-            .gap(12.)
-            .center_y()
-            .justify_end()
-            .child(skip_button(k, busy))
-            .child({
-                let label = if busy {
-                    "Importing…".to_string()
-                } else {
-                    format!("Import {n} {}", if n == 1 { "project" } else { "projects" })
-                };
-                let roll = label.clone();
-                let kit = k.clone();
-                button_sized(label, Look::Primary, Size::Small)
-                    // The count rolls as the person picks; the button's
-                    // width springs with it.
-                    .label_with(move |font, ink| {
-                        RollingText::new("projects-import-label", roll)
-                            .value(n as f64)
-                            .font(font)
-                            .color(ink)
-                            .spring(motion::ROLL)
-                            .build(&kit)
-                    })
-                    .disabled(busy || n == 0)
-                    .on_press(run_import)
-                    .build(k)
-                    .key("projects-import")
-                    .press_scale(motion::PRESS)
-            }),
-    )
+    let import = {
+        let label = if busy {
+            "Importing…".to_string()
+        } else {
+            format!("Import {n} {}", if n == 1 { "project" } else { "projects" })
+        };
+        let roll = label.clone();
+        let kit = k.clone();
+        button_sized(label, Look::Primary, Size::Small)
+            // The count rolls as the person picks; the button's width
+            // springs with it.
+            .label_with(move |font, ink| {
+                RollingText::new("projects-import-label", roll)
+                    .value(n as f64)
+                    .font(font)
+                    .color(ink)
+                    .spring(motion::ROLL)
+                    .build(&kit)
+            })
+            .disabled(busy || n == 0)
+            .on_press(run_import)
+            .build(k)
+            .key("projects-import")
+            .press_scale(motion::PRESS)
+    };
+    StepView::new(body)
+        .action(skip_button(k, busy))
+        .action(import)
 }
 
 fn skip_button(k: &Kit, busy: bool) -> El {

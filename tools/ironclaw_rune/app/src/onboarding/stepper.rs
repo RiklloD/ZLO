@@ -7,7 +7,7 @@ use std::time::Duration;
 use rune::{Beat, Easing, El, Sequence, Transition, el, row, text};
 
 use crate::design::motion;
-use crate::pages::common::ts::sm_medium;
+use crate::pages::common::ts::{sm_medium, xs_medium};
 use crate::state::State;
 
 use super::STEPS;
@@ -47,7 +47,8 @@ pub fn mark(s: &State) -> El {
             .w(4.)
             .h(h)
             .radius(2.)
-            .gradient(crate::design::lift(p.accent, 0.12), p.accent_strong);
+            // One flat ink, as the rest of the chrome (no gradient).
+            .fill(p.text);
         if entering {
             // A finite track on the render clock: it plays once from the
             // mount, holds its final (resting) pose, and holds whole under
@@ -73,7 +74,9 @@ pub fn mark(s: &State) -> El {
 pub const PILL_KEY: &str = "onboarding-step-pill";
 
 /// t3code `WizardSteps`: done steps take a check and can be reopened. One
-/// highlight sits behind the current step and glides to the next one.
+/// highlight sits behind the current step and glides to the next one. Drawn
+/// as the app's segmented control: the faint wash, a raised knob, neutral
+/// ink (the current step's badge is the solid one, as primary buttons are).
 pub fn steps(s: &State) -> El {
     let p = &s.palette;
     let current = s.onboarding.step.index();
@@ -92,16 +95,23 @@ pub fn steps(s: &State) -> El {
     for ix in 0..current {
         track = track.child(el().key(format!("before-{ix}")).grow(1.).min_w(0.));
     }
-    track = track.child(
-        el().key(PILL_KEY)
-            .grow(1.)
-            .min_w(0.)
-            .h_full()
-            .radius(8.)
-            .fill(p.surface_card)
-            .border(1., p.border)
-            .motion(motion::PILL),
-    );
+    let mut knob = el()
+        .key(PILL_KEY)
+        .grow(1.)
+        .min_w(0.)
+        .h_full()
+        .radius(crate::design::ROW_RADIUS)
+        .continuous_corners()
+        .fill(if p.light {
+            p.surface_raised
+        } else {
+            rune::Color::WHITE.alpha(0.12)
+        })
+        .motion(motion::PILL);
+    if p.light {
+        knob = knob.shadow(1., 2., rune::Color::BLACK.alpha(0.05));
+    }
+    track = track.child(knob);
     for ix in current + 1..STEPS.len() {
         track = track.child(el().key(format!("after-{ix}")).grow(1.).min_w(0.));
     }
@@ -112,49 +122,35 @@ pub fn steps(s: &State) -> El {
         .w_full()
         .gap(4.)
         .padding(4.)
-        .radius(12.)
-        .fill(p.bg)
-        .border(1., p.border)
+        .radius(crate::design::PANEL_RADIUS)
+        .continuous_corners()
+        .fill(crate::design::kit::hover_wash(p))
         .child(track);
     for (step, name) in STEPS {
         let ix = step.index();
         let here = ix == current;
         let done = ix < current;
         let mark = if done {
-            rune::icon(&crate::icons::CHECK, 14.)
+            rune::icon(&crate::icons::CHECK, 12.)
                 .key("check")
-                .color(p.on_accent())
+                .color(p.text)
                 .transition(motion::glyph_pop())
         } else {
             text((ix + 1).to_string())
                 .key("number")
-                .font(sm_medium())
-                .color(if here { p.accent } else { p.text_muted })
+                .font(xs_medium())
+                .color(if here { p.bg } else { p.text_muted })
                 .transition(Transition::opacity())
         };
         let badge = el()
             .key("badge")
-            .w(20.)
-            .h(20.)
-            .radius(10.)
+            .w(18.)
+            .h(18.)
+            .radius(9.)
             .center()
-            .fill(if done {
-                p.accent
-            } else if here {
-                p.accent.alpha(0.12)
-            } else {
-                p.surface_card
-            })
-            .border(
-                1.,
-                if done {
-                    p.accent
-                } else if here {
-                    p.accent.alpha(0.3)
-                } else {
-                    p.border_strong
-                },
-            )
+            .fill(if here { p.text } else { p.text.alpha(0.) })
+            .border(1., if here { p.text } else { p.border_strong })
+            .motion(motion::SLIDE)
             .child(mark);
         let mut item = row()
             .key(format!("onboarding-step-{ix}"))
@@ -179,7 +175,7 @@ pub fn steps(s: &State) -> El {
                 .role("button")
                 .focusable(true)
                 .cursor(rune::Cursor::Pointer)
-                .hover(p.surface_card)
+                .hover(crate::design::kit::hover_wash(p))
                 .hover_motion(motion::HOVER, motion::HOVER)
                 .press_scale(motion::PRESS)
                 .on_press(move |s: &mut State| super::go_to(s, step));

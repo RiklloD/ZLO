@@ -6,8 +6,9 @@
 //!    computer's, found on the tailnet or added with a pairing link or code
 //!    (`crate::remote`). ZLO talks to one gateway at a time, so picking a
 //!    computer switches to it.
-//! 2. **Agents** — coding-agent CLIs (Codex, Claude Code) with Install and
-//!    Sign in run in Terminal, as t3code runs them in its terminal; or,
+//! 2. **Agents** — coding-agent CLIs (Codex, Claude Code, Antigravity, and
+//!    Muse Code once found) with Install and Sign in run in Terminal, as
+//!    t3code runs them in its terminal; or,
 //!    instead of a CLI, a provider (ChatGPT plan, an API key) that
 //!    IronClaw's own agent runs on (`agents.rs`).
 //! 3. **Projects** — folders Claude Code and Codex sessions ran in, the
@@ -25,6 +26,8 @@
 mod agents;
 pub mod fixtures;
 pub mod gateway;
+#[cfg(test)]
+mod layout_tests;
 #[cfg(test)]
 mod motion_tests;
 mod projects;
