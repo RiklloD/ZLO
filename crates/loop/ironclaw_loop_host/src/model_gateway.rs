@@ -3771,6 +3771,32 @@ fn is_legacy_credit_exhaustion_error(error: &LlmError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The replayed pre-tool text always passes provider-metadata
+    /// validation: controls are stripped, a multibyte cap lands on a char
+    /// boundary, and a leak-detector hit drops the text instead of failing
+    /// the tool batch.
+    #[test]
+    fn replayable_response_text_is_shaped_to_pass_validation() {
+        assert_eq!(replayable_response_text(None), None);
+        assert_eq!(replayable_response_text(Some("  \n ")), None);
+        assert_eq!(
+            replayable_response_text(Some(" Line\u{0001} one\n\tLine two ")).as_deref(),
+            Some("Line one\n\tLine two")
+        );
+        let long = "é".repeat(PROVIDER_METADATA_TEXT_MAX_BYTES);
+        let capped = replayable_response_text(Some(&long)).expect("capped text");
+        assert!(capped.len() <= PROVIDER_METADATA_TEXT_MAX_BYTES);
+        assert!(capped.len() >= PROVIDER_METADATA_TEXT_MAX_BYTES - 1);
+        assert!(capped.chars().all(|c| c == 'é'));
+        // A token the sanitizer leaves but the leak detector rejects: the
+        // text is not replayed, rather than failing the whole tool batch.
+        let leak = format!(
+            "Posting with xoxb-1234567890-{}",
+            "abcdefghijABCDEFGHIJ1234"
+        );
+        assert_eq!(replayable_response_text(Some(&leak)), None);
+    }
     use std::time::Duration;
 
     #[test]

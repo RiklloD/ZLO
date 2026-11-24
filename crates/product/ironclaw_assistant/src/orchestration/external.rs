@@ -194,8 +194,8 @@ pub(crate) struct TimelineRow {
     pub(crate) at: Option<i64>,
     /// The engine's steer id when the runtime journaled this row as one.
     pub(crate) steer_id: Option<String>,
-    /// Assistant text the run moved on from: a tool call or a later
-    /// assistant row of the same run follows it. Clients subdue it and fold
+    /// Assistant text the run moved on from: a later assistant row of the
+    /// same run follows it. Clients subdue it and fold
     /// it into the turn's work; only the run's last row reads as the answer.
     pub(crate) commentary: bool,
 }
@@ -260,28 +260,17 @@ pub(crate) fn timeline_rows(thread: &ThreadId, history: &[HistoryMessage]) -> Ve
             commentary: false,
         });
     }
-    mark_commentary(history, &mut rows);
+    mark_commentary(&mut rows);
     rows
 }
 
-/// Flag assistant rows the run moved on from (see [`TimelineRow::commentary`]).
-/// One backwards pass: a row is commentary when a tool call or another
-/// assistant row of its run comes after its first message.
-fn mark_commentary(history: &[HistoryMessage], rows: &mut [TimelineRow]) {
-    use std::collections::HashSet;
-    // Runs with a tool call at or after each history position.
-    let mut working: HashSet<&str> = HashSet::new();
-    let mut work_after = vec![false; history.len()];
-    for (i, m) in history.iter().enumerate().rev() {
-        let Some(run) = m.run_id.as_deref() else {
-            continue;
-        };
-        if !m.hidden && (m.role == HistoryRole::Tool || !m.tool_calls.is_empty()) {
-            working.insert(run);
-        }
-        work_after[i] = working.contains(run);
-    }
-    let mut answered: HashSet<String> = HashSet::new();
+/// Flag assistant rows the run moved on from (see [`TimelineRow::commentary`]):
+/// every assistant row of a run but its last. The last is the answer even
+/// when calls ride on it (Codex and Muse journal the final answer with the
+/// turn's aggregate tool calls) or the run ended on a call, so a message's
+/// own calls never decide it.
+fn mark_commentary(rows: &mut [TimelineRow]) {
+    let mut answered: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in rows.iter_mut().rev() {
         if row.kind != "assistant" {
             continue;
@@ -289,8 +278,7 @@ fn mark_commentary(history: &[HistoryMessage], rows: &mut [TimelineRow]) {
         let Some(run) = row.run_id.clone() else {
             continue;
         };
-        row.commentary = work_after[row.index] || answered.contains(&run);
-        answered.insert(run);
+        row.commentary = !answered.insert(run);
     }
 }
 

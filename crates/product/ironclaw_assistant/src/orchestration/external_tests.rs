@@ -899,3 +899,78 @@ fn cli_timeline_marks_pre_tool_assistant_rows_as_commentary() {
         "the flag is omitted when false"
     );
 }
+
+/// Regression (review of the commentary flag): the run's last assistant
+/// row is never commentary, whatever calls ride on it. Codex and Muse
+/// journal the final answer with the turn's aggregate tool calls; a run
+/// can end on a tool call; a steer can be followed by work and no reply.
+#[test]
+fn cli_timeline_never_marks_a_runs_last_assistant_row_as_commentary() {
+    let msg = |role: HistoryRole, text: &str, calls: &[&str], run: &str| HistoryMessage {
+        role,
+        text: text.to_string(),
+        tool_calls: calls.iter().map(|c| c.to_string()).collect(),
+        run_id: Some(run.into()),
+        hidden: false,
+        at: None,
+        steer_id: None,
+    };
+    let flags = |history: &[HistoryMessage]| -> Vec<(String, bool)> {
+        let thread = ThreadId::new("cli-last-row").unwrap();
+        super::external::timeline_values(&thread, history)
+            .iter()
+            .filter(|r| r["kind"] == "assistant")
+            .map(|r| {
+                (
+                    r["content"].as_str().unwrap().to_string(),
+                    r["commentary"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect()
+    };
+    // Codex/Muse: one final entry carrying every call of the turn.
+    assert_eq!(
+        flags(&[
+            msg(HistoryRole::User, "fix it", &[], "codex"),
+            msg(
+                HistoryRole::Assistant,
+                "Fixed: the test passes.",
+                &["shell()", "apply_patch()"],
+                "codex"
+            ),
+        ]),
+        vec![("Fixed: the test passes.".into(), false)]
+    );
+    // Codex after a steer cut: the segment before is commentary.
+    assert_eq!(
+        flags(&[
+            msg(HistoryRole::User, "fix it", &[], "cut"),
+            msg(HistoryRole::Assistant, "Looking at it", &["shell()"], "cut"),
+            msg(HistoryRole::User, "also the docs", &[], "cut"),
+            msg(
+                HistoryRole::Assistant,
+                "Both done.",
+                &["apply_patch()"],
+                "cut"
+            ),
+        ]),
+        vec![("Looking at it".into(), true), ("Both done.".into(), false)]
+    );
+    // A run that ends on a tool call (stopped, or a steer then work).
+    assert_eq!(
+        flags(&[
+            msg(HistoryRole::User, "go", &[], "stop"),
+            msg(
+                HistoryRole::Assistant,
+                "Running the suite.",
+                &["bash(cargo test)"],
+                "stop"
+            ),
+            msg(HistoryRole::Tool, "ok", &[], "stop"),
+            msg(HistoryRole::User, "and clippy", &[], "stop"),
+            msg(HistoryRole::Assistant, "", &["bash(cargo clippy)"], "stop"),
+            msg(HistoryRole::Tool, "ok", &[], "stop"),
+        ]),
+        vec![("Running the suite.".into(), false)]
+    );
+}

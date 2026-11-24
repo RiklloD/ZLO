@@ -98,17 +98,20 @@ pub(super) fn convert_messages(messages: &[ChatMessage]) -> (Option<String>, Vec
                 if let Some(ref tool_calls) = msg.tool_calls {
                     // Assistant message with tool calls
                     let mut contents: Vec<AssistantContent> = Vec::new();
-                    if !msg.content.is_empty() {
-                        contents.push(AssistantContent::text(&msg.content));
-                    }
                     // Round-trip provider-emitted reasoning artifacts. rig-core's
                     // dedicated DeepSeek/Gemini/OpenRouter clients consume
                     // `AssistantContent::Reasoning` on the message and re-emit
                     // it as the wire-format reasoning field on the next request.
                     // Without this, DeepSeek/Gemini reject the follow-up turn
-                    // with HTTP 400. See #3201, #3225.
+                    // with HTTP 400. See #3201, #3225. Reasoning goes first:
+                    // Anthropic with extended thinking rejects a turn whose
+                    // thinking block does not lead, and the replayed pre-tool
+                    // text now fills `content` here.
                     if let Some(reasoning) = assistant_reasoning_content(msg) {
                         contents.push(reasoning);
+                    }
+                    if !msg.content.is_empty() {
+                        contents.push(AssistantContent::text(&msg.content));
                     }
                     for (idx, tc) in tool_calls.iter().enumerate() {
                         let tool_call_id =
@@ -146,11 +149,12 @@ pub(super) fn convert_messages(messages: &[ChatMessage]) -> (Option<String>, Vec
                     // provider validates the chain, even when the message has
                     // no tool calls of its own.
                     let mut contents: Vec<AssistantContent> = Vec::new();
-                    if !msg.content.is_empty() {
-                        contents.push(AssistantContent::text(&msg.content));
-                    }
+                    // Reasoning first, as above.
                     if let Some(reasoning) = assistant_reasoning_content(msg) {
                         contents.push(reasoning);
+                    }
+                    if !msg.content.is_empty() {
+                        contents.push(AssistantContent::text(&msg.content));
                     }
                     if let Ok(many) = OneOrMany::many(contents) {
                         history.push(RigMessage::Assistant {

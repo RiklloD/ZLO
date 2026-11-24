@@ -32,6 +32,12 @@ pub(super) fn validate_provider_tool_call(
     )
     .map_err(invalid_invocation)?;
     validate_optional_provider_metadata_text(
+        tool_call.response_text.as_deref(),
+        "provider response text",
+        PROVIDER_METADATA_TEXT_MAX_BYTES,
+    )
+    .map_err(invalid_invocation)?;
+    validate_optional_provider_metadata_text(
         tool_call.reasoning.as_deref(),
         "provider reasoning",
         PROVIDER_METADATA_TEXT_MAX_BYTES,
@@ -129,6 +135,22 @@ mod tests {
         let error = validate_provider_tool_call(&call)
             .expect_err("non-whitespace response reasoning control should fail");
         assert_eq!(error.kind, AgentLoopHostErrorKind::InvalidInvocation);
+    }
+
+    /// The replayed pre-tool text is checked like the other metadata text:
+    /// controls and leaked secret-like tokens fail; prose passes.
+    #[test]
+    fn provider_tool_call_validation_checks_response_text() {
+        let mut call = provider_tool_call();
+        call.response_text = Some("I'll launch two subagents.\n\nThen check on them.".to_string());
+        validate_provider_tool_call(&call).expect("multiline response text is valid");
+
+        call.response_text = Some("line one\u{0001}line two".to_string());
+        let error = validate_provider_tool_call(&call).expect_err("control character fails");
+        assert_eq!(error.kind, AgentLoopHostErrorKind::InvalidInvocation);
+
+        call.response_text = Some(format!("using sk-proj-{}", "c".repeat(24)));
+        assert!(validate_provider_tool_call(&call).is_err());
     }
 
     #[test]

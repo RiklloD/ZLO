@@ -1792,6 +1792,31 @@ mod tests {
         assert_eq!(items[2]["call_id"], "call_2");
     }
 
+    /// The Responses API's own output order survives replay: the turn's
+    /// reasoning items, then the pre-tool text, then the calls.
+    #[test]
+    fn convert_assistant_orders_reasoning_then_text_then_calls() {
+        let signature = serde_json::json!({
+            REASONING_SIGNATURE_KEY: [{"type": "reasoning", "id": "rs_1", "encrypted_content": "blob"}]
+        })
+        .to_string();
+        let call = ToolCall {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({}),
+            reasoning: None,
+            signature: Some(signature),
+            arguments_parse_error: None,
+        };
+        let msg =
+            ChatMessage::assistant_with_tool_calls(Some("Searching.".to_string()), vec![call]);
+        let kinds: Vec<String> = convert_message(&msg, 0)
+            .iter()
+            .map(|item| item["type"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(kinds, ["reasoning", "message", "function_call"]);
+    }
+
     #[test]
     fn convert_assistant_tool_calls_without_text_emits_no_message_item() {
         let call = ToolCall {
