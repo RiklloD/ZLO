@@ -21,6 +21,12 @@ just gc                                                         # reclaim disk f
 RUST_LOG=ironclaw=debug cargo run -p ironclaw -- serve          # run the serve binary, `zlo` (add tower_http=debug for HTTP logging)
 ```
 
+**Keep the check loop cheap.** These defaults override any broader "run the gate" habit:
+
+- While iterating, use `cargo check -p <crate>` (not `cargo build`, `cargo test`, or `cargo clippy`) to confirm code compiles.
+- Run `cargo clippy` (or `just lint`) **once, at the end of a task** — never after every edit.
+- Run only the tests for the crate or module you changed, e.g. `cargo test -p ironclaw_threads some_test`. Do not run the whole suite (`just test`, `just gate`, bare `cargo test`, `--workspace`) unless the user asks.
+
 The workspace-root `integration` feature is empty with zero consumers — a bare root `cargo test --features integration` adds nothing. Backend-heavy gated suites are crate-level (e.g. `cargo test -p ironclaw_hooks --features integration,test-support`). E2E suite: `tests/e2e/AGENTS.md`.
 
 **Cargo features are a last resort.** A feature is a second build of the workspace, compiled and tested forever. Add one only for a heavy optional dependency, a build shape that ships with it OFF, a CI lane selector, a dev-only seam (always named `test-support`), or a privilege boundary — and say which in the manifest comment. Deployment shape belongs in `DeploymentConfig` and `[storage]`, not `#[cfg]`. Full bar: `.claude/rules/cargo-features.md`.

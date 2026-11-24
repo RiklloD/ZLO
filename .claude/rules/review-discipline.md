@@ -57,7 +57,9 @@ regression-check exemption rather than silently omitting coverage.
 
 ## Required checks
 
-Run the narrowest crate tests and clippy first. Add:
+Iterate with `cargo check -p OWNING_CRATE` and only the changed crate's or
+module's tests (root `AGENTS.md` → "Keep the check loop cheap"). The checks
+below run **once, at the end of a task** — never after every edit:
 
 ```bash
 cargo test -p ironclaw_architecture_tests
@@ -65,7 +67,7 @@ cargo clippy -p OWNING_CRATE --all-targets --all-features -- -D warnings
 scripts/pre-commit-safety.sh
 ```
 
-Workspace-wide zero-warning clippy:
+Workspace-wide zero-warning clippy (only when the user asks, or before a merge):
 
 ```bash
 cargo clippy --workspace --all-targets --all-features -- -D warnings

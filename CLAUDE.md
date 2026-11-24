@@ -5,6 +5,11 @@
 Everything above (from `AGENTS.md`) is the canonical, tool-neutral contract.
 The rest of this file is Claude-specific.
 
+## Check loop (read before running cargo)
+
+- Use `cargo check -p <crate>` while iterating. Run `cargo clippy` only once, at the end of a task — don't run clippy after every edit.
+- Run only the tests for the crate or module you changed, e.g. `cargo test -p <crate> some_test`. Don't run the whole suite unless the user asks.
+
 ## Skills and rules
 
 - Project skills live in `.claude/skills/` — start from
