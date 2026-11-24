@@ -73,10 +73,13 @@ pub fn run<F, Fut, T>(
     Fut: Future<Output = Result<T, ClientError>> + Send + 'static,
     T: Send + 'static,
 {
-    run_rerouted(s, label, f, move |s, reply, tx| {
-        if let Reply::Fresh(result) = reply {
+    run_rerouted(s, label, f, move |s, reply, tx| match reply {
+        Reply::Fresh(result) => {
             done(s, result, tx);
+            true
         }
+        // Not this caller's answer any more: nothing changed, no redraw.
+        Reply::Rerouted => false,
     });
 }
 
@@ -94,12 +97,15 @@ pub enum Reply<T> {
 /// [`run`] for a loop that must survive the computer in use changing
 /// route mid-request (`remote::connect::refresh`): such a reply lands as
 /// [`Reply::Rerouted`] instead of being dropped. A reply from another
-/// computer is still dropped.
+/// computer is still dropped. `done` returns whether the window redraws.
+///
+/// Only for idempotent reads: a caller answers `Rerouted` by sending the
+/// request again, so a side-effecting request could run twice.
 pub fn run_rerouted<F, Fut, T>(
     s: &State,
     label: &'static str,
     f: F,
-    done: impl FnOnce(&mut State, Reply<T>, &mut Tx) + Send + 'static,
+    done: impl FnOnce(&mut State, Reply<T>, &mut Tx) -> bool + Send + 'static,
 ) where
     F: FnOnce(Client) -> Fut,
     Fut: Future<Output = Result<T, ClientError>> + Send + 'static,
@@ -116,17 +122,22 @@ pub fn run_rerouted<F, Fut, T>(
     let tag = s.remote.tag.clone();
     let Some(backend) = s.rt.backend.as_ref() else {
         rt.deliver(move |s, tx| {
-            if s.fixture || !crate::remote::lands(s, &tag) {
+            if s.fixture {
                 return false;
             }
-            done(
-                s,
-                Reply::Fresh(Err(ClientError::Config(
-                    "not connected to the gateway".into(),
-                ))),
-                tx,
-            );
-            true
+            if crate::remote::lands(s, &tag) {
+                done(
+                    s,
+                    Reply::Fresh(Err(ClientError::Config(
+                        "not connected to the gateway".into(),
+                    ))),
+                    tx,
+                )
+            } else if crate::remote::same_computer(s, &tag) {
+                done(s, Reply::Rerouted, tx)
+            } else {
+                false
+            }
         });
         return;
     };
@@ -143,15 +154,14 @@ pub fn run_rerouted<F, Fut, T>(
                 return false;
             }
             if crate::remote::lands(s, &tag) {
-                done(s, Reply::Fresh(result), tx);
+                done(s, Reply::Fresh(result), tx)
             } else if crate::remote::same_computer(s, &tag) {
                 tracing::debug!(view = label, "reply from the computer's earlier route");
-                done(s, Reply::Rerouted, tx);
+                done(s, Reply::Rerouted, tx)
             } else {
                 tracing::debug!(view = label, "reply from an earlier connection dropped");
-                return false;
+                false
             }
-            true
         });
     });
 }

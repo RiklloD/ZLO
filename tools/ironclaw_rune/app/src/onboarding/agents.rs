@@ -294,7 +294,7 @@ fn request_catalog(s: &mut State, shown: bool) {
         move |s, reply, tx| {
             let a = &mut s.onboarding.agents;
             if a.refresh_gen != generation {
-                return;
+                return false;
             }
             a.in_flight = false;
             let mut again = a.queued.take();
@@ -315,6 +315,7 @@ fn request_catalog(s: &mut State, shown: bool) {
             if let Some(shown) = again {
                 request_catalog(s, shown);
             }
+            true
         },
     );
 }
@@ -1116,13 +1117,27 @@ mod tests {
         assert!(pump.until(&mut s, WAIT, |s| state_of(s, agy) == AgentState::SignIn));
         super::super::go_to(&mut s, super::super::Step::Projects);
         assert!(s.onboarding.agents.watching.is_empty());
+        // Let the watch's last look (and any ask folded behind it) land, so
+        // the count below sees only what the return itself asks for.
+        assert!(pump.until(&mut s, WAIT, |s| {
+            let a = &s.onboarding.agents;
+            !a.in_flight && a.queued.is_none()
+        }));
         super::super::go_to(&mut s, super::super::Step::Agents);
+        // The return's own looks (setup's, and the Settings providers page
+        // it refreshes, same endpoint) land; after that nothing polls.
+        assert!(pump.until(&mut s, WAIT, |s| {
+            let a = &s.onboarding.agents;
+            !a.in_flight && a.queued.is_none()
+        }));
+        pump.run_for(&mut s, SIGN_IN_POLL * 2);
         let asked = gateway.requests_to(CATALOG);
         pump.run_for(&mut s, SIGN_IN_POLL * 8);
         assert!(s.onboarding.agents.watching.is_empty());
-        assert!(
-            gateway.requests_to(CATALOG) <= asked + 1,
-            "only the entry's own look: {:?}",
+        assert_eq!(
+            gateway.requests_to(CATALOG),
+            asked,
+            "the old watch kept polling: {:?}",
             gateway.paths()
         );
 
