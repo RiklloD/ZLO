@@ -2336,3 +2336,131 @@ async fn caller_shaped_capability_port_error_is_a_tool_error_not_a_dead_run() {
         .await
         .expect("the run continues past a recoverable port error");
 }
+
+/// Polls the recorded capability invocations until `capability_id` reached
+/// the host `expected` times, while the scripted model stream is still parked.
+async fn wait_for_tool_invocation_count(
+    h: &RebornIntegrationHarness,
+    capability_id: &str,
+    expected: usize,
+) -> usize {
+    for _ in 0..500 {
+        let count = h
+            .tool_invocation_count(capability_id)
+            .await
+            .expect("invocation count reads");
+        if count >= expected {
+            return count;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    h.tool_invocation_count(capability_id)
+        .await
+        .expect("invocation count reads")
+}
+
+fn create_parallel_fixture() -> RebornScriptedReply {
+    RebornScriptedReply::tool_call(
+        "builtin.write_file",
+        json!({"path": "/workspace/streamed.txt", "content": "first\nsecond\n"}),
+    )
+}
+
+/// P2.1 through the whole production chain: the vendor streams `read_file`
+/// #1 and holds the stream open; the read reaches the capability host before
+/// the model call finishes, and once the response confirms both reads the
+/// pre-executed result is reused — `read_file` #1 runs exactly once.
+#[tokio::test]
+async fn streamed_read_only_call_runs_before_the_model_stream_finishes_and_only_once() {
+    let gate = reborn_support::scripted_provider::ParkingModelGate::parking_call(1);
+    let h = RebornIntegrationHarness::test_default()
+        .with_durable_capability_io_file_tools()
+        .stream_tool_calls_parking(gate.clone(), 1)
+        .script([
+            create_parallel_fixture(),
+            RebornScriptedReply::tool_calls([
+                (
+                    "builtin.read_file",
+                    json!({"path": "/workspace/streamed.txt", "offset": 1, "limit": 1}),
+                ),
+                (
+                    "builtin.read_file",
+                    json!({"path": "/workspace/streamed.txt", "offset": 2, "limit": 1}),
+                ),
+            ]),
+            RebornScriptedReply::text("read both"),
+        ])
+        .build()
+        .await
+        .expect("harness builds");
+    let observe = async {
+        gate.wait_until_parked().await;
+        let started = wait_for_tool_invocation_count(&h, "builtin.read_file", 1).await;
+        gate.release();
+        started
+    };
+    let (turn, started_mid_stream) = tokio::join!(h.submit_turn("read both lines"), observe);
+    turn.expect("turn completes");
+    assert_eq!(
+        started_mid_stream, 1,
+        "only the announced read starts while the stream is held open"
+    );
+    h.assert_tool_invocation_count("builtin.read_file", 2)
+        .await
+        .expect("each read reached the host once: the streamed result was reused");
+    h.assert_reply_eq("read both")
+        .await
+        .expect("final reply matches exactly");
+}
+
+/// The fail-closed half: a side-effecting call announced mid-stream never
+/// starts before the response is accepted, and a read streamed beside it is
+/// not reused for the mixed batch — the stage dispatches it again.
+#[tokio::test]
+async fn streamed_side_effecting_call_never_starts_before_the_response_is_accepted() {
+    let gate = reborn_support::scripted_provider::ParkingModelGate::parking_call(1);
+    let h = RebornIntegrationHarness::test_default()
+        .with_durable_capability_io_file_tools()
+        .stream_tool_calls_parking(gate.clone(), 2)
+        .script([
+            create_parallel_fixture(),
+            RebornScriptedReply::tool_calls([
+                (
+                    "builtin.read_file",
+                    json!({"path": "/workspace/streamed.txt", "offset": 1, "limit": 1}),
+                ),
+                (
+                    "builtin.write_file",
+                    json!({"path": "/workspace/other.txt", "content": "x"}),
+                ),
+            ]),
+            RebornScriptedReply::text("done"),
+        ])
+        .build()
+        .await
+        .expect("harness builds");
+    let observe = async {
+        gate.wait_until_parked().await;
+        let reads = wait_for_tool_invocation_count(&h, "builtin.read_file", 1).await;
+        let writes = h
+            .tool_invocation_count("builtin.write_file")
+            .await
+            .expect("invocation count reads");
+        gate.release();
+        (reads, writes)
+    };
+    let (turn, (reads_mid_stream, writes_mid_stream)) =
+        tokio::join!(h.submit_turn("read then write"), observe);
+    turn.expect("turn completes");
+    assert_eq!(reads_mid_stream, 1, "the streamed read starts mid-stream");
+    assert_eq!(
+        writes_mid_stream, 1,
+        "only the fixture write ran; the streamed write waited for the response"
+    );
+    h.assert_tool_invocation_count("builtin.write_file", 2)
+        .await
+        .expect("the streamed write ran once, after the response");
+    h.assert_tool_invocation_count("builtin.read_file", 2)
+        .await
+        .expect("a mixed batch re-dispatches the read instead of reusing it");
+}

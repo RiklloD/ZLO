@@ -47,9 +47,10 @@ use ironclaw_loop_contracts::{
     InMemoryLoopHostMilestoneSink, InstructionMaterializationStore, InstructionSafetyContext,
     LoopModelGateway, LoopModelGatewayError, LoopModelGatewayRequest, LoopModelPort,
     LoopModelProgressSink, LoopModelRequest, LoopModelResponse, LoopPromptBundleRequest,
-    LoopPromptPort, LoopRunContext, LoopSafeSummary, ModelProfileId, ModelVisibleToolObservation,
-    PromptMode, ProviderToolCall, ProviderToolDefinition, RegisterProviderToolCallRequest,
-    ToolObservationDetail, ToolObservationStatus, sanitize_model_visible_text,
+    LoopPromptPort, LoopRunContext, LoopSafeSummary, LoopStreamedCapabilityCallObserver,
+    ModelProfileId, ModelVisibleToolObservation, PromptMode, ProviderToolCall,
+    ProviderToolDefinition, RegisterProviderToolCallRequest, ToolObservationDetail,
+    ToolObservationStatus, sanitize_model_visible_text,
 };
 use ironclaw_observability::live_latency_started_at;
 use ironclaw_safety::{
@@ -63,7 +64,10 @@ use tracing::debug;
 mod observation_masking;
 mod prompt_cache_activity;
 mod redaction;
+mod streamed_tool_calls;
 pub(crate) mod warm_prefix;
+
+use streamed_tool_calls::{StreamedCallsOnlySink, StreamedToolCallBridge};
 
 pub use warm_prefix::WarmPrefixCache;
 use warm_prefix::{WarmPrefixBoundary, WarmPrefixCapture};
@@ -250,7 +254,7 @@ where
         &self,
         request: LoopModelGatewayRequest,
     ) -> Result<LoopModelResponse, LoopModelGatewayError> {
-        self.stream_model_inner(request, None).await
+        self.stream_model_inner(request, None, None).await
     }
 
     async fn stream_model_with_progress(
@@ -258,7 +262,18 @@ where
         request: LoopModelGatewayRequest,
         progress_sink: Arc<dyn LoopModelProgressSink>,
     ) -> Result<LoopModelResponse, LoopModelGatewayError> {
-        self.stream_model_inner(request, Some(progress_sink)).await
+        self.stream_model_inner(request, Some(progress_sink), None)
+            .await
+    }
+
+    async fn stream_model_with_progress_observing_capability_calls(
+        &self,
+        request: LoopModelGatewayRequest,
+        progress_sink: Arc<dyn LoopModelProgressSink>,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<LoopModelResponse, LoopModelGatewayError> {
+        self.stream_model_inner(request, Some(progress_sink), Some(observer))
+            .await
     }
 }
 
@@ -271,6 +286,7 @@ where
         &self,
         request: LoopModelGatewayRequest,
         progress_sink: Option<Arc<dyn LoopModelProgressSink>>,
+        observer: Option<Arc<dyn LoopStreamedCapabilityCallObserver>>,
     ) -> Result<LoopModelResponse, LoopModelGatewayError> {
         let mut request = request;
         let context_window_tokens = self
@@ -315,9 +331,14 @@ where
                 inner: progress_sink,
             }));
         }
-        port.stream_model(request.request)
-            .await
-            .map_err(host_error_to_model_gateway_error)
+        match observer {
+            Some(observer) => {
+                port.stream_model_observing_capability_calls(request.request, observer)
+                    .await
+            }
+            None => port.stream_model(request.request).await,
+        }
+        .map_err(host_error_to_model_gateway_error)
     }
 }
 
@@ -651,77 +672,8 @@ where
         request: HostManagedModelRequest,
         capabilities: Arc<dyn ironclaw_loop_contracts::LoopCapabilityPort>,
     ) -> Result<HostManagedModelResponse, HostManagedModelError> {
-        let route = self
-            .policy
-            .route_for(&request.model_profile_id)
-            .ok_or_else(|| {
-                HostManagedModelError::safe(
-                    HostManagedModelErrorKind::PolicyDenied,
-                    "model profile is not permitted",
-                )
-            })?;
-        let model_override = request_model_override(
-            route,
-            self.provider.as_ref(),
-            request
-                .resolved_model_route
-                .as_ref()
-                .map(|snapshot| snapshot.model_id()),
-        )?;
-        let model_profile_id = request.model_profile_id.clone();
-        let run_id = request.run_id;
-        let turn_id = request.turn_id;
-        let thread_id = request.thread_id.as_ref();
-        let PreparedFallbackCompletion {
-            mut completion,
-            replay_identity,
-            effective_fallback_index,
-            next_fallback_index,
-            warm_prefix_boundaries,
-        } = prepare_fallback_completion(
-            self.provider.as_ref(),
-            &self.provider_id,
-            &model_override,
-            request.fallback_index,
-            request.messages,
-            self.observation_masking_inputs(),
-        )
-        .await?;
-        completion.response_format = request.response_format.clone();
-        add_request_metadata(
-            &mut completion,
-            &model_profile_id,
-            run_id,
-            turn_id,
-            thread_id,
-        );
-
-        let provider_turn_scope = format!(
-            "run={run_id}\nturn={turn_id}\nmodel_call={}",
-            self.provider_turn_sequence.fetch_add(1, Ordering::Relaxed)
-        );
-        let diagnostic_effective_model = replay_identity.provider_model_id.clone();
-        let result = complete_model_request(
-            self.provider.as_ref(),
-            completion,
-            Some(capabilities),
-            Some(provider_turn_scope),
-            None,
-            ProviderRequestContext::new(replay_identity, next_fallback_index)
-                .with_tool_choice(request.tool_choice)
-                .with_warm_prefix_capture(WarmPrefixCapture::new(
-                    &self.warm_prefix_cache,
-                    thread_id,
-                    run_id,
-                    &model_profile_id,
-                    request.resolved_model_route.as_ref(),
-                    effective_fallback_index,
-                    warm_prefix_boundaries,
-                )),
-            Some(self.prompt_cache_scope(run_id)),
-        )
-        .await;
-        with_model_diagnostic_evidence(result, effective_fallback_index, diagnostic_effective_model)
+        self.stream_with_capabilities(request, capabilities, None, None)
+            .await
     }
 
     async fn stream_model_with_capabilities_and_progress(
@@ -729,6 +681,35 @@ where
         request: HostManagedModelRequest,
         capabilities: Arc<dyn ironclaw_loop_contracts::LoopCapabilityPort>,
         sink: Arc<dyn HostManagedModelStreamSink>,
+    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        self.stream_with_capabilities(request, capabilities, Some(sink), None)
+            .await
+    }
+
+    async fn stream_model_with_capabilities_observing_calls(
+        &self,
+        request: HostManagedModelRequest,
+        capabilities: Arc<dyn ironclaw_loop_contracts::LoopCapabilityPort>,
+        sink: Option<Arc<dyn HostManagedModelStreamSink>>,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        self.stream_with_capabilities(request, capabilities, sink, Some(observer))
+            .await
+    }
+}
+
+impl<P> LlmProviderModelGateway<P>
+where
+    P: LlmProvider + ?Sized + Send + Sync,
+{
+    /// The tool-capable call every capability entry point shares; `sink`
+    /// selects provider streaming and `observer` the streamed-call bridge.
+    async fn stream_with_capabilities(
+        &self,
+        request: HostManagedModelRequest,
+        capabilities: Arc<dyn ironclaw_loop_contracts::LoopCapabilityPort>,
+        sink: Option<Arc<dyn HostManagedModelStreamSink>>,
+        observer: Option<Arc<dyn LoopStreamedCapabilityCallObserver>>,
     ) -> Result<HostManagedModelResponse, HostManagedModelError> {
         let route = self
             .policy
@@ -780,23 +761,27 @@ where
             self.provider_turn_sequence.fetch_add(1, Ordering::Relaxed)
         );
         let diagnostic_effective_model = replay_identity.provider_model_id.clone();
+        let mut request_context = ProviderRequestContext::new(replay_identity, next_fallback_index)
+            .with_tool_choice(request.tool_choice)
+            .with_warm_prefix_capture(WarmPrefixCapture::new(
+                &self.warm_prefix_cache,
+                thread_id,
+                run_id,
+                &model_profile_id,
+                request.resolved_model_route.as_ref(),
+                effective_fallback_index,
+                warm_prefix_boundaries,
+            ));
+        // A per-call opt-in, not a wired dependency: only the loop's
+        // observing model call carries one.
+        request_context.streamed_call_observer = observer;
         let result = complete_model_request(
             self.provider.as_ref(),
             completion,
             Some(capabilities),
             Some(provider_turn_scope),
-            Some(sink),
-            ProviderRequestContext::new(replay_identity, next_fallback_index)
-                .with_tool_choice(request.tool_choice)
-                .with_warm_prefix_capture(WarmPrefixCapture::new(
-                    &self.warm_prefix_cache,
-                    thread_id,
-                    run_id,
-                    &model_profile_id,
-                    request.resolved_model_route.as_ref(),
-                    effective_fallback_index,
-                    warm_prefix_boundaries,
-                )),
+            sink,
+            request_context,
             Some(self.prompt_cache_scope(run_id)),
         )
         .await;
@@ -1114,70 +1099,8 @@ where
         request: HostManagedModelRequest,
         capabilities: Arc<dyn ironclaw_loop_contracts::LoopCapabilityPort>,
     ) -> Result<HostManagedModelResponse, HostManagedModelError> {
-        let slot = slot_for_model_profile(&request.model_profile_id)?;
-        let request_snapshot = request
-            .resolved_model_route
-            .as_ref()
-            .ok_or_else(missing_route_snapshot_error)?;
-        let policy_mode = self.validate_route_snapshot(slot, request_snapshot)?;
-        let snapshot = snapshot_from_host_request(slot, request_snapshot, policy_mode)?;
-        let provider = self.provider_pool.provider_for_route(&snapshot).await?;
-        let model_profile_id = request.model_profile_id.clone();
-        let run_id = request.run_id;
-        let turn_id = request.turn_id;
-        let thread_id = request.thread_id.as_ref();
-        validate_provider_model_binding_matches_route(snapshot.route(), provider.as_ref())?;
-        let PreparedFallbackCompletion {
-            mut completion,
-            replay_identity,
-            effective_fallback_index,
-            next_fallback_index,
-            warm_prefix_boundaries,
-        } = prepare_fallback_completion(
-            provider.as_ref(),
-            snapshot.route().provider_id(),
-            snapshot.route().model_id(),
-            request.fallback_index,
-            request.messages,
-            self.observation_masking_inputs(),
-        )
-        .await?;
-        completion.response_format = request.response_format.clone();
-        add_request_metadata(
-            &mut completion,
-            &model_profile_id,
-            run_id,
-            turn_id,
-            thread_id,
-        );
-        add_route_metadata(&mut completion, &snapshot);
-
-        let provider_turn_scope = format!(
-            "run={run_id}\nturn={turn_id}\nmodel_call={}",
-            self.provider_turn_sequence.fetch_add(1, Ordering::Relaxed)
-        );
-        let diagnostic_effective_model = replay_identity.provider_model_id.clone();
-        let result = complete_model_request(
-            provider.as_ref(),
-            completion,
-            Some(capabilities),
-            Some(provider_turn_scope),
-            None,
-            ProviderRequestContext::new(replay_identity, next_fallback_index)
-                .with_tool_choice(request.tool_choice)
-                .with_warm_prefix_capture(WarmPrefixCapture::new(
-                    &self.warm_prefix_cache,
-                    thread_id,
-                    run_id,
-                    &model_profile_id,
-                    request.resolved_model_route.as_ref(),
-                    effective_fallback_index,
-                    warm_prefix_boundaries,
-                )),
-            Some(self.prompt_cache_scope(run_id)),
-        )
-        .await;
-        with_model_diagnostic_evidence(result, effective_fallback_index, diagnostic_effective_model)
+        self.stream_with_capabilities(request, capabilities, None, None)
+            .await
     }
 
     async fn stream_model_with_capabilities_and_progress(
@@ -1185,6 +1108,35 @@ where
         request: HostManagedModelRequest,
         capabilities: Arc<dyn ironclaw_loop_contracts::LoopCapabilityPort>,
         sink: Arc<dyn HostManagedModelStreamSink>,
+    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        self.stream_with_capabilities(request, capabilities, Some(sink), None)
+            .await
+    }
+
+    async fn stream_model_with_capabilities_observing_calls(
+        &self,
+        request: HostManagedModelRequest,
+        capabilities: Arc<dyn ironclaw_loop_contracts::LoopCapabilityPort>,
+        sink: Option<Arc<dyn HostManagedModelStreamSink>>,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        self.stream_with_capabilities(request, capabilities, sink, Some(observer))
+            .await
+    }
+}
+
+impl<P> RoutedLlmProviderModelGateway<P>
+where
+    P: ModelRouteProviderPool + ?Sized + Send + Sync,
+{
+    /// The tool-capable call every capability entry point shares; `sink`
+    /// selects provider streaming and `observer` the streamed-call bridge.
+    async fn stream_with_capabilities(
+        &self,
+        request: HostManagedModelRequest,
+        capabilities: Arc<dyn ironclaw_loop_contracts::LoopCapabilityPort>,
+        sink: Option<Arc<dyn HostManagedModelStreamSink>>,
+        observer: Option<Arc<dyn LoopStreamedCapabilityCallObserver>>,
     ) -> Result<HostManagedModelResponse, HostManagedModelError> {
         let slot = slot_for_model_profile(&request.model_profile_id)?;
         let request_snapshot = request
@@ -1229,23 +1181,27 @@ where
             self.provider_turn_sequence.fetch_add(1, Ordering::Relaxed)
         );
         let diagnostic_effective_model = replay_identity.provider_model_id.clone();
+        let mut request_context = ProviderRequestContext::new(replay_identity, next_fallback_index)
+            .with_tool_choice(request.tool_choice)
+            .with_warm_prefix_capture(WarmPrefixCapture::new(
+                &self.warm_prefix_cache,
+                thread_id,
+                run_id,
+                &model_profile_id,
+                request.resolved_model_route.as_ref(),
+                effective_fallback_index,
+                warm_prefix_boundaries,
+            ));
+        // A per-call opt-in, not a wired dependency: only the loop's
+        // observing model call carries one.
+        request_context.streamed_call_observer = observer;
         let result = complete_model_request(
             provider.as_ref(),
             completion,
             Some(capabilities),
             Some(provider_turn_scope),
-            Some(sink),
-            ProviderRequestContext::new(replay_identity, next_fallback_index)
-                .with_tool_choice(request.tool_choice)
-                .with_warm_prefix_capture(WarmPrefixCapture::new(
-                    &self.warm_prefix_cache,
-                    thread_id,
-                    run_id,
-                    &model_profile_id,
-                    request.resolved_model_route.as_ref(),
-                    effective_fallback_index,
-                    warm_prefix_boundaries,
-                )),
+            sink,
+            request_context,
             Some(self.prompt_cache_scope(run_id)),
         )
         .await;
@@ -1724,6 +1680,8 @@ struct ProviderRequestContext {
     /// Records the exact provider request on success, for cache-forked
     /// compaction. Only live loop calls carry one.
     warm_prefix_capture: Option<WarmPrefixCapture>,
+    /// Receives streamed pure-read tool calls on the tool-capable path.
+    streamed_call_observer: Option<Arc<dyn LoopStreamedCapabilityCallObserver>>,
 }
 
 impl ProviderRequestContext {
@@ -1733,6 +1691,7 @@ impl ProviderRequestContext {
             next_fallback_index,
             tool_choice: None,
             warm_prefix_capture: None,
+            streamed_call_observer: None,
         }
     }
 
@@ -1849,6 +1808,7 @@ struct ProviderStreamSink {
     inner: Arc<dyn HostManagedModelStreamSink>,
     state: Mutex<ProviderStreamSinkState>,
     replace_on_next_delta: AtomicBool,
+    streamed_tool_calls: Option<StreamedToolCallBridge>,
 }
 
 impl ProviderStreamSink {
@@ -1864,7 +1824,13 @@ impl ProviderStreamSink {
                 last_reasoning_emit: Instant::now(),
             }),
             replace_on_next_delta: AtomicBool::new(false),
+            streamed_tool_calls: None,
         }
+    }
+
+    fn with_streamed_tool_calls(mut self, bridge: Option<StreamedToolCallBridge>) -> Self {
+        self.streamed_tool_calls = bridge;
+        self
     }
 
     /// Force-emit whatever text is buffered past the last coalesced update,
@@ -1911,6 +1877,12 @@ impl ProviderStreamSink {
 
 #[async_trait]
 impl CompletionStreamSink for ProviderStreamSink {
+    async fn tool_call_ready(&self, call: ToolCall) {
+        if let Some(bridge) = self.streamed_tool_calls.as_ref() {
+            bridge.tool_call_ready(call).await;
+        }
+    }
+
     async fn reasoning_delta(&self, delta: String) {
         if delta.is_empty() || !self.inner.accepts_safe_text_updates() {
             return;
@@ -2043,6 +2015,7 @@ where
         next_fallback_index,
         tool_choice,
         warm_prefix_capture,
+        streamed_call_observer,
     } = request_context;
     // A forced tool choice or a native response format is not the shape of
     // an ordinary live turn; such a request must never seed a fork.
@@ -2146,9 +2119,32 @@ where
             tool_request.tool_choice = forced_provider_tool_name;
             debug!("reborn model gateway dispatching tool-capable provider request");
             let provider_started_at = live_latency_started_at();
-            let provider_stream_sink = stream_sink
-                .as_ref()
-                .map(|sink| Arc::new(ProviderStreamSink::new(Arc::clone(sink))));
+            let streamed_tool_calls = streamed_call_observer.map(|observer| {
+                StreamedToolCallBridge::new(
+                    Arc::clone(&capabilities),
+                    observer,
+                    advertised_tool_names.clone(),
+                    provider_turn_scope
+                        .as_deref()
+                        .unwrap_or("model_call=unknown")
+                        .to_string(),
+                    replay_identity.clone(),
+                )
+            });
+            // A streamed-call observer needs provider streaming even when no
+            // text consumer is attached.
+            let provider_stream_sink = match (stream_sink.as_ref(), streamed_tool_calls) {
+                (None, None) => None,
+                (sink, bridge) => {
+                    let inner = sink.map_or_else(
+                        || Arc::new(StreamedCallsOnlySink) as Arc<dyn HostManagedModelStreamSink>,
+                        Arc::clone,
+                    );
+                    Some(Arc::new(
+                        ProviderStreamSink::new(inner).with_streamed_tool_calls(bridge),
+                    ))
+                }
+            };
             let completion_result =
                 if let Some(provider_stream_sink) = provider_stream_sink.as_ref() {
                     provider
@@ -2545,7 +2541,9 @@ async fn tool_response_to_host(
             response: Some(Box::new(response)),
         };
         let mut candidates = Vec::with_capacity(response.tool_calls.len());
-        let provider_turn_id = provider_turn_id(provider_turn_scope, &response.tool_calls);
+        // Anchored on the first call, so a call announced while the response
+        // still streamed (`streamed_tool_calls`) derives this same id.
+        let provider_turn_id = provider_turn_id(provider_turn_scope, &response.tool_calls[0]);
         let provider_calls = match response
             .tool_calls
             .iter()
@@ -2776,16 +2774,17 @@ fn provider_tool_arguments_parse_error_summary(parse_error: &str) -> String {
     }
 }
 
-fn provider_turn_id(provider_turn_scope: &str, tool_calls: &[ToolCall]) -> String {
+/// Stable id of one provider response's tool-call turn: the model call's
+/// scope plus the response's first tool call. Later calls are deliberately
+/// left out — they have not streamed yet when the first one is announced.
+fn provider_turn_id(provider_turn_scope: &str, first_tool_call: &ToolCall) -> String {
     let mut stable = String::new();
     stable.push_str(provider_turn_scope);
     stable.push('\0');
-    for tool_call in tool_calls {
-        stable.push_str(tool_call.id.as_str());
-        stable.push('\0');
-        stable.push_str(tool_call.name.as_str());
-        stable.push('\0');
-    }
+    stable.push_str(first_tool_call.id.as_str());
+    stable.push('\0');
+    stable.push_str(first_tool_call.name.as_str());
+    stable.push('\0');
     format!("provider_turn:{}", sha256_hex_prefix(stable.as_bytes(), 32))
 }
 

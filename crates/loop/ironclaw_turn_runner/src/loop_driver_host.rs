@@ -130,11 +130,11 @@ use ironclaw_loop_contracts::{
     LoopModelGateway, LoopModelPolicyGuard, LoopModelPort, LoopModelRequest, LoopModelResponse,
     LoopModelUsage, LoopProgressEvent, LoopProgressPort, LoopPromptBundle,
     LoopPromptBundleAuthority, LoopPromptBundleRequest, LoopPromptPort, LoopRequest,
-    LoopRequestBatch, LoopRunContext, LoopRunInfoPort, LoopRuntimeContext, LoopTranscriptPort,
-    MemoryPromptContextService, NoOpBudgetAccountant, NoOpPolicyGuard, ProviderToolCall,
-    ProviderToolDefinition, RegisterProviderToolCallRequest, RunScopedHookMilestoneSink,
-    StageCheckpointPayloadRequest, SystemInferencePort, VisibleCapabilityRequest,
-    VisibleCapabilitySurface,
+    LoopRequestBatch, LoopRunContext, LoopRunInfoPort, LoopRuntimeContext,
+    LoopStreamedCapabilityCallObserver, LoopTranscriptPort, MemoryPromptContextService,
+    NoOpBudgetAccountant, NoOpPolicyGuard, ProviderToolCall, ProviderToolDefinition,
+    RegisterProviderToolCallRequest, RunScopedHookMilestoneSink, StageCheckpointPayloadRequest,
+    SystemInferencePort, VisibleCapabilityRequest, VisibleCapabilitySurface,
 };
 use ironclaw_turns::{
     AgentTurnRuntimePort, AgentTurnSpawnTreeRuntimePort, LoopCheckpointStore, RunProfileId,
@@ -1960,6 +1960,16 @@ impl LoopModelPort for RebornLoopDriverHost {
         request: LoopModelRequest,
     ) -> Result<LoopModelResponse, AgentLoopHostError> {
         self.model.stream_model(request).await
+    }
+
+    async fn stream_model_observing_capability_calls(
+        &self,
+        request: LoopModelRequest,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<LoopModelResponse, AgentLoopHostError> {
+        self.model
+            .stream_model_observing_capability_calls(request, observer)
+            .await
     }
 }
 

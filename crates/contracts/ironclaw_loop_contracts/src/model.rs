@@ -16,6 +16,7 @@ use ironclaw_host_api::turn::LoopGateRef;
 use crate::host::{
     AgentLoopHostError, AgentLoopHostErrorKind, AgentLoopHostErrorReasonKind, LoopModelRequest,
     LoopModelResponse, LoopModelUsage, LoopRunContext, LoopSafeSummary,
+    LoopStreamedCapabilityCallObserver,
 };
 use crate::model_work::{ModelWorkOutcome, ModelWorkRequest};
 
@@ -238,6 +239,22 @@ pub trait LoopModelGateway: Send + Sync {
         _progress_sink: Arc<dyn LoopModelProgressSink>,
     ) -> Result<LoopModelResponse, LoopModelGatewayError> {
         self.stream_model(request).await
+    }
+
+    /// [`Self::stream_model_with_progress`], announcing each capability call
+    /// the provider finishes streaming to `observer`. Same opt-in contract as
+    /// [`crate::LoopModelPort::stream_model_observing_capability_calls`]; the
+    /// default ignores the observer, so a gateway that does not override it
+    /// degrades to no speculation.
+    async fn stream_model_with_progress_observing_capability_calls(
+        &self,
+        request: LoopModelGatewayRequest,
+        progress_sink: Arc<dyn LoopModelProgressSink>,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<LoopModelResponse, LoopModelGatewayError> {
+        drop(observer);
+        self.stream_model_with_progress(request, progress_sink)
+            .await
     }
 }
 

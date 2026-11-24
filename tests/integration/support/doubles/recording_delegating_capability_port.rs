@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use ironclaw_host_api::resolution::{Resolution, ResolutionBatch};
 use ironclaw_loop_contracts::{
     AgentLoopHostError, CapabilityCallCandidate, LoopCapabilityPort, LoopRequest, LoopRequestBatch,
-    ProviderToolCall, ProviderToolDefinition, VisibleCapabilityRequest, VisibleCapabilitySurface,
+    ProviderToolCall, ProviderToolCallCapabilityIds, ProviderToolDefinition,
+    VisibleCapabilityRequest, VisibleCapabilitySurface,
 };
 
 pub(crate) struct RecordingDelegatingCapabilityPort {
@@ -16,8 +17,22 @@ pub(crate) struct RecordingDelegatingCapabilityPort {
 
 #[async_trait]
 impl LoopCapabilityPort for RecordingDelegatingCapabilityPort {
+    // Forwarded, not defaulted: the trait default is the fail-closed `true`,
+    // which would make the harness serialize every batch (and refuse every
+    // streamed read pre-execution) where the production port does not.
+    fn requires_ordered_batch_invocation(&self, invocations: &[LoopRequest]) -> bool {
+        self.inner.requires_ordered_batch_invocation(invocations)
+    }
+
     fn tool_definitions(&self) -> Result<Vec<ProviderToolDefinition>, AgentLoopHostError> {
         self.inner.tool_definitions()
+    }
+
+    fn provider_tool_call_capability_ids(
+        &self,
+        tool_call: &ProviderToolCall,
+    ) -> Result<ProviderToolCallCapabilityIds, AgentLoopHostError> {
+        self.inner.provider_tool_call_capability_ids(tool_call)
     }
 
     fn validate_provider_tool_call(

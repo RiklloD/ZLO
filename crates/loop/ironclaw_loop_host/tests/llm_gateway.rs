@@ -1170,6 +1170,110 @@ async fn gateway_with_tool_surface_calls_complete_with_tools_and_returns_capabil
     );
 }
 
+#[derive(Default)]
+struct RecordingStreamedCallObserver(Mutex<Vec<ironclaw_loop_contracts::CapabilityCallCandidate>>);
+
+impl ironclaw_loop_contracts::LoopStreamedCapabilityCallObserver for RecordingStreamedCallObserver {
+    fn capability_call_ready(&self, candidate: ironclaw_loop_contracts::CapabilityCallCandidate) {
+        self.0.lock().unwrap().push(candidate);
+    }
+}
+
+fn file_tool_call(id: &str, tool: &str, path: &str) -> ToolCall {
+    ToolCall {
+        id: id.to_string(),
+        name: format!("builtin__{tool}"),
+        arguments: serde_json::json!({"path": path}),
+        reasoning: None,
+        signature: None,
+        arguments_parse_error: None,
+    }
+}
+
+/// P2.1 at the gateway seam: each pure read the provider streams is
+/// registered and announced while the response is still open, with the
+/// `provider_turn_id` and input ref the final pass derives — for the second
+/// read too, although the first call alone anchors the id. A writer streamed
+/// beside them is never registered before the response is accepted. No text
+/// sink is attached, so the observer alone selects provider streaming.
+#[tokio::test]
+async fn streamed_pure_reads_register_mid_stream_exactly_as_the_final_response() {
+    let provider = Arc::new(ToolAwareProvider::tool_calls(vec![
+        file_tool_call("call_read_1", "read_file", "a.txt"),
+        file_tool_call("call_read_2", "read_file", "b.txt"),
+        file_tool_call("call_write", "write_file", "c.txt"),
+    ]));
+    let gateway = LlmProviderModelGateway::with_provider_identity(
+        STATIC_PROVIDER_ID,
+        provider.clone(),
+        LlmModelProfilePolicy::new()
+            .allow_model_profile(interactive_model(), Some("host-selected-model".to_string())),
+    );
+    let capabilities = Arc::new(GatewayCapabilityPort::with_read_and_write_file_surface());
+    let observer = Arc::new(RecordingStreamedCallObserver::default());
+
+    let response = gateway
+        .stream_model_with_capabilities_observing_calls(
+            model_request(interactive_model()),
+            capabilities.clone(),
+            None,
+            observer.clone(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(provider.streaming_tool_requests.lock().unwrap().len(), 1);
+    let announced = observer.0.lock().unwrap().clone();
+    assert_eq!(
+        announced
+            .iter()
+            .map(|candidate| candidate.capability_id.as_str())
+            .collect::<Vec<_>>(),
+        ["builtin.read_file", "builtin.read_file"],
+        "only the pure reads are announced"
+    );
+    let ParentLoopOutput::CapabilityCalls(final_calls) = response.output else {
+        panic!("expected capability calls");
+    };
+    assert_eq!(final_calls.len(), 3);
+    for (streamed, accepted) in announced.iter().zip(&final_calls) {
+        assert_eq!(streamed.input_ref, accepted.input_ref);
+        let streamed_replay = streamed.provider_replay.as_ref().expect("replay");
+        let accepted_replay = accepted.provider_replay.as_ref().expect("replay");
+        assert_eq!(
+            streamed_replay.provider_turn_id,
+            accepted_replay.provider_turn_id
+        );
+        assert_eq!(
+            streamed_replay.provider_call_id,
+            accepted_replay.provider_call_id
+        );
+    }
+    let registered = capabilities.registered.lock().unwrap();
+    let writes = registered
+        .iter()
+        .filter(|call| call.name.as_str() == "builtin__write_file")
+        .count();
+    assert_eq!(
+        writes, 1,
+        "the writer registers once, from the final response"
+    );
+    assert_eq!(
+        registered.len(),
+        5,
+        "two streamed reads, then all three calls"
+    );
+    let turn_ids = registered
+        .iter()
+        .map(|call| call.turn_id.clone().expect("turn id"))
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        turn_ids.len(),
+        1,
+        "every call shares the response's turn id"
+    );
+}
+
 #[tokio::test]
 async fn gateway_allows_unadvertised_tool_call_when_capability_port_resolves_it() {
     let provider = Arc::new(ToolAwareProvider::tool_calls(vec![ToolCall {
@@ -5724,15 +5828,21 @@ impl LlmProvider for ToolAwareProvider {
     async fn complete_with_tools_streaming(
         &self,
         request: ToolCompletionRequest,
-        _sink: Arc<dyn CompletionStreamSink>,
+        sink: Arc<dyn CompletionStreamSink>,
     ) -> Result<ToolCompletionResponse, LlmError> {
         self.streaming_tool_requests.lock().unwrap().push(request);
-        Ok(self
+        let response = self
             .tool_responses
             .lock()
             .unwrap()
             .pop_front()
-            .expect("tool response configured"))
+            .expect("tool response configured");
+        // Like a real streaming vendor: each call is announced as its block
+        // closes, before the response returns.
+        for call in &response.tool_calls {
+            sink.tool_call_ready(call.clone()).await;
+        }
+        Ok(response)
     }
 }
 
@@ -5890,6 +6000,25 @@ impl GatewayCapabilityPort {
             tool_definition_reads: std::sync::atomic::AtomicUsize::new(0),
             validation_error: None,
             registration_error: None,
+        }
+    }
+
+    /// A pure read and a writer, for the streamed-call bridge.
+    fn with_read_and_write_file_surface() -> Self {
+        let definitions = ["read_file", "write_file"]
+            .into_iter()
+            .map(|name| ProviderToolDefinition {
+                capability_id: CapabilityId::new(format!("builtin.{name}")).unwrap(),
+                name: provider_name(&format!("builtin__{name}")),
+                description: format!("{name} a workspace file"),
+                description_trust: Default::default(),
+                parameters: serde_json::json!({"type": "object"}),
+            })
+            .collect::<Vec<_>>();
+        Self {
+            resolvable_definitions: definitions.clone(),
+            definitions,
+            ..Self::default()
         }
     }
 

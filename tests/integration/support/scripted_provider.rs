@@ -548,6 +548,117 @@ impl LlmProvider for ParkingLlm {
     }
 }
 
+/// A raw `LlmProvider` that streams its scripted tool calls the way a real
+/// streaming vendor does: every tool-capable streaming call announces each
+/// call through `CompletionStreamSink::tool_call_ready` before returning the
+/// response. On the call `gate` parks, it announces the first
+/// `announced_before_park` calls, parks with the stream still open until the
+/// test releases it, then announces the rest. Same vendor-SDK seam as
+/// [`ParkingLlm`]; the scripted `TraceLlm` still supplies every response.
+pub struct StreamingToolCallsLlm {
+    inner: Arc<TraceLlm>,
+    gate: ParkingModelGate,
+    announced_before_park: usize,
+}
+
+pub fn streaming_tool_calls_trace_llm(
+    gate: ParkingModelGate,
+    announced_before_park: usize,
+    inner: Arc<TraceLlm>,
+) -> StreamingToolCallsLlm {
+    StreamingToolCallsLlm {
+        inner,
+        gate,
+        announced_before_park,
+    }
+}
+
+#[async_trait]
+impl LlmProvider for StreamingToolCallsLlm {
+    fn provider_id(&self) -> String {
+        self.inner.provider_id()
+    }
+
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+
+    fn cost_per_token(&self) -> (Decimal, Decimal) {
+        self.inner.cost_per_token()
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        self.inner.complete(request).await
+    }
+
+    async fn complete_with_tools(
+        &self,
+        request: ToolCompletionRequest,
+    ) -> Result<ToolCompletionResponse, LlmError> {
+        self.inner.complete_with_tools(request).await
+    }
+
+    async fn complete_with_tools_streaming(
+        &self,
+        request: ToolCompletionRequest,
+        sink: Arc<dyn CompletionStreamSink>,
+    ) -> Result<ToolCompletionResponse, LlmError> {
+        let response = self.inner.complete_with_tools(request).await?;
+        let (before, after) = response
+            .tool_calls
+            .split_at(self.announced_before_park.min(response.tool_calls.len()));
+        for call in before {
+            sink.tool_call_ready(call.clone()).await;
+        }
+        // Parks only the chosen call; every other one streams straight through.
+        self.gate.park().await;
+        for call in after {
+            sink.tool_call_ready(call.clone()).await;
+        }
+        Ok(response)
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, LlmError> {
+        self.inner.list_models().await
+    }
+
+    async fn model_metadata(&self) -> Result<ModelMetadata, LlmError> {
+        self.inner.model_metadata().await
+    }
+
+    fn effective_model_name(&self, requested_model: Option<&str>) -> String {
+        self.inner.effective_model_name(requested_model)
+    }
+
+    fn fallback_route(
+        &self,
+        fallback_index: u32,
+        requested_model: Option<&str>,
+    ) -> Result<ModelFallbackRoute, LlmError> {
+        self.inner.fallback_route(fallback_index, requested_model)
+    }
+
+    fn active_model_name(&self) -> String {
+        self.inner.active_model_name()
+    }
+
+    fn set_model(&self, model: &str) -> Result<(), LlmError> {
+        self.inner.set_model(model)
+    }
+
+    fn calculate_cost(&self, input_tokens: u32, output_tokens: u32) -> Decimal {
+        self.inner.calculate_cost(input_tokens, output_tokens)
+    }
+
+    fn cache_write_multiplier(&self) -> Decimal {
+        self.inner.cache_write_multiplier()
+    }
+
+    fn cache_read_discount(&self) -> Decimal {
+        self.inner.cache_read_discount()
+    }
+}
+
 /// Deterministic raw-provider latency used by heartbeat-sensitive integration
 /// workloads. The production decorator chain remains above this wrapper.
 pub struct DelayedLlm {

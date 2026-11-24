@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use ironclaw_host_api::ids::TenantId;
 use ironclaw_loop_contracts::{
     AgentLoopHostError, LoopModelPort, LoopModelRequest, LoopModelResponse,
+    LoopStreamedCapabilityCallObserver,
 };
 
 use crate::dispatch::HookDispatcher;
@@ -61,6 +62,18 @@ impl LoopModelPort for HookedLoopModelPort {
         // port at the durable-finalization boundary, not here. See module
         // docs.
         self.inner.stream_model(request).await
+    }
+
+    /// Forwarded so the inner port's streamed-call opt-in survives this
+    /// wrapper; the default would silently drop the observer.
+    async fn stream_model_observing_capability_calls(
+        &self,
+        request: LoopModelRequest,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<LoopModelResponse, AgentLoopHostError> {
+        self.inner
+            .stream_model_observing_capability_calls(request, observer)
+            .await
     }
 }
 

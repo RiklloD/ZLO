@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use ironclaw_loop_contracts::{
     InstructionMaterializationStore, LoopCapabilityPort, LoopModelGateway, LoopModelGatewayError,
     LoopModelGatewayRequest, LoopModelPort, LoopModelProgressSink, LoopModelResponse,
-    LoopPromptBundleAuthority, PromptContextTokenBudget,
+    LoopPromptBundleAuthority, LoopStreamedCapabilityCallObserver, PromptContextTokenBudget,
 };
 use ironclaw_threads::{SessionThreadService, ThreadScope};
 
@@ -125,7 +125,7 @@ where
         &self,
         request: LoopModelGatewayRequest,
     ) -> Result<LoopModelResponse, LoopModelGatewayError> {
-        self.stream_model_inner(request, None).await
+        self.stream_model_inner(request, None, None).await
     }
 
     async fn stream_model_with_progress(
@@ -133,7 +133,18 @@ where
         request: LoopModelGatewayRequest,
         progress_sink: Arc<dyn LoopModelProgressSink>,
     ) -> Result<LoopModelResponse, LoopModelGatewayError> {
-        self.stream_model_inner(request, Some(progress_sink)).await
+        self.stream_model_inner(request, Some(progress_sink), None)
+            .await
+    }
+
+    async fn stream_model_with_progress_observing_capability_calls(
+        &self,
+        request: LoopModelGatewayRequest,
+        progress_sink: Arc<dyn LoopModelProgressSink>,
+        observer: Arc<dyn LoopStreamedCapabilityCallObserver>,
+    ) -> Result<LoopModelResponse, LoopModelGatewayError> {
+        self.stream_model_inner(request, Some(progress_sink), Some(observer))
+            .await
     }
 }
 
@@ -146,6 +157,7 @@ where
         &self,
         request: LoopModelGatewayRequest,
         progress_sink: Option<Arc<dyn LoopModelProgressSink>>,
+        observer: Option<Arc<dyn LoopStreamedCapabilityCallObserver>>,
     ) -> Result<LoopModelResponse, LoopModelGatewayError> {
         let mut run_context = request.context;
         let model_request = request.request;
@@ -199,10 +211,15 @@ where
                 inner: progress_sink,
             }));
         }
-        model_port
-            .stream_model(model_request)
-            .await
-            .map_err(host_error_to_model_gateway_error)
+        match observer {
+            Some(observer) => {
+                model_port
+                    .stream_model_observing_capability_calls(model_request, observer)
+                    .await
+            }
+            None => model_port.stream_model(model_request).await,
+        }
+        .map_err(host_error_to_model_gateway_error)
     }
 }
 

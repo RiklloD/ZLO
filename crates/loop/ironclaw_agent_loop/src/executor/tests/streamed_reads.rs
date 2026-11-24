@@ -240,11 +240,14 @@ async fn a_non_tool_response_discards_the_in_flight_read() {
     assert!(host.appended_result_refs().is_empty());
 }
 
-/// A final batch that mixes in a side-effecting call is not read-only: the
-/// streamed read is aborted and the whole batch dispatches normally, so the
-/// read's result comes from the normal path only.
+/// A final batch that mixes in a side-effecting call is not read-only, so it
+/// reuses nothing and dispatches whole through the normal path. The confirmed
+/// streamed read is let finish first rather than aborted mid-dispatch: the
+/// batch dispatches that read again under the same activity identity, and a
+/// host dispatch torn by an abort would be replayed torn (empty result). Its
+/// result is never appended; only the normal-path ones are.
 #[tokio::test]
-async fn a_mixed_final_batch_discards_the_speculative_read() {
+async fn a_mixed_final_batch_settles_then_discards_the_speculative_read() {
     let streamed = read(0);
     let write = candidate("builtin.write_file", "builtin.write_file", 1);
     let host = host(
@@ -254,7 +257,7 @@ async fn a_mixed_final_batch_discards_the_speculative_read() {
         ],
         3,
     )
-    .with_single_invoke_delays(vec![Duration::from_secs(30)])
+    .with_single_invoke_delays(vec![Duration::from_millis(20)])
     .with_streamed_capability_calls(vec![streamed.clone()], 1);
 
     let exit = run(&host).await.expect("execute");
@@ -277,10 +280,14 @@ async fn a_mixed_final_batch_discards_the_speculative_read() {
     );
     assert_eq!(
         host.finished_single_invocations(),
-        2,
-        "only the normal-path invocations finished"
+        3,
+        "the streamed read finished before the batch dispatched; nothing was torn"
     );
-    assert_eq!(host.appended_result_refs().len(), 2);
+    assert_eq!(
+        host.appended_result_refs().len(),
+        2,
+        "the speculative result is discarded, never appended"
+    );
     assert!(
         host.checkpoint_kinds()
             .contains(&LoopCheckpointKind::BeforeSideEffect),

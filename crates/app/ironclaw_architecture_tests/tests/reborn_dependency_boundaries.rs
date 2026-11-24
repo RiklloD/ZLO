@@ -2906,6 +2906,9 @@ fn provider_tool_names_stay_at_model_protocol_boundaries() {
         // The model gateway is the LLM wire boundary. Executor helpers may
         // rebuild provider calls only from stored replay metadata.
         "crates/ironclaw_loop_host/src/model_gateway.rs",
+        // The gateway's streamed-call bridge registers provider tool calls
+        // mid-stream exactly as the gateway's final pass does.
+        "crates/ironclaw_loop_host/src/model_gateway/streamed_tool_calls.rs",
         "crates/ironclaw_agent_loop/src/executor/capability_helpers.rs",
         // Progressive tool disclosure is itself a model-protocol boundary: the
         // catalog/selector and the bridging decorator map provider tool names
