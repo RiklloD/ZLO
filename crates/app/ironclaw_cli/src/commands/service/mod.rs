@@ -83,7 +83,7 @@ pub(crate) fn service_definition() -> String {
                 format!("~/Library/LaunchAgents/{SERVICE_LABEL}.plist")
             });
         format!(
-            "launchd job {SERVICE_LABEL} ({plist}; pre-ZLO label {LEGACY_SERVICE_LABEL}); it logs to the backend logs below"
+            "launchd job {SERVICE_LABEL} ({plist}; pre-ZLO label {LEGACY_SERVICE_LABEL}); it logs to the backend logs above"
         )
     } else if cfg!(target_os = "linux") {
         format!(

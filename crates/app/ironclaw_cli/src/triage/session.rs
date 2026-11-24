@@ -47,12 +47,17 @@ impl TriagePaths {
             ironclaw_composition::setup_transfer::standalone_database_file(&storage_root);
         let master_key =
             storage_root.join(ironclaw_composition::setup_transfer::SECRETS_MASTER_KEY_FILE);
+        let update_log = crate::commands::update::UpdatePaths::new(&state_dir).log_file();
         Self {
             database,
             config_file: home.config_file_path(),
             providers_file: home.providers_file_path(),
             logs_dir: home.logs_dir(),
-            backend_logs: crate::diagnostics_bundle::log_files(&state_dir),
+            backend_logs: crate::diagnostics_bundle::log_files(&state_dir)
+                .into_iter()
+                .filter(|log| *log != update_log)
+                .collect(),
+            update_log,
             desktop_app_log: cfg!(target_os = "macos")
                 .then(|| user_home.join(DESKTOP_APP_LOG_RELATIVE_PATH)),
             desktop_backend_pid_file: home.desktop_backend_pid_file_path(),

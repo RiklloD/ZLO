@@ -122,8 +122,9 @@ pub(crate) struct TriagePaths {
     pub(crate) config_file: PathBuf,
     pub(crate) providers_file: PathBuf,
     pub(crate) logs_dir: PathBuf,
-    /// Backend and updater logs, in the order worth reading.
+    /// The backend's own logs (`serve.stdout.log`, `serve.stderr.log`).
     pub(crate) backend_logs: Vec<PathBuf>,
+    pub(crate) update_log: PathBuf,
     pub(crate) desktop_app_log: Option<PathBuf>,
     pub(crate) desktop_backend_pid_file: PathBuf,
     /// The OS service definition (launchd plist, systemd unit), described.
@@ -246,6 +247,10 @@ pub(crate) fn build_context(input: &ContextInput<'_>) -> String {
             show(log)
         ));
     }
+    out.push_str(&format!(
+        "- Self-update log (`zlo update`): {}\n",
+        show(&paths.update_log)
+    ));
     if let Some(log) = &paths.desktop_app_log {
         out.push_str(&format!("- Desktop app log: {}\n", show(log)));
     }
@@ -336,6 +341,7 @@ mod tests {
             providers_file: "/home/u/.zlo/providers.json".into(),
             logs_dir: "/home/u/.zlo/logs".into(),
             backend_logs: vec!["/home/u/.zlo/logs/serve.stderr.log".into()],
+            update_log: "/home/u/.zlo/update/update.log".into(),
             desktop_app_log: Some("/home/u/Library/Logs/ZLO/rune.log".into()),
             desktop_backend_pid_file: "/home/u/.zlo/zlo-backend.pid".into(),
             service: "launchd job com.zlo.serve".into(),
