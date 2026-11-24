@@ -324,8 +324,10 @@ pub(super) async fn status(config: &AntigravityConfig, now: i64) -> SignIn {
                 Keyring::Unknown
             };
             match keyring {
-                // Checked and gone (a logout elsewhere): no file and no
-                // older note of a success outweighs that.
+                // Checked and gone (a logout elsewhere): no older note of a
+                // success outweighs that. agy's own token file still does:
+                // agy falls back to it when the keychain is unusable.
+                Keyring::Absent if cli == Token::Valid => true,
                 Keyring::Absent => {
                     return SignIn {
                         signed_in: false,

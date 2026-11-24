@@ -299,6 +299,7 @@ impl AntigravityRuntime {
         text: &str,
         effort: Option<String>,
         context: TurnContext,
+        attended: bool,
     ) -> Result<String, RuntimeError> {
         let key = thread
             .native_session_id
@@ -319,8 +320,18 @@ impl AntigravityRuntime {
             );
             return Ok(run_id);
         }
-        // A turn the user started may sign in, browser included.
-        let mut child = launch::agent_command(&self.config)
+        // A turn the person started may sign in, browser included. One ZLO
+        // started with no one present (a delegated brief, an auto-continue,
+        // a result delivery) gets the browser stubs: a sign-in that needs a
+        // browser fails the turn instead of opening one unattended.
+        let mut command = launch::agent_command(&self.config);
+        if !attended {
+            let stubs = launch::browser_stubs(&self.config)
+                .await
+                .map_err(|e| RuntimeError::Unavailable(format!("browser stubs: {}", e.kind())))?;
+            launch::without_browser(&mut command, &stubs).map_err(RuntimeError::Unavailable)?;
+        }
+        let mut child = command
             .spawn()
             .map_err(|e| RuntimeError::Unavailable(format!("spawn antigravity: {}", e.kind())))?;
         let pgid = rpc::group_of(&child)
@@ -1795,8 +1806,13 @@ impl TurnRuntime for AntigravityRuntime {
             listed.requested.as_deref(),
             input.goal.as_deref(),
         );
+        // Typed by the person, or their own queued message going out.
+        let attended = matches!(
+            input.origin,
+            TurnOrigin::UserPrompt | TurnOrigin::QueueDrain
+        );
         let run_id = self
-            .spawn_turn(claim, &thread, &input.text, input.effort, context)
+            .spawn_turn(claim, &thread, &input.text, input.effort, context, attended)
             .await?;
         Ok(TurnAdmission::Started {
             run_id: Some(run_id),
@@ -1844,7 +1860,9 @@ impl TurnRuntime for AntigravityRuntime {
         };
         // The restarted turn is a new agent process: it needs the notes too.
         let context = TurnContext::new(&self.primed, &thread.thread_id, None, None, None);
-        self.spawn_turn(claim, thread, text, None, context).await?;
+        // A steer is the person's own message.
+        self.spawn_turn(claim, thread, text, None, context, true)
+            .await?;
         Ok(SteerOutcome::Restarted)
     }
 

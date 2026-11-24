@@ -2711,6 +2711,27 @@ async fn antigravity_cli_catalog_reads_never_sign_in_while_signed_out() {
 /// agy's keyring entry present: the catalog reads signed in and refreshes
 /// the model list in the background, in a folder made for the probe alone,
 /// which is gone afterwards.
+/// Review P3: agy falls back to its own token file when the keychain is
+/// unusable (a timeout, a failed migration). With the keychain entry absent
+/// but agy's file still usable, it reads signed in, not signed out for good.
+#[tokio::test]
+async fn antigravity_cli_a_file_sign_in_counts_without_a_keychain_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let acp = dir.path().join("profile/antigravity-acp");
+    std::fs::create_dir_all(&acp).unwrap();
+    std::fs::write(
+        acp.join("antigravity-oauth-token"),
+        r#"{"token":{"access_token":"a","refresh_token":"r","expiry":"2000-01-01T00:00:00Z"}}"#,
+    )
+    .unwrap();
+    let keyring = fake_keyring(dir.path(), false);
+    let rt = antigravity_cli_with(dir.path(), "pong", &recorder, None, |c| {
+        c.keyring = Some(keyring);
+    });
+    assert!(rt.catalog(&scope()).await.unwrap()[0].authenticated);
+}
+
 #[tokio::test]
 async fn antigravity_cli_a_keyring_sign_in_refreshes_the_model_list() {
     let dir = tempfile::tempdir().unwrap();
@@ -2828,10 +2849,32 @@ async fn antigravity_cli_only_background_agents_get_the_browser_stubs() {
     let inherited = std::env::var("PATH").unwrap_or_default();
     assert!(probe_path.ends_with(&inherited), "{probe_path}");
 
-    let (_, outcome) = one_turn(&rt, &recorder).await;
+    // A turn the person typed keeps their PATH: it may sign in.
+    let typed = thread(&rt, "default").await;
+    let mut prompt = input();
+    prompt.origin = TurnOrigin::UserPrompt;
+    rt.start_turn(&typed, prompt).await.unwrap();
+    wait_for(|| recorder.finished.lock().unwrap().len() == 1).await;
+    let outcome = recorder.finished.lock().unwrap()[0].clone();
     assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
-    let turn_path = path(&agy_log(dir.path()), 1);
-    assert_eq!(turn_path, inherited);
+    assert_eq!(path(&agy_log(dir.path()), 1), inherited);
+
+    // Review P2: a turn ZLO started with no one present (a delegated
+    // brief, an auto-continue) gets the stubs, so a sign-in that wants a
+    // browser fails instead of opening one at 3am.
+    for origin in [TurnOrigin::DelegatedBrief, TurnOrigin::AutoContinue] {
+        let done = recorder.finished.lock().unwrap().len();
+        let background = thread(&rt, "default").await;
+        let mut brief = input();
+        brief.origin = origin;
+        rt.start_turn(&background, brief).await.unwrap();
+        wait_for(|| recorder.finished.lock().unwrap().len() == done + 1).await;
+        let seen = path(&agy_log(dir.path()), done + 1);
+        assert!(
+            seen.starts_with(&stubs.display().to_string()),
+            "{origin:?} turn PATH: {seen}"
+        );
+    }
 }
 
 /// Review P1: the probe's cleanup trusts no session id. Its own session

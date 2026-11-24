@@ -362,6 +362,8 @@ async fn cli_version(agy: &Path) -> Option<(u64, u64, u64)> {
                 .iter()
                 .filter_map(|k| Some((k, std::env::var_os(k)?))),
         )
+        // Killed after its deadline: never mid-way through replacing itself.
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
