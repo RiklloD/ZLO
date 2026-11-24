@@ -119,7 +119,6 @@ struct Rows {
     run_of: Vec<u32>,
     /// The newest prompt, while a send's reserve is in play.
     turn_start: Option<usize>,
-    seed: u64,
     outputs: Arc<HashMap<String, CliBody>>,
     reserve_h: f32,
     /// The newest prompt's row key while the reserve keeps room under it.
@@ -208,30 +207,27 @@ impl Rows {
                 key,
                 rows: group,
                 live,
-                after_steer,
-            } => {
-                let open = chat.activity_open(key, *live);
-                flow::render_activity(
-                    s,
-                    id,
-                    key,
-                    group,
-                    *live,
-                    *after_steer,
-                    open,
-                    &chat.toggles,
-                    &self.outputs,
-                    k,
-                )
-            }
-            Item::Pending { stopping } => super::super::pending::render_pending(
+            } => flow::render_activity(
                 s,
-                *stopping,
-                chat.run_started,
-                &chat.clock_text,
-                self.seed,
+                id,
+                key,
+                group,
+                *live,
+                chat.activity_open(key),
+                &chat.toggles,
+                &self.outputs,
                 k,
             ),
+            Item::Working => super::super::pending::render_working(
+                s,
+                chat.transcript.is_stopping(),
+                chat.run_started,
+                &chat.clock_text,
+            ),
+            Item::TurnFold {
+                key, label, open, ..
+            } => flow::render_turn_fold(s, id, key, label, *open),
+            Item::Pending { stopping } => super::super::pending::render_pending(s, *stopping, k),
             Item::Tail => super::super::orchestration::tail(s, chat, k).unwrap_or_else(el),
             Item::Reserve => el().h(self.reserve_h),
         };
@@ -370,7 +366,6 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
         items,
         run_of,
         turn_start,
-        seed: super::super::pending::seed(&id),
         outputs: chat.transcript.tool_outputs(),
         reserve_h,
         anchor,

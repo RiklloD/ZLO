@@ -228,13 +228,10 @@ pub(crate) fn steer_marker(waiting: bool) -> (&'static str, &'static str) {
     }
 }
 
-/// The fold line of the work after a steer: "Continued for 3 min".
+/// The fold line of the work after a steer: "Continued for 3m 5s".
 pub(crate) fn continued_label(ms: Option<i64>) -> String {
     match ms {
-        Some(ms) if ms >= 1000 => format!(
-            "Continued for {}",
-            super::orchestration::duration(ms / 1000)
-        ),
+        Some(ms) if ms >= 1000 => format!("Continued for {}", super::flow::duration(ms)),
         _ => "Continued".into(),
     }
 }
@@ -434,7 +431,7 @@ mod tests {
     fn steer_markers_read_like_t3code() {
         assert_eq!(steer_marker(true).0, "Steer · waiting to be read");
         assert_eq!(steer_marker(false), ("Steer", "Steered the active turn"));
-        assert_eq!(continued_label(Some(185_000)), "Continued for 3 min");
+        assert_eq!(continued_label(Some(185_000)), "Continued for 3m 5s");
         assert_eq!(continued_label(None), "Continued");
     }
 }

@@ -257,24 +257,18 @@ fn editing_that_flips_send_lands_the_layout_at_once() {
 }
 
 #[test]
-fn the_activity_chevron_turns() {
+fn the_fold_chevron_turns() {
     let mut run = Run::new(fixtures::chat);
-    let head = run
-        .rt
-        .elements()
-        .into_iter()
-        .find(|e| e.key.as_deref().is_some_and(|k| k.ends_with("-head")) && !e.exiting)
-        .and_then(|e| e.key)
-        .expect("an activity group");
-    let group = head.trim_end_matches("-head").to_string();
-    let open = run
-        .rt
-        .state
-        .chat
-        .as_ref()
-        .is_some_and(|c| c.activity_open(&group, false));
-    run.change(move |c| {
-        c.toggles.insert(group, !open);
+    let head = "fold-msg:1-head".to_string();
+    assert!(run.path(&head).is_some(), "the settled first turn folds");
+    assert!(run.path("act-think:1-head").is_none(), "its work is folded");
+    run.rt.update(|s, tx| {
+        if let Some(c) = s.chat.as_mut() {
+            c.toggles.insert("fold-msg:1".into(), true);
+            c.folded = None;
+        }
+        sync_items(s, "t1", tx);
+        tx.animated();
     });
     run.frames(3);
     let turning = run
@@ -283,6 +277,11 @@ fn the_activity_chevron_turns() {
         .into_iter()
         .any(|e| e.key.as_deref() == Some("chevron") && e.path.contains(&head) && e.moving);
     assert!(turning, "the chevron springs between its turns");
+    run.frames(30);
+    assert!(
+        run.path("act-think:1-head").is_some(),
+        "the opened fold shows the turn's work"
+    );
 }
 
 /// The chat with its first thought long enough to open.
@@ -297,6 +296,8 @@ fn long_thought(s: &mut State) {
             *text = "First the summary line, then the tree under it, then every row of the transcript in its place.".into();
         }
     }
+    // The settled turn's fold, opened, so its work is on screen.
+    c.toggles.insert("fold-msg:1".into(), true);
     c.rows = Rc::new(rows);
     c.rows_gen += 1;
     let mut tx = rune::Tx::default();

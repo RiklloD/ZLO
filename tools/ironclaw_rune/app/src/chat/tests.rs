@@ -4,7 +4,11 @@
 use zlo_client::GateDecision;
 use zlo_client::transcript::{GateState, Row, ToolStatus};
 
-use super::flow::{Item, fold, summary};
+use std::collections::HashMap;
+
+use zlo_client::transcript::SteerMark;
+
+use super::flow::{Item, summary};
 
 fn tool(key: &str, title: &str) -> Row {
     Row::Tool {
@@ -16,8 +20,63 @@ fn tool(key: &str, title: &str) -> Row {
     }
 }
 
+fn fold(rows: &[Row], live: bool, stopping: bool, tail: bool, reserve: bool) -> Vec<Item> {
+    super::flow::fold(
+        rows,
+        live,
+        stopping,
+        tail,
+        reserve,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+}
+
+fn user(key: &str) -> Row {
+    Row::User {
+        key: key.into(),
+        text: key.into(),
+        pending: false,
+        attachments: Vec::new(),
+        steer: None,
+    }
+}
+
+fn said(key: &str) -> Row {
+    Row::Narration {
+        key: key.into(),
+        text: key.into(),
+    }
+}
+
+fn answer(key: &str) -> Row {
+    Row::Assistant {
+        key: key.into(),
+        text: key.into(),
+        streaming: false,
+    }
+}
+
+/// The items as short tags: `fold:<label>`, `act:<first row>`, a row's key.
+fn shape(items: &[Item]) -> Vec<String> {
+    items
+        .iter()
+        .map(|i| match i {
+            Item::TurnFold { label, open, .. } => {
+                format!("fold:{label}{}", if *open { ":open" } else { "" })
+            }
+            Item::Activity { rows, live, .. } => {
+                format!("act:{}{}", rows[0].key(), if *live { ":live" } else { "" })
+            }
+            Item::Working => "working".into(),
+            Item::Pending { .. } => "pending".into(),
+            other => other.key().to_string(),
+        })
+        .collect()
+}
+
 #[test]
-fn summary_reads_like_zerons() {
+fn summary_reads_like_t3codes() {
     let rows = vec![
         Row::Thinking {
             key: "t".into(),
@@ -27,10 +86,29 @@ fn summary_reads_like_zerons() {
         tool("b", "ironclaw.shell"),
         tool("c", "mcp.yab-browser.open"),
     ];
+    assert_eq!(summary(&rows), "Ran 2 commands and called 1 tool");
+    // Commands and edits lead; the rest is counted.
+    let rows = vec![
+        tool("r", "cli.read"),
+        tool("w", "cli.write"),
+        tool("g", "cli.grep"),
+        tool("x", "cli.bash"),
+        tool("y", "cli.bash"),
+    ];
     assert_eq!(
         summary(&rows),
-        "Thought process · ran 2 commands · called 1 tool"
+        "Edited 1 file, ran 2 commands and performed 2 other actions"
     );
+    let thoughts = |n: usize| -> Vec<Row> {
+        (0..n)
+            .map(|i| Row::Thinking {
+                key: format!("t{i}"),
+                text: "hmm".into(),
+            })
+            .collect()
+    };
+    assert_eq!(summary(&thoughts(1)), "Thought");
+    assert_eq!(summary(&thoughts(3)), "Thought (×3)");
 }
 
 #[test]
@@ -64,14 +142,148 @@ fn settled_gates_fold_into_the_work_and_open_ones_do_not() {
     ));
 }
 
+/// The auto-battler turn that drew every commentary line twice: settled,
+/// it is the prompt, one "Worked for" line and the answer; opened, the
+/// words and tool groups come back in arrival order, each once.
 #[test]
-fn the_working_word_rotates_every_seven_seconds() {
-    use super::pending::{flavour_word, format_elapsed};
-    assert_eq!(flavour_word(0, 0), flavour_word(0, 6));
-    assert_ne!(flavour_word(0, 0), flavour_word(0, 7));
-    assert_eq!(format_elapsed(59), "59s");
-    assert_eq!(format_elapsed(125), "2m 5s");
-    assert_eq!(format_elapsed(3_700), "1h 1m");
+fn a_settled_turn_folds_its_work_above_the_answer() {
+    let rows = vec![
+        user("p"),
+        tool("t1", "cli.bash"),
+        tool("t2", "cli.read"),
+        said("s1"),
+        tool("t3", "cli.write"),
+        said("s2"),
+        tool("t4", "cli.bash"),
+        answer("a"),
+    ];
+    let spans = HashMap::from([("p".to_string(), 1_872_000)]);
+    let shut = super::flow::fold(&rows, false, false, false, false, &spans, &HashMap::new());
+    assert_eq!(shape(&shut), ["p", "fold:Worked for 31m 12s", "a"]);
+    let Item::TurnFold { hidden, .. } = &shut[1] else {
+        panic!("a fold");
+    };
+    assert!(hidden.iter().any(|k| k == "s1") && hidden.iter().any(|k| k == "t3"));
+    let toggles = HashMap::from([("fold-p".to_string(), true)]);
+    let open = super::flow::fold(&rows, false, false, false, false, &spans, &toggles);
+    assert_eq!(
+        shape(&open),
+        [
+            "p",
+            "fold:Worked for 31m 12s:open",
+            "act:t1",
+            "s1",
+            "act:t3",
+            "s2",
+            "act:t4",
+            "a"
+        ]
+    );
+}
+
+/// The live turn never folds: the working line sits under its prompt, the
+/// trailing group follows the newest step and stands in for the thinking
+/// line. Older turns fold all the same.
+#[test]
+fn the_live_turn_works_in_the_open() {
+    let rows = vec![
+        user("p1"),
+        tool("t1", "cli.bash"),
+        answer("a1"),
+        user("p2"),
+        said("s1"),
+        tool("t2", "cli.bash"),
+    ];
+    let items = fold(&rows, true, false, false, false);
+    assert_eq!(
+        shape(&items),
+        [
+            "p1",
+            "fold:Worked",
+            "a1",
+            "p2",
+            "working",
+            "s1",
+            "act:t2:live"
+        ]
+    );
+    // Text last: the thinking line closes the turn.
+    let mut rows = rows;
+    rows.push(said("s2"));
+    let items = fold(&rows, true, false, false, false);
+    assert_eq!(shape(&items).last().map(String::as_str), Some("pending"));
+}
+
+/// A plain answer has nothing to fold; a failed or stopped run keeps its
+/// work in view; finished work after the answer folds, running work not.
+#[test]
+fn only_settled_work_folds() {
+    let plain = vec![user("p"), answer("a")];
+    assert_eq!(shape(&fold(&plain, false, false, false, false)), ["p", "a"]);
+    let failed = vec![
+        user("p"),
+        tool("t1", "cli.bash"),
+        Row::RunNotice {
+            key: "n".into(),
+            run_id: "r".into(),
+            text: "Run failed".into(),
+            failed: true,
+            retryable: true,
+        },
+    ];
+    assert_eq!(
+        shape(&fold(&failed, false, false, false, false)),
+        ["p", "act:t1", "n"]
+    );
+    let running = Row::Tool {
+        key: "t9".into(),
+        title: "cli.bash".into(),
+        detail: None,
+        status: ToolStatus::Running,
+        reason: None,
+    };
+    let after = vec![
+        user("p"),
+        tool("t1", "cli.bash"),
+        answer("a"),
+        tool("t2", "cli.bash"),
+        user("q"),
+        tool("t3", "cli.bash"),
+        answer("b"),
+        running,
+    ];
+    assert_eq!(
+        shape(&fold(&after, false, false, false, false)),
+        ["p", "fold:Worked", "a", "q", "fold:Worked", "b", "act:t9"]
+    );
+}
+
+/// The work after a steer folds on its own under "Continued for", so the
+/// steer stays between the work it split; the turn's answer stays out.
+#[test]
+fn a_steer_splits_the_fold() {
+    let steer = Row::User {
+        key: "s".into(),
+        text: "s".into(),
+        pending: false,
+        attachments: Vec::new(),
+        steer: Some(SteerMark {
+            continued_ms: Some(90_000),
+            ..SteerMark::default()
+        }),
+    };
+    let rows = vec![
+        user("p"),
+        tool("t1", "cli.bash"),
+        said("w"),
+        steer,
+        tool("t2", "cli.bash"),
+        answer("a"),
+    ];
+    assert_eq!(
+        shape(&fold(&rows, false, false, false, false)),
+        ["p", "fold:Worked", "s", "fold:Continued for 1m 30s", "a"]
+    );
 }
 
 #[test]
@@ -214,25 +426,18 @@ fn the_working_clock_repaints_its_seconds_without_a_new_view() {
             .and_then(|c| c.clock_secs)
             .expect("a second shown")
     };
-    // Start on a second whose next one doesn't roll the word.
-    if (shown(&rt) + 1) % 7 == 0 {
-        earlier(&mut rt, 1);
-        poll(&mut rt);
-    }
     let at = shown(&rt);
     // The next second turns: the live label repaints, the view stays.
     earlier(&mut rt, 1);
     assert!(!poll(&mut rt), "a tick built a new view");
     assert_eq!(label(&rt), super::pending::format_elapsed(at + 1));
-    // The word rolls (every 7 s): the line itself changes, a new view.
-    let roll = 7 - (at + 1) % 7;
-    earlier(&mut rt, roll);
-    assert!(poll(&mut rt), "the rolled word needs a new view");
-    assert_eq!(label(&rt), super::pending::format_elapsed(at + 1 + roll));
+    // Past the hour the label's box widens: the line itself changes.
+    let hour = 3_600u64.saturating_sub(at + 1).max(1);
+    earlier(&mut rt, hour);
+    assert!(poll(&mut rt), "the widened label needs a new view");
+    assert_eq!(label(&rt), super::pending::format_elapsed(at + 1 + hour));
 }
 
-/// The seconds of a run nobody is looking at need no wake of their own;
-/// back in front, the clock picks up again.
 #[test]
 fn the_working_clock_asks_for_no_wake_while_the_window_is_in_the_background() {
     let (mut rt, id) = live_runtime();

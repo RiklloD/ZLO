@@ -23,7 +23,6 @@ pub(super) const NEST_AFTER: usize = 64;
 pub(super) struct Line {
     pub key: String,
     pub leaf: Leaf,
-    pub last: bool,
     pub expanded: bool,
     pub open_key: String,
 }
@@ -38,9 +37,7 @@ pub(super) fn tree(s: &State, thread: &str, tree: El, lines: Vec<Line>) -> El {
             col()
                 .w_full()
                 .key(format!("{}-step", l.key))
-                .children(tree_row(
-                    s, thread, &l.key, l.leaf, l.last, l.expanded, l.open_key,
-                ))
+                .children(tree_row(s, thread, &l.key, l.leaf, l.expanded, l.open_key))
         }));
     }
     let count = lines.len();
@@ -67,7 +64,6 @@ pub(super) fn tree(s: &State, thread: &str, tree: El, lines: Vec<Line>) -> El {
                     &thread,
                     &l.key,
                     l.leaf.clone(),
-                    l.last,
                     l.expanded,
                     l.open_key.clone(),
                 )),
@@ -112,7 +108,6 @@ mod tests {
             "t0",
             &rows,
             false,
-            None,
             true,
             &HashMap::new(),
             &HashMap::new(),

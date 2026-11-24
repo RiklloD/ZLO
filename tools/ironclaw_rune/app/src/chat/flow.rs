@@ -1,23 +1,22 @@
-//! The transcript as the list shows it, ported from Zeron's
-//! `crates/ui/src/transcript.rs` (MIT) by way of the GPUI app's
-//! `chat/flow.rs`. Activity (reasoning, tool calls, skills, settled
-//! approvals) folds into one quiet summary line with a task tree under it,
-//! in arrival order between the answer's text. The group is open while it is
-//! the live tail and closes once the answer moves on. One status line (a
-//! glyph, a rotating verb, the seconds) trails the newest content while a
-//! run is live. Sizes are Zeron's, at a 16 px base that the font-size
-//! setting scales ([`ui`]).
+//! The transcript as the list shows it: t3code's timeline. A turn is its
+//! prompt, then the agent's words and its work in arrival order, then the
+//! answer. Activity (reasoning, tool calls, skills, settled approvals)
+//! between the words folds into one line per group: a single step's own
+//! line, or the group's summary ("Ran 3 commands and edited 2 files"),
+//! opening to the steps. While a run is live, "Working for …" sits under
+//! its prompt, the trailing group's line follows the newest step and a
+//! "Thinking" line closes the turn otherwise. Once the run settles,
+//! everything before the answer folds under "Worked for …" (the work after
+//! a steer under "Continued for …"). Sizes are at a 16 px base that the
+//! font-size setting scales ([`ui`]).
 
 use std::collections::HashMap;
 
-use rune::{
-    Color, El, Icon, LineCap, Path, Shape, TextStyle, Transition, canvas, col, el, row, text,
-};
+use rune::{El, Icon, TextStyle, Transition, col, el, row, text};
 use rune_kit::{Kit, RollingText};
 use zlo_client::GateDecision;
 use zlo_client::transcript::{CliBody, GateState, QuestionState, Row, ToolStatus};
 
-use crate::design::Palette;
 use crate::icons;
 use crate::state::State;
 
@@ -26,19 +25,17 @@ pub const SPACE_SM: f32 = 8.;
 pub const SPACE_MD: f32 = 12.;
 pub const SPACE_LG: f32 = 16.;
 
-const HEADER_HEIGHT: f32 = 26.;
-const TREE_ROW_HEIGHT: f32 = 32.;
+/// A work line's height (t3code's `min-h-6`).
+const TREE_ROW_HEIGHT: f32 = 24.;
 
 #[path = "flow/timeline.rs"]
 mod timeline;
-const GUTTER_WIDTH: f32 = 48.;
-const TRUNK_X: f32 = 12.;
-const BEND_RADIUS: f32 = 6.;
-const BRANCH_END_X: f32 = 28.;
-const ICON_LEFT: f32 = 32.;
+/// The icon's column at the head of a work line.
+const ICON_COLUMN: f32 = 20.;
 const ICON_SIZE: f32 = 14.;
-const TEXT_GAP: f32 = 8.;
-const LABEL_LINE: f32 = 18.;
+const TEXT_GAP: f32 = 6.;
+const LABEL_SIZE: f32 = 13.;
+const LABEL_LINE: f32 = 20.;
 /// Lines of a command's output tail a row shows.
 const OUTPUT_LINES: usize = 14;
 
@@ -69,14 +66,27 @@ pub fn rise(y: f32) -> Transition {
 #[derive(Clone, PartialEq)]
 pub enum Item {
     Row(Row),
-    /// Consecutive activity rows, keyed by the first one.
+    /// Consecutive activity rows, keyed by the first one: one line, a tool
+    /// call's own or the group's summary, that opens to the steps
+    /// (t3code's work row and tool-group toggle).
     Activity {
         key: String,
         rows: Vec<Row>,
+        /// The live turn's trailing group: its line follows the newest step.
         live: bool,
-        /// The work after a steer: `Some(how long it ran)`, drawn as
-        /// "Continued for {duration}" (t3code's steer segment).
-        after_steer: Option<Option<i64>>,
+    },
+    /// The live turn's line under its prompt: "Working for 1m 3s"
+    /// (t3code's working row).
+    Working,
+    /// A settled turn's work, or the work after one of its steers, folded
+    /// under one line: "Worked for 31m 12s" (t3code's turn fold). The
+    /// answer stays below it. `hidden` lists the rows it holds while shut,
+    /// so a search hit inside can open it.
+    TurnFold {
+        key: String,
+        label: String,
+        open: bool,
+        hidden: Vec<String>,
     },
     Pending {
         stopping: bool,
@@ -90,7 +100,8 @@ impl Item {
     pub fn key(&self) -> &str {
         match self {
             Item::Row(row) => row.key(),
-            Item::Activity { key, .. } => key,
+            Item::Activity { key, .. } | Item::TurnFold { key, .. } => key,
+            Item::Working => "\u{0}working",
             Item::Pending { .. } => "\u{0}pending",
             Item::Tail => "\u{0}tail",
             Item::Reserve => "\u{0}reserve",
@@ -119,35 +130,50 @@ fn is_activity(row: &Row) -> bool {
     )
 }
 
-/// Fold `rows` into list items. `live` marks a run in flight; the trailing
-/// activity group is then the one being written and opens by itself.
-pub fn fold(rows: &[Row], live: bool, stopping: bool, tail: bool, reserve: bool) -> Vec<Item> {
-    let mut items: Vec<Item> = Vec::with_capacity(rows.len() + 2);
-    // The steer whose work the next group is, until the next prompt.
-    let mut steer: Option<Option<i64>> = None;
+/// A person's message that starts a turn (a steer joins the turn it steers).
+fn is_prompt(item: &Item) -> bool {
+    matches!(item, Item::Row(Row::User { steer: None, .. }))
+}
+
+/// Fold `rows` into list items, t3code's timeline: each turn is its
+/// prompt, the agent's words and tool groups in arrival order, and the
+/// answer. `live` marks a run in flight: its turn gets the working line
+/// under the prompt and its trailing group follows the newest step. A
+/// settled turn folds everything before its answer under "Worked for …"
+/// (`spans`: each prompt's worked time), shut unless `toggles` opened it.
+pub fn fold(
+    rows: &[Row],
+    live: bool,
+    stopping: bool,
+    tail: bool,
+    reserve: bool,
+    spans: &HashMap<String, i64>,
+    toggles: &HashMap<String, bool>,
+) -> Vec<Item> {
+    let mut grouped: Vec<Item> = Vec::with_capacity(rows.len() + 2);
     for row in rows {
         if is_activity(row) {
-            if let Some(Item::Activity { rows, .. }) = items.last_mut() {
+            if let Some(Item::Activity { rows, .. }) = grouped.last_mut() {
                 rows.push(row.clone());
                 continue;
             }
-            items.push(Item::Activity {
+            grouped.push(Item::Activity {
                 key: format!("act-{}", row.key()),
                 rows: vec![row.clone()],
                 live: false,
-                after_steer: steer.take(),
             });
         } else {
-            if let Row::User { steer: mark, .. } = row {
-                steer = mark.as_ref().map(|m| m.continued_ms);
-            }
-            items.push(Item::Row(row.clone()));
+            grouped.push(Item::Row(row.clone()));
         }
     }
-    if live && let Some(Item::Activity { live, .. }) = items.last_mut() {
+    if live && let Some(Item::Activity { live, .. }) = grouped.last_mut() {
         *live = true;
     }
-    if live || stopping {
+    let working = live || stopping;
+    let mut items = fold_turns(grouped, working, spans, toggles);
+    // The thinking line closes the live turn, unless its trailing group
+    // already shows the step at work.
+    if stopping || (live && !matches!(items.last(), Some(Item::Activity { live: true, .. }))) {
         items.push(Item::Pending { stopping });
     }
     if tail {
@@ -159,6 +185,153 @@ pub fn fold(rows: &[Row], live: bool, stopping: bool, tail: bool, reserve: bool)
     items
 }
 
+/// Split `items` into turns at each prompt: the live (newest) turn gets its
+/// working line, every settled turn folds its work.
+fn fold_turns(
+    items: Vec<Item>,
+    working: bool,
+    spans: &HashMap<String, i64>,
+    toggles: &HashMap<String, bool>,
+) -> Vec<Item> {
+    let starts: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, item)| is_prompt(item).then_some(ix))
+        .collect();
+    let Some(&first) = starts.first() else {
+        return items;
+    };
+    let mut out = Vec::with_capacity(items.len() + starts.len() + 1);
+    out.extend_from_slice(&items[..first]);
+    for (n, &start) in starts.iter().enumerate() {
+        let end = starts.get(n + 1).copied().unwrap_or(items.len());
+        let prompt = &items[start];
+        out.push(prompt.clone());
+        let body = &items[start + 1..end];
+        if working && n + 1 == starts.len() {
+            out.push(Item::Working);
+            out.extend_from_slice(body);
+        } else {
+            fold_turn(prompt.key(), body, spans, toggles, &mut out);
+        }
+    }
+    out
+}
+
+/// One settled turn after its prompt. Its answer is its last reply; the
+/// words and work before it fold, and so does finished work after it. The
+/// work after each steer folds on its own, under "Continued for …", so the
+/// steer stays between the work it split. A run that failed or was stopped
+/// keeps everything in view, as do open cards and dividers.
+fn fold_turn(
+    prompt_key: &str,
+    body: &[Item],
+    spans: &HashMap<String, i64>,
+    toggles: &HashMap<String, bool>,
+    out: &mut Vec<Item>,
+) {
+    if body
+        .iter()
+        .any(|i| matches!(i, Item::Row(Row::RunNotice { .. })))
+    {
+        out.extend_from_slice(body);
+        return;
+    }
+    let answer = body
+        .iter()
+        .rposition(|i| matches!(i, Item::Row(Row::Assistant { .. })));
+    let hides = |ix: usize, item: &Item| {
+        let after = answer.is_some_and(|a| ix > a);
+        match item {
+            Item::Activity { rows, .. } => {
+                !after
+                    || rows.iter().all(|r| {
+                        !matches!(
+                            r,
+                            Row::Tool {
+                                status: ToolStatus::Running | ToolStatus::Failed,
+                                ..
+                            }
+                        )
+                    })
+            }
+            Item::Row(Row::Narration { .. }) => !after,
+            Item::Row(Row::Assistant { .. }) => Some(ix) != answer && !after,
+            _ => false,
+        }
+    };
+    // Segments: the work before the first steer, then after each steer.
+    let mut segment_start = 0;
+    let mut label = spans.get(prompt_key).map_or_else(
+        || "Worked".to_string(),
+        |ms| format!("Worked for {}", duration(*ms)),
+    );
+    let mut fold_key = format!("fold-{prompt_key}");
+    for ix in 0..=body.len() {
+        let steer = body.get(ix).and_then(|item| match item {
+            Item::Row(Row::User {
+                key,
+                steer: Some(mark),
+                ..
+            }) => Some((key, mark)),
+            _ => None,
+        });
+        if ix < body.len() && steer.is_none() {
+            continue;
+        }
+        let segment = segment_start..ix;
+        let hidden: Vec<usize> = segment.clone().filter(|&i| hides(i, &body[i])).collect();
+        if !hidden.is_empty() {
+            let open = toggles.get(&fold_key).copied().unwrap_or(false);
+            let keys = if open {
+                Vec::new()
+            } else {
+                hidden.iter().flat_map(|&i| item_keys(&body[i])).collect()
+            };
+            out.push(Item::TurnFold {
+                key: fold_key.clone(),
+                label: label.clone(),
+                open,
+                hidden: keys,
+            });
+            for i in segment {
+                if open || !hidden.contains(&i) {
+                    out.push(body[i].clone());
+                }
+            }
+        } else {
+            out.extend_from_slice(&body[segment]);
+        }
+        if let Some((key, mark)) = steer {
+            out.push(body[ix].clone());
+            segment_start = ix + 1;
+            fold_key = format!("fold-{key}");
+            label = super::dispatch::continued_label(mark.continued_ms);
+        }
+    }
+}
+
+/// The row keys an item holds, for a search hit inside a shut fold.
+fn item_keys(item: &Item) -> Vec<String> {
+    match item {
+        Item::Activity { key, rows, .. } => std::iter::once(key.clone())
+            .chain(rows.iter().map(|r| r.key().to_string()))
+            .collect(),
+        other => vec![other.key().to_string()],
+    }
+}
+
+/// t3code's turn length: "45s", "31m 12s", "1h 2m 3s".
+pub(crate) fn duration(ms: i64) -> String {
+    let secs = (ms.max(0) + 500) / 1000;
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    match (h, m) {
+        (0, 0) => format!("{s}s"),
+        (0, _) => format!("{m}m {s}s"),
+        _ => format!("{h}h {m}m {s}s"),
+    }
+}
+
 /// Zeron's `top_gap_for`: a turn opens 16 above the person's message, a tool
 /// group gets 12 on either side, everything else sits 8 apart.
 pub fn top_gap(prev: Option<&Item>, item: &Item) -> f32 {
@@ -168,7 +341,12 @@ pub fn top_gap(prev: Option<&Item>, item: &Item) -> f32 {
         (_, Item::Row(Row::User { .. })) => SPACE_LG + SPACE_SM,
         (_, Item::Pending { .. }) => SPACE_SM,
         (_, Item::Tail) => SPACE_LG,
-        (Some(Item::Activity { .. }), _) | (_, Item::Activity { .. }) => SPACE_MD,
+        // The working line and a turn's fold sit close under the prompt;
+        // their hairline gets room below.
+        (_, Item::Working | Item::TurnFold { .. }) => SPACE_SM,
+        (Some(Item::Working | Item::TurnFold { .. }), _) => SPACE_MD,
+        // Work lines stack like one list (t3code's work log).
+        (Some(Item::Activity { .. }), Item::Activity { .. }) => 2.,
         _ => SPACE_SM,
     }
 }
@@ -236,6 +414,99 @@ fn tool_kind(title: &str) -> ToolKind {
     }
 }
 
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// "a", "a and b", "a, b and c".
+fn join_clauses(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [one] => one.clone(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+    }
+}
+
+/// A group's one line, t3code's tool-group summary: the two leading kinds
+/// of work (commands and edits first), then a count of the rest — "Ran 3
+/// commands and edited 2 files", "Read 4 files, searched 2 times and
+/// performed 1 other action". Thoughts alone read "Thought".
+pub(crate) fn summary(rows: &[Row]) -> String {
+    let mut counts = [0usize; 6];
+    let mut first = [usize::MAX; 6];
+    let (mut thoughts, mut others) = (0, 0);
+    for (ix, row) in rows.iter().enumerate() {
+        match row {
+            Row::Thinking { .. } => thoughts += 1,
+            Row::Tool { title, .. } => {
+                let kind = tool_kind(title) as usize;
+                counts[kind] += 1;
+                first[kind] = first[kind].min(ix);
+            }
+            // A run's restated status is not a step.
+            Row::WorkSummary { .. } => {}
+            _ => others += 1,
+        }
+    }
+    if counts.iter().all(|n| *n == 0) && others == 0 {
+        return match thoughts {
+            0 => String::new(),
+            1 => "Thought".into(),
+            n => format!("Thought (×{n})"),
+        };
+    }
+    let verbs = [
+        ("Ran", "command", "commands"),
+        ("Edited", "file", "files"),
+        ("Read", "file", "files"),
+        ("Searched", "time", "times"),
+        ("Fetched", "page", "pages"),
+        ("Called", "tool", "tools"),
+    ];
+    let mut kinds: Vec<usize> = (0..counts.len()).filter(|k| counts[*k] > 0).collect();
+    // Commands and edits lead; ties go to whichever came first.
+    kinds.sort_by_key(|k| (usize::from(*k > ToolKind::Edit as usize), first[*k]));
+    kinds.truncate(2);
+    kinds.sort_by_key(|k| first[*k]);
+    let mut parts: Vec<String> = kinds
+        .iter()
+        .map(|k| {
+            let (verb, one, many) = verbs[*k];
+            format!("{verb} {}", plural(counts[*k], one, many))
+        })
+        .collect();
+    let rest =
+        counts.iter().sum::<usize>() - kinds.iter().map(|k| counts[*k]).sum::<usize>() + others;
+    if rest > 0 {
+        let verb = if parts.is_empty() {
+            "Performed"
+        } else {
+            "performed"
+        };
+        let what = if parts.is_empty() {
+            "action"
+        } else {
+            "other action"
+        };
+        parts.push(format!(
+            "{verb} {}",
+            plural(rest, what, &format!("{what}s"))
+        ));
+    }
+    let lowered: Vec<String> = parts
+        .iter()
+        .enumerate()
+        .map(|(ix, part)| {
+            if ix == 0 {
+                part.clone()
+            } else {
+                lower_first(part)
+            }
+        })
+        .collect();
+    join_clauses(&lowered)
+}
+
 /// "Ran 2 commands" → "ran 2 commands", to follow a lead-in.
 fn lower_first(line: &str) -> String {
     let mut out = line.to_string();
@@ -245,70 +516,34 @@ fn lower_first(line: &str) -> String {
     out
 }
 
-fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
+/// A group's icon: its kind of work when there is one kind, else a mix.
+fn group_icon(rows: &[Row]) -> &'static Icon {
+    let mut kinds = rows.iter().filter_map(|r| match r {
+        Row::Tool { title, .. } => Some(tool_kind(title)),
+        _ => None,
+    });
+    match kinds.next() {
+        None if rows.iter().all(|r| matches!(r, Row::Thinking { .. })) => &icons::BOT,
+        Some(kind) if kinds.all(|k| k == kind) => kind_icon(kind),
+        _ => &icons::ACTIVITY,
+    }
 }
 
-/// "Thought process · ran 2 commands · called 2 tools", Zeron's one line
-/// for a group, capitalized at its first letter only.
-pub(crate) fn summary(rows: &[Row]) -> String {
-    let mut counts = [0usize; 6];
-    let (mut thoughts, mut failed, mut approvals, mut skills) = (0, 0, 0, 0);
-    let mut extra = Vec::new();
-    for row in rows {
-        match row {
-            Row::Thinking { .. } => thoughts += 1,
-            Row::Tool { title, status, .. } => {
-                counts[tool_kind(title) as usize] += 1;
-                failed += usize::from(*status == ToolStatus::Failed);
-            }
-            Row::Gate { .. } | Row::Question { .. } => approvals += 1,
-            Row::Skills { .. } => skills += 1,
-            // A run restates its status as it goes; only the latest counts.
-            Row::WorkSummary { text, .. } => extra = vec![text.clone()],
-            _ => {}
-        }
+fn kind_icon(kind: ToolKind) -> &'static Icon {
+    match kind {
+        ToolKind::Command => &icons::SQUARE_TERMINAL,
+        ToolKind::Edit => &icons::SQUARE_PEN,
+        ToolKind::Read => &icons::FILE_TEXT,
+        ToolKind::Search => &icons::SEARCH,
+        ToolKind::Fetch => &icons::GLOBE,
+        ToolKind::Other => &icons::ZAP,
     }
-    let mut parts = Vec::new();
-    match thoughts {
-        0 => {}
-        1 => parts.push("thought process".to_string()),
-        n => parts.push(format!("thought {n} times")),
-    }
-    let verbs = [
-        ("ran", "command", "commands"),
-        ("edited", "file", "files"),
-        ("read", "file", "files"),
-        ("searched", "time", "times"),
-        ("fetched", "page", "pages"),
-        ("called", "tool", "tools"),
-    ];
-    for (n, (verb, one, many)) in counts.iter().zip(verbs) {
-        if *n > 0 {
-            parts.push(format!("{verb} {}", plural(*n, one, many)));
-        }
-    }
-    if skills > 0 {
-        parts.push("loaded skills".into());
-    }
-    if approvals > 0 {
-        parts.push(plural(approvals, "approval", "approvals"));
-    }
-    if failed > 0 {
-        parts.push(format!("{failed} failed"));
-    }
-    parts.extend(extra);
-    let mut line = parts.join(" · ");
-    if let Some(first) = line.get_mut(..1) {
-        first.make_ascii_uppercase();
-    }
-    line
 }
 
-/// Whether a group is drawn open: the reader's own toggle wins, otherwise
-/// it follows the run (open while live, closed after).
-pub fn is_open(key: &str, live: bool, toggles: &HashMap<String, bool>) -> bool {
-    toggles.get(key).copied().unwrap_or(live)
+/// Whether a group (or one of its steps) is drawn open: shut until the
+/// reader opens it, live or not (t3code's work rows).
+pub fn is_open(key: &str, toggles: &HashMap<String, bool>) -> bool {
+    toggles.get(key).copied().unwrap_or(false)
 }
 
 /// A tree row: the label (verb), its detail, an icon and whether it failed.
@@ -396,8 +631,9 @@ fn leaf(row: &Row) -> Option<Leaf> {
         } => {
             let kind = tool_kind(title);
             let (mcp, name) = tool_name(title);
+            let is_mcp = !mcp.is_empty();
             let verb = match kind {
-                _ if !mcp.is_empty() => mcp,
+                _ if is_mcp => mcp,
                 ToolKind::Command => "Ran".into(),
                 ToolKind::Edit => "Edited".into(),
                 ToolKind::Read => "Read".into(),
@@ -406,8 +642,10 @@ fn leaf(row: &Row) -> Option<Leaf> {
                 ToolKind::Other => "Called".into(),
             };
             let arg = detail.as_deref().map(one_line).unwrap_or_default();
-            // A command reads as the command itself; other tools by name.
-            let shown = if kind == ToolKind::Command && !arg.is_empty() {
+            // A command reads as the command itself, a file step as its
+            // path; other tools by name.
+            let plain = !is_mcp && kind != ToolKind::Other;
+            let shown = if plain && !arg.is_empty() {
                 arg.clone()
             } else if arg.is_empty() {
                 name
@@ -415,13 +653,10 @@ fn leaf(row: &Row) -> Option<Leaf> {
                 format!("{name} · {arg}")
             };
             Leaf {
-                icon: match kind {
-                    ToolKind::Command => &icons::SQUARE_TERMINAL,
-                    ToolKind::Edit => &icons::FILE_TEXT,
-                    ToolKind::Read => &icons::FILE,
-                    ToolKind::Search => &icons::SEARCH,
-                    ToolKind::Fetch => &icons::GLOBE,
-                    ToolKind::Other => &icons::NETWORK,
+                icon: if is_mcp {
+                    &icons::NETWORK
+                } else {
+                    kind_icon(kind)
                 },
                 label: verb,
                 detail: shown,
@@ -517,52 +752,6 @@ fn leaf(row: &Row) -> Option<Leaf> {
     })
 }
 
-/// The tree's line color: opaque, so the trunk and an elbow overlapping it
-/// never darken the joint the way two translucent strokes would.
-fn rail_color(p: &Palette) -> Color {
-    p.bg.mix(p.text, if p.light { 0.16 } else { 0.14 })
-}
-
-/// The gutter for one tree row: the trunk coming down from above, a rounded
-/// elbow out to the icon, and the trunk carrying on when a row follows.
-fn rail(leaf: &Leaf, last: bool, p: &Palette) -> El {
-    let color = rail_color(p);
-    let mid = TREE_ROW_HEIGHT / 2.;
-    let tint = if leaf.failed { p.danger } else { p.text_muted };
-    let x = TRUNK_X + 0.5;
-    let trunk_end = if last {
-        mid - BEND_RADIUS
-    } else {
-        TREE_ROW_HEIGHT
-    };
-    let shape = Shape::new()
-        .line([x, 0.], [x, trunk_end], 1., LineCap::Butt, color)
-        .stroke_path(
-            &Path::new()
-                .move_to([x, mid - BEND_RADIUS])
-                .quad_to([x, mid + 0.5], [x + BEND_RADIUS, mid + 0.5])
-                .line_to([BRANCH_END_X, mid + 0.5]),
-            1.,
-            LineCap::Butt,
-            color,
-        );
-    el().w(GUTTER_WIDTH)
-        .h(TREE_ROW_HEIGHT)
-        .child(
-            canvas(shape)
-                .size(GUTTER_WIDTH, TREE_ROW_HEIGHT)
-                .absolute(0., 0.),
-        )
-        // A running step's glyph breathes on the loaders' 15 fps clock
-        // (still under reduced motion and the battery saver). Its finish
-        // lands with the stream, which Rune commits at once, so the glyph
-        // just stops breathing there.
-        .child(
-            crate::design::kit::busy_glyph("leaf-glyph", leaf.icon, leaf.running, ICON_SIZE, tint)
-                .absolute(ICON_LEFT, mid - ICON_SIZE / 2.),
-        )
-}
-
 /// Whether a finished group of `rows` folds on its own glide. A group long
 /// enough to nest its tree as a virtual list (`timeline::NEST_AFTER`) opens
 /// at once: gliding it open leaves the nested list committing on every
@@ -572,7 +761,70 @@ pub(crate) fn folds_on_glide(rows: usize) -> bool {
     rows <= timeline::NEST_AFTER
 }
 
-/// The activity group: a summary line that opens to the tree.
+/// A settled turn's fold, t3code's: "Worked for 31m 12s" and a chevron over
+/// a hairline. Opening it puts the turn's words and work back above the
+/// answer; the line holds still under the pointer meanwhile.
+pub fn render_turn_fold(s: &State, thread: &str, key: &str, label: &str, open: bool) -> El {
+    let p = &s.palette;
+    let font = type_at(s, LABEL_SIZE, LABEL_LINE, 400.);
+    let head_key = format!("{key}-head");
+    let (thread_id, toggle_key, keep) = (thread.to_string(), key.to_string(), head_key.clone());
+    col()
+        .key(format!("{key}-fold"))
+        .w_full()
+        .transition(rise(4.))
+        .child(
+            row()
+                .key(head_key)
+                .role("button")
+                .label(label.to_string())
+                .h(24.)
+                .gap(4.)
+                .px(2.)
+                .center_y()
+                .radius(design_radius())
+                .cursor(rune::Cursor::Pointer)
+                .child(text(label.to_string()).font(font).color(p.text_muted))
+                .child(crate::design::kit::chevron(
+                    "chevron",
+                    open,
+                    crate::design::kit::Turn::Disclose,
+                    12.,
+                    p.text_muted,
+                ))
+                .on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
+                    let Some(c) = super::chat_for(s, &thread_id) else {
+                        return;
+                    };
+                    let now = is_open(&toggle_key, &c.toggles);
+                    c.toggles.insert(toggle_key.clone(), !now);
+                    // The fold decides which rows exist: fold the list again.
+                    c.folded = None;
+                    super::fold_now(c, tx);
+                    tx.keep_on_screen(keep.clone());
+                    super::sync_items(s, &thread_id, tx);
+                }),
+        )
+        .child(el().w_full().h(1.).mt(4.).fill(p.border))
+}
+
+/// A step's verb while it runs: "Ran" → "Running".
+fn present_tense(verb: &str) -> String {
+    match verb {
+        "Ran" => "Running",
+        "Edited" => "Editing",
+        "Read" => "Reading",
+        "Searched" => "Searching",
+        "Fetched" => "Fetching",
+        "Called" => "Calling",
+        other => other,
+    }
+    .to_string()
+}
+
+/// An activity group, t3code's work row: a settled single step is its own
+/// line; otherwise one line (the newest step while live, the summary after)
+/// that opens to every step.
 #[allow(clippy::too_many_arguments)]
 pub fn render_activity(
     s: &State,
@@ -580,101 +832,24 @@ pub fn render_activity(
     key: &str,
     rows: &[Row],
     live: bool,
-    after_steer: Option<Option<i64>>,
     open: bool,
     toggles: &HashMap<String, bool>,
     outputs: &HashMap<String, CliBody>,
     k: &Kit,
 ) -> El {
     let p = &s.palette;
-    let label = match after_steer {
-        // A live run has no length yet: "Continued".
-        Some(ms) => {
-            let head = super::dispatch::continued_label(if live { None } else { ms });
-            match summary(rows) {
-                rest if rest.is_empty() => head,
-                rest => format!("{head} · {}", lower_first(&rest)),
-            }
-        }
-        None => summary(rows),
-    };
-    let small = type_at(s, 12., LABEL_LINE, 400.);
-    let toggle_key = key.to_string();
-    let head_key = format!("{key}-head");
-    let thread_id = thread.to_string();
-    let title = if live {
-        // The live group's line breathes while the run works.
-        text(label.clone())
-            .font(small)
-            .color(p.text_muted)
-            .truncate()
-            .cycle(crate::design::kit::loops::breathe(
-                1.6,
-                0.,
-                &crate::design::kit::loops::BREATH_55,
-            ))
-    } else {
-        RollingText::new(format!("{key}-title"), label.clone())
-            .font(small)
-            .color(p.text_muted)
-            .build(k)
-    };
-    // The shared disclosure chevron: its turn springs between closed and
-    // open instead of snapping a quarter turn.
-    let chevron = crate::design::kit::chevron(
-        "chevron",
-        open,
-        crate::design::kit::Turn::Disclose,
-        13.,
-        p.text_muted,
-    );
-    let header = row()
-        .key(format!("{key}-head"))
-        .role("button")
-        .label(label.clone())
-        .h(HEADER_HEIGHT)
-        .gap(6.)
-        .pr(4.)
-        .center_y()
-        .cursor(rune::Cursor::Pointer)
-        .transition(rise(4.))
-        .child(
-            el().w(22.)
-                .h(18.)
-                .child(chevron.absolute(TRUNK_X - 6.5, 2.5)),
-        )
-        .child(el().min_w(0.).shrink().child(title))
-        // The header stays under the pointer while its rows open or shut.
-        .on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
-            let Some(c) = super::chat_for(s, &thread_id) else {
-                return;
-            };
-            let now = c.activity_open(&toggle_key, live);
-            c.toggles.insert(toggle_key.clone(), !now);
-            super::fold_now(c, tx);
-            tx.keep_on_screen(head_key.clone());
-        });
-
-    let group = col().key(format!("{key}-group")).w_full().child(header);
-    if !open {
-        return group;
-    }
     let parts: Vec<(&Row, Leaf)> = rows
         .iter()
         .filter_map(|r| leaf(r).map(|l| (r, l)))
         .collect();
     let count = parts.len();
-    let tree = col()
-        .key(format!("{key}-tree"))
-        .w_full()
-        .transition(rise(4.));
     let mut lines = Vec::with_capacity(count);
     for (ix, (row, mut leaf)) in parts.into_iter().enumerate() {
         let row_key = row.key();
         let open_key = format!("leaf:{row_key}");
-        // The thought being written stays open; it folds once it ends.
-        let thinking_now = live && ix + 1 == count && matches!(row, Row::Thinking { .. });
-        if thinking_now {
+        // The thought being written reads "Thinking"; its words show once
+        // it ends, under "Thought".
+        if live && ix + 1 == count && matches!(row, Row::Thinking { .. }) {
             leaf = live_thought();
         }
         if matches!(row, Row::Tool { .. }) {
@@ -694,47 +869,122 @@ pub fn render_activity(
         lines.push(timeline::Line {
             key: row_key.to_string(),
             leaf,
-            last: ix + 1 == count,
             expanded,
             open_key,
         });
     }
+    let group = col().key(format!("{key}-group")).w_full();
+    // One settled step: the step is the line (t3code's single tool row).
+    if !live
+        && lines.len() == 1
+        && let Some(line) = lines.pop()
+    {
+        return group.children(tree_row(
+            s,
+            thread,
+            &line.key,
+            line.leaf,
+            line.expanded,
+            line.open_key,
+        ));
+    }
+    let newest = lines.last().map(|l| &l.leaf);
+    let (icon, label, busy) = match newest {
+        Some(leaf) if live => {
+            let verb = if leaf.running {
+                present_tense(&leaf.label)
+            } else {
+                leaf.label.clone()
+            };
+            let line = if leaf.detail.is_empty() {
+                verb
+            } else {
+                format!("{verb} {}", leaf.detail)
+            };
+            (leaf.icon, line, true)
+        }
+        _ => (group_icon(rows), summary(rows), false),
+    };
+    // A failed step is red on its own line; the group's line stays quiet.
+    let tint = p.text_muted;
+    let font = type_at(s, LABEL_SIZE, LABEL_LINE, 400.);
+    let title = if busy {
+        // The live line breathes while the run works (t3code's shimmer).
+        text(label.clone()).font(font).color(tint).truncate().cycle(
+            crate::design::kit::loops::breathe(1.6, 0., &crate::design::kit::loops::BREATH_55),
+        )
+    } else {
+        RollingText::new(format!("{key}-title"), label.clone())
+            .font(font)
+            .color(tint)
+            .build(k)
+    };
+    let toggle_key = key.to_string();
+    let head_key = format!("{key}-head");
+    let thread_id = thread.to_string();
+    let header = row()
+        .key(head_key.clone())
+        .role("button")
+        .label(label)
+        .w_full()
+        .h(TREE_ROW_HEIGHT)
+        .gap(TEXT_GAP)
+        .center_y()
+        .radius(design_radius())
+        .cursor(rune::Cursor::Pointer)
+        .transition(rise(4.))
+        .child(el().w(ICON_COLUMN).h(TREE_ROW_HEIGHT).center().child(
+            crate::design::kit::busy_glyph("head-glyph", icon, busy, ICON_SIZE, tint),
+        ))
+        .child(el().min_w(0.).shrink().child(title))
+        // The header stays under the pointer while its rows open or shut.
+        .on_press_tx(move |s: &mut State, tx: &mut rune::Tx| {
+            let Some(c) = super::chat_for(s, &thread_id) else {
+                return;
+            };
+            let now = c.activity_open(&toggle_key);
+            c.toggles.insert(toggle_key.clone(), !now);
+            super::fold_now(c, tx);
+            tx.keep_on_screen(head_key.clone());
+        });
+    let group = group.child(header);
+    if !open {
+        return group;
+    }
+    let tree = col()
+        .key(format!("{key}-tree"))
+        .w_full()
+        .pl(ICON_COLUMN / 2.)
+        .transition(rise(4.));
     group.child(timeline::tree(s, thread, tree, lines))
 }
 
-/// One step of the tree: its label line, then its opened text while open.
-/// The caller's `{key}-step` column holds both, so opening a step never
-/// moves `{key}-leaf` under a new parent (which cut its motion short).
+/// One step: its icon, verb and subject on one line, then its opened text
+/// while open. The caller's `{key}-step` column holds both, so opening a
+/// step never moves `{key}-leaf` under a new parent (which cut its motion
+/// short).
 fn tree_row(
     s: &State,
     thread: &str,
     key: &str,
     leaf: Leaf,
-    last: bool,
     expanded: bool,
     open_key: String,
 ) -> Vec<El> {
     let p = &s.palette;
     let tint = if leaf.failed { p.danger } else { p.text_muted };
     let expandable = leaf.body.is_some() || leaf.output.is_some();
-    let small = type_at(s, 12., LABEL_LINE, 400.);
+    let font = type_at(s, LABEL_SIZE, LABEL_LINE, 400.);
     let mut words = row()
-        .ml(TEXT_GAP)
         .min_w(0.)
         .grow(1.)
-        .gap(8.)
+        .gap(5.)
         .center_y()
-        .child(text(leaf.label.clone()).font(small).color(if leaf.running {
-            p.text
-        } else {
-            tint
-        }));
-    // An opened row shows its text once, below; the label line keeps only
-    // the verb.
-    if !leaf.detail.is_empty() && !expanded {
+        .child(text(leaf.label.clone()).font(font).color(tint));
+    if !leaf.detail.is_empty() {
         words = words.child(
             text(leaf.detail.clone())
-                .font(small)
+                .font(font)
                 .color(if leaf.failed { p.danger } else { p.text_faint })
                 .truncate()
                 .min_w(0.)
@@ -745,8 +995,23 @@ fn tree_row(
         .key(format!("{key}-leaf"))
         .w_full()
         .h(TREE_ROW_HEIGHT)
+        .gap(TEXT_GAP)
+        .center_y()
         .transition(rise(4.))
-        .child(rail(&leaf, last && !expanded, p))
+        .child(
+            el().w(ICON_COLUMN)
+                .h(TREE_ROW_HEIGHT)
+                .center()
+                // A running step's glyph breathes on the loaders' 15 fps
+                // clock; its finish lands with the stream.
+                .child(crate::design::kit::busy_glyph(
+                    "leaf-glyph",
+                    leaf.icon,
+                    leaf.running,
+                    ICON_SIZE,
+                    tint,
+                )),
+        )
         .child(words);
     if expandable {
         let thread_id = thread.to_string();
@@ -765,21 +1030,17 @@ fn tree_row(
                 tx.keep_on_screen(leaf_key.clone());
             });
     }
-    if !expanded || (leaf.body.is_none() && leaf.output.is_none()) {
+    if !expanded || !expandable {
         return vec![line];
     }
-    // An opened row's full text hangs under its label, the trunk carrying on
-    // beside it unless this is the last row.
-    let mut gutter = el().w(GUTTER_WIDTH + TEXT_GAP).self_stretch();
-    if !last {
-        gutter = gutter.child(el().w(1.).fill(rail_color(p)).pin(
-            Some(TRUNK_X),
-            Some(0.),
-            None,
-            Some(0.),
-        ));
-    }
-    let mut body_col = col().grow(1.).min_w(0.).pb(8.).gap(4.);
+    // An opened step's text hangs under its words.
+    let small = type_at(s, 12., 18., 400.);
+    let mut body_col = col()
+        .grow(1.)
+        .min_w(0.)
+        .pl(ICON_COLUMN + TEXT_GAP)
+        .pb(8.)
+        .gap(4.);
     if let Some(body) = &leaf.body {
         body_col = body_col.child(
             text(body.clone())
@@ -799,7 +1060,6 @@ fn tree_row(
             .key(format!("{key}-detail"))
             .w_full()
             .transition(rise(4.))
-            .child(gutter)
             .child(body_col),
     ]
 }
@@ -869,65 +1129,4 @@ pub fn user_pill(s: &State, key: &str, body: El, pending: bool, column: f32) -> 
             .transition(rise(6.))
             .child(body.shrink()),
     )
-}
-
-#[cfg(test)]
-mod steer_fold_tests {
-    use zlo_client::transcript::SteerMark;
-
-    use super::*;
-
-    fn user(key: &str, steer: Option<SteerMark>) -> Row {
-        Row::User {
-            key: key.into(),
-            text: key.into(),
-            pending: false,
-            attachments: Vec::new(),
-            steer,
-        }
-    }
-
-    fn tool(key: &str) -> Row {
-        Row::Tool {
-            key: key.into(),
-            title: "cli.bash".into(),
-            detail: None,
-            status: ToolStatus::Completed,
-            reason: None,
-        }
-    }
-
-    fn after_steer(items: &[Item]) -> Vec<Option<Option<i64>>> {
-        items
-            .iter()
-            .filter_map(|i| match i {
-                Item::Activity { after_steer, .. } => Some(*after_steer),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_work_after_a_steer_folds_under_continued() {
-        let mark = SteerMark {
-            continued_ms: Some(90_000),
-            ..SteerMark::default()
-        };
-        let rows = vec![
-            user("prompt", None),
-            tool("t1"),
-            user("steer", Some(mark)),
-            tool("t2"),
-            tool("t3"),
-            user("next", None),
-            tool("t4"),
-        ];
-        let items = fold(&rows, false, false, false, false);
-        assert_eq!(after_steer(&items), vec![None, Some(Some(90_000)), None]);
-        assert_eq!(
-            super::super::dispatch::continued_label(Some(90_000)),
-            "Continued for 1 min"
-        );
-        assert_eq!(lower_first("Ran 2 commands"), "ran 2 commands");
-    }
 }

@@ -160,7 +160,8 @@ pub(crate) async fn ingest_thread(
                 .as_deref()
                 .is_some_and(|a| anchor_of(&rows, cursor.ingested_through).as_deref() != Some(a));
         // Otherwise only new rows, plus the last ingested one, which may
-        // have grown since (a run's later assistant steps join it).
+        // have changed since (a step still being written); re-upserting it
+        // is idempotent.
         let from = if rewritten {
             0
         } else {

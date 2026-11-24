@@ -194,7 +194,10 @@ fn fold(c: &mut ChatState) {
     let rows: Rc<Vec<Row>> = Rc::new(c.transcript.rows());
     let live = c.running_run().is_some();
     let stopping = c.transcript.is_stopping();
-    c.items = Rc::new(super::flow::fold(&rows, live, stopping, false, false));
+    c.spans = Rc::new(c.transcript.turn_spans());
+    c.items = Rc::new(super::flow::fold(
+        &rows, live, stopping, false, false, &c.spans, &c.toggles,
+    ));
     c.outline.set(outline::prompts(&c.items));
     c.rows = rows;
     c.rows_gen += 1;
@@ -253,6 +256,7 @@ pub(super) fn adopt(s: &mut State, chat: &mut ChatState) -> bool {
     let warm = w.chat;
     chat.transcript = warm.transcript;
     chat.rows = warm.rows;
+    chat.spans = warm.spans;
     chat.rows_gen = warm.rows_gen;
     chat.items = warm.items;
     chat.outline = warm.outline;

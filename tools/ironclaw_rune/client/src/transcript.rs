@@ -1317,6 +1317,51 @@ impl Transcript {
         self.last_settled.as_deref()
     }
 
+    /// How long each settled turn worked, by its prompt row's key: from the
+    /// prompt to the run's last row, stored or live (t3code's "Worked for").
+    /// The running turn has no length yet and is left out.
+    pub fn turn_spans(&self) -> HashMap<String, i64> {
+        let durable = self
+            .durable
+            .iter()
+            .filter_map(|m| Some((m.turn_run_id.as_deref()?, m.created_at?.timestamp_millis())));
+        let live = self
+            .live
+            .values()
+            .filter_map(|e| Some((e.run.as_deref()?, e.at)));
+        let mut last_at: HashMap<&str, i64> = HashMap::new();
+        for (run, at) in durable.chain(live) {
+            last_at
+                .entry(run)
+                .and_modify(|t| *t = (*t).max(at))
+                .or_insert(at);
+        }
+        let active = self.active_run();
+        let mut started: HashSet<&str> = HashSet::new();
+        let mut spans = HashMap::new();
+        for m in self
+            .durable
+            .iter()
+            .filter(|m| m.kind == MessageKind::User && m.is_visible())
+        {
+            let Some(run) = m.turn_run_id.as_deref() else {
+                continue;
+            };
+            // A run's later messages of the person's are steers: the turn
+            // is timed from the prompt that started it.
+            if !started.insert(run) || active == Some(run) {
+                continue;
+            }
+            if let (Some(sent), Some(end)) = (m.created_at, last_at.get(run)) {
+                let ms = end - sent.timestamp_millis();
+                if ms > 0 {
+                    spans.insert(self.key_of_message(&m.message_id), ms);
+                }
+            }
+        }
+        spans
+    }
+
     pub fn rows(&self) -> Vec<Row> {
         // Live entries grouped by run, in first-seen order.
         let mut groups: Vec<(Option<String>, Vec<&str>)> = Vec::new();
@@ -2086,6 +2131,92 @@ mod tests {
             "thread": { "thread_id": "t1" }, "messages": messages
         }))
         .expect("timeline decodes")
+    }
+
+    /// A CLI run whose stored timeline caught up mid-run (a reconnect, a
+    /// compaction): each text block is its own stored row, as its live
+    /// segment streamed it. Every line draws once, in arrival order, with
+    /// the tools between them. (A joined stored reply used to stack every
+    /// line over the live segments, so each drew twice.)
+    #[test]
+    fn a_cli_runs_stored_steps_and_live_segments_draw_each_line_once() {
+        let seg = |n: u32, body: &str| {
+            items(serde_json::json!([{ "text": {
+                "id": format!("text:{RUN}:cli:t1:{n}"), "run_id": RUN,
+                "body": body, "narration": false } }]))
+        };
+        let tool = |n: u32, input: &str, status: &str| {
+            items(serde_json::json!([{ "capability_activity": {
+                "invocation_id": format!("6f1c1c0e-0000-4000-8000-{n:012}"),
+                "turn_run_id": RUN, "thread_id": "t1", "capability_id": "cli.bash",
+                "status": status, "input_summary": input,
+                "updated_at": "2026-11-22T21:00:00Z" } }]))
+        };
+        let mut t = Transcript::default();
+        t.apply(&status("running"));
+        t.apply(&tool(1, "ls", "completed"));
+        t.apply(&seg(0, "First, the decision record."));
+        t.apply(&tool(2, "cat roadmap.md", "completed"));
+        t.apply(&seg(1, "Now the engine contract."));
+        t.apply(&tool(3, "bun test", "running"));
+        t.set_timeline(page(serde_json::json!([
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "build it" },
+            { "message_id": "m2", "sequence": 2, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "First, the decision record." },
+            { "message_id": "m3", "sequence": 3, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "Now the engine contract." },
+        ])));
+        let shape: Vec<String> = t
+            .rows()
+            .iter()
+            .map(|r| match r {
+                Row::User { text, .. } => format!("user:{text}"),
+                Row::Assistant { text, .. } | Row::Narration { text, .. } => {
+                    format!("text:{text}")
+                }
+                Row::Tool { detail, .. } => format!("tool:{}", detail.clone().unwrap_or_default()),
+                other => format!("other:{}", other.key()),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                "user:build it",
+                "tool:ls",
+                "text:First, the decision record.",
+                "tool:cat roadmap.md",
+                "text:Now the engine contract.",
+                "tool:bun test",
+            ]
+        );
+    }
+
+    /// A settled turn is timed from its prompt to its run's last row; the
+    /// running turn has no length yet.
+    #[test]
+    fn turn_spans_time_each_settled_prompt() {
+        let mut t = Transcript::default();
+        t.set_timeline(page(serde_json::json!([
+            { "message_id": "m1", "sequence": 1, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "go", "created_at": "2026-11-22T21:00:00Z" },
+            { "message_id": "m2", "sequence": 2, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "Working on it.", "created_at": "2026-11-22T21:10:00Z" },
+            { "message_id": "m3", "sequence": 3, "kind": "user", "status": "accepted",
+              "turn_run_id": RUN, "content": "a steer", "created_at": "2026-11-22T21:20:00Z" },
+            { "message_id": "m4", "sequence": 4, "kind": "assistant", "status": "finalized",
+              "turn_run_id": RUN, "content": "Done.", "created_at": "2026-11-22T21:31:12Z" },
+        ])));
+        let spans = t.turn_spans();
+        assert_eq!(
+            spans.get("msg:m1"),
+            Some(&1_872_000),
+            "31m 12s, steers included"
+        );
+        assert!(!spans.contains_key("msg:m3"), "a steer is not a turn");
+        // While the run is live, its turn has no length yet.
+        t.apply(&status("running"));
+        assert!(t.turn_spans().is_empty());
     }
 
     fn items(items: serde_json::Value) -> StreamEvent {
