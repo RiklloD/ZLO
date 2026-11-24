@@ -49,7 +49,7 @@ ironclaw_host_api = { path = "../../contracts/ironclaw_host_api" }
 ironclaw_prompt_envelope = { path = "../../contracts/ironclaw_prompt_envelope" }
 ironclaw_loop_contracts = { path = "../../contracts/ironclaw_loop_contracts", version = "0.1.0" }
 ironclaw_wasm_limiter = { path = "../../lanes/ironclaw_wasm_limiter" }
-lru = "0.18"
+lru = "0.19"
 rust_decimal = { workspace = true, features = ["serde", "serde-with-str", "db-tokio-postgres"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
