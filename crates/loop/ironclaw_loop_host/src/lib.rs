@@ -93,9 +93,12 @@ pub use capability_surface_filter::{
 };
 pub use capability_surface_policy::{CapabilityResolveError, CapabilitySurfaceProfileResolver};
 pub use compaction_task::{
-    ACTIVE_TASK_COMPACTION_PROMPT_ID, DEFAULT_COMPACTION_PROMPT_ID, HostManagedLoopCompactionPort,
-    active_task_compaction_prompt_id, default_compaction_prompt_id,
-    default_host_managed_loop_compaction_port, host_managed_loop_compaction_port_with_prompt_id,
+    ACTIVE_TASK_COMPACTION_PROMPT_ID, CompactionWarmPrefix, CompactionWarmPrefixRequest,
+    CompactionWarmPrefixSource, DEFAULT_COMPACTION_PROMPT_ID, HostManagedLoopCompactionPort,
+    WarmPrefixCacheCompactionSource, active_task_compaction_prompt_id,
+    default_compaction_prompt_id, default_host_managed_loop_compaction_port,
+    host_managed_loop_compaction_port_with_prompt_id,
+    host_managed_loop_compaction_port_with_warm_prefix,
 };
 pub use context_window_cache::ThreadContextWindowCache;
 pub use driver_host_port_adapters::{
@@ -123,7 +126,7 @@ pub use ironclaw_loop_contracts::PromptContextTokenBudget;
 pub use model_gateway::{
     LlmModelProfilePolicy, LlmProviderModelGateway, ModelRouteProviderPool,
     REBORN_COLLAPSE_REPEATED_FAILURES_ENV, RoutedLlmProviderModelGateway,
-    StaticModelRouteProviderPool, ThreadBackedLoopModelGateway,
+    StaticModelRouteProviderPool, ThreadBackedLoopModelGateway, WarmPrefixCache,
 };
 pub use model_routes::{
     ActiveModelRouteSettings, ModelRoute, ModelRouteError, ModelRouteErrorKind, ModelRoutePolicy,
@@ -2426,6 +2429,47 @@ pub trait HostManagedModelGateway: Send + Sync {
     ) -> Option<std::sync::Arc<dyn HostManagedModelGateway>> {
         None
     }
+
+    /// The in-memory cache of live provider request prefixes this gateway
+    /// records, when it supports cache-forked inference. Shared with the
+    /// compaction warm-prefix source so compaction can fork the live prefix.
+    fn warm_prefix_cache(&self) -> Option<Arc<WarmPrefixCache>> {
+        None
+    }
+
+    /// Replay a recorded live request prefix with one trailing instruction
+    /// (see [`ironclaw_loop_contracts::SystemInferenceCacheFork`]). Gateways
+    /// without a [`Self::warm_prefix_cache`] reject it, which makes the caller
+    /// take its standalone path.
+    async fn stream_cache_fork(
+        &self,
+        _request: HostManagedCacheForkRequest,
+    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        Err(HostManagedModelError::safe(
+            HostManagedModelErrorKind::Unavailable,
+            "cache-forked inference is not supported by this model gateway",
+        ))
+    }
+}
+
+/// A host-owned request to replay a recorded live provider prefix.
+///
+/// `system_prompt` and `context_messages` are the text view the caller
+/// scanned; the gateway replays only when they still equal the view of the
+/// recorded bytes, so what was scanned is what reaches the provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostManagedCacheForkRequest {
+    pub fork: ironclaw_loop_contracts::SystemInferenceCacheFork,
+    pub model_profile_id: ModelProfileId,
+    pub fallback_index: u32,
+    pub resolved_model_route: Option<HostManagedModelRouteSnapshot>,
+    pub run_id: TurnRunId,
+    pub turn_id: TurnId,
+    pub thread_id: ironclaw_host_api::ids::ThreadId,
+    pub system_prompt: String,
+    pub context_messages: Vec<SystemInferenceContextMessage>,
+    /// The only new content: appended as one trailing user message.
+    pub tail_instruction: String,
 }
 
 #[async_trait::async_trait]
@@ -3555,10 +3599,21 @@ fn message_ref_from_context(message: &ContextMessage) -> Option<LoopMessageRef> 
     if let Some(message_id) = message.message_id {
         return message_ref(message_id).ok();
     }
-    message.summary_id.and_then(|summary_id| {
-        LoopMessageRef::new(format!("msg:summary-{summary_id}"))
-            .map_err(|_| ())
-            .ok()
+    message
+        .summary_id
+        .and_then(|summary_id| summary_message_ref(summary_id).ok())
+}
+
+/// The model message ref a selected summary artifact is rendered under.
+fn summary_message_ref(
+    summary_id: ironclaw_threads::SummaryArtifactId,
+) -> Result<LoopMessageRef, AgentLoopHostError> {
+    LoopMessageRef::new(format!("msg:summary-{summary_id}")).map_err(|error| {
+        tracing::debug!(?error, "summary message reference could not be represented");
+        AgentLoopHostError::new(
+            AgentLoopHostErrorKind::Internal,
+            "summary message reference could not be represented",
+        )
     })
 }
 

@@ -4,11 +4,14 @@ use ironclaw_host_api::ids::ThreadId;
 use ironclaw_loop_contracts::{
     LoopCompactionError, LoopCompactionInputTruncation, LoopCompactionMode, LoopCompactionOutcome,
     LoopCompactionPort, LoopCompactionRequest, LoopCompactionResponse, LoopSafeSummary,
-    LoopSummaryArtifactId, SystemInferenceError, SystemInferenceIdentity, SystemInferencePort,
-    SystemInferenceRequest, SystemInferenceResponse, SystemInferenceTaskId, SystemPromptId,
-    SystemPromptSource, SystemTaskKind,
+    LoopSummaryArtifactId, SystemInferenceCacheFork, SystemInferenceError, SystemInferenceIdentity,
+    SystemInferencePort, SystemInferenceRequest, SystemInferenceResponse, SystemInferenceTaskId,
+    SystemPromptId, SystemPromptSource, SystemTaskKind,
 };
 use ironclaw_safety::{InjectionScanner, LeakDetector, LeakScanner, Sanitizer};
+use ironclaw_turns::{LoopMessageRef, TurnRunId};
+
+use crate::WarmPrefixCache;
 use ironclaw_threads::{
     CreateSummaryArtifactRequest, MessageContent, MessageKind, MessageStatus, SessionThreadService,
     SummaryArtifact, SummaryContextMode, SummaryKind, SummaryModelContextPolicy,
@@ -42,6 +45,10 @@ const DEFAULT_MAX_CACHE_FORK_INPUT_TOKENS: u64 =
 pub struct CompactionWarmPrefix {
     pub system_prompt: String,
     pub context_messages: Vec<ironclaw_loop_contracts::SystemInferenceContextMessage>,
+    /// Exact replay of the recorded provider request behind this text view
+    /// (`tools[]`, structured tool rounds, cache key). `None` sends the text
+    /// view as plain role-preserving context instead.
+    pub cache_fork: Option<SystemInferenceCacheFork>,
 }
 
 /// What a [`CompactionWarmPrefixSource`] is asked for: the warm prefix of
@@ -52,6 +59,50 @@ pub struct CompactionWarmPrefixRequest {
     pub thread_id: ThreadId,
     pub scope: ThreadScope,
     pub through_sequence: u64,
+    /// Model message refs of every durable message and prior summary being
+    /// compacted. A prefix that does not contain all of them is incomplete.
+    pub covered_message_refs: Vec<LoopMessageRef>,
+}
+
+/// The production source: the cut of the latest live provider request the
+/// run's model gateway recorded in its [`WarmPrefixCache`].
+///
+/// Only the run that recorded a prefix may fork it, and only when the
+/// prefix contains every compacted message and can be cut right after the
+/// last one without splitting a tool round.
+pub struct WarmPrefixCacheCompactionSource {
+    cache: Arc<WarmPrefixCache>,
+    run_id: TurnRunId,
+}
+
+impl WarmPrefixCacheCompactionSource {
+    pub fn new(cache: Arc<WarmPrefixCache>, run_id: TurnRunId) -> Self {
+        Self { cache, run_id }
+    }
+}
+
+#[async_trait::async_trait]
+impl CompactionWarmPrefixSource for WarmPrefixCacheCompactionSource {
+    async fn warm_prefix(
+        &self,
+        request: &CompactionWarmPrefixRequest,
+    ) -> Option<CompactionWarmPrefix> {
+        let Some(recording) = self.cache.latest(&request.thread_id) else {
+            tracing::debug!("no warm prefix recorded for the compacted thread");
+            return None;
+        };
+        if recording.run_id != self.run_id {
+            tracing::debug!("warm prefix was recorded by another run; not forked");
+            return None;
+        }
+        let cut = recording.cut_covering(&request.covered_message_refs)?;
+        let (system_prompt, context_messages) = recording.scan_view(cut)?;
+        Some(CompactionWarmPrefix {
+            system_prompt,
+            context_messages,
+            cache_fork: recording.cache_fork(cut),
+        })
+    }
 }
 
 /// Host-owned input to the compaction port: where a warm prefix comes from.
@@ -197,6 +248,35 @@ struct ValidatedCompactionMessage {
     sequence: u64,
     kind: MessageKind,
     body: String,
+    /// Model message ref the live prompt renders this message under; `None`
+    /// for synthesized messages that are not durable transcript entries.
+    source_ref: Option<LoopMessageRef>,
+}
+
+/// The wall-clock budget shared by every inference attempt of one
+/// compaction.
+struct InferenceDeadline {
+    started: tokio::time::Instant,
+    budget_ms: u64,
+}
+
+impl InferenceDeadline {
+    fn start(budget_ms: u64) -> Self {
+        Self {
+            started: tokio::time::Instant::now(),
+            budget_ms,
+        }
+    }
+
+    /// Milliseconds left for the next attempt; an exhausted budget is the
+    /// same failure as an attempt that timed out.
+    fn remaining_ms(&self) -> Result<u64, CompactionError> {
+        let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        match self.budget_ms.saturating_sub(elapsed_ms) {
+            0 => Err(map_inference_error(SystemInferenceError::Timeout)),
+            remaining => Ok(remaining),
+        }
+    }
 }
 
 struct CompactionInput {
@@ -354,10 +434,13 @@ where
                 return Ok(LoopCompactionOutcome::Deferred { safe_summary });
             }
         };
-        // The durable range is always validated, scanned, and budgeted first,
-        // so the cache fork can never admit a range the standalone path
-        // rejects.
-        let input = self.build_input(&range)?;
+        // One wall-clock budget covers the fork attempt and any standalone
+        // retry, so the worst case is one `deadline_ms`, never two.
+        let deadline = InferenceDeadline::start(request.deadline_ms);
+        // The fork runs before the standalone input is built: its larger
+        // token budget admits ranges the standalone 64k cap rejects. It still
+        // scans the complete durable range first (see `cache_fork.rs`), so it
+        // never admits a range the standalone path rejects on safety grounds.
         let (
             response,
             input_bytes,
@@ -365,17 +448,19 @@ where
             truncated_message_count,
             omitted_input_bytes,
         ) = match self
-            .try_cache_forked_inference(&request, &range, warm_prefix_source)
+            .try_cache_forked_inference(&request, &range, warm_prefix_source, &deadline)
             .await?
         {
             // The fork replays a clean (unredacted, untruncated) prefix.
             Some(forked) => (forked.response, forked.input_bytes, 0, 0, 0),
             None => {
+                let input = self.build_input(&range)?;
                 let input_bytes = input.text.len();
                 let redacted = input.redacted_leak_count;
                 let truncated = input.truncated_message_count;
                 let omitted = input.omitted_input_bytes;
-                let response = self.run_inference(&request, input).await?;
+                let deadline_ms = deadline.remaining_ms()?;
+                let response = self.run_inference(&request, input, deadline_ms).await?;
                 (response, input_bytes, redacted, truncated, omitted)
             }
         };
@@ -545,10 +630,17 @@ where
                 }
             }
             let body = message.content.ok_or(CompactionError::InvalidCutPoint)?;
+            let source_ref = crate::message_ref(message.message_id).map_err(|error| {
+                tracing::debug!(%error, "compacted message ref could not be represented");
+                CompactionError::PersistenceFailed {
+                    safe_summary: safe("thread message reference unavailable"),
+                }
+            })?;
             validated_messages.push(ValidatedCompactionMessage {
                 sequence: message.sequence,
                 kind: message.kind,
                 body,
+                source_ref: Some(source_ref),
             });
         }
 
@@ -616,12 +708,22 @@ where
         let summary_artifact_id = latest_summary.map(|summary| summary.summary_id);
         let messages = selected
             .into_iter()
-            .map(|summary| ValidatedCompactionMessage {
-                sequence: summary.end_sequence,
-                kind: MessageKind::Summary,
-                body: summary.content,
+            .map(|summary| {
+                let source_ref =
+                    crate::summary_message_ref(summary.summary_id).map_err(|error| {
+                        tracing::debug!(%error, "prior summary ref could not be represented");
+                        CompactionError::PersistenceFailed {
+                            safe_summary: safe("previous compaction summary reference unavailable"),
+                        }
+                    })?;
+                Ok(ValidatedCompactionMessage {
+                    sequence: summary.end_sequence,
+                    kind: MessageKind::Summary,
+                    body: summary.content,
+                    source_ref: Some(source_ref),
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, CompactionError>>()?;
         if !messages.is_empty() {
             let sanitized = self.sanitizer().sanitize_messages(&messages)?;
             if sanitized.content.len() > self.max_summary_bytes {
@@ -733,6 +835,7 @@ where
                     sequence: message.sequence,
                     kind: message.kind,
                     body,
+                    source_ref: message.source_ref,
                 })
             })
             .collect::<Result<Vec<_>, CompactionError>>()?;
@@ -769,6 +872,7 @@ where
         &self,
         request: &CompactionTaskRequest,
         input: CompactionInput,
+        deadline_ms: u64,
     ) -> Result<SystemInferenceResponse, CompactionError> {
         self.inference
             .call_system_inference(SystemInferenceRequest {
@@ -783,8 +887,9 @@ where
                 input_text: input.text,
                 context_messages: Vec::new(),
                 max_input_tokens: self.max_input_tokens,
-                deadline_ms: request.deadline_ms,
+                deadline_ms,
                 output_contract: None,
+                cache_fork: None,
             })
             .await
             .map_err(map_inference_error)
@@ -1025,6 +1130,35 @@ where
         prompt_id,
         system_prompt,
     ))
+}
+
+/// [`host_managed_loop_compaction_port_with_prompt_id`] that forks the live
+/// warm prefix from `warm_prefix_source` when one is available; `None` keeps
+/// every compaction standalone.
+pub fn host_managed_loop_compaction_port_with_warm_prefix<S>(
+    inference: Arc<dyn SystemInferencePort>,
+    threads: Arc<S>,
+    expected_scope: ThreadScope,
+    prompt_id: SystemPromptId,
+    system_prompt: impl Into<String>,
+    warm_prefix_source: Option<Arc<dyn CompactionWarmPrefixSource>>,
+) -> Arc<dyn LoopCompactionPort>
+where
+    S: SessionThreadService + ?Sized + 'static,
+{
+    let port = HostManagedLoopCompactionPort::with_scanners_and_prompt_id(
+        inference,
+        threads,
+        expected_scope,
+        Arc::new(Sanitizer::new()),
+        Arc::new(LeakDetector::new()),
+        prompt_id,
+        system_prompt,
+    );
+    Arc::new(match warm_prefix_source {
+        Some(source) => port.with_warm_prefix_source(source),
+        None => port,
+    })
 }
 
 pub fn default_compaction_prompt_id() -> SystemPromptId {

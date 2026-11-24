@@ -128,6 +128,7 @@ impl<'a> CompactionSanitizer<'a> {
                 sequence: message.sequence,
                 kind: message.kind,
                 body,
+                source_ref: message.source_ref.clone(),
             });
         }
         Ok(PreTruncationSanitizedMessages {

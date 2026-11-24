@@ -12,9 +12,9 @@ use ironclaw_loop_contracts::{
 };
 
 use crate::{
-    HostManagedModelErrorKind, HostManagedModelGateway, HostManagedModelMessage,
-    HostManagedModelMessageRole, HostManagedModelRequest, HostManagedModelStreamSink,
-    token_estimator::estimate_tokens_from_chars,
+    HostManagedCacheForkRequest, HostManagedModelErrorKind, HostManagedModelGateway,
+    HostManagedModelMessage, HostManagedModelMessageRole, HostManagedModelRequest,
+    HostManagedModelStreamSink, token_estimator::estimate_tokens_from_chars,
 };
 use ironclaw_host_api::output::OutputContract;
 use ironclaw_llm::{CompletionResponseFormat, JsonSchemaResponseFormat};
@@ -198,6 +198,9 @@ where
         }
 
         let started = Instant::now();
+        if let Some(fork) = request.cache_fork.clone() {
+            return self.call_cache_fork(request, fork, started).await;
+        }
         let use_streaming_transport = matches!(
             request.identity.task_kind,
             ironclaw_loop_contracts::SystemTaskKind::StructuredOutputFinalization
@@ -307,37 +310,106 @@ where
         } else {
             self.gateway.stream_model(model_request).boxed()
         };
-        let response = tokio::time::timeout(
-            std::time::Duration::from_millis(request.deadline_ms),
+        finish_model_call(
             model_call,
+            request.task_id,
+            request.deadline_ms,
+            requested_fallback_index,
+            started,
         )
+        .await
+    }
+}
+
+impl<G> ModelGatewayBackedSystemInferencePort<G>
+where
+    G: HostManagedModelGateway + ?Sized,
+{
+    /// Replay the live warm prefix instead of building a standalone prompt.
+    /// It runs on the run's own model profile and route at fallback 0, like
+    /// every system inference; the gateway rejects it unless that is exactly
+    /// where the prefix was recorded.
+    async fn call_cache_fork(
+        &self,
+        request: SystemInferenceRequest,
+        fork: ironclaw_loop_contracts::SystemInferenceCacheFork,
+        started: Instant,
+    ) -> Result<SystemInferenceResponse, SystemInferenceError> {
+        if request.output_contract.is_some()
+            || matches!(
+                request.identity.task_kind,
+                ironclaw_loop_contracts::SystemTaskKind::StructuredOutputFinalization
+            )
+        {
+            return Err(SystemInferenceError::Failed {
+                safe_summary: safe("cache-forked inference carries no output contract"),
+            });
+        }
+        let requested_fallback_index = 0;
+        let fork_request = HostManagedCacheForkRequest {
+            fork,
+            model_profile_id: self
+                .run_context
+                .resolved_run_profile
+                .model_profile_id
+                .clone(),
+            fallback_index: requested_fallback_index,
+            resolved_model_route: self.run_context.resolved_model_route.clone(),
+            run_id: self.run_context.run_id,
+            turn_id: self.run_context.turn_id,
+            thread_id: self.run_context.thread_id.clone(),
+            system_prompt: request.identity.system_prompt,
+            context_messages: request.context_messages,
+            tail_instruction: request.input_text,
+        };
+        finish_model_call(
+            self.gateway.stream_cache_fork(fork_request).boxed(),
+            request.task_id,
+            request.deadline_ms,
+            requested_fallback_index,
+            started,
+        )
+        .await
+    }
+}
+
+async fn finish_model_call(
+    model_call: futures::future::BoxFuture<
+        '_,
+        Result<crate::HostManagedModelResponse, crate::HostManagedModelError>,
+    >,
+    task_id: ironclaw_loop_contracts::SystemInferenceTaskId,
+    deadline_ms: u64,
+    requested_fallback_index: u32,
+    started: Instant,
+) -> Result<SystemInferenceResponse, SystemInferenceError> {
+    let response = tokio::time::timeout(std::time::Duration::from_millis(deadline_ms), model_call)
         .await
         .map_err(|_| SystemInferenceError::Timeout)?
         .map_err(|error| map_model_error(error.kind))?;
 
-        if response.effective_fallback_index != Some(requested_fallback_index) {
+    if response.effective_fallback_index != Some(requested_fallback_index) {
+        return Err(SystemInferenceError::Failed {
+            safe_summary: safe("system inference model route evidence is invalid"),
+        });
+    }
+
+    let usage = response.usage;
+    let output_text = match response.output {
+        ParentLoopOutput::AssistantReply(reply) => reply.content,
+        ParentLoopOutput::CapabilityCalls(_) => {
             return Err(SystemInferenceError::Failed {
-                safe_summary: safe("system inference model route evidence is invalid"),
+                safe_summary: safe("system inference returned capability calls"),
             });
         }
+    };
 
-        let usage = response.usage;
-        let output_text = match response.output {
-            ParentLoopOutput::AssistantReply(reply) => reply.content,
-            ParentLoopOutput::CapabilityCalls(_) => {
-                return Err(SystemInferenceError::Failed {
-                    safe_summary: safe("system inference returned capability calls"),
-                });
-            }
-        };
-
-        Ok(SystemInferenceResponse {
-            task_id: request.task_id,
-            output_text,
-            elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-            usage,
-        })
-    }
+    Ok(SystemInferenceResponse {
+        task_id,
+        output_text,
+        elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        usage,
+    })
 }
 
 fn map_model_error(kind: HostManagedModelErrorKind) -> SystemInferenceError {

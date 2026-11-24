@@ -36,7 +36,7 @@ use ironclaw_threads::{MessageKind, SessionThreadService};
 use super::{
     CACHE_FORK_COMPACTION_PROMPT_ID, CompactionError, CompactionTask, CompactionTaskRequest,
     CompactionWarmPrefix, CompactionWarmPrefixRequest, CompactionWarmPrefixSource,
-    ValidatedCompactionMessage, ValidatedCompactionRange, map_inference_error,
+    InferenceDeadline, ValidatedCompactionMessage, ValidatedCompactionRange, map_inference_error,
     static_system_prompt_id,
 };
 
@@ -82,12 +82,18 @@ where
         request: &CompactionTaskRequest,
         range: &ValidatedCompactionRange,
         warm_prefix_source: &dyn CompactionWarmPrefixSource,
+        deadline: &InferenceDeadline,
     ) -> Result<Option<CacheForkedInference>, CompactionError> {
         let prefix = warm_prefix_source
             .warm_prefix(&CompactionWarmPrefixRequest {
                 thread_id: range.thread_id.clone(),
                 scope: range.thread_scope.clone(),
                 through_sequence: range.end_sequence,
+                covered_message_refs: range
+                    .messages
+                    .iter()
+                    .filter_map(|message| message.source_ref.clone())
+                    .collect(),
             })
             .await;
         let prefix = match prefix {
@@ -108,12 +114,22 @@ where
             );
             return Ok(skip(CacheForkSkipReason::OverBudget));
         }
+        // The durable range must fit the fork budget too, and its complete
+        // bodies are scanned before anything is forked: a range the
+        // standalone path would reject as unsafe is rejected here the same
+        // way (`?`), whatever the warm prefix holds.
+        if !self.durable_range_fits_cache_fork(range) {
+            return Ok(skip(CacheForkSkipReason::OverBudget));
+        }
+        self.sanitizer()
+            .sanitize_messages_before_truncation(&range.messages)?;
         let input_bytes = prefix
             .context_messages
             .iter()
             .map(|message| message.content.len())
             .fold(0_usize, usize::saturating_add);
         let context_message_count = prefix.context_messages.len();
+        let replays_live_request = prefix.cache_fork.is_some();
 
         let result = self
             .inference
@@ -129,8 +145,9 @@ where
                 input_text,
                 context_messages: prefix.context_messages,
                 max_input_tokens: self.max_cache_fork_input_tokens,
-                deadline_ms: request.deadline_ms,
+                deadline_ms: deadline.remaining_ms()?,
                 output_contract: None,
+                cache_fork: prefix.cache_fork,
             })
             .await;
         match result {
@@ -138,6 +155,7 @@ where
                 tracing::debug!(
                     context_message_count,
                     estimated_tokens,
+                    replays_live_request,
                     cache_read_input_tokens = response
                         .usage
                         .as_ref()
@@ -175,6 +193,7 @@ where
                 sequence: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
                 kind: warm_message_kind(message.role),
                 body: message.content.clone(),
+                source_ref: None,
             })
             .collect::<Vec<_>>();
         match self
@@ -188,6 +207,25 @@ where
                 Err(CacheForkSkipReason::ScannerRejected)
             }
         }
+    }
+}
+
+impl<S> CompactionTask<S>
+where
+    S: SessionThreadService + ?Sized,
+{
+    /// Metadata-only bound on the durable range before its bodies are
+    /// scanned: the same token budget the fork itself is held to.
+    fn durable_range_fits_cache_fork(&self, range: &ValidatedCompactionRange) -> bool {
+        let body_bytes = range
+            .messages
+            .iter()
+            .map(|message| message.body.len())
+            .fold(0_usize, usize::saturating_add);
+        let cap = self
+            .max_cache_fork_input_tokens
+            .saturating_mul(crate::CHARS_PER_TOKEN_DEFAULT);
+        u64::try_from(body_bytes).is_ok_and(|bytes| bytes <= cap)
     }
 }
 

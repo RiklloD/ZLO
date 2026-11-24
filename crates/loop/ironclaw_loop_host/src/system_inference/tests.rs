@@ -246,6 +246,7 @@ fn system_request(input_text: &str) -> SystemInferenceRequest {
         max_input_tokens: 100,
         deadline_ms: 100,
         output_contract: None,
+        cache_fork: None,
     }
 }
 
@@ -273,6 +274,7 @@ async fn dispatches_direct_gateway_request_without_prompt_materialization() {
             max_input_tokens: 100,
             deadline_ms: 100,
             output_contract: None,
+            cache_fork: None,
         })
         .await
         .expect("system inference succeeds");
@@ -429,6 +431,7 @@ async fn structured_finalization_uses_native_schema_without_tools() {
                     "required": ["items"]
                 }),
             }),
+            cache_fork: None,
         })
         .await
         .expect("structured finalization succeeds");
@@ -704,6 +707,7 @@ async fn rejects_gateway_capability_calls() {
             max_input_tokens: 100,
             deadline_ms: 100,
             output_contract: None,
+            cache_fork: None,
         })
         .await
         .expect_err("capability calls are invalid for system inference");
@@ -731,6 +735,7 @@ async fn oversized_input_fails_before_gateway_dispatch() {
             max_input_tokens: 1,
             deadline_ms: 100,
             output_contract: None,
+            cache_fork: None,
         })
         .await
         .expect_err("input should exceed token preflight");
@@ -764,6 +769,7 @@ async fn timeout_returns_timeout_error() {
             max_input_tokens: 100,
             deadline_ms: 1,
             output_contract: None,
+            cache_fork: None,
         })
         .await
         .expect_err("slow gateway should hit system inference timeout");
@@ -816,6 +822,7 @@ async fn cancelled_gateway_error_maps_to_cancelled() {
             max_input_tokens: 100,
             deadline_ms: 100,
             output_contract: None,
+            cache_fork: None,
         })
         .await
         .expect_err("cancelled gateway error should be preserved");

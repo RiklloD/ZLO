@@ -23,11 +23,12 @@ use std::{
 };
 
 use crate::{
-    HostManagedModelError, HostManagedModelErrorKind, HostManagedModelGateway,
-    HostManagedModelMessage, HostManagedModelMessageRole, HostManagedModelRequest,
-    HostManagedModelResponse, HostManagedModelRouteSnapshot, HostManagedModelStreamSink,
-    HostManagedToolResultContent, ModelCost, ProviderModelId, StaticModelCostTable,
-    ThreadBackedLoopContextPort, ThreadBackedLoopModelPort, ThreadContextWindowCache,
+    HostManagedCacheForkRequest, HostManagedModelError, HostManagedModelErrorKind,
+    HostManagedModelGateway, HostManagedModelMessage, HostManagedModelMessageRole,
+    HostManagedModelRequest, HostManagedModelResponse, HostManagedModelRouteSnapshot,
+    HostManagedModelStreamSink, HostManagedToolResultContent, ModelCost, ProviderModelId,
+    StaticModelCostTable, ThreadBackedLoopContextPort, ThreadBackedLoopModelPort,
+    ThreadContextWindowCache,
 };
 use async_trait::async_trait;
 use ironclaw_common::llm_costs::{default_cost, model_cost};
@@ -62,6 +63,10 @@ use tracing::debug;
 mod observation_masking;
 mod prompt_cache_activity;
 mod redaction;
+pub(crate) mod warm_prefix;
+
+pub use warm_prefix::WarmPrefixCache;
+use warm_prefix::{WarmPrefixBoundary, WarmPrefixCapture};
 
 use observation_masking::{ObservationMaskingConfig, mask_old_tool_observations};
 
@@ -411,6 +416,7 @@ where
     prompt_cache_activity: Arc<PromptCacheActivityLog>,
     model_context_window_cache: ModelContextWindowCache,
     observation_masking: ObservationMaskingConfig,
+    warm_prefix_cache: Arc<WarmPrefixCache>,
 }
 
 impl<P> LlmProviderModelGateway<P>
@@ -435,6 +441,7 @@ where
             prompt_cache_activity: Arc::new(PromptCacheActivityLog::default()),
             model_context_window_cache: Arc::new(Mutex::new(HashMap::new())),
             observation_masking: ObservationMaskingConfig::from_env(),
+            warm_prefix_cache: Arc::new(WarmPrefixCache::new()),
         }
     }
 
@@ -499,6 +506,17 @@ where
         .await
     }
 
+    fn warm_prefix_cache(&self) -> Option<Arc<WarmPrefixCache>> {
+        Some(Arc::clone(&self.warm_prefix_cache))
+    }
+
+    async fn stream_cache_fork(
+        &self,
+        request: HostManagedCacheForkRequest,
+    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        warm_prefix::llm_provider_cache_fork(self, request).await
+    }
+
     async fn stream_model(
         &self,
         request: HostManagedModelRequest,
@@ -524,16 +542,21 @@ where
         let run_id = request.run_id;
         let turn_id = request.turn_id;
         let thread_id = request.thread_id.as_ref();
-        let (mut completion, replay_identity, effective_fallback_index, next_fallback_index) =
-            prepare_fallback_completion(
-                self.provider.as_ref(),
-                &self.provider_id,
-                &model_override,
-                request.fallback_index,
-                request.messages,
-                self.observation_masking_inputs(),
-            )
-            .await?;
+        let PreparedFallbackCompletion {
+            mut completion,
+            replay_identity,
+            effective_fallback_index,
+            next_fallback_index,
+            warm_prefix_boundaries: _,
+        } = prepare_fallback_completion(
+            self.provider.as_ref(),
+            &self.provider_id,
+            &model_override,
+            request.fallback_index,
+            request.messages,
+            self.observation_masking_inputs(),
+        )
+        .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -584,16 +607,21 @@ where
         let run_id = request.run_id;
         let turn_id = request.turn_id;
         let thread_id = request.thread_id.as_ref();
-        let (mut completion, replay_identity, effective_fallback_index, next_fallback_index) =
-            prepare_fallback_completion(
-                self.provider.as_ref(),
-                &self.provider_id,
-                &model_override,
-                request.fallback_index,
-                request.messages,
-                self.observation_masking_inputs(),
-            )
-            .await?;
+        let PreparedFallbackCompletion {
+            mut completion,
+            replay_identity,
+            effective_fallback_index,
+            next_fallback_index,
+            warm_prefix_boundaries: _,
+        } = prepare_fallback_completion(
+            self.provider.as_ref(),
+            &self.provider_id,
+            &model_override,
+            request.fallback_index,
+            request.messages,
+            self.observation_masking_inputs(),
+        )
+        .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -644,16 +672,21 @@ where
         let run_id = request.run_id;
         let turn_id = request.turn_id;
         let thread_id = request.thread_id.as_ref();
-        let (mut completion, replay_identity, effective_fallback_index, next_fallback_index) =
-            prepare_fallback_completion(
-                self.provider.as_ref(),
-                &self.provider_id,
-                &model_override,
-                request.fallback_index,
-                request.messages,
-                self.observation_masking_inputs(),
-            )
-            .await?;
+        let PreparedFallbackCompletion {
+            mut completion,
+            replay_identity,
+            effective_fallback_index,
+            next_fallback_index,
+            warm_prefix_boundaries,
+        } = prepare_fallback_completion(
+            self.provider.as_ref(),
+            &self.provider_id,
+            &model_override,
+            request.fallback_index,
+            request.messages,
+            self.observation_masking_inputs(),
+        )
+        .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -675,7 +708,16 @@ where
             Some(provider_turn_scope),
             None,
             ProviderRequestContext::new(replay_identity, next_fallback_index)
-                .with_tool_choice(request.tool_choice),
+                .with_tool_choice(request.tool_choice)
+                .with_warm_prefix_capture(WarmPrefixCapture::new(
+                    &self.warm_prefix_cache,
+                    thread_id,
+                    run_id,
+                    &model_profile_id,
+                    request.resolved_model_route.as_ref(),
+                    effective_fallback_index,
+                    warm_prefix_boundaries,
+                )),
             Some(self.prompt_cache_scope(run_id)),
         )
         .await;
@@ -709,16 +751,21 @@ where
         let run_id = request.run_id;
         let turn_id = request.turn_id;
         let thread_id = request.thread_id.as_ref();
-        let (mut completion, replay_identity, effective_fallback_index, next_fallback_index) =
-            prepare_fallback_completion(
-                self.provider.as_ref(),
-                &self.provider_id,
-                &model_override,
-                request.fallback_index,
-                request.messages,
-                self.observation_masking_inputs(),
-            )
-            .await?;
+        let PreparedFallbackCompletion {
+            mut completion,
+            replay_identity,
+            effective_fallback_index,
+            next_fallback_index,
+            warm_prefix_boundaries,
+        } = prepare_fallback_completion(
+            self.provider.as_ref(),
+            &self.provider_id,
+            &model_override,
+            request.fallback_index,
+            request.messages,
+            self.observation_masking_inputs(),
+        )
+        .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -740,7 +787,16 @@ where
             Some(provider_turn_scope),
             Some(sink),
             ProviderRequestContext::new(replay_identity, next_fallback_index)
-                .with_tool_choice(request.tool_choice),
+                .with_tool_choice(request.tool_choice)
+                .with_warm_prefix_capture(WarmPrefixCapture::new(
+                    &self.warm_prefix_cache,
+                    thread_id,
+                    run_id,
+                    &model_profile_id,
+                    request.resolved_model_route.as_ref(),
+                    effective_fallback_index,
+                    warm_prefix_boundaries,
+                )),
             Some(self.prompt_cache_scope(run_id)),
         )
         .await;
@@ -859,6 +915,7 @@ where
     prompt_cache_activity: Arc<PromptCacheActivityLog>,
     model_context_window_cache: ModelContextWindowCache,
     observation_masking: ObservationMaskingConfig,
+    warm_prefix_cache: Arc<WarmPrefixCache>,
 }
 
 impl<P> RoutedLlmProviderModelGateway<P>
@@ -873,6 +930,7 @@ where
             prompt_cache_activity: Arc::new(PromptCacheActivityLog::default()),
             model_context_window_cache: Arc::new(Mutex::new(HashMap::new())),
             observation_masking: ObservationMaskingConfig::from_env(),
+            warm_prefix_cache: Arc::new(WarmPrefixCache::new()),
         }
     }
 
@@ -925,6 +983,17 @@ where
         )
         .await
     }
+
+    fn warm_prefix_cache(&self) -> Option<Arc<WarmPrefixCache>> {
+        Some(Arc::clone(&self.warm_prefix_cache))
+    }
+
+    async fn stream_cache_fork(
+        &self,
+        request: HostManagedCacheForkRequest,
+    ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        warm_prefix::routed_cache_fork(self, request).await
+    }
     async fn stream_model(
         &self,
         request: HostManagedModelRequest,
@@ -942,16 +1011,21 @@ where
         let turn_id = request.turn_id;
         let thread_id = request.thread_id.as_ref();
         validate_provider_model_binding_matches_route(snapshot.route(), provider.as_ref())?;
-        let (mut completion, replay_identity, effective_fallback_index, next_fallback_index) =
-            prepare_fallback_completion(
-                provider.as_ref(),
-                snapshot.route().provider_id(),
-                snapshot.route().model_id(),
-                request.fallback_index,
-                request.messages,
-                self.observation_masking_inputs(),
-            )
-            .await?;
+        let PreparedFallbackCompletion {
+            mut completion,
+            replay_identity,
+            effective_fallback_index,
+            next_fallback_index,
+            warm_prefix_boundaries: _,
+        } = prepare_fallback_completion(
+            provider.as_ref(),
+            snapshot.route().provider_id(),
+            snapshot.route().model_id(),
+            request.fallback_index,
+            request.messages,
+            self.observation_masking_inputs(),
+        )
+        .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -995,16 +1069,21 @@ where
         let turn_id = request.turn_id;
         let thread_id = request.thread_id.as_ref();
         validate_provider_model_binding_matches_route(snapshot.route(), provider.as_ref())?;
-        let (mut completion, replay_identity, effective_fallback_index, next_fallback_index) =
-            prepare_fallback_completion(
-                provider.as_ref(),
-                snapshot.route().provider_id(),
-                snapshot.route().model_id(),
-                request.fallback_index,
-                request.messages,
-                self.observation_masking_inputs(),
-            )
-            .await?;
+        let PreparedFallbackCompletion {
+            mut completion,
+            replay_identity,
+            effective_fallback_index,
+            next_fallback_index,
+            warm_prefix_boundaries: _,
+        } = prepare_fallback_completion(
+            provider.as_ref(),
+            snapshot.route().provider_id(),
+            snapshot.route().model_id(),
+            request.fallback_index,
+            request.messages,
+            self.observation_masking_inputs(),
+        )
+        .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -1048,16 +1127,21 @@ where
         let turn_id = request.turn_id;
         let thread_id = request.thread_id.as_ref();
         validate_provider_model_binding_matches_route(snapshot.route(), provider.as_ref())?;
-        let (mut completion, replay_identity, effective_fallback_index, next_fallback_index) =
-            prepare_fallback_completion(
-                provider.as_ref(),
-                snapshot.route().provider_id(),
-                snapshot.route().model_id(),
-                request.fallback_index,
-                request.messages,
-                self.observation_masking_inputs(),
-            )
-            .await?;
+        let PreparedFallbackCompletion {
+            mut completion,
+            replay_identity,
+            effective_fallback_index,
+            next_fallback_index,
+            warm_prefix_boundaries,
+        } = prepare_fallback_completion(
+            provider.as_ref(),
+            snapshot.route().provider_id(),
+            snapshot.route().model_id(),
+            request.fallback_index,
+            request.messages,
+            self.observation_masking_inputs(),
+        )
+        .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -1080,7 +1164,16 @@ where
             Some(provider_turn_scope),
             None,
             ProviderRequestContext::new(replay_identity, next_fallback_index)
-                .with_tool_choice(request.tool_choice),
+                .with_tool_choice(request.tool_choice)
+                .with_warm_prefix_capture(WarmPrefixCapture::new(
+                    &self.warm_prefix_cache,
+                    thread_id,
+                    run_id,
+                    &model_profile_id,
+                    request.resolved_model_route.as_ref(),
+                    effective_fallback_index,
+                    warm_prefix_boundaries,
+                )),
             Some(self.prompt_cache_scope(run_id)),
         )
         .await;
@@ -1106,16 +1199,21 @@ where
         let turn_id = request.turn_id;
         let thread_id = request.thread_id.as_ref();
         validate_provider_model_binding_matches_route(snapshot.route(), provider.as_ref())?;
-        let (mut completion, replay_identity, effective_fallback_index, next_fallback_index) =
-            prepare_fallback_completion(
-                provider.as_ref(),
-                snapshot.route().provider_id(),
-                snapshot.route().model_id(),
-                request.fallback_index,
-                request.messages,
-                self.observation_masking_inputs(),
-            )
-            .await?;
+        let PreparedFallbackCompletion {
+            mut completion,
+            replay_identity,
+            effective_fallback_index,
+            next_fallback_index,
+            warm_prefix_boundaries,
+        } = prepare_fallback_completion(
+            provider.as_ref(),
+            snapshot.route().provider_id(),
+            snapshot.route().model_id(),
+            request.fallback_index,
+            request.messages,
+            self.observation_masking_inputs(),
+        )
+        .await?;
         completion.response_format = request.response_format.clone();
         add_request_metadata(
             &mut completion,
@@ -1138,7 +1236,16 @@ where
             Some(provider_turn_scope),
             Some(sink),
             ProviderRequestContext::new(replay_identity, next_fallback_index)
-                .with_tool_choice(request.tool_choice),
+                .with_tool_choice(request.tool_choice)
+                .with_warm_prefix_capture(WarmPrefixCapture::new(
+                    &self.warm_prefix_cache,
+                    thread_id,
+                    run_id,
+                    &model_profile_id,
+                    request.resolved_model_route.as_ref(),
+                    effective_fallback_index,
+                    warm_prefix_boundaries,
+                )),
             Some(self.prompt_cache_scope(run_id)),
         )
         .await;
@@ -1339,6 +1446,17 @@ struct ObservationMaskingInputs<'a> {
     context_window_cache: &'a ModelContextWindowCache,
 }
 
+/// A provider-bound completion plus the evidence the gateway needs around it.
+struct PreparedFallbackCompletion {
+    completion: CompletionRequest,
+    replay_identity: ProviderReplayIdentity,
+    effective_fallback_index: u32,
+    next_fallback_index: Option<u32>,
+    /// Host-message cut points into `completion.messages`, for warm-prefix
+    /// recording; `None` when the prompt cannot be cut.
+    warm_prefix_boundaries: Option<Vec<WarmPrefixBoundary>>,
+}
+
 async fn prepare_fallback_completion<P>(
     provider: &P,
     provider_id: &str,
@@ -1346,7 +1464,7 @@ async fn prepare_fallback_completion<P>(
     fallback_index: u32,
     messages: Vec<HostManagedModelMessage>,
     masking: ObservationMaskingInputs<'_>,
-) -> Result<(CompletionRequest, ProviderReplayIdentity, u32, Option<u32>), HostManagedModelError>
+) -> Result<PreparedFallbackCompletion, HostManagedModelError>
 where
     P: LlmProvider + ?Sized,
 {
@@ -1380,7 +1498,8 @@ where
     } else {
         HashMap::new()
     };
-    let mut converted = convert_messages(messages, &replay_identity, native_tool_images)?;
+    let (mut converted, warm_prefix_boundaries) =
+        convert_messages_with_boundaries(messages, &replay_identity, native_tool_images)?;
     if masking.config.enabled {
         // Prompt projection only: the durable transcript is never touched.
         let context_window_tokens = cached_provider_context_window_tokens(
@@ -1412,12 +1531,13 @@ where
     let mut completion = CompletionRequest::new(converted);
     completion.model = Some(route.model);
     completion.set_fallback_index(route.fallback_index);
-    Ok((
+    Ok(PreparedFallbackCompletion {
         completion,
         replay_identity,
-        route.fallback_index,
+        effective_fallback_index: route.fallback_index,
         next_fallback_index,
-    ))
+        warm_prefix_boundaries,
+    })
 }
 
 fn add_route_metadata(completion: &mut CompletionRequest, snapshot: &ResolvedModelRouteSnapshot) {
@@ -1601,6 +1721,9 @@ struct ProviderRequestContext {
     next_fallback_index: Option<u32>,
     /// Strategy-imposed provider tool-choice constraint for this call.
     tool_choice: Option<ironclaw_loop_contracts::LoopModelToolChoice>,
+    /// Records the exact provider request on success, for cache-forked
+    /// compaction. Only live loop calls carry one.
+    warm_prefix_capture: Option<WarmPrefixCapture>,
 }
 
 impl ProviderRequestContext {
@@ -1609,7 +1732,13 @@ impl ProviderRequestContext {
             replay_identity,
             next_fallback_index,
             tool_choice: None,
+            warm_prefix_capture: None,
         }
+    }
+
+    fn with_warm_prefix_capture(mut self, capture: Option<WarmPrefixCapture>) -> Self {
+        self.warm_prefix_capture = capture;
+        self
     }
 
     fn with_tool_choice(
@@ -1913,7 +2042,12 @@ where
         replay_identity,
         next_fallback_index,
         tool_choice,
+        warm_prefix_capture,
     } = request_context;
+    // A forced tool choice or a native response format is not the shape of
+    // an ordinary live turn; such a request must never seed a fork.
+    let warm_prefix_capture = warm_prefix_capture
+        .filter(|_| tool_choice.is_none() && completion.response_format.is_none());
     let redaction_started_at = Instant::now();
     let redaction_count = redact_completion_request(&mut completion);
     if tracing::enabled!(target: CONTEXT_SHADOW_TARGET, tracing::Level::DEBUG) {
@@ -2041,6 +2175,9 @@ where
                         provider_turn_scope.as_deref(),
                         provider_started_at,
                     );
+                    if let Some(capture) = warm_prefix_capture.as_ref() {
+                        capture.record_tool_request(&tool_request);
+                    }
                     response
                 }
                 Err(error) => {
@@ -2208,6 +2345,9 @@ where
         ));
     }
 
+    let recorded_completion = warm_prefix_capture
+        .as_ref()
+        .map(|capture| (capture, completion.clone()));
     let provider_started_at = live_latency_started_at();
     let provider_stream_sink = stream_sink
         .as_ref()
@@ -2235,6 +2375,9 @@ where
                 provider_turn_scope.as_deref(),
                 provider_started_at,
             );
+            if let Some((capture, completion)) = recorded_completion {
+                capture.record_completion(completion);
+            }
             response
         }
         Err(error) => {
@@ -2913,11 +3056,25 @@ fn collapse_repeated_failure_observations(messages: &mut [HostManagedModelMessag
 
 /// `native_tool_images`: the provider takes images inside a tool result;
 /// otherwise a tool result's picture follows the tool results as a user image.
+#[cfg(test)]
 fn convert_messages(
-    mut messages: Vec<HostManagedModelMessage>,
+    messages: Vec<HostManagedModelMessage>,
     replay_identity: &ProviderReplayIdentity,
     native_tool_images: bool,
 ) -> Result<Vec<ChatMessage>, HostManagedModelError> {
+    convert_messages_with_boundaries(messages, replay_identity, native_tool_images)
+        .map(|(converted, _)| converted)
+}
+
+/// [`convert_messages`], plus where each host message ends in the provider
+/// list (see [`WarmPrefixBoundary`]). Boundaries are `None` when the list
+/// cannot be cut at host-message boundaries (tool-result pictures move
+/// messages around).
+fn convert_messages_with_boundaries(
+    mut messages: Vec<HostManagedModelMessage>,
+    replay_identity: &ProviderReplayIdentity,
+    native_tool_images: bool,
+) -> Result<(Vec<ChatMessage>, Option<Vec<WarmPrefixBoundary>>), HostManagedModelError> {
     // Off by default (see REBORN_COLLAPSE_REPEATED_FAILURES_ENV): only collapse
     // interior duplicate error observations when an operator opts in, so the
     // replayed context is otherwise byte-identical to the pre-feature path.
@@ -2944,9 +3101,11 @@ fn convert_messages(
             HashMap::new()
         };
     let mut converted = Vec::with_capacity(messages.len() + 1);
+    let mut boundaries = Vec::with_capacity(messages.len());
     let mut index = 0;
     while index < messages.len() {
         let message = &messages[index];
+        let group_start = index;
         match message.role {
             HostManagedModelMessageRole::System => {
                 converted.push(ChatMessage::system(message.content.clone()))
@@ -2978,6 +3137,12 @@ fn convert_messages(
                     converted.push(ChatMessage::user(tool_summary_message(
                         replay.plain_fallback_content(),
                     )));
+                    push_boundaries(
+                        &mut boundaries,
+                        &messages,
+                        index..index + 1,
+                        converted.len(),
+                    );
                     index += 1;
                     continue;
                 };
@@ -2985,6 +3150,12 @@ fn convert_messages(
                     converted.push(ChatMessage::user(tool_summary_message(
                         replay.plain_fallback_content(),
                     )));
+                    push_boundaries(
+                        &mut boundaries,
+                        &messages,
+                        index..index + 1,
+                        converted.len(),
+                    );
                     index += 1;
                     continue;
                 }
@@ -3038,15 +3209,56 @@ fn convert_messages(
                         .map(tool_summary_message)
                         .map(ChatMessage::user),
                 );
+                push_boundaries(
+                    &mut boundaries,
+                    &messages,
+                    group_start..index,
+                    converted.len(),
+                );
                 continue;
             }
         }
+        push_boundaries(
+            &mut boundaries,
+            &messages,
+            index..index + 1,
+            converted.len(),
+        );
         index += 1;
     }
-    if !tool_images.is_empty() {
+    let boundaries = if tool_images.is_empty() {
+        let leading_system_messages = converted
+            .iter()
+            .take_while(|message| message.role == Role::System)
+            .count();
+        Some(warm_prefix::coalesced_boundaries(
+            boundaries,
+            leading_system_messages,
+        ))
+    } else {
         converted = place_tool_images(converted, tool_images, native_tool_images);
+        None
+    };
+    Ok((coalesce_system_messages_at_start(converted), boundaries))
+}
+
+/// Record the host messages in `range` as one converted unit ending at
+/// `provider_message_count`: only the last one is a valid cut point.
+fn push_boundaries(
+    boundaries: &mut Vec<WarmPrefixBoundary>,
+    messages: &[HostManagedModelMessage],
+    range: std::ops::Range<usize>,
+    provider_message_count: usize,
+) {
+    let last = range.end.saturating_sub(1);
+    for index in range {
+        if let Some(message) = messages.get(index) {
+            boundaries.push(WarmPrefixBoundary {
+                content_ref: message.content_ref.clone(),
+                provider_message_count: (index == last).then_some(provider_message_count),
+            });
+        }
     }
-    Ok(coalesce_system_messages_at_start(converted))
 }
 
 const TOOL_SCREENSHOT_CAPTION: &str =

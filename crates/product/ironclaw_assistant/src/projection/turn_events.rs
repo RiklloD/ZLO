@@ -986,6 +986,7 @@ fn failure_explanation_request(input: &FailureExplanationInput) -> Option<System
             .as_millis()
             .min(u128::from(u64::MAX)) as u64,
         output_contract: None,
+        cache_fork: None,
     })
 }
 

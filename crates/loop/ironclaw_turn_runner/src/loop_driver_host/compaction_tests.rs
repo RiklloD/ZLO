@@ -42,6 +42,7 @@ async fn build_compaction_ports_dispatches_through_scope_resolved_gateway() {
     #[derive(Default)]
     struct RecordingScopedGateway {
         calls: Mutex<usize>,
+        warm_prefix_cache_requests: Mutex<usize>,
     }
 
     #[async_trait]
@@ -54,6 +55,14 @@ async fn build_compaction_ports_dispatches_through_scope_resolved_gateway() {
             Ok(HostManagedModelResponse::assistant_reply(
                 "scoped compaction summary",
             ))
+        }
+
+        // The cache-forked compaction source must read the warm prefixes of
+        // the same gateway compaction dispatches through. Empty here, so the
+        // compaction itself stays standalone.
+        fn warm_prefix_cache(&self) -> Option<Arc<ironclaw_loop_host::WarmPrefixCache>> {
+            *self.warm_prefix_cache_requests.lock().unwrap() += 1;
+            Some(Arc::new(ironclaw_loop_host::WarmPrefixCache::new()))
         }
     }
 
@@ -82,6 +91,10 @@ async fn build_compaction_ports_dispatches_through_scope_resolved_gateway() {
                  scope-resolved gateway — build_compaction_ports must call \
                  self.model_gateway.resolve_for_scope(&run_context.scope)"
             );
+        }
+
+        fn warm_prefix_cache(&self) -> Option<Arc<ironclaw_loop_host::WarmPrefixCache>> {
+            panic!("the warm-prefix cache must come from the scope-resolved gateway");
         }
 
         fn resolve_for_scope(&self, scope: &TurnScope) -> Option<Arc<dyn HostManagedModelGateway>> {
@@ -184,6 +197,11 @@ async fn build_compaction_ports_dispatches_through_scope_resolved_gateway() {
         *scoped_gateway.calls.lock().unwrap(),
         1,
         "compaction must dispatch exactly once through the scope-resolved gateway"
+    );
+    assert_eq!(
+        *scoped_gateway.warm_prefix_cache_requests.lock().unwrap(),
+        1,
+        "the warm-prefix source is wired from the scope-resolved gateway"
     );
     // Pin the scope: compaction must have resolved the gateway for the CURRENT
     // run scope exactly once. A regression that passes a wrong/stale/empty
