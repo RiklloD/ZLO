@@ -1679,6 +1679,7 @@ pub fn trace_tool_call_response() -> ironclaw_loop_host::HostManagedModelRespons
                 provider_tool_name: ProviderToolName::new("test_echo").expect("provider tool name"),
                 arguments: json!({"message": "hi"}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }),

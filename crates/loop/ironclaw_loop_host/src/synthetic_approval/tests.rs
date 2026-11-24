@@ -312,6 +312,7 @@ impl Fixture {
                     name: ironclaw_host_api::ids::ProviderToolName::new(TOOL).unwrap(),
                     arguments: json!({"name": "report"}),
                     response_reasoning: None,
+                    response_text: None,
                     reasoning: None,
                     signature: None,
                 },

@@ -138,6 +138,10 @@ pub const SCENES: &[Scene] = &[
     ("chat-cli-turn", crate::chat::fixtures::cli_turn_settled),
     ("chat-cli-turn-open", crate::chat::fixtures::cli_turn_open),
     ("chat-cli-turn-live", crate::chat::fixtures::cli_turn_live),
+    (
+        "chat-commentary-live",
+        crate::chat::fixtures::commentary_live,
+    ),
     ("chat-steering", crate::chat::fixtures::steering),
     ("chat-steering-queue-default", |s| {
         crate::chat::fixtures::steering(s);

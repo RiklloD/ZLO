@@ -941,6 +941,7 @@ mod tests {
                 name: ProviderToolName::new("client_tool").expect("provider tool name"),
                 arguments: serde_json::json!({}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             })
@@ -1017,6 +1018,7 @@ mod tests {
                 name: ProviderToolName::new("clienttool").expect("provider tool name"),
                 arguments: serde_json::json!({}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))
@@ -1075,6 +1077,7 @@ mod tests {
                 name: ProviderToolName::new("get_weather").expect("provider tool name"),
                 arguments: serde_json::json!({"city": "Boston"}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))

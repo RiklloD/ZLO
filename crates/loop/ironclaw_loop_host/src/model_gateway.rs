@@ -54,7 +54,8 @@ use ironclaw_loop_contracts::{
 };
 use ironclaw_observability::live_latency_started_at;
 use ironclaw_safety::{
-    is_provider_arguments_too_large_summary, provider_arguments_exceed_max_bytes,
+    PROVIDER_METADATA_TEXT_MAX_BYTES, is_provider_arguments_too_large_summary,
+    provider_arguments_exceed_max_bytes, validate_optional_provider_metadata_text,
 };
 use ironclaw_threads::{ProviderToolCallReferenceEnvelope, SessionThreadService, ThreadScope};
 use ironclaw_turns::HostManagedLoopPromptPort;
@@ -2544,6 +2545,7 @@ async fn tool_response_to_host(
         // Anchored on the first call, so a call announced while the response
         // still streamed (`streamed_tool_calls`) derives this same id.
         let provider_turn_id = provider_turn_id(provider_turn_scope, &response.tool_calls[0]);
+        let response_text = replayable_response_text(response.content.as_deref());
         let provider_calls = match response
             .tool_calls
             .iter()
@@ -2551,6 +2553,7 @@ async fn tool_response_to_host(
                 provider_tool_call_from_llm(
                     tool_call.clone(),
                     response.reasoning.clone(),
+                    response_text.clone(),
                     provider_turn_id.clone(),
                     replay_identity,
                 )
@@ -2720,9 +2723,44 @@ fn provider_calls_are_advertised_or_resolvable(
     true
 }
 
+/// The assistant text a tool-call response carried, shaped so it always
+/// passes provider-metadata validation: sanitized, trimmed, control
+/// characters dropped, capped on a char boundary. Text that still fails (a
+/// leak-detector hit) is not replayed rather than rejecting the whole batch.
+fn replayable_response_text(content: Option<&str>) -> Option<String> {
+    let sanitized = sanitize_model_visible_text(content?.to_string());
+    let mut text: String = sanitized
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+        .collect();
+    if text.is_empty() {
+        return None;
+    }
+    if text.len() > PROVIDER_METADATA_TEXT_MAX_BYTES {
+        let mut end = PROVIDER_METADATA_TEXT_MAX_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    match validate_optional_provider_metadata_text(
+        Some(&text),
+        "provider response text",
+        PROVIDER_METADATA_TEXT_MAX_BYTES,
+    ) {
+        Ok(()) => Some(text),
+        Err(error) => {
+            debug!(%error, "pre-tool assistant text is not replayable; dropping it from replay");
+            None
+        }
+    }
+}
+
 fn provider_tool_call_from_llm(
     tool_call: ToolCall,
     response_reasoning: Option<String>,
+    response_text: Option<String>,
     provider_turn_id: String,
     replay_identity: &ProviderReplayIdentity,
 ) -> Result<ProviderToolCall, HostManagedModelError> {
@@ -2754,6 +2792,7 @@ fn provider_tool_call_from_llm(
         name,
         arguments: tool_call.arguments,
         response_reasoning,
+        response_text,
         reasoning: tool_call.reasoning,
         signature: tool_call.signature,
     })
@@ -3504,8 +3543,13 @@ fn provider_tool_roundtrip_messages(
     let reasoning = provider_results
         .iter()
         .find_map(|(provider_call, _, _)| provider_call.response_reasoning.clone());
+    // The pre-tool commentary the model emitted with this batch. Replaying
+    // it keeps the model from re-announcing the same plan every tool round.
+    let response_text = provider_results
+        .iter()
+        .find_map(|(provider_call, _, _)| provider_call.response_text.clone());
     let assistant = ChatMessage::assistant_with_tool_calls(
-        None,
+        response_text,
         provider_results
             .iter()
             .map(|(provider_call, _, _)| provider_tool_call_from_reference(provider_call))
@@ -3727,6 +3771,32 @@ fn is_legacy_credit_exhaustion_error(error: &LlmError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The replayed pre-tool text always passes provider-metadata
+    /// validation: controls are stripped, a multibyte cap lands on a char
+    /// boundary, and a leak-detector hit drops the text instead of failing
+    /// the tool batch.
+    #[test]
+    fn replayable_response_text_is_shaped_to_pass_validation() {
+        assert_eq!(replayable_response_text(None), None);
+        assert_eq!(replayable_response_text(Some("  \n ")), None);
+        assert_eq!(
+            replayable_response_text(Some(" Line\u{0001} one\n\tLine two ")).as_deref(),
+            Some("Line one\n\tLine two")
+        );
+        let long = "é".repeat(PROVIDER_METADATA_TEXT_MAX_BYTES);
+        let capped = replayable_response_text(Some(&long)).expect("capped text");
+        assert!(capped.len() <= PROVIDER_METADATA_TEXT_MAX_BYTES);
+        assert!(capped.len() >= PROVIDER_METADATA_TEXT_MAX_BYTES - 1);
+        assert!(capped.chars().all(|c| c == 'é'));
+        // A token the sanitizer leaves but the leak detector rejects: the
+        // text is not replayed, rather than failing the whole tool batch.
+        let leak = format!(
+            "Posting with xoxb-1234567890-{}",
+            "abcdefghijABCDEFGHIJ1234"
+        );
+        assert_eq!(replayable_response_text(Some(&leak)), None);
+    }
     use std::time::Duration;
 
     #[test]

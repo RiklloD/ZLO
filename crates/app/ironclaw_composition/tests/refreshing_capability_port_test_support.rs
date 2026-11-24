@@ -774,6 +774,7 @@ async fn input_and_result_refs_correlate_through_one_shared_io() {
         name: ProviderToolName::new("builtin__project_create").expect("tool name"),
         arguments: serde_json::json!({"name": "My Project"}),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     };
@@ -870,6 +871,7 @@ async fn capability_execution_mount_overrides_reach_invocation_context() {
         name: ProviderToolName::new("builtin__echo").expect("tool name"),
         arguments: serde_json::json!({}),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     };
@@ -1048,6 +1050,7 @@ async fn multi_entry_collection_knobs_round_trip() {
             name: ProviderToolName::new(provider_tool_name).expect("tool name"),
             arguments: serde_json::json!({}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         };

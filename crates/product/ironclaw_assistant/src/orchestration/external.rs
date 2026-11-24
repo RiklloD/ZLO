@@ -194,6 +194,10 @@ pub(crate) struct TimelineRow {
     pub(crate) at: Option<i64>,
     /// The engine's steer id when the runtime journaled this row as one.
     pub(crate) steer_id: Option<String>,
+    /// Assistant text the run moved on from: a later assistant row of the
+    /// same run follows it. Clients subdue it and fold
+    /// it into the turn's work; only the run's last row reads as the answer.
+    pub(crate) commentary: bool,
 }
 
 /// The id a timeline row gets: stable for its position in the history.
@@ -253,9 +257,29 @@ pub(crate) fn timeline_rows(thread: &ThreadId, history: &[HistoryMessage]) -> Ve
             run_id: m.run_id.clone(),
             at: m.at,
             steer_id: m.steer_id.clone(),
+            commentary: false,
         });
     }
+    mark_commentary(&mut rows);
     rows
+}
+
+/// Flag assistant rows the run moved on from (see [`TimelineRow::commentary`]):
+/// every assistant row of a run but its last. The last is the answer even
+/// when calls ride on it (Codex and Muse journal the final answer with the
+/// turn's aggregate tool calls) or the run ended on a call, so a message's
+/// own calls never decide it.
+fn mark_commentary(rows: &mut [TimelineRow]) {
+    let mut answered: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for row in rows.iter_mut().rev() {
+        if row.kind != "assistant" {
+            continue;
+        }
+        let Some(run) = row.run_id.clone() else {
+            continue;
+        };
+        row.commentary = !answered.insert(run);
+    }
 }
 
 /// Every timeline row of a CLI history, oldest first, as timeline items.
@@ -263,7 +287,8 @@ pub(super) fn timeline_values(thread: &ThreadId, history: &[HistoryMessage]) -> 
     timeline_rows(thread, history)
         .into_iter()
         .map(|row| {
-            json!({
+            let commentary = row.commentary;
+            let mut value = json!({
                 "message_id": row.message_id,
                 "thread_id": thread.as_str(),
                 "sequence": row.index as u64 + 1,
@@ -283,7 +308,12 @@ pub(super) fn timeline_values(thread: &ThreadId, history: &[HistoryMessage]) -> 
                     .at
                     .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
                     .map(|at| at.to_rfc3339()),
-            })
+            });
+            // Omitted when false so older clients and fixtures see no change.
+            if commentary {
+                value["commentary"] = Value::Bool(true);
+            }
+            value
         })
         .collect()
 }

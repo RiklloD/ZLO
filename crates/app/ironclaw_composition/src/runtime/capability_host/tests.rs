@@ -366,6 +366,7 @@ mod tests {
             name: ProviderToolName::new(name).expect("provider tool name"),
             arguments,
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }
@@ -3007,6 +3008,7 @@ mod tests {
             name: tool_definition.name,
             arguments: serde_json::json!({"names": ["unit-activate-helper"]}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         };

@@ -785,6 +785,7 @@ mod tests {
             name: ProviderToolName::new(name).expect("provider tool name"),
             arguments: serde_json::json!({}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }

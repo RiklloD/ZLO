@@ -518,6 +518,7 @@ mod tests {
                 .expect("capability id"),
             arguments: serde_json::json!({ "url": "https://example.com" }),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }

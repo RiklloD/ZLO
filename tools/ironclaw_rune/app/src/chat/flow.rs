@@ -28,6 +28,8 @@ pub const SPACE_LG: f32 = 16.;
 /// A work line's height (t3code's `min-h-6`).
 const TREE_ROW_HEIGHT: f32 = 24.;
 
+#[path = "flow/commentary.rs"]
+pub(crate) mod commentary;
 #[path = "flow/timeline.rs"]
 mod timeline;
 /// The icon's column at the head of a work line.
@@ -163,6 +165,8 @@ pub fn fold(
     reserve: bool,
     ctx: &Folding,
 ) -> Vec<Item> {
+    // A model that re-announces its plan before every call says it once.
+    let rows = commentary::collapse(rows);
     let mut grouped: Vec<Item> = Vec::with_capacity(rows.len() + 2);
     for row in rows {
         if is_activity(row) {
@@ -253,9 +257,15 @@ fn fold_turn(
         out.extend_from_slice(body);
         return;
     }
+    // A turn with no answer row (every reply flagged commentary, or the
+    // run ended on a call) keeps its last words in view as the answer.
     let answer = body
         .iter()
-        .rposition(|i| matches!(i, Item::Row(Row::Assistant { .. })));
+        .rposition(|i| matches!(i, Item::Row(Row::Assistant { .. })))
+        .or_else(|| {
+            body.iter()
+                .rposition(|i| matches!(i, Item::Row(Row::Narration { .. })))
+        });
     let hides = |ix: usize, item: &Item| {
         let after = answer.is_some_and(|a| ix > a);
         match item {
@@ -273,7 +283,7 @@ fn fold_turn(
                         )
                     })
             }
-            Item::Row(Row::Narration { .. }) => !after,
+            Item::Row(Row::Narration { .. }) => Some(ix) != answer && !after,
             Item::Row(Row::Assistant { .. }) => Some(ix) != answer && !after,
             _ => false,
         }
@@ -579,8 +589,33 @@ struct Leaf {
     running: bool,
 }
 
-/// The tail thought of a live group, as Zeron draws it: a "Thinking" label
-/// and nothing more. Its words show once it ends, folded under "Thought".
+/// Characters of a live thought its preview keeps: about three lines.
+const THOUGHT_PREVIEW_CHARS: usize = 280;
+/// Characters of a cut first word the preview drops to start on a word.
+const THOUGHT_WORD_SKIP: usize = 24;
+
+/// The newest words of a thought being written, on one line: what the
+/// preview under a live group's "Thinking" shows. Cut at a word, with an
+/// ellipsis where earlier words were left out.
+pub(crate) fn thought_tail(text: &str) -> String {
+    let line = one_line(text);
+    let count = line.chars().count();
+    if count <= THOUGHT_PREVIEW_CHARS {
+        return line;
+    }
+    let tail: String = line.chars().skip(count - THOUGHT_PREVIEW_CHARS).collect();
+    // Skip the cut word only when a space comes soon: a long token (a URL,
+    // a hash) must not take the whole preview with it.
+    let tail = match tail.char_indices().find(|(_, c)| *c == ' ') {
+        Some((at, _)) if tail[..at].chars().count() <= THOUGHT_WORD_SKIP => &tail[at + 1..],
+        _ => tail.as_str(),
+    };
+    format!("…{tail}")
+}
+
+/// The tail thought of a live group, as Zeron draws it: a "Thinking" label,
+/// its newest words previewed under the group (see [`thought_tail`]). The
+/// whole thought shows once it ends, folded under "Thought".
 fn live_thought() -> Leaf {
     Leaf {
         icon: &icons::BOT,
@@ -862,6 +897,13 @@ pub fn render_activity(
         .collect();
     let count = parts.len();
     let mut lines = Vec::with_capacity(count);
+    // The thought being written, previewed subdued under the group.
+    let thinking = match rows.last() {
+        Some(Row::Thinking { text, .. }) if live && !text.trim().is_empty() => {
+            Some(thought_tail(text))
+        }
+        _ => None,
+    };
     for (ix, (row, mut leaf)) in parts.into_iter().enumerate() {
         let row_key = row.key();
         let open_key = format!("leaf:{row_key}");
@@ -965,16 +1007,30 @@ pub fn render_activity(
             super::fold_now(c, tx);
             tx.keep_on_screen(head_key.clone());
         });
-    let group = group.child(header);
-    if !open {
-        return group;
+    let mut group = group.child(header);
+    if open {
+        let tree = col()
+            .key(format!("{key}-tree"))
+            .w_full()
+            .pl(ICON_COLUMN / 2.)
+            .transition(rise(4.));
+        group = group.child(timeline::tree(s, thread, tree, lines));
     }
-    let tree = col()
-        .key(format!("{key}-tree"))
-        .w_full()
-        .pl(ICON_COLUMN / 2.)
-        .transition(rise(4.));
-    group.child(timeline::tree(s, thread, tree, lines))
+    match thinking {
+        // Plain text, not Markdown: it changes every tick while live.
+        Some(words) => group.child(
+            text(words)
+                .key(format!("{key}-thought"))
+                .font(type_at(s, LABEL_SIZE, 19., 400.))
+                .color(p.text_muted)
+                // The newest words stay; older ones elide at the head.
+                .max_lines(3)
+                .elide_head()
+                .pl(ICON_COLUMN + TEXT_GAP)
+                .w_full(),
+        ),
+        None => group,
+    }
 }
 
 /// One step: its icon, verb and subject on one line, then its opened text

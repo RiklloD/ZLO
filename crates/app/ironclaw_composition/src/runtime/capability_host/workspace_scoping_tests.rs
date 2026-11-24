@@ -324,6 +324,7 @@ fn provider_tool_call(name: &str, arguments: serde_json::Value) -> ProviderToolC
         name: ProviderToolName::new(name).expect("provider tool name"), // safety: test-only literal.
         arguments,
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     }

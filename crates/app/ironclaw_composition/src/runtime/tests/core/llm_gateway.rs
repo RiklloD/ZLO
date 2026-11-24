@@ -213,6 +213,7 @@ impl HostManagedModelGateway for ToolCallingGateway {
                 name: echo_tool.name,
                 arguments: serde_json::json!({"message": "hello from tool"}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))
@@ -307,6 +308,7 @@ impl HostManagedModelGateway for SandboxShellCallingGateway {
                     "credential_contexts": []
                 }),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))
@@ -393,6 +395,7 @@ impl HostManagedModelGateway for LargeEchoToolCallingGateway {
                             "max_bytes": 2048,
                         }),
                         response_reasoning: None,
+                        response_text: None,
                         reasoning: None,
                         signature: None,
                     },
@@ -466,6 +469,7 @@ impl HostManagedModelGateway for LargeEchoToolCallingGateway {
                 name: echo_tool.name,
                 arguments: serde_json::json!({ "message": big_message }),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))
@@ -519,6 +523,7 @@ impl HostManagedModelGateway for AuthGateToolCallingGateway {
                 name: notion_tool.name,
                 arguments: serde_json::json!({ "query": "project notes" }),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))
@@ -588,6 +593,7 @@ impl HostManagedModelGateway for WorkspaceListingGateway {
                 name: list_dir_tool.name,
                 arguments: serde_json::json!({"path": "/workspace"}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))

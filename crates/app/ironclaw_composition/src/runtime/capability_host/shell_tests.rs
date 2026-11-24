@@ -47,6 +47,7 @@ fn provider_tool_call(arguments: serde_json::Value) -> ProviderToolCall {
         name: ProviderToolName::new("builtin_shell").expect("provider tool name"), // safety: test-only provider-safe literal.
         arguments,
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     }

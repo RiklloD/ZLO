@@ -821,7 +821,16 @@ fn try_reveal(s: &mut State, id: &str, tx: &mut Tx) {
             _ => None,
         })
     });
-    let hit = |key: &str| key.ends_with(&target) || key == sent || kept.as_deref() == Some(key);
+    let direct = |key: &str| key.ends_with(&target) || key == sent || kept.as_deref() == Some(key);
+    // A repeated commentary line the fold dropped reveals the line it
+    // repeats (`flow::commentary`).
+    let alias = c
+        .rows
+        .iter()
+        .find(|r| matches!(r, Row::Narration { .. }) && direct(r.key()))
+        .and_then(|r| flow::commentary::kept_key(&c.rows, r.key()))
+        .map(str::to_string);
+    let hit = |key: &str| direct(key) || alias.as_deref() == Some(key);
     // A hit inside a settled turn's shut fold opens the fold first.
     let folded = c.items.iter().find_map(|item| match item {
         Item::TurnFold {

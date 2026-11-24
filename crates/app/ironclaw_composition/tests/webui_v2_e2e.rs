@@ -266,6 +266,7 @@ impl HostManagedModelGateway for ToolCallingGateway {
                 name: echo_tool.name,
                 arguments: json!({"message": self.tool_message.clone()}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))
@@ -403,6 +404,7 @@ async fn register_write(
             name: tool_name,
             arguments: json!({"path": path, "content": content}),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }))
@@ -552,6 +554,7 @@ impl HostManagedModelGateway for MemoryWriteGateway {
                     "append": false
                 }),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))

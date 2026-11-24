@@ -944,6 +944,7 @@ fn run_output_provider_call() -> ProviderToolCallReferenceEnvelope {
         capability_id: CapabilityId::new("web.search").expect("capability id"),
         arguments: serde_json::json!({ "query": "rust" }),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     }

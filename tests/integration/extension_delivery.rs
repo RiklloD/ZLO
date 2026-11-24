@@ -325,6 +325,7 @@ impl HostManagedModelGateway for PreambleToolReplyGateway {
                 name: tool.name,
                 arguments: serde_json::json!({ "query": "web" }),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))

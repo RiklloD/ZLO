@@ -1283,6 +1283,7 @@ fn provider_call_reference() -> Result<ProviderToolCallReferenceEnvelope, Worklo
             .map_err(|source| WorkloadFailure::source("build capability id", source))?,
         arguments: serde_json::json!({"offset": 0}),
         response_reasoning: None,
+        response_text: None,
         reasoning: None,
         signature: None,
     })

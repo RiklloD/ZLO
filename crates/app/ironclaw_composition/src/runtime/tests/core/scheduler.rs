@@ -99,6 +99,7 @@ async fn multi_tool_call_response_survives_surface_change_mid_register() {
                 name: echo_tool.name.clone(),
                 arguments: serde_json::json!({"message": "hello from call 1"}),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             };
@@ -827,6 +828,7 @@ impl HostManagedModelGateway for SkillShellGateway {
                     "workdir": workdir,
                 }),
                 response_reasoning: None,
+                response_text: None,
                 reasoning: None,
                 signature: None,
             }))

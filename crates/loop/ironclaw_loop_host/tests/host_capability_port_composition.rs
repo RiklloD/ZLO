@@ -201,6 +201,7 @@ async fn factory_stages_provider_tool_call_arguments_without_custom_resolver_ove
             name: ProviderToolName::new("demo__echo").expect("provider tool name"),
             arguments: arguments.clone(),
             response_reasoning: None,
+            response_text: None,
             reasoning: None,
             signature: None,
         }))

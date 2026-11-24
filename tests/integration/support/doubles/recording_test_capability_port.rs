@@ -307,6 +307,7 @@ impl LoopCapabilityPort for RecordingTestCapabilityPort {
                 provider_tool_name: call.name,
                 arguments: call.arguments,
                 response_reasoning: call.response_reasoning,
+                response_text: call.response_text,
                 reasoning: call.reasoning,
                 signature: call.signature,
             }),
