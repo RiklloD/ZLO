@@ -139,6 +139,7 @@ jobs:
 
           python3 scripts/ci/test_reborn_pr_test_plan.py
           python3 scripts/ci/test_pre_commit_staged_paths.py
+          python3 scripts/ci/test_hooks_hermetic_git_env.py
           scripts/ci/discover-reborn-package-crates.sh \
             > "${RUNNER_TEMP}/reborn-canonical-packages.json"
           plan="$(
