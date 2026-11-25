@@ -167,7 +167,7 @@ pub struct CodexRuntime {
     id: RuntimeId,
     config: Arc<CodexConfig>,
     sink: Weak<dyn TurnEventSink>,
-    // arch-exempt: optional_arc, a host without the gateway keeps the sandbox read-only, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, a host without the gateway keeps the sandbox read-only, plan #25
     bridge: Option<Arc<CliBridge>>,
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
@@ -560,7 +560,7 @@ struct Turn {
     /// Where the door's steers arrive; taken by `run`.
     steer_rx: Option<mpsc::UnboundedReceiver<SteerRequest>>,
     steer_timeout: Duration,
-    // arch-exempt: optional_arc, a host without the gateway asks nothing, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, a host without the gateway asks nothing, plan #25
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
     run_id: String,

@@ -390,7 +390,7 @@ pub(crate) struct RebornRuntimeStores {
     // arch-exempt: optional_arc, libSQL-only engine absent on other backends, plan #orchestrator-stage-3
     pub(crate) orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
     /// Approvals, live stream and MCP tokens of CLI threads; set with `orchestrator`.
-    // arch-exempt: optional_arc, libSQL-only like the engine it serves, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, libSQL-only like the engine it serves, plan #25
     pub(crate) cli_bridge: Option<Arc<ironclaw_cli_providers::bridge::CliBridge>>,
     /// The host folder mounted at `/projects/workspace` (what `/workspace`
     /// names), set with `orchestrator`: workspace `@`-mentions read below it.

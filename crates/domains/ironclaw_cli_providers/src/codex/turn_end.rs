@@ -21,7 +21,7 @@ pub(super) struct TurnEnd {
     thread_id: ThreadId,
     run: String,
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
-    // arch-exempt: optional_arc, mirrors CodexRuntime::bridge (tools-off hosts), plan #v3-cli-bridge
+    // arch-exempt: optional_arc, mirrors CodexRuntime::bridge (tools-off hosts), plan #25
     bridge: Option<Arc<CliBridge>>,
     sink: Weak<dyn TurnEventSink>,
     claim: Option<Claim>,
@@ -37,7 +37,7 @@ pub(super) struct TurnEndParts {
     pub(super) thread_id: ThreadId,
     pub(super) run: String,
     pub(super) active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
-    // arch-exempt: optional_arc, mirrors CodexRuntime::bridge (tools-off hosts), plan #v3-cli-bridge
+    // arch-exempt: optional_arc, mirrors CodexRuntime::bridge (tools-off hosts), plan #25
     pub(super) bridge: Option<Arc<CliBridge>>,
     pub(super) sink: Weak<dyn TurnEventSink>,
     pub(super) claim: Claim,

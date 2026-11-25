@@ -150,6 +150,18 @@ fn main() {
             ..WindowOptions::default()
         })
         .keep_running()
+        // On macOS, motion nobody steers (a reply streaming in, the list
+        // following it) draws at most 60 frames a second once input has
+        // rested 600 ms. New input lifts the cap, and motion that input
+        // started keeps the full rate for up to 2 s, so scrolling and typing
+        // keep 120 Hz. This caps the frames Rune draws, not the panel's
+        // refresh rate.
+        .ambient_fps(60.0)
+        // When word fades are the only thing moving, they step on a 30 Hz
+        // timer instead of the display link; alongside other motion they
+        // draw at that motion's rate. 30 divides both 60 and 120 Hz panels,
+        // so the steps don't judder.
+        .reveal_fps(30.0)
         // ⌘ held alone shows the sidebar's ⌘N badges.
         .modifier_keys()
         .on_focus(window_focus)

@@ -1,4 +1,4 @@
-// arch-exempt: large_file, one fake-agent suite per host (Antigravity, Muse, Codex, and their skill listing) awaits a split, plan #v3-cli-bridge
+// arch-exempt: large_file, one fake-agent suite per host (Antigravity, Muse, Codex, and their skill listing) awaits a split, plan #25
 //! The Antigravity (ACP), Muse Code (MSP) and Codex (app-server) drivers against fake agent
 //! scripts: session create then resume, fail-closed permissions, outcome,
 //! transcript and telemetry folding, steering, and Stop ending the whole

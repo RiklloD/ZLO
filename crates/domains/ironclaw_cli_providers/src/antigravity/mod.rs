@@ -1,4 +1,4 @@
-// arch-exempt: large_file, the MCP grant and session notes moved to context.rs and skill listing to skill_listing.rs; the turn driver still awaits decomposition, plan #v3-cli-bridge
+// arch-exempt: large_file, the MCP grant and session notes moved to context.rs and skill listing to skill_listing.rs; the turn driver still awaits decomposition, plan #25
 //! The Antigravity agent as an orchestrator runtime, driven over the
 //! Agent Client Protocol: `initialize`, `authenticate` eagerly,
 //! `session/new` once, then `session/resume` instead of replaying history.
@@ -219,7 +219,7 @@ pub struct AntigravityRuntime {
     id: RuntimeId,
     config: Arc<AntigravityConfig>,
     sink: Weak<dyn TurnEventSink>,
-    // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #25
     bridge: Option<Arc<CliBridge>>,
     active: Slots<ActiveTurn>,
     primed: Arc<context::InlinePrimed>,
@@ -662,7 +662,7 @@ struct Turn {
     steer_tx: SteerTx,
     /// Permission requests still waiting for an answer.
     permissions: Arc<AtomicUsize>,
-    // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, a host without the gateway denies every permission, plan #25
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
     run_id: String,

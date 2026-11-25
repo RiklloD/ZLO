@@ -13,7 +13,8 @@
 //! - `on_focus(s, focused, tx)` from `App::on_focus`.
 //! - `apply_motion(s, cx)` at the top of every view run: sets
 //!   `Cx::reduced_motion` from `prefs.reduce_motion`, the OS setting and the
-//!   battery saver.
+//!   battery saver. `motion_reduced()` reads it back for the rest of the
+//!   run.
 //!
 //! For the workspace shell:
 //! - `wallpaper_layer(s, area) -> Option<El>` and
@@ -71,11 +72,23 @@ pub fn on_focus(s: &mut State, focused: bool, _tx: &mut Tx) {
     s.look.battery.set_active(focused);
 }
 
+thread_local! {
+    /// This view run's reduced motion, as [`apply_motion`] set it.
+    static MOTION_REDUCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Set this commit's reduced motion. Call it at the top of every view run
 /// (Rune's override holds for one commit only).
 pub fn apply_motion(s: &State, cx: &mut Cx<State>) {
     let reduced = battery::reduced(&s.prefs, &s.look.battery, cx.system_reduced_motion());
+    MOTION_REDUCED.with(|m| m.set(reduced));
     cx.reduced_motion(reduced);
+}
+
+/// Whether this view run reduces motion: the preference, the OS setting it
+/// may follow, or the battery saver ([`apply_motion`] sets it first).
+pub fn motion_reduced() -> bool {
+    MOTION_REDUCED.with(std::cell::Cell::get)
 }
 
 /// The battery saver is engaged (window in the background or idle for

@@ -149,7 +149,7 @@ pub struct ClaudeCliRuntime {
     id: RuntimeId,
     config: ClaudeCliConfig,
     sink: Weak<dyn TurnEventSink>,
-    // arch-exempt: optional_arc, a host without the gateway runs the CLI tools-off, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, a host without the gateway runs the CLI tools-off, plan #25
     bridge: Option<Arc<CliBridge>>,
     active: Arc<Mutex<HashMap<ThreadId, ActiveTurn>>>,
     /// Each thread's last profile context, reused when Stop restarts a turn.
