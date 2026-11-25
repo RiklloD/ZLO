@@ -7,11 +7,17 @@
 //! does offer is the open panel (the "Powerbox"): a folder the person picks
 //! there is readable and writable without the whole-folder switch. ZLO
 //! keeps each pick as a security-scoped bookmark and opens it again at
-//! launch, before it starts the backend, so the backend inherits exactly
-//! those folders.
+//! launch, before it starts the backend, so the backend can use exactly
+//! those folders. (That the child gets the parent's access is checked on a
+//! signed install; if it does not, the bookmarks go to the backend itself.)
 //!
 //! The list is saved next to the appearance prefs as `folder-access.json`
-//! (path plus bookmark, base64).
+//! (path plus bookmark, base64). A folder that does not open at launch (a
+//! drive not plugged in) stays in the list and is tried again next time.
+//!
+//! Forgetting a folder only drops ZLO's bookmark: macOS may still let ZLO in
+//! (a whole-folder switch turned on, or consent it keeps on its own), so
+//! Settings says "Forget", never "revoke".
 //!
 //! A backend already running keeps the folders it started with: a change
 //! reaches it only when it restarts. Nothing here restarts it (that would
@@ -20,6 +26,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,16 +42,17 @@ struct Saved {
 struct Grant {
     path: PathBuf,
     bookmark: String,
-    /// The resolved `NSURL` (retained, accessing), as an address.
-    url: usize,
+    /// The resolved `NSURL` (retained, accessing), as an address; `None`
+    /// while the folder does not open (kept, tried again at next launch).
+    url: Option<usize>,
 }
 
 static GRANTS: Mutex<Vec<Grant>> = Mutex::new(Vec::new());
 
-/// The pid of the backend that was running when the list last changed: it
-/// does not have the change. Any later backend (a restart, a new launch)
-/// does.
-static CHANGED_UNDER: Mutex<Option<u32>> = Mutex::new(None);
+/// Bumped by every saved change to the list.
+static REVISION: AtomicU64 = AtomicU64::new(0);
+/// The revision the newest backend was started with ([`note_backend_spawn`]).
+static APPLIED: AtomicU64 = AtomicU64::new(0);
 
 fn grants() -> std::sync::MutexGuard<'static, Vec<Grant>> {
     GRANTS.lock().unwrap_or_else(|e| e.into_inner())
@@ -61,118 +69,153 @@ fn load() -> Vec<Saved> {
         .unwrap_or_default()
 }
 
-fn save(list: &[Grant]) {
-    let Some(file) = file() else { return };
-    let saved: Vec<Saved> = list
-        .iter()
+fn save(list: &[Saved]) -> Result<(), String> {
+    let file = file().ok_or("ZLO has no settings folder to save the list in")?;
+    let bytes = serde_json::to_vec_pretty(list).map_err(|e| e.to_string())?;
+    crate::persist::atomic_write(&file, &bytes)
+        .map_err(|e| format!("could not save the folder list: {e}"))
+}
+
+fn saved(list: &[Grant]) -> Vec<Saved> {
+    list.iter()
         .map(|g| Saved {
             path: g.path.clone(),
             bookmark: g.bookmark.clone(),
         })
-        .collect();
-    let result = serde_json::to_vec_pretty(&saved)
-        .map_err(std::io::Error::other)
-        .and_then(|bytes| {
-            if let Some(dir) = file.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            std::fs::write(&file, bytes)
-        });
-    if let Err(e) = result {
-        tracing::warn!(error = %e, "could not save the folder list");
-    }
+        .collect()
+}
+
+/// One spelling per folder (symlinks and `/private` resolved), so paths
+/// compare as the folders they name.
+fn normal(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Open every saved folder again. Call once at launch, before the backend
-/// starts, so its process inherits them. A folder that is gone or whose
-/// bookmark no longer resolves is dropped from the list.
+/// starts. A folder that does not open stays in the list for next time.
 pub fn restore() {
-    let saved = load();
-    let mut list = grants();
-    let before = saved.len();
+    let mut opened = Vec::new();
     let mut refreshed = false;
-    for s in saved {
+    // Foundation runs outside the lock.
+    for s in load() {
         match mac::resolve(&s.bookmark) {
             Some((url, path, fresh)) => {
                 refreshed |= fresh.is_some();
-                list.push(Grant {
-                    path,
+                opened.push(Grant {
+                    path: normal(&path),
                     bookmark: fresh.unwrap_or(s.bookmark),
-                    url,
+                    url: Some(url),
                 });
             }
-            None => tracing::debug!(path = %s.path.display(), "granted folder no longer opens"),
+            None => {
+                tracing::debug!(path = %s.path.display(), "granted folder does not open now");
+                opened.push(Grant {
+                    path: s.path,
+                    bookmark: s.bookmark,
+                    url: None,
+                });
+            }
         }
     }
-    if refreshed || list.len() != before {
-        save(&list);
+    if refreshed && let Err(e) = save(&saved(&opened)) {
+        tracing::debug!(error = %e, "refreshed bookmarks not saved; the old ones still work");
     }
+    *grants() = opened;
 }
 
-/// The list changed: the backend running now (if any) misses it until it
-/// restarts.
-fn mark_changed() {
-    let running = crate::service::backend_pid();
-    *CHANGED_UNDER.lock().unwrap_or_else(|e| e.into_inner()) = running;
+/// The service is about to start a backend: it gets the list as it is now.
+pub fn note_backend_spawn() {
+    APPLIED.store(REVISION.load(Ordering::SeqCst), Ordering::SeqCst);
 }
 
 /// Whether the running backend started before the last change to the list,
 /// so only a restart gives it the change.
 pub fn pending() -> bool {
-    let changed_under = *CHANGED_UNDER.lock().unwrap_or_else(|e| e.into_inner());
-    misses_change(changed_under, crate::service::backend_pid())
+    misses_change(
+        REVISION.load(Ordering::SeqCst),
+        APPLIED.load(Ordering::SeqCst),
+        crate::service::backend_pid().is_some(),
+    )
 }
 
-fn misses_change(changed_under: Option<u32>, running: Option<u32>) -> bool {
-    changed_under.is_some() && changed_under == running
+fn misses_change(revision: u64, applied: u64, running: bool) -> bool {
+    running && revision != applied
 }
 
-/// The granted folders, for Settings.
-pub fn list() -> Vec<PathBuf> {
-    grants().iter().map(|g| g.path.clone()).collect()
+/// The granted folders, for Settings, with whether each opened.
+pub fn list() -> Vec<(PathBuf, bool)> {
+    grants()
+        .iter()
+        .map(|g| (g.path.clone(), g.url.is_some()))
+        .collect()
 }
 
 /// Keep a folder the person just picked in the open panel. `Ok(true)` when
 /// it is newly covered (a running backend gets it at its next start, see
 /// [`pending`]), `Ok(false)` when a granted folder already holds it.
 pub fn add(path: &Path) -> Result<bool, String> {
-    let mut list = grants();
-    if covered(list.iter().map(|g| g.path.as_path()), path) {
+    let path = normal(path);
+    // A folder that did not open at launch is picked again here: it is
+    // replaced below rather than counted as covering.
+    let opened = grants()
+        .iter()
+        .filter(|g| g.url.is_some())
+        .map(|g| g.path.clone())
+        .collect::<Vec<_>>();
+    if covered(opened.iter().map(PathBuf::as_path), &path) {
         return Ok(false);
     }
     // The open panel gave this process access just now; a bookmark made
     // while it lasts carries that access to later launches.
-    let bookmark = mac::bookmark(path).ok_or("macOS would not remember this folder")?;
+    let bookmark = mac::bookmark(&path).ok_or("macOS would not remember this folder")?;
     let (url, resolved, _) = mac::resolve(&bookmark).ok_or("macOS would not open this folder")?;
+    let resolved = normal(&resolved);
+    let mut list = grants();
     // A new folder that holds older ones replaces them.
-    list.retain(|g| {
-        let inside = g.path.starts_with(&resolved);
-        if inside {
-            mac::release(g.url);
-        }
-        !inside
-    });
-    list.push(Grant {
+    let (inside, mut kept): (Vec<Grant>, Vec<Grant>) =
+        list.drain(..).partition(|g| g.path.starts_with(&resolved));
+    kept.push(Grant {
         path: resolved,
         bookmark,
-        url,
+        url: Some(url),
     });
-    save(&list);
-    mark_changed();
+    if let Err(e) = save(&saved(&kept)) {
+        // Nothing changes: the old list stays, the new URL is let go.
+        kept.pop();
+        kept.extend(inside);
+        *list = kept;
+        drop(list);
+        mac::release(url);
+        return Err(e);
+    }
+    *list = kept;
+    drop(list);
+    for g in inside {
+        if let Some(u) = g.url {
+            mac::release(u);
+        }
+    }
+    REVISION.fetch_add(1, Ordering::SeqCst);
     Ok(true)
 }
 
-/// Forget a granted folder. `true` when it was in the list.
-pub fn remove(path: &Path) -> bool {
+/// Forget a granted folder: ZLO drops its bookmark (macOS may still let it
+/// in, see the module note). `Ok(true)` when it was in the list.
+pub fn forget(path: &Path) -> Result<bool, String> {
     let mut list = grants();
     let Some(ix) = list.iter().position(|g| g.path == path) else {
-        return false;
+        return Ok(false);
     };
+    let mut rest = saved(&list);
+    rest.remove(ix);
+    save(&rest)?;
     let gone = list.remove(ix);
-    mac::release(gone.url);
-    save(&list);
-    mark_changed();
-    true
+    drop(list);
+    if let Some(u) = gone.url {
+        mac::release(u);
+    }
+    REVISION.fetch_add(1, Ordering::SeqCst);
+    Ok(true)
 }
 
 /// A folder the open panel just handed over (a project folder, say): kept
@@ -182,13 +225,13 @@ pub fn adopt_pick(path: &Path) -> bool {
     let Some(home) = dirs::home_dir() else {
         return false;
     };
-    if !guarded(path, &home) {
+    if !guarded(&normal(path), &normal(&home)) {
         return false;
     }
     match add(path) {
         Ok(new) => new,
         Err(e) => {
-            tracing::warn!(error = %e, path = %path.display(), "could not keep the picked folder");
+            tracing::debug!(error = %e, path = %path.display(), "could not keep the picked folder");
             false
         }
     }
@@ -227,8 +270,9 @@ mod mac {
 
     /// `NSURLBookmarkCreationWithSecurityScope`.
     const CREATE_SCOPED: usize = 1 << 11;
-    /// `NSURLBookmarkResolutionWithSecurityScope`.
-    const RESOLVE_SCOPED: usize = 1 << 10;
+    /// `NSURLBookmarkResolutionWithSecurityScope`, `…WithoutUI` and
+    /// `…WithoutMounting`: no dialog or volume mount, at launch above all.
+    const RESOLVE_SCOPED: usize = (1 << 10) | (1 << 8) | (1 << 9);
 
     fn class(name: &CStr) -> Option<&'static AnyClass> {
         AnyClass::get(name)
@@ -245,35 +289,46 @@ mod mac {
             }
             let url: *mut AnyObject =
                 msg_send![class(c"NSURL")?, fileURLWithPath: ns, isDirectory: Bool::YES];
-            if url.is_null() {
-                return None;
-            }
-            let mut error: *mut AnyObject = std::ptr::null_mut();
-            let data: *mut AnyObject = msg_send![
+            bookmark_of(url)
+        })
+    }
+
+    /// Bookmark data for a file URL, base64. Call inside a pool.
+    unsafe fn bookmark_of(url: *mut AnyObject) -> Option<String> {
+        if url.is_null() {
+            return None;
+        }
+        let mut error: *mut AnyObject = std::ptr::null_mut();
+        let data: *mut AnyObject = unsafe {
+            msg_send![
                 url,
                 bookmarkDataWithOptions: CREATE_SCOPED,
                 includingResourceValuesForKeys: std::ptr::null_mut::<AnyObject>(),
                 relativeToURL: std::ptr::null_mut::<AnyObject>(),
                 error: &mut error
-            ];
-            if data.is_null() {
-                return None;
-            }
-            let bytes: *const c_void = msg_send![data, bytes];
-            let len: usize = msg_send![data, length];
-            let slice = std::slice::from_raw_parts(bytes.cast::<u8>(), len);
-            Some(base64::engine::general_purpose::STANDARD.encode(slice))
-        })
+            ]
+        };
+        if data.is_null() {
+            return None;
+        }
+        let bytes: *const c_void = unsafe { msg_send![data, bytes] };
+        let len: usize = unsafe { msg_send![data, length] };
+        if bytes.is_null() || len == 0 {
+            return None;
+        }
+        // SAFETY: NSData owns `len` bytes at `bytes` while the pool lives.
+        let slice = unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), len) };
+        Some(base64::engine::general_purpose::STANDARD.encode(slice))
     }
 
     /// Resolve bookmark data and start accessing it: the retained URL (as an
-    /// address), its path, and fresh bookmark data when macOS called the
-    /// old one stale.
+    /// address), its path, and fresh bookmark data (made from the resolved
+    /// URL) when macOS called the old one stale and remaking it worked.
     pub fn resolve(saved: &str) -> Option<(usize, PathBuf, Option<String>)> {
         let raw = base64::engine::general_purpose::STANDARD
             .decode(saved)
             .ok()?;
-        let (url, path, stale) = autoreleasepool(|_| unsafe {
+        autoreleasepool(|_| unsafe {
             let data: *mut AnyObject = msg_send![
                 class(c"NSData")?,
                 dataWithBytes: raw.as_ptr().cast::<c_void>(),
@@ -303,12 +358,15 @@ mod mac {
                 return None;
             }
             let path = PathBuf::from(CStr::from_ptr(utf8).to_string_lossy().into_owned());
+            // Stale data still resolved: remake it while access lasts.
+            let fresh = if stale.as_bool() {
+                bookmark_of(url)
+            } else {
+                None
+            };
             let _: *mut AnyObject = msg_send![url, retain];
-            Some((url as usize, path, stale.as_bool()))
-        })?;
-        // Stale data still resolved: remake it while access lasts.
-        let fresh = if stale { bookmark(&path) } else { None };
-        Some((url, path, fresh))
+            Some((url as usize, path, fresh))
+        })
     }
 
     /// Stop accessing a URL from [`resolve`] and release it.
@@ -356,12 +414,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_backend_from_before_a_change_misses_it() {
-        assert!(misses_change(Some(7), Some(7)));
-        // Restarted since, or none was running: the new one has the list.
-        assert!(!misses_change(Some(7), Some(8)));
-        assert!(!misses_change(Some(7), None));
-        assert!(!misses_change(None, Some(7)));
+    fn only_a_backend_started_before_a_change_misses_it() {
+        assert!(misses_change(3, 2, true));
+        // Started with this list, or none runs: nothing to restart.
+        assert!(!misses_change(3, 3, true));
+        assert!(!misses_change(3, 2, false));
     }
 
     #[test]

@@ -21,13 +21,15 @@ pub fn view(s: &State, k: &Kit) -> El {
     let mut rows: Vec<El> = folder_access::list()
         .into_iter()
         .enumerate()
-        .map(|(ix, path)| {
+        .map(|(ix, (path, opens))| {
             let shown = shown(&path);
-            let remove = button_xs("Remove", Btn::Outline)
+            let forget = button_xs("Forget", Btn::Outline)
                 .on_press(move |s: &mut State| forget(s, path.clone()))
                 .build(k)
-                .key(format!("folder-remove-{ix}"));
-            setting_row(p, &shown, None, remove)
+                .key(format!("folder-forget-{ix}"));
+            let note = (!opens)
+                .then_some("Not available now (a drive not plugged in?). Tried again next start.");
+            setting_row(p, &shown, note, forget)
         })
         .collect();
     let add = button_xs("Add folder…", Btn::Primary)
@@ -115,9 +117,18 @@ fn pick(tx: &mut Tx) {
     });
 }
 
+/// ZLO drops its bookmark. macOS may still let it in (a whole-folder switch,
+/// or consent it keeps), so the note says what changed, not "revoked".
 fn forget(s: &mut State, path: PathBuf) {
-    if folder_access::remove(&path) {
-        s.pages.settings.notice = Some(format!("ZLO no longer has {}.", shown(&path)));
+    match folder_access::forget(&path) {
+        Ok(true) => {
+            s.pages.settings.notice = Some(format!(
+                "ZLO forgot {}. To block it entirely, check Files and Folders in System Settings.",
+                shown(&path)
+            ))
+        }
+        Ok(false) => {}
+        Err(e) => s.pages.settings.error = Some(e),
     }
 }
 

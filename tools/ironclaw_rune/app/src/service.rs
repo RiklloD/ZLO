@@ -466,6 +466,9 @@ fn spawn(paths: &Paths) -> std::io::Result<(Child, fs::File, u64)> {
         command.arg("--create-token-if-missing");
     }
     set_home_env(&mut command, &paths.home);
+    // This backend gets the granted folders as they are now; a later change
+    // waits for its restart (`folder_access::pending`).
+    crate::folder_access::note_backend_spawn();
     let child = command
         .current_dir(&workspace)
         .stdin(Stdio::null())
