@@ -471,23 +471,22 @@ fn spawn(paths: &Paths) -> std::io::Result<(Child, fs::File, u64)> {
     command.env("PATH", crate::login_path::path());
     // This backend gets the granted folders as they are now, handed over on
     // its stdin (never argv, env or logs); a later change waits for its
-    // restart (`folder_access::pending`).
-    let grants = crate::folder_access::handoff_for_backend_spawn();
-    if grants.is_empty() {
-        command.stdin(Stdio::null());
-    } else {
-        command
-            .env("ZLO_FOLDER_GRANTS", "stdin")
-            .stdin(Stdio::piped());
-    }
+    // restart (`folder_access::pending`). Only the bundled backend, which
+    // matches this app, reads them: an older installed CLI would not.
+    let grants = crate::folder_access::handoff_for_backend_spawn().filter(|_| paths.bundled);
+    match &grants {
+        Some(_) => command.arg("--folder-grants-stdin").stdin(Stdio::piped()),
+        None => command.stdin(Stdio::null()),
+    };
     let mut child = command
         .current_dir(&workspace)
         .stdout(log("serve.stdout.log")?)
         .stderr(stderr_log.try_clone()?)
         .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        // Off the supervisor thread: a backend that never reads cannot
-        // block it. EOF when the thread drops the pipe.
+    if let (Some(grants), Some(mut stdin)) = (grants, child.stdin.take()) {
+        // Off the supervisor thread. The backend reads it to the end first
+        // thing; if it dies first the write fails (EPIPE). EOF when the
+        // thread drops the pipe.
         let spawned = std::thread::Builder::new()
             .name("zlo-folder-grants".into())
             .spawn(move || {

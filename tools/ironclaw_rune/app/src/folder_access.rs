@@ -8,9 +8,9 @@
 //! there is readable and writable without the whole-folder switch. ZLO
 //! keeps each pick as a security-scoped bookmark and opens it again at
 //! launch, before it starts the backend. macOS ties that access to the
-//! process holding it, so each backend start also gets the folders handed
-//! over ([`handoff`], written to its stdin by `service.rs`; opened there by
-//! `ironclaw_cli`'s `folder_grants.rs`).
+//! process holding it, so each start of the bundled backend also gets the
+//! folders handed over ([`handoff_for_backend_spawn`], written to its stdin
+//! by `service.rs`; opened there by `ironclaw_cli`'s `folder_grants.rs`).
 //!
 //! The list is saved next to the appearance prefs as `folder-access.json`
 //! (path plus bookmark, base64). A folder that does not open at launch (a
@@ -52,7 +52,8 @@ static GRANTS: Mutex<Vec<Grant>> = Mutex::new(Vec::new());
 
 /// Bumped by every saved change to the list.
 static REVISION: AtomicU64 = AtomicU64::new(0);
-/// The revision the newest backend was started with ([`note_backend_spawn`]).
+/// The revision the newest backend was started with
+/// ([`handoff_for_backend_spawn`]).
 static APPLIED: AtomicU64 = AtomicU64::new(0);
 
 fn grants() -> std::sync::MutexGuard<'static, Vec<Grant>> {
@@ -124,23 +125,33 @@ pub fn restore() {
     *grants() = opened;
 }
 
-/// The service is about to start a backend: it gets the list as it is now,
-/// as one hex bookmark per line for its stdin (empty: nothing to hand
-/// over). Implicitly scoped bookmarks, made from the URLs this process is
-/// accessing, are how macOS passes that access to another process. Never
-/// logged: they are capabilities.
-pub fn handoff_for_backend_spawn() -> String {
+/// The service is about to start a backend: it gets the list as it is now.
+/// Returns the stdin hand-over for it (`folder_grants.rs`'s framing), or
+/// `None` when there is nothing to hand over. Implicitly scoped bookmarks,
+/// made from the URLs this process is accessing, are how macOS passes that
+/// access to another process. Never logged: they are capabilities.
+pub fn handoff_for_backend_spawn() -> Option<String> {
     APPLIED.store(REVISION.load(Ordering::SeqCst), Ordering::SeqCst);
-    let mut out = String::new();
-    for g in grants().iter() {
-        if let Some(data) = g.url.and_then(mac::implicit_bookmark) {
-            for b in data {
-                out.push_str(&format!("{b:02x}"));
-            }
-            out.push('\n');
-        }
+    let lines: Vec<String> = grants()
+        .iter()
+        .filter_map(|g| g.url.and_then(mac::implicit_bookmark))
+        .map(|data| data.iter().map(|b| format!("{b:02x}")).collect())
+        .collect();
+    framed(&lines)
+}
+
+/// The hand-over text for `lines` (hex bookmarks); `None` when empty.
+fn framed(lines: &[String]) -> Option<String> {
+    if lines.is_empty() {
+        return None;
     }
-    out
+    let mut out = format!("zlo-folder-grants 1 {}\n", lines.len());
+    for l in lines {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.push_str("end\n");
+    Some(out)
 }
 
 /// Whether the running backend started before the last change to the list,
@@ -449,6 +460,15 @@ mod tests {
         // Started with this list, or none runs: nothing to restart.
         assert!(!misses_change(3, 3, true));
         assert!(!misses_change(3, 2, false));
+    }
+
+    #[test]
+    fn the_hand_over_is_framed_as_the_backend_reads_it() {
+        assert_eq!(framed(&[]), None);
+        assert_eq!(
+            framed(&["0102".into(), "03".into()]).as_deref(),
+            Some("zlo-folder-grants 1 2\n0102\n03\nend\n")
+        );
     }
 
     #[test]
