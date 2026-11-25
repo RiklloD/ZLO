@@ -83,40 +83,42 @@ pub fn bind_isolated_base_dir_for_tests() -> std::io::Result<PathBuf> {
     Ok(bound)
 }
 
-/// Parent of every test process's isolated base. One fixed directory under
-/// the system temp dir, so leftovers from earlier runs are found and swept
-/// instead of accumulating as one stray temp dir per process.
+/// Parent of every test process's isolated base and owned fixture dir. One
+/// fixed directory under the system temp dir, so dirs left by dead processes
+/// are found and reclaimed instead of accumulating.
 #[cfg(any(test, feature = "test-support"))]
 pub fn isolated_test_root() -> PathBuf {
     std::env::temp_dir().join("ironclaw-trace-commons-tests")
 }
 
-/// How old a sibling process's isolated base must be before a later test
-/// process removes it. Far longer than any test binary runs, so a live
-/// process's base is never swept from under it.
+/// Create a fresh directory under [`isolated_test_root`] that this process
+/// owns for its whole lifetime, for test fixtures that need a process-wide
+/// Trace Commons base (pass it to [`set_base_dir`]). Unlike a `TempDir` held
+/// in a static (statics never drop), it is reclaimed by a later test process
+/// once this one has exited.
 #[cfg(any(test, feature = "test-support"))]
-const STALE_ISOLATED_BASE_AGE: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+pub fn owned_test_dir() -> std::io::Result<PathBuf> {
+    let root = isolated_test_root();
+    static SWEPT: std::sync::Once = std::sync::Once::new();
+    SWEPT.call_once(|| owned_dirs::sweep_abandoned(&root));
+    owned_dirs::create_under(&root)
+}
 
 #[cfg(any(test, feature = "test-support"))]
 fn bind_isolated_or_existing() -> PathBuf {
     static ISOLATED: OnceLock<PathBuf> = OnceLock::new();
     let isolated = ISOLATED.get_or_init(|| {
-        let root = isolated_test_root();
-        sweep_stale_isolated_bases(&root);
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or_default();
-        let dir = root.join(format!("pid-{}-{nanos}", std::process::id()));
-        // Best effort: writers create their own parents, and a failure here
-        // must not redirect state anywhere else.
-        if let Err(error) = std::fs::create_dir_all(&dir) {
+        owned_test_dir().unwrap_or_else(|error| {
+            // Still a private temp path, never the real base; it is just not
+            // reclaimable by the sweep.
+            let fallback = isolated_test_root().join(format!("unowned-{}", std::process::id()));
             eprintln!(
-                "trace commons tests: could not create isolated base {}: {error}",
-                dir.display()
+                "trace commons tests: could not create an owned isolated base ({error}); \
+                 using {}",
+                fallback.display()
             );
-        }
-        dir
+            fallback
+        })
     });
     match set_base_dir(isolated.clone()) {
         Ok(()) => isolated.clone(),
@@ -124,29 +126,101 @@ fn bind_isolated_or_existing() -> PathBuf {
     }
 }
 
-/// Remove isolated bases left by earlier test processes (statics never drop,
-/// so a process cannot remove its own). Best effort; errors are ignored.
+/// Lock-based ownership of the dirs under [`isolated_test_root`].
+///
+/// Each owned dir is named `pid-<pid>-<nanos>-<seq>` and holds an `.owner`
+/// file that its process locks exclusively (and stamps with its pid) for its
+/// whole lifetime, through a static that never drops. The OS releases the
+/// lock when the process dies, so the sweep deletes a dir only when it can
+/// take that lock itself AND finds the stamp: the owner is gone. An empty
+/// `.owner` means the owner is still between creating and stamping it, a
+/// dir without `.owner` is not ours to judge, and names that do not match
+/// the pattern are never touched.
 #[cfg(any(test, feature = "test-support"))]
-fn sweep_stale_isolated_bases(root: &std::path::Path) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    let now = std::time::SystemTime::now();
-    for entry in entries.flatten() {
-        let stale = entry
-            .metadata()
-            .and_then(|meta| meta.modified())
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age > STALE_ISOLATED_BASE_AGE);
-        if stale {
-            // Best effort: another process may be sweeping the same entry.
-            if let Err(error) = std::fs::remove_dir_all(entry.path()) {
+mod owned_dirs {
+    use std::fs::{File, TryLockError};
+    use std::io::{Read, Write};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const OWNER_FILE: &str = ".owner";
+
+    /// Lock handles of every dir this process owns; never dropped.
+    static OWNERS: Mutex<Vec<File>> = Mutex::new(Vec::new());
+
+    pub(super) fn create_under(root: &Path) -> std::io::Result<PathBuf> {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        std::fs::create_dir_all(root)?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = root.join(format!("pid-{}-{nanos}-{seq}", std::process::id()));
+        std::fs::create_dir(&dir)?;
+        let mut owner = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join(OWNER_FILE))?;
+        // Blocking: a sweeper that grabbed the fresh, still-empty file
+        // releases it at once without deleting anything.
+        owner.lock()?;
+        write!(owner, "{}", std::process::id())?;
+        owner.flush()?;
+        OWNERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(owner);
+        Ok(dir)
+    }
+
+    pub(super) fn is_owned_dir_name(name: &str) -> bool {
+        let Some(rest) = name.strip_prefix("pid-") else {
+            return false;
+        };
+        let parts: Vec<&str> = rest.split('-').collect();
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    /// Remove dirs under `root` whose owning process has exited. Best effort.
+    pub(super) fn sweep_abandoned(root: &Path) {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let is_candidate = entry.file_name().to_str().is_some_and(is_owned_dir_name)
+                && entry.file_type().is_ok_and(|kind| kind.is_dir());
+            if is_candidate
+                && owner_is_gone(&entry.path().join(OWNER_FILE))
+                && let Err(error) = std::fs::remove_dir_all(entry.path())
+            {
                 eprintln!(
-                    "trace commons tests: could not sweep stale base {}: {error}",
+                    "trace commons tests: could not reclaim {}: {error}",
                     entry.path().display()
                 );
             }
+        }
+    }
+
+    /// True only when this process can take `.owner`'s lock and it carries
+    /// an owner stamp. The lock is released before returning; the dir name
+    /// is unique to a process that is gone, so nothing re-takes it.
+    fn owner_is_gone(owner_path: &Path) -> bool {
+        let Ok(mut owner) = File::options().read(true).write(true).open(owner_path) else {
+            return false;
+        };
+        match owner.try_lock() {
+            Ok(()) => {
+                let mut stamp = String::new();
+                owner.read_to_string(&mut stamp).is_ok() && !stamp.trim().is_empty()
+            }
+            Err(TryLockError::WouldBlock | TryLockError::Error(_)) => false,
         }
     }
 }
@@ -157,7 +231,10 @@ fn sweep_stale_isolated_bases(root: &std::path::Path) {
 /// the exact state of a developer who opted into Trace Commons. The child
 /// test asserts "not enrolled" behavior; it can only pass if the code under
 /// test ignores the default base. Afterwards the probe also checks the child
-/// wrote nothing into that base.
+/// wrote nothing into that base and left its `policy.json` byte-identical.
+/// The child also gets `IRONCLAW_BASE_DIR` pointed at that same base, so the
+/// real-default fallback resolves there on every platform (on Windows `dirs`
+/// reads the profile known folder, not `HOME`).
 ///
 /// Env changes go only to the child process, so this is safe under parallel
 /// tests.
@@ -201,7 +278,10 @@ pub mod leak_probe {
             .args([test_path, "--exact", "--nocapture", "--test-threads=1"])
             .env(CHILD_ENV, "1")
             .env("HOME", home)
-            .env_remove("IRONCLAW_BASE_DIR")
+            // `dirs` ignores HOME on Windows (profile known folder), so also
+            // point the env override at the seeded base: a regressed fallback
+            // then lands where this probe inspects on every platform.
+            .env("IRONCLAW_BASE_DIR", home.join(".ironclaw"))
             .env_remove("ZLO_HOME")
             .output()
             .map_err(|e| format!("spawn probe child: {e}"))?;
@@ -256,6 +336,61 @@ pub mod leak_probe {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sweep_reclaims_only_abandoned_owned_dirs() {
+        let root = tempfile::tempdir().expect("sweep root");
+        let make = |name: &str, stamp: Option<&str>| {
+            let dir = root.path().join(name);
+            std::fs::create_dir(&dir).expect("create dir");
+            if let Some(stamp) = stamp {
+                std::fs::write(dir.join(".owner"), stamp).expect("write owner");
+            }
+            dir
+        };
+        // Live: another holder keeps the lock; an ancient mtime must not matter.
+        let held = make("pid-11-1-0", Some("11"));
+        let held_lock = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(held.join(".owner"))
+            .expect("open held owner");
+        held_lock.lock().expect("hold owner lock");
+        #[cfg(unix)]
+        {
+            let ancient = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+            std::fs::File::open(&held)
+                .and_then(|dir| dir.set_modified(ancient))
+                .expect("age held dir");
+        }
+        // Live through the real creator (lock kept in this process's static).
+        let created = super::owned_dirs::create_under(root.path()).expect("owned dir");
+        // Abandoned: stamped, nobody holds the lock.
+        let abandoned = make("pid-22-2-0", Some("22"));
+        // Not ours to judge: wrong name, or no / empty owner file.
+        let unrelated = make("keep-me", Some("33"));
+        let ownerless = make("pid-44-4-0", None);
+        let unstamped = make("pid-55-5-0", Some(""));
+
+        super::owned_dirs::sweep_abandoned(root.path());
+
+        assert!(held.exists(), "a dir whose owner lock is held must survive");
+        assert!(created.exists(), "this process's own dir must survive");
+        assert!(
+            !abandoned.exists(),
+            "an abandoned owned dir must be reclaimed"
+        );
+        assert!(
+            unrelated.exists(),
+            "names outside the pattern are never touched"
+        );
+        assert!(ownerless.exists(), "a dir without .owner is not reclaimed");
+        assert!(
+            unstamped.exists(),
+            "an unstamped .owner may be mid-creation"
+        );
+        drop(held_lock);
+    }
+
     #[test]
     fn default_base_ignores_enrolled_real_home() {
         if super::leak_probe::is_child() {
