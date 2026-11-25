@@ -200,13 +200,13 @@ impl Checkout {
     /// checked out, else the checked-out branch. Its remote comes from
     /// `branch.<name>.remote`, default `origin`.
     pub(crate) fn tracking(&self, configured: Option<&str>) -> Result<Tracking, GitRefusal> {
+        // The full ref, not `--short`: with a tag of the same name `--short`
+        // says `heads/<name>`, which would never match the configured branch.
         let checked_out = self
-            .git(
-                &["symbolic-ref", "--quiet", "--short", "HEAD"],
-                LOCAL_TIMEOUT,
-            )
-            .map(|s| s.trim().to_string())
-            .map_err(|_| GitRefusal::DetachedHead)?;
+            .git(&["symbolic-ref", "--quiet", "HEAD"], LOCAL_TIMEOUT)
+            .ok()
+            .and_then(|full| branch_of_symbolic_ref(full.trim()).map(str::to_string))
+            .ok_or(GitRefusal::DetachedHead)?;
         if !is_safe_branch_name(&checked_out) {
             return Err(GitRefusal::NoUpstream(checked_out));
         }
@@ -576,6 +576,12 @@ fn collect(reader: std::sync::mpsc::Receiver<String>, deadline: Instant) -> Stri
     reader.recv_timeout(wait).unwrap_or_default() // silent-ok: a pipe still held open after the grace yields no output; the exit status still decides
 }
 
+/// The branch a full symbolic ref (`refs/heads/<name>`) names; `None` for
+/// anything else.
+fn branch_of_symbolic_ref(full: &str) -> Option<&str> {
+    full.strip_prefix("refs/heads/").filter(|b| !b.is_empty())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -861,6 +867,19 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(checkout.head().expect("head"), local, "nothing merged");
+    }
+
+    #[test]
+    fn a_branch_with_a_same_named_tag_is_still_followed() {
+        assert_eq!(branch_of_symbolic_ref("refs/heads/main"), Some("main"));
+        assert_eq!(branch_of_symbolic_ref("refs/heads/a/b"), Some("a/b"));
+        assert_eq!(branch_of_symbolic_ref("refs/tags/main"), None);
+        assert_eq!(branch_of_symbolic_ref("refs/heads/"), None);
+        let r = repos();
+        sh(&r.checkout, &["tag", "main"]);
+        let checkout = Checkout::open(&r.checkout).expect("open");
+        let tracking = checkout.tracking(Some("main")).expect("tracking");
+        assert_eq!(tracking.branch, "main");
     }
 
     #[test]

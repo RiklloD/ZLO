@@ -145,9 +145,20 @@ pub(crate) fn run_job(
     host: &dyn UpdateHost,
     progress: &mut dyn FnMut(&str),
 ) -> anyhow::Result<Result<RunRecord, JobRefused>> {
-    let Some(_lock) = records::lock_for_job(input.paths)? else {
+    let Some(lock) = records::lock_for_job(input.paths)? else {
         return Ok(Err(JobRefused::AlreadyRunning));
     };
+    run_locked(&lock, input, host, progress).map(Ok)
+}
+
+/// [`run_job`] for a caller that already holds the lock (the detached job,
+/// which reads `[update]` only once it has it).
+pub(crate) fn run_locked(
+    _lock: &records::UpdateLock,
+    input: JobInput<'_>,
+    host: &dyn UpdateHost,
+    progress: &mut dyn FnMut(&str),
+) -> anyhow::Result<RunRecord> {
     let mut log = records::fresh_log(input.paths)?;
     let mut record = RunRecord::running("Fetching the source");
     let mut step = |record: &mut RunRecord, message: &str, log: &mut std::fs::File| {
@@ -171,7 +182,7 @@ pub(crate) fn run_job(
     };
     records::write_run(input.paths, &finished)?;
     progress(finished.message.as_deref().unwrap_or_default());
-    Ok(Ok(finished))
+    Ok(finished)
 }
 
 type Step<'s> = dyn FnMut(&mut RunRecord, &str, &mut std::fs::File) -> anyhow::Result<()> + 's;

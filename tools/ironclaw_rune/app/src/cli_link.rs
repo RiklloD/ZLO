@@ -14,9 +14,15 @@
 //! (`install.sh`, run on purpose, re-points it).
 //!
 //! The home comes from the bundled backend itself (`zlo-backend config
-//! path`), which resolves it the way the backend does and moves a pre-ZLO
-//! `~/.ironclaw/reborn` first: writing `~/.zlo/bin` before that move would
-//! strand the old data behind a new, nearly empty `~/.zlo`.
+//! path --home`, which prints only the path), which resolves it the way the
+//! backend does and moves a pre-ZLO `~/.ironclaw/reborn` first: writing
+//! `~/.zlo/bin` before that move would strand the old data behind a new,
+//! nearly empty `~/.zlo`.
+//!
+//! Both writers hold `bin/.zlo-link.lock` (an flock; `install.sh` takes it
+//! with lockf(1)) around the link and the marker, so the pair changes
+//! together. The marker is written to a temp file and renamed over, never
+//! opened for writing, and a marker that is a symlink is refused.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -28,6 +34,15 @@ const ZLO_BUNDLE_ID: &str = "com.numoh.desktop";
 /// Next to the link: the target ZLO last wrote, so a dangling link (the
 /// app it pointed into was deleted) can be told apart from someone else's.
 const MARKER: &str = ".zlo-managed";
+
+/// Next to the link: held by whoever is changing the link and the marker.
+const LOCK: &str = ".zlo-link.lock";
+
+/// How long to wait for the other writer (the installer holds it briefly).
+#[cfg(not(test))]
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(test)]
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// This bundle's `Contents/MacOS/zlo-backend`, when the app runs from a
 /// ZLO.app that has one (never under `cargo run` or a Light bundle).
@@ -68,29 +83,29 @@ fn link_into_resolved_home(
     Ok((link, outcome))
 }
 
-/// Ask the backend for its (migrated) home: `reborn_home: <path>` from
-/// `zlo-backend config path`.
+/// Ask the backend for its (migrated) home: `zlo-backend config path
+/// --home` prints only the path.
 fn resolved_home(backend: &Path) -> io::Result<PathBuf> {
     let out = Command::new(backend)
-        .args(["config", "path"])
+        .args(["config", "path", "--home"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()?;
     if !out.status.success() {
         return Err(io::Error::other(format!(
-            "`zlo-backend config path` exited with {}",
+            "`zlo-backend config path --home` exited with {}",
             out.status
         )));
     }
-    parse_reborn_home(&String::from_utf8_lossy(&out.stdout))
-        .ok_or_else(|| io::Error::other("`zlo-backend config path` printed no reborn_home"))
+    parse_home(&String::from_utf8_lossy(&out.stdout))
+        .ok_or_else(|| io::Error::other("`zlo-backend config path --home` printed no home"))
 }
 
-fn parse_reborn_home(stdout: &str) -> Option<PathBuf> {
-    stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("reborn_home: "))
-        .map(PathBuf::from)
+/// The one line `config path --home` prints: an absolute path.
+fn parse_home(stdout: &str) -> Option<PathBuf> {
+    let line = stdout.strip_suffix('\n').unwrap_or(stdout);
+    (!line.is_empty() && !line.contains('\n'))
+        .then(|| PathBuf::from(line))
         .filter(|path| path.is_absolute())
 }
 
@@ -110,9 +125,10 @@ pub fn refresh(link: &Path, target: &Path) -> io::Result<Outcome> {
     let dir = link
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "link has no folder"))?;
+    std::fs::create_dir_all(dir)?;
+    let _lock = lock_dir(dir)?;
     match std::fs::symlink_metadata(link) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            std::fs::create_dir_all(dir)?;
             // Exclusive: `symlink` fails when anything appeared meanwhile.
             match std::os::unix::fs::symlink(target, link) {
                 Ok(()) => {}
@@ -179,17 +195,78 @@ fn owned_dangling(dir: &Path, raw: &Path) -> bool {
         std::fs::metadata(absolute_in(dir, raw)),
         Err(e) if e.kind() == io::ErrorKind::NotFound
     );
-    gone && std::fs::read_to_string(dir.join(MARKER))
-        .is_ok_and(|recorded| Path::new(recorded.trim_end_matches('\n')) == raw)
+    let marker = dir.join(MARKER);
+    gone && std::fs::symlink_metadata(&marker).is_ok_and(|meta| meta.is_file())
+        && std::fs::read_to_string(&marker)
+            .is_ok_and(|recorded| Path::new(recorded.trim_end_matches('\n')) == raw)
 }
 
+/// The link lock for `dir`, waiting up to [`LOCK_WAIT`] for the other
+/// writer. Released when the returned file drops.
+fn lock_dir(dir: &Path) -> io::Result<std::fs::File> {
+    let path = dir.join(LOCK);
+    if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is a symlink; not locking through it", path.display()),
+        ));
+    }
+    // Never written to: only flocked.
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!("{} is held by another writer", path.display()),
+                ));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        }
+    }
+}
+
+/// Record `target` in the marker: a temp file in the same folder renamed
+/// over it, so the marker path is never opened for writing (a symlink
+/// planted there is never followed). A marker that is a symlink is refused.
 fn write_marker(dir: &Path, target: &Path) -> io::Result<()> {
     let marker = dir.join(MARKER);
     let line = format!("{}\n", target.display());
-    if std::fs::read_to_string(&marker).is_ok_and(|now| now == line) {
-        return Ok(());
+    match std::fs::symlink_metadata(&marker) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is a symlink; not writing through it", marker.display()),
+            ));
+        }
+        Ok(meta)
+            if meta.is_file() && std::fs::read_to_string(&marker).is_ok_and(|now| now == line) =>
+        {
+            return Ok(());
+        }
+        _ => {}
     }
-    std::fs::write(marker, line)
+    let staged = dir.join(format!(".zlo-managed-{}", std::process::id()));
+    let _ = std::fs::remove_file(&staged); // silent-ok: a leftover from a crashed launch, if any
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged)
+        .and_then(|mut file| io::Write::write_all(&mut file, line.as_bytes()))
+        .and_then(|()| std::fs::rename(&staged, &marker));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staged); // silent-ok: cleanup; the write error is returned
+    }
+    written
 }
 
 /// `…/<Name>.app/Contents/MacOS/zlo-backend` of an app whose Info.plist
@@ -294,8 +371,8 @@ mod tests {
         fs::write(&link, b"mine").unwrap();
         assert_eq!(refresh(&link, &new).unwrap(), Outcome::LeftAlone);
         assert_eq!(fs::read(&link).unwrap(), b"mine");
-        // No staging leftovers: the link and the marker only.
-        assert_eq!(fs::read_dir(link.parent().unwrap()).unwrap().count(), 2);
+        // No staging leftovers: the link, the marker and the lock only.
+        assert_eq!(fs::read_dir(link.parent().unwrap()).unwrap().count(), 3);
     }
 
     #[test]
@@ -315,6 +392,57 @@ mod tests {
     }
 
     #[test]
+    fn the_marker_is_replaced_never_written_through() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("bin");
+        fs::create_dir_all(&dir).unwrap();
+        let target = app_in(root.path(), "ZLO.app", ZLO_BUNDLE_ID);
+
+        // An existing marker is replaced by a new file (a hard link to it,
+        // or an open handle, still sees the old bytes), and nothing is left.
+        fs::write(dir.join(MARKER), "/old\n").unwrap();
+        let alias = root.path().join("alias");
+        fs::hard_link(dir.join(MARKER), &alias).unwrap();
+        write_marker(&dir, &target).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join(MARKER)).unwrap(),
+            format!("{}\n", target.display())
+        );
+        assert_eq!(fs::read_to_string(&alias).unwrap(), "/old\n");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        // A marker that is a symlink is refused; its target is untouched.
+        let victim = root.path().join("victim");
+        fs::write(&victim, "precious").unwrap();
+        fs::remove_file(dir.join(MARKER)).unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join(MARKER)).unwrap();
+        assert!(write_marker(&dir, &target).is_err());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "precious");
+        // ... and is not trusted as a record either.
+        let link = dir.join("zlo");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        fs::remove_file(&victim).unwrap();
+        assert!(!owned_dangling(&dir, &fs::read_link(&link).unwrap()));
+    }
+
+    #[test]
+    fn a_held_link_lock_keeps_the_app_out() {
+        let root = tempfile::tempdir().unwrap();
+        let link = root.path().join("bin/zlo");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        let target = app_in(root.path(), "ZLO.app", ZLO_BUNDLE_ID);
+        let held = lock_dir(link.parent().unwrap()).unwrap();
+        let err = refresh(&link, &target).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        assert!(
+            fs::symlink_metadata(&link).is_err(),
+            "nothing written while held"
+        );
+        drop(held);
+        assert_eq!(refresh(&link, &target).unwrap(), Outcome::Linked);
+    }
+
+    #[test]
     fn the_link_waits_for_the_resolved_home() {
         let root = tempfile::tempdir().unwrap();
         let backend = app_in(root.path(), "ZLO.app", ZLO_BUNDLE_ID);
@@ -329,12 +457,16 @@ mod tests {
         let (link, outcome) = link_into_resolved_home(&backend, || Ok(home.clone())).unwrap();
         assert_eq!((link, outcome), (home.join("bin/zlo"), Outcome::Linked));
 
-        let out =
-            "IronClaw Reborn config path\nreborn_home: /Users/me/.zlo\nhome_source: default\n";
         assert_eq!(
-            parse_reborn_home(out),
-            Some(PathBuf::from("/Users/me/.zlo"))
+            parse_home("/Users/me/My [ZLO] home\n"),
+            Some(PathBuf::from("/Users/me/My [ZLO] home"))
         );
-        assert_eq!(parse_reborn_home("reborn_home: relative\n"), None);
+        assert_eq!(parse_home("relative\n"), None);
+        assert_eq!(parse_home(""), None);
+        assert_eq!(
+            parse_home("IronClaw Reborn config path\nreborn_home: /x\n"),
+            None,
+            "only the one-line machine output is accepted"
+        );
     }
 }

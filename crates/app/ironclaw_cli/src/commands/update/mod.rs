@@ -16,8 +16,10 @@
 //!   `cargo build --release -p ironclaw` and an atomic replace of this
 //!   binary), then restart through `zlo service` when it is installed.
 //!   For ZLO.app the CLI hands the job to the detached updater and returns:
-//!   `bundle.sh` waits until nothing under the bundle runs, which would
-//!   include a CLI started from inside it.
+//!   `bundle.sh` quits and waits for the ZLO that runs from that bundle,
+//!   which would include a CLI started from inside it. The run is reserved
+//!   first ([`records::reserve`], shared with the app's button), so a second
+//!   start is refused and `--json` shows it at once.
 //!
 //! The backend runs the same job detached for `POST /api/operator/update`
 //! (`job.rs`); its records live under `<reborn_home>/update/`
@@ -261,12 +263,25 @@ impl UpdateCommand {
         }
 
         if self.run_job {
-            let settings = settings.ok_or_else(|| anyhow::anyhow!(ENABLE_HINT))?;
             let install_path = self
                 .install_path
                 .ok_or_else(|| anyhow::anyhow!("--run-job needs --install-path"))?;
+            // The lock first, then `[update]`: an installer or `enable`
+            // that held the lock a moment ago may just have rewritten it.
+            let Some(lock) = records::lock_for_job(&paths)? else {
+                // Another job holds the lock; it owns run.json.
+                eprintln!("zlo update: another update is already running");
+                return Ok(());
+            };
+            let config_file = RebornConfigFile::load(&config_path)
+                .with_context(|| format!("read {}", config_path.display()))?;
+            let Some(settings) = source_settings(config_file.as_ref()) else {
+                records::reservation_failed(&paths, ENABLE_HINT)?;
+                anyhow::bail!("{ENABLE_HINT}");
+            };
             let install = job::InstallKind::detect(&install_path, &settings.repo);
-            let outcome = job::run_job(
+            job::run_locked(
+                &lock,
                 job::JobInput {
                     paths: &paths,
                     settings: &settings,
@@ -276,10 +291,6 @@ impl UpdateCommand {
                 &job::SystemUpdateHost,
                 &mut |_| {},
             )?;
-            if outcome.is_err() {
-                // Another job holds the lock; it owns run.json.
-                eprintln!("zlo update: another update is already running");
-            }
             return Ok(());
         }
 
@@ -395,10 +406,18 @@ impl UpdateCommand {
         home: &Path,
         service: &SourceSelfUpdate,
     ) -> anyhow::Result<()> {
-        if records::is_locked(paths)? {
+        // Published before returning, so a second `zlo update` (or the
+        // app's button) is refused and `--json` shows this run.
+        if records::reserve(paths)? == records::Reservation::AlreadyRunning {
             anyhow::bail!("another update is already running");
         }
-        job::spawn_detached(paths, exe, home)?;
+        if let Err(error) = job::spawn_detached(paths, exe, home) {
+            records::reservation_failed(
+                paths,
+                &format!("The update job could not be started: {error:#}"),
+            )?;
+            return Err(error);
+        }
         if self.json {
             let status = service.status_blocking()?;
             println!("{}", serde_json::to_string_pretty(&status)?);

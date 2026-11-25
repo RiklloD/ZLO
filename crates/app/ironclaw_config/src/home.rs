@@ -620,4 +620,89 @@ mod tests {
         .expect("resolves");
         assert!(matches!(early.migration(), HomeMigration::BothExist { .. }));
     }
+
+    /// `install.sh` finds the update lock (`<home>/update/update.lock`)
+    /// before any ZLO build exists to ask, with its own `zlo_data_home`. It
+    /// must name the folder the backend locks: the resolved home, or the
+    /// pre-ZLO folder while that still holds the data (which the move keeps
+    /// as the same directory).
+    #[cfg(unix)]
+    #[test]
+    fn the_installer_finds_the_same_data_home_as_the_resolver() {
+        let script = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../install.sh"),
+        )
+        .expect("install.sh");
+        let lib_dir = tempfile::tempdir().expect("lib dir");
+        let lib = lib_dir.path().join("install_lib.sh");
+        let body = script
+            .trim_end()
+            .strip_suffix("main \"$@\"")
+            .expect("install.sh ends by calling main");
+        std::fs::write(&lib, body).expect("lib");
+        let installer = |user: &Path, zlo_home: Option<&str>| -> String {
+            let mut command = std::process::Command::new("/bin/sh");
+            command
+                .arg("-c")
+                .arg(". \"$0\"; zlo_data_home")
+                .arg(&lib)
+                .env("HOME", user)
+                .env_remove(REBORN_HOME_ENV)
+                .env_remove(LEGACY_REBORN_HOME_ENV);
+            if let Some(value) = zlo_home {
+                command.env(REBORN_HOME_ENV, value);
+            }
+            let out = command.output().expect("sh runs");
+            assert!(out.status.success(), "zlo_data_home failed");
+            String::from_utf8(out.stdout).expect("utf8")
+        };
+        let resolver = |user: &Path, zlo_home: Option<&str>| {
+            let home = RebornHome::resolve_from_env_parts_without_migrating(
+                zlo_home.map(OsString::from),
+                Some(user.as_os_str().to_owned()),
+                None,
+            )
+            .expect("resolves");
+            match home.source() {
+                RebornHomeSource::Default => current_data_location(user),
+                _ => home.path().to_path_buf(),
+            }
+        };
+        let same = |user: &Path, zlo_home: Option<&str>| {
+            assert_eq!(
+                PathBuf::from(installer(user, zlo_home)),
+                resolver(user, zlo_home),
+                "ZLO_HOME={zlo_home:?}"
+            );
+        };
+
+        let user = tempfile::tempdir().expect("user home");
+        let user = user.path();
+        same(user, None); // fresh
+        same(user, Some("/elsewhere/zlo"));
+        let legacy = crate::legacy_home_path(user);
+        std::fs::create_dir_all(&legacy).expect("legacy");
+        std::fs::write(legacy.join("config.toml"), "").expect("legacy config");
+        same(user, None); // the data is still in the pre-ZLO folder
+        std::fs::create_dir_all(user.join(DEFAULT_HOME_DIR_NAME)).expect("empty .zlo");
+        same(user, None); // an empty ~/.zlo does not count yet
+
+        // After the move the installer's answer is ~/.zlo, and the lock it
+        // took before the move is the same file the backend now locks.
+        let before = PathBuf::from(installer(user, None)).join("update");
+        std::fs::create_dir_all(&before).expect("lock dir");
+        std::fs::write(before.join("update.lock"), "").expect("lock");
+        let migrated = RebornHome::resolve_from_env_parts_migrating(
+            None,
+            Some(user.as_os_str().to_owned()),
+            None,
+        )
+        .expect("migrates");
+        same(user, None);
+        assert!(migrated.path().join("update/update.lock").is_file());
+        assert_eq!(
+            std::fs::canonicalize(before.join("update.lock")).expect("old path"),
+            std::fs::canonicalize(migrated.path().join("update/update.lock")).expect("new path")
+        );
+    }
 }

@@ -28,7 +28,13 @@ enum ConfigSubcommand {
 }
 
 #[derive(Debug, Args)]
-struct ConfigPathCommand;
+struct ConfigPathCommand {
+    /// Print only the (migrated) home folder, nothing else. For scripts:
+    /// `install.sh` and the app's `zlo` link (`tools/ironclaw_rune/app/src/cli_link.rs`)
+    /// read it to learn where `bin/zlo` and `update/update.lock` live.
+    #[arg(long)]
+    home: bool,
+}
 
 mod capability_config;
 mod get;
@@ -65,6 +71,10 @@ impl ConfigPathCommand {
         let report =
             ironclaw_config::RebornDoctorReport::from_config(context.boot_config().clone());
         let home = context.boot_config().home();
+        if self.home {
+            println!("{}", home.path().display());
+            return Ok(());
+        }
         let config_file = crate::runtime::read_config_file(context.boot_config())?;
         let profile =
             crate::runtime::effective_profile(context.boot_config(), config_file.as_ref())?;
@@ -80,8 +90,6 @@ impl ConfigPathCommand {
         };
 
         println!("IronClaw Reborn config path");
-        // `install.sh` and the app's `zlo` link (`tools/ironclaw_rune/app/src/cli_link.rs`)
-        // read this line to learn the migrated home: keep its `reborn_home: ` prefix.
         println!("reborn_home: {}", report.home_path().display());
         println!("home_source: {}", report.home_source_label());
         println!("profile: {}", profile);

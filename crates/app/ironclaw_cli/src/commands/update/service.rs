@@ -19,7 +19,7 @@ use ironclaw_webui::{SelfUpdateError, SelfUpdateService};
 
 use super::git::{Checkout, GitRefusal, Scope};
 use super::job;
-use super::records::{self, CheckRecord, RunRecord, UpdatePaths};
+use super::records::{self, CheckRecord, UpdatePaths};
 
 /// A backend that just started checks its source this soon.
 const FIRST_CHECK_AFTER: Duration = Duration::from_secs(20);
@@ -232,22 +232,18 @@ impl SourceSelfUpdate {
             return Err(SelfUpdateError::NotConfigured);
         }
         let spawner = self.spawner.as_ref().ok_or(SelfUpdateError::Unavailable)?;
-        let locked = records::is_locked(&self.paths).map_err(unavailable)?;
-        let starting = records::read_run(&self.paths)
-            .map_err(unavailable)?
-            .is_some_and(|run| run.just_started(Utc::now()));
-        if locked || starting {
+        if records::reserve(&self.paths).map_err(unavailable)?
+            == records::Reservation::AlreadyRunning
+        {
             return Err(SelfUpdateError::AlreadyRunning);
         }
-        records::write_run(&self.paths, &RunRecord::running("Starting the update"))
-            .map_err(unavailable)?;
         if let Err(error) = spawner.spawn(&self.paths) {
             tracing::error!(target: "ironclaw::reborn::cli::update", error = %format!("{error:#}"), "update job did not start");
-            let failed = RunRecord::running("Starting the update").finish(
-                ironclaw_product_contracts::self_update::UpdateRunState::Failed,
-                "The update job could not be started. See the backend log.".into(),
-            );
-            records::write_run(&self.paths, &failed).map_err(unavailable)?;
+            records::reservation_failed(
+                &self.paths,
+                "The update job could not be started. See the backend log.",
+            )
+            .map_err(unavailable)?;
         }
         self.status_blocking().map_err(unavailable)
     }
@@ -401,6 +397,7 @@ mod tests {
     use ironclaw_product_contracts::self_update::UpdateRunState;
 
     use super::super::git::tests::{commit, push_upstream, repos, sh};
+    use super::super::records::RunRecord;
     use super::*;
 
     impl SourceSelfUpdate {

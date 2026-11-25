@@ -189,17 +189,15 @@ echo "Built $app ($version)"
 [ -z "$install" ] && exit 0
 
 # Replace, never overwrite in place: macOS kills a running binary whose
-# signed file changed underneath it. Quitting ZLO also stops its backend.
-was_running=
-if pgrep -f "$dest/Contents/MacOS/$EXE" >/dev/null; then
-  was_running=1
-  osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 || true
-  i=0
-  while pgrep -f "$dest/Contents/MacOS/" >/dev/null; do
-    i=$((i + 1))
-    [ $i -gt 60 ] && { echo "$NAME did not quit; quit it and run again." >&2; exit 1; }
-    sleep 0.5
-  done
+# signed file changed underneath it. Only the ZLO that runs from $dest is
+# quit and waited for, found by executable path (running.sh): never the
+# updater running this script, whose arguments name $dest, and never
+# another copy of ZLO sharing the bundle id. Quitting ZLO also stops its
+# backend.
+. "$here/running.sh"
+if ! was_running=$(zlo_quit_bundle "$dest" 30); then
+  echo "$NAME did not quit; quit it and run again." >&2
+  exit 1
 fi
 mkdir -p "$(dirname "$dest")"
 rm -rf "$dest"

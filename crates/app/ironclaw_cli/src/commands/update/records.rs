@@ -223,6 +223,42 @@ pub(crate) fn lock_for_job(paths: &UpdatePaths) -> anyhow::Result<Option<UpdateL
     }
 }
 
+/// What [`reserve`] found.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Reservation {
+    /// `run.json` now says `running` ("Starting the update"); start the job.
+    Reserved,
+    /// A job holds the lock, or another starter reserved a moment ago.
+    AlreadyRunning,
+}
+
+/// Claim the next job before starting it: under the lock, refuse when a
+/// job runs or a fresh reservation stands, else write a `running` record.
+/// The lock is released on return so the started job can take it; the
+/// record keeps a second starter out until then ([`RunRecord::just_started`]).
+/// Every start path (the CLI's hand-off, the app's button) goes through here.
+pub(crate) fn reserve(paths: &UpdatePaths) -> anyhow::Result<Reservation> {
+    let Some(_lock) = lock_for_job(paths)? else {
+        return Ok(Reservation::AlreadyRunning);
+    };
+    if read_run(paths)?.is_some_and(|run| run.just_started(Utc::now())) {
+        return Ok(Reservation::AlreadyRunning);
+    }
+    write_run(paths, &RunRecord::running(STARTING))?;
+    Ok(Reservation::Reserved)
+}
+
+/// The message of a reserved, not yet started job.
+pub(crate) const STARTING: &str = "Starting the update";
+
+/// Mark a reservation whose job could not be started as failed.
+pub(crate) fn reservation_failed(paths: &UpdatePaths, message: &str) -> anyhow::Result<()> {
+    write_run(
+        paths,
+        &RunRecord::running(STARTING).finish(UpdateRunState::Failed, message.to_string()),
+    )
+}
+
 /// Whether a job holds the lock right now (probes and releases at once).
 /// Creates nothing: no lock file means no job ever ran here.
 pub(crate) fn is_locked(paths: &UpdatePaths) -> anyhow::Result<bool> {
@@ -331,6 +367,34 @@ mod tests {
         assert!(try_lock(&paths).expect("lock").is_none());
         drop(held);
         assert!(!is_locked(&paths).expect("probe"));
+    }
+
+    #[test]
+    fn one_reservation_at_a_time_and_none_while_a_job_runs() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let paths = UpdatePaths::new(home.path());
+        assert_eq!(reserve(&paths).expect("reserve"), Reservation::Reserved);
+        let run = read_run(&paths).expect("read").expect("record");
+        assert_eq!(
+            run.state,
+            UpdateRunState::Running,
+            "published before returning"
+        );
+        assert!(!is_locked(&paths).expect("probe"), "released for the job");
+        assert_eq!(
+            reserve(&paths).expect("reserve"),
+            Reservation::AlreadyRunning,
+            "a fresh reservation keeps a second starter out"
+        );
+        reservation_failed(&paths, "did not start").expect("fail");
+        let _job = try_lock(&paths).expect("lock").expect("free");
+        assert_eq!(
+            reserve(&paths).expect("reserve"),
+            Reservation::AlreadyRunning,
+            "a running job keeps starters out"
+        );
+        drop(_job);
+        assert_eq!(reserve(&paths).expect("reserve"), Reservation::Reserved);
     }
 
     #[test]

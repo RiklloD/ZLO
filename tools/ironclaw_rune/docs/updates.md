@@ -90,9 +90,11 @@ On any machine:
 ```sh
 zlo update enable      # turn self-update on (see above)
 zlo update --check     # how far behind, with the newest commit subjects
-zlo update             # pull and rebuild in the foreground
+zlo update             # pull and rebuild (see below for ZLO on a Mac)
 zlo update --json      # machine-readable output
 ```
+
+For ZLO on a Mac, `zlo update` hands the job to the same detached updater the app's **Update** button starts and returns at once: the rebuild quits ZLO, and a `zlo` started from inside `ZLO.app` would otherwise be waiting on itself. It says where to follow the log (`tail -f ~/.zlo/update/update.log`); `zlo update --json` right after already shows the run as **running**, and a second `zlo update` (or the button) is refused until it finishes. Only the ZLO installed at that path is quit and reopened; another copy of ZLO is left running. Elsewhere `zlo update` runs in the foreground.
 
 What "rebuild" means depends on how the machine runs IronClaw:
 
