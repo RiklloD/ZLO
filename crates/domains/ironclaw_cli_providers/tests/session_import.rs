@@ -1054,5 +1054,8 @@ async fn discovery_ignores_symlinks_and_special_files() {
         .unwrap();
     let codex = engine.store().import_ledger(&owner, CODEX).await.unwrap();
     assert!(!claude.contains_key(stray) && !codex.contains_key(linked));
-    assert!(!claude.contains_key("own-2"), "never from the app's own folder");
+    assert!(
+        !claude.contains_key("own-2"),
+        "never from the app's own folder"
+    );
 }
