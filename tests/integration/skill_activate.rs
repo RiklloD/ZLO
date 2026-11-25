@@ -33,6 +33,7 @@ async fn skill_activate_dispatches_and_injects_skill_context() {
         .script([
             RebornScriptedReply::tool_call("builtin.skill_activate", json!({"names": ["greet"]})),
             RebornScriptedReply::text("done"),
+            RebornScriptedReply::text("welcome back"),
         ])
         .build()
         .await
@@ -59,12 +60,14 @@ async fn skill_activate_dispatches_and_injects_skill_context() {
         .expect("skill_activate reported the explicitly requested skill");
 
     // Model-invoked skill discovery: before activation the skill advertises
-    // itself as a one-line `- name: description` listing entry (the first
-    // model request is built before `skill_activate` runs).
+    // itself in the listing (the first model request is built before
+    // `skill_activate` runs). This user has never used it, so the listing
+    // policy (`ironclaw_skills::usage::listing`) keeps it cold: a bare
+    // `- name` entry, still activatable by name.
     harness
-        .assert_model_request_contains("- greet: greets the user warmly")
+        .assert_model_message_content_contains("\n- greet\n")
         .await
-        .expect("discovered skill must appear as a one-line listing entry");
+        .expect("a never-used skill must appear as a name-only listing entry");
 
     // Half B: the activated skill's instructions reached a later model request
     // through the wired `skill_context_source`.
@@ -72,6 +75,17 @@ async fn skill_activate_dispatches_and_injects_skill_context() {
         .assert_model_request_contains("GREET_SKILL_PROMPT_SENTINEL")
         .await
         .expect("activated skill instructions must inject into a model request");
+
+    // The activation counted one use in the person's usage ledger, so on the
+    // next turn the skill is hot and the listing carries its description.
+    harness
+        .submit_turn("a request unrelated to greetings")
+        .await
+        .expect("second turn completes");
+    harness
+        .assert_model_request_contains("- greet: greets the user warmly")
+        .await
+        .expect("a skill used this week must be listed with its description");
 }
 
 // INTENTIONAL: `SkillActivationMode::ActivationCriteria` (keyword/regex
@@ -120,13 +134,19 @@ async fn skill_criteria_auto_activation_stays_off_on_coordinator_path() {
     );
 
     // Listing-mode discovery (default `IRONCLAW_REBORN_SKILL_INJECTION=listing`):
-    // the non-activated skill still ADVERTISES itself as a one-line
-    // `- name: description` entry under the skill_activate header, so the
-    // model can choose to activate it — its body stays out (asserted above).
+    // the non-activated skill still ADVERTISES itself under the skill_activate
+    // header, so the model can choose to activate it — its body stays out
+    // (asserted above). It has never been used, so the listing policy keeps it
+    // name-only; the keyword in the message does not rank it on this path
+    // either, so its description stays out too.
     harness
-        .assert_model_request_contains("- greet: greets the user warmly")
+        .assert_model_message_content_contains("\n- greet\n")
         .await
-        .expect("non-activated skill must appear as a one-line listing entry");
+        .expect("non-activated skill must appear as a name-only listing entry");
+    harness
+        .assert_model_request_excludes("- greet: greets the user warmly")
+        .await
+        .expect("a cold skill's description must stay out of the listing");
     harness
         .assert_model_message_content_in_order(&[
             "The following skills are available for use with builtin.skill_activate.",
@@ -175,11 +195,7 @@ async fn coordinator_listing_uses_descriptor_order_without_criteria_input() {
         .expect("turn completes");
 
     harness
-        .assert_model_message_content_in_order(&[
-            "- greet: greets the user warmly",
-            "- alpha: alpha baseline skill",
-            "- zulu: zulu baseline skill",
-        ])
+        .assert_model_message_content_in_order(&["\n- greet\n", "- alpha\n", "- zulu\n"])
         .await
         .expect("coordinator listing must preserve source-then-name descriptor order");
 }
@@ -263,9 +279,9 @@ async fn installed_skill_is_listed_but_not_model_activatable() {
         .expect("turn completes despite installed skill trust");
 
     harness
-        .assert_model_request_contains("- remote-helper: a remotely installed helper")
+        .assert_model_message_content_contains("\n- remote-helper\n")
         .await
-        .expect("installed skill remains safely discoverable");
+        .expect("installed skill remains safely discoverable (name-only while unused)");
     harness
         .assert_tool_result_contains("\"count\":0")
         .await
@@ -409,9 +425,9 @@ fn skill_activate_ambiguous_name_surfaces_recoverable_failed() {
                 .expect("run recovered and finalized");
             harness
                 .assert_model_message_content_in_order(&[
-                    "- duplicate: a system-scoped skill",
-                    "- greet: greets the user warmly",
-                    "- duplicate: a user-scoped skill",
+                    "\n- duplicate\n",
+                    "- greet\n",
+                    "- duplicate\n",
                 ])
                 .await
                 .expect(
