@@ -906,12 +906,17 @@ impl HostRuntimeCapabilityHarness {
             input = input.with_network_http_egress_for_test(egress);
         }
         if google_oauth_backend_for_test {
-            // Dummy but well-formed: only presence on `oauth_provider_configs`
-            // feeds `google_oauth_configured` (factory.rs) — the readiness-map
-            // check has no reason to touch the real client id/secret values.
+            // Dummy but well-formed client id/secret: the provider-instance
+            // readiness gate only checks that a client id resolves. The
+            // redirect must keep the production shape
+            // (`<origin>/api/reborn/product-auth/oauth/<vendor>/callback`):
+            // composition derives the OAuth callback base from it, and since
+            // upstream #8102 (eb149fa47) readiness also requires a startable
+            // flow — no callback base means the gate fails closed and every
+            // Google install reports "unavailable on this instance".
             let google_client = OAuthClientConfig::new(
                 "itest-google-client-id.apps.googleusercontent.com",
-                "http://127.0.0.1/oauth/callback/google",
+                "http://127.0.0.1/api/reborn/product-auth/oauth/google/callback",
                 None,
             )
             .map_err(|error| format!("test google oauth client config: {error}"))?;

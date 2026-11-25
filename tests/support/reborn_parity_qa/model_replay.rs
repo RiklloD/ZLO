@@ -129,6 +129,9 @@ impl RebornScriptedProviderToolCall {
 struct ReplayState {
     steps: VecDeque<ReplayStep>,
     requests: Vec<HostManagedModelRequest>,
+    /// Capability ids of the native provider tool definitions (`tools[]`)
+    /// advertised on each capability-aware model call, in call order.
+    advertised_tools: Vec<Vec<CapabilityId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +295,7 @@ impl RebornTraceReplayModelGateway {
             inner: Arc::new(Mutex::new(ReplayState {
                 steps,
                 requests: Vec::new(),
+                advertised_tools: Vec::new(),
             })),
         }
     }
@@ -301,6 +305,20 @@ impl RebornTraceReplayModelGateway {
             .lock()
             .expect("trace replay lock poisoned")
             .requests
+            .clone()
+    }
+
+    /// Capability ids advertised to the model as native provider tools on
+    /// each capability-aware model call, in call order. Since the surface
+    /// section of the instruction bundle stopped duplicating descriptors
+    /// (096bfd8a8), `tools[]` is the only channel a capability reaches the
+    /// model through, so surface-parity assertions read this, not messages.
+    #[allow(dead_code)]
+    pub fn advertised_tool_capability_ids(&self) -> Vec<Vec<CapabilityId>> {
+        self.inner
+            .lock()
+            .expect("trace replay lock poisoned")
+            .advertised_tools
             .clone()
     }
 
@@ -357,6 +375,22 @@ impl HostManagedModelGateway for RebornTraceReplayModelGateway {
         request: HostManagedModelRequest,
         capabilities: Arc<dyn LoopCapabilityPort>,
     ) -> Result<HostManagedModelResponse, HostManagedModelError> {
+        let advertised = capabilities
+            .tool_definitions()
+            .map_err(capability_host_error)?
+            .into_iter()
+            .map(|definition| definition.capability_id)
+            .collect();
+        self.inner
+            .lock()
+            .map_err(|_| {
+                HostManagedModelError::safe(
+                    HostManagedModelErrorKind::Unavailable,
+                    "trace replay lock poisoned",
+                )
+            })?
+            .advertised_tools
+            .push(advertised);
         let step = self.take_step(request.clone())?;
         match step.output {
             ReplayOutput::Response(response) => {
