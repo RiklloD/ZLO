@@ -373,17 +373,39 @@ fn a_removed_computer_leaves_no_update_prompt_behind() {
     use super::updates::{RowState, set_row, waiting};
     let mut s = state();
     s.remote.registry.upsert(studio());
-    set_row(&mut s, "env-studio".into(), RowState::Behind(2));
+    set_row(&mut s, "env-studio".into(), RowState::behind(2));
     assert_eq!(waiting(&s.remote.updates), 1);
     super::pairing::remove(&mut s, "env-studio".into());
     assert_eq!(waiting(&s.remote.updates), 0);
     // A poll that was already on its way answers after the removal.
-    set_row(&mut s, "env-studio".into(), RowState::Behind(2));
+    set_row(&mut s, "env-studio".into(), RowState::behind(2));
     assert_eq!(
         waiting(&s.remote.updates),
         0,
         "no row for a computer that is gone"
     );
+}
+
+#[test]
+fn the_update_dialog_closes_when_its_updates_are_gone() {
+    use super::updates::{RowState, set_row};
+    let mut s = state();
+    s.remote.registry.upsert(studio());
+    set_row(&mut s, "env-studio".into(), RowState::behind(2));
+    s.workspace.confirm_update = Some(vec!["env-studio".into()]);
+    // Another computer's news leaves it open.
+    set_row(
+        &mut s,
+        zlo_client::environments::THIS_MAC.into(),
+        RowState::behind(1),
+    );
+    assert!(s.workspace.confirm_update.is_some());
+    // Its own computer got updated elsewhere: it closes, and stays closed
+    // when that computer falls behind again later.
+    set_row(&mut s, "env-studio".into(), RowState::UpToDate);
+    assert!(s.workspace.confirm_update.is_none());
+    set_row(&mut s, "env-studio".into(), RowState::behind(3));
+    assert!(s.workspace.confirm_update.is_none());
 }
 
 mod triage_switch {
