@@ -100,6 +100,9 @@ pub fn menu_items() -> Vec<MenuItem<State>> {
 pub fn quit(s: &mut State, tx: &mut Tx) {
     tracing::debug!("quit requested");
     on_close(s, tx);
+    // Rune may end the process without macOS's will-terminate: no
+    // installer started from the app outlives it.
+    crate::cli_install::stop_all();
     tx.quit();
 }
 

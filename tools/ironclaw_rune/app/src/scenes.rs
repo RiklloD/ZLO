@@ -297,6 +297,10 @@ pub const SCENES: &[Scene] = &[
         crate::pages::providers::fixtures::catalog,
     ),
     ("providers-cli", crate::pages::providers::fixtures::cli),
+    (
+        "providers-cli-install",
+        crate::pages::providers::fixtures::cli_install,
+    ),
     ("quick-composer", ws::fixture_quick),
     ("settings", |s| {
         page_with(s, Page::Settings, crate::pages::settings::fixture)

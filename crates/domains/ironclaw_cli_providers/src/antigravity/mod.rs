@@ -1948,10 +1948,14 @@ pub fn sign_in_dir(profile_dir: &Path) -> PathBuf {
 /// profile Hermes already signed in when there is one (the plan shares CLI
 /// logins across apps), else IronClaw's own.
 pub async fn default_config(home: &Path) -> Option<AntigravityConfig> {
-    let launch = launch::find_agent(home).await?;
+    Some(config_for(home, launch::find_agent(home).await?))
+}
+
+/// The runtime's configuration over an agent program already found.
+pub fn config_for(home: &Path, launch: AgentLaunch) -> AntigravityConfig {
     let state = state_dir(home);
     let profile_dir = profile_dir(home);
-    Some(AntigravityConfig {
+    AntigravityConfig {
         runtime_id: "antigravity".into(),
         display_name: "Antigravity".into(),
         launch,
@@ -1964,7 +1968,7 @@ pub async fn default_config(home: &Path) -> Option<AntigravityConfig> {
         background_hold: DEFAULT_BACKGROUND_HOLD,
         prompt_silence: DEFAULT_PROMPT_SILENCE,
         keyring: signin::KeyringEntry::agy(),
-    })
+    }
 }
 
 #[cfg(test)]

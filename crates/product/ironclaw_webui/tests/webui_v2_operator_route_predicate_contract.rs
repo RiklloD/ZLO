@@ -9,6 +9,7 @@ use ironclaw_webui::webui_v2::{
     WEBUI_V2_ROUTE_OPERATOR_LIST_CONFIG, WEBUI_V2_ROUTE_OPERATOR_LIST_EXTENSION_CONFIGURATION,
     WEBUI_V2_ROUTE_OPERATOR_LOGS, WEBUI_V2_ROUTE_OPERATOR_REPLACE_EXTENSION_CONFIGURATION,
     WEBUI_V2_ROUTE_OPERATOR_SET_CONFIG_KEY, WEBUI_V2_ROUTE_OPERATOR_STATUS,
+    WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS, WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS_RESCAN,
     WEBUI_V2_ROUTE_SET_SETTINGS_TOOL_PERMISSION, WEBUI_V2_ROUTE_SET_SETTINGS_TOOLS_AUTO_APPROVE,
     is_webui_v2_operator_webui_config_route_id,
 };
@@ -50,6 +51,14 @@ fn operator_route_predicate_matches_operator_config_routes_only() {
     // buffering) in deployments that mount no operator surface.
     assert!(is_webui_v2_operator_webui_config_route_id(
         WEBUI_V2_ROUTE_IMPORT_EXTENSION
+    ));
+    // The CLI rescan probes the backend's host and registers runtimes for
+    // every caller: operator only. Reading the providers stays per caller.
+    assert!(is_webui_v2_operator_webui_config_route_id(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS_RESCAN
+    ));
+    assert!(!is_webui_v2_operator_webui_config_route_id(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS
     ));
     // Install stays a regular authenticated-user route: it references an
     // already-cataloged package by ref and uploads nothing.

@@ -218,6 +218,18 @@ pub fn holds_launch_import(s: &State) -> bool {
 }
 
 /// Setup shows (t3code: the wizard owns only the home route).
+/// A CLI was installed from the app: setup's agent list looks again and
+/// says so under the agents.
+pub fn agents_catalog_changed(s: &mut State, notice: String) {
+    s.onboarding.agents.agent_notice = Some(notice);
+    agents::request_catalog(s, true);
+}
+
+/// Open Terminal with `command` shown, run once Enter is pressed there.
+pub fn run_in_terminal(command: &str) -> Result<(), String> {
+    agents::run_in_terminal(command)
+}
+
 pub fn wizard_shown(s: &State) -> bool {
     s.onboarding.decision == Decision::Wizard && matches!(s.page, Page::Chat | Page::Draft)
 }

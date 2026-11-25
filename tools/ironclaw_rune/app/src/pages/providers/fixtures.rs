@@ -190,6 +190,35 @@ pub fn catalog(s: &mut State) {
     p.confirm_delete = Some("zai".into());
 }
 
+/// The CLI agents tab on a Mac with no agent yet: one installing, one
+/// failed, one to install.
+pub fn cli_install(s: &mut State) {
+    use crate::cli_install::{Phase, fixture};
+    base(s);
+    let p = &mut s.pages.providers;
+    p.tab = Tab::Cli;
+    p.runtimes = Some(Vec::new());
+    fixture(
+        s,
+        "antigravity",
+        Phase::Running,
+        &[
+            "Downloading Antigravity CLI 1.6.2 for darwin-arm64",
+            "######################################## 100.0%",
+            "Installing to /Users/you/.local/bin/agy",
+        ],
+    );
+    fixture(
+        s,
+        "codex",
+        Phase::Failed(
+            "The installer stopped with exit code 6. curl: (6) Could not resolve host: chatgpt.com"
+                .into(),
+        ),
+        &[],
+    );
+}
+
 /// The CLI agents tab, one agent removed, Claude Code's models open.
 pub fn cli(s: &mut State) {
     base(s);

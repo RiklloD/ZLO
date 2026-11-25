@@ -98,6 +98,27 @@ pub async fn orchestrator_providers(
     ))
 }
 
+/// `POST /api/webchat/v2/providers/rescan` — registers coding-agent CLIs
+/// installed since the backend started; answers the providers view.
+pub async fn orchestrator_providers_rescan(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Extension(capabilities): Extension<super::WebUiV2Capabilities>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    // Host-wide (probes host CLIs, registers runtimes for every caller):
+    // the operator gate already stops other callers; checked here too.
+    super::require_operator_webui_config(capabilities)?;
+    Ok(Json(
+        invoke_product_command(
+            state.services(),
+            caller,
+            ORCHESTRATOR_PROVIDERS_RESCAN_COMMAND,
+            serde_json::json!({}),
+        )
+        .await?,
+    ))
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrchestratorRouteBody {
