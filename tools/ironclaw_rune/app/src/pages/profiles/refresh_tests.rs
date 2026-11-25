@@ -245,7 +245,9 @@ fn a_read_from_before_an_archive_does_not_revive_it() {
     let (mut s, mut pump, gateway) = live(
         state(true),
         vec![
-            Answer::ok(before).after(Duration::from_millis(600)),
+            // Long enough that the archive's own reply lands first even on a
+            // loaded machine; the test then sees this answer arrive stale.
+            Answer::ok(before).after(Duration::from_millis(2_000)),
             Answer::ok("{}"),
             Answer::ok(after),
         ],

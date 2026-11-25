@@ -537,14 +537,7 @@ pub fn refresh(s: &mut State) {
             let shown = !again && std::mem::take(&mut s.workspace.inbox.shown);
             match result {
                 Ok(mut list) => {
-                    // A profile changed while this read was out: its
-                    // profiles predate the change, so the ones held stay
-                    // until the read that change asked for answers.
-                    if epoch != s.workspace.inbox.profiles_epoch {
-                        let held = &s.workspace.inbox.list;
-                        list.profiles = held.profiles.clone();
-                        list.last_used_profile_id = held.last_used_profile_id.clone();
-                    }
+                    hold_profiles(s, &mut list, epoch);
                     refreshed(s, list, shown, tx)
                 }
                 // silent-ok: the list keeps its last state; the next event retries.
@@ -566,6 +559,17 @@ pub fn refresh_shown(s: &mut State) {
     }
     s.workspace.inbox.shown = true;
     refresh(s);
+}
+
+/// A snapshot asked for before a profile change made here (`epoch` is the
+/// count when it left) lists the profiles that change replaced: keep the
+/// ones held until the read the change asked for answers.
+fn hold_profiles(s: &State, list: &mut InboxListResponse, epoch: u64) {
+    if epoch != s.workspace.inbox.profiles_epoch {
+        let held = &s.workspace.inbox.list;
+        list.profiles = held.profiles.clone();
+        list.last_used_profile_id = held.last_used_profile_id.clone();
+    }
 }
 
 /// An inbox read answered; `shown` when the person caused it.
@@ -592,11 +596,17 @@ pub fn mark_quietly(s: &mut State, thread_id: String, action: InboxAction) {
 
 fn mark_as(s: &mut State, thread_id: String, action: InboxAction, until: Option<i64>, shown: bool) {
     s.workspace.inbox.snooze_menu = None;
+    let epoch = s.workspace.inbox.profiles_epoch;
     jobs::run(
         s,
         "inbox mark",
         move |c| async move { c.inbox_mutate(&thread_id, action, until).await },
-        move |s, result, tx| marked(s, result, shown, tx),
+        move |s, mut result, tx| {
+            if let Ok(list) = result.as_mut() {
+                hold_profiles(s, list, epoch);
+            }
+            marked(s, result, shown, tx)
+        },
     );
 }
 
@@ -618,18 +628,20 @@ fn marked(s: &mut State, result: Result<InboxListResponse, ClientError>, shown: 
 /// sidebar snapshot to choose a thread that may already be settled.
 pub fn settle(s: &mut State, thread_id: String) {
     let id = thread_id.clone();
+    let epoch = s.workspace.inbox.profiles_epoch;
     jobs::run(
         s,
         "inbox settle",
         move |c| async move { c.inbox_mutate(&id, InboxAction::Settle, None).await },
         move |s, result, tx| {
-            let list = match result {
+            let mut list = match result {
                 Ok(list) => list,
                 Err(e) => {
                     tracing::warn!(error = %e, "could not settle thread");
                     return;
                 }
             };
+            hold_profiles(s, &mut list, epoch);
             settled(s, &thread_id, list, tx);
         },
     );
@@ -1157,5 +1169,68 @@ mod tests {
         crate::workspace::run_ended(&mut s, "a".into(), false);
         let inbox = &s.workspace.inbox;
         assert_eq!(inbox.shown_status(inbox.row("a").expect("row")), None);
+    }
+
+    /// A pin answered after a profile was archived here carries the
+    /// profiles from before: it must not put the archived one back.
+    #[test]
+    fn a_mark_answered_after_an_archive_does_not_revive_it() {
+        use crate::jobs::harness::Pump;
+        use crate::test_gateway::{Answer, Gateway};
+
+        let profile = |id: &str| InboxProfile {
+            profile_id: id.into(),
+            display_name: id.into(),
+            git_branch: None,
+            last_used_at: None,
+        };
+        let body = |ids: &[&str], last: &str| {
+            serde_json::to_string(&InboxListResponse {
+                rows: vec![row("a", InboxState::Pinned, None)],
+                profiles: ids.iter().map(|id| profile(id)).collect(),
+                last_used_profile_id: Some(last.into()),
+            })
+            .expect("json")
+        };
+        let gateway = Gateway::start(vec![
+            Answer::ok(body(&["default", "work"], "work")).after(Duration::from_millis(1_500)),
+            Answer::ok(body(&["default"], "default")),
+        ]);
+        let mut s = crate::chat::fixtures::test_state();
+        s.rt.backend = Some(gateway.backend());
+        let mut pump = Pump::install(&mut s);
+        s.workspace.inbox.list.profiles = vec![profile("default"), profile("work")];
+        s.workspace.inbox.list.last_used_profile_id = Some("work".into());
+
+        mark(&mut s, "a".into(), InboxAction::Pin, None);
+        let asked = Instant::now();
+        while gateway.paths().is_empty() {
+            assert!(asked.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        profiles_changed(&mut s, ProfileChange::Deleted("work"));
+
+        let ids = |s: &State| {
+            s.workspace
+                .inbox
+                .list
+                .profiles
+                .iter()
+                .map(|p| p.profile_id.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut revived = false;
+        // Done once the pin's own answer (its pinned row) has landed.
+        assert!(pump.until(&mut s, Duration::from_secs(10), |s| {
+            revived |= ids(s).iter().any(|id| id == "work");
+            s.workspace.inbox.row("a").is_some() && gateway.paths().len() >= 2
+        }));
+        pump.run_for(&mut s, Duration::from_millis(1_700));
+        revived |= ids(&s).iter().any(|id| id == "work");
+        assert!(!revived, "the pin's old snapshot put Work back");
+        assert_eq!(
+            s.workspace.inbox.list.last_used_profile_id.as_deref(),
+            Some("default")
+        );
     }
 }
