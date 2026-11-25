@@ -12,6 +12,11 @@ use std::{env, ffi::OsString};
 pub const WEBUI_TOKEN_ENV: &str = "ZLO_WEBUI_TOKEN";
 /// Pre-ZLO name of [`WEBUI_TOKEN_ENV`].
 pub const LEGACY_WEBUI_TOKEN_ENV: &str = "IRONCLAW_REBORN_WEBUI_TOKEN";
+/// Set to `1` by the ZLO desktop app on the backend it starts: `serve`
+/// creates `<home>/webui-token` on its first start when no env token and no
+/// file exist. Nothing else sets it, so a service, container or deployment
+/// with its secret missing still fails closed.
+pub const PROVISION_WEBUI_TOKEN_ENV: &str = "ZLO_PROVISION_WEBUI_TOKEN";
 /// Env var naming the WebUI user id, absent a `[webui].env_user_id_var`.
 pub const WEBUI_USER_ID_ENV: &str = "ZLO_WEBUI_USER_ID";
 /// Pre-ZLO name of [`WEBUI_USER_ID_ENV`].

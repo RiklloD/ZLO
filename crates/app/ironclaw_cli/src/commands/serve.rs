@@ -69,6 +69,12 @@ pub(crate) fn present_unicode_env_var(name: &str) -> anyhow::Result<Option<Strin
     }
 }
 
+/// Whether the desktop app asked this `serve` to create its token file
+/// (`ironclaw_config::PROVISION_WEBUI_TOKEN_ENV` = `1`).
+fn desktop_token_provisioning_requested() -> bool {
+    env::var_os(ironclaw_config::PROVISION_WEBUI_TOKEN_ENV).is_some_and(|value| value == "1")
+}
+
 /// Mints the admin-created-user API bearer over a signed session store. The
 /// store is deterministic in its signing key (operator secret + tenant), so a
 /// token minted here validates under the SSO login surface's own store.
@@ -179,13 +185,16 @@ impl ServeCommand {
         // closed here rather than starting the server and having it reject
         // the value opaquely.
         //
-        // First start on a fresh home (the desktop app's child backend, a
-        // bare `zlo serve`): with no env token and no file, make the file
-        // now rather than demanding a `zlo onboard` first. Auth stays on —
-        // the token is random and only readable from the 0600 file — and an
-        // existing file, valid or not, is never touched.
+        // The desktop app's own backend on a fresh Mac (and only it — it
+        // sets `ZLO_PROVISION_WEBUI_TOKEN=1`): with no env token and no
+        // file, make the file now rather than demanding a `zlo onboard`
+        // first. Auth stays on — the token is random and only readable from
+        // the 0600 file — and an existing file, valid or not, is never
+        // touched. Services and deployments never set the variable, so a
+        // missing secret there still fails closed below.
         let env_token_value = present_unicode_env_var(env_token_var)?;
-        if env_token_value.as_deref().is_none_or(str::is_empty)
+        if desktop_token_provisioning_requested()
+            && env_token_value.as_deref().is_none_or(str::is_empty)
             && crate::webui_token::provision_missing_webui_token_file(boot_config.home().path())?
         {
             tracing::debug!(

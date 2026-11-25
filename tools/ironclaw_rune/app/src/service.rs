@@ -28,6 +28,8 @@ use std::time::{Duration, Instant};
 const LAUNCHD_LABELS: [&str; 2] = ["com.ironclaw.reborn", "com.zlo.serve"];
 /// Read by `zlo triage` to report whether this app's backend runs.
 const PID_FILE: &str = ironclaw_config::DESKTOP_BACKEND_PID_FILE;
+/// The backend's stderr, under `<home>/logs`.
+const STDERR_LOG: &str = "serve.stderr.log";
 const STOP_GRACE: Duration = Duration::from_secs(6);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// A run this long resets the restart backoff.
@@ -246,10 +248,100 @@ pub fn backend_pid() -> Option<u32> {
     Some(supervisor().pid.load(Ordering::SeqCst)).filter(|pid| *pid != 0)
 }
 
+/// Why this app's backend last stopped on its own (its own error, from
+/// `serve.stderr.log`), until it runs healthily or the app connects. The
+/// connect screen shows it instead of waiting out the startup grace.
+static STARTUP_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn startup_failure() -> Option<String> {
+    STARTUP_FAILURE.lock().ok().and_then(|f| f.clone())
+}
+
+pub fn clear_startup_failure() {
+    if let Ok(mut f) = STARTUP_FAILURE.lock() {
+        *f = None;
+    }
+}
+
+pub(crate) fn set_startup_failure(line: Option<String>) {
+    if let Ok(mut f) = STARTUP_FAILURE.lock() {
+        *f = line;
+    }
+}
+
+/// The error a backend printed before it exited: from its last `Error:`
+/// line on (anyhow's message and causes), ANSI colours stripped, bounded.
+/// `None` when it printed none (killed, or it never got that far).
+fn startup_error(stderr: &str) -> Option<String> {
+    let plain = strip_ansi(stderr);
+    let lines: Vec<&str> = plain.lines().collect();
+    let start = lines.iter().rposition(|l| l.starts_with("Error: "))?;
+    let mut out = lines[start..]
+        .iter()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty())
+        .take(8)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if out.len() > 800 {
+        let mut end = 800;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+        out.push('…');
+    }
+    Some(out)
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // CSI: ESC [ … final byte in @..~
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// What the backend wrote to `serve.stderr.log` since byte `from` (this
+/// run only), at most the last 64 KiB of it.
+fn stderr_since(home: &Path, from: u64) -> String {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let Ok(mut file) = fs::File::open(home.join("logs").join(STDERR_LOG)) else {
+        return String::new();
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = from.max(len.saturating_sub(64 * 1024));
+    if from >= len || file.seek(SeekFrom::Start(from)).is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    if file.take(len - from).read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+fn stderr_len(home: &Path) -> u64 {
+    fs::metadata(home.join("logs").join(STDERR_LOG)).map_or(0, |m| m.len())
+}
+
 fn supervise(sup: &Supervisor, paths: &Paths) {
     let mut backoff = Duration::from_secs(1);
     while !sup.stopping.load(Ordering::SeqCst) {
         let started = Instant::now();
+        let log_from = stderr_len(&paths.home);
         let mut child = match spawn(paths) {
             Ok(child) => child,
             Err(e) => {
@@ -271,6 +363,9 @@ fn supervise(sup: &Supervisor, paths: &Paths) {
         }
         if started.elapsed() > HEALTHY_RUN {
             backoff = Duration::from_secs(1);
+            set_startup_failure(None);
+        } else {
+            set_startup_failure(startup_error(&stderr_since(&paths.home, log_from)));
         }
         tracing::warn!(?status, retry_in = ?backoff, "backend exited; restarting");
         std::thread::sleep(backoff);
@@ -292,11 +387,15 @@ fn spawn(paths: &Paths) -> std::io::Result<Child> {
     let mut command = Command::new(&paths.backend);
     command.arg("serve");
     set_home_env(&mut command, &paths.home);
+    // On a fresh Mac nothing has made the WebUI token yet: this backend
+    // makes it on its first start (and never replaces one). Only this app
+    // asks for that; services and deployments still fail closed.
+    command.env(ironclaw_config::PROVISION_WEBUI_TOKEN_ENV, "1");
     command
         .current_dir(&workspace)
         .stdin(Stdio::null())
         .stdout(log("serve.stdout.log")?)
-        .stderr(log("serve.stderr.log")?)
+        .stderr(log(STDERR_LOG)?)
         .spawn()
 }
 
@@ -408,6 +507,21 @@ mod tests {
         fs::create_dir_all(&not_app).unwrap();
         assert!(!is_light_bundle(&not_app.join("zlo")));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_backend_that_stops_is_reported_by_its_own_error() {
+        let log = "\u{1b}[2m2026-11-25T11:46:19Z\u{1b}[0m \u{1b}[33m WARN\u{1b}[0m no LLM selection configured\n\
+                   Error: failed to assemble Reborn runtime for `serve`\n\n\
+                   Caused by:\n    0: workspace root must not overlap default skill root /skills\n";
+        assert_eq!(
+            startup_error(log).as_deref(),
+            Some(
+                "Error: failed to assemble Reborn runtime for `serve`\nCaused by:\n    0: workspace root must not overlap default skill root /skills"
+            )
+        );
+        // Killed, or still starting: nothing it said is an error.
+        assert_eq!(startup_error("\u{1b}[33m WARN\u{1b}[0m slow start\n"), None);
     }
 
     #[test]

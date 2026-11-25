@@ -2452,12 +2452,51 @@ fn serve_help_mentions_host_and_port() {
     assert!(stdout.contains("--port"), "stdout: {stdout}");
 }
 
+#[test]
+fn serve_fails_closed_when_env_bearer_token_var_is_unset() {
+    // The standalone CLI's env-bearer authenticator reads the token
+    // value out of the env var named by `[webui].env_token_var`
+    // (defaulting to IRONCLAW_REBORN_WEBUI_TOKEN). When that var is
+    // absent the CLI must exit non-zero before binding any listener —
+    // we never want a half-configured serve loop running with auth
+    // disabled.
+    let temp = tempfile::tempdir().expect("tempdir");
+
+    let output = Command::new(reborn_bin())
+        .arg("serve")
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg("0")
+        .env("ZLO_HOME", temp.path().join("reborn-home"))
+        .env_remove("ZLO_PROFILE")
+        .env_remove("IRONCLAW_REBORN_PROFILE")
+        .env_remove("IRONCLAW_REBORN_WEBUI_TOKEN")
+        .env_remove("IRONCLAW_REBORN_WEBUI_USER_ID")
+        // Only the desktop app opts in to creating the token file.
+        .env_remove("ZLO_PROVISION_WEBUI_TOKEN")
+        .output()
+        .expect("ironclaw-reborn serve should run");
+
+    assert!(
+        !output.status.success(),
+        "serve must fail closed when the bearer token env var is unset"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ZLO_WEBUI_TOKEN must be set"),
+        "stderr should explain which env var is missing: {stderr}"
+    );
+}
+
 /// Zero-setup first start: the desktop app starts `serve` on a fresh Mac,
 /// before anything has written a token. With no env token and no token
 /// file, `serve` creates `<home>/webui-token` (0600, random) and boots —
 /// auth stays on, nobody holds the token until they read the file — and a
 /// second start keeps the same token. Launched exactly as the app does it
-/// (cwd `<home>/workspace`, only `ZLO_HOME` set).
+/// (cwd `<home>/workspace`, `ZLO_HOME` and the app's
+/// `ZLO_PROVISION_WEBUI_TOKEN=1` opt-in; without it, the test above
+/// still fails closed).
 #[test]
 fn serve_creates_its_token_file_on_first_start_of_an_empty_home() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -2485,6 +2524,7 @@ fn serve_creates_its_token_file_on_first_start_of_an_empty_home() {
             .env_remove("ZLO_WEBUI_TOKEN")
             .env_remove("IRONCLAW_REBORN_WEBUI_TOKEN")
             .env_remove("IRONCLAW_REBORN_WEBUI_USER_ID")
+            .env("ZLO_PROVISION_WEBUI_TOKEN", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

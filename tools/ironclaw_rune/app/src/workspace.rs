@@ -296,6 +296,7 @@ pub(crate) fn connected(
         tx.animated();
     }
     s.workspace.connect_attempt = 0;
+    crate::service::clear_startup_failure();
     s.session = Some(session);
     inbox::apply(s, list);
     s.conn = Conn::Ready;
@@ -410,8 +411,14 @@ pub(crate) fn connect_failed(s: &mut State, problem: crate::remote::connect::Pro
         Problem::Blocked(m) => (false, m),
     };
     let local = !crate::remote::backend_is_remote(s);
+    // This app's backend already stopped with its own error: show that now
+    // rather than waiting out the grace and then a vaguer symptom.
+    let crashed = (local && crate::remote::runs_local_backend(s))
+        .then(crate::service::startup_failure)
+        .flatten();
     if network
         && local
+        && crashed.is_none()
         && crate::remote::runs_local_backend(s)
         && s.launched.elapsed() < STARTUP_GRACE
     {
@@ -428,10 +435,15 @@ pub(crate) fn connect_failed(s: &mut State, problem: crate::remote::connect::Pro
     let attempt = s.workspace.connect_attempt;
     let retry_in = network.then(|| CONNECT_RETRY[attempt.min(CONNECT_RETRY.len() - 1)]);
     s.conn = Conn::Failed {
-        message: if network && local {
-            friendly_unreachable(&message, crate::remote::runs_local_backend(s))
-        } else {
-            message
+        message: match crashed {
+            Some(error) => format!(
+                "ZLO's engine on this Mac stopped while starting:\n\n{error}\n\n\
+                 ZLO keeps trying. Triage looks into it for you."
+            ),
+            None if network && local => {
+                friendly_unreachable(&message, crate::remote::runs_local_backend(s))
+            }
+            None => message,
         },
         retry_in,
     };
@@ -456,7 +468,11 @@ pub(crate) fn triage_in_terminal(s: &mut State) {
         );
         return;
     };
-    let command = triage_command(&backend, std::env::var_os("ZLO_HOME").as_deref());
+    // The data folder the app's backend runs on (also under the legacy
+    // `IRONCLAW_REBORN_HOME` or the pre-ZLO folder), so Terminal's triage
+    // reads that backend's logs whatever its own environment says.
+    let home = zlo_client::reborn_home().ok();
+    let command = triage_command(&backend, home.as_deref().map(std::path::Path::as_os_str));
     if s.fixture {
         return;
     }

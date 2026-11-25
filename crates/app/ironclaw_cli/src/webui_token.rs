@@ -9,11 +9,12 @@
 //! `onboard` (unconditional — [`ensure_webui_token_file`]) provisions the
 //! fallback file so a service-installed `serve` (launchd/systemd), whose
 //! unit environment carries only `HOME`/`PROFILE` (see
-//! `serve_invocation.rs`), still has a token to read. `serve` itself
-//! creates the file on first start when no env token is set and no file
-//! exists yet ([`provision_missing_webui_token_file`]): the desktop app
-//! starts `serve` on a fresh Mac before anything else has run, and must
-//! not need a terminal step first. It never replaces an existing file.
+//! `serve_invocation.rs`), still has a token to read. The desktop app's own
+//! `serve` (only it sets `ZLO_PROVISION_WEBUI_TOKEN=1`) creates the file on
+//! first start when no env token is set and no file exists yet
+//! ([`provision_missing_webui_token_file`]): it starts on a fresh Mac before
+//! anything else has run, and must not need a terminal step first. It never
+//! replaces an existing file.
 //! `serve` then reads ([`resolve_webui_token`]) through this same
 //! precedence and entropy validation.
 
@@ -260,14 +261,19 @@ pub(crate) fn ensure_webui_token_file(reborn_home: &Path) -> anyhow::Result<File
         repair_token_file_mode(&file_path)?;
         return Ok(FileWriteAction::Preserved);
     }
-    let overwrote = file_path.exists();
+    if !file_path.exists() {
+        // No file: create it the same no-clobber way `serve` does, so an
+        // `onboard` racing the app's first backend start keeps the token
+        // that backend already accepted instead of renaming over it.
+        return Ok(if provision_missing_webui_token_file(reborn_home)? {
+            FileWriteAction::Wrote
+        } else {
+            FileWriteAction::Preserved
+        });
+    }
     let token = generate_webui_token();
     write_token_file(&file_path, &token)?;
-    Ok(if overwrote {
-        FileWriteAction::Overwrote
-    } else {
-        FileWriteAction::Wrote
-    })
+    Ok(FileWriteAction::Overwrote)
 }
 
 /// Unconditionally replace `<reborn_home>/webui-token` with a freshly
@@ -639,9 +645,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let home = dir.path().to_path_buf();
         let created: Vec<bool> = std::thread::scope(|scope| {
+            // `serve` (provision) racing `onboard` (ensure) on a fresh home.
             let handles: Vec<_> = (0..8)
-                .map(|_| {
-                    scope.spawn(|| provision_missing_webui_token_file(&home).expect("provision"))
+                .map(|i| {
+                    let home = &home;
+                    scope.spawn(move || {
+                        if i % 2 == 0 {
+                            provision_missing_webui_token_file(home).expect("provision")
+                        } else {
+                            ensure_webui_token_file(home).expect("ensure") == FileWriteAction::Wrote
+                        }
+                    })
                 })
                 .collect();
             handles
@@ -652,7 +666,7 @@ mod tests {
         assert_eq!(
             created.iter().filter(|c| **c).count(),
             1,
-            "exactly one concurrent start creates the token: {created:?}"
+            "exactly one concurrent start creates the token; the rest keep it: {created:?}"
         );
         let resolved = resolve_webui_token("ZLO_WEBUI_TOKEN", None, &home).expect("resolves");
         assert_eq!(

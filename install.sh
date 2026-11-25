@@ -384,6 +384,7 @@ install_zlo_command() {
   # Another `zlo` (a cargo install, an older link) may answer first.
   other=$(command -v zlo 2>/dev/null) || other=
   if [ -n "$other" ] && [ "$other" != "$bin/zlo" ]; then
+    zlo_cmd_note="\`zlo\` here runs $other, not this install; this one is $(sh_quote "$bin/zlo")."
     if [ -n "$on_path" ]; then
       warn "\`zlo\` runs $other, which comes before $bin on your PATH; ZLO's is $bin/zlo"
     else

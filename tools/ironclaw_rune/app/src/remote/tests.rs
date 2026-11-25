@@ -666,6 +666,10 @@ fn a_fresh_mac_without_a_token_keeps_waiting_for_its_first_start() {
 
     // Through the caller: within the startup grace the app stays on its
     // connecting screen and knocks again.
+    let _guard = crate::service::TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    crate::service::clear_startup_failure();
     let mut s = state();
     assert!(runs_local_backend(&s));
     s.launched = std::time::Instant::now();
@@ -687,4 +691,19 @@ fn a_fresh_mac_without_a_token_keeps_waiting_for_its_first_start() {
         }
         other => panic!("expected a retrying failure, got {other:?}"),
     }
+
+    // The backend already stopped with its own error: shown at once (no
+    // grace), still retried, and gone once the app connects.
+    crate::service::set_startup_failure(Some("Error: bad config.toml".into()));
+    let mut s = state();
+    s.launched = std::time::Instant::now();
+    crate::workspace::connect_failed(&mut s, connect::discover_problem(&missing, false));
+    match &s.conn {
+        Conn::Failed { message, retry_in } => {
+            assert!(message.contains("Error: bad config.toml"), "{message}");
+            assert!(retry_in.is_some());
+        }
+        other => panic!("expected the backend's own error, got {other:?}"),
+    }
+    crate::service::clear_startup_failure();
 }
