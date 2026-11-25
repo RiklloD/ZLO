@@ -82,10 +82,13 @@ async fn skill_activate_dispatches_and_injects_skill_context() {
         .submit_turn("a request unrelated to greetings")
         .await
         .expect("second turn completes");
+    // Only the second turn's request counts: the first turn's post-activation
+    // request must not be able to satisfy this. The script's last reply is the
+    // second turn's only model call, so the final captured request is it.
     harness
-        .assert_model_request_contains("- greet: greets the user warmly")
+        .assert_last_model_message_content_contains("- greet: greets the user warmly")
         .await
-        .expect("a skill used this week must be listed with its description");
+        .expect("a skill used this week must be listed with its description on the next turn");
 }
 
 // INTENTIONAL: `SkillActivationMode::ActivationCriteria` (keyword/regex
@@ -378,12 +381,26 @@ fn skill_activate_ambiguous_name_surfaces_recoverable_failed() {
         || async {
             // The user-scoped half of the ambiguous pair must exist before boot; the system half
             // is seeded below, against the system tree the runtime re-reads.
-            let group = RebornIntegrationGroup::skill_activation_tools_with_user_skills(&[(
-                "duplicate",
-                "a user-scoped skill",
-                "USER_DUPLICATE_SKILL_SENTINEL",
-                false,
-            )])
+            //
+            // `aide` is a user-only marker: the listing is source-then-name
+            // ordered and name-only while unused, so the two `duplicate`
+            // entries render identically. Bracketing each with a scope-unique
+            // neighbour (`greet` is system-only, `aide` user-only) is what pins
+            // which scope each `duplicate` was listed under.
+            let group = RebornIntegrationGroup::skill_activation_tools_with_user_skills(&[
+                (
+                    "duplicate",
+                    "a user-scoped skill",
+                    "USER_DUPLICATE_SKILL_SENTINEL",
+                    false,
+                ),
+                (
+                    "aide",
+                    "a user-scoped marker skill",
+                    "USER_AIDE_SKILL_SENTINEL",
+                    false,
+                ),
+            ])
             .await
             .expect("skill-activation group builds");
             let capability_harness = group
@@ -425,13 +442,14 @@ fn skill_activate_ambiguous_name_surfaces_recoverable_failed() {
                 .expect("run recovered and finalized");
             harness
                 .assert_model_message_content_in_order(&[
-                    "\n- duplicate\n",
-                    "- greet\n",
-                    "- duplicate\n",
+                    "\n- duplicate\n- greet\n",
+                    "\n- aide\n- duplicate\n",
                 ])
                 .await
                 .expect(
-                    "the baseline listing exposes ambiguous bare names without qualified recovery identifiers",
+                    "the system-scoped `duplicate` is listed with the system skills (right \
+                     before `greet`) and the user-scoped one with the user skills (right after \
+                     `aide`); the bare names carry no qualified recovery identifiers",
                 );
             // Neither candidate's instructions may leak into a later model request —
             // an ambiguous selection activates nothing.
