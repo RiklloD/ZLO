@@ -87,12 +87,11 @@ pub(crate) fn markdown_style(s: &State, k: &Kit) -> MarkdownStyle {
     MarkdownStyle::from_kit(k).body_font(flow::type_at(s, 14., 22., 400.))
 }
 
-/// The streamed words' fade-in, in seconds. Each fade keeps the window
-/// drawing at the display's full rate (120 Hz on ProMotion) for as long as
-/// words keep arriving (upstream Rune has no capped clock for word fades
-/// yet, anomalyco/rune#2015); the pacer already lands the reply word by
-/// word, so with the window in the background, the battery saver engaged or
-/// motion reduced, words land without it.
+/// The streamed words' fade-in, in seconds. While only word fades run, Rune
+/// steps them on a timer at `App::reveal_fps` (`main.rs`) rather than the
+/// display's full rate; the pacer already lands the reply word by word, so
+/// with the window in the background, the battery saver engaged or motion
+/// reduced, words land without it.
 fn word_fade(s: &State) -> f32 {
     // `ZLO_WORD_FADE=1`/`0` forces it, for energy measurements (`energy.rs`).
     static FORCED: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();

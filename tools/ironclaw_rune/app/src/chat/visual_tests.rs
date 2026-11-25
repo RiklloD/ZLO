@@ -1,9 +1,7 @@
 //! Streamed words with Reduce Motion on land at once: ZLO asks for no word
-//! fade, and Rune must not put a short one back. Upstream Rune turns
-//! `reveal(0)` into a 0.15 s fade under reduced motion, and rune-kit's
-//! streaming Markdown always asks for at least `reveal(0)`, so the app can't
-//! opt out (anomalyco/rune#2015). Ignored until Rune ships the fix; run it
-//! with `--ignored` on every Rune bump and drop the `ignore` once it passes.
+//! fade, and Rune must not put a short one back. rune-kit's streaming
+//! Markdown always asks for at least `reveal(0)`, which Rune keeps instant
+//! under reduced motion (anomalyco/rune#2029).
 
 use std::cell::RefCell;
 
@@ -27,7 +25,6 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 }
 
 #[test]
-#[ignore = "needs anomalyco/rune#2015: reduced motion turns reveal(0) into a fade"]
 fn streamed_words_land_at_once_with_reduce_motion_on() {
     TEXT.with(|t| *t.borrow_mut() = "The reply starts".into());
     let mut s = crate::chat::fixtures::test_state();

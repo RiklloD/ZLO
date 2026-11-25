@@ -150,6 +150,14 @@ fn main() {
             ..WindowOptions::default()
         })
         .keep_running()
+        // Motion nobody steers (a reply streaming in, the list following it)
+        // paces at 60 Hz once input rests; any input lifts the cap, so
+        // scrolling and typing keep the panel's full 120 Hz.
+        .ambient_fps(60.0)
+        // Word fades alone wake on a 30 Hz timer instead of holding the
+        // display link at 120 Hz while a reply streams; 30 divides both 60
+        // and 120 Hz panels, so the steps don't judder.
+        .reveal_fps(30.0)
         // ⌘ held alone shows the sidebar's ⌘N badges.
         .modifier_keys()
         .on_focus(window_focus)

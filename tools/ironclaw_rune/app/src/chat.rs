@@ -100,7 +100,7 @@ pub(crate) fn fold_now(c: &mut ChatState, tx: &mut Tx) {
 const COPIED_GRACE: Duration = Duration::from_millis(500);
 /// The pacer's step while someone is at the window: one 60 Hz frame, so a
 /// streaming reply or thought grows on every frame Rune draws once input
-/// rests (`rune::cap_ambient_motion` holds ambient motion at 60 Hz) — never
+/// rests (`App::ambient_fps` in `main.rs` holds ambient motion at 60 Hz) — never
 /// faster, so a ProMotion display is not kept at 120 Hz by text.
 const PACE_TICK: Duration = Duration::from_micros(16_667);
 /// The pacer's step under the battery saver (idle for 30 s): each step
