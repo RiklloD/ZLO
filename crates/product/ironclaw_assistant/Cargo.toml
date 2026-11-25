@@ -87,6 +87,10 @@ uuid = { workspace = true, features = ["v4", "v5", "serde"] }
 rustix = { version = "1", features = ["fs", "process"] }
 
 [dev-dependencies]
+# Binds the process-global Trace Commons base to a temp dir in tests
+# (`location::bind_isolated_base_dir_for_tests`) so they never read or write
+# the developer's real `~/.ironclaw/trace_contributions`.
+ironclaw_trace_commons = { path = "../../domains/ironclaw_trace_commons", features = ["test-support"] }
 # Enables the shared in-memory turn-state store double for tests only.
 ironclaw_turns = { path = "../../kernel/ironclaw_turns", features = ["test-support"] }
 # Enables the in-memory-backed outbound-state store constructor for tests only.
