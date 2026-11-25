@@ -2102,7 +2102,11 @@ async fn a_rescan_registers_a_runtime_installed_after_boot_and_never_replaces_on
         .runtime(&RuntimeId::new("late-cli").unwrap())
         .unwrap();
 
-    assert_eq!(h.engine.rediscover_runtimes().await, 0, "already registered");
+    assert_eq!(
+        h.engine.rediscover_runtimes().await,
+        0,
+        "already registered"
+    );
     let still = h
         .engine
         .runtime(&RuntimeId::new("late-cli").unwrap())

@@ -15,6 +15,7 @@ mod alerts;
 mod backdrop;
 mod bench;
 mod chat;
+mod cli_install;
 mod cli_link;
 mod design;
 mod drafts;

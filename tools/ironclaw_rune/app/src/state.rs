@@ -97,6 +97,8 @@ pub struct State {
     pub prewarm: crate::chat::prewarm::Prewarm,
     /// The launch intro (`workspace::intro`); spent unless `main` armed it.
     pub intro: crate::workspace::intro::Intro,
+    /// Coding-agent CLIs being installed from the app (`cli_install`).
+    pub cli_installs: crate::cli_install::Installs,
 }
 
 impl State {
@@ -128,6 +130,7 @@ impl State {
             bench: None,
             prewarm: Default::default(),
             intro: Default::default(),
+            cli_installs: Default::default(),
         }
     }
 

@@ -1024,6 +1024,17 @@ impl Client {
         self.orch_get(format!("{V2}/providers")).await
     }
 
+    /// Ask the backend to look again for coding-agent CLIs installed since
+    /// it started (`POST /providers/rescan`); answers the catalog after it.
+    /// An older backend answers 404: restarting it is the only way then.
+    pub async fn rescan_providers(&self) -> Result<ProviderCatalog, ClientError> {
+        let path = format!("{V2}/providers/rescan");
+        decode(
+            self.send::<Value>(self.request(reqwest::Method::POST, &path))
+                .await?,
+        )
+    }
+
     pub async fn thread_route(&self, thread_id: &str) -> Result<ThreadRoute, ClientError> {
         self.orch_get(format!("{V2}/threads/{}/route", seg(thread_id)))
             .await

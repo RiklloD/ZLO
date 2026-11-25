@@ -276,7 +276,7 @@ pub fn refresh(s: &mut State) {
 /// the answer animates. One request at a time: asked while one is out, it
 /// goes once that one lands (several asks fold into one). A restart owns
 /// the requests until the new gateway answers ([`wait_for_gateway`]).
-fn request_catalog(s: &mut State, shown: bool) {
+pub(super) fn request_catalog(s: &mut State, shown: bool) {
     let a = &mut s.onboarding.agents;
     if s.fixture {
         return;
@@ -425,7 +425,7 @@ fn applescript_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn run_in_terminal(command: &str) -> Result<(), String> {
+pub(crate) fn run_in_terminal(command: &str) -> Result<(), String> {
     let script = format!(
         "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
         applescript_string(&terminal_script(command))
@@ -725,7 +725,7 @@ fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
         button_sized(label, Look::Outline, Size::Small)
             .icon(&crate::icons::SQUARE_TERMINAL)
             .disabled(terminal_open)
-            .on_press(move |s: &mut State| open_terminal(s, driver, install))
+            .on_press(move |s: &mut State| press(s, driver, install))
             .build(k)
             .key(key)
             .press_scale(motion::PRESS)
@@ -798,6 +798,10 @@ fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
                 format!("agent-action-{}", driver.runtime()),
             )),
     };
+    let (headline, trailing) = match install_shown(s, k, driver) {
+        Some((line, trailing)) => (line, trailing),
+        None => (headline.to_string(), trailing),
+    };
     list_row(
         s,
         format!("agent-{}", driver.runtime()),
@@ -806,6 +810,96 @@ fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
         Some(text(headline).font(xs()).color(p.text_muted).wrap()),
         trailing,
     )
+}
+
+/// Install runs the installer here when this Mac has the backend
+/// (`cli_install`); another computer's install, and every sign-in, opens the
+/// command in Terminal.
+fn press(s: &mut State, driver: Driver, install: bool) {
+    if install
+        && driver
+            .known()
+            .is_some_and(|k| crate::cli_install::can_install_here(s, k))
+    {
+        crate::cli_install::start(s, driver.runtime());
+    } else {
+        open_terminal(s, driver, install);
+    }
+}
+
+/// An install from the app in progress or failed: the row's line and its
+/// trailing part while it lasts.
+fn install_shown(s: &State, k: &Kit, driver: Driver) -> Option<(String, El)> {
+    use crate::cli_install::Phase;
+    let p = &s.palette;
+    let runtime = driver.runtime();
+    let install = s.cli_installs.get(runtime)?;
+    let breathing = |label: &'static str| {
+        text(label)
+            .font(xs())
+            .color(p.text_muted)
+            .cycle(crate::design::kit::loops::breathe(
+                1.6,
+                0.,
+                &crate::design::kit::loops::BREATH_55,
+            ))
+    };
+    let small = |label: &'static str, look: Look| button_sized(label, look, Size::Small);
+    Some(match &install.phase {
+        Phase::Running => (
+            install
+                .tail
+                .back()
+                .cloned()
+                .unwrap_or_else(|| "Starting the installer…".into()),
+            row()
+                .key("installing")
+                .gap(8.)
+                .center_y()
+                .transition(motion::fade())
+                .child(breathing("Installing…"))
+                .child(
+                    small("Cancel", Look::Ghost)
+                        .on_press(move |s: &mut State| crate::cli_install::cancel(s, runtime))
+                        .build(k)
+                        .key(format!("agent-install-cancel-{runtime}"))
+                        .press_scale(motion::PRESS),
+                ),
+        ),
+        Phase::Finding => (
+            "Installed. Finding it…".into(),
+            row()
+                .key("finding")
+                .transition(motion::fade())
+                .child(breathing("Finding it…")),
+        ),
+        Phase::Failed(why) => (
+            why.clone(),
+            row()
+                .key("install-failed")
+                .gap(6.)
+                .center_y()
+                .transition(motion::fade())
+                .child(
+                    small("Retry", Look::Outline)
+                        .on_press(move |s: &mut State| crate::cli_install::start(s, runtime))
+                        .build(k)
+                        .key(format!("agent-install-retry-{runtime}"))
+                        .press_scale(motion::PRESS),
+                )
+                .child(
+                    small("Open in Terminal", Look::Ghost)
+                        .icon(&crate::icons::SQUARE_TERMINAL)
+                        .on_press(move |s: &mut State| {
+                            crate::cli_install::dismiss(s, runtime);
+                            open_terminal(s, driver, true);
+                        })
+                        .build(k)
+                        .key(format!("agent-install-terminal-{runtime}"))
+                        .press_scale(motion::PRESS),
+                ),
+        ),
+    })
 }
 
 fn terminal_panel(s: &State, k: &Kit, t: &AgentTerminal) -> El {

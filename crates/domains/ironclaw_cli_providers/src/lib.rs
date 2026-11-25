@@ -205,7 +205,26 @@ impl CliRuntimeDiscovery {
 #[async_trait::async_trait]
 impl ironclaw_orchestrator::engine::RuntimeDiscovery for CliRuntimeDiscovery {
     async fn discover(&self, engine: &Arc<Engine>) -> usize {
-        let added = register_installed(engine, &self.bridge, &self.skills).await;
+        // A kind already running is skipped before its binary is even looked
+        // for: a client watching for installs asks every few seconds.
+        let has = |id: &str| {
+            ironclaw_orchestrator::model::RuntimeId::new(id).is_ok_and(|id| engine.has_runtime(&id))
+        };
+        let bridge = || Some(Arc::clone(&self.bridge));
+        let skills = &self.skills;
+        let mut added = 0;
+        if !has("claude-cli") {
+            added += register_claude_runtimes(engine, bridge(), skills);
+        }
+        if !has("antigravity") {
+            added += register_antigravity_runtime(engine, bridge(), skills).await;
+        }
+        if !has("muse-code") {
+            added += register_muse_runtime(engine, bridge(), skills);
+        }
+        if !has("codex") {
+            added += register_codex_runtime(engine, bridge(), skills);
+        }
         tracing::debug!(added, "looked again for coding-agent CLIs");
         added
     }
