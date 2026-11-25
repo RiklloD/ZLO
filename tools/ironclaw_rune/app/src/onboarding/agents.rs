@@ -233,6 +233,13 @@ pub fn reset(s: &mut State) {
 pub fn entered(s: &mut State) {
     request_catalog(s, true);
     crate::pages::providers::refresh(s);
+    // An agent installed while the step is open (another computer's
+    // Terminal, the person's own) turns up without a restart.
+    crate::cli_install::watch(s, agents_step_open);
+}
+
+fn agents_step_open(s: &State) -> bool {
+    super::wizard_shown(s) && s.onboarding.step == super::Step::Agents
 }
 
 /// Setup left the step: its sign-in watch ends, so coming back starts
@@ -1029,6 +1036,28 @@ mod tests {
     fn state_of(s: &State, driver: Driver) -> AgentState {
         let a = &s.onboarding.agents;
         agent_state(a.catalog.as_deref(), &a.hidden, driver)
+    }
+
+    /// Re-review 6: an agent installed on another computer while the step
+    /// is open turns up there through the rescan watch, with no restart.
+    #[test]
+    fn the_agents_step_notices_an_install_made_elsewhere() {
+        let (mut s, mut pump, gateway) = live(vec![Answer::ok(catalog(&[]))]);
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-1", "studio.local");
+        entered(&mut s);
+        assert!(pump.until(&mut s, WAIT, |s| {
+            s.onboarding.agents.catalog.is_some() && s.pages.providers.runtimes.is_some()
+        }));
+        assert_eq!(state_of(&s, Driver::Codex), AgentState::Install);
+        gateway.script(vec![Answer::ok(catalog(&[("codex", false)]))]);
+        assert!(pump.until(&mut s, WAIT, |s| state_of(s, Driver::Codex)
+            == AgentState::SignIn));
+        assert!(gateway.requests_to("/api/webchat/v2/providers/rescan") >= 1);
+        assert_eq!(
+            s.onboarding.agents.agent_notice.as_deref(),
+            Some("Codex CLI is installed. Sign in to use it.")
+        );
     }
 
     /// Review P2: a second sign-in panel closing joins the watch instead

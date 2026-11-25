@@ -580,10 +580,6 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
             get(handlers::orchestrator_providers),
         )
         .route(
-            WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS_RESCAN,
-            post(handlers::orchestrator_providers_rescan),
-        )
-        .route(
             WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_FORK,
             post(handlers::orchestrator_thread_fork),
         )
@@ -802,6 +798,11 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
             .route(
                 WEBUI_V2_PATTERN_START_CODEX_LOGIN,
                 post(handlers::start_codex_login),
+            )
+            // Host-wide CLI discovery: operator surface only.
+            .route(
+                WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS_RESCAN,
+                post(handlers::orchestrator_providers_rescan),
             );
     }
     if options.mount_operator_routes {
