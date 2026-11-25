@@ -12,7 +12,7 @@
 //!    instead of a CLI, a provider (ChatGPT plan, an API key) that
 //!    IronClaw's own agent runs on (`agents.rs`).
 //! 3. **Projects** — folders Claude Code and Codex sessions ran in, the
-//!    recent repositories picked, imported as threads (`projects.rs`); the
+//!    every one picked, imported as threads (`projects.rs`); the
 //!    pick limits the session import to those folders.
 //!
 //! The gate (t3code `resolveFirstRunDecision`): setup done before (the
@@ -417,7 +417,13 @@ mod tests {
         let mut s = state();
         s.onboarding.decision = Decision::Wizard;
         s.onboarding.step = Step::Projects;
+        // The decline is on its way: setup cannot be closed under it.
+        s.onboarding.projects.importing = true;
+        view::close(&mut s);
+        assert_eq!(s.onboarding.decision, Decision::Wizard);
+        assert!(holds_launch_import(&s));
         projects::skip_saved(&mut s, Err(zlo_client::ClientError::Config("down".into())));
+        assert!(!s.onboarding.projects.importing, "the controls come back");
         assert_eq!(s.onboarding.decision, Decision::Wizard);
         assert!(holds_launch_import(&s), "nothing may import yet");
         assert!(s.onboarding.projects.error.is_some());

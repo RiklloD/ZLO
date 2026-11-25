@@ -1271,19 +1271,7 @@ pub fn imports_dir(work_dir: &Path) -> PathBuf {
 /// The `claude` binary: `PATH` first, then the installer's usual homes (a
 /// desktop-launched backend often runs with a minimal `PATH`).
 pub fn find_binary(home: &Path) -> Option<PathBuf> {
-    let from_path = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .unwrap_or_default();
-    from_path
-        .into_iter()
-        .chain([
-            home.join(".local/bin"),
-            home.join(".claude/local"),
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/local/bin"),
-        ])
-        .map(|dir| dir.join("claude"))
-        .find(|p| p.is_file())
+    crate::binaries::find(home, "claude")
 }
 
 /// Persist the CLI's own limit reading (atomic replace). Losing one is

@@ -1,9 +1,10 @@
 //! Setup's "Import your projects" (t3code `ImportStep` and
 //! `projectImport.logic.ts`): the folders Claude Code and Codex sessions ran
-//! in, grouped by repository, the recent ones picked (a git checkout with
-//! three or more sessions in the last 30 days). "Import N projects" limits
-//! the session import to the picked folders and runs it; "Do not import
-//! projects" limits it to none. Settings → General → Import terminal
+//! in, grouped by repository, every one picked (t3code picks only recent
+//! repositories; here the person's whole history comes in unless they
+//! narrow it). "Import N projects" limits the session import to the picked
+//! folders and runs it; "Do not import projects" limits it to none (with
+//! nothing listed it saves nothing: a CLI found later still imports). Settings → General → Import terminal
 //! sessions shows the limit and imports every folder again
 //! (`pages/settings/session_import.rs`).
 
@@ -23,8 +24,6 @@ use super::Finish;
 
 mod list;
 
-const RECENT_WINDOW_MS: i64 = 30 * 24 * 60 * 60 * 1000;
-const DEFAULT_SELECTION_MIN_THREADS: u32 = 3;
 const IMPORT_POLL: Duration = Duration::from_secs(1);
 const SCAN_LIMIT_MESSAGE: &str =
     "Scan limit reached. Some projects or conversations may be missing.";
@@ -41,7 +40,7 @@ pub enum Scan {
 pub struct ProjectsState {
     pub scan: Option<Scan>,
     scan_gen: Generation,
-    /// The person's pick; `None` keeps the recent ones (t3code's default).
+    /// The person's pick; `None` keeps every listed folder.
     pub selection: Option<BTreeSet<String>>,
     /// Groups whose open state differs from their default.
     pub flipped: BTreeSet<String>,
@@ -50,19 +49,45 @@ pub struct ProjectsState {
     pub error: Option<String>,
 }
 
-/// t3code `partitionOnboardingProjects`: the recent repositories.
-pub fn recent(projects: &[SessionImportProject], now_ms: i64) -> BTreeSet<String> {
-    let cutoff = now_ms - RECENT_WINDOW_MS;
-    projects
-        .iter()
-        .filter(|p| {
-            p.git.is_some()
-                && p.thread_count >= DEFAULT_SELECTION_MIN_THREADS
-                && p.last_active_at
-                    .is_some_and(|at| at >= cutoff && at <= now_ms)
-        })
-        .map(|p| p.path.clone())
-        .collect()
+/// The default pick: every listed folder.
+pub fn default_pick(projects: &[SessionImportProject]) -> BTreeSet<String> {
+    projects.iter().map(|p| p.path.clone()).collect()
+}
+
+/// What the step's secondary button saves. With folders listed (or still
+/// loading, or a list that failed) it is "Do not import projects" and saves
+/// no folder: the person said no, and a CLI found later imports nothing.
+/// With nothing to decline (the list came back empty: no CLI found yet) or
+/// a gateway that cannot limit the import, it is "Continue" and saves
+/// nothing, so a CLI found later still brings its sessions in.
+pub(super) fn skip_limit(scan: Option<&Scan>) -> Option<ProjectSelection> {
+    match scan {
+        Some(Scan::Unsupported) => None,
+        Some(Scan::Ready(list)) if list.projects.is_empty() => None,
+        _ => Some(ProjectSelection::Only(BTreeSet::new())),
+    }
+}
+
+/// The secondary button's label, matching what [`skip_limit`] saves.
+pub(super) fn skip_label(scan: Option<&Scan>) -> &'static str {
+    match skip_limit(scan) {
+        Some(_) => "Do not import projects",
+        None => "Continue",
+    }
+}
+
+/// The limit "Import N projects" saves: every folder (also ones found later,
+/// by a CLI installed since or past a truncated list) when every listed one
+/// is picked, else just the pick.
+pub(super) fn import_limit(
+    pick: BTreeSet<String>,
+    projects: &[SessionImportProject],
+) -> ProjectSelection {
+    if !projects.is_empty() && projects.iter().all(|p| pick.contains(&p.path)) {
+        ProjectSelection::All
+    } else {
+        ProjectSelection::Only(pick)
+    }
 }
 
 pub struct Group<'a> {
@@ -187,7 +212,7 @@ fn listed(s: &State) -> &[SessionImportProject] {
     }
 }
 
-/// The picked folders: the person's pick, else the recent ones.
+/// The picked folders: the person's pick, else every listed one.
 pub fn selected(s: &State) -> BTreeSet<String> {
     let projects = listed(s);
     match &s.onboarding.projects.selection {
@@ -196,7 +221,7 @@ pub fn selected(s: &State) -> BTreeSet<String> {
             .filter(|p| pick.contains(&p.path))
             .map(|p| p.path.clone())
             .collect(),
-        None => recent(projects, chrono::Utc::now().timestamp_millis()),
+        None => default_pick(projects),
     }
 }
 
@@ -217,16 +242,20 @@ fn skip(s: &mut State) {
     if s.onboarding.projects.importing {
         return;
     }
-    let none = ProjectSelection::Only(BTreeSet::new());
-    if matches!(s.onboarding.projects.scan, Some(Scan::Unsupported)) {
-        // An older gateway cannot limit the import; leave it as it was.
+    let Some(none) = skip_limit(s.onboarding.projects.scan.as_ref()) else {
+        // An older gateway cannot limit the import, and with nothing
+        // listed there is nothing to decline: leave it as it was.
         super::finish(s, finish_with(0, None));
         return;
-    }
+    };
     let request = SessionImportRequest {
-        projects: Some(none.clone()),
+        projects: Some(none),
         ..SessionImportRequest::default()
     };
+    // Busy until the decline is saved: closing setup meanwhile would release
+    // the held import under the old, unlimited settings.
+    s.onboarding.projects.importing = true;
+    s.onboarding.projects.error = None;
     jobs::run(
         s,
         "onboarding",
@@ -242,6 +271,7 @@ fn skip(s: &mut State) {
 /// held import bring in every folder, the opposite of what was asked: the
 /// wizard stays, says so, and the button tries again.
 pub(super) fn skip_saved(s: &mut State, result: Result<(), zlo_client::ClientError>) {
+    s.onboarding.projects.importing = false;
     match result {
         Ok(()) => super::finish(s, finish_with(0, None)),
         Err(e) => {
@@ -267,7 +297,7 @@ fn run_import(s: &mut State) {
     p.error = None;
     let generation = p.import_gen.bump();
     let request = SessionImportRequest {
-        projects: Some(ProjectSelection::Only(pick)),
+        projects: Some(import_limit(pick, listed(s))),
         run: Some(ImportTrigger::Manual),
         ..SessionImportRequest::default()
     };
@@ -450,25 +480,64 @@ mod tests {
     }
 
     #[test]
-    fn recent_repositories_are_picked_by_default() {
+    fn every_listed_folder_is_picked_by_default() {
         let now = 100 * DAY;
         let list = vec![
             project("/w/app", Some("github.com/acme/app"), 5, Some(now - DAY)),
-            // Too few sessions.
-            project("/w/lib", Some("github.com/acme/lib"), 2, Some(now - DAY)),
-            // Too old.
+            // Few sessions, long ago, outside git: still the person's.
             project(
-                "/w/old",
-                Some("github.com/acme/old"),
-                9,
-                Some(now - 40 * DAY),
+                "/w/lib",
+                Some("github.com/acme/lib"),
+                1,
+                Some(now - 400 * DAY),
             ),
-            // Not a checkout.
-            project("/w/notes", None, 9, Some(now - DAY)),
-            // From the future (a skewed clock).
-            project("/w/next", Some("github.com/acme/next"), 9, Some(now + DAY)),
+            project("/w/notes", None, 2, None),
         ];
-        assert_eq!(recent(&list, now), ["/w/app".to_string()].into());
+        assert_eq!(
+            default_pick(&list),
+            ["/w/app", "/w/lib", "/w/notes"].map(String::from).into()
+        );
+    }
+
+    #[test]
+    fn declining_an_empty_list_saves_no_limit() {
+        let ready = |projects| {
+            Scan::Ready(SessionImportProjects {
+                projects,
+                truncated: false,
+            })
+        };
+        let none = Some(ProjectSelection::Only(BTreeSet::new()));
+        assert_eq!(
+            skip_limit(Some(&ready(vec![]))),
+            None,
+            "a CLI found later still imports"
+        );
+        assert_eq!(skip_limit(Some(&Scan::Unsupported)), None);
+        assert_eq!(
+            skip_limit(Some(&ready(vec![project("/w/app", None, 1, None)]))),
+            none
+        );
+        assert_eq!(skip_limit(Some(&Scan::Failed("down".into()))), none);
+        assert_eq!(skip_limit(Some(&Scan::Pending)), none);
+        // The button says what it does.
+        assert_eq!(skip_label(Some(&ready(vec![]))), "Continue");
+        assert_eq!(skip_label(Some(&Scan::Pending)), "Do not import projects");
+    }
+
+    #[test]
+    fn the_whole_list_picked_imports_every_folder_found_later_too() {
+        let list = vec![
+            project("/w/app", None, 1, None),
+            project("/w/lib", None, 1, None),
+        ];
+        let all: BTreeSet<String> = ["/w/app", "/w/lib"].map(String::from).into();
+        assert_eq!(import_limit(all, &list), ProjectSelection::All);
+        let some: BTreeSet<String> = ["/w/app".to_string()].into();
+        assert_eq!(
+            import_limit(some.clone(), &list),
+            ProjectSelection::Only(some)
+        );
     }
 
     #[test]

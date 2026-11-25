@@ -386,6 +386,13 @@ pub fn release_session_import(s: &mut State) {
     session_import_tick(s, zlo_client::session_import::ImportTrigger::Launch);
 }
 
+/// A coding-agent CLI turned up since launch (an install, the live
+/// rescan): the backend imports its terminal sessions when they were never
+/// read.
+pub fn cli_found(s: &mut State) {
+    session_import_tick(s, zlo_client::session_import::ImportTrigger::Launch);
+}
+
 /// Read the inbox again (after setup imported threads).
 /// A prompt went out in `thread_id`: its sidebar card shows Working now.
 pub fn prompt_sent(s: &mut State, thread_id: &str) {

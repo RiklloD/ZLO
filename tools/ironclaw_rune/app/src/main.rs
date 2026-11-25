@@ -24,6 +24,7 @@ mod folder_access;
 mod icons;
 mod jobs;
 mod login_item;
+mod login_path;
 mod logs;
 mod native_view;
 mod onboarding;

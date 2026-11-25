@@ -466,6 +466,9 @@ fn spawn(paths: &Paths) -> std::io::Result<(Child, fs::File, u64)> {
         command.arg("--create-token-if-missing");
     }
     set_home_env(&mut command, &paths.home);
+    // A Finder-opened app has launchd's PATH: give the backend a terminal's,
+    // so it finds the coding-agent CLIs (and imports their sessions).
+    command.env("PATH", crate::login_path::path());
     // This backend gets the granted folders as they are now; a later change
     // waits for its restart (`folder_access::pending`).
     crate::folder_access::note_backend_spawn();

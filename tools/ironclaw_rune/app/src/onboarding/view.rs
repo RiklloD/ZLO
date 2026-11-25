@@ -71,7 +71,7 @@ pub(super) fn step_transition(direction: i8) -> Transition {
     .springs(SpringPair::new(STEP_IN, STEP_OUT))
 }
 
-fn close(s: &mut State) {
+pub(super) fn close(s: &mut State) {
     if s.onboarding.projects.importing || s.remote.page.busy.is_some() {
         return;
     }
