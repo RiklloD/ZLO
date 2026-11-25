@@ -86,7 +86,7 @@ pub(crate) const HARNESS_ACTOR_ID: &str = "host-user";
 pub(crate) const INTERACTIVE_MODEL_PROFILE: &str = "interactive_model";
 /// Coverage-instrumented real-runtime paths (notably bundled WASM startup) can
 /// take more than 30 seconds when several tests run concurrently in CI.
-const RUN_STATE_SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
+pub(super) const RUN_STATE_SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Selects the durable storage backend mounted into the integration harness's
 /// `CompositeRootFilesystem`. Both modes ride **one** composite at the
@@ -205,6 +205,9 @@ pub struct RebornIntegrationHarnessBuilder {
     runner_heartbeat_interval: Option<Duration>,
     /// Test-only canonical-loop iteration limit override.
     planned_default_iteration_limit: Option<std::num::NonZeroU32>,
+    /// Test-only override of how long `submit_turn` and the run-state waits
+    /// poll before timing out. `None` keeps [`RUN_STATE_SETTLE_TIMEOUT`].
+    run_state_settle_timeout: Option<Duration>,
     /// Test-only runtime seam that rejects final assistant transcript writes.
     fail_append_finalized_assistant_message: bool,
     fail_append_tool_result_reference: bool,
@@ -487,6 +490,15 @@ impl RebornIntegrationHarnessBuilder {
     /// this harness so terminal recovery can be reached without a long script.
     pub fn with_iteration_limit_for_test(mut self, limit: std::num::NonZeroU32) -> Self {
         self.planned_default_iteration_limit = Some(limit);
+        self
+    }
+
+    /// Extend how long this harness waits for a run to settle. Only for
+    /// scenarios that are long by construction (e.g. a tool run that must
+    /// outgrow the production 512-message window); the default bound keeps
+    /// ordinary hangs failing fast.
+    pub fn with_run_state_settle_timeout_for_test(mut self, timeout: Duration) -> Self {
+        self.run_state_settle_timeout = Some(timeout);
         self
     }
 
@@ -878,7 +890,11 @@ impl RebornIntegrationHarnessBuilder {
         if let Some(provider_id) = self.scripted_provider_id {
             thread = thread.with_scripted_provider_id(provider_id);
         }
-        thread.build().await
+        let mut harness = thread.build().await?;
+        if let Some(timeout) = self.run_state_settle_timeout {
+            harness.run_state_settle_timeout = timeout;
+        }
+        Ok(harness)
     }
 }
 
@@ -958,6 +974,9 @@ pub struct RebornIntegrationHarness {
     /// `recorded_turn_events` slices `[baseline_turn_event_count..]` like the
     /// other `baseline_*_count` fields (R2).
     pub(crate) baseline_turn_event_count: usize,
+    /// How long run-state waits poll before timing out
+    /// (default [`RUN_STATE_SETTLE_TIMEOUT`]).
+    pub(crate) run_state_settle_timeout: Duration,
     /// Loop milestone count at harness construction. Milestones share one group
     /// sink, so assertions slice from this baseline just like capability and
     /// turn-event recordings.
@@ -1002,6 +1021,7 @@ impl RebornIntegrationHarness {
             lease_recovery_interval: None,
             runner_heartbeat_interval: None,
             planned_default_iteration_limit: None,
+            run_state_settle_timeout: None,
             fail_append_finalized_assistant_message: false,
             fail_append_tool_result_reference: false,
             record_model_calls: false,
@@ -2103,7 +2123,7 @@ impl RebornIntegrationHarness {
         mut decide: impl FnMut(&TurnRunState) -> ControlFlow<HarnessResult<TurnRunState>>,
         timeout_context: &str,
     ) -> HarnessResult<TurnRunState> {
-        let deadline = tokio::time::Instant::now() + RUN_STATE_SETTLE_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + self.run_state_settle_timeout;
         loop {
             let state = self
                 .turn_runtime

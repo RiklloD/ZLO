@@ -2750,8 +2750,16 @@ async fn static_i18n_module_guards_locale_race_and_clears_failed_pack_cache() {
         loader_segment.contains("Promise.resolve(null)"),
         "a resolved pack load must only commit when the pack is available and still the latest request",
     );
+    // The staleness check must sit inside `setLang`, between stamping the
+    // ref and the commit (`localStorage.setItem`). Its polarity is the
+    // minifier's choice: Vite 8.1 kept the source's early return
+    // (`if(!t||u.current!==e)return`), while Vite 8.3 (dependabot batch
+    // baaed6a6a) inverts it into a guarded block (`if(t&&u.current===e){…}`).
+    // Both encode the same guard, so accept either — but only on the
+    // setLang commit path, not the mount effect's separate `===` check.
+    let set_lang_commit = bundle_segment(provider_segment, ".current=", "localStorage.setItem");
     assert!(
-        provider_segment.contains(".current!=="),
+        set_lang_commit.contains(".current!==") || set_lang_commit.contains(".current==="),
         "a resolved pack load must be ignored after a newer language request",
     );
     assert_eq!(
