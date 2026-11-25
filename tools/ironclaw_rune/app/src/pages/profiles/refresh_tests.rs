@@ -323,3 +323,83 @@ fn a_save_before_the_first_inbox_read_waits_for_the_read() {
     );
     assert!(s.workspace.inbox.list.profiles.is_empty());
 }
+
+/// Pressing Archive while a Save is in flight must not send a concurrent
+/// delete that races with the save reply.
+#[test]
+fn delete_is_ignored_while_a_save_is_in_flight() {
+    let reread = inbox(
+        vec![
+            picked("default", "Default", Some(900)),
+            picked("work", "Work 2", Some(500)),
+        ],
+        Some("work"),
+    );
+    let (mut s, mut pump, gateway) = live(
+        state(true),
+        vec![
+            Answer::ok(
+                serde_json::to_string(&zlo_client::profiles::ProfileListResponse {
+                    profiles: vec![info("default", "Default"), info("work", "Work")],
+                    last_used_profile_id: Some("work".into()),
+                })
+                .expect("json"),
+            ),
+            Answer::ok(serde_json::to_string(&info("work", "Work 2")).expect("json")),
+            Answer::ok(reread),
+        ],
+    );
+    super::select(&mut s, Some("work".into()));
+    s.pages.profiles.name.replace_text("Work 2");
+    super::save(&mut s);
+    assert!(s.pages.profiles.saving);
+
+    // Attempt to delete while save is in flight.
+    super::delete(&mut s);
+    assert!(!s.pages.profiles.deleting);
+
+    assert!(pump.until(&mut s, WAIT, |s| !s.pages.profiles.saving));
+    assert!(picker_ids(&s).contains(&"work"));
+    assert!(
+        !gateway
+            .paths()
+            .iter()
+            .any(|p| p.ends_with("/profiles/work") && gateway.requests_to("/profiles/work") > 1),
+        "unexpected extra request: {:?}",
+        gateway.paths()
+    );
+}
+
+/// If the computer switches route while an inbox read is in flight, the
+/// rerouted reply must clear `loading` and retry on the new route instead
+/// of wedging every future inbox refresh.
+#[test]
+fn inbox_refresh_recovers_after_route_change() {
+    let first = inbox(
+        vec![picked("default", "Default", Some(900))],
+        Some("default"),
+    );
+    let second = inbox(
+        vec![
+            picked("default", "Default", Some(900)),
+            picked("thesis", "Thesis", None),
+        ],
+        Some("default"),
+    );
+    let (mut s, mut pump, gateway) = live(
+        state(false),
+        vec![
+            Answer::ok(first).after(Duration::from_millis(100)),
+            Answer::ok(second),
+        ],
+    );
+    crate::workspace::refresh_inbox(&mut s);
+    assert!(s.workspace.inbox.is_loading());
+    // Simulate a route change on the same computer while the first read is in flight.
+    s.remote.tag.generation.bump();
+
+    assert!(pump.until(&mut s, WAIT, |s| {
+        !s.workspace.inbox.is_loading() && picker_ids(s).contains(&"thesis")
+    }));
+    assert!(gateway.requests_to(INBOX) >= 2);
+}

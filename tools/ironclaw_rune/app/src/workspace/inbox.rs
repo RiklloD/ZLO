@@ -125,6 +125,11 @@ impl Sent {
 }
 
 impl Inbox {
+    #[cfg(test)]
+    pub(crate) fn is_loading(&self) -> bool {
+        self.loading
+    }
+
     pub(super) fn new() -> Self {
         Self {
             list: InboxListResponse::default(),
@@ -516,7 +521,7 @@ pub(super) fn poll_for_title(s: &mut State) {
 /// input caused: data changing under the person doesn't move. A read the
 /// person caused goes through [`refresh_shown`].
 pub fn refresh(s: &mut State) {
-    if s.rt.backend.is_none() {
+    if s.fixture || s.rt.backend.is_none() {
         return;
     }
     if s.workspace.inbox.loading {
@@ -525,25 +530,37 @@ pub fn refresh(s: &mut State) {
     }
     s.workspace.inbox.loading = true;
     let epoch = s.workspace.inbox.profiles_epoch;
-    jobs::run(
+    jobs::run_rerouted(
         s,
         "inbox",
         |c| async move { c.inbox().await },
-        move |s, result, tx| {
+        move |s, reply, tx| {
             s.workspace.inbox.loading = false;
-            // A newer read is due: a shown read waits for it, the newest.
-            let again = std::mem::take(&mut s.workspace.inbox.stale);
-            let shown = !again && std::mem::take(&mut s.workspace.inbox.shown);
-            match result {
-                Ok(mut list) => {
-                    hold_profiles(s, &mut list, epoch);
-                    refreshed(s, list, shown, tx)
+            match reply {
+                jobs::Reply::Rerouted => {
+                    // The computer switched route mid-request: retry on the
+                    // new route rather than leaving `loading` stuck true.
+                    s.workspace.inbox.stale = false;
+                    refresh(s);
+                    false
                 }
-                // silent-ok: the list keeps its last state; the next event retries.
-                Err(e) => tracing::debug!(error = %e, "inbox refresh failed"),
-            }
-            if again {
-                refresh(s);
+                jobs::Reply::Fresh(result) => {
+                    // A newer read is due: a shown read waits for it, the newest.
+                    let again = std::mem::take(&mut s.workspace.inbox.stale);
+                    let shown = !again && std::mem::take(&mut s.workspace.inbox.shown);
+                    match result {
+                        Ok(mut list) => {
+                            hold_profiles(s, &mut list, epoch);
+                            refreshed(s, list, shown, tx)
+                        }
+                        // silent-ok: the list keeps its last state; the next event retries.
+                        Err(e) => tracing::debug!(error = %e, "inbox refresh failed"),
+                    }
+                    if again {
+                        refresh(s);
+                    }
+                    true
+                }
             }
         },
     );

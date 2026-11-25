@@ -268,6 +268,15 @@ pub struct SessionImporter {
     fail_at: Mutex<Option<Step>>,
 }
 
+/// Releases `SessionImporter::running` on every exit path, panics included.
+struct RunningGuard<'a>(&'a AtomicBool);
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 impl SessionImporter {
     pub fn new(paths: ImportPaths) -> Self {
         Self {
@@ -396,18 +405,18 @@ impl SessionImporter {
         }
         let this = Arc::clone(self);
         tokio::spawn(async move {
+            let _guard = RunningGuard(&this.running);
             // A run that reached its limits goes on with what it left, as
             // long as each round gets somewhere: a first import finishes
             // now, not one rescan interval at a time.
             let mut total = BTreeMap::new();
             for _ in 0..=FOLLOW_UP_RUNS {
-                let round = this.run_held(&engine, &scope, trigger, &total).await;
+                let (round, newly_skipped) = this.run_held(&engine, &scope, trigger, &total).await;
                 total = combined(&total, &round);
-                if !continues(&round) {
+                if !continues(&round, newly_skipped) {
                     break;
                 }
             }
-            this.running.store(false, Ordering::SeqCst);
         });
         true
     }
@@ -426,33 +435,35 @@ impl SessionImporter {
         {
             return None;
         }
-        let counts = self
+        let _guard = RunningGuard(&self.running);
+        let (counts, _) = self
             .run_held(engine, scope, trigger, &BTreeMap::new())
             .await;
-        self.running.store(false, Ordering::SeqCst);
         Some(counts)
     }
 
     /// The run itself, with the running flag held; records the outcome,
     /// added to `earlier` (the rounds of the same request before it), and
-    /// answers this round's counts.
+    /// answers this round's counts plus whether new files entered the skip
+    /// cache.
     async fn run_held(
         &self,
         engine: &Engine,
         scope: &ThreadScope,
         trigger: ImportTrigger,
         earlier: &BTreeMap<String, SessionImportCounts>,
-    ) -> BTreeMap<String, SessionImportCounts> {
+    ) -> (BTreeMap<String, SessionImportCounts>, bool) {
         let owner = ProfileOwner::from(scope);
         let store = engine.store();
         let started = now_ms();
         let result = self.scan_all(engine, scope).await;
-        let (counts, error) = match result {
-            Ok(counts) => (counts, None),
+        let (counts, newly_skipped, error) = match result {
+            Ok((counts, newly_skipped)) => (counts, newly_skipped, None),
             Err(error) => {
                 tracing::debug!(%error, "session import failed");
                 (
                     BTreeMap::new(),
+                    false,
                     Some("The import could not finish.".to_string()),
                 )
             }
@@ -473,17 +484,18 @@ impl SessionImporter {
             Err(error) => tracing::debug!(%error, "session import: state unreadable"),
         }
         tracing::debug!(?counts, "session import finished");
-        counts
+        (counts, newly_skipped)
     }
 
     async fn scan_all(
         &self,
         engine: &Engine,
         scope: &ThreadScope,
-    ) -> Result<BTreeMap<String, SessionImportCounts>, OrchestratorError> {
+    ) -> Result<(BTreeMap<String, SessionImportCounts>, bool), OrchestratorError> {
         let owner = ProfileOwner::from(scope);
         let store = engine.store();
         let state = store.session_import_state(&owner).await?;
+        let skipped_before = self.skipped.lock().map(|m| m.len()).unwrap_or(0);
         let mut out = BTreeMap::new();
         for spec in &SOURCES {
             let runtime = RuntimeId::new(spec.runtime)?;
@@ -535,7 +547,8 @@ impl SessionImporter {
             }
             out.insert(spec.id.to_string(), pass.counts);
         }
-        Ok(out)
+        let skipped_after = self.skipped.lock().map(|m| m.len()).unwrap_or(0);
+        Ok((out, skipped_after > skipped_before))
     }
 
     // ── shared steps ────────────────────────────────────────────────────
@@ -743,10 +756,12 @@ impl SessionImporter {
 /// Rounds a background run may add after one that left work deferred.
 const FOLLOW_UP_RUNS: usize = 8;
 
-/// Another round is worth it: work was left, and this round moved.
-fn continues(counts: &BTreeMap<String, SessionImportCounts>) -> bool {
+/// Another round is worth it: work was left, and this round moved (imported,
+/// updated, or cached newly skipped files so the next round can skip past
+/// them without spending its byte budget).
+fn continues(counts: &BTreeMap<String, SessionImportCounts>, newly_skipped: bool) -> bool {
     let left = counts.values().any(|c| c.deferred > 0);
-    let moved = counts.values().any(|c| c.imported + c.updated > 0);
+    let moved = newly_skipped || counts.values().any(|c| c.imported + c.updated > 0);
     left && moved
 }
 

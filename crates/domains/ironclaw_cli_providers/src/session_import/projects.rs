@@ -52,12 +52,20 @@ impl SessionImporter {
         engine: &Engine,
         owner: &ProfileOwner,
     ) -> Result<SessionImportProjects, OrchestratorError> {
+        self.projects_with_budget(engine, owner, SCAN_BYTES, SCAN_TIME)
+            .await
+    }
+
+    /// [`Self::projects`] with explicit per-source byte and time bounds.
+    pub(super) async fn projects_with_budget(
+        &self,
+        engine: &Engine,
+        owner: &ProfileOwner,
+        scan_bytes: u64,
+        scan_time: Duration,
+    ) -> Result<SessionImportProjects, OrchestratorError> {
         let store = engine.store();
         let state = store.session_import_state(owner).await?;
-        let mut budget = Budget {
-            bytes: SCAN_BYTES,
-            deadline: Instant::now() + SCAN_TIME,
-        };
         let mut folders: BTreeMap<String, Folder> = BTreeMap::new();
         let mut truncated = false;
         for (ix, spec) in SOURCES.iter().enumerate() {
@@ -65,6 +73,12 @@ impl SessionImporter {
             if !state.settings.enabled(spec.id) || !engine.has_runtime(&runtime) {
                 continue;
             }
+            // Each source has its own budget, matching `scan_all`: a large
+            // Claude Code history must not starve Codex out of the list.
+            let mut budget = Budget {
+                bytes: scan_bytes,
+                deadline: Instant::now() + scan_time,
+            };
             let mut own = store
                 .native_sessions(std::slice::from_ref(&runtime))
                 .await?;

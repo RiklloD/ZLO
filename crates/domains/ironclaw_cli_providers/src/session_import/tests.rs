@@ -685,3 +685,83 @@ async fn sessions_run_in_the_zlo_home_are_not_imported() {
     );
     assert!(!ledger.contains_key("z1"), "the app's own home: {counts:?}");
 }
+
+#[tokio::test]
+async fn project_discovery_gives_codex_its_own_budget_when_claude_truncates() {
+    let h = harness().await;
+    // Put Codex in its own project folder so we can tell it apart from Claude.
+    let codex_app = h.root.join("codex-only");
+    std::fs::create_dir_all(&codex_app).unwrap();
+    let codex_rollout = h
+        .root
+        .join(".codex/sessions/2026/10/03")
+        .join("rollout-2026-10-03T10-00-00-01a19dc0-9936-7d50-8808-84fea8a23fa7.jsonl");
+    let meta = serde_json::json!({
+        "timestamp": "2026-10-03T10:00:00.000Z", "type": "session_meta",
+        "payload": {
+            "id": "01a19dc0-9936-7d50-8808-84fea8a23fa7",
+            "cwd": codex_app,
+            "originator": "codex_cli_rs",
+            "source": "cli"
+        },
+    })
+    .to_string();
+    write(
+        &codex_rollout,
+        &[meta, message("user", "2026-10-03T10:00:02.000Z", "Hi")],
+    );
+
+    // Add a second Claude session so a tiny byte budget truncates Claude's scan.
+    let claude_dir = h
+        .root
+        .join(".claude/projects")
+        .join(claude_codes::transcript::encode_project_dir(&h.app));
+    let pad = "x".repeat(4096);
+    let big = serde_json::json!({
+        "type": "user", "sessionId": "c2", "cwd": h.app, "timestamp": "2026-10-01T11:00:00Z",
+        "message": {"role": "user", "content": pad},
+    })
+    .to_string();
+    write(&claude_dir.join("c2.jsonl"), &[big]);
+
+    let owner = ProfileOwner::from(&scope());
+    // 1024 bytes is smaller than c2.jsonl (so Claude truncates), yet enough for
+    // Codex's session_meta header when each source gets its own budget.
+    let discovered = h
+        .importer
+        .projects_with_budget(&h.engine, &owner, 1024, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(
+        discovered.truncated,
+        "Claude should hit the 1 KiB scan budget"
+    );
+    let codex_path = codex_app.display().to_string();
+    assert!(
+        discovered
+            .projects
+            .iter()
+            .any(|p| p.path == codex_path && p.sources.iter().any(|s| s == CODEX)),
+        "Codex must still be discovered when Claude exhausts its budget: {discovered:?}"
+    );
+}
+
+#[test]
+fn skipped_files_count_as_progress_for_multi_round_imports() {
+    let mut counts = BTreeMap::new();
+    counts.insert(
+        CLAUDE_CODE.to_string(),
+        SessionImportCounts {
+            deferred: 5,
+            ..SessionImportCounts::default()
+        },
+    );
+    assert!(
+        continues(&counts, true),
+        "newly cached skipped files let the next round advance to deferred files"
+    );
+    assert!(
+        !continues(&counts, false),
+        "no imports, no updates, and no newly skipped files must stop"
+    );
+}

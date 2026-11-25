@@ -311,6 +311,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         );
 
     let can_delete = profile.is_some_and(|p| !p.is_default);
+    let busy = ps.saving || ps.deleting;
     let mut footer = row()
         .key("profile-footer")
         .w_full()
@@ -325,7 +326,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
                 "Archive this profile?",
                 Look::Danger,
                 None,
-                false,
+                busy,
                 delete,
             )
         } else {
@@ -335,7 +336,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
                 "Archive",
                 Look::Ghost,
                 None,
-                false,
+                busy,
                 |s: &mut State| s.pages.profiles.confirm_delete = true,
             )
         });
@@ -365,7 +366,7 @@ fn render_editor(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
             if creating { "Create profile" } else { "Save" },
             Look::Primary,
             None,
-            ps.saving,
+            busy,
             save,
         ));
 

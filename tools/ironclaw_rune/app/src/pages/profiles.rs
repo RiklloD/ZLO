@@ -59,6 +59,8 @@ pub struct ProfilesState {
     rail: Option<String>,
     search: TextEdit,
     saving: bool,
+    deleting: bool,
+    mutation_gen: jobs::Generation,
     importing: bool,
     loaded: bool,
     error: Option<String>,
@@ -251,7 +253,7 @@ fn select(s: &mut State, id: Option<String>) {
 
 fn save(s: &mut State) {
     let ps = &mut s.pages.profiles;
-    if ps.saving {
+    if ps.saving || ps.deleting {
         return;
     }
     let settings = ps.settings(ps.selected_profile().map(|p| &p.settings));
@@ -264,6 +266,7 @@ fn save(s: &mut State) {
         return;
     }
     ps.saving = true;
+    let generation = ps.mutation_gen.bump();
     let (picks, origin) = (ps.picks.clone(), ps.origin.clone());
     jobs::run(
         s,
@@ -283,12 +286,15 @@ fn save(s: &mut State) {
                 None => c.create_profile(&id, settings).await,
             }
         },
-        |s, result, tx| {
+        move |s, result, tx| {
             // The reply to the person's own action: let it move.
             tx.animated();
 
             let ps = &mut s.pages.profiles;
             ps.saving = false;
+            if ps.mutation_gen != generation {
+                return;
+            }
             match result {
                 Ok(saved) => {
                     crate::workspace::profiles_changed(
@@ -319,10 +325,15 @@ fn approval_mode_changed(s: &mut State) {
 
 fn delete(s: &mut State) {
     let ps = &mut s.pages.profiles;
+    if ps.saving || ps.deleting {
+        return;
+    }
     let Some(id) = ps.selected.clone() else {
         return;
     };
     ps.confirm_delete = false;
+    ps.deleting = true;
+    let generation = ps.mutation_gen.bump();
     let job_id = id.clone();
     jobs::run(
         s,
@@ -331,6 +342,10 @@ fn delete(s: &mut State) {
         move |s, result, tx| {
             // The reply to the person's own action: let it move.
             tx.animated();
+            s.pages.profiles.deleting = false;
+            if s.pages.profiles.mutation_gen != generation {
+                return;
+            }
             match result {
                 Ok(()) => {
                     crate::workspace::profiles_changed(

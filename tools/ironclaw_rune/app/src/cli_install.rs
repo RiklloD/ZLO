@@ -327,7 +327,11 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// stopped, with its group, and counts as not found.
 fn binary_on_login_path(binary: &str) -> bool {
     use std::os::unix::process::CommandExt as _;
-    let Ok(mut child) = Command::new("/bin/zsh")
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| s.starts_with('/'))
+        .unwrap_or_else(|| "/bin/zsh".to_string());
+    let Ok(mut child) = Command::new(&shell)
         .args(["-lc", &format!("command -v {binary}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -953,7 +957,24 @@ fn installed(s: &mut State, runtime: &'static str) {
     }
     s.cli_installs.by_runtime.remove(runtime);
     let name = known(runtime).map_or(runtime, |k| k.name);
-    let notice = format!("{name} is installed. Sign in to use it.");
+    let already_signed_in = known(runtime).is_some_and(|k| {
+        s.pages
+            .providers
+            .runtimes
+            .as_deref()
+            .is_some_and(|catalog| {
+                catalog.iter().any(|r| {
+                    r.authenticated
+                        && (r.provider.starts_with(k.runtime) || r.runtime.starts_with(k.runtime))
+                        && !(k.legacy_runtime && r.launch == Some(CatalogLaunch::Legacy))
+                })
+            })
+    });
+    let notice = if already_signed_in {
+        format!("{name} is installed and ready.")
+    } else {
+        format!("{name} is installed. Sign in to use it.")
+    };
     let p = &mut s.pages.providers;
     p.error = None;
     p.notice = Some(notice.clone());
@@ -1513,5 +1534,29 @@ mod tests {
         let claude = known("claude-cli").unwrap();
         assert!(listed(&[row("claude-cli-2", None)], claude));
         assert!(!listed(&[row("codex", None)], claude));
+    }
+
+    #[test]
+    fn an_already_authenticated_install_says_ready() {
+        let (mut s, mut pump, _gateway) = live(vec![Answer::ok(
+            serde_json::json!({
+                "providers": [{
+                    "provider": "claude-cli",
+                    "runtime": "claude-cli",
+                    "launch": "native",
+                    "authenticated": true
+                }],
+                "picker": {},
+                "added": 1
+            })
+            .to_string(),
+        )]);
+        s.pages.providers.runtimes = Some(vec![]);
+        watch(&mut s, |_| true);
+        assert!(pump.until(&mut s, WAIT, |s| s.pages.providers.notice.is_some()));
+        assert_eq!(
+            s.pages.providers.notice.as_deref(),
+            Some("Claude Code is installed and ready.")
+        );
     }
 }

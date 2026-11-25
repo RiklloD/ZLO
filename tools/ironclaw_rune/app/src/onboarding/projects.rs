@@ -173,6 +173,20 @@ pub fn reset(s: &mut State) {
     p.error = None;
 }
 
+/// A CLI agent was installed or newly discovered: drop any cached project
+/// scan so returning to (or staying on) the Projects step lists the new
+/// agent's sessions.
+pub fn invalidate_scan(s: &mut State) {
+    if s.onboarding.projects.importing {
+        return;
+    }
+    s.onboarding.projects.scan_gen.bump();
+    s.onboarding.projects.scan = None;
+    if s.onboarding.step == super::Step::Projects && s.rt.backend.is_some() {
+        scan(s);
+    }
+}
+
 /// The step opened: list the folders (once; Retry lists again).
 pub fn entered(s: &mut State) {
     if matches!(s.onboarding.projects.scan, Some(Scan::Ready(_))) {

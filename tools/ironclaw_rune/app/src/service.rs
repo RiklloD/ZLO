@@ -41,6 +41,7 @@ struct Supervisor {
     /// and `restart` signal it by pid.
     pid: AtomicU32,
     stopping: AtomicBool,
+    restarting: AtomicBool,
     running: AtomicBool,
 }
 
@@ -50,6 +51,7 @@ fn supervisor() -> &'static Arc<Supervisor> {
         Arc::new(Supervisor {
             pid: AtomicU32::new(0),
             stopping: AtomicBool::new(false),
+            restarting: AtomicBool::new(false),
             running: AtomicBool::new(false),
         })
     })
@@ -158,8 +160,8 @@ pub fn is_light_bundle(exe: &Path) -> bool {
 /// Start the backend unless it already runs, or the app may not run one
 /// ([`set_allowed`]). Called by every connect (`remote::sync_local_backend`).
 pub fn start() {
-    // Unit tests never spawn a real backend, allowed or not.
-    if !allowed() || cfg!(test) {
+    // Unit tests and headless renders never spawn a real backend, allowed or not.
+    if !allowed() || cfg!(test) || rune::is_headless() {
         return;
     }
     let Some(paths) = paths() else {
@@ -170,6 +172,7 @@ pub fn start() {
         return;
     }
     sup.stopping.store(false, Ordering::SeqCst);
+    sup.restarting.store(false, Ordering::SeqCst);
     // A new supervising lifecycle: an earlier one's error is history.
     let lifecycle = new_lifecycle();
     clear_startup_failure();
@@ -194,6 +197,7 @@ pub fn restart() -> bool {
     }
     match backend_pid() {
         Some(pid) => {
+            sup.restarting.store(true, Ordering::SeqCst);
             tracing::debug!(pid, "backend restarting");
             terminate(pid);
             true
@@ -259,6 +263,7 @@ pub fn stop_on_terminate() {}
 pub fn stop() {
     let sup = supervisor();
     sup.stopping.store(true, Ordering::SeqCst);
+    sup.restarting.store(false, Ordering::SeqCst);
     new_lifecycle();
     clear_startup_failure();
     if let Some(pid) = backend_pid() {
@@ -398,6 +403,23 @@ fn child_stderr(_log: &fs::File, _from: u64) -> String {
     String::new()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ExitAction {
+    Stop,
+    RestartNow,
+    Backoff,
+}
+
+fn classify_exit(sup: &Supervisor) -> ExitAction {
+    if sup.stopping.load(Ordering::SeqCst) {
+        return ExitAction::Stop;
+    }
+    if sup.restarting.swap(false, Ordering::SeqCst) {
+        return ExitAction::RestartNow;
+    }
+    ExitAction::Backoff
+}
+
 fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) {
     let mut backoff = Duration::from_secs(1);
     while !sup.stopping.load(Ordering::SeqCst) {
@@ -424,9 +446,17 @@ fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) {
         let status = child.wait().ok();
         sup.pid.store(0, Ordering::SeqCst);
         let _ = fs::remove_file(paths.home.join(PID_FILE));
-        if sup.stopping.load(Ordering::SeqCst) {
-            tracing::debug!(?status, "backend stopped");
-            return;
+        match classify_exit(sup) {
+            ExitAction::Stop => {
+                tracing::debug!(?status, "backend stopped");
+                return;
+            }
+            ExitAction::RestartNow => {
+                backoff = Duration::from_secs(1);
+                tracing::debug!(?status, "backend restarted on request");
+                continue;
+            }
+            ExitAction::Backoff => {}
         }
         if started.elapsed() > HEALTHY_RUN {
             backoff = Duration::from_secs(1);
@@ -620,5 +650,22 @@ mod tests {
         start();
         assert!(!is_running(), "a backend was spawned while not allowed");
         assert!(!restart(), "a restart while not allowed");
+    }
+
+    #[test]
+    fn an_intentional_restart_skips_backoff_and_failure_reporting() {
+        let sup = Supervisor {
+            pid: AtomicU32::new(42),
+            stopping: AtomicBool::new(false),
+            restarting: AtomicBool::new(true),
+            running: AtomicBool::new(true),
+        };
+        assert_eq!(classify_exit(&sup), ExitAction::RestartNow);
+        // Flag is consumed once: a subsequent unexpected exit backs off.
+        assert_eq!(classify_exit(&sup), ExitAction::Backoff);
+        // Stop takes precedence over restart.
+        sup.restarting.store(true, Ordering::SeqCst);
+        sup.stopping.store(true, Ordering::SeqCst);
+        assert_eq!(classify_exit(&sup), ExitAction::Stop);
     }
 }

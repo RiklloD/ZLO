@@ -219,10 +219,12 @@ pub fn holds_launch_import(s: &State) -> bool {
 
 /// Setup shows (t3code: the wizard owns only the home route).
 /// A CLI was installed from the app: setup's agent list looks again and
-/// says so under the agents.
+/// says so under the agents, and any cached project scan is cleared so the
+/// Projects step picks up sessions from the newly installed CLI.
 pub fn agents_catalog_changed(s: &mut State, notice: String) {
     s.onboarding.agents.agent_notice = Some(notice);
     agents::request_catalog(s, true);
+    projects::invalidate_scan(s);
 }
 
 pub fn wizard_shown(s: &State) -> bool {
@@ -482,5 +484,28 @@ mod tests {
     fn steps_count_up_in_order() {
         let order: Vec<usize> = STEPS.iter().map(|(s, _)| s.index()).collect();
         assert_eq!(order, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn installing_a_cli_invalidates_an_earlier_empty_project_scan() {
+        let mut s = state();
+        s.onboarding.step = Step::Agents;
+        s.onboarding.projects.scan = Some(projects::Scan::Ready(
+            zlo_client::session_import::SessionImportProjects {
+                projects: vec![],
+                truncated: false,
+            },
+        ));
+        agents_catalog_changed(&mut s, "Claude Code is installed.".into());
+        assert!(
+            s.onboarding.projects.scan.is_none(),
+            "cached empty scan must clear so Step 3 re-scans after a CLI install"
+        );
+
+        // An in-progress import must not be disturbed.
+        s.onboarding.projects.scan = Some(projects::Scan::Pending);
+        s.onboarding.projects.importing = true;
+        agents_catalog_changed(&mut s, "Codex CLI is installed.".into());
+        assert!(s.onboarding.projects.scan.is_some());
     }
 }

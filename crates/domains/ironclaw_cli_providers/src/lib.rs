@@ -226,7 +226,12 @@ impl CliRuntimeDiscovery {
         let bridge = || Some(Arc::clone(&self.bridge));
         let skills = &self.skills;
         let mut added = 0;
-        if !has("claude-cli") {
+        if !has("claude-cli")
+            || (!has("claude-cli-2")
+                && std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .is_some_and(|home| home.join(claude::SECOND_ACCOUNT_DIR).exists()))
+        {
             added += register_claude_runtimes(engine, bridge(), skills);
         }
         let mut restart_needed = Vec::new();
@@ -391,16 +396,23 @@ pub fn register_claude_runtimes(
         tracing::debug!("claude cli not found; claude runtimes not registered");
         return 0;
     };
-    spawn_version_check(binary.clone());
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     let mut registered = 0;
+    let mut added_primary = false;
     for config in claude::default_accounts(&home, &binary, skills) {
+        let is_primary = config.runtime_id == "claude-cli";
         match claude::ClaudeCliRuntime::new(config, sink.clone(), bridge.clone()) {
             Ok(runtime) => {
-                registered += usize::from(engine.register_runtime_if_absent(Arc::new(runtime)));
+                if engine.register_runtime_if_absent(Arc::new(runtime)) {
+                    registered += 1;
+                    added_primary |= is_primary;
+                }
             }
             Err(error) => tracing::debug!(%error, "claude runtime id rejected"),
         }
+    }
+    if added_primary {
+        spawn_version_check(binary);
     }
     registered
 }

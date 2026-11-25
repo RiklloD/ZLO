@@ -594,6 +594,7 @@ impl TriageCommand {
                         _ => None,
                     };
                     let Some(offered) = offered else {
+                        println!("\n{}", describe_files(&session).join("\n"));
                         anyhow::bail!("{missing}");
                     };
                     Some(offered)

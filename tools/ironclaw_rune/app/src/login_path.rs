@@ -39,24 +39,60 @@ fn backend_path(shell: &str, own: &str, timeout: Duration) -> String {
     merge(login.as_deref().unwrap_or_default(), own)
 }
 
+/// Shell command that prints `PATH` colon-separated between two [`MARK`]s.
+/// POSIX shells already store `$PATH` colon-separated; `fish` and `nu` store
+/// it as a list and would otherwise print spaces or structured text.
+fn path_script(shell: &str) -> String {
+    let name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    match name {
+        "fish" => format!("printf '%s%s%s' '{MARK}' (string join : -- $PATH) '{MARK}'"),
+        "nu" => format!("print --no-newline $\"{MARK}($env.PATH | str join ':'){MARK}\""),
+        _ => format!("printf '%s%s%s' '{MARK}' \"$PATH\" '{MARK}'"),
+    }
+}
+
+#[cfg(unix)]
+fn kill_process_group(pgid: u32) {
+    // silent-ok: the shell may already have exited.
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", "--", &format!("-{pgid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 /// `shell -ilc` printing PATH between marks. The whole probe has `timeout`:
 /// stdout is read on its own thread (a chatty `.zshrc` cannot fill the
 /// pipe), the answer is taken as soon as both marks are in (a background
-/// job keeping stdout open does not hold it up), and the shell is killed
-/// when it is not done in time.
+/// job keeping stdout open does not hold it up), and the shell's whole
+/// process group is killed when it is not done in time.
 fn login_shell_path(shell: &str, timeout: Duration) -> Option<String> {
-    let script = format!("printf '%s%s%s' '{MARK}' \"$PATH\" '{MARK}'");
-    let mut child = Command::new(shell)
-        .args(["-ilc", &script])
+    let script = path_script(shell);
+    let mut cmd = Command::new(shell);
+    cmd.args(["-ilc", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| tracing::debug!(error = %e, "login shell did not start"))
         .ok()?;
+    let pid = child.id();
     let stdout = child.stdout.take()?;
     let answer = read_marked(stdout, Instant::now() + timeout);
-    // Done with it either way; an exited shell makes these no-ops.
+    // Done with it either way; kill the whole process group so any
+    // descendant started by a slow profile cannot leak or hold stdout open.
+    #[cfg(unix)]
+    kill_process_group(pid);
     let _ = child.kill();
     let _ = child.wait();
     answer
@@ -266,5 +302,59 @@ mod tests {
             "/Users/me/.nvm/versions/node/v22/bin:/usr/bin:/bin:/usr/sbin"
         );
         assert_eq!(merge("", "/usr/bin:/bin"), "/usr/bin:/bin");
+    }
+
+    #[test]
+    fn fish_shell_uses_colon_joined_path_script() {
+        let fish = path_script("/opt/homebrew/bin/fish");
+        assert!(fish.contains("string join : -- $PATH"), "{fish}");
+        assert!(fish.contains(MARK), "{fish}");
+        let zsh = path_script("/bin/zsh");
+        assert!(zsh.contains("\"$PATH\""), "{zsh}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_shell_kills_its_descendants() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let pgid_file = dir.path().join("pgid");
+        let shell = dir.path().join("slow-sh");
+        std::fs::write(
+            &shell,
+            format!(
+                "#!/bin/sh\necho $$ > {}\nsleep 30 &\nwait\n",
+                pgid_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = Instant::now();
+        let path = login_shell_path(shell.to_str().unwrap(), Duration::from_millis(250));
+        assert_eq!(path, None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        if let Ok(raw) = std::fs::read_to_string(&pgid_file)
+            && let Ok(pgid) = raw.trim().parse::<u32>()
+        {
+            // Give the kernel a moment to reap the killed process group.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut alive = true;
+            while Instant::now() < deadline {
+                alive = Command::new("/bin/kill")
+                    .args(["-0", "--", &format!("-{pgid}")])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if !alive {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(!alive, "descendant process group {pgid} leaked");
+        }
     }
 }

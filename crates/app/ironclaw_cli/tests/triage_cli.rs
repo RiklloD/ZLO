@@ -195,10 +195,14 @@ fn reports_the_missing_agy_executable_when_antigravity_is_requested() {
     let fixture = Fixture::new(&["codex"]);
     let output = fixture.run(&["--agent", "antigravity"]);
     assert!(!output.status.success());
+    let all = text(&output);
     assert!(
-        text(&output).contains("`agy` is not installed or was not found on PATH."),
-        "{}",
-        text(&output)
+        all.contains("`agy` is not installed or was not found on PATH."),
+        "{all}"
+    );
+    assert!(
+        all.contains("triage-playbook.md") && all.contains("context.md"),
+        "missing requested agent should still print the generated triage files: {all}"
     );
     assert!(!fixture.record().exists());
 }
