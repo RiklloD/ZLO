@@ -11,29 +11,32 @@
 use std::collections::HashSet;
 
 use rune::shape::{LineCap, Path, Shape};
-use rune::{Color, Cursor, El, MotionIntent, Phase, TextStyle, canvas, col, el, row, text};
+use rune::{Color, Cursor, El, Phase, TextStyle, canvas, col, el, row, text};
 use rune_kit::{Kit, RollingText};
 use zlo_client::orchestration::RouteProvider;
 
 use super::view::{FOLLOW, SETTLE, provider_mark, thinking_choices, thinking_row};
-use super::{ModelPickerState, NATIVE, Slot, effort_label, pick, pretty_model};
-use crate::design::kit::compact::{XS, panel_surface, txt_medium};
+use super::{ModelPickerState, NATIVE, Slot, pick, pretty_model};
+use crate::design::kit::compact::{composer_surface, panel_surface};
 use crate::design::styles::rem;
-use crate::design::{self, Palette, rgb};
+use crate::design::{self, Palette};
 use crate::state::State;
 
 const MATRIX_WIDTH: f32 = 408.;
 const PLOT_W: f32 = 384.;
-const PLOT_H: f32 = 264.;
+const PLOT_H: f32 = 236.;
 /// The data area inside the plot box, in points: room on the left for the
 /// score ticks, a top strip for the captions, a bottom strip for the axis.
-const AREA_L: f32 = 30.;
-const AREA_R: f32 = PLOT_W - 14.;
-const AREA_T: f32 = 28.;
-const AREA_B: f32 = PLOT_H - 24.;
+const AREA_L: f32 = 26.;
+const AREA_R: f32 = PLOT_W - 22.;
+const AREA_T: f32 = 16.;
+const AREA_B: f32 = PLOT_H - 26.;
+/// Marker diameters: a provider logo in a disc.
+const MARK: f32 = 20.;
+const ACTIVE_MARK: f32 = 26.;
 /// The level a model without a thinking knob (or Auto) is rated at.
 const DEFAULT_LEVEL: &str = "high";
-const LABEL_H: f32 = 16.;
+const LABEL_H: f32 = 15.;
 
 /// Artificial Analysis Intelligence Index v5.0.1 scores per reasoning level
 /// and list price (USD per 1M tokens), as published on 2026-11-24
@@ -275,6 +278,8 @@ pub(crate) struct MatrixPoint {
 pub(crate) struct Unrated {
     pub provider: String,
     pub provider_name: String,
+    pub runtime: String,
+    pub brand: Option<String>,
     pub model: String,
 }
 
@@ -285,7 +290,9 @@ pub(crate) struct Matrix {
     pub y_lo: f32,
     pub y_hi: f32,
     pub y_step: f32,
-    pub level: Option<String>,
+    /// Price axis bounds, log10 of USD per 1M tokens.
+    pub x_lo: f32,
+    pub x_hi: f32,
 }
 
 /// Compact node label ("claude-opus-5-5" → "Opus 5.5", "gemini-4-carbon" →
@@ -303,7 +310,7 @@ pub(crate) fn short_model(id: &str) -> String {
 }
 
 fn label_w(label: &str) -> f32 {
-    label.chars().count() as f32 * 6.1 + 12.
+    label.chars().count() as f32 * 6.3 + 6.
 }
 
 /// Build the chart from connected (`authenticated`), non-hidden providers.
@@ -322,7 +329,12 @@ pub(crate) fn build(m: &ModelPickerState) -> Matrix {
     let dedicated: HashSet<&str> = connected
         .iter()
         .filter(|p| p.provider != NATIVE)
-        .flat_map(|p| p.models.iter().map(String::as_str))
+        .flat_map(|p| {
+            p.models
+                .iter()
+                .filter(|md| !m.prefs.model_hidden(&p.provider, md))
+                .map(String::as_str)
+        })
         .collect();
 
     let mut points = Vec::new();
@@ -343,6 +355,8 @@ pub(crate) fn build(m: &ModelPickerState) -> Matrix {
                     unrated.push(Unrated {
                         provider: provider.provider.clone(),
                         provider_name: provider.name.clone(),
+                        runtime: provider.runtime.clone(),
+                        brand: provider.brand.clone(),
                         model: model.clone(),
                     });
                 }
@@ -380,7 +394,7 @@ pub(crate) fn build(m: &ModelPickerState) -> Matrix {
     }
 
     // Axes fit every level of every plotted model, so they hold still while
-    // the Thinking slider moves the dots.
+    // the Thinking slider moves the markers.
     let (lo, hi) = points.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
         (lo.min(p.span.0), hi.max(p.span.1))
     });
@@ -390,8 +404,8 @@ pub(crate) fn build(m: &ModelPickerState) -> Matrix {
         (lo, hi)
     };
     let y_step = if hi - lo > 30. { 10. } else { 5. };
-    let y_lo = lo - 1.5;
-    let y_hi = hi + 1.5;
+    let y_lo = lo - 1.;
+    let y_hi = hi + 1.;
     let (plo, phi) = points.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
         (lo.min(p.price.log10()), hi.max(p.price.log10()))
     });
@@ -405,12 +419,13 @@ pub(crate) fn build(m: &ModelPickerState) -> Matrix {
     } else {
         (plo, phi)
     };
-    // Room past the outermost dots for their labels.
-    let (x_lo, x_hi) = (plo - (phi - plo) * 0.06, phi + (phi - plo) * 0.06);
+    let pad = (phi - plo) * 0.05;
+    let (x_lo, x_hi) = (plo - pad, phi + pad);
     for p in &mut points {
         p.x = AREA_L + (p.price.log10() - x_lo) / (x_hi - x_lo) * (AREA_R - AREA_L);
         p.y = AREA_B - (p.score - y_lo) / (y_hi - y_lo) * (AREA_B - AREA_T);
     }
+    spread_markers(&mut points);
 
     // Pareto frontier: no other model scores at least as well for no more.
     const EPS: f32 = 1e-4;
@@ -432,7 +447,47 @@ pub(crate) fn build(m: &ModelPickerState) -> Matrix {
         y_lo,
         y_hi,
         y_step,
-        level,
+        x_lo,
+        x_hi,
+    }
+}
+
+/// Models at the same price and nearly the same score would sit on top of
+/// each other: push such pairs apart sideways, just enough to show both.
+fn spread_markers(points: &mut [MatrixPoint]) {
+    let min = MARK + 3.;
+    for _ in 0..6 {
+        let mut moved = false;
+        for i in 0..points.len() {
+            for j in i + 1..points.len() {
+                let (dx, dy) = (points[j].x - points[i].x, points[j].y - points[i].y);
+                if dy.abs() >= min || dx.abs() >= min {
+                    continue;
+                }
+                let need = (min * min - dy * dy).max(0.).sqrt();
+                if dx.abs() >= need {
+                    continue;
+                }
+                let push = (need - dx.abs()) * 0.5;
+                // The higher scorer moves right, so order still reads.
+                let dir = if dx.abs() > 0.01 {
+                    dx.signum()
+                } else if points[j].score >= points[i].score {
+                    1.
+                } else {
+                    -1.
+                };
+                points[i].x -= push * dir;
+                points[j].x += push * dir;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    for p in points.iter_mut() {
+        p.x = p.x.clamp(AREA_L + MARK * 0.5, PLOT_W - MARK * 0.5 - 2.);
     }
 }
 
@@ -440,9 +495,10 @@ fn overlaps(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
     a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
 }
 
-/// Put each label beside its dot where it covers no other label or dot: the
-/// active model first, then the frontier, then by score. A label with no
-/// free spot is left off (the dot still shows, and scrubbing names it).
+/// Put each label beside its marker where it covers no other label or
+/// marker: the active model first, then the frontier, then by score. A
+/// label with no free spot is left off (the marker's logo still shows, and
+/// scrubbing names it in the header).
 fn place_labels(points: &mut [MatrixPoint], active: Option<&(String, String)>) {
     let mut order: Vec<usize> = (0..points.len()).collect();
     let is_act =
@@ -453,35 +509,38 @@ fn place_labels(points: &mut [MatrixPoint], active: Option<&(String, String)>) {
             .cmp(&(is_act(pa), pa.frontier))
             .then(pb.score.total_cmp(&pa.score))
     });
-    let dots: Vec<(f32, f32, f32, f32)> = points
+    let marks: Vec<(f32, f32, f32, f32)> = points
         .iter()
-        .map(|p| (p.x - 5., p.y - 5., 10., 10.))
+        .map(|p| {
+            let r = if is_act(p) { ACTIVE_MARK } else { MARK } * 0.5 + 1.;
+            (p.x - r, p.y - r, r * 2., r * 2.)
+        })
         .collect();
     let mut placed: Vec<(f32, f32, f32, f32)> = Vec::new();
     for i in order {
         let (x, y) = (points[i].x, points[i].y);
         let act = is_act(&points[i]);
-        let w = label_w(&points[i].short) + if act { 2. } else { 0. };
-        let gap = if act { 13. } else { 8. };
+        let w = label_w(&points[i].short) + if act { 4. } else { 0. };
+        let gap = if act { ACTIVE_MARK } else { MARK } * 0.5 + 4.;
         let h = LABEL_H;
         let candidates = [
             (x + gap, y - h * 0.5),
             (x - gap - w, y - h * 0.5),
-            (x - w * 0.5, y - gap - h),
-            (x - w * 0.5, y + gap),
-            (x + gap, y - h - 2.),
-            (x + gap, y + 2.),
-            (x - gap - w, y - h - 2.),
-            (x - gap - w, y + 2.),
+            (x - w * 0.5, y - gap - h + 2.),
+            (x - w * 0.5, y + gap - 2.),
+            (x + gap - 4., y - h - 4.),
+            (x + gap - 4., y + 4.),
+            (x - gap - w + 4., y - h - 4.),
+            (x - gap - w + 4., y + 4.),
         ];
         let fits = |&(lx, ly): &(f32, f32)| {
             let r = (lx, ly, w, h);
-            lx >= AREA_L - 2.
-                && lx + w <= PLOT_W - 2.
-                && ly >= AREA_T - 10.
-                && ly + h <= AREA_B + 8.
+            lx >= AREA_L
+                && lx + w <= PLOT_W - 4.
+                && ly >= 4.
+                && ly + h <= AREA_B
                 && !placed.iter().any(|o| overlaps(r, *o))
-                && !dots
+                && !marks
                     .iter()
                     .enumerate()
                     .any(|(j, d)| j != i && overlaps(r, *d))
@@ -489,7 +548,7 @@ fn place_labels(points: &mut [MatrixPoint], active: Option<&(String, String)>) {
         let spot = candidates.iter().find(|c| fits(c)).copied().or_else(|| {
             act.then(|| {
                 let (lx, ly) = candidates[0];
-                (lx.min(PLOT_W - w - 2.), ly)
+                (lx.min(PLOT_W - w - 4.), ly)
             })
         });
         if let Some((lx, ly)) = spot {
@@ -526,106 +585,50 @@ fn y_of(score: f32, mx: &Matrix) -> f32 {
     AREA_B - (score - mx.y_lo) / (mx.y_hi - mx.y_lo) * (AREA_B - AREA_T)
 }
 
-/// The plot's drawing: dot field, dotted score rules, each model's level
-/// range, the frontier with its wash and scanlines, and the active crosshair.
-fn matrix_canvas_shape(p: &Palette, mx: &Matrix, active: Option<&MatrixPoint>) -> Shape {
-    let mut shape = Shape::new();
+fn x_of(price: f32, mx: &Matrix) -> f32 {
+    AREA_L + (price.log10() - mx.x_lo) / (mx.x_hi - mx.x_lo) * (AREA_R - AREA_L)
+}
 
-    // Dot field (the Thinking slider's texture).
-    let dot_col = p.text_faint.alpha(if p.light { 0.12 } else { 0.11 });
-    let mut gx = AREA_L + 4.;
-    while gx < PLOT_W - 6. {
-        let mut gy = AREA_T;
-        while gy < AREA_B {
-            shape = shape.line([gx, gy], [gx, gy + 1.5], 1.5, LineCap::Butt, dot_col);
-            gy += 16.;
-        }
-        gx += 16.;
-    }
-
-    // Dotted rules at each score tick.
-    let rule = p.text_faint.alpha(if p.light { 0.32 } else { 0.28 });
+/// Score ticks inside the axis.
+fn y_ticks(mx: &Matrix) -> Vec<f32> {
+    let mut out = Vec::new();
     let mut t = (mx.y_lo / mx.y_step).ceil() * mx.y_step;
     while t <= mx.y_hi {
-        let y = y_of(t, mx);
-        let mut x = AREA_L;
-        while x < AREA_R {
-            shape = shape.line([x, y], [x + 1.5, y], 1., LineCap::Butt, rule);
-            x += 5.;
-        }
+        out.push(t);
         t += mx.y_step;
     }
+    out
+}
 
-    // Each thinking model's range across its levels: the dot slides on it.
-    let range_col = p.text_faint.alpha(if p.light { 0.3 } else { 0.26 });
-    for pt in &mx.points {
-        if pt.span.1 - pt.span.0 < 0.5 {
-            continue;
-        }
-        let (y0, y1) = (y_of(pt.span.1, mx), y_of(pt.span.0, mx));
-        shape = shape
-            .line([pt.x, y0], [pt.x, y1], 1.5, LineCap::Round, range_col)
-            .line(
-                [pt.x - 3., y0],
-                [pt.x + 3., y0],
-                1.,
-                LineCap::Butt,
-                range_col,
-            )
-            .line(
-                [pt.x - 3., y1],
-                [pt.x + 3., y1],
-                1.,
-                LineCap::Butt,
-                range_col,
-            );
+/// Price ticks (powers of two dollars) inside the axis.
+fn x_ticks(mx: &Matrix) -> Vec<f32> {
+    [0.25_f32, 0.5, 1., 2., 4., 8., 16., 32., 64.]
+        .into_iter()
+        .filter(|p| (mx.x_lo..=mx.x_hi).contains(&p.log10()))
+        .collect()
+}
+
+/// The plot's drawing: hairline score rules and the frontier. Everything
+/// else is a real element on top.
+fn matrix_canvas_shape(p: &Palette, mx: &Matrix) -> Shape {
+    let mut shape = Shape::new();
+    let rule = p.border.alpha(if p.light { 0.4 } else { 0.45 });
+    for t in y_ticks(mx) {
+        let y = y_of(t, mx).round() + 0.5;
+        shape = shape.line([AREA_L, y], [AREA_R + 6., y], 1., LineCap::Butt, rule);
     }
-
-    // Frontier: a stepped line (a cheaper model holds until a pricier one
-    // scores higher), its wash, and fine scanlines under it.
     let frontier = frontier_ordered(&mx.points);
-    if let Some(first) = frontier.first() {
-        let mut steps: Vec<[f32; 2]> = vec![[first.x, first.y]];
-        for win in frontier.windows(2) {
-            let (a, b) = (win[0], win[1]);
-            steps.push([b.x, a.y]);
-            steps.push([b.x, b.y]);
+    if frontier.len() >= 2 {
+        let mut line = Path::new().move_to([frontier[0].x, frontier[0].y]);
+        for pt in &frontier[1..] {
+            line = line.line_to([pt.x, pt.y]);
         }
-        let last = *steps.last().unwrap_or(&[first.x, first.y]);
-        let mut line = Path::new().move_to(steps[0]);
-        let mut area = Path::new().move_to([steps[0][0], AREA_B]).line_to(steps[0]);
-        for s in &steps[1..] {
-            line = line.line_to(*s);
-            area = area.line_to(*s);
-        }
-        area = area.line_to([last[0], AREA_B]).close();
-        shape = shape.fill_path(&area, p.accent.alpha(if p.light { 0.07 } else { 0.12 }));
-        let scan = p.accent.alpha(if p.light { 0.08 } else { 0.1 });
-        let mut sx = (steps[0][0] / 6.).ceil() * 6.;
-        while sx <= last[0] {
-            let top = steps
-                .windows(2)
-                .find(|w| sx >= w[0][0] && sx <= w[1][0] && (w[0][0] - w[1][0]).abs() > 0.01)
-                .map_or(steps[0][1], |w| w[0][1]);
-            shape = shape.line([sx, top + 2.], [sx, AREA_B], 1., LineCap::Butt, scan);
-            sx += 6.;
-        }
-        if steps.len() >= 2 {
-            shape = shape.stroke_path(&line, 1.75, LineCap::Round, p.accent.alpha(0.9));
-        }
+        shape = shape.stroke_path(&line, 1.5, LineCap::Round, p.accent.alpha(0.55));
     }
-
-    if let Some(act) = active {
-        let ch = p.accent.alpha(if p.light { 0.22 } else { 0.2 });
-        shape = shape
-            .line([AREA_L, act.y], [AREA_R, act.y], 1., LineCap::Butt, ch)
-            .line([act.x, AREA_T - 6.], [act.x, AREA_B], 1., LineCap::Butt, ch);
-    }
-
     shape
 }
 
-/// The Signal Matrix popover: header, the plot, unrated models, and the
+/// The Signal Matrix popover: header, the plot, unscored models, and the
 /// Thinking slider.
 pub(super) fn matrix_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
     let p = &s.palette;
@@ -637,14 +640,14 @@ pub(super) fn matrix_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &K
             .find(|pt| &pt.provider == pv && &pt.model == md)
     });
 
-    let (head_name, head_provider, head_runtime, head_brand) = match (active_point, active_pair) {
-        (Some(pt), _) => (
+    let (head_name, head_provider, head_runtime, head_brand) = match active_point {
+        Some(pt) => (
             pretty_model(&pt.model),
             pt.provider.clone(),
             pt.runtime.clone(),
             pt.brand.clone(),
         ),
-        _ => {
+        None => {
             let (lbl, pv) = m.label();
             let pv = pv.unwrap_or_else(|| NATIVE.into());
             let found = m.providers().iter().find(|r| r.provider == pv);
@@ -656,34 +659,43 @@ pub(super) fn matrix_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &K
             )
         }
     };
+    // What the active model scores and costs, beside its name.
+    let stats =
+        active_point.map(|pt| format!("Index {:.1} · ${}/M", pt.score, price_text(pt.price)));
 
-    let header = row()
+    let mut name_row = row().gap(6.).center_y().child(provider_mark(
+        s,
+        head_brand.as_deref(),
+        &head_runtime,
+        &head_provider,
+        14.,
+    ));
+    name_row = name_row.child(
+        RollingText::new("matrix-active-model", head_name)
+            .font(TextStyle::new(rem(13.), 500.))
+            .color(p.text)
+            .spring(design::motion::ROLL)
+            .trailing()
+            .build(k),
+    );
+    let mut header = row()
         .key("matrix-header")
-        .px(12.)
+        .px(14.)
         .pt(12.)
-        .pb(8.)
+        .pb(10.)
+        .gap(8.)
         .center_y()
-        .child(txt_medium("Model", XS, p.text_faint).grow(1.))
-        .child(
-            row()
-                .gap(6.)
-                .center_y()
-                .child(provider_mark(
-                    s,
-                    head_brand.as_deref(),
-                    &head_runtime,
-                    &head_provider,
-                    14.,
-                ))
-                .child(
-                    RollingText::new("matrix-active-model", head_name)
-                        .font(TextStyle::new(rem(13.), 500.))
-                        .color(p.text)
-                        .spring(design::motion::ROLL)
-                        .trailing()
-                        .build(k),
-                ),
+        .child(name_row.grow(1.));
+    if let Some(stats) = stats {
+        header = header.child(
+            RollingText::new("matrix-active-stats", stats)
+                .font(TextStyle::new(rem(11.5), 450.))
+                .color(p.text_muted)
+                .spring(design::motion::ROLL)
+                .trailing()
+                .build(k),
         );
+    }
 
     let pad_body = if mx.points.is_empty() {
         let msg = if m.route.is_none() {
@@ -691,17 +703,11 @@ pub(super) fn matrix_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &K
         } else {
             "No benchmarked models connected."
         };
-        el().key("matrix-pad")
-            .h(72.)
-            .center()
-            .radius(8.)
-            .fill(p.bg)
-            .border(1., p.border)
-            .child(
-                text(msg)
-                    .font(TextStyle::new(rem(11.), 400.))
-                    .color(p.text_faint),
-            )
+        el().key("matrix-pad").h(64.).center().child(
+            text(msg)
+                .font(TextStyle::new(rem(11.5), 400.))
+                .color(p.text_faint),
+        )
     } else {
         plot(s, m, &mx, active_point, slot)
     };
@@ -715,10 +721,12 @@ pub(super) fn matrix_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &K
         .items_stretch()
         .clip_rounded(design::PANEL_RADIUS)
         .child(header)
-        .child(el().px(12.).pb(10.).child(pad_body));
+        .child(el().px(12.).child(pad_body));
 
     if !mx.unrated.is_empty() {
-        body = body.child(unrated_row(p, &mx.unrated, active_pair, slot));
+        body = body
+            .child(el().h(1.).w_full().fill(p.border))
+            .child(unrated_list(s, &mx.unrated, active_pair, slot));
     }
 
     if let Some(bar) = thinking_row(s, m, slot, k) {
@@ -728,9 +736,21 @@ pub(super) fn matrix_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &K
     panel_surface(p, body)
 }
 
-fn caption(t: impl Into<String>, color: Color) -> El {
+/// "16", "2.25", "0.5".
+fn price_text(price: f32) -> String {
+    if (price - price.round()).abs() < 0.01 {
+        format!("{price:.0}")
+    } else {
+        format!("{price:.2}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
+}
+
+fn axis_text(t: impl Into<String>, color: Color) -> El {
     text(t.into())
-        .font(TextStyle::new(rem(9.5), 500.))
+        .font(TextStyle::new(rem(10.), 450.))
         .color(color)
         .single_line()
 }
@@ -743,226 +763,210 @@ fn plot(
     slot: &Slot,
 ) -> El {
     let p = &s.palette;
+    // The popover's own fill, so markers and label backs hide the lines
+    // under them without showing as boxes.
+    let panel = composer_surface(p).0;
     let spring = if m.matrix_drag.is_some() || m.thinking_drag.is_some() {
         FOLLOW
     } else {
         SETTLE
     };
-    let ink = p.text_faint.alpha(0.75);
-    let level = mx
-        .level
-        .as_deref()
-        .map_or_else(|| "AUTO".to_string(), |l| effort_label(l).to_uppercase());
+    let ink = p.text_faint;
 
     let mut pad = el()
         .key("matrix-pad")
         .role("group")
-        .label("Signal Matrix: drag to pick a model")
+        .label("Models by intelligence and price: drag to pick")
         .w(PLOT_W)
         .h(PLOT_H)
-        .radius(8.)
-        .continuous_corners()
-        .clip_rounded(8.)
-        .fill(p.bg)
-        .border(1., p.border)
         .cursor(Cursor::Crosshair)
         .child(
-            canvas(matrix_canvas_shape(p, mx, active_point).view_box(PLOT_W, PLOT_H))
+            canvas(matrix_canvas_shape(p, mx).view_box(PLOT_W, PLOT_H))
                 .key("matrix-canvas")
                 .pin(Some(0.), Some(0.), Some(0.), Some(0.))
                 .a11y_hidden()
                 .inert(),
-        )
-        .child(
-            el().pin(Some(10.), Some(8.), None, None)
-                .inert()
-                .a11y_hidden()
-                .child(caption("INTELLIGENCE INDEX ↑", ink)),
-        )
-        .child(
-            el().key("matrix-level")
-                .pin(None, Some(8.), Some(10.), None)
-                .inert()
-                .a11y_hidden()
-                .child(caption(format!("THINKING · {level}"), p.accent.alpha(0.85))),
-        )
-        .child(
-            el().pin(Some(AREA_L), None, None, Some(7.))
-                .inert()
-                .a11y_hidden()
-                .child(caption("CHEAPER", ink)),
-        )
-        .child(
-            el().pin(None, None, Some(10.), Some(7.))
-                .inert()
-                .a11y_hidden()
-                .child(caption("PRICIER →", ink)),
         );
 
-    // Score ticks down the left edge.
-    let mut t = (mx.y_lo / mx.y_step).ceil() * mx.y_step;
-    while t <= mx.y_hi {
-        let y = y_of(t, mx);
+    // Score ticks on the left, price ticks along the bottom.
+    for t in y_ticks(mx) {
         pad = pad.child(
             row()
-                .absolute(0., y - 6.)
-                .w(AREA_L - 6.)
-                .h(12.)
+                .absolute(0., y_of(t, mx) - 7.)
+                .w(AREA_L - 8.)
+                .h(14.)
                 .justify_end()
                 .center_y()
                 .inert()
                 .a11y_hidden()
-                .child(caption(format!("{t:.0}"), ink)),
+                .child(axis_text(format!("{t:.0}"), ink)),
         );
-        t += mx.y_step;
+    }
+    let ticks = x_ticks(mx);
+    for (ix, t) in ticks.iter().enumerate() {
+        let label = if ix + 1 == ticks.len() {
+            format!("${}/M", price_text(*t))
+        } else {
+            format!("${}", price_text(*t))
+        };
+        let w = 48.;
+        pad = pad.child(
+            row()
+                .absolute((x_of(*t, mx) - w * 0.5).min(PLOT_W - w), AREA_B + 8.)
+                .w(w)
+                .h(14.)
+                .justify_center()
+                .center_y()
+                .inert()
+                .a11y_hidden()
+                .child(axis_text(label, ink)),
+        );
     }
 
+    // A ring that glides to whichever model is active or under the drag.
     if let Some(act) = active_point {
-        let d = 26.;
+        let d = ACTIVE_MARK + 10.;
         pad = pad.child(
             el().key("matrix-halo")
                 .absolute(act.x - d * 0.5, act.y - d * 0.5)
                 .size(d, d)
                 .radius(d * 0.5)
-                .fill(p.accent.alpha(if p.light { 0.14 } else { 0.2 }))
-                .border(1.5, p.accent.alpha(0.5))
+                .border(1.5, p.accent.alpha(0.35))
                 .a11y_hidden()
                 .inert()
                 .motion(spring),
         );
     }
 
-    // Dots and labels are drawn only: the plot itself takes presses and
-    // drags, so a drag can start on a dot.
+    // Markers and labels are drawn only: the plot itself takes presses and
+    // drags, so a drag can start on a marker.
     for pt in &mx.points {
         let is_act = active_point.is_some_and(|a| a.provider == pt.provider && a.model == pt.model);
-        let size = if pt.frontier { 9. } else { 7. };
-        let dot = if is_act {
-            el().size(size, size)
+        let size = if is_act { ACTIVE_MARK } else { MARK };
+        let ring = if is_act {
+            p.accent
         } else if pt.frontier {
-            el().size(size, size)
-                .radius(size * 0.5)
-                .fill(p.accent)
-                .border(1.5, p.bg)
+            p.accent.alpha(0.6)
         } else {
-            el().size(size, size)
-                .radius(size * 0.5)
-                .fill(p.bg)
-                .border(1.5, p.text_muted.alpha(0.7))
+            p.border
         };
         pad = pad.child(
             el().key(format!("matrix-node-{}-{}", pt.provider, pt.model))
                 .absolute(pt.x - size * 0.5, pt.y - size * 0.5)
                 .size(size, size)
+                .radius(size * 0.5)
+                .center()
+                .fill(panel)
+                .border(if is_act { 2. } else { 1. }, ring)
                 .inert()
                 .a11y_hidden()
                 .motion(spring)
-                .child(dot),
+                .child(provider_mark(
+                    s,
+                    pt.brand.as_deref(),
+                    &pt.runtime,
+                    &pt.provider,
+                    if is_act { 14. } else { 11. },
+                )),
         );
         if let Some((lx, ly, w)) = pt.label {
-            let color = if is_act {
-                p.text
+            let (color, weight) = if is_act {
+                (p.text, 600.)
             } else if pt.frontier {
-                p.text.alpha(0.9)
+                (p.text, 500.)
             } else {
-                p.text_muted
+                (p.text_muted, 450.)
             };
-            let mut chip = row()
-                .key(format!("matrix-lbl-{}-{}", pt.provider, pt.model))
-                .absolute(lx, ly)
-                .w(w)
-                .h(LABEL_H)
-                .center()
-                .radius(4.)
-                .fill(if is_act {
-                    p.accent.alpha(if p.light { 0.2 } else { 0.3 })
-                } else {
-                    p.bg.alpha(0.9)
-                })
-                .inert()
-                .a11y_hidden()
-                .motion(spring)
-                .child(
-                    text(pt.short.clone())
-                        .font(TextStyle::new(rem(10.5), if is_act { 600. } else { 500. }))
-                        .color(color)
-                        .single_line(),
-                );
-            if is_act {
-                chip = chip.border(1., p.accent.alpha(0.55));
-            }
-            pad = pad.child(chip);
+            pad = pad.child(
+                row()
+                    .key(format!("matrix-lbl-{}-{}", pt.provider, pt.model))
+                    .absolute(lx, ly)
+                    .w(w)
+                    .h(LABEL_H)
+                    .center()
+                    .radius(3.)
+                    .fill(panel)
+                    .inert()
+                    .a11y_hidden()
+                    .motion(spring)
+                    .child(
+                        text(pt.short.clone())
+                            .font(TextStyle::new(rem(11.), weight))
+                            .color(color)
+                            .single_line(),
+                    ),
+            );
         }
-    }
-
-    if let Some(act) = active_point {
-        pad = pad.child(
-            el().key("matrix-puck")
-                .absolute(act.x - 8., act.y - 8.)
-                .size(16., 16.)
-                .radius(8.)
-                .fill(if p.light { p.text } else { rgb(0xedf0f5) })
-                .border(
-                    1.5,
-                    if p.light {
-                        p.bg
-                    } else {
-                        Color::WHITE.alpha(0.5)
-                    },
-                )
-                .shadow(2., 8., Color::BLACK.alpha(0.45))
-                .a11y_hidden()
-                .inert()
-                .motion(spring)
-                .motion_intent(MotionIntent::OVERSHOOT),
-        );
     }
 
     let drag_slot = slot.clone();
     pad.on_drag(move |s: &mut State, d, _| matrix_drag(s, &drag_slot, d))
 }
 
-/// Connected models with no published score, as plain chips under the plot.
-fn unrated_row(
-    p: &Palette,
+/// Connected models with no published score: plain two-column rows under
+/// the plot, picked with a press.
+fn unrated_list(
+    s: &State,
     unrated: &[Unrated],
     active: Option<&(String, String)>,
     slot: &Slot,
 ) -> El {
-    let mut chips = row().key("matrix-unrated").flex_wrap().gap(4.);
+    let p = &s.palette;
+    let cell_w = (MATRIX_WIDTH - 16. - 4.) / 2.;
+    let mut grid = row().key("matrix-unrated").flex_wrap().gap(4.);
     for u in unrated {
         let on = active.is_some_and(|(pv, md)| pv == &u.provider && md == &u.model);
         let (pv, md) = (u.provider.clone(), u.model.clone());
         let pick_slot = slot.clone();
-        chips = chips.child(
-            el().key(format!("matrix-unrated-{}-{}", u.provider, u.model))
+        grid = grid.child(
+            row()
+                .key(format!("matrix-unrated-{}-{}", u.provider, u.model))
                 .role("button")
                 .label(format!("{} ({})", pretty_model(&u.model), u.provider_name))
                 .help(format!("{} · no published score", u.provider_name))
+                .w(cell_w)
+                .h(28.)
                 .px(8.)
-                .h(22.)
-                .center()
+                .gap(8.)
+                .center_y()
                 .radius(6.)
                 .continuous_corners()
                 .fill(if on { p.active } else { Color::TRANSPARENT })
-                .border(1., p.border)
-                .hover(p.hover)
+                .hover(if on { p.active } else { p.hover })
                 .cursor(Cursor::Pointer)
                 .on_press(move |s: &mut State| pick(s, pick_slot.clone(), pv.clone(), md.clone()))
+                .child(provider_mark(
+                    s,
+                    u.brand.as_deref(),
+                    &u.runtime,
+                    &u.provider,
+                    13.,
+                ))
                 .child(
                     text(pretty_model(&u.model))
-                        .font(TextStyle::new(rem(11.), if on { 500. } else { 400. }))
+                        .font(TextStyle::new(rem(12.), if on { 500. } else { 400. }))
                         .color(if on { p.text } else { p.text_muted })
-                        .single_line(),
+                        .single_line()
+                        .truncate()
+                        .grow(1.)
+                        .min_w(0.),
                 ),
         );
     }
     col()
-        .px(12.)
-        .pb(10.)
-        .gap(6.)
-        .child(caption("NOT BENCHMARKED", p.text_faint.alpha(0.75)))
-        .child(chips)
+        .px(8.)
+        .pt(8.)
+        .pb(8.)
+        .gap(2.)
+        .child(
+            el().px(8.).pb(2.).child(
+                text("No published score")
+                    .font(TextStyle::new(rem(11.), 450.))
+                    .color(p.text_faint)
+                    .single_line(),
+            ),
+        )
+        .child(grid)
 }
 
 /// A press or drag on the plot scrubs to the nearest model; letting go
@@ -1010,13 +1014,36 @@ mod tests {
     fn only_connected_visible_models_plot_and_unscored_ones_are_listed() {
         let mx = build(&fixture_matrix());
         assert!(!mx.points.iter().any(|pt| pt.provider == "openrouter"));
-        assert!(!mx.points.iter().any(|pt| pt.model == "gpt-6.1-mini"));
-        find(&mx, "anthropic", "claude-fable-5-2");
-        find(&mx, "gemini", "gemini-4-carbon");
+        // A hidden provider and hidden models stay out.
+        assert!(!mx.points.iter().any(|pt| pt.provider == "codex"));
+        assert!(!mx.points.iter().any(|pt| pt.model == "claude-sonnet-5-5"));
+        assert!(!mx.points.iter().any(|pt| pt.model == "gpt-6.1-terra"));
+        assert!(
+            !mx.points
+                .iter()
+                .any(|pt| pt.provider == "antigravity" && pt.model == "claude-opus-5-5")
+        );
+        find(&mx, "claude-cli", "claude-fable-5-2");
+        find(&mx, "antigravity", "gemini-4-carbon");
+        // With Codex hidden, IronClaw's own GPT copies are the ones shown.
+        find(&mx, NATIVE, "gpt-6.2-sol");
         // No published score: listed, never placed on a guess.
         assert!(!mx.points.iter().any(|pt| pt.model == "glm-5.4"));
-        assert!(mx.unrated.iter().any(|u| u.model == "glm-5.4"));
-        assert!(mx.unrated.iter().any(|u| u.model == "claude-haiku-5-5"));
+        for model in [
+            "glm-5.4",
+            "glm-5.3-flash",
+            "mercury-3",
+            "gemini-pro-orchestrator-argon",
+        ] {
+            assert!(
+                mx.unrated.iter().any(|u| u.model == model),
+                "{model} listed"
+            );
+        }
+        assert!(
+            !mx.unrated.iter().any(|u| u.model == "claude-haiku-5-5"),
+            "hidden stays hidden"
+        );
     }
 
     #[test]
@@ -1026,8 +1053,8 @@ mod tests {
         for level in ["low", "medium", "high", "xhigh", "max"] {
             m.effort = Some(level.into());
             let mx = build(&m);
-            let fable = find(&mx, "anthropic", "claude-fable-5-2");
-            let opus = find(&mx, "anthropic", "claude-opus-5-5");
+            let fable = find(&mx, "claude-cli", "claude-fable-5-2");
+            let opus = find(&mx, "claude-cli", "claude-opus-5-5");
             assert!(fable.score > opus.score, "Fable above Opus at {level}");
             assert!(fable.y < opus.y, "drawn higher at {level}");
             assert!(fable.y <= last_fable_y, "more thinking never drops the dot");
@@ -1035,30 +1062,42 @@ mod tests {
         }
         m.effort = Some("max".into());
         assert_eq!(
-            find(&build(&m), "anthropic", "claude-fable-5-2").score,
+            find(&build(&m), "claude-cli", "claude-fable-5-2").score,
             64.8
         );
         m.effort = Some("low".into());
         assert_eq!(
-            find(&build(&m), "anthropic", "claude-fable-5-2").score,
+            find(&build(&m), "claude-cli", "claude-fable-5-2").score,
             53.9
         );
-        // Gemini tops out at high: the slider past it keeps it at high.
+        // Carbon is rated up to high: past it, it holds its high score.
         m.effort = Some("max".into());
-        assert_eq!(find(&build(&m), "gemini", "gemini-4-carbon").score, 60.1);
+        assert_eq!(
+            find(&build(&m), "antigravity", "gemini-4-carbon").score,
+            60.1
+        );
     }
 
     #[test]
     fn a_model_without_a_thinking_knob_holds_still() {
         let mut m = fixture_matrix();
+        // IronClaw's GPT 6.2 Sol is rated at five levels; take its knob away.
+        if let Some(route) = m.route.as_mut()
+            && let Some(native) = route.providers.iter_mut().find(|p| p.provider == NATIVE)
+        {
+            native.efforts.clear();
+        }
         let mut seen = Vec::new();
         for level in ["low", "medium", "high", "xhigh", "max"] {
             m.effort = Some(level.into());
             let mx = build(&m);
-            let terra = find(&mx, NATIVE, "gpt-6.1-terra");
-            seen.push((terra.score, terra.x, terra.y));
+            let sol = find(&mx, NATIVE, "gpt-6.2-sol");
+            // Its height and score hold; it may only step aside for a
+            // neighbour that moves onto it.
+            seen.push((sol.score, sol.y));
         }
         assert!(seen.windows(2).all(|w| w[0] == w[1]), "{seen:?}");
+        assert_eq!(seen[0].0, 54.8, "held at its default level");
     }
 
     #[test]
@@ -1119,10 +1158,10 @@ mod tests {
         // Press on a dot (Opus), drag onto another (Carbon), let go.
         let slot = Slot::chat("t1");
         let (opus, _) = rt
-            .presented("matrix-node-anthropic-claude-opus-5-5")
+            .presented("matrix-node-claude-cli-claude-opus-5-5")
             .expect("opus dot");
         let (carbon, _) = rt
-            .presented("matrix-node-gemini-gemini-4-carbon")
+            .presented("matrix-node-antigravity-gemini-4-carbon")
             .expect("carbon dot");
         let (ox, oy) = (opus[0] + opus[2] * 0.5, opus[1] + opus[3] * 0.5);
         let (cx, cy) = (carbon[0] + carbon[2] * 0.5, carbon[1] + carbon[3] * 0.5);
@@ -1131,7 +1170,7 @@ mod tests {
         rt.frame(1.1);
         assert_eq!(
             slot.get(&rt.state).and_then(|m| m.matrix_drag.clone()),
-            Some(("anthropic".into(), "claude-opus-5-5".into())),
+            Some(("claude-cli".into(), "claude-opus-5-5".into())),
             "press on a dot scrubs to it"
         );
         for step in 1..=8 {
@@ -1141,7 +1180,7 @@ mod tests {
         }
         assert_eq!(
             slot.get(&rt.state).and_then(|m| m.matrix_drag.clone()),
-            Some(("gemini".into(), "gemini-4-carbon".into())),
+            Some(("antigravity".into(), "gemini-4-carbon".into())),
             "drag follows to the dot under the pointer"
         );
         rt.pointer_up(cx, cy);
@@ -1150,7 +1189,7 @@ mod tests {
         assert!(!m.is_open(), "release picks and closes");
         assert_eq!(
             rt.state.prefs.recent_models.first(),
-            Some(&("gemini".to_string(), "gemini-4-carbon".to_string())),
+            Some(&("antigravity".to_string(), "gemini-4-carbon".to_string())),
             "the dot under the pointer was picked"
         );
     }

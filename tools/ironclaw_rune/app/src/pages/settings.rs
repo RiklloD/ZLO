@@ -264,8 +264,8 @@ fn render_follow_ups(s: &State, k: &Kit) -> El {
                 p,
                 "Signal Matrix model picker",
                 Some(
-                    "Plot connected models on a 2D Intelligence × Price/Speed matrix with a \
-                     Pareto frontier instead of a list.",
+                    "Pick models on a chart of Artificial Analysis intelligence against \
+                     price, at the Thinking level you choose, instead of a list.",
                 ),
                 matrix.key("signal-matrix-picker"),
             ),
