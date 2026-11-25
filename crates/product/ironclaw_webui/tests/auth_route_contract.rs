@@ -884,7 +884,7 @@ async fn oidc_hs256_token_rejected_on_route() {
     let forged = encode(
         &header,
         &claims,
-        &EncodingKey::from_secret(public.n().to_bytes_be().as_slice()),
+        &EncodingKey::from_secret(public.n().to_bytes_be().as_slice()).expect("hs256 key"),
     )
     .expect("sign hs256");
 

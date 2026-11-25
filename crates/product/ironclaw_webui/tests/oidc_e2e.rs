@@ -441,7 +441,7 @@ fn sign_hs256_token(kid: &str, issuer: &str, audience: &str) -> String {
     encode(
         &header,
         &claims,
-        &EncodingKey::from_secret(b"attacker-chosen-secret"),
+        &EncodingKey::from_secret(b"attacker-chosen-secret").expect("hs256 key"),
     )
     .expect("sign hs256")
 }

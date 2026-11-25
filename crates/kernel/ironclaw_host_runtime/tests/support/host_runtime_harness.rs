@@ -2234,7 +2234,7 @@ pub(crate) fn tool_component(wat_src: &str) -> Vec<u8> {
         .select_world(&[package], Some("sandboxed-tool"))
         .unwrap();
 
-    embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8).unwrap();
+    embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8, false).unwrap();
 
     ComponentEncoder::default()
         .module(&module)

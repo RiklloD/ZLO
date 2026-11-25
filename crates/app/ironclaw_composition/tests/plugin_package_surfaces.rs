@@ -243,6 +243,7 @@ fn tool_component(wat_src: &str) -> Vec<u8> {
         &resolve,
         world,
         wit_component::StringEncoding::UTF8,
+        false,
     )
     .unwrap();
     wit_component::ComponentEncoder::default()
