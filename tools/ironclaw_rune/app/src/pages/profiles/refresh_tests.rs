@@ -196,16 +196,118 @@ fn a_deleted_profile_leaves_the_picker() {
     assert!(pump.until(&mut s, WAIT, |_| gateway.requests_to(INBOX) >= 1));
 }
 
+/// A draft in the archived profile moves to one that exists (it showed
+/// "Default" yet sent the archived id), and a sidebar filter on it lifts
+/// (its chip is gone, so nothing could turn it off).
+#[test]
+fn an_archive_moves_the_draft_and_lifts_the_filter() {
+    let reread = inbox(
+        vec![picked("default", "Default", Some(900))],
+        Some("default"),
+    );
+    let (mut s, mut pump, _gateway) = live(state(true), vec![Answer::ok("{}"), Answer::ok(reread)]);
+    crate::workspace::start_in_profile(&mut s, "work".into());
+    s.workspace.inbox.profile = Some("work".into());
+    assert_eq!(
+        s.workspace.draft.as_ref().map(|d| d.profile.as_str()),
+        Some("work")
+    );
+
+    super::select(&mut s, Some("work".into()));
+    super::delete(&mut s);
+
+    assert!(pump.until(&mut s, WAIT, |s| !picker_ids(s).contains(&"work")));
+    assert_eq!(
+        s.workspace.draft.as_ref().map(|d| d.profile.as_str()),
+        Some("default")
+    );
+    assert_eq!(s.workspace.inbox.profile, None);
+}
+
+/// A read that left before an archive answers with the archived profile
+/// in it: that answer must not bring it back; the read after does count.
+#[test]
+fn a_read_from_before_an_archive_does_not_revive_it() {
+    let before = inbox(
+        vec![
+            picked("default", "Default", Some(900)),
+            picked("work", "Work", Some(950)),
+        ],
+        Some("work"),
+    );
+    let after = inbox(
+        vec![InboxProfile {
+            git_branch: Some("main".into()),
+            ..picked("default", "Default", Some(900))
+        }],
+        Some("default"),
+    );
+    let (mut s, mut pump, gateway) = live(
+        state(true),
+        vec![
+            Answer::ok(before).after(Duration::from_millis(600)),
+            Answer::ok("{}"),
+            Answer::ok(after),
+        ],
+    );
+    crate::workspace::refresh_inbox(&mut s);
+    // Wait for the read to reach the gateway without landing its answer.
+    let asked = std::time::Instant::now();
+    while gateway.requests_to(INBOX) == 0 {
+        assert!(asked.elapsed() < WAIT, "the inbox read never left");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    super::select(&mut s, Some("work".into()));
+    super::delete(&mut s);
+
+    let mut revived = false;
+    let mut archived = false;
+    assert!(pump.until(&mut s, WAIT, |s| {
+        archived |= !s
+            .pages
+            .profiles
+            .items
+            .iter()
+            .any(|p| p.profile_id == "work");
+        revived |= archived && picker_ids(s).contains(&"work");
+        s.workspace
+            .inbox
+            .list
+            .profiles
+            .iter()
+            .any(|p| p.git_branch.is_some())
+    }));
+    assert!(!revived, "the old read put Work back");
+    assert_eq!(picker_ids(&s), ["default"]);
+    assert_eq!(
+        s.workspace.inbox.list.last_used_profile_id.as_deref(),
+        Some("default")
+    );
+}
+
 /// Imported profiles come from the server: the import re-reads the inbox.
 #[test]
 fn an_import_rereads_the_picker() {
+    // Every read after the import gets the inbox; the page's own reads
+    // fail to decode it, which this test does not look at.
+    let reread = inbox(
+        vec![
+            picked("default", "Default", Some(900)),
+            picked("hermes", "Hermes", None),
+        ],
+        Some("default"),
+    );
     let (mut s, mut pump, gateway) = live(
         state(false),
-        vec![Answer::ok(r#"{"imported":["hermes"],"skipped":[]}"#)],
+        vec![
+            Answer::ok(r#"{"imported":["hermes"],"skipped":[]}"#),
+            Answer::ok(reread),
+        ],
     );
     super::import(&mut s);
 
-    assert!(pump.until(&mut s, WAIT, |_| gateway.requests_to(INBOX) >= 1));
+    assert!(pump.until(&mut s, WAIT, |s| picker_ids(s).contains(&"hermes")));
+    assert!(gateway.requests_to(INBOX) >= 1);
 }
 
 /// Before the first inbox read the picker shows a stand-in Default; a

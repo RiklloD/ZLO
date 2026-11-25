@@ -303,6 +303,28 @@ pub fn start_in_profile(s: &mut State, profile: String) {
     record(s);
 }
 
+/// Profile `id` was archived: a draft in it moves to the profile the
+/// picker now leads with, so the screen never shows one profile and sends
+/// another.
+pub(super) fn profile_gone(s: &mut State, id: &str) {
+    if s.workspace.draft.as_ref().is_none_or(|d| d.profile != id) {
+        return;
+    }
+    let list = &s.workspace.inbox.list;
+    let profile = list
+        .last_used_profile_id
+        .clone()
+        .or_else(|| list.profiles.first().map(|p| p.profile_id.clone()))
+        .unwrap_or_else(|| DEFAULT_PROFILE_ID.into());
+    let catalog = catalog_thread(s);
+    crate::chat::model_picker::draft_set_profile(s, profile.clone(), catalog);
+    if let Some(draft) = s.workspace.draft.as_mut() {
+        draft.profile = profile;
+        draft.worktree = None;
+    }
+    record(s);
+}
+
 /// Put a draft carried from another computer back as the new-thread draft
 /// (triage's switch, `super::triage::connected`) and show it. Its profile
 /// falls back to the default when this computer has no such profile.

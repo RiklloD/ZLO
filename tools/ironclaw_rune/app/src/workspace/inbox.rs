@@ -79,6 +79,9 @@ pub struct Inbox {
     settle_poll_until: i64,
     loading: bool,
     stale: bool,
+    /// Bumped by each profile change made here ([`profiles_changed`]): a
+    /// read that left before one answers with the profiles it replaced.
+    profiles_epoch: u64,
     /// A read the person caused is waiting or in flight ([`refresh_shown`]):
     /// its answer moves the rows instead of landing them.
     shown: bool,
@@ -143,6 +146,7 @@ impl Inbox {
             settle_poll_until: 0,
             loading: false,
             stale: false,
+            profiles_epoch: 0,
             shown: false,
             expanded: BTreeSet::new(),
             revealed: None,
@@ -483,9 +487,15 @@ pub fn profiles_changed(s: &mut State, change: ProfileChange<'_>) {
             if list.last_used_profile_id.as_deref() == Some(id) {
                 list.last_used_profile_id = None;
             }
+            // Its chip goes, so its filter must too: nothing could turn it off.
+            if s.workspace.inbox.profile.as_deref() == Some(id) {
+                s.workspace.inbox.profile = None;
+            }
+            draft::profile_gone(s, id);
         }
         ProfileChange::Reloaded => {}
     }
+    s.workspace.inbox.profiles_epoch += 1;
     refresh(s);
 }
 
@@ -515,17 +525,28 @@ pub fn refresh(s: &mut State) {
         return;
     }
     s.workspace.inbox.loading = true;
+    let epoch = s.workspace.inbox.profiles_epoch;
     jobs::run(
         s,
         "inbox",
         |c| async move { c.inbox().await },
-        |s, result, tx| {
+        move |s, result, tx| {
             s.workspace.inbox.loading = false;
             // A newer read is due: a shown read waits for it, the newest.
             let again = std::mem::take(&mut s.workspace.inbox.stale);
             let shown = !again && std::mem::take(&mut s.workspace.inbox.shown);
             match result {
-                Ok(list) => refreshed(s, list, shown, tx),
+                Ok(mut list) => {
+                    // A profile changed while this read was out: its
+                    // profiles predate the change, so the ones held stay
+                    // until the read that change asked for answers.
+                    if epoch != s.workspace.inbox.profiles_epoch {
+                        let held = &s.workspace.inbox.list;
+                        list.profiles = held.profiles.clone();
+                        list.last_used_profile_id = held.last_used_profile_id.clone();
+                    }
+                    refreshed(s, list, shown, tx)
+                }
                 // silent-ok: the list keeps its last state; the next event retries.
                 Err(e) => tracing::debug!(error = %e, "inbox refresh failed"),
             }
