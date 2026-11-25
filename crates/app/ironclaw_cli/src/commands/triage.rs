@@ -61,10 +61,12 @@ pub(crate) struct Installer {
 }
 
 /// Downloads `$1` and runs it with `$2`; exits with the first failure.
+/// `-q` first: a `.curlrc` (`no-clobber`, `output`) must not redirect the
+/// download. The temp file goes on any exit, Ctrl+C and kill included.
 const INSTALL_SCRIPT: &str = "tmp=$(mktemp) || exit 1; \
-curl -fsSL \"$1\" -o \"$tmp\"; status=$?; \
-if [ \"$status\" -eq 0 ]; then \"$2\" \"$tmp\"; status=$?; fi; \
-rm -f \"$tmp\"; exit \"$status\"";
+trap 'rm -f \"$tmp\"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM HUP; \
+curl -q -fsSL \"$1\" -o \"$tmp\" || exit \"$?\"; \
+\"$2\" \"$tmp\"";
 
 impl TriageAgent {
     /// The installer as people type it, where it runs (not on Windows).
@@ -78,7 +80,10 @@ impl TriageAgent {
 /// directory `zlo triage` ran from, where an empty or relative entry could
 /// pick up that folder's own `curl` or shell.
 fn absolute_path_entries(path: &OsStr) -> Option<std::ffi::OsString> {
-    std::env::join_paths(std::env::split_paths(path).filter(|dir| dir.is_absolute())).ok()
+    std::env::join_paths(std::env::split_paths(path).filter(|dir| dir.is_absolute()))
+        .ok()
+        // An empty PATH makes the shell search the current folder.
+        .filter(|joined| !joined.is_empty())
 }
 
 pub(crate) const TRIAGE_AGENTS: [TriageAgent; 3] = [
@@ -907,6 +912,32 @@ mod tests {
         assert_eq!(
             absolute_path_entries(OsStr::new("bin::/usr/bin:./x:/bin")),
             Some("/usr/bin:/bin".into())
+        );
+        for unsafe_path in ["", "bin", "bin::./x"] {
+            assert_eq!(absolute_path_entries(OsStr::new(unsafe_path)), None);
+        }
+        // A `.curlrc` with no-clobber must not divert the download.
+        std::fs::remove_file(&marker).expect("reset");
+        let curl_home = tmp.path().join("curl-home");
+        std::fs::create_dir(&curl_home).expect("dir");
+        std::fs::write(curl_home.join(".curlrc"), "no-clobber\n").expect("curlrc");
+        let output = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                INSTALL_SCRIPT,
+                "t",
+                &format!("file://{}", script.display()),
+                "sh",
+            ])
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &curl_home)
+            .env("CURL_HOME", &curl_home)
+            .output()
+            .expect("sh");
+        assert!(output.status.success());
+        assert!(
+            marker.exists(),
+            "the downloaded installer ran despite .curlrc"
         );
     }
 
