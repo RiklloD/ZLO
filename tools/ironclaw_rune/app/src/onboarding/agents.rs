@@ -28,12 +28,6 @@ use crate::state::State;
 
 use super::view::{StepView, command_block, list_row, section, step_shell};
 
-/// How long a restarted gateway gets to answer again.
-const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-/// Fast enough to see the gap between the old gateway and the new one (the
-/// supervisor waits at least a second before starting it again).
-const RESTART_POLL: std::time::Duration = std::time::Duration::from_millis(250);
-
 /// The coding-agent CLIs setup offers: t3code's `PRIMARY_AGENT_DRIVERS`
 /// (Codex, Claude Code), then the others ZLO's CLI manager runs. Names,
 /// commands and binaries come from the one list Settings → Providers reads
@@ -85,11 +79,6 @@ impl Driver {
     /// The sign-in command (t3code `resolveOnboardingProviderLoginCommand`).
     pub fn login(self) -> Option<&'static str> {
         self.known().and_then(|k| k.login)
-    }
-
-    /// The program its installer puts on the login shell's PATH.
-    fn binary(self) -> &'static str {
-        self.known().map_or(self.runtime(), |k| k.binary)
     }
 
     /// Listed even when the computer does not have it: it can be installed
@@ -199,11 +188,7 @@ pub struct AgentsState {
     /// Asked again while one was out: one more request once it lands
     /// (`true` when the answer is to animate).
     queued: Option<bool>,
-    /// Bumped per restart wait, and when the computer changes.
-    restart_gen: Generation,
     pub terminal: Option<AgentTerminal>,
-    /// The gateway restarts to find a CLI installed just now.
-    pub restarting: bool,
     /// The agents whose sign-in setup watches for, after their sign-in
     /// panels closed ([`watch_sign_in`]); one watch covers them all.
     pub watching: Vec<Driver>,
@@ -225,7 +210,6 @@ pub struct AgentsState {
 pub fn reset(s: &mut State) {
     let a = &mut s.onboarding.agents;
     a.refresh_gen.bump();
-    a.restart_gen.bump();
     a.in_flight = false;
     a.queued = None;
     stop_watch(a);
@@ -233,7 +217,6 @@ pub fn reset(s: &mut State) {
     a.hidden.clear();
     a.catalog_error = None;
     a.terminal = None;
-    a.restarting = false;
     a.agent_notice = None;
     a.saving_key = false;
     a.notice = None;
@@ -274,14 +257,13 @@ pub fn refresh(s: &mut State) {
 /// Ask the gateway which CLIs it found; `shown` when it answers something
 /// the person just did (entered the step, closed the Terminal panel), so
 /// the answer animates. One request at a time: asked while one is out, it
-/// goes once that one lands (several asks fold into one). A restart owns
-/// the requests until the new gateway answers ([`wait_for_gateway`]).
+/// goes once that one lands (several asks fold into one).
 pub(super) fn request_catalog(s: &mut State, shown: bool) {
     let a = &mut s.onboarding.agents;
     if s.fixture {
         return;
     }
-    if a.in_flight || a.restarting {
+    if a.in_flight {
         a.queued = Some(a.queued.unwrap_or(false) || shown);
         return;
     }
@@ -369,9 +351,10 @@ pub(super) fn open_terminal(s: &mut State, driver: Driver, install: bool) {
         return;
     };
     // An agent of another computer is set up there: show the command for
-    // that computer, never run it on this Mac.
-    if crate::remote::backend_is_remote(s) {
-        let host = crate::remote::computer_label(s);
+    // that computer, never run it on this Mac. That includes a backend this
+    // Mac reaches at another host (`IRONCLAW_DESKTOP_URL`).
+    if !crate::cli_install::backend_on_this_mac(s) {
+        let host = crate::cli_install::backend_host(s);
         s.onboarding.agents.terminal = Some(AgentTerminal {
             driver,
             command,
@@ -442,57 +425,21 @@ pub(crate) fn run_in_terminal(command: &str) -> Result<(), String> {
     }
 }
 
-/// t3code closes its terminal and refreshes the providers. An install is
-/// found once the gateway restarts, so this Mac's gateway restarts first.
+/// t3code closes its terminal and refreshes the providers. An install made
+/// there is looked for like one made from the row (`cli_install`): the
+/// backend rescans, and a restart, when one is needed, is the person's
+/// to press.
 fn close_terminal(s: &mut State) {
     let Some(t) = s.onboarding.agents.terminal.take() else {
         return;
     };
-    // Only this Mac's own CLI and gateway are looked at or restarted here.
     if !t.install {
         watch_sign_in(s, t.driver);
         request_catalog(s, true);
         return;
     }
-    if crate::remote::backend_is_remote(s) || s.fixture {
-        request_catalog(s, true);
-        return;
-    }
-    // Only a CLI that is really there now is worth a restart: closing a
-    // cancelled install must not cut the gateway's streams for nothing.
-    let driver = t.driver;
-    jobs::blocking(
-        s,
-        move || cli_installed(driver),
-        move |s, installed, tx| {
-            // The reply to the person's Done.
-            tx.animated();
-            if !installed {
-                request_catalog(s, true);
-                return;
-            }
-            if !crate::service::restart() {
-                // A gateway this app did not start (`zlo serve`).
-                request_catalog(s, true);
-                s.onboarding.agents.agent_notice = Some(format!(
-                    "{} is installed. Restart IronClaw so it finds it.",
-                    driver.name()
-                ));
-                return;
-            }
-            crate::cli_install::note_restart(s);
-            let a = &mut s.onboarding.agents;
-            a.restarting = true;
-            a.catalog = None;
-            let generation = a.restart_gen.bump();
-            wait_for_gateway(
-                s,
-                generation,
-                std::time::Instant::now() + RESTART_WAIT,
-                false,
-            );
-        },
-    );
+    crate::cli_install::after_terminal_install(s, t.driver.runtime());
+    request_catalog(s, true);
 }
 
 /// How often setup looks again while it waits for a sign-in, and for how
@@ -555,87 +502,6 @@ fn poll_sign_in(s: &mut State, generation: Generation) {
     });
 }
 
-/// The CLI's binary is on the login shell's PATH (where its installer
-/// puts it).
-fn cli_installed(driver: Driver) -> bool {
-    let binary = driver.binary();
-    std::process::Command::new("/bin/zsh")
-        .args(["-lc", &format!("command -v {binary}")])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-/// Wait for the restarted gateway: the old one keeps answering (with its
-/// old catalog) while it shuts down, so an answer counts only once one
-/// request has failed, or once the wait is over.
-fn wait_for_gateway(
-    s: &mut State,
-    generation: Generation,
-    deadline: std::time::Instant,
-    seen_down: bool,
-) {
-    jobs::after(s, RESTART_POLL, move |s, _| {
-        if s.onboarding.agents.restart_gen != generation {
-            return;
-        }
-        jobs::run(
-            s,
-            "onboarding",
-            |c| async move { c.providers().await },
-            move |s, result, tx| {
-                if s.onboarding.agents.restart_gen != generation {
-                    return;
-                }
-                let before = std::time::Instant::now() < deadline;
-                match (restart_step(result.is_ok(), seen_down, before), result) {
-                    (RestartStep::Wait { seen_down }, _) => {
-                        wait_for_gateway(s, generation, deadline, seen_down)
-                    }
-                    (RestartStep::Done, result) => {
-                        // The polls land quietly; the end of the restart
-                        // the person asked for is shown.
-                        tx.animated();
-                        restarted(s, result)
-                    }
-                }
-            },
-        );
-    });
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum RestartStep {
-    Wait { seen_down: bool },
-    Done,
-}
-
-/// One answer while waiting for a restart: an answer before the gateway
-/// was seen down is the old one still shutting down.
-fn restart_step(answered: bool, seen_down: bool, before_deadline: bool) -> RestartStep {
-    match (answered, seen_down, before_deadline) {
-        (_, _, false) => RestartStep::Done,
-        (true, true, true) => RestartStep::Done,
-        (true, false, true) => RestartStep::Wait { seen_down: false },
-        (false, _, true) => RestartStep::Wait { seen_down: true },
-    }
-}
-
-fn restarted(
-    s: &mut State,
-    result: Result<zlo_client::orchestration::ProviderCatalog, zlo_client::ClientError>,
-) {
-    let a = &mut s.onboarding.agents;
-    a.restarting = false;
-    land_catalog(a, result);
-    settle_watch(a);
-    // Asked while the restart held the requests.
-    if let Some(shown) = a.queued.take() {
-        request_catalog(s, shown);
-    }
-}
-
 /// The agents listed: those with an installer, and any other the computer
 /// already has.
 fn listed(catalog: Option<&[RouteProvider]>) -> Vec<Driver> {
@@ -665,7 +531,7 @@ pub fn view(s: &State, k: &Kit) -> StepView {
     if let Some(t) = &a.terminal {
         body = body.child(terminal_panel(s, k, t));
     }
-    if a.restarting {
+    if crate::cli_install::restarting(s) {
         body = body.child(
             spinner_line(p, k, "Restarting IronClaw so it finds the new agent…")
                 .key("agents-restarting")
@@ -701,7 +567,7 @@ pub fn view(s: &State, k: &Kit) -> StepView {
 fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
     let p = &s.palette;
     let a = &s.onboarding.agents;
-    let state = if a.restarting {
+    let state = if crate::cli_install::restarting(s) {
         AgentState::Checking
     } else {
         agent_state(a.catalog.as_deref(), &a.hidden, driver)
@@ -1095,7 +961,6 @@ mod tests {
             Some("curl -fsSL https://antigravity.google/cli/install.sh | bash")
         );
         assert_eq!(Driver::Antigravity.login(), Some("agy acp --login"));
-        assert_eq!(Driver::Antigravity.binary(), "agy");
         assert_eq!(Driver::Muse.install(), None);
     }
 
@@ -1378,24 +1243,6 @@ mod tests {
             ),
             AgentState::SignIn
         );
-    }
-
-    #[test]
-    fn a_restart_counts_only_once_the_old_gateway_went_away() {
-        // The old gateway still answers while it shuts down: keep waiting.
-        assert_eq!(
-            restart_step(true, false, true),
-            RestartStep::Wait { seen_down: false }
-        );
-        // Down, then up again: the new gateway.
-        assert_eq!(
-            restart_step(false, false, true),
-            RestartStep::Wait { seen_down: true }
-        );
-        assert_eq!(restart_step(true, true, true), RestartStep::Done);
-        // Out of time either way: stop waiting.
-        assert_eq!(restart_step(true, false, false), RestartStep::Done);
-        assert_eq!(restart_step(false, true, false), RestartStep::Done);
     }
 
     #[test]

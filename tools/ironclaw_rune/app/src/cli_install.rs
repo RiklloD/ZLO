@@ -106,6 +106,9 @@ pub struct Installs {
     /// A backend restart (asked here or by setup) may still be coming back
     /// until then: Restart is not offered again meanwhile.
     restart_until: Option<Instant>,
+    /// Restarts the person dismissed: the watch does not ask again for them
+    /// until the backend restarts or the computer changes.
+    restart_dismissed: std::collections::HashSet<&'static str>,
 }
 
 impl Installs {
@@ -161,14 +164,7 @@ pub fn backend_on_this_mac(s: &State) -> bool {
 }
 
 fn is_loopback(base_url: &str) -> bool {
-    let rest = base_url
-        .split_once("://")
-        .map_or(base_url, |(_, rest)| rest);
-    let authority = rest.split('/').next().unwrap_or_default();
-    let host = match authority.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or_default(),
-        None => authority.split(':').next().unwrap_or_default(),
-    };
+    let host = url_host(base_url);
     host == "localhost"
         || host
             .parse::<std::net::IpAddr>()
@@ -253,13 +249,105 @@ pub fn cancel(s: &mut State, runtime: &str) {
     }
 }
 
-/// Close a failed install's message.
-pub fn dismiss(s: &mut State, runtime: &str) {
-    if s.cli_installs
-        .get(runtime)
-        .is_some_and(|i| matches!(i.phase, Phase::Failed(_) | Phase::NeedsRestart(_)))
-    {
-        s.cli_installs.by_runtime.remove(runtime);
+/// Close a failed install's message, or a restart the person does not
+/// want now (the watch does not bring that one back until a restart).
+pub fn dismiss(s: &mut State, runtime: &'static str) {
+    let installs = &mut s.cli_installs;
+    match installs.get(runtime).map(|i| &i.phase) {
+        Some(Phase::Failed(_)) => {
+            installs.by_runtime.remove(runtime);
+        }
+        Some(Phase::NeedsRestart(_)) => {
+            installs.by_runtime.remove(runtime);
+            installs.restart_dismissed.insert(runtime);
+        }
+        _ => {}
+    }
+}
+
+/// An install made in Terminal (setup's Open in Terminal, then Done) is
+/// looked for like one made here: when the binary is there, the backend
+/// rescans, and a restart, if needed, is the person's to press. A closed
+/// Terminal with nothing installed changes nothing.
+pub fn after_terminal_install(s: &mut State, runtime: &'static str) {
+    let Some(known) = known(runtime) else {
+        return;
+    };
+    let binary = known.binary;
+    after_terminal_install_with(s, runtime, move || binary_on_login_path(binary));
+}
+
+fn after_terminal_install_with(
+    s: &mut State,
+    runtime: &'static str,
+    present: impl FnOnce() -> bool + Send + 'static,
+) {
+    if s.cli_installs.get(runtime).is_some_and(|i| i.phase.busy()) || s.fixture {
+        return;
+    }
+    let installs = &mut s.cli_installs;
+    installs.next_generation += 1;
+    let generation = installs.next_generation;
+    installs.by_runtime.insert(
+        runtime,
+        Install {
+            phase: Phase::Finding,
+            tail: VecDeque::new(),
+            stop: Arc::new(AtomicBool::new(false)),
+            generation,
+        },
+    );
+    if !backend_on_this_mac(s) {
+        // Installed on the backend's computer: its rescan says.
+        find(s, runtime, generation, 1);
+        return;
+    }
+    jobs::blocking(s, present, move |s, present, tx| {
+        if s.cli_installs.current(runtime, generation).is_none() {
+            return;
+        }
+        if present {
+            find(s, runtime, generation, 1);
+        } else {
+            tx.animated();
+            s.cli_installs.by_runtime.remove(runtime);
+        }
+    });
+}
+
+/// The program is on the login shell's PATH (where installers put it).
+fn binary_on_login_path(binary: &str) -> bool {
+    Command::new("/bin/zsh")
+        .args(["-lc", &format!("command -v {binary}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Where the backend runs, for "run this on …" lines: the computer's name,
+/// or the host an `IRONCLAW_DESKTOP_URL` points at.
+pub fn backend_host(s: &State) -> String {
+    if crate::remote::backend_is_remote(s) {
+        return crate::remote::computer_label(s);
+    }
+    s.rt.backend
+        .as_ref()
+        .map(|b| b.client().connection().base_url.clone())
+        .map_or_else(
+            || crate::remote::computer_label(s),
+            |url| url_host(&url).to_string(),
+        )
+}
+
+fn url_host(base_url: &str) -> &str {
+    let rest = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest);
+    let authority = rest.split('/').next().unwrap_or_default();
+    match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
     }
 }
 
@@ -269,6 +357,7 @@ pub fn dismiss(s: &mut State, runtime: &str) {
 pub fn computer_switched(s: &mut State) {
     let installs = &mut s.cli_installs;
     installs.restart_until = None;
+    installs.restart_dismissed.clear();
     installs
         .by_runtime
         .retain(|_, install| match install.phase {
@@ -309,6 +398,16 @@ fn run_installer(
     if stop.load(Ordering::SeqCst) {
         return Exit::Stopped;
     }
+    // Spawned and registered under the registry's lock, which quitting
+    // takes too: every installer started is one `stop_all` ends, and none
+    // starts once the app is quitting.
+    let mut live = match live_groups().lock() {
+        Ok(live) => live,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if live.quitting {
+        return Exit::Stopped;
+    }
     let spawned = Command::new("/bin/zsh")
         .args(["-lc", &shell_line(command)])
         .stdin(Stdio::null())
@@ -322,9 +421,11 @@ fn run_installer(
         Err(e) => return Exit::Failed(format!("Could not start the installer: {e}")),
     };
     let pgid = child.id();
+    live.groups.insert(pgid);
+    drop(live);
     // From here on every way out (a stop, the deadline, a clean or failed
     // exit) ends the whole group before the row is released.
-    let _group = LiveGroup::new(pgid);
+    let _group = LiveGroup(pgid);
     let (lines_tx, lines_rx) = mpsc::channel::<String>();
     for stream in [
         child
@@ -498,9 +599,15 @@ fn clean_line(raw: &str) -> Option<String> {
 }
 
 /// Installer process groups alive now, for [`stop_all`] at quit.
-fn live_groups() -> &'static std::sync::Mutex<std::collections::HashSet<u32>> {
-    static LIVE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<u32>>> =
-        std::sync::OnceLock::new();
+#[derive(Default)]
+struct LiveGroups {
+    groups: std::collections::HashSet<u32>,
+    /// The app is quitting: no installer starts any more.
+    quitting: bool,
+}
+
+fn live_groups() -> &'static std::sync::Mutex<LiveGroups> {
+    static LIVE: std::sync::OnceLock<std::sync::Mutex<LiveGroups>> = std::sync::OnceLock::new();
     LIVE.get_or_init(Default::default)
 }
 
@@ -510,15 +617,6 @@ const GROUP_GONE_WAIT: Duration = Duration::from_secs(2);
 /// One installer's process group while its worker owns it. Dropping it
 /// SIGKILLs the group and waits (bounded) until no member is left.
 struct LiveGroup(u32);
-
-impl LiveGroup {
-    fn new(pgid: u32) -> Self {
-        if let Ok(mut live) = live_groups().lock() {
-            live.insert(pgid);
-        }
-        Self(pgid)
-    }
-}
 
 impl Drop for LiveGroup {
     fn drop(&mut self) {
@@ -531,7 +629,7 @@ impl Drop for LiveGroup {
             tracing::debug!(pgid = self.0, "installer group outlived its SIGKILL wait");
         }
         if let Ok(mut live) = live_groups().lock() {
-            live.remove(&self.0);
+            live.groups.remove(&self.0);
         }
     }
 }
@@ -545,14 +643,16 @@ fn group_alive(pgid: u32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// The app is quitting: no installer outlives it.
+/// The app is quitting (Quit ZLO, or macOS ending it): no installer
+/// outlives it, and none starts after. Safe to call more than once.
 pub fn stop_all() {
-    let groups: Vec<u32> = live_groups()
-        .lock()
-        .map(|live| live.iter().copied().collect())
-        .unwrap_or_default();
-    for pgid in groups {
-        signal_group(pgid, "-KILL");
+    let mut live = match live_groups().lock() {
+        Ok(live) => live,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    live.quitting = true;
+    for pgid in &live.groups {
+        signal_group(*pgid, "-KILL");
     }
 }
 
@@ -666,6 +766,24 @@ fn needs_restart(s: &mut State, runtime: &'static str, generation: u64, flagged:
     }
 }
 
+/// The watch learned that `runtime`, installed outside the app, is put to
+/// use only by a backend restart.
+fn flag_restart(s: &mut State, runtime: &'static str) {
+    let installs = &mut s.cli_installs;
+    installs.next_generation += 1;
+    let generation = installs.next_generation;
+    installs.by_runtime.insert(
+        runtime,
+        Install {
+            phase: Phase::Finding,
+            tail: VecDeque::new(),
+            stop: Arc::new(AtomicBool::new(false)),
+            generation,
+        },
+    );
+    needs_restart(s, runtime, generation, true);
+}
+
 /// A restart this app asked for may still be coming back.
 pub fn restarting(s: &State) -> bool {
     s.cli_installs
@@ -771,6 +889,7 @@ fn fail(s: &mut State, runtime: &str, generation: u64, why: String) {
 /// path): Restart is not offered again while it comes back.
 pub fn note_restart(s: &mut State) {
     s.cli_installs.restart_until = Some(Instant::now() + RESTART_WAIT);
+    s.cli_installs.restart_dismissed.clear();
 }
 
 /// The agent is listed: its row turns into the found agent's row (sign in,
@@ -873,12 +992,26 @@ fn tick(s: &mut State, generation: u64, open: fn(&State) -> bool) {
                                 listed(&catalog.providers, k) && !before.contains(&k.runtime)
                             })
                             .collect();
-                        let changed = !new.is_empty();
+                        // Installed elsewhere over a runtime only a restart
+                        // replaces (Antigravity's legacy one): the row asks.
+                        let flagged: Vec<&'static str> = KNOWN_CLIS
+                            .iter()
+                            .map(|k| k.runtime)
+                            .filter(|r| {
+                                catalog.restart_needed.iter().any(|n| n == r)
+                                    && s.cli_installs.get(r).is_none()
+                                    && !s.cli_installs.restart_dismissed.contains(r)
+                            })
+                            .collect();
+                        let changed = !new.is_empty() || !flagged.is_empty();
                         if changed {
                             tx.animated();
                             landed(s, catalog);
                             for k in new {
                                 installed(s, k.runtime);
+                            }
+                            for runtime in flagged {
+                                flag_restart(s, runtime);
                             }
                         }
                         tick(s, generation, open);
@@ -1181,8 +1314,59 @@ mod tests {
         assert!(!alive, "the installer's background child was ended");
     }
 
+    /// Re-review 4 P1: setup's Terminal install, then Done, rescans and
+    /// never restarts; a Terminal closed with nothing installed is quiet.
+    #[test]
+    fn a_terminal_install_is_found_by_a_rescan_and_never_restarts() {
+        let (mut s, mut pump, gateway) = live(vec![Answer::ok(catalog(&["codex"]))]);
+        after_terminal_install_with(&mut s, "codex", || false);
+        assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
+        assert_eq!(
+            gateway.requests_to(RESCAN),
+            0,
+            "nothing installed, nothing asked"
+        );
+
+        after_terminal_install_with(&mut s, "codex", || true);
+        assert!(pump.until(&mut s, WAIT, |s| s.pages.providers.notice.is_some()));
+        assert_eq!(gateway.requests_to(RESCAN), 1);
+        assert!(s.cli_installs.restart_until.is_none(), "nothing restarted");
+    }
+
+    /// Re-review 4 P2: the watch turns `restartNeeded` into a row that asks
+    /// for the restart; dismissed, it does not come back.
+    #[test]
+    fn the_watch_asks_for_a_restart_the_backend_needs() {
+        let legacy = serde_json::json!({
+            "providers": [{"provider": "antigravity", "runtime": "antigravity", "launch": "legacy"}],
+            "picker": {},
+            "restartNeeded": ["antigravity"],
+        })
+        .to_string();
+        let (mut s, mut pump, gateway) = live(vec![Answer::ok(legacy)]);
+        s.pages.providers.runtimes = Some(vec![]);
+        watch(&mut s, |_| true);
+        assert!(pump.until(&mut s, WAIT, |s| {
+            s.cli_installs
+                .get("antigravity")
+                .is_some_and(|i| matches!(i.phase, Phase::NeedsRestart(_)))
+        }));
+        dismiss(&mut s, "antigravity");
+        let asked = gateway.requests_to(RESCAN);
+        assert!(pump.until(&mut s, WAIT, |_| gateway.requests_to(RESCAN) >= asked + 2));
+        assert!(
+            s.cli_installs.get("antigravity").is_none(),
+            "stays dismissed"
+        );
+    }
+
     #[test]
     fn only_a_loopback_backend_is_this_macs() {
+        assert_eq!(
+            url_host("https://mac-mini.tail1234.ts.net:3000/x"),
+            "mac-mini.tail1234.ts.net"
+        );
+        assert_eq!(url_host("http://[::1]:3000"), "::1");
         assert!(is_loopback("http://127.0.0.1:3000"));
         assert!(is_loopback("http://localhost:3000/"));
         assert!(is_loopback("http://[::1]:3000"));

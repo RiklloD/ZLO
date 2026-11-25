@@ -172,6 +172,9 @@ fn install_in_terminal(s: &mut State, runtime: &'static str) {
         return;
     };
     crate::cli_install::dismiss(s, runtime);
+    if !crate::cli_install::backend_on_this_mac(s) {
+        return;
+    }
     jobs::blocking(
         s,
         move || crate::onboarding::run_in_terminal(command),
