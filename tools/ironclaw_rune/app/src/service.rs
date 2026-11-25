@@ -498,12 +498,36 @@ fn spawn(paths: &Paths) -> std::io::Result<(Child, fs::File, u64)> {
     // A Finder-opened app has launchd's PATH: give the backend a terminal's,
     // so it finds the coding-agent CLIs (and imports their sessions).
     command.env("PATH", crate::login_path::path());
-    let child = command
+    // This backend gets the granted folders as they are now, handed over on
+    // its stdin (never argv, env or logs); a later change waits for its
+    // restart (`folder_access::pending`). Only the bundled backend, which
+    // matches this app, reads them: an older installed CLI would not.
+    let grants = crate::folder_access::handoff_for_backend_spawn().filter(|_| paths.bundled);
+    match &grants {
+        Some(_) => command.arg("--folder-grants-stdin").stdin(Stdio::piped()),
+        None => command.stdin(Stdio::null()),
+    };
+    let mut child = command
         .current_dir(&workspace)
-        .stdin(Stdio::null())
         .stdout(log("serve.stdout.log")?)
         .stderr(stderr_log.try_clone()?)
         .spawn()?;
+    if let (Some(grants), Some(mut stdin)) = (grants, child.stdin.take()) {
+        // Off the supervisor thread. The backend reads it to the end first
+        // thing; if it dies first the write fails (EPIPE). EOF when the
+        // thread drops the pipe.
+        let spawned = std::thread::Builder::new()
+            .name("zlo-folder-grants".into())
+            .spawn(move || {
+                use std::io::Write;
+                if let Err(e) = stdin.write_all(grants.as_bytes()) {
+                    tracing::debug!(error = %e, "backend did not take the folder grants");
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::debug!(error = %e, "could not hand the folder grants over");
+        }
+    }
     Ok((child, stderr_log, from))
 }
 

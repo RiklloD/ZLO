@@ -164,6 +164,16 @@ cat > "$app/Contents/Info.plist" <<EOF
     <string>ZLO listens while you dictate, talk to it, or (if you turn it on) for its wake word.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>ZLO turns your speech into text on this Mac so you can dictate messages.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>ZLO’s agents want to work with files in your Desktop. To share only one folder instead, choose Don’t Allow and add it in ZLO Settings → Permissions → Folders on this Mac.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>ZLO’s agents want to work with files in your Documents folder. To share only one folder instead, choose Don’t Allow and add it in ZLO Settings → Permissions → Folders on this Mac.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>ZLO’s agents want to work with files in your Downloads folder. To share only one folder instead, choose Don’t Allow and add it in ZLO Settings → Permissions → Folders on this Mac.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>ZLO’s agents want to work with files in this drive. To share only one folder instead, choose Don’t Allow and add it in ZLO Settings → Permissions → Folders on this Mac.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>ZLO’s agents want to work with files in this network drive. To share only one folder instead, choose Don’t Allow and add it in ZLO Settings → Permissions → Folders on this Mac.</string>
 </dict>
 </plist>
 EOF

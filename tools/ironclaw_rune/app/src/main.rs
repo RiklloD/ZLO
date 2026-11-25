@@ -19,6 +19,7 @@ mod cli_link;
 mod design;
 mod drafts;
 mod energy;
+mod folder_access;
 mod icons;
 mod jobs;
 mod login_item;
@@ -121,6 +122,9 @@ fn main() {
     let launch = (!headless).then(remote::Launch::read);
     if let Some(launch) = &launch {
         service::set_allowed(launch.runs_local_backend());
+        // Folders granted one by one, opened before the backend starts so
+        // its process inherits them (`folder_access.rs`).
+        folder_access::restore();
         service::start();
         service::stop_on_terminate();
         energy::start();

@@ -127,11 +127,21 @@ pub(crate) struct ServeCommand {
     /// starts, so a fresh Mac needs no `zlo onboard`.
     #[arg(long = "create-token-if-missing")]
     create_token_if_missing: bool,
+    /// Read folder grants from stdin before booting (`folder_grants.rs`).
+    /// Only the ZLO desktop app passes it, to the bundled backend it
+    /// starts; a flag, so nothing this process spawns inherits it.
+    #[arg(long = "folder-grants-stdin", hide = true)]
+    folder_grants_stdin: bool,
 }
 
 impl ServeCommand {
     pub(crate) fn execute(self, context: RebornCliContext) -> anyhow::Result<()> {
         crate::runtime::init_tracing();
+        // Folders the desktop app was given one at a time: opened in this
+        // process before anything reads files (`folder_grants.rs`).
+        if self.folder_grants_stdin {
+            crate::folder_grants::open_from_app();
+        }
 
         // Build the runtime config from the operator's TOML. Built first so
         // the unrestricted standalone host-access disclosure gate fires before any

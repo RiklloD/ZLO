@@ -7,6 +7,7 @@ mod diagnostics_bundle;
 mod dto;
 mod file_write;
 mod first_party;
+mod folder_grants;
 mod host_info;
 mod operator_env;
 mod render;
