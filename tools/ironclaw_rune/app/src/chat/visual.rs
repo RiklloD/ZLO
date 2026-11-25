@@ -92,7 +92,7 @@ pub(crate) fn markdown_style(s: &State, k: &Kit) -> MarkdownStyle {
 /// display's full rate; the pacer already lands the reply word by word, so
 /// with the window in the background, the battery saver engaged or motion
 /// reduced, words land without it.
-fn word_fade(s: &State) -> f32 {
+fn word_fade() -> f32 {
     // `ZLO_WORD_FADE=1`/`0` forces it, for energy measurements (`energy.rs`).
     static FORCED: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
     let forced = *FORCED.get_or_init(|| match std::env::var("ZLO_WORD_FADE").as_deref() {
@@ -103,7 +103,8 @@ fn word_fade(s: &State) -> f32 {
     if forced == Some(true) {
         return rune::edge::WORD_FADE.word_fade;
     }
-    if forced == Some(false) || s.look.battery.saving() || s.prefs.reduce_motion == "on" {
+    // Reduced motion covers the battery saver and the OS setting too.
+    if forced == Some(false) || crate::design::look::motion_reduced() {
         0.
     } else {
         rune::edge::WORD_FADE.word_fade
@@ -122,7 +123,7 @@ pub(crate) fn prose(s: &State, thread: &str, id: &str, text: &str, streaming: bo
     Markdown::new(text)
         .style(markdown_style(s, k))
         .streaming(streaming)
-        .reveal(if streaming { word_fade(s) } else { 0. })
+        .reveal(if streaming { word_fade() } else { 0. })
         .selectable(true)
         .on_link_tx(move |s: &mut State, href: &str, tx: &mut rune::Tx| {
             let external = tx.mods().cmd;

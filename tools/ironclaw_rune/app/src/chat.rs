@@ -100,8 +100,8 @@ pub(crate) fn fold_now(c: &mut ChatState, tx: &mut Tx) {
 const COPIED_GRACE: Duration = Duration::from_millis(500);
 /// The pacer's step while someone is at the window: one 60 Hz frame, so a
 /// streaming reply or thought grows on every frame Rune draws once input
-/// rests (`App::ambient_fps` in `main.rs` holds ambient motion at 60 Hz) — never
-/// faster, so a ProMotion display is not kept at 120 Hz by text.
+/// rests (`App::ambient_fps` in `main.rs` caps unsteered motion at 60 Hz on
+/// macOS) and never faster, so text alone never asks for 120 Hz.
 const PACE_TICK: Duration = Duration::from_micros(16_667);
 /// The pacer's step under the battery saver (idle for 30 s): each step
 /// rebuilds the view, and Rune's word reveal staggers a step's words in one
@@ -948,8 +948,10 @@ fn yields_to_input(input_waiting: bool, since: Instant, now: Instant) -> bool {
     input_waiting && now.saturating_duration_since(since) < INPUT_YIELD_MAX
 }
 
-/// [`poll_one`] with the frame's `input_waiting` passed in (tests set it;
-/// a headless runtime's input carries no timestamp, so it never reads true).
+/// [`poll_one`] with the frame's `input_waiting` passed in (tests set it).
+/// Rune reports queued headless input as waiting too (anomalyco/rune#2039),
+/// so a scripted press that lands with a stream fold defers the fold a frame,
+/// as a real one does.
 fn poll_chat(s: &mut State, id: &str, input_waiting: bool, tx: &mut Tx) -> bool {
     let front = crate::workspace::window_active(s);
     let Some(c) = chat_for(s, id) else {

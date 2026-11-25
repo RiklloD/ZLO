@@ -24,12 +24,14 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(super::prose(s, "t1", "m1", &text, true, &k))
 }
 
-#[test]
-fn streamed_words_land_at_once_with_reduce_motion_on() {
+/// Streams more words into a reply under `reduce_motion` (with the OS
+/// setting `system`) and says whether anything still draws afterwards.
+fn words_fade_in(reduce_motion: &str, system: bool) -> bool {
     TEXT.with(|t| *t.borrow_mut() = "The reply starts".into());
     let mut s = crate::chat::fixtures::test_state();
-    s.prefs.reduce_motion = "on".into();
+    s.prefs.reduce_motion = reduce_motion.into();
     let mut rt = Runtime::new(s, view, (600., 400.), Env::new(true, 1.));
+    rt.set_system_reduced_motion(system);
     rt.frame(0.);
     for _ in 0..60 {
         rt.frame(DT);
@@ -38,8 +40,21 @@ fn streamed_words_land_at_once_with_reduce_motion_on() {
     TEXT.with(|t| t.borrow_mut().push_str(" and more words arrive"));
     rt.invalidate();
     rt.frame(DT);
+    rt.frame(DT) || rt.wake_deadline().is_some()
+}
+
+#[test]
+fn streamed_words_land_at_once_with_reduce_motion_on() {
     assert!(
-        !rt.frame(DT) && rt.wake_deadline().is_none(),
-        "no frames after the words land: nothing fades in"
+        !words_fade_in("on", false),
+        "Reduce Motion on: nothing fades in after the words land"
+    );
+    assert!(
+        !words_fade_in("system", true),
+        "Reduce Motion following the OS, with the OS reducing: nothing fades in"
+    );
+    assert!(
+        words_fade_in("system", false),
+        "the OS not reducing: the words still fade in"
     );
 }

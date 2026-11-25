@@ -41,7 +41,7 @@ gateway's latency is left out and only the UI's cost is measured.
 | `stream` | 40-turn chat; a ~2.6k-char reply (Markdown, table, 30-line code block) arrives in 6–48-char bursts every 45–75 ms, then the run ends | none |
 | `switch` | two 150-turn threads (code blocks, tables) | 4 sidebar taps alternating t2/t1, 1 s apart |
 | `sidebar` | 40-turn chat | ⌘B ×4 |
-| `scroll` | 500 messages | 20 wheel notches (40 pt, not precise, `notch` set, as Rune marks a real mouse wheel on every platform), then 3 trackpad swipes with fling |
+| `scroll` | 500 messages | 20 wheel notches (40 pt, not precise, `notch` set, as Rune marks every macOS mouse-wheel line delta; on Windows and Linux a fractional wheel delta may not be a notch), then 3 trackpad swipes with fling |
 | `dock` | 40-turn chat, right pane closed | ⌥⌘B ×3 |
 | `typing` | 40-turn chat | 200 chars into the composer, 30 ms apart |
 | `shelf` | 40-turn chat | none: 3 runs start (cards move to the Working shelf), then end |
