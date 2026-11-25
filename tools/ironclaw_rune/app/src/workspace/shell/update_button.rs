@@ -43,13 +43,21 @@ pub enum FooterUpdate {
     Off,
 }
 
-/// The button's state. `label` names a computer by its key.
-pub fn footer_update(u: &UpdatesState, label: impl Fn(&str) -> String) -> FooterUpdate {
-    let step = u.rows.iter().find_map(|(key, row)| match row {
-        RowState::Updating(step) => Some((key.clone(), step.clone())),
-        _ => None,
-    });
-    if u.updating || step.is_some() {
+/// The button's state. `machines`: how many computers this Mac updates
+/// (a row may be missing for one that never answered). `label` names a
+/// computer by its key.
+pub fn footer_update(
+    u: &UpdatesState,
+    machines: usize,
+    label: impl Fn(&str) -> String,
+) -> FooterUpdate {
+    // Only a run started here: a row a background read saw updating (on a
+    // computer that may then go offline for good) is Computers' to show.
+    if u.updating {
+        let step = u.rows.iter().find_map(|(key, row)| match row {
+            RowState::Updating(step) => Some((key.clone(), step.clone())),
+            _ => None,
+        });
         return match step {
             Some((key, step)) => FooterUpdate::Updating {
                 line: format!("Updating {}…", label(&key)),
@@ -82,6 +90,7 @@ pub fn footer_update(u: &UpdatesState, label: impl Fn(&str) -> String) -> Footer
         };
     }
     if !u.rows.is_empty()
+        && u.rows.len() >= machines
         && u.rows
             .values()
             .all(|row| matches!(row, RowState::NotSetUp { .. }))
@@ -107,15 +116,23 @@ fn computer_label(s: &State, key: &str) -> String {
         .map_or_else(|| "a computer".into(), |env| env.label.clone())
 }
 
+/// How many computers this Mac updates: the saved ones, and This Mac
+/// unless this is a Light bundle.
+fn fleet_size(s: &State) -> usize {
+    crate::remote::saved(s).len() + usize::from(!s.remote.app_only)
+}
+
 fn press(s: &mut State) {
-    match footer_update(&s.remote.updates, |_| String::new()) {
-        FooterUpdate::Idle { .. } => updates::check(s),
+    match footer_update(&s.remote.updates, fleet_size(s), |_| String::new()) {
+        // A failed run checks again: the computer that failed shows as
+        // behind again (with what it would get) and can be retried with
+        // the others; Computers keeps why it failed.
+        FooterUpdate::Idle { .. } | FooterUpdate::Failed => updates::check(s),
         FooterUpdate::Checking => {}
-        FooterUpdate::Available { .. } => s.workspace.confirm_update = true,
-        FooterUpdate::Failed if updates::waiting(&s.remote.updates) > 0 => {
-            s.workspace.confirm_update = true;
+        FooterUpdate::Available { .. } => {
+            s.workspace.confirm_update = Some(updates::waiting_keys(&s.remote.updates));
         }
-        FooterUpdate::Updating { .. } | FooterUpdate::Failed | FooterUpdate::Off => {
+        FooterUpdate::Updating { .. } | FooterUpdate::Off => {
             super::super::show(s, Page::Computers);
         }
     }
@@ -124,7 +141,9 @@ fn press(s: &mut State) {
 /// The footer's button: an icon while there is nothing to say, a capsule
 /// with a line while there is. It takes the footer's free width.
 pub fn button(s: &State, p: &Palette) -> El {
-    let state = footer_update(&s.remote.updates, |key| computer_label(s, key));
+    let state = footer_update(&s.remote.updates, fleet_size(s), |key| {
+        computer_label(s, key)
+    });
     let (glyph, ink, line, tip): (&'static rune::Icon, Color, Option<String>, String) = match &state
     {
         FooterUpdate::Idle { tip } => (&icons::REFRESH_CW, p.text_muted, None, tip.clone()),
@@ -157,7 +176,7 @@ pub fn button(s: &State, p: &Palette) -> El {
             &icons::CIRCLE_ALERT,
             p.danger,
             Some("Update failed".into()),
-            "An update failed. Press to see why or retry".into(),
+            "An update failed (Settings → Computers says why). Press to check again".into(),
         ),
         FooterUpdate::Off => (
             &icons::REFRESH_CW,
@@ -235,11 +254,11 @@ pub fn button(s: &State, p: &Palette) -> El {
 }
 
 /// The computers the dialog lists, in the order an update runs them.
-fn listed(s: &State) -> Vec<(String, String, Pending)> {
-    updates::waiting_keys(&s.remote.updates)
-        .into_iter()
-        .filter_map(|key| match s.remote.updates.rows.get(&key) {
-            Some(RowState::Behind(p)) => Some((key.clone(), computer_label(s, &key), p.clone())),
+/// `keys`: the dialog's computers, already in that order.
+fn listed(s: &State, keys: &[String]) -> Vec<(String, String, Pending)> {
+    keys.iter()
+        .filter_map(|key| match s.remote.updates.rows.get(key) {
+            Some(RowState::Behind(p)) => Some((key.clone(), computer_label(s, key), p.clone())),
             _ => None,
         })
         .collect()
@@ -277,12 +296,14 @@ pub fn heading(listed: &[(String, String, Pending)]) -> (String, String) {
     }
 }
 
-/// The line saying what the update interrupts.
+/// The line saying what the update interrupts. `running`: the threads
+/// running on the computer in use when it is one of those updating (ZLO
+/// sees no other computer's threads).
 pub fn warning(running: usize, this_mac: bool) -> String {
     let threads = match running {
         0 => String::new(),
-        1 => "1 running thread will be interrupted. ".into(),
-        n => format!("{n} running threads will be interrupted. "),
+        1 => "1 running thread here will be interrupted. ".into(),
+        n => format!("{n} running threads here will be interrupted. "),
     };
     let restart = if this_mac {
         "ZLO quits and reopens when This Mac has finished."
@@ -295,16 +316,23 @@ pub fn warning(running: usize, this_mac: bool) -> String {
 /// "Update ZLO?": what changes, where, and what it interrupts. Cancel and
 /// Escape leave everything as it was; only "Update" starts it.
 pub fn confirm(s: &State, k: &Kit, layer: &mut Vec<El>) {
-    if !s.workspace.confirm_update {
+    let Some(keys) = &s.workspace.confirm_update else {
         return;
-    }
+    };
     let p = &s.palette;
-    let listed = listed(s);
+    let listed = listed(s, keys);
     if listed.is_empty() {
         // The update went away under the dialog (checked elsewhere, or
-        // done): nothing to confirm.
+        // done); `set_row` closes it.
         return;
     }
+    let run: Vec<String> = listed.iter().map(|(key, _, _)| key.clone()).collect();
+    let active = s.onboarding.computer.key();
+    let running = if run.contains(&active) {
+        s.workspace.inbox.running()
+    } else {
+        0
+    };
     let (title, description) = heading(&listed);
     let this_mac = listed.iter().any(|(key, _, _)| key == THIS_MAC);
     // What changes: the subjects of the computer furthest behind.
@@ -341,7 +369,7 @@ pub fn confirm(s: &State, k: &Kit, layer: &mut Vec<El>) {
                     .child(t(subject.clone(), XS, p.text).wrap().shrink().grow(1.)),
             );
         }
-        let more = pending.behind as usize - pending.subjects.len().min(pending.behind as usize);
+        let more = (pending.behind as usize).saturating_sub(pending.subjects.len());
         if more > 0 {
             list = list.child(t(format!("and {more} more"), XS, p.text_muted));
         }
@@ -366,13 +394,9 @@ pub fn confirm(s: &State, k: &Kit, layer: &mut Vec<El>) {
     }
     body = body
         .child(
-            t(
-                warning(s.workspace.inbox.running(), this_mac),
-                XS,
-                p.text_muted,
-            )
-            .wrap()
-            .w_full(),
+            t(warning(running, this_mac), XS, p.text_muted)
+                .wrap()
+                .w_full(),
         )
         .child(
             row()
@@ -381,16 +405,16 @@ pub fn confirm(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 .justify_end()
                 .child(
                     rune_kit::Button::new("Cancel")
-                        .on_press(|s: &mut State| s.workspace.confirm_update = false)
+                        .on_press(|s: &mut State| s.workspace.confirm_update = None)
                         .build(k),
                 )
                 .child(
                     rune_kit::Button::new("Update")
                         .variant(rune_kit::ButtonVariant::Contrast)
                         .icon(&icons::DOWNLOAD)
-                        .on_press(|s: &mut State| {
-                            s.workspace.confirm_update = false;
-                            updates::update_waiting(s);
+                        .on_press(move |s: &mut State| {
+                            s.workspace.confirm_update = None;
+                            updates::update_keys(s, run.clone());
                         })
                         .build(k),
                 ),
@@ -401,7 +425,7 @@ pub fn confirm(s: &State, k: &Kit, layer: &mut Vec<El>) {
         .width(460.)
         .description(description)
         .child(body)
-        .on_close(|s: &mut State| s.workspace.confirm_update = false)
+        .on_close(|s: &mut State| s.workspace.confirm_update = None)
         .build(k, layer);
 }
 
@@ -430,20 +454,20 @@ mod tests {
     fn the_button_says_what_is_going_on() {
         let mut u = UpdatesState::default();
         assert_eq!(
-            footer_update(&u, label),
+            footer_update(&u, 2, label),
             FooterUpdate::Idle {
                 tip: "Check for updates".into()
             }
         );
         u.rows.insert(THIS_MAC.into(), RowState::UpToDate);
         assert_eq!(
-            footer_update(&u, label),
+            footer_update(&u, 2, label),
             FooterUpdate::Idle {
                 tip: "Up to date. Check for updates".into()
             }
         );
         u.checking = true;
-        assert_eq!(footer_update(&u, label), FooterUpdate::Checking);
+        assert_eq!(footer_update(&u, 2, label), FooterUpdate::Checking);
         u.checking = false;
 
         u.rows
@@ -451,17 +475,26 @@ mod tests {
         u.rows
             .insert("studio".into(), RowState::Behind(pending(2, &[])));
         assert_eq!(
-            footer_update(&u, label),
+            footer_update(&u, 2, label),
             FooterUpdate::Available {
                 machines: 2,
                 commits: 7
             }
         );
 
+        // A row a background read saw updating is not a run of ours.
         u.rows
             .insert("studio".into(), RowState::Updating("building".into()));
         assert_eq!(
-            footer_update(&u, label),
+            footer_update(&u, 2, label),
+            FooterUpdate::Available {
+                machines: 1,
+                commits: 7
+            }
+        );
+        u.updating = true;
+        assert_eq!(
+            footer_update(&u, 2, label),
             FooterUpdate::Updating {
                 line: "Updating STUDIO…".into(),
                 step: "building".into()
@@ -470,23 +503,29 @@ mod tests {
         u.rows
             .insert("studio".into(), RowState::Updating(String::new()));
         assert_eq!(
-            footer_update(&u, label),
+            footer_update(&u, 2, label),
             FooterUpdate::Updating {
                 line: "Updating STUDIO…".into(),
                 step: String::new()
             }
         );
 
+        u.updating = false;
         u.rows
             .insert("studio".into(), RowState::Failed("dirty".into()));
         u.failed_run = true;
-        assert_eq!(footer_update(&u, label), FooterUpdate::Failed);
+        assert_eq!(footer_update(&u, 2, label), FooterUpdate::Failed);
         u.failed_run = false;
 
         let mut off = UpdatesState::default();
         off.rows
             .insert(THIS_MAC.into(), RowState::NotSetUp { can_enable: true });
-        assert_eq!(footer_update(&off, label), FooterUpdate::Off);
+        assert_eq!(footer_update(&off, 1, label), FooterUpdate::Off);
+        // A computer that never answered may have updates on: still a check.
+        assert!(matches!(
+            footer_update(&off, 2, label),
+            FooterUpdate::Idle { .. }
+        ));
     }
 
     #[test]
@@ -521,9 +560,9 @@ mod tests {
         );
         assert_eq!(
             warning(2, true),
-            "2 running threads will be interrupted. ZLO quits and reopens when This Mac has finished."
+            "2 running threads here will be interrupted. ZLO quits and reopens when This Mac has finished."
         );
-        assert!(warning(1, false).starts_with("1 running thread will"));
+        assert!(warning(1, false).starts_with("1 running thread here will"));
     }
 
     #[test]

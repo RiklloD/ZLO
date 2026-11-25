@@ -131,8 +131,6 @@ pub struct UpdatesState {
     /// The last update run ended with a computer failing; cleared by the
     /// next check or update. The footer button shows it.
     pub failed_run: bool,
-    /// When the rows were last read (a check or a background read).
-    pub read_at: Option<DateTime<Utc>>,
 }
 
 // ── decisions (pure) ─────────────────────────────────────────────────────
@@ -506,6 +504,16 @@ pub(crate) fn set_row(s: &mut State, key: String, row: RowState) {
     if is_member(s, &key) {
         s.remote.updates.rows.insert(key, row);
     }
+    // The footer's dialog closes once none of its computers has an update
+    // waiting any more (so it never comes back by itself later).
+    let gone = s.workspace.confirm_update.as_ref().is_some_and(|keys| {
+        !keys
+            .iter()
+            .any(|k| matches!(s.remote.updates.rows.get(k), Some(RowState::Behind(_))))
+    });
+    if gone {
+        s.workspace.confirm_update = None;
+    }
 }
 
 /// A computer was removed from this Mac: its row goes with it.
@@ -539,10 +547,7 @@ pub fn check(s: &mut State) {
     let handle = s.rt.handle.clone();
     net.spawn(async move {
         check_all(all, report).await;
-        handle.update(|s, _| {
-            s.remote.updates.checking = false;
-            s.remote.updates.read_at = Some(Utc::now());
-        });
+        handle.update(|s, _| s.remote.updates.checking = false);
     });
 }
 
@@ -580,7 +585,6 @@ pub fn poll(s: &mut State) {
             }
         }))
         .await;
-        handle.update(|s, _| s.remote.updates.read_at = Some(Utc::now()));
     });
 }
 
@@ -659,11 +663,10 @@ pub fn update_everything(s: &mut State) {
     run_update(s, |_| true);
 }
 
-/// The footer dialog's "Update": only the computers with an update
-/// waiting, the ones the dialog listed.
-pub fn update_waiting(s: &mut State) {
-    let waiting: Vec<String> = waiting_keys(&s.remote.updates);
-    run_update(s, move |key| waiting.iter().any(|k| k == key));
+/// The footer dialog's "Update": exactly the computers it listed, never
+/// one whose update arrived after the dialog drew.
+pub fn update_keys(s: &mut State, keys: Vec<String>) {
+    run_update(s, move |key| keys.iter().any(|k| k == key));
 }
 
 /// The computers with an update waiting: the others by key, This Mac last

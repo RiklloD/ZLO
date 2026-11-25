@@ -617,5 +617,7 @@ pub fn fixture_update(s: &mut State, which: &str) {
             .rows
             .insert(STUDIO.into(), RowState::Behind(pending(3)));
     }
-    s.workspace.confirm_update = which.starts_with("confirm");
+    s.workspace.confirm_update = which
+        .starts_with("confirm")
+        .then(|| crate::remote::updates::waiting_keys(&s.remote.updates));
 }
