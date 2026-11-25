@@ -167,6 +167,21 @@ async fn send_user_message_preserves_model_unavailable_after_retry_budget() {
 /// best-effort capture sink → thread-history read → redact/score →
 /// eligibility → queue (+ immediate flush attempt, which fails locally
 /// against the closed loopback endpoint and must leave the entry queued).
+/// Regression: the enrolled-scope capture test writes a scoped policy before
+/// any shared helper binds a Trace Commons base. Re-run it in a child whose
+/// default base (`$HOME/.ironclaw`) carries an enabled instance enrollment;
+/// the probe fails if the child writes there or rewrites that policy.
+#[test]
+fn send_user_message_trace_capture_stays_off_the_default_base() {
+    if ironclaw_trace_commons::location::leak_probe::is_child() {
+        return;
+    }
+    let verdict = ironclaw_trace_commons::location::leak_probe::run_child_with_enrolled_fake_home(
+        "runtime::tests::send_message::send_user_message_auto_queues_trace_for_enrolled_scope",
+    );
+    assert!(verdict.is_ok(), "{}", verdict.unwrap_err());
+}
+
 #[tokio::test]
 async fn send_user_message_auto_queues_trace_for_enrolled_scope() {
     use ironclaw_trace_commons::contribution as trace_contribution;

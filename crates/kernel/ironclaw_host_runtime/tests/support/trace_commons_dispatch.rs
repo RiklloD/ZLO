@@ -5,8 +5,8 @@
 //! enrollment) via `#[path = "support/trace_commons_dispatch.rs"] mod ...`.
 //!
 //! Each `tests/*.rs` file compiles to a SEPARATE test binary, so each gets a
-//! fresh process — and therefore a fresh `LazyLock` for `ironclaw_base_dir()`
-//! plus a private `IRONCLAW_BASE_DIR` tempdir. That process boundary is what
+//! fresh process — and therefore a fresh process-wide Trace Commons base
+//! (`location::set_base_dir`) bound to a private tempdir. That process boundary is what
 //! keeps the two suites isolated: the instance suite writes the process-global
 //! instance policy (scope `None`), which must not bleed into the personal suite
 //! whose tests rely on per-user not-enrolled defaults.
@@ -60,21 +60,17 @@ use tempfile::TempDir;
 
 static BASE_DIR: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
 
-/// Point `IRONCLAW_BASE_DIR` at a process-lifetime temp dir before any code
-/// reads it. `#[tokio::test]` uses a multi-threaded runtime and tests in this
-/// binary run concurrently, so this must be the FIRST call in every test:
-/// the `OnceLock` serializes initialization (concurrent callers block until
-/// the variable is set) and no test reads `ironclaw_base_dir()` before its
-/// own `setup_base_dir()` call returns.
+/// Bind the Trace Commons base to a process-lifetime temp dir before any code
+/// resolves it. `#[tokio::test]` uses a multi-threaded runtime and tests in
+/// this binary run concurrently, so this must be the FIRST call in every
+/// test: the `OnceLock` serializes initialization (concurrent callers block
+/// until the base is bound) and no test resolves a Trace Commons path before
+/// its own `setup_base_dir()` call returns.
 pub fn setup_base_dir() -> &'static TempDir {
     BASE_DIR.get_or_init(|| {
-        let dir = tempfile::tempdir().expect("tempdir for IRONCLAW_BASE_DIR");
-        // SAFETY: executed exactly once inside `OnceLock::get_or_init`; every
-        // test calls `setup_base_dir()` before any env read, so there is no
-        // concurrent reader during this write.
-        unsafe {
-            std::env::set_var("IRONCLAW_BASE_DIR", dir.path());
-        }
+        let dir = tempfile::tempdir().expect("tempdir for the Trace Commons base");
+        ironclaw_trace_commons::location::set_base_dir(dir.path().to_path_buf())
+            .expect("bind Trace Commons base before any resolution");
         dir
     })
 }

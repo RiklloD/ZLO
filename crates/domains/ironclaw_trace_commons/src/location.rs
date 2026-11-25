@@ -11,9 +11,12 @@
 //! Test processes must never fall through to the developer's real base: a
 //! real `~/.ironclaw/trace_contributions/policy.json` (instance enrollment)
 //! flips "not enrolled" assertions and test writes land in live user state.
-//! This crate's own tests bind an isolated per-process base automatically;
-//! downstream test suites call [`bind_isolated_base_dir_for_tests`]
-//! (`test-support` feature) from their shared test helpers.
+//! In any build with `cfg(test)` or the `test-support` feature, an unset base
+//! resolves to an isolated per-process temp base instead of the default, so
+//! no test anywhere in the workspace can reach the real one — every crate
+//! whose tests reach Trace Commons enables `ironclaw_trace_commons/test-support`
+//! as a dev-dependency. Shipping builds never enable `test-support`, and the
+//! `zlo` binary binds its home with [`set_base_dir`] before any resolution.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -33,22 +36,34 @@ pub fn set_base_dir(base: PathBuf) -> Result<(), PathBuf> {
 }
 
 /// The base directory default-path helpers use.
+///
+/// Test builds (`cfg(test)` or `test-support`) never fall back to the real
+/// default: an unset base binds the process's isolated temp base, so even a
+/// test that resolves a default path before any shared helper ran stays off
+/// the developer's live state.
 pub fn base_dir() -> PathBuf {
-    #[cfg(test)]
-    #[allow(clippy::expect_used)] // cfg(test) only: never fall back to the real home.
-    let fallback = || {
-        bind_isolated_base_dir_for_tests().expect("bind isolated Trace Commons base dir for tests") // safety: cfg(test) only
-    };
-    #[cfg(not(test))]
-    let fallback = ironclaw_common::paths::ironclaw_base_dir;
-    BASE_DIR.get().cloned().unwrap_or_else(fallback)
+    if let Some(base) = BASE_DIR.get() {
+        return base.clone();
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        bind_isolated_or_existing()
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        ironclaw_common::paths::ironclaw_base_dir()
+    }
 }
 
-/// Bind this process's Trace Commons base to a fresh, process-private
-/// temporary directory, so test code that reaches the default-path helpers
-/// (directly or through production callers such as host-runtime dispatch,
-/// turn-runner capture, or product views) can neither read the developer's
-/// real enrollment nor write into it.
+/// Bind this process's Trace Commons base to a process-private directory
+/// under a shared, well-known parent in the system temp dir (see
+/// [`isolated_test_root`]), so test code that reaches the default-path
+/// helpers (directly or through production callers such as host-runtime
+/// dispatch, turn-runner capture, or product views) can neither read the
+/// developer's real enrollment nor write into it.
+///
+/// [`base_dir`] does this on its own in test builds; call this explicitly
+/// only to fail fast when a real-default base is already bound.
 ///
 /// Idempotent: every call in a process returns the same directory. When a
 /// base was already bound (e.g. a test drove a host entry point against a
@@ -56,28 +71,83 @@ pub fn base_dir() -> PathBuf {
 /// base, which is an error.
 #[cfg(any(test, feature = "test-support"))]
 pub fn bind_isolated_base_dir_for_tests() -> std::io::Result<PathBuf> {
+    let bound = bind_isolated_or_existing();
+    if bound == ironclaw_common::paths::compute_ironclaw_base_dir() {
+        return Err(std::io::Error::other(format!(
+            "Trace Commons base is already bound to the real default base {}; \
+             tests must not touch live user state",
+            bound.display()
+        )));
+    }
+    std::fs::create_dir_all(&bound)?;
+    Ok(bound)
+}
+
+/// Parent of every test process's isolated base. One fixed directory under
+/// the system temp dir, so leftovers from earlier runs are found and swept
+/// instead of accumulating as one stray temp dir per process.
+#[cfg(any(test, feature = "test-support"))]
+pub fn isolated_test_root() -> PathBuf {
+    std::env::temp_dir().join("ironclaw-trace-commons-tests")
+}
+
+/// How old a sibling process's isolated base must be before a later test
+/// process removes it. Far longer than any test binary runs, so a live
+/// process's base is never swept from under it.
+#[cfg(any(test, feature = "test-support"))]
+const STALE_ISOLATED_BASE_AGE: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+#[cfg(any(test, feature = "test-support"))]
+fn bind_isolated_or_existing() -> PathBuf {
     static ISOLATED: OnceLock<PathBuf> = OnceLock::new();
     let isolated = ISOLATED.get_or_init(|| {
+        let root = isolated_test_root();
+        sweep_stale_isolated_bases(&root);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos())
             .unwrap_or_default();
-        std::env::temp_dir().join(format!(
-            "ironclaw-trace-commons-test-{}-{nanos}",
-            std::process::id()
-        ))
-    });
-    std::fs::create_dir_all(isolated)?;
-    match set_base_dir(isolated.clone()) {
-        Ok(()) => Ok(isolated.clone()),
-        Err(existing) if existing == ironclaw_common::paths::compute_ironclaw_base_dir() => {
-            Err(std::io::Error::other(format!(
-                "Trace Commons base is already bound to the real default base {}; \
-                 tests must not touch live user state",
-                existing.display()
-            )))
+        let dir = root.join(format!("pid-{}-{nanos}", std::process::id()));
+        // Best effort: writers create their own parents, and a failure here
+        // must not redirect state anywhere else.
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            eprintln!(
+                "trace commons tests: could not create isolated base {}: {error}",
+                dir.display()
+            );
         }
-        Err(existing) => Ok(existing),
+        dir
+    });
+    match set_base_dir(isolated.clone()) {
+        Ok(()) => isolated.clone(),
+        Err(existing) => existing,
+    }
+}
+
+/// Remove isolated bases left by earlier test processes (statics never drop,
+/// so a process cannot remove its own). Best effort; errors are ignored.
+#[cfg(any(test, feature = "test-support"))]
+fn sweep_stale_isolated_bases(root: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > STALE_ISOLATED_BASE_AGE);
+        if stale {
+            // Best effort: another process may be sweeping the same entry.
+            if let Err(error) = std::fs::remove_dir_all(entry.path()) {
+                eprintln!(
+                    "trace commons tests: could not sweep stale base {}: {error}",
+                    entry.path().display()
+                );
+            }
+        }
     }
 }
 
@@ -125,7 +195,7 @@ pub mod leak_probe {
     }
 
     fn run_in(home: &Path, test_path: &str) -> Result<(), String> {
-        let contributions = seed_enrolled_home(home)?;
+        let (contributions, seeded_policy) = seed_enrolled_home(home)?;
         let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
         let output = std::process::Command::new(exe)
             .args([test_path, "--exact", "--nocapture", "--test-threads=1"])
@@ -155,10 +225,20 @@ pub mod leak_probe {
                 "probe child `{test_path}` wrote into the default base: {written:?}"
             ));
         }
+        let policy_path = contributions.join("policy.json");
+        let policy_after = std::fs::read(&policy_path)
+            .map_err(|e| format!("read {} after probe: {e}", policy_path.display()))?;
+        if policy_after != seeded_policy {
+            return Err(format!(
+                "probe child `{test_path}` rewrote the default base's policy.json"
+            ));
+        }
         Ok(())
     }
 
-    fn seed_enrolled_home(home: &Path) -> Result<PathBuf, String> {
+    /// Seed the enrolled default base; returns its `trace_contributions/`
+    /// dir and the exact `policy.json` bytes written.
+    fn seed_enrolled_home(home: &Path) -> Result<(PathBuf, Vec<u8>), String> {
         let contributions = home.join(".ironclaw").join("trace_contributions");
         std::fs::create_dir_all(&contributions)
             .map_err(|e| format!("create {}: {e}", contributions.display()))?;
@@ -168,9 +248,9 @@ pub mod leak_probe {
             ..Default::default()
         };
         let body = serde_json::to_string_pretty(&policy).map_err(|e| e.to_string())?;
-        std::fs::write(contributions.join("policy.json"), body)
+        std::fs::write(contributions.join("policy.json"), &body)
             .map_err(|e| format!("seed policy: {e}"))?;
-        Ok(contributions)
+        Ok((contributions, body.into_bytes()))
     }
 }
 

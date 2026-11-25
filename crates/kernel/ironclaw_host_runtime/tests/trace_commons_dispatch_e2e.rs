@@ -3,8 +3,8 @@
 //! path (not directly through the library).
 //!
 //! This file is a separate test binary so it gets a fresh process — and
-//! therefore a fresh `LazyLock` for `ironclaw_base_dir()`. `IRONCLAW_BASE_DIR`
-//! is set to a tempdir as the very first action so the LazyLock picks it up.
+//! therefore a fresh process-wide Trace Commons base, bound to a tempdir
+//! (`location::set_base_dir`) as the very first action.
 //!
 //! All tests share the tempdir (base dir is process-wide); they use different
 //! mock ports / invite codes and, critically, a distinct per-test user scope

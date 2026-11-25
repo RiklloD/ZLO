@@ -81,7 +81,10 @@ These are recorded so they are not rediscovered as bugs. See PROPOSAL §6.4.14.
   keeps `trace_contributions/` inside its home instead of `~/.ironclaw`
   (smoke: `traces_state_is_written_under_zlo_home_not_the_user_home`).
   Re-verify with `rg -n "ironclaw_base_dir" crates/domains/ironclaw_trace_commons/src`
-  — the only hit should be the fallback in `location.rs`. An existing
+  — the only hit should be the fallback in `location.rs`. Test builds
+  (`cfg(test)` or `test-support`) never take that fallback: an unset base
+  binds an isolated temp base, so every crate whose tests reach Trace Commons
+  enables `ironclaw_trace_commons/test-support` as a dev-dependency. An existing
   `~/.ironclaw/trace_contributions` is not migrated: `home.rs` moves only the
   pre-ZLO `~/.ironclaw/reborn` folder, so a prior Trace Commons enrollment
   must be redone from the ZLO home.

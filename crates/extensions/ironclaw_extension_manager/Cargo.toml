@@ -9,6 +9,12 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+# `ironclaw_trace_commons` is a dev-dependency only to switch on its
+# `test-support` feature (isolated Trace Commons base in tests); no test
+# code names it, so cargo-shear cannot see the use.
+[package.metadata.cargo-shear]
+ignored = ["ironclaw_trace_commons"]
+
 [package.metadata.ironclaw]
 layer = "products"
 
@@ -73,6 +79,11 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+# Test builds resolve an unset Trace Commons base to an isolated temp dir
+# (`ironclaw_trace_commons::location::base_dir`, `test-support`), so tests that
+# reach Trace Commons through the runtime never touch the developer's real
+# `~/.ironclaw/trace_contributions`.
+ironclaw_trace_commons = { path = "../../domains/ironclaw_trace_commons", features = ["test-support"] }
 ironclaw_auth = { path = "../../domains/ironclaw_auth", features = ["test-support"] }
 ironclaw_authorization = { path = "../../kernel/ironclaw_authorization" }
 ironclaw_extension_host = { path = "../ironclaw_extension_host", features = ["test-support"] }
