@@ -6,6 +6,7 @@
 
 mod appearance;
 mod compaction;
+mod folders;
 #[cfg(test)]
 mod motion_tests;
 pub mod session_import;
@@ -345,7 +346,7 @@ pub fn view(s: &State, page: Page, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec
             ))
             .child(session_import::view(s, k)),
         Section::Appearance => body.child(appearance::view(s, k, layer)),
-        Section::Permissions => body.child(tools::view(s, k)),
+        Section::Permissions => body.child(folders::view(s, k)).child(tools::view(s, k)),
         Section::Traces => body
             .child(group_header(
                 p,

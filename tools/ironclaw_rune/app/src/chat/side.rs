@@ -763,7 +763,15 @@ fn pick_project_folder(tx: &mut Tx) {
         ..Default::default()
     };
     tx.open_folder(options, |s: &mut State, result, _| match result {
-        Ok(Some(folder)) => set_folder(s, folder, true),
+        Ok(Some(folder)) => {
+            // Picked in the open panel, so macOS lets ZLO have just this
+            // folder: keep it, so a project in Documents never needs the
+            // whole-Documents switch (`folder_access.rs`).
+            if crate::folder_access::adopt_pick(&folder) {
+                crate::service::restart();
+            }
+            set_folder(s, folder, true);
+        }
         Ok(None) => {}
         Err(e) => tracing::warn!(error = %e, "folder picker failed"),
     });
