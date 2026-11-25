@@ -190,7 +190,7 @@ async fn instance_only_user_passes_dispatch_gate_and_mints_login_link() {
     );
 
     // The one-time URL is delivered out-of-band to a private 0600 file.
-    let persisted = find_persisted_login_link(setup_base_dir().path())
+    let persisted = find_persisted_login_link(setup_base_dir())
         .expect("the login URL must be persisted to the private account-login-link file");
     assert!(
         persisted.contains("/account/login?code=instancecode456"),

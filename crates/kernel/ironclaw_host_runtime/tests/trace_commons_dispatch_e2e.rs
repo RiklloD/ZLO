@@ -491,7 +491,7 @@ async fn account_login_link_through_dispatch() {
     // `account_login_link.url` file in the caller scope's local state dir for the
     // local UI/CLI to open. Locate it under the base dir without recomputing the
     // exact scope path.
-    let persisted = find_persisted_login_link(setup_base_dir().path())
+    let persisted = find_persisted_login_link(setup_base_dir())
         .expect("the login URL must be persisted to the private account-login-link file");
     assert!(
         persisted.contains("/account/login?code=testcode123"),

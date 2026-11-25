@@ -42,7 +42,6 @@ use ironclaw_trace_commons::contribution::{
 };
 use reborn_support::group::RebornIntegrationGroup;
 use reborn_support::reply::RebornScriptedReply;
-use tempfile::TempDir;
 
 const ONBOARD_CAPABILITY_ID: &str = "builtin.trace_commons.onboard";
 
@@ -50,15 +49,19 @@ const ONBOARD_CAPABILITY_ID: &str = "builtin.trace_commons.onboard";
 /// see the scope-isolation note on `completed_turn_queues_trace_contribution_for_enrolled_scope`.
 const CONSENT_CONTROL_ACTOR_ID: &str = "host-user-trace-consent-control";
 
-static BASE_DIR: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+static BASE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-/// Bind the Trace Commons base to a process-lifetime tempdir before any code
+/// Bind the Trace Commons base to a process-owned dir before any code
 /// resolves it (first bind wins, `location::set_base_dir`). Must be the first
 /// call in every test in this binary.
-fn setup_base_dir() -> &'static TempDir {
+fn setup_base_dir() -> &'static std::path::Path {
     BASE_DIR.get_or_init(|| {
-        let dir = tempfile::tempdir().expect("tempdir for the Trace Commons base");
-        ironclaw_trace_commons::location::set_base_dir(dir.path().to_path_buf())
+        // A process-owned dir under the shared sweep root, not a `TempDir` in
+        // a static (which never drops): a later test process reclaims it once
+        // this one has exited.
+        let dir = ironclaw_trace_commons::location::owned_test_dir()
+            .expect("owned dir for the Trace Commons base");
+        ironclaw_trace_commons::location::set_base_dir(dir.clone())
             .expect("bind Trace Commons base before any resolution");
         dir
     })

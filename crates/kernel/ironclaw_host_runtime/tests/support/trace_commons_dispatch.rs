@@ -54,22 +54,25 @@ use ironclaw_trust::{
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tempfile::TempDir;
 
 // ── Process-wide base-dir setup ──────────────────────────────────────────────
 
-static BASE_DIR: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+static BASE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-/// Bind the Trace Commons base to a process-lifetime temp dir before any code
+/// Bind the Trace Commons base to a process-owned dir before any code
 /// resolves it. `#[tokio::test]` uses a multi-threaded runtime and tests in
 /// this binary run concurrently, so this must be the FIRST call in every
 /// test: the `OnceLock` serializes initialization (concurrent callers block
 /// until the base is bound) and no test resolves a Trace Commons path before
 /// its own `setup_base_dir()` call returns.
-pub fn setup_base_dir() -> &'static TempDir {
+pub fn setup_base_dir() -> &'static std::path::Path {
     BASE_DIR.get_or_init(|| {
-        let dir = tempfile::tempdir().expect("tempdir for the Trace Commons base");
-        ironclaw_trace_commons::location::set_base_dir(dir.path().to_path_buf())
+        // A process-owned dir under the shared sweep root, not a `TempDir` in
+        // a static (which never drops): a later test process reclaims it once
+        // this one has exited.
+        let dir = ironclaw_trace_commons::location::owned_test_dir()
+            .expect("owned dir for the Trace Commons base");
+        ironclaw_trace_commons::location::set_base_dir(dir.clone())
             .expect("bind Trace Commons base before any resolution");
         dir
     })
