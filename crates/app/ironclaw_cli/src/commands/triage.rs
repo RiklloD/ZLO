@@ -49,14 +49,36 @@ pub(crate) struct TriageAgent {
     /// The native installer (no Node or npm needed), as the app's
     /// "Connect your agents" runs it (`KnownCli::install` in the desktop
     /// app's provider catalog). macOS and Linux only.
-    install: &'static str,
+    install: Installer,
 }
 
+/// A native installer script and the shell that runs it: shown as the
+/// usual `curl -fsSL <url> | <shell>` line, run as a download to a temp file
+/// then the shell on it, so a failed download is a failed install.
+pub(crate) struct Installer {
+    url: &'static str,
+    shell: &'static str,
+}
+
+/// Downloads `$1` and runs it with `$2`; exits with the first failure.
+const INSTALL_SCRIPT: &str = "tmp=$(mktemp) || exit 1; \
+curl -fsSL \"$1\" -o \"$tmp\"; status=$?; \
+if [ \"$status\" -eq 0 ]; then \"$2\" \"$tmp\"; status=$?; fi; \
+rm -f \"$tmp\"; exit \"$status\"";
+
 impl TriageAgent {
-    /// The installer command, where it runs (not on Windows).
-    pub(crate) fn install_command(&self) -> Option<&'static str> {
-        (!cfg!(windows)).then_some(self.install)
+    /// The installer as people type it, where it runs (not on Windows).
+    pub(crate) fn install_command(&self) -> Option<String> {
+        (!cfg!(windows))
+            .then(|| format!("curl -fsSL {} | {}", self.install.url, self.install.shell))
     }
+}
+
+/// `PATH` with only its absolute entries: the installer runs in the
+/// directory `zlo triage` ran from, where an empty or relative entry could
+/// pick up that folder's own `curl` or shell.
+fn absolute_path_entries(path: &OsStr) -> Option<std::ffi::OsString> {
+    std::env::join_paths(std::env::split_paths(path).filter(|dir| dir.is_absolute())).ok()
 }
 
 pub(crate) const TRIAGE_AGENTS: [TriageAgent; 3] = [
@@ -68,7 +90,10 @@ pub(crate) const TRIAGE_AGENTS: [TriageAgent; 3] = [
         state_dir_env: "CLAUDE_CONFIG_DIR",
         default_state_dir: ".claude",
         prompt_args: &[],
-        install: "curl -fsSL https://claude.ai/install.sh | bash",
+        install: Installer {
+            url: "https://claude.ai/install.sh",
+            shell: "bash",
+        },
     },
     TriageAgent {
         id: AgentId::Codex,
@@ -78,7 +103,10 @@ pub(crate) const TRIAGE_AGENTS: [TriageAgent; 3] = [
         state_dir_env: "CODEX_HOME",
         default_state_dir: ".codex",
         prompt_args: &[],
-        install: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+        install: Installer {
+            url: "https://chatgpt.com/codex/install.sh",
+            shell: "sh",
+        },
     },
     TriageAgent {
         id: AgentId::Antigravity,
@@ -88,7 +116,10 @@ pub(crate) const TRIAGE_AGENTS: [TriageAgent; 3] = [
         state_dir_env: "GEMINI_HOME",
         default_state_dir: ".gemini",
         prompt_args: &["--prompt-interactive"],
-        install: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+        install: Installer {
+            url: "https://antigravity.google/cli/install.sh",
+            shell: "bash",
+        },
     },
 ];
 
@@ -411,20 +442,25 @@ fn describe_files(session: &TriageSession) -> Vec<String> {
     ]
 }
 
-/// With no agent found, on a terminal: offer each installer, run the chosen
-/// one in this terminal, then find that agent again. `None` when skipped,
-/// when the installer fails, or when the agent is still not found.
+/// With the agent(s) not found, on a terminal: offer each of `offered`'s
+/// installers, run the chosen one in this terminal, then find that agent
+/// again. `None` when skipped, when the installer fails, or when the agent
+/// is still not found.
 fn offer_install(
+    headline: &str,
+    offered: &[&'static TriageAgent],
+    path: &OsStr,
     locate: &dyn Fn(&TriageAgent) -> Option<FoundAgent>,
 ) -> anyhow::Result<Option<(&'static TriageAgent, FoundAgent)>> {
-    let installable: Vec<&'static TriageAgent> = TRIAGE_AGENTS
+    let installable: Vec<&'static TriageAgent> = offered
         .iter()
+        .copied()
         .filter(|agent| agent.install_command().is_some())
         .collect();
     if installable.is_empty() {
         return Ok(None);
     }
-    println!("No supported agent CLI (claude, codex, agy) was found on this machine.\n");
+    println!("{headline}\n");
     let Some(agent) = pick_on_terminal(&installable, pick_install)?
         .and_then(|index| installable.get(index).copied())
     else {
@@ -435,10 +471,19 @@ fn offer_install(
         return Ok(None);
     };
     println!("\nInstalling {} with:\n  {install}\n", agent.label);
-    let status = std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(install)
-        .status();
+    let mut installer = std::process::Command::new("/bin/sh");
+    installer.args([
+        "-c",
+        INSTALL_SCRIPT,
+        "zlo-triage-install",
+        agent.install.url,
+        agent.install.shell,
+    ]);
+    match absolute_path_entries(path) {
+        Some(clean) => installer.env("PATH", clean),
+        None => installer.env("PATH", "/usr/bin:/bin"),
+    };
+    let status = installer.status();
     match status {
         Ok(status) if status.success() => {}
         Ok(status) => {
@@ -497,7 +542,9 @@ impl TriageCommand {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let cwd = std::env::current_dir()?;
         let extensions = executable_extensions(std::env::var_os("PATHEXT").as_deref());
-        let home_dirs = home_agent_dirs(&user_home);
+        // Absolute: the agent starts in the session folder, where a
+        // relative `HOME` would point somewhere else.
+        let home_dirs = home_agent_dirs(&cwd.join(&user_home));
         let locate =
             |agent: &TriageAgent| locate_agent(agent.command, &path, &cwd, &extensions, &home_dirs);
         let installed: Vec<(&'static TriageAgent, FoundAgent)> = TRIAGE_AGENTS
@@ -527,16 +574,26 @@ impl TriageCommand {
 
         let on_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
         let mut selected: Option<(&'static TriageAgent, FoundAgent)> = match self.agent {
-            Some(requested) => {
-                let Some(found) = installed.iter().find(|(agent, _)| agent.id == requested) else {
-                    let command = TRIAGE_AGENTS
-                        .iter()
-                        .find(|agent| agent.id == requested)
-                        .map_or("agent", |agent| agent.command);
-                    anyhow::bail!("`{command}` is not installed or was not found on PATH.");
-                };
-                Some(found.clone())
-            }
+            Some(requested) => match installed.iter().find(|(agent, _)| agent.id == requested) {
+                Some(found) => Some(found.clone()),
+                None => {
+                    let agent = TRIAGE_AGENTS.iter().find(|agent| agent.id == requested);
+                    let missing = format!(
+                        "`{}` is not installed or was not found on PATH.",
+                        agent.map_or("agent", |agent| agent.command)
+                    );
+                    let offered = match agent {
+                        Some(agent) if on_terminal => {
+                            offer_install(&missing, &[agent], &path, &locate)?
+                        }
+                        _ => None,
+                    };
+                    let Some(offered) = offered else {
+                        anyhow::bail!("{missing}");
+                    };
+                    Some(offered)
+                }
+            },
             None if installed.len() == 1 => installed.first().cloned(),
             None if installed.len() > 1 => {
                 // The picker needs terminal output too, or its invisible prompt hangs.
@@ -561,7 +618,13 @@ impl TriageCommand {
         };
 
         if selected.is_none() && on_terminal {
-            selected = offer_install(&locate)?;
+            let all: Vec<&'static TriageAgent> = TRIAGE_AGENTS.iter().collect();
+            selected = offer_install(
+                "No supported agent CLI (claude, codex, agy) was found on this machine.",
+                &all,
+                &path,
+                &locate,
+            )?;
         }
 
         let Some((agent, found)) = selected else {
@@ -813,6 +876,38 @@ mod tests {
                 Some("/h/.local/bin:/usr/bin:/bin".into())
             );
         }
+    }
+
+    /// Review: a failed download must not read as a clean install, and the
+    /// installer must not run a `curl` or shell from the current folder.
+    /// `file://` URLs only: no network.
+    #[cfg(unix)]
+    #[test]
+    fn the_installer_fails_with_its_download_and_ignores_relative_path_entries() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let marker = tmp.path().join("ran");
+        let script = tmp.path().join("install.sh");
+        std::fs::write(&script, format!("touch '{}'\n", marker.display())).expect("script");
+        let run = |url: &str| {
+            std::process::Command::new("/bin/sh")
+                .args(["-c", INSTALL_SCRIPT, "t", url, "sh"])
+                .env("PATH", "/usr/bin:/bin")
+                .output()
+                .expect("sh")
+        };
+        let missing = format!("file://{}", tmp.path().join("missing.sh").display());
+        assert!(!run(&missing).status.success());
+        assert!(!marker.exists(), "the shell ran after a failed download");
+        assert!(
+            run(&format!("file://{}", script.display()))
+                .status
+                .success()
+        );
+        assert!(marker.exists(), "the downloaded installer ran");
+        assert_eq!(
+            absolute_path_entries(OsStr::new("bin::/usr/bin:./x:/bin")),
+            Some("/usr/bin:/bin".into())
+        );
     }
 
     #[test]
