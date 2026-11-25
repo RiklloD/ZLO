@@ -190,6 +190,12 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
     // backend of its own to go back to).
     let remote = (crate::remote::backend_is_remote(s) || s.remote.registry_error.is_some())
         && !s.remote.app_only;
+    // Triage in Terminal looks at this Mac's own backend: only when that
+    // is what failed (never for a paired computer, a Light bundle, which
+    // has no backend of its own, or an `IRONCLAW_DESKTOP_URL` gateway).
+    let local_triage = !crate::remote::backend_is_remote(s)
+        && !s.remote.app_only
+        && !crate::remote::env_override();
     let mut c = col()
         .key("failed")
         .w_full()
@@ -197,7 +203,7 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
         .center()
         .gap(12.)
         .padding(32.)
-        .child(tw("Can't connect to IronClaw", 16., SEMIBOLD, p.text))
+        .child(tw("Can't connect to ZLO", 16., SEMIBOLD, p.text))
         .child(
             el().w(520.).child(
                 t(message.to_string(), SM, p.text_muted)
@@ -227,6 +233,16 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
                         s.onboarding.computer.label()
                     ))
                     .on_press(crate::remote::use_this_mac)
+                    .build(k)
+            }))
+            .children(local_triage.then(|| {
+                // This Mac's backend is down, so in-app triage (which runs
+                // on it) is out of reach: `zlo triage` in Terminal needs no
+                // backend and no PATH (the bundled CLI, by full path).
+                rune_kit::Button::new("Triage")
+                    .icon(&icons::SQUARE_TERMINAL)
+                    .help("Open Terminal with a coding agent that looks into what went wrong")
+                    .on_press(super::triage_in_terminal)
                     .build(k)
             }))
             .child(

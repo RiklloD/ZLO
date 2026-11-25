@@ -225,11 +225,6 @@ pub fn agents_catalog_changed(s: &mut State, notice: String) {
     agents::request_catalog(s, true);
 }
 
-/// Open Terminal with `command` shown, run once Enter is pressed there.
-pub fn run_in_terminal(command: &str) -> Result<(), String> {
-    agents::run_in_terminal(command)
-}
-
 pub fn wizard_shown(s: &State) -> bool {
     s.onboarding.decision == Decision::Wizard && matches!(s.page, Page::Chat | Page::Draft)
 }

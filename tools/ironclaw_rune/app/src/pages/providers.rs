@@ -177,7 +177,7 @@ fn install_in_terminal(s: &mut State, runtime: &'static str) {
     }
     jobs::blocking(
         s,
-        move || crate::onboarding::run_in_terminal(command),
+        move || crate::terminal::run(command),
         |s, result, tx| {
             tx.animated();
             if let Err(e) = result {

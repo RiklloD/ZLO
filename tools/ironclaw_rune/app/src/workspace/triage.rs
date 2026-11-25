@@ -290,20 +290,8 @@ fn cli_fallback(computer: &str) -> Option<String> {
     let backend = crate::cli_link::bundled_backend()?;
     Some(format!(
         "{} triage",
-        shell_quote(&backend.display().to_string())
+        crate::terminal::shell_quote(&backend.display().to_string())
     ))
-}
-
-/// Single-quote a path for a POSIX shell when it needs it.
-fn shell_quote(path: &str) -> String {
-    if path
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "/._-~".contains(c))
-    {
-        path.to_string()
-    } else {
-        format!("'{}'", path.replace('\'', "'\\''"))
-    }
 }
 
 /// Put `prompt` (text with the playbook link) in front of what the

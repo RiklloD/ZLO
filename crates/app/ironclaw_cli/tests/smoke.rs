@@ -2456,35 +2456,183 @@ fn serve_help_mentions_host_and_port() {
 fn serve_fails_closed_when_env_bearer_token_var_is_unset() {
     // The standalone CLI's env-bearer authenticator reads the token
     // value out of the env var named by `[webui].env_token_var`
-    // (defaulting to IRONCLAW_REBORN_WEBUI_TOKEN). When that var is
-    // absent the CLI must exit non-zero before binding any listener —
-    // we never want a half-configured serve loop running with auth
-    // disabled.
+    // (defaulting to ZLO_WEBUI_TOKEN). When that var is absent, no token
+    // file exists and `--create-token-if-missing` (the desktop app's
+    // opt-in) is not passed, the CLI must exit non-zero before binding any
+    // listener — we never want a half-configured serve loop running.
     let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("reborn-home");
+    let working_directory = reborn_home.join("workspace");
+    std::fs::create_dir_all(&working_directory).expect("working directory");
 
-    let output = Command::new(reborn_bin())
-        .arg("serve")
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg("0")
-        .env("ZLO_HOME", temp.path().join("reborn-home"))
-        .env_remove("ZLO_PROFILE")
-        .env_remove("IRONCLAW_REBORN_PROFILE")
-        .env_remove("IRONCLAW_REBORN_WEBUI_TOKEN")
-        .env_remove("IRONCLAW_REBORN_WEBUI_USER_ID")
-        .output()
-        .expect("ironclaw-reborn serve should run");
+    // `reborn_command` clears the environment, so no inherited token (or
+    // `.env` beside the caller's cwd) can let this one start serving.
+    let mut child = reborn_command()
+        .args(["serve", "--host", "127.0.0.1", "--port", "0"])
+        .current_dir(&working_directory)
+        .env("HOME", temp.path())
+        .env("ZLO_HOME", &reborn_home)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("serve should run");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("serve child status") {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
+            let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
+            let _ = child.wait();
+            panic!("serve kept running without a token; it must fail closed");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().expect("stderr piped"), &mut stderr)
+        .expect("read stderr");
 
     assert!(
-        !output.status.success(),
+        !status.success(),
         "serve must fail closed when the bearer token env var is unset"
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("ZLO_WEBUI_TOKEN must be set"),
         "stderr should explain which env var is missing: {stderr}"
     );
+    assert!(
+        !reborn_home.join("webui-token").exists(),
+        "without the desktop opt-in no token file is created"
+    );
+}
+
+/// Zero-setup first start: the desktop app starts `serve` on a fresh Mac,
+/// before anything has written a token. With no env token and no token
+/// file, `serve` creates `<home>/webui-token` (0600, random) and boots —
+/// auth stays on, nobody holds the token until they read the file — and a
+/// second start keeps the same token. Launched exactly as the app does it
+/// (cwd `<home>/workspace`, `ZLO_HOME`, and the app's
+/// `--create-token-if-missing`; without it the test above still fails
+/// closed).
+#[test]
+fn serve_creates_its_token_file_on_first_start_of_an_empty_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("reborn-home");
+    let home = temp.path().join("home");
+    let working_directory = reborn_home.join("workspace");
+    std::fs::create_dir_all(&home).expect("home dir");
+    std::fs::create_dir_all(&working_directory).expect("working directory");
+    let token_path = reborn_home.join("webui-token");
+    let _serve_port_guard = SERVE_PORT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // Never minted for a start that can't listen: another program holds
+    // the port, or `[remote]` would publish a second listener.
+    let busy = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupy a port");
+    let busy_port = busy.local_addr().expect("busy addr").port();
+    let refused = |port: u16| {
+        let output = reborn_command()
+            .args([
+                "serve",
+                "--create-token-if-missing",
+                "--host",
+                "127.0.0.1",
+                "--port",
+            ])
+            .arg(port.to_string())
+            .current_dir(&working_directory)
+            .env("HOME", &home)
+            .env("ZLO_HOME", &reborn_home)
+            .output()
+            .expect("serve should run and exit");
+        assert!(!output.status.success(), "serve must not start: {output:?}");
+        assert!(!token_path.exists(), "no token may be created: {output:?}");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let stderr = refused(busy_port);
+    assert!(stderr.contains("another program is using it"), "{stderr}");
+    drop(busy);
+    std::fs::write(
+        reborn_home.join("config.toml"),
+        "[remote]\nenabled = true\ntailnet_url = \"https://mac.tail1.ts.net\"\n",
+    )
+    .expect("write remote config");
+    let stderr = refused(unused_local_port());
+    assert!(stderr.contains("must be set"), "{stderr}");
+    std::fs::remove_file(reborn_home.join("config.toml")).expect("remove remote config");
+
+    let mut first_token = None;
+    for start in ["first", "second"] {
+        let port = unused_local_port();
+        let mut child = reborn_command()
+            .args([
+                "serve",
+                "--create-token-if-missing",
+                "--host",
+                "127.0.0.1",
+                "--port",
+            ])
+            .arg(port.to_string())
+            .current_dir(&working_directory)
+            .env("HOME", &home)
+            .env("ZLO_HOME", &reborn_home)
+            .env_remove("ZLO_PROFILE")
+            .env_remove("IRONCLAW_REBORN_PROFILE")
+            .env_remove("ZLO_WEBUI_TOKEN")
+            .env_remove("IRONCLAW_REBORN_WEBUI_TOKEN")
+            .env_remove("IRONCLAW_REBORN_WEBUI_USER_ID")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("serve should start");
+        wait_for_serve_banner(&mut child);
+
+        let token = std::fs::read_to_string(&token_path)
+            .expect("serve must have created the token file")
+            .trim()
+            .to_string();
+        assert!(token.len() >= 32, "{start} start: token too short");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&token_path)
+                .expect("stat token file")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "{start} start: token file mode {mode:o}");
+        }
+        // The app's first call: the session answers with that token.
+        let status = bearer_get_status(port, "/api/webchat/v2/session", &token);
+        assert_eq!(
+            status, 200,
+            "{start} start: the session must accept the token"
+        );
+        match &first_token {
+            None => first_token = Some(token),
+            Some(first) => assert_eq!(first, &token, "a restart must keep the token"),
+        }
+
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
+        let _ = child.kill();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "test teardown; the child may already have exited"
+        )]
+        let _ = child.wait();
+    }
 }
 
 #[test]
@@ -3677,6 +3825,37 @@ fn strip_ansi(text: &str) -> String {
 /// of the banner — fail with a broken pipe, which is a panic, and killed the
 /// server the test was about to probe. That was the "connection refused"
 /// flake in every serve smoke test.
+/// `GET path` on the local listener with `Authorization: Bearer token`;
+/// the HTTP status code. Retries the connect briefly: the banner prints just
+/// before the listener accepts.
+fn bearer_get_status(port: u16, path: &str, token: &str) -> u16 {
+    use std::io::{Read as _, Write as _};
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut stream = loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => break stream,
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) => panic!("connect to 127.0.0.1:{port}: {error}"),
+        }
+    };
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .expect("read timeout");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write request");
+    let mut head = [0_u8; 12];
+    stream.read_exact(&mut head).expect("read status line");
+    std::str::from_utf8(&head[9..12])
+        .ok()
+        .and_then(|code| code.parse().ok())
+        .unwrap_or_else(|| panic!("bad status line: {:?}", String::from_utf8_lossy(&head)))
+}
+
 fn wait_for_serve_banner(child: &mut std::process::Child) -> String {
     let stderr_all = wait_for_serve_banner_with_capture(child, "serve");
     let banner = stderr_all
