@@ -1,7 +1,6 @@
-//! The command menu (⌘K): one search field over threads, new threads per
-//! profile, every settings page and the view actions. (GPUI
-//! `workspace/command.rs`.) The scrim fades in and the card rises a few
-//! points into place as it mounts, and both go faster than they came when it
+//! The command menu (⌘K): one search field over threads, new threads per profile,
+//! every settings page and the view actions. The scrim fades in and the card rises
+//! a few points into place as it mounts, and both go faster than they came when it
 //! closes ([`SCRIM`], [`CARD_RISE`]); one wash glides to the selected row. Rows are
 //! keyed by what they open ([`Cmd::key`]), never by position.
 

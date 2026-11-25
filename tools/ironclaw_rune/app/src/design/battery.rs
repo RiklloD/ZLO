@@ -1,9 +1,8 @@
-//! Battery saver (t3code behaviour, GPUI `design/battery.rs`): decorative
+//! Battery saver (t3code behaviour): decorative
 //! animation stops while the window is in the background or nobody has
 //! touched it for 30 s.
 //!
-//! GPUI flipped `reduce_motion`; on Rune the same switch is
-//! `Cx::reduced_motion`, set every view run by `look::apply_motion` from
+//! The switch is `Cx::reduced_motion`, set every view run by `look::apply_motion` from
 //! [`reduced`]. Under it loops (spinners, pulse dots, shimmer) hold their
 //! resting pose and request no frames, travel snaps, and live content
 //! (streamed text, new rows) still lands because it re-renders on data, not

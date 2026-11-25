@@ -142,7 +142,7 @@ cargo test
 
 ZLO — мой личный форк [IronClaw](https://github.com/nearai/ironclaw), созданного [NEAR AI](https://github.com/nearai). Я построил своё настольное приложение на этой основе и продолжаю менять бэкенд под себя. Среда выполнения агента, механизмы безопасности и большая часть этого репозитория — результат их работы.
 
-Интерфейс использует [Rune](https://github.com/anomalyco/rune). Более ранняя версия приложения была построена на [GPUI](https://www.gpui.rs/), UI-фреймворке на Rust, разработанном для Zed; она сохранена в ветке `archive/gpui` (тег `gpui-final`). Помощник computer-use взят из [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus). Способ, которым ZLO подключается к другим компьютерам, повторяет удалённые среды [T3 Code](https://github.com/pingdotgg/t3code), с Tailscale вместо их хостингового ретранслятора.
+Интерфейс использует [Rune](https://github.com/anomalyco/rune). Помощник computer-use взят из [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus). Способ, которым ZLO подключается к другим компьютерам, повторяет удалённые среды [T3 Code](https://github.com/pingdotgg/t3code), с Tailscale вместо их хостингового ретранслятора.
 
 Этот репозиторий — мой проект, а не официальный релиз IronClaw или NEAR AI.
 

@@ -1,5 +1,4 @@
-//! An inbox row's right-click menu and its snooze presets (GPUI
-//! `workspace/inbox.rs`).
+//! An inbox row's right-click menu and its snooze presets.
 
 use chrono::{Datelike, Duration as Span, Local, TimeZone};
 use rune::{PopupItem, PopupMenu, Tx};

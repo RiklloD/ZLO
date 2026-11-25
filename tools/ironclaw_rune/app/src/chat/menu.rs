@@ -1,6 +1,5 @@
 //! The `/` and `@` composer menu, shared by a thread's composer and the
-//! new-thread screen: its inventory, highlight, keys and popover (GPUI
-//! `chat/menu.rs`).
+//! new-thread screen: its inventory, highlight, keys and popover.
 //!
 //! `@` lists mentions first (the Changes selection, files, folders, recent
 //! threads; `zlo_client::mentions`), then tools and skills. A

@@ -1,11 +1,10 @@
-//! The prompt outline, after MonoCode's `transcript/outline.rs` (MIT) by way
-//! of the GPUI app's `chat/outline.rs`: one short tick per message you sent,
+//! The prompt outline, after MonoCode's `transcript/outline.rs` (MIT): one short tick per message you sent,
 //! stacked on the transcript's right edge. The tick for the part on screen
 //! is lit. Pointing at the rail magnifies the ticks around the pointer like
 //! the macOS Dock and shows the prompt with the start of its answer; a click
 //! jumps there.
 //!
-//! GPUI observed the list's scroll position; here each prompt row reports
+//! Each prompt row reports
 //! where it lies ([`saw`]) and the view re-runs only when the lit tick moves.
 
 use std::collections::HashMap;

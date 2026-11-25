@@ -1,5 +1,5 @@
-//! Operator → Setup: what is configured. Providers and models are added
-//! and switched on the Providers page (GPUI `pages/operator/setup.rs`).
+//! Operator → Setup: what is configured. Providers and models are added and
+//! switched on the Providers page.
 
 use crate::pages::common::controls::{muted, outlined_tag, spinner};
 use crate::pages::common::ts::{body_semibold, sm_medium};

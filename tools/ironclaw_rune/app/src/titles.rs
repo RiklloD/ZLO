@@ -1,8 +1,7 @@
 //! Thread titles for every surface that names a conversation: notifications,
 //! system alerts, Memory > threads. The sidebar inbox supplies them, automation
 //! runs included; a thread it does not list (older than its page) is fetched
-//! once, on demand. (GPUI `titles.rs`; the GPUI global lives in
-//! `WorkspaceState::titles` here.)
+//! once, on demand.
 
 use std::collections::{HashMap, HashSet};
 

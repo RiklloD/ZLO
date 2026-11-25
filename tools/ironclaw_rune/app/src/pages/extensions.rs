@@ -7,8 +7,7 @@
 //! custom MCP servers and tool-bundle imports. OAuth and device linking
 //! report back to a browser popup, so those continue in the WebUI.
 //!
-//! Port of GPUI `pages/extensions.rs`: state and gateway calls here, the
-//! rendering in `extensions/view.rs`.
+//! State and gateway calls live here, the rendering in `extensions/view.rs`.
 
 pub(crate) mod drill;
 pub mod fixtures;

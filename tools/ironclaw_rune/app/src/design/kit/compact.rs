@@ -1,5 +1,5 @@
 //! Compact chat controls (model picker, goals, orchestration, computer
-//! use): text at the GPUI app's sizes, icons, small ghost and variant
+//! use): text at the app's small sizes, icons, small ghost and variant
 //! buttons, a tinted spinner and the composer-matched popover surface.
 //! Compact chat-extras widgets; the `⌘N` badge is [`super::shortcut_badge`].
 
@@ -10,7 +10,7 @@ use crate::design::styles::rem;
 use crate::design::{self, Palette};
 use crate::state::State;
 
-/// GPUI's `text_xs`, `text_sm` and the icon sizes `xsmall`, `small`.
+/// The extra-small and small text and icon sizes.
 pub const XS: f32 = 12.;
 pub const SM: f32 = 14.;
 pub const ICON_XS: f32 = 12.;
@@ -29,8 +29,7 @@ pub fn ico(i: &'static Icon, size: f32, color: Color) -> El {
     icon(i, size).color(color)
 }
 
-/// A ghost icon-only button (GPUI `Button::icon(..).ghost().xsmall()`), with
-/// a tooltip that is also its accessible name.
+/// A ghost icon-only button, with a tooltip that is also its accessible name.
 pub fn ghost_icon(
     k: &Kit,
     key: impl Into<String>,
@@ -66,9 +65,8 @@ pub fn ghost_icon_tx(
         .key(key)
 }
 
-/// A ghost labelled button, optionally with a leading icon (GPUI
-/// `Button::new(..).label(..).ghost().xsmall()`). `press` is dropped when
-/// disabled.
+/// A ghost labelled button, optionally with a leading icon. `press` is dropped
+/// when disabled.
 pub fn ghost_button(
     k: &Kit,
     key: impl Into<String>,

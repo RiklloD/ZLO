@@ -1,7 +1,6 @@
-//! The profile editor's pickers (GPUI `pages/profiles/pickers.rs`): every
-//! choice comes from what IronClaw has (providers and models, tools,
-//! skills, MCP servers, the Supermemory containers profiles use), never
-//! from free text.
+//! The profile editor's pickers: every choice comes from what IronClaw has
+//! (providers and models, tools, skills, MCP servers, the Supermemory
+//! containers profiles use), never from free text.
 
 use crate::chat::model_picker::pretty_model;
 use crate::pages::common::controls::{floating, hairline, hover_row, styled};

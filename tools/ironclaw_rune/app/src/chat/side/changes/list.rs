@@ -1,6 +1,5 @@
-//! The Changes tab's file list (GPUI `changes.rs`'s `render_change_list`):
-//! staged and unstaged files, each with its actions. A row scrolls the diff
-//! to its file.
+//! The Changes tab's file list: staged and unstaged files, each with its
+//! actions. A row scrolls the diff to its file.
 
 use rune::{El, GrowthSpec, ScrollSpec, col, el, row};
 use rune_kit::Kit;

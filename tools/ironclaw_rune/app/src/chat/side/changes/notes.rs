@@ -1,6 +1,5 @@
-//! The Changes tab's diff annotations (review comments, Codex findings,
-//! the comment draft) and its scene fixtures (GPUI `changes.rs`'s
-//! `render_annotation`).
+//! The Changes tab's diff annotations (review comments, Codex findings, the
+//! comment draft) and its scene fixtures.
 
 use rune::{El, col, el, icon, row};
 use rune_kit::diff::{Annotation, DiffState, LineRange, LineRef, Side};

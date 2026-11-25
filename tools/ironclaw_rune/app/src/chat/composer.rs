@@ -1,6 +1,4 @@
-//! The composer card (GPUI `chat.rs`: `render_composer`, `composer_card`,
-//! `composer_surface`, `round_button`, `attachment_card`, and the composer's
-//! key routing). `composer_card`, `round_button`, `composer_surface` and
+//! The composer card. `composer_card`, `round_button`, `composer_surface` and
 //! `attachment_card` are shared with the new-thread and quick composers.
 //!
 //! Keys (t3code's, `dispatch::key_action`): ⌘↵ with a draft while a turn
@@ -384,8 +382,8 @@ pub(crate) fn view(
         picker,
         controls,
     );
-    // The new-thread composer flies down to this dock (GPUI `design/dock.rs`)
-    // and back on `motion::DOCK` (`dock_matched`).
+    // The new-thread composer flies down to this dock and back on
+    // `motion::DOCK` (`dock_matched`).
     match chat.embedded {
         false => dock_matched(s, card),
         true => card,
@@ -394,8 +392,8 @@ pub(crate) fn view(
 
 /// The hero and docked composer cards share `motion::COMPOSER_MATCH`, so the
 /// new-thread composer flies to the chat's dock and back. Not under a
-/// wallpaper: the wallpaper is laid OVER the content (as GPUI and
-/// vscode-background do), while a matched flight draws above the whole
+/// wallpaper: the wallpaper is laid OVER the content (as vscode-background
+/// does), while a matched flight draws above the whole
 /// window, so the flying card would sit on top of the picture, unwashed and
 /// dark, then snap back under it as it landed. There it swaps in place.
 /// A thread switch gives the new dock a new id (`WorkspaceState::dock_flight`):

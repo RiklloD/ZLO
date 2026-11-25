@@ -1,10 +1,8 @@
-//! Side panel chrome, after Zeron's shell (MIT), ported from the GPUI app's
-//! `design/panels.rs`: the sidebar glyph whose inner panel morphs as a
+//! Side panel chrome, after Zeron's shell (MIT): the sidebar glyph whose inner panel morphs as a
 //! column opens or closes, the titlebar button that carries it, and the
 //! reveal a column slides on.
 //!
-//! GPUI drove the morph and the slide from its own tween store
-//! (`motion::state_t`). Here they are layout: the glyph's inner panel and the
+//! The morph and the slide are layout: the glyph's inner panel and the
 //! column's clipping wrapper are keyed elements whose width springs on
 //! [`GLYPH`] / [`REVEAL`] when `open` flips, and a second click reverses from
 //! the drawn width (Rune retargets keep position and velocity).
@@ -23,9 +21,8 @@ use crate::state::State;
 
 /// Zeron Icons' state morph: 280 ms on `cubic-bezier(.22, 1, .36, 1)`.
 pub const GLYPH: Spring = Spring::new(0.28, 0.0);
-/// A column opening or closing (GPUI `panels::REVEAL`: Zeron's panel clock,
-/// 240 ms). Set on the toggle's commit (`Tx::motion`), so everything the
-/// column moves rides the one curve.
+/// A column opening or closing. Set on the toggle's commit (`Tx::motion`), so
+/// everything the column moves rides the one curve.
 pub const REVEAL: Spring = Spring::new(0.24, 0.0);
 /// Titlebar button target and its glyph.
 pub const TOGGLE_SIZE: f32 = 28.;

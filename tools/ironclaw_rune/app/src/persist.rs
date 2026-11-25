@@ -5,9 +5,8 @@
 //! saves land in the order they were made; several saves of one file that
 //! queue up while a write runs collapse into the newest (latest wins), and a
 //! removal is ordered with the writes of the same file. Each write is a temp
-//! file in the same folder renamed over the target, so a reader (this app,
-//! or the GPUI app sharing `prefs.json` and `drafts/`) sees either the old
-//! or the new file, never a torn one. A failed write stays queued and is
+//! file in the same folder renamed over the target, so a reader sees either
+//! the old or the new file, never a torn one. A failed write stays queued and is
 //! retried, and [`Writer::flush`] waits for everything queued before it
 //! (quit uses it).
 //!
@@ -97,7 +96,7 @@ impl Writer {
     }
 
     /// Change only `changes`' keys of the JSON object at `path`, keeping
-    /// whatever another writer (the GPUI app) put in the other keys.
+    /// whatever another writer put in the other keys.
     pub fn patch(&self, path: PathBuf, changes: Map<String, Value>, full: Value) {
         self.send(Msg::Op(path, Op::Patch { changes, full }));
     }
@@ -302,7 +301,7 @@ mod tests {
         let dir = temp("patch");
         let w = Writer::spawn();
         let f = dir.join("prefs.json");
-        std::fs::write(&f, r#"{"theme":"gpui","width":1}"#).unwrap();
+        std::fs::write(&f, r#"{"theme":"other","width":1}"#).unwrap();
         let mut changes = Map::new();
         changes.insert("width".into(), Value::from(2));
         w.patch(
@@ -312,7 +311,7 @@ mod tests {
         );
         assert!(w.flush(Duration::from_secs(5)));
         let back: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
-        assert_eq!(back, serde_json::json!({"theme":"gpui","width":2}));
+        assert_eq!(back, serde_json::json!({"theme":"other","width":2}));
         // A missing or corrupt file gets the whole value.
         std::fs::write(&f, "{not json").unwrap();
         w.patch(f.clone(), Map::new(), serde_json::json!({"theme":"rune"}));

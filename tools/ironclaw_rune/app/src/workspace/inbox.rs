@@ -1,9 +1,8 @@
-//! The sidebar inbox (t3code's): one list by recency with search and
-//! filters (profile, model, state), Pinned on top, the Working, Snoozed (N)
-//! and Settled (N) shelves at the bottom (a working thread that waits on an
-//! approval or sign-in comes back up to the inbox, marked "Needs you"), and
-//! the profile menu of the new-thread screen. (GPUI `workspace/inbox.rs`;
-//! the drawing is in `inbox/view.rs`.)
+//! The sidebar inbox (t3code's): one list by recency with search and filters
+//! (profile, model, state), Pinned on top, the Working, Snoozed (N) and Settled
+//! (N) shelves at the bottom (a working thread that waits on an approval or
+//! sign-in comes back up to the inbox, marked "Needs you"), and the profile
+//! menu of the new-thread screen.
 //!
 //! The backend joins and classifies every row (`GET /inbox`), so this file
 //! only renders and sends marks. Refresh is event-driven: on connect, when

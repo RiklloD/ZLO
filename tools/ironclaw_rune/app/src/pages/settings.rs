@@ -1,8 +1,7 @@
-//! The app's own settings, one topic per sidebar page (Zeron's layout):
-//! General (the desktop app), Appearance, Permissions (what tools may do
-//! without asking) and Trace Commons. Models and provider logins live on
-//! the Providers page; Voice is `voice::settings_view` (area F).
-//! Port of GPUI `pages/settings.rs`.
+//! The app's own settings, one topic per sidebar page (Zeron's layout): General
+//! (the desktop app), Appearance, Permissions (what tools may do without
+//! asking) and Trace Commons. Models and provider logins live on the Providers
+//! page; Voice is `voice::settings_view` (area F).
 
 mod appearance;
 mod compaction;

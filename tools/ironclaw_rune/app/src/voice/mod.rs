@@ -17,11 +17,10 @@
 //! in `engine.rs` so a cloud engine can follow. Battery: nothing listens or
 //! polls unless the person turned it on or is talking right now.
 //!
-//! Rune port of the GPUI app's `voice/mod.rs`. The GPUI globals became
-//! [`VoiceState`] in `State::voice`; the effect runner and the engine glue
-//! live in `session.rs`, the composer controls in `ui.rs` and Settings →
-//! Voice in `settings.rs`. Background threads (recognizer events, the
-//! push-to-talk watcher, permission prompts) land through
+//! The voice state is [`VoiceState`] in `State::voice`; the effect runner
+//! and the engine glue live in `session.rs`, the composer controls in `ui.rs`
+//! and Settings → Voice in `settings.rs`. Background threads (recognizer
+//! events, the push-to-talk watcher, permission prompts) land through
 //! `State::rt.handle.update`; timers run from [`poll`] with `Tx::wake_after`.
 
 #[cfg(target_os = "macos")]
@@ -73,8 +72,7 @@ use self::session::Engine;
 pub(crate) use self::turn::Submission;
 use crate::state::State;
 
-/// Voice preferences, saved as `voice.json` next to `prefs.json` (the same
-/// file and format as the GPUI app).
+/// Voice preferences, saved as `voice.json` next to `prefs.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoicePrefs {
@@ -233,8 +231,7 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
     session::poll(s, tx)
 }
 
-/// Edit the preferences, save them off the UI thread and re-arm what
-/// changed (GPUI `VoicePrefs::update`).
+/// Edit the preferences, save them off the UI thread and re-arm what changed.
 pub fn update_prefs(s: &mut State, edit: impl FnOnce(&mut VoicePrefs)) {
     let old = s.voice.prefs.clone();
     edit(&mut s.voice.prefs);
@@ -425,7 +422,7 @@ fn bound(
         e.target = Some(Target::new(composer, Some(thread.to_string())));
     }
     if let Some(answer) = early {
-        // Deferred like the GPUI app: the composer finishes its send first.
+        // Deferred: the composer finishes its send first.
         s.rt.handle
             .update(move |s, tx| session::with_motion(s, tx, |s| session::deliver(s, answer)));
     }
@@ -523,7 +520,7 @@ pub fn settings_opened(s: &mut State) {
     }
 }
 
-/// Settings → Voice (GPUI `pages/settings/voice.rs`).
+/// Settings → Voice.
 pub fn settings_view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     settings::view(s, cx, k, layer)
 }

@@ -1,10 +1,9 @@
-//! Profiles (GPUI `pages/profiles.rs`): list (most recently used first),
-//! edit, create and archive profiles, start a thread on one, and run the
-//! one-time Hermes import. Each profile has its own SOUL.md, default model,
-//! tool allowlist, folder and Supermemory container; skills, keys and MCP
-//! servers stay shared, and a profile only hides or enables some of them.
-//! Every field but the id, name and SOUL.md picks from what IronClaw has
-//! (`pickers.rs`).
+//! Profiles: list (most recently used first), edit, create and archive
+//! profiles, start a thread on one, and run the one-time Hermes import. Each
+//! profile has its own SOUL.md, default model, tool allowlist, folder and
+//! Supermemory container; skills, keys and MCP servers stay shared, and a
+//! profile only hides or enables some of them. Every field but the id, name and
+//! SOUL.md picks from what IronClaw has (`pickers.rs`).
 //!
 //! Other areas call [`new_profile`] (the inbox's New profile button).
 
@@ -313,7 +312,7 @@ fn save(s: &mut State) {
     );
 }
 
-/// GPUI `chat::approval_mode::changed`: every approval pill reloads.
+/// Every approval pill reloads.
 fn approval_mode_changed(s: &mut State) {
     crate::chat::approval_mode_changed(s);
 }

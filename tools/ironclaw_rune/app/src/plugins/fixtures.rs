@@ -55,7 +55,7 @@ pub fn panel_tree() -> Value {
             { "type": "badge", "text": "In review", "tone": "accent" }
         ]},
         { "type": "text", "text": "Port the frontend to Rune", "style": "title" },
-        { "type": "text", "text": "The desktop app moves off GPUI. Every page keeps its scenes and the energy budget holds.", "style": "body" },
+        { "type": "text", "text": "Every page keeps its scenes and the energy budget holds.", "style": "body" },
         { "type": "row", "gap": 6, "children": [
             { "type": "button", "label": "Mark done", "action": "close", "payload": { "id": "ENG-412" }, "style": "primary" },
             { "type": "button", "label": "Open in Linear", "action": "open", "payload": { "id": "ENG-412" }, "style": "secondary" },

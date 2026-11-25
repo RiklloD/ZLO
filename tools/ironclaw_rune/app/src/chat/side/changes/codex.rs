@@ -1,5 +1,4 @@
-//! The Changes tab on a Codex thread: what Codex itself computed and can do
-//! (GPUI `chat/side/changes/codex.rs`).
+//! The Changes tab on a Codex thread: what Codex itself computed and can do.
 //!
 //! - **Codex diff**: the turn diff Codex reports while it works
 //!   (`turn/diff/updated`, file-change previews before it), as its own scope.

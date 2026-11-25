@@ -1,5 +1,4 @@
-//! The reserve while an answer streams (GPUI held the newest prompt at the
-//! top of the list for the whole turn): the prompt must not creep while the
+//! The reserve while an answer streams: the prompt must not creep while the
 //! answer below it grows.
 
 use std::rc::Rc;

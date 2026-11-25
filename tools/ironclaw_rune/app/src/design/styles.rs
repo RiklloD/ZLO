@@ -1,19 +1,17 @@
-//! The app's one look: geometry, materials and motion (GPUI
-//! `design/styles.rs`). A theme only owns colour. The single knob is
-//! translucency: on, macOS blurs the desktop through the sidebar and the
-//! panels turn to frosted glass.
+//! The app's one look: geometry, materials and motion. A theme only owns
+//! colour. The single knob is translucency: on, macOS blurs the desktop through
+//! the sidebar and the panels turn to frosted glass.
 //!
-//! GPUI kept `Style` as a global read by `Style::of(cx)`; here it is a small
+//! `Style` is a small
 //! `Copy` value derived from the preferences, [`Style::of`]`(&s.prefs)`,
 //! cheap enough to build in every view run. Every widget in `kit` reads it
 //! instead of hardcoding a radius or a duration.
 //!
-//! Vibrancy is GPUI's blurred backdrop: a transparent window whose desktop
+//! Vibrancy is a blurred backdrop: a transparent window whose desktop
 //! the WindowServer blurs, untinted (`crate::backdrop`), under the shell's
 //! and panel's fills at `shell_alpha`/`panel_alpha`. Not Rune's system
 //! materials: their popover material greys the window over.
 //!
-//! GPUI flipped the window's backdrop live (`set_translucent`/`apply_window`).
 //! Rune fixes a window's transparency when it creates the window
 //! (`WindowOptions::transparent`), so `main` asks for a transparent window
 //! when `prefs.translucent` is on at launch and records it here
@@ -29,8 +27,7 @@ use rune::{Curve, Spring, TextStyle};
 
 use super::prefs::Prefs;
 
-/// Popovers and menus: a hair under critical, settles without a wobble
-/// (GPUI `Spring::new(0.78, 300)`).
+/// Popovers and menus: a hair under critical, settles without a wobble.
 pub const POP: Spring = Spring::new(0.22, 0.06);
 
 #[derive(Clone, Copy, Debug)]
@@ -45,7 +42,7 @@ pub struct Style {
     pub control_radius: f32,
     /// Sidebar and list rows. Sized to T3 Code's proportions.
     pub row_height: f32,
-    /// The base text size (GPUI's rem). `prefs.ui_font_size` overrides it.
+    /// The base text size. `prefs.ui_font_size` overrides it.
     pub font_size: f32,
     /// Panel and popover elevation, 0 for none.
     pub elevation: f32,
@@ -85,16 +82,15 @@ impl Style {
         s
     }
 
-    /// Body text size, scaled from the 16 pt rem (GPUI `text_sm` = 14).
+    /// Body text size, scaled from the 16 pt rem.
     pub fn text(&self, px_at_16: f32) -> f32 {
         (px_at_16 * self.font_size / 16.).round()
     }
 }
 
-/// The UI type scale, `font_size / 16` (GPUI's rem against its 16 pt
-/// base), as `f32` bits. Set from the preferences at the top of every view
-/// build ([`set_type_scale`]), read by the shared text helpers
-/// ([`rem`], [`scaled`]) so pages, compact controls, the side pane and
+/// The UI type scale, `font_size / 16`, as `f32` bits. Set from the preferences
+/// at the top of every view build ([`set_type_scale`]), read by the shared text
+/// helpers ([`rem`], [`scaled`]) so pages, compact controls, the side pane and
 /// rune-kit's components follow Appearance → UI font size together, as the
 /// transcript does through [`Style::text`]. Code keeps its fixed sizes.
 static TYPE_SCALE: AtomicU32 = AtomicU32::new(0x3f80_0000); // 1.0

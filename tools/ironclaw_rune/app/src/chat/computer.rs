@@ -1,5 +1,5 @@
-//! The computer-use screen share (the Hermes plugin's Desktop viewer). Port
-//! of GPUI `chat/computer.rs`; the view is in `computer/view.rs`.
+//! The computer-use screen share (the Hermes plugin's Desktop viewer); the
+//! view is in `computer/view.rs`.
 //!
 //! While the agent in this conversation drives apps, a fanned stack of cards
 //! floats at the top right: one per window it used, newest in front. The
@@ -15,11 +15,10 @@
 //!
 //! # Entry points
 //!
-//! Every chat has its own share, the open one and each side chat (GPUI:
-//! each `ChatView` owned a `ComputerShare`); functions take the chat's
-//! thread id and find it with `chat::chat_for`, so a poll or a frame for a
-//! chat that closed meanwhile goes nowhere (and dropping the share hands a
-//! taken-over desktop back).
+//! Every chat has its own share, the open one and each side chat; functions
+//! take the chat's thread id and find it with `chat::chat_for`, so a poll or a
+//! frame for a chat that closed meanwhile goes nowhere (and dropping the share
+//! hands a taken-over desktop back).
 //!
 //! - `start(s, id)`: after a chat starts.
 //! - `poll(s, id, tx) -> bool`: from `chat::poll`, drives the cursor animation.

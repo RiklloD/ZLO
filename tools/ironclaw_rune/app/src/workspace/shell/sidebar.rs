@@ -104,7 +104,7 @@ pub(super) fn sidebar(
     pane = pane.child(if s.workspace.sidebar.is_open() {
         // Docked over a translucent window, the shell's fill alone lets
         // through far more of the blurred desktop than the panel's stacked
-        // fills, and the sidebar read lighter than the panel. GPUI's reads a
+        // fills, and the sidebar read lighter than the panel. This reads a
         // step darker: the shell's (darker) surface at the panel's opacity.
         // Opaque, this is the shell's own fill again.
         let st = design::styles::Style::of(&s.prefs);

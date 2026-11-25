@@ -2,10 +2,9 @@
 //! word. Everything that costs battery says so, and all of it is off until
 //! turned on here (the composer's mic button works without any of it).
 //!
-//! Rune port of the GPUI `pages/settings/voice.rs`. The page helpers
-//! (`page_body`, `header`, `group_header`, `rows_card`, `setting_row`) are
-//! local copies of the GPUI `pages/mod.rs` ones until area D lands
-//! `pages/common.rs`; the integrator swaps them.
+//! The page helpers (`page_body`, `header`, `group_header`, `rows_card`,
+//! `setting_row`) are local copies of the shared page helpers until this page
+//! moves onto `pages/common.rs`.
 
 use rune::{Color, Cx, El, ScrollSpec, TextStyle, col, el, row, text};
 use rune_kit::{Button, Kit, SegmentedControl, Switch, TextInput};
@@ -286,8 +285,7 @@ fn closest(options: impl Iterator<Item = f32>, value: f32) -> usize {
         .map_or(0, |(ix, _)| ix)
 }
 
-/// A segmented choice (GPUI `design::kit::segmented`); dimmed and inert
-/// while `disabled`.
+/// A segmented choice; dimmed and inert while `disabled`.
 fn segmented(
     _s: &State,
     k: &Kit,
@@ -308,7 +306,7 @@ fn segmented(
     control.key(key)
 }
 
-// Page helpers (GPUI `pages/mod.rs`), local until `pages/common.rs`.
+// Page helpers, local until `pages/common.rs`.
 
 /// Centered, width-capped page body that scrolls.
 fn page_body(key: &'static str, content: El) -> El {

@@ -24,7 +24,7 @@ use crate::design::{self, Palette, panels, styles::Style};
 use crate::state::{Page, State};
 
 /// Where the titlebar cluster ends: the traffic lights, then the sidebar
-/// button (GPUI `panels::CLUSTER_END`).
+/// button.
 pub(super) const CLUSTER_END: f32 = design::TRAFFIC_LIGHTS_WIDTH + panels::TOGGLE_SIZE;
 /// Room between the cluster and the titlebar's text.
 pub(super) const PAST_CLUSTER: f32 = 10.;
@@ -119,10 +119,9 @@ fn frame_kit(s: &State, p: &Palette, k: &Kit) -> Kit {
     f
 }
 
-/// Zeron's sidebar button (GPUI `panels::toggle`): the morphing sidebar
-/// glyph, washed only under the pointer, as in GPUI. Folds the left sidebar
-/// away or brings it back (docks a peeking one); the choice survives a
-/// relaunch.
+/// Zeron's sidebar button: the morphing sidebar glyph, washed only under the
+/// pointer. Folds the left sidebar away or brings it back (docks a
+/// peeking one); the choice survives a relaunch.
 fn sidebar_toggle(s: &State) -> El {
     let open = s.workspace.sidebar.is_open();
     let label = if open { "Hide sidebar" } else { "Show sidebar" };

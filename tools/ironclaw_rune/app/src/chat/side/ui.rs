@@ -1,6 +1,4 @@
-//! Small building blocks every side tab shares (GPUI `side.rs`'s `empty`,
-//! `error_line`, `loading`, `heading`, `scroll`, plus the ghost buttons and
-//! hover rows of gpui-kit the tabs used). Area G's `design/kit.rs` may
+//! Small building blocks every side tab shares. Area G's `design/kit.rs` may
 //! replace these at integration.
 
 use crate::design::kit::Spinner;
@@ -18,7 +16,7 @@ use rune_kit::{
 
 use crate::state::State;
 
-/// gpui-kit's `text_size(10)`, `text_xs`, `text_sm`, scaled to Appearance →
+/// The 10, 12 and 14 pt text sizes, scaled to Appearance →
 /// UI font size (`styles::rem`); code ([`MONO_XS`]) keeps its size.
 fn at(size: f32, weight: f32) -> TextStyle {
     TextStyle::new(crate::design::styles::rem(size), weight)
@@ -309,7 +307,7 @@ pub fn fill_col() -> El {
     col().w_full().grow(1.).min_h(0.)
 }
 
-/// gpui-kit's `Button::new(..).icon(..).ghost().xsmall()` with a tooltip.
+/// An extra-small ghost icon button with a tooltip.
 pub fn ibtn(icon: &'static Icon, tip: &str) -> IconButton {
     // Muted ink, as the titlebar's toggles and tabs: the pane's own buttons
     // sit quieter than its content.
@@ -346,7 +344,7 @@ pub fn busy(b: Button, loading: bool) -> Button {
     }
 }
 
-/// gpui-kit's `.selected(true)` on a ghost button: the active fill behind
+/// A ghost button shown selected: the active fill behind
 /// it, which morphs in and out on the slide spring.
 pub fn selected(s: &State, button: El, on: bool) -> El {
     el().radius(crate::design::CONTROL_RADIUS)
@@ -391,9 +389,8 @@ pub fn grow() -> El {
     el().grow(1.)
 }
 
-/// Hand a file or folder on this Mac to Finder: open it in its app, or
-/// reveal it (GPUI `cx.open_with_system`, `cx.reveal_path`). Rune's
-/// `Tx::open_url` refuses `file:` links, so this asks `open(1)`.
+/// Hand a file or folder on this Mac to Finder: open it in its app, or reveal
+/// it. Rune's `Tx::open_url` refuses `file:` links, so this asks `open(1)`.
 pub fn open_path(path: &std::path::Path, reveal: bool) {
     let mut cmd = std::process::Command::new("/usr/bin/open");
     if reveal {

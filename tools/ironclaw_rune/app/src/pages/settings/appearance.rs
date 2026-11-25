@@ -1,9 +1,8 @@
 //! Settings → Appearance, laid out after Zeron's page
-//! (`crates/ui/src/settings/appearance.rs`, MIT), one decision per row:
-//! the color scheme, a theme for each side of it, an accent, then the
-//! new-chat wallpaper and its effect, motion and layout. All client-side
-//! preferences (`design::prefs`), applied live through `State::update_prefs`.
-//! Port of GPUI `pages/settings/appearance.rs`.
+//! (`crates/ui/src/settings/appearance.rs`, MIT), one decision per row: the
+//! color scheme, a theme for each side of it, an accent, then the new-chat
+//! wallpaper and its effect, motion and layout. All client-side preferences
+//! (`design::prefs`), applied live through `State::update_prefs`.
 
 use rune::{Color, Cursor, El, FileDialogOptions, Tx, col, el, row};
 use rune_kit::{Kit, Select, SelectAppearance};
@@ -763,7 +762,7 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(layout_rows)
 }
 
-/// The Translucent window row's detail: GPUI's line, plus a relaunch note
+/// The Translucent window row's detail, plus a relaunch note
 /// while the pref is on and the open window is still opaque.
 fn translucent_detail(prefs: &crate::design::prefs::Prefs) -> &'static str {
     if crate::design::styles::translucency_pending(prefs) {

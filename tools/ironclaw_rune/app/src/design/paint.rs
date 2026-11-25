@@ -3,8 +3,7 @@
 //! redrawn through one of Zeron's background effects. The app lays it over the
 //! window at the opacity the person picked.
 //!
-//! Ported unchanged from the GPUI app's `design/paint.rs` (it never touched
-//! GPUI). The work happens once per wallpaper, area size or theme change; the
+//! Pure image code, no UI. The work happens once per wallpaper, area size or theme change; the
 //! result is one static image in a `rune::Pixels`, nothing runs while idle.
 
 use image::{Rgba, RgbaImage};

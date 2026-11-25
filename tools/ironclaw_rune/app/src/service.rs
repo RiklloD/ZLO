@@ -205,8 +205,7 @@ pub fn restart() -> bool {
 /// SIGTERM the backend without waiting: its graceful shutdown drains open
 /// streams, and this app's streams close only once it exits. A backend that
 /// is still around at the next launch is stopped by `stop_stale`.
-/// GPUI stopped the backend from its quit hook (`on_app_quit`). Rune's
-/// `App::run` does not return when AppKit terminates the app itself (Quit
+/// Rune's `App::run` does not return when AppKit terminates the app itself (Quit
 /// from the Dock, AppleScript `quit`, logout), so `main`'s stop after `run`
 /// never ran and the backend was left to exit on its own a minute later.
 /// Observe `NSApplicationWillTerminateNotification` too: it stops the

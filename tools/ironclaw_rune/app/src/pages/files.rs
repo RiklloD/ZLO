@@ -479,7 +479,7 @@ pub fn fixture(s: &mut State) {
     this.path = "threads".into();
     this.selected = Some("threads/MEMORY.md".into());
     this.preview = Some(Ok(FilePreview::Text {
-        text: "# Memory\n\nThe user ports **ZLO** from GPUI to Rune.\n\n- Prefers short answers\n- Works in Zurich time\n\n```rust\nfn main() {}\n```\n".into(),
+        text: "# Memory\n\nThe user builds **ZLO** on Rune.\n\n- Prefers short answers\n- Works in Zurich time\n\n```rust\nfn main() {}\n```\n".into(),
         markdown: true,
     }));
 }

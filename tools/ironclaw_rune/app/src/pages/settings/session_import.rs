@@ -5,9 +5,8 @@
 //! while it runs this panel polls the status once a second.
 //!
 //! [`schedule`] asks for the first-launch import when the app connects and a
-//! rescan every [`RESCAN_EVERY`] after; the backend runs either only when
-//! due, and reads only session files that changed. Port of GPUI
-//! `pages/settings/session_import.rs`.
+//! rescan every [`RESCAN_EVERY`] after; the backend runs either only when due,
+//! and reads only session files that changed.
 
 use std::time::Duration;
 

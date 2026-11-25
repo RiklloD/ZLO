@@ -1,8 +1,7 @@
 //! Operator → Inspector: pick a conversation and one of its runs, then see
 //! model calls, tool executions, activity, token stats, the exact prompt,
 //! and the thread's log lines. "Follow live" re-reads the snapshot on every
-//! update. GPUI `pages/operator/inspector.rs`; rendering in
-//! `inspector/view.rs`.
+//! update. The rendering is in `inspector/view.rs`.
 //!
 //! The gateway keeps diagnostics in memory for a few recent runs per
 //! session, so older runs show "no diagnostics".

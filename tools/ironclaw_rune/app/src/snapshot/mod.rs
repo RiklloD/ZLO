@@ -10,8 +10,8 @@
 //! two staged files that the composer shows as one chip. Client-only: the
 //! gateway sees ordinary attachments.
 //!
-//! Rune port of the GPUI `snapshot/mod.rs`: the `SnapshotPrefs`, `Chips`
-//! and `Service` globals became [`SnapshotState`] in `State::snapshot`.
+//! The preferences, chips and service live in [`SnapshotState`] in
+//! `State::snapshot`.
 
 #[cfg(target_os = "macos")]
 mod ax;
@@ -126,9 +126,8 @@ pub fn poll(_s: &mut State, _tx: &mut Tx) -> bool {
     false
 }
 
-/// Edit the preferences, save them off the UI thread and re-arm the
-/// trigger (GPUI `SnapshotPrefs::update`). Settings → SnapShots (area D)
-/// calls this.
+/// Edit the preferences, save them off the UI thread and re-arm the trigger.
+/// Settings → SnapShots (area D) calls this.
 pub fn update_prefs(s: &mut State, edit: impl FnOnce(&mut SnapshotPrefs)) {
     edit(&mut s.snapshot.prefs);
     s.snapshot.prefs.save();

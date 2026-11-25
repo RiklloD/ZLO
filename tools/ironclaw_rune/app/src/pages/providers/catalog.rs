@@ -1,6 +1,5 @@
-//! Presentation data (ported unchanged from GPUI `pages/providers/catalog.rs`) for the Providers page: names and kinds for the
-//! gateway's provider ids, and the CLI agents IronClaw can drive. The
-//! gateway stays the source of truth for which providers exist.
+//! Presentation data for the Providers page: names and kinds for the gateway's provider ids, and the CLI agents IronClaw can
+//! drive. The gateway stays the source of truth for which providers exist.
 
 /// How a provider connects.
 #[derive(Clone, Copy, PartialEq, Eq)]

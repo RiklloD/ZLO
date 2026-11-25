@@ -62,7 +62,7 @@ fn shell_with(s: &mut State, rows: Vec<Row>, live: bool) {
         .titles
         .remember("t2", "Fix the flaky integration test");
     let mut chat = ChatState::new(THREAD.into());
-    chat.channel = Some("gpui".into());
+    chat.channel = Some("desktop".into());
     fill(&mut chat, rows, live);
     s.chat = Some(chat);
 }
@@ -123,10 +123,7 @@ pub fn fill(chat: &mut ChatState, rows: Vec<Row>, live: bool) {
 
 fn history() -> Vec<Row> {
     vec![
-        user(
-            "msg:1",
-            "Port the chat transcript to Rune and keep the GPUI look.",
-        ),
+        user("msg:1", "Tidy the chat transcript and keep its look."),
         Row::Thinking {
             key: "think:1".into(),
             text: "The transcript folds activity into one summary line with a tree under it."
@@ -135,13 +132,13 @@ fn history() -> Vec<Row> {
         tool(
             "tool:1",
             "ironclaw.shell",
-            "rg -n \"fn render_row\" tools/ironclaw_gpui",
+            "rg -n \"fn render_row\" tools/ironclaw_rune",
             ToolStatus::Completed,
         ),
         tool(
             "tool:2",
             "ironclaw.read_file",
-            "tools/ironclaw_gpui/app/src/chat.rs",
+            "tools/ironclaw_rune/app/src/chat/rows.rs",
             ToolStatus::Completed,
         ),
         tool(

@@ -1,6 +1,5 @@
 //! Projects: list, create, archive, restore and delete. Shown only when the
-//! gateway reports `features.reborn_projects`. Port of GPUI
-//! `pages/projects.rs`.
+//! gateway reports `features.reborn_projects`.
 
 use rune::{Cx, El, TextEdit, col, row};
 use rune_kit::{Kit, TextArea, TextInput};
@@ -234,7 +233,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
                 .placeholder("Project name")
                 .width(None)
                 .on_edit(|s: &mut State| &mut s.pages.projects.name)
-                // Enter creates (GPUI `submit_on_enter`).
+                // Enter creates.
                 .on_submit(|s: &mut State, _| create(s))
                 .build(k),
         )
@@ -297,7 +296,7 @@ pub fn fixture(s: &mut State) {
         project(
             "p1",
             "ZLO on Rune",
-            "Port the desktop app from GPUI to Rune, file by file.",
+            "Ship the desktop app on Rune, one page at a time.",
             "active",
             1
         ),

@@ -1,9 +1,8 @@
-//! A multi-line editor in the mono font (GPUI's memory and SKILL.md
-//! editors: `Input` with `font_family(FONT_MONO)`). rune-kit's `TextArea`
-//! fixes its text style, so this builds the same field on Rune's core
-//! `text_input`: the kit field's fill, radius, resting shadow, hover wash
-//! and focus ring, grown between `min_rows` and `max_rows` lines, then
-//! scrolling with the caret kept in view.
+//! A multi-line editor in the mono font. rune-kit's `TextArea` fixes its text
+//! style, so this builds the same field on Rune's core `text_input`: the kit
+//! field's fill, radius, resting shadow, hover wash and focus ring, grown
+//! between `min_rows` and `max_rows` lines, then scrolling with the caret kept
+//! in view.
 
 use rune::{El, TextEdit, TextStyle, col, text_input};
 use rune_kit::Kit;

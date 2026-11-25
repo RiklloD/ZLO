@@ -1,7 +1,7 @@
-//! Hooks: the hooks a run would install: name, where it comes from (which
-//! fixes its trust class), the hook points it attaches to, and whether it
-//! is live. Read-only — the framework switch is boot configuration and
-//! per-hook enablement has no backend yet. Port of GPUI `pages/hooks.rs`.
+//! Hooks: the hooks a run would install: name, where it comes from (which fixes
+//! its trust class), the hook points it attaches to, and whether it is live.
+//! Read-only — the framework switch is boot configuration and per-hook
+//! enablement has no backend yet.
 
 use crate::design::motion;
 use crate::pages::common::controls::{header_with, outlined_tag, refresh_icon, spinner};

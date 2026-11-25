@@ -2,15 +2,15 @@
 //! no per-view entities. Each feature area owns its sub-state type in its own
 //! module and a slot here, so areas plug in without touching each other:
 //!
-//! | Slot | Owner module | GPUI origin |
+//! | Slot | Owner module | Holds |
 //! |---|---|---|
-//! | `workspace` | `workspace` | `workspace.rs`, `workspace/*`, alerts, drafts, titles |
-//! | `chat` | `chat` | `chat.rs`, `chat/*` (minus side) |
-//! | `pages` | `pages` | `pages/*` |
-//! | `voice` | `voice` | `voice/*` |
-//! | `snapshot` | `snapshot` | `snapshot/*` |
+//! | `workspace` | `workspace` | the shell, inbox, alerts, drafts, titles |
+//! | `chat` | `chat` | the open chat and its extras (minus the side pane) |
+//! | `pages` | `pages` | the settings and operator pages |
+//! | `voice` | `voice` | dictation and spoken replies |
+//! | `snapshot` | `snapshot` | SnapShots |
 //! | `design` | `design::look` | wallpaper, battery saver, motion prefs |
-//! | `plugins` | `plugins` | (new) plugin UI slots and trees |
+//! | `plugins` | `plugins` | plugin UI slots and trees |
 //!
 //! Handlers reach their slot from the root (`s.chat.as_mut()`, `&mut s.pages`)
 //! — Rune has no state lenses, every handler closure is `Fn(&mut State)`.

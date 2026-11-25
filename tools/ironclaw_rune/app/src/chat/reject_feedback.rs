@@ -1,10 +1,9 @@
-//! "No, do X instead": rejecting an approval with a reason (GPUI
-//! `chat/reject_feedback.rs`). The card's "Reject with feedback…" opens a
-//! one-line field under it; Enter sends the decline with the text, Esc
-//! closes the field and the card keeps asking. Plain Decline stays one click
-//! on the card. The backend bounds the text and hands it to the agent as the
-//! rejected call's result, so the agent adapts instead of stopping; it never
-//! turns the decline into an approval.
+//! "No, do X instead": rejecting an approval with a reason. The card's "Reject
+//! with feedback…" opens a one-line field under it; Enter sends the decline
+//! with the text, Esc closes the field and the card keeps asking. Plain Decline
+//! stays one click on the card. The backend bounds the text and hands it to the
+//! agent as the rejected call's result, so the agent adapts instead of
+//! stopping; it never turns the decline into an approval.
 
 use rune::{El, KeyEvent, TextEdit, Tx, el, row};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextInput};

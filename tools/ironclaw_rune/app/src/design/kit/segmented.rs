@@ -9,7 +9,7 @@ use crate::design::motion;
 use crate::design::styles::Style;
 use crate::state::State;
 
-/// The narrowest segment, so short labels (On / Off) keep the GPUI width.
+/// The narrowest segment, so short labels (On / Off) share one width.
 const SEG_MIN: f32 = 54.;
 const SEG_H: f32 = 24.;
 const INSET: f32 = 2.;
@@ -30,7 +30,7 @@ pub fn segment_width(label: &str, px: f32) -> f32 {
 /// A segmented control whose knob glides, changing width as it goes, to the
 /// picked segment instead of jumping. Each segment is as wide as its label
 /// needs (at least 54 pt), so "System / Light / Dark" and "Cost / Tokens"
-/// both fit; segments of short labels share the GPUI 54 pt width. The knob
+/// both fit; segments of short labels share the 54 pt width. The knob
 /// springs on `motion::TAB_SLIDE`; Reduce Motion lands it.
 ///
 /// ```ignore
@@ -111,7 +111,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn short_labels_keep_the_gpui_width_and_long_ones_grow() {
+    fn short_labels_keep_the_minimum_width_and_long_ones_grow() {
         assert_eq!(segment_width("On", 12.), SEG_MIN);
         assert_eq!(segment_width("Dark", 12.), SEG_MIN);
         assert!(segment_width("Accounts and keys", 12.) > SEG_MIN);

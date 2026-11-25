@@ -1,7 +1,5 @@
-//! One transcript row (GPUI `chat.rs`: `render_row`, `with_actions`,
-//! `placed_body`, `openable`, `render_gate`, `switch_marker`): the person's
-//! bubble with its files and mentions in place, replies, system lines,
-//! gates, run notices and slash-command answers.
+//! One transcript row: the person's bubble with its files and mentions in
+//! place, replies, system lines, gates, run notices and slash-command answers.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -900,7 +898,7 @@ fn switch_marker(s: &State, words: &str) -> El {
 }
 
 /// Fork the conversation from run `at_run` (area H's orchestration; a
-/// side chat's fork opens as the main chat, as in GPUI).
+/// side chat's fork opens as the main chat).
 fn fork(s: &mut State, thread: &str, at_run: Option<u32>) {
     super::orchestration::fork(s, thread, at_run);
 }

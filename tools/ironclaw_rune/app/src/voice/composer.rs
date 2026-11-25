@@ -6,13 +6,11 @@
 //! in place as the recognizer revises it. Commit inserts the tail as typed
 //! text; discard drops it.
 //!
-//! Rune port of the GPUI `voice/composer.rs`. GPUI held a weak handle to
-//! the composer's `TextareaState`; Rune has one state tree, so a target
-//! names its composer ([`Composer`]) and finds the `TextEdit` again through
-//! the composer owners (`crate::chat::voice_composer{,_mut}`) every time.
-//! The quick composer's field lives in its own window; an edit there goes
-//! to its mirror in the main state and, as the same edit, to the window
-//! (`workspace::quick::voice_edit`).
+//! Rune has one state tree, so a target names its composer ([`Composer`]) and finds the
+//! `TextEdit` again through the composer owners
+//! (`crate::chat::voice_composer{,_mut}`) every time. The quick composer's
+//! field lives in its own window; an edit there goes to its mirror in the main
+//! state and, as the same edit, to the window (`workspace::quick::voice_edit`).
 
 use rune::{Ime, TextEdit, Tx};
 

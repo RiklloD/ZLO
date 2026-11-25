@@ -1,7 +1,6 @@
 //! "Compact idle Claude threads": the engine setting that has an idle Claude
-//! CLI thread send `/compact` while its prompt cache is still warm. Each run
-//! is listed with its cost on the Usage page. Port of GPUI
-//! `pages/settings/compaction.rs`.
+//! CLI thread send `/compact` while its prompt cache is still warm. Each run is
+//! listed with its cost on the Usage page.
 
 use rune::{El, col};
 use rune_kit::Kit;

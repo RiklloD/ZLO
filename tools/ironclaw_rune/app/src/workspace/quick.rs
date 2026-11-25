@@ -1,13 +1,12 @@
-//! The quick composer (GPUI `workspace/quick.rs`): ⇧⌘Space from any app
-//! opens a small floating prompt. Enter sends it as a new thread through the
-//! new-thread screen's own path (last-used profile, the picked model) and
-//! brings the main window forward on that thread. Escape, the shortcut
-//! again, or clicking elsewhere closes it.
+//! The quick composer: ⇧⌘Space from any app opens a small floating prompt.
+//! Enter sends it as a new thread through the new-thread screen's own path
+//! (last-used profile, the picked model) and brings the main window forward on
+//! that thread. Escape, the shortcut again, or clicking elsewhere closes it.
 //!
 //! In Rune it is a second window with its own small state ([`QuickState`]),
 //! a launcher panel (non-activating, hidden until shown) added with
-//! `App::window`; the shortcut is Rune's `App::global_shortcut`, so GPUI's
-//! hand-written HIToolbox registration is gone.
+//! `App::window`; the shortcut is Rune's `App::global_shortcut`, so no
+//! hand-written HIToolbox registration is needed.
 //!
 //! ## Voice
 //!
@@ -238,9 +237,8 @@ fn card_entrance() -> rune::Transition {
     )
 }
 
-/// The quick composer's distance from the top of a screen `height` points
-/// tall: a fifth of the way down (GPUI `quick.rs`), or 180 pt when the
-/// screen is unknown.
+/// The quick composer's distance from the top of a screen `height` points tall:
+/// a fifth of the way down, or 180 pt when the screen is unknown.
 fn top_margin(height: Option<f32>) -> f32 {
     height
         .filter(|h| *h > 0.)

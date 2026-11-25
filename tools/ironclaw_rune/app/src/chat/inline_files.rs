@@ -1,10 +1,9 @@
-//! Files placed in the text (GPUI `chat/inline_files.rs`). A staged file
-//! shows as a card at the spot it was attached: in the composer it is an
-//! atomic pill (Rune's `Mark::Pill`: one Backspace removes it, undo brings
-//! it back), and in the sent bubble a card between the words. On send each
-//! pill becomes an anchor (`{{attachment:N}}`), so the backend puts the
-//! file's reference where the person put it. Both composers (thread and
-//! new-thread draft) share these helpers.
+//! Files placed in the text. A staged file shows as a card at the spot it was
+//! attached: in the composer it is an atomic pill (Rune's `Mark::Pill`: one
+//! Backspace removes it, undo brings it back), and in the sent bubble a card
+//! between the words. On send each pill becomes an anchor (`{{attachment:N}}`),
+//! so the backend puts the file's reference where the person put it. Both
+//! composers (thread and new-thread draft) share these helpers.
 //!
 //! `@` mentions are pills too: their id names the mention
 //! (`mentions::token_id`), and on send each becomes its Markdown link.

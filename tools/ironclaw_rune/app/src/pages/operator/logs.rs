@@ -1,6 +1,5 @@
-//! Operator → Logs: the gateway's in-memory log ring (`operator.logs`),
-//! newest first, with level and target filters and paging to older lines.
-//! GPUI `pages/operator/logs.rs`.
+//! Operator → Logs: the gateway's in-memory log ring (`operator.logs`), newest
+//! first, with level and target filters and paging to older lines.
 
 use crate::pages::common::controls::{Look, Size, button_sized, input, muted, rule, spinner};
 use crate::pages::common::ts::MONO_XS;

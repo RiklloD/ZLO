@@ -1,8 +1,7 @@
-//! Schedule rows (`t3_schedule`, agent- or page-made): when it runs next,
-//! how the last run went, run now / pause / edit / delete, and for webhooks
-//! the URL and signing secret — masked until the user reveals them — with
-//! rotation, the last request's status and a signed `curl` example. Port of
-//! GPUI `pages/automations/schedule_rows.rs`.
+//! Schedule rows (`t3_schedule`, agent- or page-made): when it runs next, how
+//! the last run went, run now / pause / edit / delete, and for webhooks the URL
+//! and signing secret — masked until the user reveals them — with rotation, the
+//! last request's status and a signed `curl` example.
 
 use chrono::{DateTime, Utc};
 use rune::{Cursor, El, col, el, row, text};

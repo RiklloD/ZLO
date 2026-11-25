@@ -1,6 +1,6 @@
 //! Skills: installed skills with auto-activation, how each is listed to the
 //! models (`listing`), their instructions (view and edit), removal, and a
-//! catalog search to install more. Port of GPUI `pages/skills.rs`.
+//! catalog search to install more.
 
 pub mod fixtures;
 mod listing;

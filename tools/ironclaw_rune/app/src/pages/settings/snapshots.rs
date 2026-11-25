@@ -1,7 +1,7 @@
-//! Settings → General → SnapShots: the switch, whether the window's text
-//! comes along, and the fallback shortcut. Turning a part on asks macOS for
-//! the permission it needs: Screen Recording for the picture, Accessibility
-//! only for the text. Port of GPUI `pages/settings/snapshots.rs`.
+//! Settings → General → SnapShots: the switch, whether the window's text comes
+//! along, and the fallback shortcut. Turning a part on asks macOS for the
+//! permission it needs: Screen Recording for the picture, Accessibility only
+//! for the text.
 
 use rune::{El, col};
 use rune_kit::Kit;
@@ -81,7 +81,7 @@ pub fn view(s: &State, k: &Kit) -> El {
         ))
 }
 
-/// Ask macOS for what the switched-on parts need (GPUI `ask`).
+/// Ask macOS for what the switched-on parts need.
 fn ask(screen: bool, text: bool) {
     use crate::permissions::{self, Permission};
     let wanted: Vec<Permission> = permissions::missing()

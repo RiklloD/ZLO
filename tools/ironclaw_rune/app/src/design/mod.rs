@@ -1,6 +1,6 @@
 //! Design system: one palette, layout numbers, fonts and the rune-kit `Kit`
-//! built from them. Ported from the GPUI app's `design/mod.rs`; the colour
-//! derivation (`Palette::from_seed`) is the same, in Rune's `Color`.
+//! built from them. Colours derive from one seed (`Palette::from_seed`), in
+//! Rune's `Color`.
 //!
 //! The palette is resolved from `State::prefs` with [`resolve`] and kept in
 //! `State::palette`; every view reads it from there. [`kit`] maps it onto
@@ -221,7 +221,7 @@ pub fn lift(c: Color, by: f32) -> Color {
     Color::from_oklab([(l + by).min(1.), a, b, alpha])
 }
 
-/// OKLab lightness times `k` (the GPUI app's `l * 0.85` on HSL).
+/// OKLab lightness times `k`.
 pub fn scale_lightness(c: Color, k: f32) -> Color {
     let [l, a, b, alpha] = c.to_oklab();
     Color::from_oklab([l * k, a, b, alpha])

@@ -292,7 +292,7 @@ pub fn fixture_inbox_long(s: &mut State) {
 }
 
 /// A short inbox over a folded Settled shelf: the shelf sits at the
-/// sidebar's bottom, as in GPUI, not under the last card.
+/// sidebar's bottom, not under the last card.
 pub fn fixture_inbox_short(s: &mut State) {
     fixture_shell(s);
     let mut rows: Vec<_> = [
@@ -468,7 +468,7 @@ pub fn fixture_draft_mention(s: &mut State) {
         d.input.set_caret(len);
         let files = [
             "tools/ironclaw_rune/app/src/chat/menu.rs",
-            "tools/ironclaw_gpui/app/src/chat/menu.rs",
+            "tools/ironclaw_rune/app/src/chat/composer.rs",
             "crates/product/ironclaw_webui/frontend/src/menu.ts",
             "docs/internal/menus.md",
         ];

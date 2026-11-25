@@ -62,7 +62,7 @@ only in the screenshot, and the model never got the screenshot.
 | The Codex provider discarded every image with a "not yet implemented" warning | Fixed in `openai_codex_provider.rs` (this also fixed user-uploaded images) |
 | The vision-model list stopped at `gpt-4o`, so GPT 5 and 6 counted as text only | List updated |
 | The model got `{"ok": true}` and needed a second `result_read` call to see the tree | Up to 20 KB of tree goes inline in the first result (`inline_observation` in `crates/product/ironclaw_assistant/src/computer_use.rs`) |
-| Three app identities (Numoh, `~/.ironclaw/bin/ironclaw`, the engine) confused macOS permissions | One `Numoh.app`: backend at `Contents/MacOS/numoh-backend`, engine release `engine-v0.6.0` at `Contents/Helpers/Numoh Computer Use.app`, both built by `tools/ironclaw_gpui/bundle.sh` |
+| Three app identities (Numoh, `~/.ironclaw/bin/ironclaw`, the engine) confused macOS permissions | One `Numoh.app`: backend at `Contents/MacOS/numoh-backend`, engine release `engine-v0.6.0` at `Contents/Helpers/Numoh Computer Use.app`, both built by the app's `bundle.sh` |
 
 A Calculator test confirmed the model read the picture. Outlook still failed.
 

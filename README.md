@@ -200,7 +200,7 @@ The command you type (`zlo`) and the data folder (`~/.zlo`) are ZLO's. Internal 
 
 ZLO is my personal fork of [IronClaw](https://github.com/nearai/ironclaw), built by [NEAR AI](https://github.com/nearai). I built my desktop app on that foundation and continue to change the backend for my own use. The agent runtime, security machinery, and much of this repository come from their work.
 
-The interface uses [Rune](https://github.com/anomalyco/rune). An earlier version of the app was built on [GPUI](https://www.gpui.rs/), the Rust UI framework developed for Zed; it is archived on the `archive/gpui` branch (tag `gpui-final`). The computer-use helper comes from [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus). The way ZLO connects to other computers follows [T3 Code](https://github.com/pingdotgg/t3code)'s remote environments, with Tailscale in place of its hosted relay.
+The interface uses [Rune](https://github.com/anomalyco/rune). The computer-use helper comes from [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus). The way ZLO connects to other computers follows [T3 Code](https://github.com/pingdotgg/t3code)'s remote environments, with Tailscale in place of its hosted relay.
 
 This repository is my project, not an official IronClaw or NEAR AI release.
 

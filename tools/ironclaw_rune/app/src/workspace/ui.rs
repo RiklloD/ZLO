@@ -1,4 +1,4 @@
-//! Small shared pieces of the workspace's drawing: text in the GPUI sizes,
+//! Small shared pieces of the workspace's drawing: text in the app's sizes,
 //! dots, ghost buttons, washes and the floating card. Area G's
 //! `design/kit.rs` takes these over at integration where they overlap.
 
@@ -8,7 +8,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant
 use crate::design::{Palette, motion};
 use crate::state::State;
 
-/// GPUI's `text_xs` / `text_sm` in points.
+/// The extra-small and small text sizes, in points.
 pub const XS: f32 = 12.;
 pub const SM: f32 = 14.;
 
@@ -16,15 +16,15 @@ pub const REGULAR: f32 = 400.;
 pub const MEDIUM: f32 = 500.;
 pub const SEMIBOLD: f32 = 600.;
 
-/// GPUI's default line height, a multiple of the size (`gpui::phi`).
-const GPUI_LINE: f32 = 1.618;
+/// The sidebar's line height, a multiple of the size (the golden ratio).
+const GOLDEN_LINE: f32 = 1.618;
 
-/// The sidebar's own type, as GPUI drew it: sizes in fixed pixels (the UI
-/// font size never scales them, unlike its rem-based `text_xs`/`text_sm`)
-/// on GPUI's 1.618 line height, which gives the cards their air.
+/// The sidebar's own type: sizes in fixed pixels (the UI font size never
+/// scales them, unlike the rem-based page text) on a 1.618 line height,
+/// which gives the cards their air.
 pub fn sidebar_style(size: f32, weight: f32) -> TextStyle {
     TextStyle {
-        line_height: (size * GPUI_LINE).round(),
+        line_height: (size * GOLDEN_LINE).round(),
         ..TextStyle::new(size, weight)
     }
 }
@@ -115,7 +115,7 @@ pub fn ghost_button(
     b.on_press(on_press).build(k)
 }
 
-/// A small outlined button (GPUI's default `Button` at xsmall).
+/// A small outlined button.
 pub fn small_button(
     k: &Kit,
     label: &str,
@@ -227,9 +227,8 @@ pub fn rule(p: &Palette) -> El {
     el().h(1.).w_full().fill(p.border)
 }
 
-/// A borderless multi-line field that grows from `min` to `max` lines
-/// (GPUI's `Textarea::appearance(false)` with `auto_grow`). Bind it with
-/// `.on_edit(..)`, `.on_submit(..)` and `.on_input_change(..)` on the
+/// A borderless multi-line field that grows from `min` to `max` lines. Bind it
+/// with `.on_edit(..)`, `.on_submit(..)` and `.on_input_change(..)` on the
 /// returned field before wrapping it with [`grow_box`].
 pub fn plain_area(edit: &rune::TextEdit, size: f32, placeholder: &str, p: &Palette) -> El {
     let size = crate::design::styles::rem(size);

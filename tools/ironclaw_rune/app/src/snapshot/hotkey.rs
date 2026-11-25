@@ -8,11 +8,10 @@
 //! a second, 20 while a Shift key is down so the chord lands just as fast.
 //! One cheap call per tick, nothing at all while SnapShots are off.
 //!
-//! Rune port of the GPUI `snapshot/hotkey.rs`. The fallback combo now goes
-//! through Rune's global shortcuts (`AppHandle::register_shortcut`, Carbon
-//! `RegisterEventHotKey` underneath, still without any permission), so it
-//! shares one registry with the app's other hotkeys; this file keeps the
-//! Shift watcher and the combo's spelling.
+//! The fallback combo now goes through Rune's global shortcuts
+//! (`AppHandle::register_shortcut`, Carbon `RegisterEventHotKey` underneath,
+//! still without any permission), so it shares one registry with the app's
+//! other hotkeys; this file keeps the Shift watcher and the combo's spelling.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

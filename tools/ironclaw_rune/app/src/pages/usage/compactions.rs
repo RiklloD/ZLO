@@ -1,7 +1,6 @@
-//! The Usage page's idle-compaction list (GPUI `pages/usage_compactions.rs`):
-//! each `/compact` a Claude CLI thread sent while idle, with the context it
-//! shrank and what it cost, so the setting can be judged against the cache
-//! savings above it.
+//! The Usage page's idle-compaction list: each `/compact` a Claude CLI thread
+//! sent while idle, with the context it shrank and what it cost, so the setting
+//! can be judged against the cache savings above it.
 
 use crate::chat::model_picker::pretty_model;
 use crate::pages::common::controls::{rule, styled};

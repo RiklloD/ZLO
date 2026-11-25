@@ -1,7 +1,7 @@
 //! The goal strip above the composer (t3code's goal callout): a target,
 //! "Pursuing goal" and the objective on one muted line, with edit, done and
-//! clear on hover. `/goal <objective>` sets it, `/goal clear` clears it and
-//! a bare `/goal` opens the editor. Port of GPUI `chat/goals.rs`.
+//! clear on hover. `/goal <objective>` sets it, `/goal clear` clears it and a
+//! bare `/goal` opens the editor.
 //!
 //! A goal may carry a check: `/goal <objective> --check "<cmd>"` (optionally
 //! `--attempts N`, `--timeout SECS`; `/goal --check "<cmd>"` changes only the
@@ -14,9 +14,9 @@
 //!
 //! # Entry points
 //!
-//! Every chat has its own goal, the open one and each side chat (GPUI: each
-//! `ChatView` read its own); functions take the chat's thread id and find
-//! it with `chat::chat_for`, so a reply for a closed chat goes nowhere.
+//! Every chat has its own goal, the open one and each side chat; functions take
+//! the chat's thread id and find it with `chat::chat_for`, so a reply for a
+//! closed chat goes nowhere.
 //!
 //! - `goal_command(text) -> Option<GoalCommand>`: area A's composer asks this
 //!   on send; `Some` means the line is a `/goal` command, then it calls
@@ -436,7 +436,7 @@ fn editor_edit<'a>(s: &'a mut State, id: &str) -> &'a mut TextEdit {
     }
 }
 
-/// The goal strip, or its editor while open (GPUI `render_goal`).
+/// The goal strip, or its editor while open.
 pub fn view(s: &State, chat: &ChatState, k: &Kit) -> Option<El> {
     let g = &chat.goals;
     let id = chat.thread_id.clone();

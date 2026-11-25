@@ -1,8 +1,7 @@
-//! The new-thread screen (t3code's, with a profile where t3code has a
-//! project): "What should we work on?", the profile picker below it, and
-//! the composer card. Nothing exists on the gateway until the first message
-//! is sent, so abandoned drafts leave no empty threads behind. (GPUI
-//! `workspace/draft.rs`.)
+//! The new-thread screen (t3code's, with a profile where t3code has a project):
+//! "What should we work on?", the profile picker below it, and the composer
+//! card. Nothing exists on the gateway until the first message is sent, so
+//! abandoned drafts leave no empty threads behind.
 //!
 //! The composer shares the chat's pieces (area A): staged files are inline
 //! cards at the caret (`chat::inline_files`), a paste of files or a picture
@@ -67,7 +66,7 @@ pub struct DraftState {
     pub(crate) send_tint: crate::chat::composer::PlateTint,
 }
 
-/// Where voice dictation types (GPUI `Workspace::voice_composer`).
+/// Where voice dictation types.
 pub type ComposerTarget = crate::voice::Composer;
 
 /// The composer voice types into: the quick composer when it is open, else
@@ -245,7 +244,7 @@ fn on_change(s: &mut State) {
     record(s);
 }
 
-/// Menu keys for the draft composer (GPUI `draft_menu_key`).
+/// Menu keys for the draft composer.
 fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let Some(name) = MenuKeyName::of(ev) else {
         return false;
@@ -503,8 +502,7 @@ fn paste(s: &mut State, pasted: inline_files::Pasted) {
     }
 }
 
-/// A sidebar thread dropped on the card: attach its transcript as a file
-/// (GPUI `attach_thread_to_draft`).
+/// A sidebar thread dropped on the card: attach its transcript as a file.
 pub(super) fn attach_thread(s: &mut State, id: String, title: String) {
     let Some(draft) = s.workspace.draft.as_mut() else {
         return;
@@ -733,8 +731,8 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             None,
         ))
         .child(send_button);
-    // The chat's composer card in its hero form (GPUI `composer_card` with
-    // `compact` false), hero-wide; the chat's docked card is the same one.
+    // The chat's composer card in its hero form, hero-wide; the chat's docked
+    // card is the same one.
     let card = composer::composer_card(
         s,
         "draft-composer",

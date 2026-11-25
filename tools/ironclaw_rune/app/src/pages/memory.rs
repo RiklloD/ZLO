@@ -1,4 +1,4 @@
-//! What ZLO remembers (GPUI `pages/memory.rs`). Two clearly separate stores:
+//! What ZLO remembers. Two clearly separate stores:
 //!
 //! - **Local**: the memory provider's documents (`MEMORY.md`, `USER.md`,
 //!   `SOUL.md`, daily logs, notes). Browse, search, edit with a conflict
@@ -8,8 +8,8 @@
 //!   the user's own Supermemory account — what was captured there, semantic
 //!   search, and deleting a wrong document or forgetting a wrong memory.
 //!
-//! `draft.rs` (GPUI `memory_draft.rs`) holds the open document and the
-//! late-reply rules for saves and archives.
+//! `draft.rs` holds the open document and the late-reply rules for saves and
+//! archives.
 
 mod draft;
 #[cfg(test)]
@@ -423,7 +423,7 @@ pub(super) fn list_pill(
     )
 }
 
-/// A text field with a trailing button, GPUI's `h_flex(Input, Button)`.
+/// A text field with a trailing button.
 pub(super) fn field_row(field: El, action: El) -> El {
     row()
         .w_full()
@@ -654,7 +654,7 @@ fn render_open(s: &State, k: &Kit) -> Option<El> {
             }),
     };
     let body = match &open.editor {
-        // GPUI draws the editor in the mono font.
+        // The editor is in the mono font.
         Some(editor) => mono_editor(editor)
             .rows(10, 36)
             .label(format!("Edit {}", doc.path))
@@ -768,7 +768,7 @@ fn fixture_doc() -> MemoryDocument {
     MemoryDocument {
         path: "MEMORY.md".into(),
         kind: MemoryDocumentKind::Standing,
-        content: "# Standing memory\n\n- The user ports **ZLO** from GPUI to Rune, file by file.\n\
+        content: "# Standing memory\n\n- The user builds **ZLO** on Rune, page by page.\n\
                   - Prefers short commit messages ending with a co-author line.\n\
                   - Never deletes LLM data; archives instead.\n\n## Projects\n\n\
                   1. IronClaw Reborn\n2. ZLO desktop app\n"
@@ -789,7 +789,7 @@ pub fn fixture_local(s: &mut State) {
     m.search = TextEdit::new("rune");
     m.hits = Some(vec![MemorySearchHit {
         path: "notes/rune-port.md".into(),
-        snippet: "Port the GPUI app to Rune: one state tree, slots per area, headless scenes for every page."
+        snippet: "ZLO on Rune: one state tree, slots per area, headless scenes for every page."
             .into(),
         score: 0.82,
     }]);

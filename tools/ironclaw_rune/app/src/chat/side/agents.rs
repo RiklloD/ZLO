@@ -585,7 +585,7 @@ fn title(s: &State, m: &Member<'_>) -> String {
         .unwrap_or_else(|| fallback.into())
 }
 
-/// The status dot: a soft pulse while the agent is live (GPUI `kit::status_dot`).
+/// The status dot: a soft pulse while the agent is live.
 fn status_dot(color: Color, live: bool) -> El {
     let d = ui::dot(color, 8.);
     if live {

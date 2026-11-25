@@ -1,8 +1,7 @@
 //! Browser: one web page beside the chat, for `localhost` previews, docs and
-//! anything the agent links to (GPUI `chat/side/browser.rs`). The page is a
-//! `WKWebView` from `native_view`, created when this tab shows and gone
-//! soon after it hides. There is one page for the whole app, so switching
-//! threads keeps it.
+//! anything the agent links to. The page is a `WKWebView` from `native_view`,
+//! created when this tab shows and gone soon after it hides. There is one page
+//! for the whole app, so switching threads keeps it.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -686,8 +685,8 @@ mod tests {
             Some("http://127.0.0.1:8080/x")
         );
         assert_eq!(
-            address("docs.rs/gpui").as_deref(),
-            Some("https://docs.rs/gpui")
+            address("docs.rs/rune").as_deref(),
+            Some("https://docs.rs/rune")
         );
         assert_eq!(
             address("file:///tmp/a.html").as_deref(),

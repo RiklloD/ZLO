@@ -89,6 +89,6 @@ fn a_short_list_seats_its_shelves_at_the_bottom() {
     );
     assert!(
         (footer - fold - 36.).abs() < 16.,
-        "and sits on the footer, as GPUI's: fold {fold}, footer {footer}"
+        "and sits on the footer: fold {fold}, footer {footer}"
     );
 }

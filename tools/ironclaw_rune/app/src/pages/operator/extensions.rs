@@ -1,7 +1,6 @@
 //! Operator → Extensions: deployment credentials extensions declare for the
-//! operator (Slack bot token, Telegram bot, Google OAuth client). One form
-//! per group; a blank secret keeps the stored value. GPUI
-//! `pages/operator/extensions.rs`.
+//! operator (Slack bot token, Telegram bot, Google OAuth client). One form per
+//! group; a blank secret keeps the stored value.
 
 use crate::pages::common::controls::{Look, Size, button_sized, input, muted, outlined_tag};
 use crate::pages::common::ts::{body_semibold, xs, xs_medium};

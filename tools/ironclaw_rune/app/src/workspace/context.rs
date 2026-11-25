@@ -1,11 +1,10 @@
-//! The status bar's context meter (GPUI `workspace/context.rs`). The fill is
-//! coloured by level (warning from 80 % of the window, exceeded from 100 %);
-//! a click opens what fills the window — a stacked bar, every category with
-//! tokens and share, the largest tool owners, and whether the total is the
-//! provider's count or an estimate. From 80 % a one-line banner over the
-//! thread offers "Compact now" (the runtime's own compaction command, sent
-//! as a turn) and "New thread from summary" (a fork seeded with a digest of
-//! the conversation).
+//! The status bar's context meter. The fill is coloured by level (warning from
+//! 80 % of the window, exceeded from 100 %); a click opens what fills the
+//! window — a stacked bar, every category with tokens and share, the largest
+//! tool owners, and whether the total is the provider's count or an estimate.
+//! From 80 % a one-line banner over the thread offers "Compact now" (the
+//! runtime's own compaction command, sent as a turn) and "New thread from
+//! summary" (a fork seeded with a digest of the conversation).
 
 use std::collections::HashSet;
 
@@ -98,8 +97,8 @@ pub(super) fn category_label(category: ContextCategory) -> &'static str {
     }
 }
 
-/// One fixed hue per category, so a category keeps its colour across
-/// threads and themes (GPUI's HSL at 55 % saturation and lightness).
+/// One fixed hue per category, so a category keeps its colour across threads
+/// and themes.
 fn category_color(category: ContextCategory) -> Color {
     let hue = match category {
         ContextCategory::SystemPrompt => 0.62,

@@ -1,4 +1,4 @@
-//! Providers page rendering (GPUI `ProvidersView`'s `render_*` methods).
+//! Providers page rendering.
 
 use crate::pages::common::controls::{
     Look, Size, button_sized, header_with, icon_button_sized, input, muted, open_url, outlined_tag,

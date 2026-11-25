@@ -1,5 +1,4 @@
-//! The screen share's stack, cards, status bar and enlarged view (GPUI
-//! `ComputerShare::render`, `render_card`, `overlay`, `render_permissions`).
+//! The screen share's stack, cards, status bar and enlarged view.
 
 use std::time::Instant;
 

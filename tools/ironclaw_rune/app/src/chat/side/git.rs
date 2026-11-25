@@ -1,7 +1,7 @@
 //! Git for the right pane's coding tabs, run on this Mac with the system
 //! `git` (architecture choice A: the app reads the project folder itself;
-//! the gateway has no git routes yet). GPUI-free and blocking: callers run
-//! these with `jobs::blocking`. Ported unchanged from the GPUI app.
+//! the gateway has no git routes yet). UI-free and blocking: callers run
+//! these with `jobs::blocking`.
 //!
 //! Shapes follow MonoCode Native's `monocode_core::git` (MIT): porcelain v1
 //! status, unified patches for the diff viewer, a topo-ordered log for the

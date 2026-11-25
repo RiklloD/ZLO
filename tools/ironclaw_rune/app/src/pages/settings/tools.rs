@@ -1,7 +1,6 @@
-//! Settings → Permissions: the global auto-approve switch, then every tool as
-//! a card, grouped by what it touches. Groups start folded; a search or the
-//! Changed filter opens every group with a match. Port of GPUI
-//! `pages/settings/tools.rs`.
+//! Settings → Permissions: the global auto-approve switch, then every tool as a
+//! card, grouped by what it touches. Groups start folded; a search or the
+//! Changed filter opens every group with a match.
 
 use std::collections::BTreeMap;
 
@@ -96,7 +95,6 @@ fn humanize(id: &str) -> String {
     }
 }
 
-/// GPUI `kit::hover_wash`.
 fn hover_wash(p: &Palette) -> rune::Color {
     if p.light {
         rune::Color::BLACK.alpha(0.035)
@@ -270,7 +268,7 @@ fn tool_group(
             .gap(8.)
             .pb(8.)
             .transition(motion::reveal());
-        // Two equal columns, as GPUI's `grid_cols(2)`.
+        // Two equal columns.
         let mut cards = tools
             .into_iter()
             .map(|(id, tool)| tool_card(s, k, id, tool))

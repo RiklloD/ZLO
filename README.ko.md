@@ -142,7 +142,7 @@ IronClaw에서 물려받은 React 프론트엔드는 ZLO의 데스크톱 인터�
 
 ZLO는 [NEAR AI](https://github.com/nearai)가 만든 [IronClaw](https://github.com/nearai/ironclaw)의 제 개인 포크입니다. 그 기반 위에 데스크톱 앱을 만들었고, 제 용도에 맞게 백엔드도 계속 바꾸고 있습니다. 에이전트 런타임, 보안 장치, 그리고 이 저장소의 많은 부분은 그들의 작업에서 왔습니다.
 
-인터페이스는 [Rune](https://github.com/anomalyco/rune)을 씁니다. 앱의 이전 버전은 Zed를 위해 개발된 Rust UI 프레임워크인 [GPUI](https://www.gpui.rs/)로 만들었고, `archive/gpui` 브랜치(태그 `gpui-final`)에 보관되어 있습니다. computer-use 헬퍼는 [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus)에서 왔습니다. ZLO가 다른 컴퓨터에 연결하는 방식은 [T3 Code](https://github.com/pingdotgg/t3code)의 원격 환경을 따르며, 호스팅된 릴레이 대신 Tailscale을 씁니다.
+인터페이스는 [Rune](https://github.com/anomalyco/rune)을 씁니다. computer-use 헬퍼는 [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus)에서 왔습니다. ZLO가 다른 컴퓨터에 연결하는 방식은 [T3 Code](https://github.com/pingdotgg/t3code)의 원격 환경을 따르며, 호스팅된 릴레이 대신 Tailscale을 씁니다.
 
 이 저장소는 제 프로젝트이며, IronClaw나 NEAR AI의 공식 릴리스가 아닙니다.
 

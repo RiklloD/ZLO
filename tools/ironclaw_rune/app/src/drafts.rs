@@ -1,12 +1,10 @@
 //! Unsent composer drafts, like t3code's: one per thread plus one for the
 //! new-thread screen, kept until the message is sent or the box is emptied.
 //! They live on this Mac only, one JSON file per draft under
-//! `~/Library/Application Support/ZLO/drafts/` (the GPUI app's folder and
-//! format, so both apps see the same drafts). Memory updates on every edit;
-//! the disk write waits 300 ms after the last one, and quit writes whatever
-//! is still pending. File cards come back with their files: a path is re-read
-//! on send, a pasted picture is kept inline as base64. (GPUI `drafts.rs`; its
-//! global lives in `WorkspaceState::drafts`.)
+//! `~/Library/Application Support/ZLO/drafts/`. Memory updates on every edit;
+//! the disk write waits 300 ms after the last one, and quit writes whatever is
+//! still pending. File cards come back with their files: a path is re-read on
+//! send, a pasted picture is kept inline as base64.
 //!
 //! A draft's text carries inline tokens (file cards, `@` mentions) as byte
 //! ranges, [`DraftToken`]; the composer (area A) maps them to its pills.
@@ -28,9 +26,8 @@ use crate::state::State;
 /// computer has its own new-thread draft.
 pub const NEW_THREAD: &str = "new";
 
-/// Drafts belong to one computer: this Mac's keys stay as they always were
-/// (the GPUI app shares them), another computer's are prefixed with its
-/// environment id.
+/// Drafts belong to one computer: this Mac's keys stay as they always were,
+/// another computer's are prefixed with its environment id.
 fn scoped(s: &State, key: &str) -> String {
     scoped_for(&crate::remote::scope(s), key)
 }
@@ -194,8 +191,7 @@ fn from_saved(saved: Saved) -> (String, Draft) {
     let tokens = saved
         .tokens
         .into_iter()
-        // A token past the text or off a char boundary is dropped, as
-        // GPUI's `InputContent::with_token` refuses it.
+        // A token past the text or off a char boundary is dropped.
         .filter(|t| {
             t.start < t.end
                 && t.end <= len
@@ -519,7 +515,7 @@ mod tests {
             Some("on this mac")
         );
         assert!(!has(&s, "t1"));
-        // This Mac keeps the keys the GPUI app shares; others are prefixed.
+        // This Mac keeps its unprefixed keys; others are prefixed.
         assert_eq!(scoped_for("this-mac", "new"), "new");
         assert_eq!(scoped_for("env-1", "new"), "env-1~new");
     }

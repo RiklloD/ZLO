@@ -1,9 +1,8 @@
-//! Routines: scheduled automations with their next run, last result and
-//! Run now / Pause / Resume, beside the chat (GPUI `chat/side/routines.rs`).
-//! MonoCode's Habits list over `GET /automations` and `GET /schedules`
-//! (agent- or page-made schedules and webhooks). Automations are global, so
-//! every one is listed here; they are created and edited on the Automations
-//! page.
+//! Routines: scheduled automations with their next run, last result and Run now
+//! / Pause / Resume, beside the chat. MonoCode's Habits list over `GET
+//! /automations` and `GET /schedules` (agent- or page-made schedules and
+//! webhooks). Automations are global, so every one is listed here; they are
+//! created and edited on the Automations page.
 
 use std::collections::HashMap;
 

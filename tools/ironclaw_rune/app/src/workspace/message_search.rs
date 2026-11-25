@@ -1,6 +1,5 @@
-//! Search across the text of past chats, shared by the ⌘K menu ("In
-//! messages") and the inbox search field (a snippet under a matching row).
-//! (GPUI `workspace/message_search.rs`.)
+//! Search across the text of past chats, shared by the ⌘K menu ("In messages")
+//! and the inbox search field (a snippet under a matching row).
 //!
 //! The backend owns the index (`GET /history/search`); this keeps one
 //! debounced request in flight for the latest query and the answer for the
@@ -10,7 +9,7 @@
 //! follow-up requests refreshes it; a new query cancels them. Opening a hit
 //! opens its thread scrolled to the matched message.
 //!
-//! GPUI's debounce task is a deadline here (`pending`), run by
+//! The debounce is a deadline (`pending`), run by
 //! `workspace::poll`.
 
 use std::time::{Duration, Instant};

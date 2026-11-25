@@ -519,7 +519,7 @@ fn session_with(s: &mut State, card: bool, picker: bool) {
             ],
             false,
         );
-        // The side chat's own extras (GPUI: each `ChatView` had them).
+        // The side chat's own extras.
         chat.model_picker = crate::chat::model_picker::fixture();
         chat.model_picker.thread_id = Some("sc2".into());
         chat.model_picker.set_compact(true);

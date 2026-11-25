@@ -1,9 +1,8 @@
-//! The Memory page's open-document state and how a gateway reply is applied
-//! to it (GPUI `pages/memory_draft.rs`, ported unchanged). Kept UI-free
-//! (generic over the editor, a `rune::TextEdit` here) so the late-reply
-//! rules are unit-tested: a reply only ever touches the draft that sent it —
-//! the same path AND the same edit generation — never a document opened or
-//! edited since.
+//! The Memory page's open-document state and how a gateway reply is applied to
+//! it. Kept UI-free (generic over the editor, a `rune::TextEdit` here) so the
+//! late-reply rules are unit-tested: a reply only ever touches the draft that
+//! sent it — the same path AND the same edit generation — never a document
+//! opened or edited since.
 
 use zlo_client::memory_page::MemoryDocument;
 

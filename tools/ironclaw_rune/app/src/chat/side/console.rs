@@ -1,9 +1,8 @@
-//! Console: run a shell command in the project folder and watch its output
-//! (GPUI `chat/side/console.rs`). The light stand-in for MonoCode's
-//! terminal tab: a login `zsh -lc` per command with stdout and stderr
-//! streamed line by line, Stop to end it, ↑/↓ through earlier commands. No
-//! PTY, so full-screen programs (vim, top) don't belong here; everything
-//! that prints lines does.
+//! Console: run a shell command in the project folder and watch its output. The
+//! light stand-in for MonoCode's terminal tab: a login `zsh -lc` per command
+//! with stdout and stderr streamed line by line, Stop to end it, ↑/↓ through
+//! earlier commands. No PTY, so full-screen programs (vim, top) don't belong
+//! here; everything that prints lines does.
 
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::CommandExt;

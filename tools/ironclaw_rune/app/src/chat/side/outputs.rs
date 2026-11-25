@@ -1,10 +1,8 @@
 //! Outputs: the files this conversation produced (its own workspace on the
-//! gateway), browsable by folder and previewed in place (GPUI
-//! `chat/side/outputs.rs`). MonoCode's Documents tab, fed by
-//! `GET /threads/{id}/files`.
+//! gateway), browsable by folder and previewed in place. MonoCode's Documents
+//! tab, fed by `GET /threads/{id}/files`.
 //!
-//! The folder listing (GPUI `ChatView::browse` and `FilesPanel` in
-//! `chat.rs`) lives here now: Outputs was its only reader.
+//! The folder listing lives here now: Outputs was its only reader.
 
 use std::path::PathBuf;
 

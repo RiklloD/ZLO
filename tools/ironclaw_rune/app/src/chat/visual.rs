@@ -1,9 +1,8 @@
-//! A reply's `visual` blocks drawn natively (GPUI `chat/visual.rs`): bar,
-//! line, area and pie charts, a table and stat tiles, colored from the
-//! theme's accent. The prose around them stays Markdown. The spec and its
-//! checks live in `zlo_client::visual`.
+//! A reply's `visual` blocks drawn natively: bar, line, area and pie charts, a
+//! table and stat tiles, colored from the theme's accent. The prose around them
+//! stays Markdown. The spec and its checks live in `zlo_client::visual`.
 //!
-//! GPUI used gpui-component's charts; Rune has none, so the charts here are
+//! Rune has no charts, so the charts here are
 //! drawn with Rune shapes (`canvas`): the same data, axes in the same
 //! compact number format, and each value's exact figure as the mark's help
 //! tooltip.
@@ -473,7 +472,7 @@ fn pie(s: &State, id: &str, x: &[String], series: &Series, unit: Option<&str>) -
             0.
         };
         let sweep = share as f32 * std::f32::consts::TAU;
-        // A small gap between wedges, as gpui-component's pad angle.
+        // A small gap between wedges (a pad angle).
         let pad = if sweep > 0.04 { 0.01 } else { 0. };
         let (a0, a1) = (start + pad, start + sweep - pad);
         if a1 > a0 {

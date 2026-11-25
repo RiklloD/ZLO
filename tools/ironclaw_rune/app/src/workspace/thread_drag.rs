@@ -1,6 +1,5 @@
-//! Dragging a sidebar thread onto a chat or the new-thread composer, to
-//! hand it that thread's transcript as a file (GPUI's `DraggedThread`:
-//! `inbox.rs` `on_drag`, `chat.rs` and `draft.rs` `on_drop`).
+//! Dragging a sidebar thread onto a chat or the new-thread composer, to hand it
+//! that thread's transcript as a file.
 //!
 //! Rune drags elements only within themselves, so this is a small state
 //! machine in the app:
@@ -197,8 +196,8 @@ pub fn saw_draft(s: &mut State, r: [f32; 4], tx: &mut Tx) {
     }
 }
 
-/// The card under the pointer while a thread is dragged (GPUI
-/// `DraggedThread::render`), for the shell's overlay layer.
+/// The card under the pointer while a thread is dragged, for the shell's
+/// overlay layer.
 pub fn ghost(s: &State) -> Option<El> {
     let dragged = s
         .workspace
@@ -353,7 +352,7 @@ mod tests {
 
     /// Press, travel past the slop to the target, release: the ghost
     /// follows the pointer, the target lights up, and the drop reaches the
-    /// draft (which takes the focus, as GPUI's drop does).
+    /// draft (which takes the focus).
     #[test]
     fn a_drag_onto_the_target_drops_there() {
         let mut rt = runtime();

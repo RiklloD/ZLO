@@ -1,6 +1,6 @@
-//! Sending from the new-thread screen and the quick composer: each send is
-//! a [`Submission`] fixed at Enter, and its reply only clears the draft it
-//! came from while that draft is unedited (GPUI `send_draft_as`).
+//! Sending from the new-thread screen and the quick composer: each send is a
+//! [`Submission`] fixed at Enter, and its reply only clears the draft it came
+//! from while that draft is unedited.
 
 use zlo_client::attachments::StagedFile;
 
@@ -86,8 +86,7 @@ impl Submission {
     }
 }
 
-/// Why the new-thread screen cannot send now (GPUI `send_draft_as`'s copy),
-/// or `None` when it can.
+/// Why the new-thread screen cannot send now, or `None` when it can.
 fn refusal(draft: Option<&DraftState>) -> Option<&'static str> {
     let Some(draft) = draft else {
         return Some("There is no new-thread screen to send from.");
@@ -197,14 +196,13 @@ pub(super) fn submit(s: &mut State, sub: Submission, voice: Option<crate::voice:
                 } else if let Some(sub) = voice {
                     crate::voice::submission_refused(s, sub, "The new thread did not open.");
                 }
-                // The hero composer flies to the chat's dock on its own
-                // spring (GPUI `dock::DOCK_SECS`); only this commit uses it.
-                // Set last: a matched flight takes the commit's spring over
-                // its element's, and the send asked for the prompt rise's.
-                // Nothing here needs that one: the new chat's transcript
-                // mounts in this same commit, so the prompt has no earlier
-                // place to climb from (the rise is the fade `prompt_rise`
-                // draws by time, which no commit spring touches).
+                // The hero composer flies to the chat's dock on its own spring;
+                // only this commit uses it. Set last: a matched flight takes
+                // the commit's spring over its element's, and the send asked
+                // for the prompt rise's. Nothing here needs that one: the new
+                // chat's transcript mounts in this same commit, so the prompt
+                // has no earlier place to climb from (the rise is the fade
+                // `prompt_rise` draws by time, which no commit spring touches).
                 tx.motion(crate::design::motion::DOCK);
             }
             Err(e) => {
@@ -296,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_send_says_why_in_gpuis_words() {
+    fn a_refused_send_says_why() {
         assert_eq!(
             refusal(None),
             Some("There is no new-thread screen to send from.")

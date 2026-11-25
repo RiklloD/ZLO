@@ -1,9 +1,8 @@
-//! The Usage page's Cost and Tokens views (GPUI `pages/usage_history.rs`),
-//! after t3code's usage overview: the period's total and each provider's
-//! share, a daily chart stacked by provider, token totals by type, and a
-//! per-model breakdown. The numbers come from the CLIs' own transcripts
-//! (`/usage/history`), priced at list rates, so cost reads as an API-price
-//! estimate, not a bill.
+//! The Usage page's Cost and Tokens views, after t3code's usage overview: the
+//! period's total and each provider's share, a daily chart stacked by provider,
+//! token totals by type, and a per-model breakdown. The numbers come from the
+//! CLIs' own transcripts (`/usage/history`), priced at list rates, so cost
+//! reads as an API-price estimate, not a bill.
 
 use crate::chat::model_picker::pretty_model;
 use crate::pages::common::controls::{rule, styled};

@@ -27,8 +27,7 @@ const ROW_GUTTER: f32 = 16.;
 const ROW_ESTIMATE: f32 = 72.;
 
 /// MonoCode's prompt rise, in seconds: the sent message's climb from the
-/// composer, then the slide-in of the rows after it (GPUI `PROMPT_RISE`,
-/// `PROMPT_FADE`, `PROMPT_RISE_TOTAL`).
+/// composer, then the slide-in of the rows after it.
 const PROMPT_RISE: f32 = 0.56;
 const PROMPT_FADE: f32 = 0.48;
 const PROMPT_RISE_TOTAL: f32 = 0.88;

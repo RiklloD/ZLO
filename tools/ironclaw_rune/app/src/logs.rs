@@ -1,9 +1,7 @@
 //! Where to look when something breaks: the app writes its own log to
-//! `~/Library/Logs/ZLO/rune.log` (stderr too, for `cargo run`), and the
-//! backend ZLO starts writes `serve.stderr.log` under its home. Both open in
-//! Console from the connection screen (only the app's while the backend is
-//! remote). (GPUI `logs.rs`; the GPUI app keeps
-//! `desktop.log`, so the two apps never interleave lines in one file.)
+//! `~/Library/Logs/ZLO/rune.log` (stderr too, for `cargo run`), and the backend
+//! ZLO starts writes `serve.stderr.log` under its home. Both open in Console
+//! from the connection screen (only the app's while the backend is remote).
 //!
 //! Headless runs (`--snap`, `--tree`, `--script`) log to stderr only, so a
 //! scene render never lands in the person's log file.

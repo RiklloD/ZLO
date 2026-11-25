@@ -1,8 +1,7 @@
-//! Looping marks: the working dots, Zeron's gradient spinner, the shimmer,
-//! the live status dot and the claw mark (GPUI `kit.rs` on `pulse.rs`).
+//! Looping marks: the working dots, Zeron's gradient spinner, the shimmer, the
+//! live status dot and the claw mark.
 //!
-//! GPUI ran them on a shared 30 Hz lease clock (`pulse.rs`) that notified
-//! the views painting a loop. Rune's loops already do that job: every
+//! Rune's loops need no clock of their own: every
 //! `El::cycle`/`El::looping` track runs on the one render clock, wakes the
 //! window only while visible (at the cycle's own `fps`), stays in phase with
 //! every loop of the same period, and holds its `still` pose under reduced
@@ -21,7 +20,7 @@ use crate::design::motion::{GRADIENT_SPIN_MS, GSPIN_STOPS, gspin_opacity};
 use crate::design::styles::Style;
 use crate::state::State;
 
-/// Loop frame rate for small loaders (GPUI `Rate::Half`).
+/// Loop frame rate for small loaders.
 pub(crate) const HALF_FPS: f32 = 15.;
 
 /// A cosine breath from `low` up to full and back over one period.
@@ -63,8 +62,8 @@ pub fn breathe(period: f32, delay: f32, stops: &'static [(f32, f32)]) -> Cycle {
     }
 }
 
-/// A sine bump 0.25 → 1 → 0.25 over the first half of a period, resting at
-/// 0.25 for the second (GPUI `0.25 + 0.75 * max(sin, 0)`).
+/// A sine bump 0.25 → 1 → 0.25 over the first half of a period, resting at 0.25
+/// for the second.
 const DOT_WAVE: &[(f32, f32)] = &[
     (0., 0.25),
     (0.083, 0.625),

@@ -1,8 +1,7 @@
-//! Activity: what the agent is doing and what waits for you (GPUI
-//! `chat/side/activity.rs`). MonoCode's Activity tab as a checklist per
-//! turn: every tool call, approval and run notice of the conversation,
-//! newest turn first, read from the same live rows the transcript draws.
-//! Open approvals sit on top with their buttons.
+//! Activity: what the agent is doing and what waits for you. MonoCode's
+//! Activity tab as a checklist per turn: every tool call, approval and run
+//! notice of the conversation, newest turn first, read from the same live rows
+//! the transcript draws. Open approvals sit on top with their buttons.
 
 use std::collections::HashSet;
 

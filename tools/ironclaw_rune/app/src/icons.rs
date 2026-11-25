@@ -1,5 +1,4 @@
-//! Lucide icons (ISC), from the `gpui-kit-assets` 0.8.0 catalog, as Rune
-//! `Icon`s. Draw with `rune::icon(&icons::X, size)` and colour with
+//! Lucide icons (ISC) as Rune `Icon`s. Draw with `rune::icon(&icons::X, size)` and colour with
 //! `.color(..)`. Add more from the same catalog in the same shape.
 //!
 //! Rune's icon rasterizer reads `fill`/`stroke` on each element and ignores

@@ -1,5 +1,5 @@
-//! Settings → Plugins rendering (GPUI `ExtensionsView`'s `render_*`
-//! methods); a plugin's own page and the consent sheet are `plugin_view.rs`.
+//! Settings → Plugins rendering; a plugin's own page and the consent sheet are
+//! `plugin_view.rs`.
 
 use crate::pages::common::controls::{
     Look, Size, button_sized, header_with, icon_button_sized, input, open_url, outlined_tag,

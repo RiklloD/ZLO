@@ -1,7 +1,7 @@
-//! Text styles of the GPUI app's rem scale (16 px base, 14 px body):
-//! `text_xs` 12, `text_sm` 14, `text_lg` 18, the page title 20. Each is a
-//! function, scaled to Appearance → UI font size (`styles::rem`) as GPUI's
-//! rem was; code ([`MONO_XS`]) keeps its fixed size.
+//! Text styles of the app's rem scale (16 px base, 14 px body): extra-small
+//! 12, small 14, large 18, the page title 20. Each is a function, scaled to
+//! Appearance → UI font size (`styles::rem`); code ([`MONO_XS`]) keeps its
+//! fixed size.
 
 use rune::TextStyle;
 

@@ -88,7 +88,7 @@ members = [
 default-members = ["crates/app/ironclaw_cli"]
 exclude = [
     # Standalone ZLO desktop app (Rune): its own workspace, kept out of the
-    # main build. The earlier GPUI app is archived on branch `archive/gpui`.
+    # main build.
     "tools/ironclaw_rune",
     # Standalone helper binary, `[workspace]`-rooted and never built here (it
     # needs libclang + a C toolchain). Its §5 home is `tools/`, beside the

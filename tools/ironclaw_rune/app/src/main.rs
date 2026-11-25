@@ -1,8 +1,7 @@
 //! ZLO: a native Rune window onto the local IronClaw gateway.
 //!
 //! How the app is put together, its rules and the checks that need a real
-//! window are in `../../README.md`. (The GPUI app this replaced is archived
-//! on the `archive/gpui` branch, tag `gpui-final`.)
+//! window are in `../../README.md`.
 //!
 //! Opening the app starts this Mac's gateway and quitting (⌘Q) stops it
 //! (`service.rs`), unless another computer is in use or "Run IronClaw on

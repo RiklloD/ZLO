@@ -36,7 +36,7 @@ const LIST_BOTTOM: f32 = 8.;
 /// history is slim rows.
 const ESTIMATE: f32 = design::SIDEBAR_SLIM_HEIGHT + LINE_GAP;
 
-/// The spacer between the cards and the shelves. GPUI's list is a flex
+/// The spacer between the cards and the shelves. The design is a flex
 /// column whose `flex_1` spacer sits the Working, Snoozed and Settled folds
 /// at the sidebar's bottom while the cards are short; a virtual list must be
 /// its viewport's only child, so the spacer is a row sized from layout: the
@@ -200,7 +200,7 @@ impl Ctx {
             .pb(if last { LIST_BOTTOM } else { LINE_GAP })
             .child(body)
             .arrives_whole();
-        // A resorted row glides to its new place (GPUI `flip::ROW_SECS`).
+        // A resorted row glides to its new place.
         if matches!(
             self.lines.get(i),
             Some(Line::Card { .. } | Line::Slim { .. })

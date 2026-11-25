@@ -1,27 +1,7 @@
-//! Motion catalog, ported from the GPUI app's `design/motion.rs` (itself
-//! adapted from Zeron's `motion.rs`, MIT): the timings and curves every area
-//! animates on, as Rune curves and springs, plus the few helpers Rune does not
-//! already have (the working-word vocabulary, elapsed-time labels, a
+//! Motion catalog, adapted from Zeron's `motion.rs` (MIT): the timings and
+//! curves every area animates on, as Rune curves and springs, plus the few
+//! helpers Rune does not already have (the working-word vocabulary, elapsed-time labels, a
 //! premultiplied colour mix).
-//!
-//! What GPUI needed hand-rolled and Rune does itself, so it is NOT ported:
-//!
-//! | GPUI (`design/…`) | Rune |
-//! |---|---|
-//! | `CubicBezier` solver | `rune::Easing::cubic` / `rune::CubicBezier` (solved like browsers) |
-//! | `MotionSpec` (ms + curve) | `rune::Curve::tween(secs, easing)`; `Anim` via `.into()` |
-//! | `Spring` (damping + ms) | `rune::Spring::new(duration, bounce)` |
-//! | hover tween store (`set_hover`, `hover_t`, `hover_listener`) | `El::hover(color)` + `hover_motion` (paint-only, no commit) |
-//! | state tweens (`state_t`, `glide`) | keyed elements: a changed fill, width or offset springs on `.motion(..)` |
-//! | `fade_in`, `fade_in_after`, `pop_in` | `.transition(..)` presence ([`pop`]); nothing animates on the first frame |
-//! | `born`, `reveal`, `arrive`, `settle`, `restart` | presence transitions and growth stacks (`El::growth`) |
-//! | `collapse`, `grow` (height morphs) | presence (`Transition::reveal`), or a growth stack |
-//! | `roll_text` | `rune_kit::RollingText` |
-//! | `pump`, `frame_tail` (keep frames coming) | Rune's clock requests frames only while a track moves |
-//! | `dock.rs` composer hand-off | `El::matched(COMPOSER_MATCH)` on both composers ([`COMPOSER_MATCH`]) |
-//! | `flip.rs` resorted rows / sliding pills | keyed inbox rows on `.motion(ROW_RESORT)`; the side dock's tab pill on `.motion(PILL)` |
-//! | `pulse.rs` shared 30 Hz loop clock | `El::looping` / `El::cycle` (one render clock, frames only while visible) |
-//! | `smooth_scroll.rs` wheel glide | Rune glides notched wheels natively (Chromium curve, whole device pixels, retargeted mid-ease, chained across nested viewports); a macOS mouse wheel's line deltas are notches too (no wrapper: one taking `&mut State` rebuilt the view per wheel event); trackpads stay 1:1 |
 //!
 //! Reduced motion (the battery saver, `prefs.reduce_motion`) is one switch
 //! for all of it: `look::apply_motion` sets `Cx::reduced_motion`, under which
@@ -40,16 +20,16 @@ pub const TAILWIND: Easing = Easing::cubic(0.4, 0., 0.2, 1.);
 pub const GRADIENT_SPIN_MS: u64 = 750;
 /// Segmented-control highlight slide: Zeron's 150 ms tab slide.
 pub const TAB_SLIDE: Spring = Spring::new(0.14, 0.0);
-// ---- Springs replacing GPUI's per-frame helpers ------------------------
+// ---- Springs for rows, pills and the composer dock ----------------------
 
-/// A resorted row settling in its new place (GPUI `flip::ROW_SECS`).
+/// A resorted row settling in its new place.
 pub const ROW_RESORT: Spring = Spring::new(0.26, 0.0);
-/// A selection pill moving between tabs or rows (GPUI `flip::PILL_SECS`).
+/// A selection pill moving between tabs or rows.
 pub const PILL: Spring = Spring::new(0.22, 0.0);
-/// The composer reaching its dock (GPUI `dock::DOCK_SECS`, critically damped).
+/// The composer reaching its dock.
 pub const DOCK: Spring = Spring::new(0.34, 0.0);
-/// `El::matched` id both composers carry, so the new-thread composer flies
-/// to the chat's dock on the first message and back (GPUI `dock.rs`). Put
+/// `El::matched` id both composers carry, so the new-thread composer flies to
+/// the chat's dock on the first message and back. Put
 /// `.matched(COMPOSER_MATCH).motion(DOCK)` on the hero and docked composer
 /// cards; Rune animates frame, radius and fill between them.
 pub const COMPOSER_MATCH: &str = "composer";
@@ -84,7 +64,7 @@ pub const SLIDE: Spring = Spring::new(0.22, 0.0);
 /// figures that change on events (a count, a total), never on a clock.
 pub const ROLL: Spring = Spring::new(0.3, 0.0);
 
-// ---- Presence transitions (GPUI `fade_in` / `pop_in` / `collapse`) ------
+// ---- Presence transitions ------
 
 /// The scale a popover grows from as it pops in ([`pop`]).
 const POP_SCALE: f32 = 0.97;

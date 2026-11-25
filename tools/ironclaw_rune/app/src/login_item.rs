@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// The app's bundle id (see `bundle.sh`), inherited from the archived GPUI
-/// app so an existing login item keeps working.
+/// The app's bundle id (see `bundle.sh`), unchanged since the first release
+/// so an existing login item keeps working.
 const LABEL: &str = "com.numoh.desktop";
 
 /// The `.app` this process runs from, if any.

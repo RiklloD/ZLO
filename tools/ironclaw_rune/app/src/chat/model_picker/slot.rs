@@ -1,6 +1,5 @@
 //! How handlers and async replies find a model picker again: a chat's by
-//! its thread id (the open chat and each side chat have their own, GPUI's
-//! per-`ChatView` `ModelPicker`), the draft screen's and the automation
+//! its thread id (the open chat and each side chat have their own), the draft screen's and the automation
 //! form's at a fixed place. Also which chat picker ⇧⌘M and Esc mean.
 
 use std::sync::Arc;
@@ -79,9 +78,8 @@ pub const DRAFT: Slot = Slot::Fixed(FixedSlot {
     },
 });
 
-/// The chat picker ⇧⌘M and Esc mean (GPUI `ChatView::focused_picker`): the
-/// side chat's while its composer has focus or its picker is open, else
-/// the open chat's.
+/// The chat picker ⇧⌘M and Esc mean: the side chat's while its composer has
+/// focus or its picker is open, else the open chat's.
 pub fn focused_slot(s: &State) -> Option<Slot> {
     let main = s.chat.as_ref()?;
     if let Some(side) = main.side.chat.as_ref()
@@ -116,8 +114,7 @@ pub fn close_open(s: &mut State) -> bool {
     false
 }
 
-/// A chat's reaction to its picker (GPUI `ChatView`'s `PickerEvent`
-/// subscription); `id` is the chat's thread, main or side.
+/// A chat's reaction to its picker; `id` is the chat's thread, main or side.
 fn chat_event(s: &mut State, id: &str, event: PickerEvent) {
     match event {
         PickerEvent::Changed(change) => {

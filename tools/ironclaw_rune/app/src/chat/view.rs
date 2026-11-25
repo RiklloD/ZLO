@@ -1,8 +1,7 @@
-//! The chat's main column (GPUI `chat.rs`, `impl Render for ChatView`): the
-//! reconnect banner, the transcript list with its outline and jump button,
-//! computer use, the error line, the orchestration panel (with the plan
-//! strip), the `/` `@` menu and the composer; the right pane's docks beside
-//! it.
+//! The chat's main column: the reconnect banner, the transcript list with its
+//! outline and jump button, computer use, the error line, the orchestration
+//! panel (with the plan strip), the `/` `@` menu and the composer; the right
+//! pane's docks beside it.
 //!
 //! The transcript is a virtualized growth stack in a scroll viewport that
 //! follows its end. Zeron's turn layout comes from the reserve: after a
@@ -62,9 +61,8 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
             .child(text("No thread open").color(s.palette.text_muted));
     };
     let main = column(s, chat, cx, k, layer);
-    // The conversation's wallpaper covers its column, up over the
-    // breadcrumb as GPUI's panel-high layer did; the right pane's covers
-    // the pane (GPUI computed both rects from the dock sizes).
+    // The conversation's wallpaper covers its column, up over the breadcrumb
+    // to the panel's top; the right pane's covers the pane.
     let mut conversation = row()
         .key("conversation")
         .grow(1.)
@@ -106,7 +104,7 @@ pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
 }
 
 /// A wallpaper layer over its region of the chat, reaching up over the
-/// breadcrumb to the panel's top as GPUI's panel-high layers did.
+/// breadcrumb to the panel's top.
 fn up_to_panel_top(over: El) -> El {
     el().pin(
         Some(0.),

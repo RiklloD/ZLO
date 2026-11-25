@@ -1,9 +1,8 @@
-//! Remembers the main window's frame between launches, like Safari or Zed
-//! (GPUI `window_state.rs`, same `window.json`, so both apps share it).
+//! Remembers the main window's frame between launches, like Safari or Zed.
 //!
 //! The first launch fills the screen's usable area (everything but the menu
-//! bar and Dock). After that the window reopens where it was left. As in
-//! GPUI (`observe_window_bounds` → `record`), every move and resize records
+//! bar and Dock). After that the window reopens where it was left. Every
+//! move and resize records
 //! the frame (full screen is not a frame to restore); here a record is also
 //! written, once the window has rested for [`QUIET`], through the app's one
 //! ordered writer (`persist.rs`), and quit writes the last one again.
@@ -12,7 +11,7 @@
 //! macOS this reads and sets the `NSWindow` frame itself through the raw
 //! handle Rune hands `App::on_window`, and hears moves and resizes from
 //! `NSWindowDidMoveNotification`/`NSWindowDidResizeNotification`. Frames are
-//! stored as GPUI did: top-left origin, points, y growing down from the
+//! stored top-left origin, points, y growing down from the
 //! primary screen's top.
 
 use std::cell::{Cell, RefCell};
@@ -38,7 +37,7 @@ struct Frame {
 thread_local! {
     /// The main window, once Rune created it (UI thread only).
     static WINDOW: RefCell<Option<rune::WindowHandle>> = const { RefCell::new(None) };
-    /// The last windowed frame recorded (GPUI's `Last` global).
+    /// The last windowed frame recorded.
     static LAST: Cell<Option<Frame>> = const { Cell::new(None) };
 }
 
@@ -241,7 +240,7 @@ mod mac {
         }
     }
 
-    /// Cocoa's bottom-left frame from GPUI's top-left one.
+    /// Cocoa's bottom-left frame from the stored top-left one.
     fn to_cocoa(f: Frame, primary_h: f64) -> Rect {
         Rect {
             origin: Point {
@@ -299,8 +298,8 @@ mod mac {
         Some(screens().first()?.0.size.h as f32)
     }
 
-    /// Record the frame on every move and resize of the window (GPUI
-    /// `observe_window_bounds`). The observers live as long as the app.
+    /// Record the frame on every move and resize of the window. The observers
+    /// live as long as the app.
     pub(super) fn observe(h: raw_window_handle::WindowHandle<'_>) {
         let Some(window) = ns_window(h) else { return };
         let Some(center_class) = AnyClass::get(c"NSNotificationCenter") else {

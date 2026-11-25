@@ -1,5 +1,4 @@
-//! Operator → Status: readiness checks, doctor diagnostics, and the OS
-//! service (GPUI `StatusPanel` in `pages/operator.rs`).
+//! Operator → Status: readiness checks, doctor diagnostics, and the OS service.
 
 use crate::pages::common::controls::{
     Look, Size, button_sized, muted, outlined_tag, rule, spinner,

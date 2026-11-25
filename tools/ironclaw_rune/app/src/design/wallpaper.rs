@@ -1,8 +1,6 @@
 //! The wallpaper, the way shalldie's vscode-background (MIT) does it in
 //! VS Code: one picture laid over the whole window, the conversation, the
 //! sidebar or the right pane at a fixed opacity, never catching the mouse.
-//! Ported from the GPUI app's `design/wallpaper.rs`.
-//!
 //! The picture is a painted scene or the person's own (one file, or a folder
 //! it walks through), redrawn through a background effect (`paint`). The
 //! pixels are painted on a background thread (`jobs::blocking`) at the
@@ -12,7 +10,7 @@
 //! A new picture crossfades in over the old one (a presence fade on its
 //! key); a folder can move on to its next picture on a timer.
 //!
-//! Differences from GPUI, all Rune doing the job itself: the layer's opacity
+//! Rune does the compositing itself: the layer's opacity
 //! applies to the composited pair (an isolated group), so a crossfade never
 //! dips; there is no texture atlas to release by hand (dropping the last
 //! `Pixels` handle frees it).
@@ -77,8 +75,8 @@ pub fn covers_composer(prefs: &Prefs) -> bool {
 /// The wallpaper layer for `area`, when the preferences put it there: an
 /// out-of-flow element pinned to all four edges of its parent, inert (it
 /// takes no clicks, hovers or scrolls) and hidden from accessibility. Add it
-/// as the LAST child of the area's container so it lies over the content, as
-/// in GPUI; give the container `.clip_rounded(r)` or pass the radius to
+/// as the LAST child of the area's container so it lies over the content;
+/// give the container `.clip_rounded(r)` or pass the radius to
 /// [`layer_rounded`]. It reports its size, which is what the picture is
 /// painted at, so it is returned (empty) even before the first picture.
 pub fn layer(s: &State, area: &str) -> Option<El> {

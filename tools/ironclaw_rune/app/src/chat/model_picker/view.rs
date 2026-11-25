@@ -1,6 +1,5 @@
-//! The model picker's one pill ("model · thinking") and its popover (GPUI
-//! `ModelPicker::render`, `render_popover`, `group_header`, `model_row`),
-//! with the thinking level as a slider under the models.
+//! The model picker's one pill ("model · thinking") and its popover, with the
+//! thinking level as a slider under the models.
 
 use rune::shape::{LineCap, Shape};
 use rune::{

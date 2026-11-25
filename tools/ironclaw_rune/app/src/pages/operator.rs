@@ -3,9 +3,9 @@
 //! behind this page is operator-gated; the local single-user token has that
 //! role.
 //!
-//! Port of GPUI `pages/operator.rs`: the page shell (a tab row over panels
-//! built on first visit) and the shared widgets; the Status tab lives in
-//! `operator/status.rs`, the others in their GPUI-named files.
+//! The page shell (a tab row over panels built on first visit) and the
+//! shared widgets; each tab lives in its own file (`operator/status.rs`,
+//! `operator/config.rs`, …).
 
 mod config;
 mod extensions;
@@ -55,7 +55,7 @@ const TABS: [(Tab, &str); 6] = [
 pub struct OperatorState {
     pub tab: Tab,
     pub status: status::StatusPanel,
-    /// The status panel loaded once (GPUI builds it with the page).
+    /// The status panel loaded once.
     status_built: bool,
     pub setup: Option<setup::SetupPanel>,
     pub config: Option<config::ConfigPanel>,
@@ -182,7 +182,7 @@ fn panel_motion(panel: El, tab: Tab) -> El {
 
 // --- shared widgets ---
 
-/// GPUI operator `section_title`: 20 px above, 8 below, semibold.
+/// A section title: 20 px above, 8 below, semibold.
 fn section_title(s: &State, title: &str) -> El {
     text(title.to_string())
         .font(body_semibold())

@@ -1,14 +1,13 @@
-//! The translucent window's backdrop, as GPUI's
-//! `WindowBackgroundAppearance::Blurred` made it: the WindowServer blurs
-//! the desktop behind the window (radius 80, the private CoreGraphics call
-//! Terminal.app uses, as GPUI and winit do) and adds no tint of its own, so
+//! The translucent window's backdrop: the WindowServer blurs the desktop
+//! behind the window (radius 80, the private CoreGraphics call Terminal.app
+//! and winit use) and adds no tint of its own, so
 //! the shell's and panel's fills alone set how dark the window reads.
 //!
 //! Rune's own option, a system material, is an `NSVisualEffectView`; its
 //! popover material lays a light grey wash over the blur, which fogged the
-//! whole window next to the GPUI app.
+//! whole window.
 
-/// GPUI's blur radius.
+/// The blur radius.
 #[cfg(target_os = "macos")]
 const RADIUS: i64 = 80;
 
@@ -31,7 +30,7 @@ mod mac {
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
-        // Private, but stable for years and used by Terminal.app, GPUI and winit.
+        // Private, but stable for years and used by Terminal.app and winit.
         fn CGSMainConnectionID() -> *mut AnyObject;
         fn CGSSetWindowBackgroundBlurRadius(
             connection: *mut AnyObject,

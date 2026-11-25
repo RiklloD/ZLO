@@ -1,7 +1,6 @@
-//! When each thread's current run started, for the "Weaving… 2m 33s" line
-//! and the sidebar's Working timer. Lives for the app run, outside any chat
-//! state, so leaving a thread and coming back keeps counting. (GPUI
-//! `run_clock.rs`; the global lives in `WorkspaceState::run_clock`.)
+//! When each thread's current run started, for the "Weaving… 2m 33s" line and
+//! the sidebar's Working timer. Lives for the app run, outside any chat state,
+//! so leaving a thread and coming back keeps counting.
 //!
 //! The backend's turn start (inbox `working_since`) wins when it has one;
 //! otherwise the first chat that saw the run remembers it, keyed by run id

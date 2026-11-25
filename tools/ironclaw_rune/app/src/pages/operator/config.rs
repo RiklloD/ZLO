@@ -1,6 +1,5 @@
-//! Operator → Config: keys with source and precedence, and edit one key as
-//! JSON (read fresh first, confirm before saving). GPUI
-//! `pages/operator/config.rs`.
+//! Operator → Config: keys with source and precedence, and edit one key as JSON
+//! (read fresh first, confirm before saving).
 //!
 //! No "Validate" button: the gateway's validate route has no effective-config
 //! service behind it and answers "not wired yet" for every key.

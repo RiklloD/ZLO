@@ -1,5 +1,5 @@
-//! System notifications through `UNUserNotificationCenter`, for what GPUI's
-//! `show_system_notification` and `on_system_notification_response` did.
+//! System notifications through `UNUserNotificationCenter`: showing one and
+//! handling the click on it.
 //! Everything here runs on the main thread (Rune handlers and AppKit
 //! delegate callbacks). Without an app bundle the notification center
 //! refuses to start (it raises), so nothing is posted then.

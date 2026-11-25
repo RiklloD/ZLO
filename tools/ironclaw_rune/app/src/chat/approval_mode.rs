@@ -1,12 +1,11 @@
-//! The composer's approval pill (GPUI `chat/approval_mode.rs`): "Full
-//! access" (tool calls run without asking) or "Ask first" (calls that need
-//! approval open a card). The mode belongs to the thread's profile, so
-//! switching it here changes every thread on that profile, running ones
-//! included from their next tool call; the profile editor edits the same
-//! value. A profile without a mode follows the global auto-approve setting,
-//! and the pill shows what that resolves to.
+//! The composer's approval pill: "Full access" (tool calls run without asking)
+//! or "Ask first" (calls that need approval open a card). The mode belongs to
+//! the thread's profile, so switching it here changes every thread on that
+//! profile, running ones included from their next tool call; the profile editor
+//! edits the same value. A profile without a mode follows the global
+//! auto-approve setting, and the pill shows what that resolves to.
 //!
-//! GPUI drew its own popover; here the menu is the native pop-up menu
+//! The menu is the native pop-up menu
 //! (`Tx::popup_menu`): a disabled "Access" heading, the three choices with a
 //! check on the current one (the global row says what it resolves to), and
 //! the hint for the current choice at the bottom.
@@ -76,8 +75,8 @@ impl ApprovalPill {
     }
 }
 
-/// An approval mode or the global switch was saved, from any page: every
-/// open pill reloads (GPUI's `ApprovalEpoch`).
+/// An approval mode or the global switch was saved, from any page: every open
+/// pill reloads.
 pub fn changed(s: &mut State) {
     let mut ids: Vec<String> = s.chat.iter().map(|c| c.thread_id.clone()).collect();
     ids.extend(super::side::side_chat_ids(s));

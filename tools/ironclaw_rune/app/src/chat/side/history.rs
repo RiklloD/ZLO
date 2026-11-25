@@ -1,7 +1,6 @@
-//! History: MonoCode Native's `history.rs` + `git_graph` (MIT) at pane size
-//! (GPUI `chat/side/history.rs`): the commit log with its swimlane graph
-//! drawn per row; a commit opens its own diff in the same viewer the
-//! Changes tab uses (rune-kit `DiffView`).
+//! History: MonoCode Native's `history.rs` + `git_graph` (MIT) at pane size:
+//! the commit log with its swimlane graph drawn per row; a commit opens its own
+//! diff in the same viewer the Changes tab uses (rune-kit `DiffView`).
 
 use rune::shape::{LineCap, Shape};
 use rune::{Color, El, canvas, col, el, row};
@@ -188,9 +187,7 @@ pub(super) fn refresh(s: &mut State) {
     );
 }
 
-/// A commit was made or the tree moved: History reloads (GPUI reloaded
-/// when next drawn; a Rune view can't start work, so it reloads now when
-/// the tab shows, else on its next visit).
+/// A commit was made or the tree moved: History reloads.
 pub(super) fn stale(s: &mut State) {
     let Some(x) = side_mut(s) else { return };
     x.history.commits = None;

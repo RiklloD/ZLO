@@ -1,11 +1,8 @@
-//! Provider logos (GPUI `design/brands.rs` and the provider half of
-//! `assets.rs`): which bundled icon (`assets/providers/`, t3code's and
-//! lobe-icons' sets, MIT) and tint stand for a provider, runtime or LLM
-//! backend id. Unknown ids get a lettered tile, so a new provider never
-//! renders blank.
+//! Provider logos: which bundled icon (`assets/providers/`, t3code's and
+//! lobe-icons' sets, MIT) and tint stand for a provider, runtime or LLM backend
+//! id. Unknown ids get a lettered tile, so a new provider never renders blank.
 //!
-//! GPUI drew the SVGs through its asset source with `text_color` tinting
-//! monochrome ones. Rune rasterizes SVGs through `rune::ImageCache` (resvg on
+//! Rune rasterizes SVGs through `rune::ImageCache` (resvg on
 //! its worker) at the size they draw at; a monochrome logo is recoloured by
 //! rewriting its `fill="black"` / `currentColor` before it is cached, keyed
 //! by colour, so a theme switch gets a new raster once and then reuses it.

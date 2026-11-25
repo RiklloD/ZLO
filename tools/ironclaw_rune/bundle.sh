@@ -6,11 +6,11 @@
 #   ZLO.app/Contents/MacOS/zlo-backend                IronClaw, started by zlo
 #   ZLO.app/Contents/Helpers/ZLO Computer Use.app     the engine, started by the backend
 #
-# Bundle id com.numoh.desktop, inherited from the archived GPUI app (branch
-# `archive/gpui`), so macOS keeps the permissions (microphone, speech,
-# Accessibility, Screen Recording), notification settings, defaults and the
-# login item (LaunchAgent com.numoh.desktop, app/src/login_item.rs) already
-# granted to ZLO. Installing replaces any earlier ZLO.app, GPUI or Rune.
+# Bundle id com.numoh.desktop, unchanged since the first release, so macOS
+# keeps the permissions (microphone, speech, Accessibility, Screen
+# Recording), notification settings, defaults and the login item
+# (LaunchAgent com.numoh.desktop, app/src/login_item.rs) already granted to
+# ZLO. Installing replaces any earlier ZLO.app.
 # zlo-backend keeps the identifier com.numoh.backend, which the keychain
 # item trusts.
 #

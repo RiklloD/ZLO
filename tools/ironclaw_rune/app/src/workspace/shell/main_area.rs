@@ -1,8 +1,7 @@
-//! The main column under the breadcrumb (GPUI `Workspace::render`'s
-//! `main`): one keyed structure whatever shows. The open chat stays mounted
-//! under the settings pages (hidden), so a visit never loses its place;
-//! pages and threads enter with a rise and the one they replace cuts out
-//! at once.
+//! The main column under the breadcrumb: one keyed structure whatever shows.
+//! The open chat stays mounted under the settings pages (hidden), so a visit
+//! never loses its place; pages and threads enter with a rise and the one they
+//! replace cuts out at once.
 
 use rune::{Cx, El, col, el};
 use rune_kit::Kit;
@@ -14,16 +13,15 @@ use crate::icons;
 use crate::state::{Page, State};
 
 /// Whether the open chat is mounted in the main area: on its own page and,
-/// hidden, under the settings pages, so coming back finds
-/// it where it was (GPUI kept the chat entity alive). The new-thread screen
-/// unmounts it: its composer flies to the chat's on the first send.
+/// hidden, under the settings pages, so coming back finds it where it was. The
+/// new-thread screen unmounts it: its composer flies to the chat's on the first
+/// send.
 pub(super) fn chat_shown(s: &State) -> bool {
     s.chat.is_some() && s.page != Page::Draft
 }
 
-/// The page or thread entrance: a fade while rising, as GPUI's
-/// `Style::enter` + `enter_rise`; the page it replaces cuts out at once
-/// (GPUI animated only the entrance).
+/// The page or thread entrance: a fade while rising; the page it replaces
+/// cuts out at once.
 fn entrance(s: &State) -> rune::Transition {
     let st = crate::design::styles::Style::of(&s.prefs);
     rune::Transition::opacity()

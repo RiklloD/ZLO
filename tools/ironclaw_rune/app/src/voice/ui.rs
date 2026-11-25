@@ -6,9 +6,8 @@
 //! thread, quick) draws the same controls; in the quick composer, which has
 //! no menu, a right-click on the mic toggles talk mode.
 //!
-//! Rune port of the GPUI `voice/ui.rs`. Area A (chat composer) and area B
-//! (new-thread and quick composers) place [`composer_controls`] in their
-//! composer's bottom row.
+//! Area A (chat composer) and area B (new-thread and quick composers) place
+//! [`composer_controls`] in their composer's bottom row.
 
 use rune::{Color, Cursor, El, PointerPress, TextStyle, Tx, el, icon, row, text};
 use rune_kit::{Kit, MenuItem, RollingText};
@@ -236,9 +235,8 @@ pub fn draw<S: 'static>(
     out.child(mic)
 }
 
-/// The composer's round icon button (GPUI `chat::round_button`, its
-/// non-send variant): a 28 px tile with 7 px corners, filled with the ink
-/// while on.
+/// The composer's round icon button: a 28 px tile with 7 px corners, filled
+/// with the ink while on.
 fn round_button(
     p: &Palette,
     key: &'static str,

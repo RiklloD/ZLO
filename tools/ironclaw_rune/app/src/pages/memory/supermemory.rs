@@ -1,5 +1,4 @@
-//! The Memory page's Supermemory tab (the second half of GPUI
-//! `pages/memory.rs`): the chosen profile's container on the user's own
+//! The Memory page's Supermemory tab: the chosen profile's container on the user's own
 //! Supermemory account — what was captured there, semantic search, and
 //! deleting a wrong document or forgetting a wrong memory.
 

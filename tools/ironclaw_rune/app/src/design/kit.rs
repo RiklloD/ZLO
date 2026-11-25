@@ -64,12 +64,8 @@
 //! Text sizes: [`XS`] (12) and [`SM`] (14) at the 16 pt rem, scaled by
 //! `prefs.ui_font_size` through [`Style::text`].
 //!
-//! `ui.rs` mapping: `ui::Button` → [`Button`]; `ui::card` → [`card`];
-//! `ui::activity_line` → [`activity_line`]; `ui::selectable` → [`selectable`];
-//! `ui::markdown`/`kept_markdown` → `rune_kit::Markdown` (streaming-aware, keeps
-//! its parse per key); `cached_view` → `El::cache()`; the gpui-kit re-exports
-//! (Input, Switch, Tag, charts, menus) → `rune::TextEdit` + `rune_kit::{TextInput,
-//! TextArea, Switch, Badge, Menu, Popover, ...}`.
+//! Markdown is `rune_kit::Markdown` (streaming-aware, keeps its parse per
+//! key); fields, switches, badges and menus are rune-kit's own.
 
 pub mod compact;
 mod editor;

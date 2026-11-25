@@ -5,9 +5,8 @@
 //! current one highlighted. It hides once every step is done and the run is
 //! over, so a finished plan does not linger on the next task.
 //!
-//! GPUI `chat/plan_strip.rs`. The strip is drawn inside the orchestration
-//! panel above the composer (area H's `orchestration::panel` puts
-//! [`view`] first, as GPUI's `render_orchestration` did).
+//! The strip is drawn inside the orchestration panel above the composer (area
+//! H's `orchestration::panel` puts [`view`] first).
 
 use ironclaw_host_api::agent_plan::{AgentPlan, PlanEntry, PlanEntryStatus};
 use rune::{El, col, icon, row, text};

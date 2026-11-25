@@ -1,4 +1,4 @@
-//! Native macOS notifications for new inbox items (GPUI `alerts.rs`).
+//! Native macOS notifications for new inbox items.
 //!
 //! The gateway inbox is the source: the workspace polls it, and each unread
 //! item this process has not seen yet becomes one system notification. Items
@@ -92,8 +92,7 @@ fn notify(tag: &str, title: &str, body: &str) {
     let _ = (tag, title, body);
 }
 
-/// The thread a notification opens (GPUI `pages::notifications::thread_of`,
-/// kept here so alerts need nothing from the page).
+/// The thread a notification opens.
 pub fn thread_of(item: &ProductNotification) -> Option<&str> {
     match &item.action {
         ProductNotificationAction::OpenThread { thread_id } => Some(thread_id),
@@ -101,8 +100,7 @@ pub fn thread_of(item: &ProductNotification) -> Option<&str> {
     }
 }
 
-/// The alert title per kind (the label half of GPUI's
-/// `pages::notifications::describe`).
+/// The alert title per kind.
 pub fn describe(kind: ProductNotificationKind) -> &'static str {
     match kind {
         ProductNotificationKind::ApprovalRequired => "Approval needed",

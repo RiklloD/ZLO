@@ -1,6 +1,6 @@
 //! Lucide icons (ISC) the chat draws that the shared catalog
-//! (`crate::icons`) lacks, in the same shape. GPUI drew them as
-//! `ExtraIcon::{ListChecks, CircleDashed, Circle, CircleQuestionMark}`.
+//! (`crate::icons`) lacks, in the same shape: list-checks, circle-dashed,
+//! circle and circle-question-mark.
 //! Rune's icon parser reads `fill`/`stroke` on each element, not on a
 //! `<g>`, so every element carries them.
 

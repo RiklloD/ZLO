@@ -11,8 +11,8 @@
 //! "Background tasks" picks one model per background job (thread titles
 //! today); it applies to every profile.
 //!
-//! Port of GPUI `pages/providers.rs`: the state and the gateway calls live
-//! here, the rendering in `providers/view.rs`.
+//! The state and the gateway calls live here, the rendering in
+//! `providers/view.rs`.
 
 pub(crate) mod catalog;
 mod cli;

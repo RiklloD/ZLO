@@ -1,8 +1,7 @@
-//! Files: the project folder as a tree (GPUI `chat/side/project.rs`),
-//! MonoCode Native's `explorer.rs` trimmed to what a reviewer needs:
-//! folders open lazily, git colours mark changed files, ignored files hide
-//! behind an eye toggle, a file previews in place and can be attached to
-//! the next message.
+//! Files: the project folder as a tree, MonoCode Native's `explorer.rs` trimmed
+//! to what a reviewer needs: folders open lazily, git colours mark changed
+//! files, ignored files hide behind an eye toggle, a file previews in place and
+//! can be attached to the next message.
 //!
 //! With the backend on another computer the tree is that thread's project
 //! workspace, listed and read through the gateway (`thread_files`,

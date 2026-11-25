@@ -1,4 +1,4 @@
-//! The inbox's rows (the render half of GPUI `workspace/inbox.rs`): full
+//! The inbox's rows: full
 //! cards, the shelves' slim rows, their status and timer, and the small
 //! marks other sidebar parts reuse.
 
@@ -224,8 +224,8 @@ pub(super) fn card(
     if let Some(line) = subagents::line(s, tree, row_data, false) {
         card = card.child(line);
     }
-    // A resorted row glides to its new place (GPUI `flip::ROW_SECS`). Not
-    // `card-{id}`: that is the list line holding it (`list::Ctx::key`).
+    // A resorted row glides to its new place. Not `card-{id}`: that is the list
+    // line holding it (`list::Ctx::key`).
     let mut out = col()
         .key(format!("card-box-{id}"))
         .w_full()
@@ -551,7 +551,7 @@ pub(in crate::workspace) fn status_label(
         .child(body)
 }
 
-/// Three dots pulsing in turn (GPUI `kit::pulse_dots`).
+/// Three dots pulsing in turn.
 pub(in crate::workspace) fn pulse_dots(color: Color) -> El {
     let dot = |phase: f32| {
         ui::dot(color, 4.).cycle(rune::Cycle {
@@ -570,7 +570,7 @@ pub(in crate::workspace) fn pulse_dots(color: Color) -> El {
         .child(dot(0.4))
 }
 
-/// "12s", "2m 33s", "1h 04m" (GPUI `motion::format_elapsed`).
+/// "12s", "2m 33s", "1h 04m".
 pub(in crate::workspace) fn format_elapsed(secs: u64) -> String {
     match secs {
         s if s < 60 => format!("{s}s"),
@@ -584,7 +584,7 @@ mod tests {
     use super::format_elapsed;
 
     #[test]
-    fn elapsed_reads_like_the_gpui_timer() {
+    fn elapsed_reads_as_hours_minutes_seconds() {
         assert_eq!(format_elapsed(5), "5s");
         assert_eq!(format_elapsed(153), "2m 33s");
         assert_eq!(format_elapsed(3840), "1h 4m");

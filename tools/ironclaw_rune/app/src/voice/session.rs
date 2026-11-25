@@ -2,10 +2,8 @@
 //! session gate, the synthesizer, and the code that carries the
 //! coordinator's effects out against them and the composers.
 //!
-//! Rune port of the effect runner in the GPUI `voice/mod.rs` (`send`,
-//! `follow_mode`, `run`, `start_mic`, `on_stt`, `heard`, `speak`,
-//! `arm_hotkey`). GPUI's timer tasks became [`poll`] with `Tx::wake_after`;
-//! its async listeners became threads that land through
+//! The voice effect runner: timers are [`poll`] with `Tx::wake_after`, and
+//! async listeners are threads that land through
 //! `State::rt.handle.update`.
 
 use std::time::{Duration, Instant};
@@ -157,7 +155,7 @@ pub(super) fn send(s: &mut State, input: Input) {
     follow_mode(s);
 }
 
-/// The tick and the speech poll (GPUI's timer tasks).
+/// The tick and the speech poll.
 pub(super) fn poll(s: &mut State, tx: &mut Tx) -> bool {
     let Some(e) = engine(s) else { return false };
     let now = Instant::now();
@@ -358,8 +356,7 @@ fn run(s: &mut State, effect: Effect) {
     }
 }
 
-/// Press Enter in the target composer. Runs on the next update, as GPUI's
-/// emitted Enter did, so the commit before it has landed and the
+/// Press Enter in the target composer. Runs on the next update, so the commit before it has landed and the
 /// composer's send handler gets a `Tx`.
 fn send_message(s: &mut State) {
     let alive = |s: &State, t: &Target| t.alive(s);
@@ -405,11 +402,9 @@ fn with_live(s: &mut State, f: impl FnOnce(&mut Live, &mut State)) {
     }
 }
 
-/// The composer to type into: the open quick composer, else the open chat
-/// or the new-thread screen while the main window is in front; for a key
-/// press from another app (`open_quick`) the quick composer, opened for it
-/// (GPUI `Workspace::voice_composer`; the choice is
-/// `workspace::voice_composer`'s).
+/// The composer to type into: the open quick composer, else the open chat or
+/// the new-thread screen while the main window is in front; for a key press
+/// from another app (`open_quick`) the quick composer, opened for it.
 fn resolve(s: &mut State, open_quick: bool) -> Option<Target> {
     let composer = crate::workspace::voice_composer(s, open_quick)?;
     let thread = match &composer {

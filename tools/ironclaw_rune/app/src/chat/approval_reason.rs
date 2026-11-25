@@ -1,9 +1,8 @@
-//! "Why the agent asked": the reason behind an action, in the agent's words
-//! (GPUI `chat/approval_reason.rs`). An approval card shows it as one muted
-//! line under the request; a tool or settled approval in the activity tree
-//! opens to it, so a call that ran without asking (auto-approve) still says
-//! why it ran. The reason itself comes from the transcript
-//! (`zlo_client::transcript`).
+//! "Why the agent asked": the reason behind an action, in the agent's words. An
+//! approval card shows it as one muted line under the request; a tool or
+//! settled approval in the activity tree opens to it, so a call that ran
+//! without asking (auto-approve) still says why it ran. The reason itself comes
+//! from the transcript (`zlo_client::transcript`).
 
 use rune::{El, text};
 

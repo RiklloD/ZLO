@@ -1,6 +1,6 @@
-//! Where a SnapShot lands: the open thread's composer, or the new-thread
-//! draft when no thread is open (or the draft is what is showing). (GPUI
-//! `workspace/draft/snapshot.rs`.) The snapshot area (F) calls this.
+//! Where a SnapShot lands: the open thread's composer, or the new-thread draft
+//! when no thread is open (or the draft is what is showing). The snapshot area
+//! (F) calls this.
 
 use crate::snapshot::{self, Snapshot};
 use crate::state::{Page, State};

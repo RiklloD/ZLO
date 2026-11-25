@@ -142,7 +142,7 @@ cargo test
 
 ZLO 是我对 [NEAR AI](https://github.com/nearai) 所构建的 [IronClaw](https://github.com/nearai/ironclaw) 的个人 fork。我在这个基础上构建了自己的桌面应用，并继续按自己的需要修改后端。智能体运行时、安全机制以及这个仓库的大部分内容都来自他们的工作。
 
-界面使用 [Rune](https://github.com/anomalyco/rune)。应用的早期版本基于 [GPUI](https://www.gpui.rs/)（为 Zed 开发的 Rust UI 框架），已归档在 `archive/gpui` 分支（标签 `gpui-final`）。computer-use 辅助程序来自 [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus)。ZLO 连接其他电脑的方式参照了 [T3 Code](https://github.com/pingdotgg/t3code) 的远程环境，用 Tailscale 代替了它的托管中继。
+界面使用 [Rune](https://github.com/anomalyco/rune)。computer-use 辅助程序来自 [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus)。ZLO 连接其他电脑的方式参照了 [T3 Code](https://github.com/pingdotgg/t3code) 的远程环境，用 Tailscale 代替了它的托管中继。
 
 这个仓库是我的个人项目，不是 IronClaw 或 NEAR AI 的官方发布。
 

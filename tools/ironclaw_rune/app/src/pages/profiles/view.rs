@@ -490,7 +490,7 @@ fn avatar(id: &str, name: &str) -> El {
         .a11y_hidden()
 }
 
-/// HSL (all 0..1) to an opaque colour, as GPUI's `hsla`.
+/// HSL (all 0..1) to an opaque colour.
 fn hsl(h: f32, s: f32, l: f32) -> Color {
     let c = (1. - (2. * l - 1.).abs()) * s;
     let hp = h * 6.;

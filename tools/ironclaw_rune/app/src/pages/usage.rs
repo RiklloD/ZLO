@@ -1,20 +1,19 @@
-//! Usage, after t3code's page (GPUI `pages/usage.rs`): Limits shows
-//! subscription windows per provider (Claude CLI logins, Codex, Z.ai,
-//! Antigravity, Muse Code) as bars with reset countdowns and a pace marker;
-//! Cost and Tokens show what the coding CLIs spent over a period
-//! (`history.rs`, GPUI `usage_history.rs`, with `compactions.rs`, GPUI
-//! `usage_compactions.rs`). The provider logic behind both is
-//! `ironclaw_usage`.
+//! Usage, after t3code's page: Limits shows subscription windows per provider
+//! (Claude CLI logins, Codex, Z.ai, Antigravity, Muse Code) as bars with reset
+//! countdowns and a pace marker; Cost and Tokens show what the coding CLIs
+//! spent over a period (`history.rs`, with `compactions.rs`). The provider
+//! logic behind
+//! both is `ironclaw_usage`.
 //!
 //! ## Shared with the status bar (area B)
 //!
-//! GPUI's `UsageModel` was read by both this page and the workspace status
-//! bar, so one request fed both. Here it is [`UsageState`] in
+//! Both this page and the workspace status bar read the usage, so one
+//! request feeds both. It is [`UsageState`] in
 //! `s.pages.usage`, and the status bar uses these accessors:
 //!
 //! - [`report`]`(s) -> Option<&UsageReport>`: the last subscription report.
 //! - [`peak`]`(s) -> Option<(&ProviderUsage, &UsageWindow)>`: the busiest
-//!   live window across providers (GPUI `UsageModel::peak`).
+//!   live window across providers.
 //! - [`refresh`]`(s, force)`: fetch unless the last answer is younger than a
 //!   minute (`force` skips that). Safe to call from a status poll.
 //! - [`level_color`]`(p, pct)`, [`short_countdown`]`(ms)`, [`countdown`]`(ms)`.
@@ -52,7 +51,7 @@ const METRICS: [(Metric, &str); 3] = [
     (Metric::Tokens, "Tokens"),
 ];
 
-/// GPUI `UsageModel` plus `UsageView`'s metric and period.
+/// The usage report plus the page's metric and period.
 pub struct UsageState {
     pub report: Option<UsageReport>,
     pub error: Option<String>,
@@ -174,8 +173,7 @@ pub fn refresh_history(s: &mut State, days: u32, force: bool) {
     );
 }
 
-/// The page became visible: load on first visit, refresh after (GPUI
-/// `UsageView::refresh`, which asks for the shown metric only).
+/// The page became visible: load on first visit, refresh after.
 pub fn opened(s: &mut State) {
     let (metric, days) = (s.pages.usage.metric, s.pages.usage.days);
     match metric {

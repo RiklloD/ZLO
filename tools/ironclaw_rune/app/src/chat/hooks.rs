@@ -93,8 +93,8 @@ pub fn stage_snapshot(s: &mut State, snap: Result<crate::snapshot::Snapshot, Str
     snapshot::stage_snapshot(s, &id, snap);
 }
 
-/// Show `message` in the open chat's error line (GPUI `ChatView::set_error`).
-/// The extras report into their own chat with `chat::report_error`.
+/// Show `message` in the open chat's error line. The extras report into their
+/// own chat with `chat::report_error`.
 pub fn open_error(s: &mut State, message: impl Into<String>) {
     match open_id(s) {
         Some(id) => set_error(s, &id, message),
@@ -166,9 +166,8 @@ pub fn stop_run(s: &mut State, id: &str) {
     with_tx(s, id, actions::stop);
 }
 
-/// The global auto-approve switch changed (Settings, Profiles): the
-/// approval pills of the open chat and its side chat re-read it (GPUI
-/// `approval_mode::changed`).
+/// The global auto-approve switch changed (Settings, Profiles): the approval
+/// pills of the open chat and its side chat re-read it.
 pub fn approval_mode_changed(s: &mut State) {
     approval_mode::changed(s);
 }

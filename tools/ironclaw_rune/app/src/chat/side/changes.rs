@@ -1,5 +1,5 @@
 //! Changes: MonoCode Native's `changes.rs` + `diff_view.rs` + session review
-//! card (MIT) (GPUI `chat/side/changes.rs`), on rune-kit's `DiffView`:
+//! card (MIT), on rune-kit's `DiffView`:
 //!
 //! - the branch with Pull / Push, a commit box, staged and unstaged files
 //!   with Stage / Unstage / Discard;
@@ -341,9 +341,9 @@ pub(super) fn folder_changed(x: &mut SideState) {
     x.changes.codex.mismatch = None;
 }
 
-/// Codex reported a new turn diff or review: the Codex scope and the
-/// findings follow it. Area A calls this when the transcript's CLI diff
-/// or review changes (GPUI did it while drawing).
+/// Codex reported a new turn diff or review: the Codex scope and the findings
+/// follow it. Area A calls this when the transcript's CLI diff or review
+/// changes.
 pub fn on_cli_report(s: &mut State) {
     let follow = side(s)
         .is_some_and(|x| x.changes.scope == Scope::Codex && x.changes.shown != codex::patch(s));

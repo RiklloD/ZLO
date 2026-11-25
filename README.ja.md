@@ -142,7 +142,7 @@ IronClaw から引き継いだ React フロントエンドは ZLO のデスク�
 
 ZLO は、[NEAR AI](https://github.com/nearai) が作った [IronClaw](https://github.com/nearai/ironclaw) の私の個人フォークです。その土台の上にデスクトップアプリを作り、自分用にバックエンドも変え続けています。エージェントランタイム、セキュリティの仕組み、そしてこのリポジトリの多くは彼らの仕事によるものです。
 
-インターフェースは [Rune](https://github.com/anomalyco/rune) を使っています。以前のバージョンのアプリは、Zed のために開発された Rust の UI フレームワーク [GPUI](https://www.gpui.rs/) で作られていました。それは `archive/gpui` ブランチ(タグ `gpui-final`)にアーカイブされています。computer-use ヘルパーは [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus) から来ています。ZLO がほかのコンピューターに接続する方法は [T3 Code](https://github.com/pingdotgg/t3code) のリモート環境にならっており、ホスト型リレーの代わりに Tailscale を使います。
+インターフェースは [Rune](https://github.com/anomalyco/rune) を使っています。computer-use ヘルパーは [hermes-plugin-computer-use-plus](https://github.com/RiklloD/hermes-plugin-computer-use-plus) から来ています。ZLO がほかのコンピューターに接続する方法は [T3 Code](https://github.com/pingdotgg/t3code) のリモート環境にならっており、ホスト型リレーの代わりに Tailscale を使います。
 
 このリポジトリは私のプロジェクトであり、IronClaw や NEAR AI の公式リリースではありません。
 

@@ -1,6 +1,5 @@
 //! The notification inbox: approvals, failures and finished runs the gateway
 //! recorded for this user, plus which channels deliver them outside the app.
-//! Port of GPUI `pages/notifications.rs`.
 
 use rune::{Cursor, Cx, El, col, el, row};
 use rune_kit::Kit;
@@ -393,7 +392,7 @@ fn render_row(s: &State, k: &Kit, item: &ProductNotification) -> El {
                 .transition(motion::glyph_pop()),
         );
     }
-    // Archive shows while the pointer is on the row (GPUI `group_hover`).
+    // Archive shows while the pointer is on the row.
     r.child(
         row().key("archive").group_opacity(0., 1.).child(
             icon_button(&icons::INBOX, "Archive")

@@ -1,9 +1,8 @@
-//! Shared page helpers (GPUI `pages/mod.rs` helpers plus the few `ui.rs` and
-//! `design/kit.rs` pieces every page uses): the page column, its title row,
-//! settings groups and rows, cards, tags and the small controls the pages
-//! share. Areas C, D and E build their pages from these; keep the API small
-//! and stable. [`ts`] holds the text styles, [`controls`] the sized and
-//! keyed controls and the smaller pieces.
+//! Shared page helpers: the page column, its title row, settings groups and
+//! rows, cards, tags and the small controls the pages share. Areas C, D and E
+//! build their pages from these; keep the API small and stable. [`ts`] holds
+//! the text styles, [`controls`] the sized and keyed controls and the smaller
+//! pieces.
 
 pub mod controls;
 pub mod ts;
@@ -26,7 +25,7 @@ pub fn font(size: f32, weight: f32) -> TextStyle {
     TextStyle::new(crate::design::styles::rem(size), weight)
 }
 
-/// Text sizes of the GPUI app's rem scale (16 px base); [`font`] and the
+/// Text sizes of the app's rem scale (16 px base); [`font`] and the
 /// helpers built on it scale them to the UI font size.
 pub const XS: f32 = 12.;
 pub const SM: f32 = 14.;
@@ -38,7 +37,7 @@ pub fn label(s: impl Into<String>, size: f32, weight: f32, color: Color) -> El {
     text(s).font(font(size, weight)).color(color)
 }
 
-/// Like [`label`], wrapping (GPUI `whitespace_normal`).
+/// Like [`label`], wrapping.
 pub fn para(s: impl Into<String>, size: f32, color: Color) -> El {
     text(s).font(font(size, 400.)).color(color).wrap()
 }
@@ -57,7 +56,7 @@ pub fn header(p: &Palette, title: &str, actions: El) -> El {
         .child(actions)
 }
 
-/// A row of header actions, 8 px apart (GPUI `h_flex().gap_2()`).
+/// A row of header actions, 8 px apart.
 pub fn actions(items: impl IntoIterator<Item = El>) -> El {
     row().gap(4.).center_y().children(items)
 }
@@ -259,7 +258,7 @@ pub fn refresh_busy(
     )
 }
 
-/// GPUI `ui::card`: the neutral raised plate (a faint lit fill, a hairline
+/// The card: the neutral raised plate (a faint lit fill, a hairline
 /// rim), 12 px padding, rows 8 px apart, on continuous corners. A card the
 /// person can press also takes `.press_scale(motion::PRESS_CARD)`.
 pub fn card(p: &Palette) -> El {
@@ -278,7 +277,7 @@ pub fn card(p: &Palette) -> El {
         .border(1., rim)
 }
 
-/// What a tag says: GPUI `Tag::success()`, `warning()`, `secondary()`.
+/// What a tag says: success, warning or neutral.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Success,
@@ -308,10 +307,10 @@ pub fn tag(p: &Palette, s: &str, tone: Tone) -> El {
         .child(label(s, XS, 500., ink).single_line())
 }
 
-/// GPUI button flavours.
+/// Button flavours.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Btn {
-    /// GPUI's default button: the neutral raised plate.
+    /// The default button: the neutral raised plate.
     Secondary,
     Primary,
     Ghost,
@@ -321,11 +320,10 @@ pub enum Btn {
     Quiet,
 }
 
-/// A small labelled button (GPUI `Button::new(..).label(..).small()`);
-/// chain `on_press`, `disabled`, `icon` and `build(k)`. It returns kit's
-/// builder, so the press shrink goes on the built element:
-/// `button(..).on_press(f).build(k).press_scale(motion::PRESS)`, or use
-/// [`pressable`]. The keyed `controls::press_*` helpers already do.
+/// A small labelled button; chain `on_press`, `disabled`, `icon` and
+/// `build(k)`. It returns kit's builder, so the press shrink goes on the built
+/// element: `button(..).on_press(f).build(k).press_scale(motion::PRESS)`, or
+/// use [`pressable`]. The keyed `controls::press_*` helpers already do.
 pub fn button(s: &str, kind: Btn) -> Button {
     Button::new(s)
         .variant(match kind {
@@ -339,12 +337,11 @@ pub fn button(s: &str, kind: Btn) -> Button {
         .control_size(ControlSize::Regular)
 }
 
-/// GPUI `.xsmall()`.
 pub fn button_xs(s: &str, kind: Btn) -> Button {
     button(s, kind).control_size(ControlSize::Small)
 }
 
-/// GPUI `Button::loading(on)`: the kit's loading look, not pressable.
+/// The kit's loading look, not pressable, while `on`.
 pub fn loading(b: Button, on: bool) -> Button {
     if on {
         b.variant(ButtonVariant::Loading).disabled(true)
@@ -402,7 +399,7 @@ pub fn switch(
     sw.build(k)
 }
 
-/// GPUI `kit::segmented`: equal segments, one picked.
+/// Equal segments, one picked.
 pub fn segmented(
     k: &Kit,
     labels: &[&str],
@@ -410,7 +407,7 @@ pub fn segmented(
     disabled: bool,
     on_pick: impl Fn(&mut State, usize, &mut Tx) + Clone + 'static,
 ) -> El {
-    // GPUI drew 54 px segments; the kit's font needs more, so each fits its widest label.
+    // 54 px segments are too narrow for the kit's font, so each fits its widest label.
     let mut seg = SegmentedControl::new(labels, Some(selected)).fit();
     let seg = if disabled {
         for i in 0..labels.len() {

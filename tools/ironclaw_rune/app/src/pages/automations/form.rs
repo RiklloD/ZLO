@@ -1,9 +1,8 @@
 //! The create/edit form for schedules (`t3_schedule` rows): name, prompt,
-//! profile and model, when it runs (friendly presets or raw cron, with the
-//! next three runs previewed by the backend), time zone, where results go,
-//! and webhook signing. Creating makes a thread on the chosen profile and
-//! model, then binds the schedule to it — the same steps as a new chat.
-//! Port of GPUI `pages/automations/form.rs`.
+//! profile and model, when it runs (friendly presets or raw cron, with the next
+//! three runs previewed by the backend), time zone, where results go, and
+//! webhook signing. Creating makes a thread on the chosen profile and model,
+//! then binds the schedule to it — the same steps as a new chat.
 
 use chrono::{DateTime, Local, Utc};
 use rune::{El, TextEdit, col, row};
@@ -74,8 +73,8 @@ pub struct Form {
     pub saving: bool,
 }
 
-/// Where the form's model picker lives, and where its events go: a failed
-/// pick shows as the form's save error (GPUI `PickerEvent::Failed`).
+/// Where the form's model picker lives, and where its events go: a failed pick
+/// shows as the form's save error.
 pub(crate) const FORM_PICKER: Slot = Slot::Fixed(FixedSlot {
     get: |s| s.pages.automations.form.as_ref()?.picker.as_ref(),
     get_mut: |s| s.pages.automations.form.as_mut()?.picker.as_mut(),

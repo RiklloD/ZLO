@@ -1,7 +1,7 @@
-//! What the chat does (GPUI `chat.rs`, the `ChatView` methods): send, stop,
-//! retry, gates, slash commands, attachments, opening files. Every function
-//! takes the thread id and finds its chat with [`chat_for`], and every async
-//! reply checks the chat is still there before it writes.
+//! What the chat does: send, stop, retry, gates, slash commands, attachments,
+//! opening files. Every function takes the thread id and finds its chat with
+//! [`chat_for`], and every async reply checks the chat is still there before it
+//! writes.
 
 use std::path::{Path, PathBuf};
 
@@ -450,11 +450,10 @@ pub fn send_as(s: &mut State, id: &str, alternate: bool, tx: &mut Tx) {
     super::steer::deliver(s, id, draft.idle(), voice, tx);
 }
 
-/// A send failed: put its text and cards back so a retry needs no
-/// re-picking (GPUI's behaviour). Into an empty composer they go as they
-/// were; when the person has typed or attached since, the unsent message is
-/// added below that, never dropped, and the error says so. Returns the
-/// error to show.
+/// A send failed: put its text and cards back so a retry needs no re-picking.
+/// Into an empty composer they go as they were; when the person has typed or
+/// attached since, the unsent message is added below that, never dropped, and
+/// the error says so. Returns the error to show.
 pub(super) fn restore_failed(
     c: &mut super::ChatState,
     text: &str,

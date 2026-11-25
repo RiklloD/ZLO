@@ -1,7 +1,6 @@
 # ZLO: the native Rune desktop app for the local IronClaw gateway.
 #
-# Built on Rune (github.com/anomalyco/rune). It replaced the earlier GPUI app,
-# which is archived on the `archive/gpui` branch (tag `gpui-final`).
+# Built on Rune (github.com/anomalyco/rune).
 # `client/` is the UI-free gateway client. Its own workspace root, so Rune
 # never enters the main IronClaw build.
 [workspace]

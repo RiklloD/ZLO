@@ -1,4 +1,4 @@
-//! Drawing the sidebar inbox (the render half of GPUI `workspace/inbox.rs`):
+//! Drawing the sidebar inbox (the state is `workspace/inbox.rs`):
 //! the header (search, filters, new thread), the filter panel, the
 //! new-thread draft card, the cards, the shelves and their slim
 //! rows.
@@ -112,7 +112,7 @@ fn header(s: &State, k: &Kit) -> El {
         )
 }
 
-/// A ghost button shown pressed (GPUI `.selected(true)`).
+/// A ghost button shown pressed.
 fn selected_bg(p: &Palette, on: bool, button: El) -> El {
     el().radius(design::CONTROL_RADIUS)
         .fill(if on { p.active } else { Color::TRANSPARENT })

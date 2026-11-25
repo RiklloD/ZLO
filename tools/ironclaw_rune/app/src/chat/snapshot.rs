@@ -1,6 +1,5 @@
-//! A SnapShot staged into a thread's composer, next to any files the
-//! paperclip staged (GPUI `chat/snapshot.rs`; `crate::snapshot` builds it,
-//! `workspace::stage_snapshot` decides where it lands).
+//! A SnapShot staged into a thread's composer, next to any files the paperclip
+//! staged.
 
 use crate::snapshot::{self, Snapshot};
 use crate::state::State;

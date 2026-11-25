@@ -226,9 +226,9 @@ impl Prefs {
     /// Save to disk off the UI thread. Callers edit `State::prefs` in place,
     /// then call this; the view re-runs on its own after the handler.
     ///
-    /// The file is shared with the GPUI app, so only the keys this app
-    /// changed since it last loaded or saved are written over what is on
-    /// disk (see `persist`); the rest keeps whatever the other app saved.
+    /// Only the keys this app changed since it last loaded or saved are
+    /// written over what is on disk (see `persist`); the rest keeps whatever
+    /// another writer saved.
     pub fn save(&self) {
         let Some(file) = Self::file() else { return };
         let new = match serde_json::to_value(self) {

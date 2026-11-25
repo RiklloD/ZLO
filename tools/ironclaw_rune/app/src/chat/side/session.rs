@@ -1,5 +1,5 @@
-//! Side chats (GPUI `chat/side/session.rs`) and the titlebar toggle of the
-//! thread details card (`details.rs`), which lists them.
+//! Side chats and the titlebar toggle of the thread details card
+//! (`details.rs`), which lists them.
 //!
 //! A side chat is a by-the-way question about this conversation. It is a
 //! fork (the conversation so far, the running turn's prompt included) that

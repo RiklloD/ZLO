@@ -1,6 +1,5 @@
 //! Trace Commons: credit earned for contributed redacted traces, traces held
 //! for privacy review, and a one-time link into the Trace Commons account.
-//! Port of GPUI `pages/settings/traces.rs`.
 
 use rune::{El, col, row};
 use rune_kit::Kit;

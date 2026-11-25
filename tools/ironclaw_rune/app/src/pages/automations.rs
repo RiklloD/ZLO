@@ -1,8 +1,7 @@
-//! Automations: schedules (`t3_schedule` — clock or webhook, made here or
-//! by an agent) with a create/edit form, and IronClaw's routines (cron and
-//! one-time triggers made in a chat). Each row shows its next run and last
-//! result; clicking it opens the thread of its last run. Port of GPUI
-//! `pages/automations.rs`.
+//! Automations: schedules (`t3_schedule` — clock or webhook, made here or by an
+//! agent) with a create/edit form, and IronClaw's routines (cron and one-time
+//! triggers made in a chat). Each row shows its next run and last result;
+//! clicking it opens the thread of its last run.
 
 pub(crate) mod form;
 mod schedule_rows;
