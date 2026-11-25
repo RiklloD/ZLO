@@ -1742,7 +1742,12 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // session writer and source fetch live in the `ironclaw` binary.
         // The tree measures 17_187; the pin is the minimum that passes
         // (17_187 - 150 slack), read from this test's failure message.
-        ("ironclaw_product_contracts", 17_037),
+        // 17_037 -> 17_046 (2026-11-25, cli-one-click-install): +9 lines for
+        // the `orchestrator.providers_rescan` command descriptor (id + const)
+        // the WebUI route and the ZLO client share. Vocabulary only: the
+        // rescan lives in the orchestrator domain. The tree measures 17_196;
+        // the pin is the minimum that passes (17_196 - 150 slack).
+        ("ironclaw_product_contracts", 17_046),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.
