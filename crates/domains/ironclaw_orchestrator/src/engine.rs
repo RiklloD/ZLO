@@ -277,6 +277,20 @@ impl Engine {
         true
     }
 
+    /// Replace the runtime registered under `runtime`'s id, only while none
+    /// of its threads runs a turn: turn admission waits on the same lock,
+    /// so no turn starts on the old one meanwhile, and a Stop always finds
+    /// the runtime that runs its turn. Returns whether it was replaced; a
+    /// busy runtime is left for a later look.
+    pub async fn replace_runtime_when_idle(&self, runtime: Arc<dyn TurnRuntime>) -> Result<bool> {
+        let _admission = self.dispatch.lock().await;
+        if self.store.running_threads_on(&runtime.id()).await? > 0 {
+            return Ok(false);
+        }
+        self.register_runtime(runtime);
+        Ok(true)
+    }
+
     /// Register (or replace) a runtime. The engine looks runtimes up by the
     /// `runtime_id` on each thread row.
     pub fn register_runtime(&self, runtime: Arc<dyn TurnRuntime>) {

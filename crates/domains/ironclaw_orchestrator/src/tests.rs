@@ -2113,3 +2113,47 @@ async fn a_rescan_registers_a_runtime_installed_after_boot_and_never_replaces_on
         .unwrap();
     assert!(Arc::ptr_eq(&first, &still), "a running runtime is kept");
 }
+
+/// A runtime is swapped (Antigravity's legacy runtime for its CLI) only
+/// while none of its threads runs a turn: a Stop must reach the runtime
+/// that runs the turn.
+#[tokio::test]
+async fn a_runtime_is_replaced_only_while_its_threads_are_idle() {
+    let h = harness().await;
+    let a = tid("a");
+    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
+    let thread = h.engine.store().thread(&a).await.unwrap().unwrap();
+    assert_eq!(thread.runtime_id, h.rt.id());
+    let original = h.engine.runtime(&h.rt.id()).unwrap();
+    h.engine
+        .store()
+        .set_turn_running(&a, None, 1)
+        .await
+        .unwrap();
+    let replaced = h
+        .engine
+        .replace_runtime_when_idle(Arc::new(FakeRuntime::default()))
+        .await
+        .unwrap();
+    assert!(!replaced, "a running turn keeps its runtime");
+    assert!(Arc::ptr_eq(
+        &original,
+        &h.engine.runtime(&h.rt.id()).unwrap()
+    ));
+
+    h.db.connect()
+        .unwrap()
+        .execute("UPDATE orch_threads SET turn_state = 'idle'", ())
+        .await
+        .unwrap();
+    let replaced = h
+        .engine
+        .replace_runtime_when_idle(Arc::new(FakeRuntime::default()))
+        .await
+        .unwrap();
+    assert!(replaced);
+    assert!(!Arc::ptr_eq(
+        &original,
+        &h.engine.runtime(&h.rt.id()).unwrap()
+    ));
+}

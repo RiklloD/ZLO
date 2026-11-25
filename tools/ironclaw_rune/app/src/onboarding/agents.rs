@@ -480,6 +480,7 @@ fn close_terminal(s: &mut State) {
                 ));
                 return;
             }
+            crate::cli_install::note_restart(s);
             let a = &mut s.onboarding.agents;
             a.restarting = true;
             a.catalog = None;

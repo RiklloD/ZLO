@@ -279,7 +279,13 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                 r.provider.starts_with(known.runtime) || r.runtime.starts_with(known.runtime)
             })
             .collect();
-        if found.is_empty() {
+        // While its installer runs, the row stays the install's (with its
+        // Cancel), even once the backend lists the new agent.
+        let installing = s
+            .cli_installs
+            .get(known.runtime)
+            .is_some_and(|i| i.phase.busy());
+        if found.is_empty() || installing {
             let (status, action, below) = not_found(s, k, known);
             rows.push(cli_row(
                 s,

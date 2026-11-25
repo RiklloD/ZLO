@@ -79,7 +79,7 @@ pub enum Phase {
 
 impl Phase {
     /// The attempt still owns its row: no second installer may start.
-    fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         matches!(self, Phase::Running | Phase::Stopping | Phase::Finding)
     }
 }
@@ -91,6 +91,9 @@ pub struct Install {
     /// Set to ask the worker to stop the installer.
     stop: Arc<AtomicBool>,
     generation: u64,
+    /// When the installer exited cleanly: a backend restarted before then
+    /// started too early to find it.
+    exited_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -100,9 +103,16 @@ pub struct Installs {
     /// The watch's generation: a newer [`watch`] or a closed list ends the
     /// older chain.
     watch_generation: u64,
-    /// A restart this module asked for is still coming back: another
-    /// install waits for it instead of restarting again.
-    restart_until: Option<Instant>,
+    /// The last backend restart (this module's or setup's) and until when
+    /// it may still be coming back: an install that exited before it
+    /// started waits for it instead of restarting again.
+    restart: Option<Restart>,
+}
+
+#[derive(Clone, Copy)]
+struct Restart {
+    at: Instant,
+    until: Instant,
 }
 
 impl Installs {
@@ -172,6 +182,7 @@ fn begin(s: &mut State, runtime: &'static str, command: &'static str) {
             tail: VecDeque::new(),
             stop: Arc::clone(&stop),
             generation,
+            exited_at: None,
         },
     );
     if s.fixture {
@@ -199,6 +210,7 @@ pub fn fixture(s: &mut State, runtime: &'static str, phase: Phase, tail: &[&str]
             tail: tail.iter().map(|l| l.to_string()).collect(),
             stop: Arc::new(AtomicBool::new(false)),
             generation,
+            exited_at: None,
         },
     );
 }
@@ -235,7 +247,7 @@ pub fn dismiss(s: &mut State, runtime: &str) {
 /// being looked for is forgotten.
 pub fn computer_switched(s: &mut State) {
     let installs = &mut s.cli_installs;
-    installs.restart_until = None;
+    installs.restart = None;
     installs
         .by_runtime
         .retain(|_, install| match install.phase {
@@ -272,6 +284,10 @@ fn run_installer(
 ) -> Exit {
     use std::os::unix::process::CommandExt as _;
     let started = Instant::now();
+    // Cancel pressed before the worker got here: nothing to start.
+    if stop.load(Ordering::SeqCst) {
+        return Exit::Stopped;
+    }
     let spawned = Command::new("/bin/zsh")
         .args(["-lc", &shell_line(command)])
         .stdin(Stdio::null())
@@ -387,11 +403,11 @@ fn run_installer(
         // A stop also waits for the rest of the group (the pipe's other
         // stages) to be gone, which the closed pipes show.
         if !pipes_open || (stopping.is_none() && at.elapsed() > PIPE_GRACE) {
+            // Whatever of the group lives on past the installer (a stage
+            // that closed its pipes, a descendant still holding them) goes
+            // with it, on every way out: the row is released next.
+            signal_group(pgid, "-KILL");
             if let Some((why, _)) = stopping {
-                if !killed {
-                    // Whatever of the group closed its pipes but lives on.
-                    signal_group(pgid, "-KILL");
-                }
                 return why;
             }
             return outcome(status, &tail);
@@ -478,6 +494,7 @@ fn finished(s: &mut State, runtime: &'static str, generation: u64, exit: Exit) {
         }
         (Phase::Running, Exit::Success) => {
             install.phase = Phase::Finding;
+            install.exited_at = Some(Instant::now());
             find(s, runtime, generation, 1);
         }
         (Phase::Running, Exit::Failed(why)) => install.phase = Phase::Failed(why),
@@ -563,9 +580,15 @@ fn restart_to_find(s: &mut State, runtime: &'static str, generation: u64) {
         return;
     }
     let now = Instant::now();
-    let deadline = match s.cli_installs.restart_until {
-        Some(until) if until > now => until,
-        _ => {
+    let exited_at = s
+        .cli_installs
+        .current(runtime, generation)
+        .and_then(|i| i.exited_at)
+        .unwrap_or(now);
+    let joinable = joinable_restart(s.cli_installs.restart, exited_at, now);
+    let deadline = match joinable {
+        Some(r) => r.until,
+        None => {
             if !crate::service::restart() {
                 fail(
                     s,
@@ -575,9 +598,8 @@ fn restart_to_find(s: &mut State, runtime: &'static str, generation: u64) {
                 );
                 return;
             }
-            let until = now + RESTART_WAIT;
-            s.cli_installs.restart_until = Some(until);
-            until
+            note_restart(s);
+            now + RESTART_WAIT
         }
     };
     poll_restarted(s, runtime, generation, deadline);
@@ -640,9 +662,33 @@ fn fail(s: &mut State, runtime: &str, generation: u64, why: String) {
     }
 }
 
+/// A restart still coming back that began after the install was done finds
+/// it as it starts; one that began earlier does not.
+fn joinable_restart(restart: Option<Restart>, exited_at: Instant, now: Instant) -> Option<Restart> {
+    restart.filter(|r| r.until > now && r.at >= exited_at)
+}
+
+/// This Mac's backend was just restarted (here, or by setup's own install
+/// path): installs done before now wait for it rather than restart again.
+pub fn note_restart(s: &mut State) {
+    let at = Instant::now();
+    s.cli_installs.restart = Some(Restart {
+        at,
+        until: at + RESTART_WAIT,
+    });
+}
+
 /// The agent is listed: its row turns into the found agent's row (sign in,
 /// or ready), and both screens say so.
 fn installed(s: &mut State, runtime: &'static str) {
+    // Only the worker releases a row whose installer still runs: Cancel and
+    // a computer switch need its stop flag until the process is gone.
+    if s.cli_installs
+        .get(runtime)
+        .is_some_and(|i| matches!(i.phase, Phase::Running | Phase::Stopping))
+    {
+        return;
+    }
     s.cli_installs.by_runtime.remove(runtime);
     let name = known(runtime).map_or(runtime, |k| k.name);
     let notice = format!("{name} is installed. Sign in to use it.");
@@ -679,14 +725,14 @@ fn tick(s: &mut State, generation: u64, open: fn(&State) -> bool) {
         if s.cli_installs.watch_generation != generation || !open(s) {
             return false;
         }
-        // Still loading the catalog: look again on the next tick.
-        let Some(catalog) = s.pages.providers.runtimes.as_deref() else {
-            tick(s, generation, open);
-            return false;
-        };
-        let missing = KNOWN_CLIS
-            .iter()
-            .any(|k| !k.planned && k.install.is_some() && !listed(catalog, k));
+        // Without a catalog yet (still loading, or its read failed) the
+        // rescan's answer is the catalog: it lands without notices.
+        let catalog = s.pages.providers.runtimes.as_deref();
+        let missing = catalog.is_none_or(|c| {
+            KNOWN_CLIS
+                .iter()
+                .any(|k| !k.planned && k.install.is_some() && !listed(c, k))
+        });
         if !missing {
             return false;
         }
@@ -695,11 +741,13 @@ fn tick(s: &mut State, generation: u64, open: fn(&State) -> bool) {
             tick(s, generation, open);
             return false;
         }
-        let before: Vec<&'static str> = KNOWN_CLIS
-            .iter()
-            .filter(|k| listed(catalog, k))
-            .map(|k| k.runtime)
-            .collect();
+        let before: Option<Vec<&'static str>> = catalog.map(|c| {
+            KNOWN_CLIS
+                .iter()
+                .filter(|k| listed(c, k))
+                .map(|k| k.runtime)
+                .collect()
+        });
         jobs::run_rerouted(
             s,
             "cli-install",
@@ -710,6 +758,14 @@ fn tick(s: &mut State, generation: u64, open: fn(&State) -> bool) {
                 }
                 match reply {
                     jobs::Reply::Fresh(Ok(catalog)) => {
+                        let Some(before) = before else {
+                            let first = s.pages.providers.runtimes.is_none();
+                            if first {
+                                landed(s, catalog);
+                            }
+                            tick(s, generation, open);
+                            return first;
+                        };
                         let new: Vec<&'static KnownCli> = KNOWN_CLIS
                             .iter()
                             .filter(|k| {
@@ -939,30 +995,59 @@ mod tests {
         begin(&mut s, "codex", "echo done");
         assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
         assert_eq!(gateway.requests_to(RESCAN), 2);
-        assert!(s.cli_installs.restart_until.is_none(), "no restart");
+        assert!(s.cli_installs.restart.is_none(), "no restart");
         assert!(s.pages.providers.notice.is_some());
     }
 
-    /// Review 4: a catalog still loading when the watch starts, and a
-    /// failed look, do not end the watch.
+    /// Review 4: a page whose own catalog read failed, and a failed look,
+    /// do not strand the watch: its first answer is the catalog (no
+    /// notice), and the next install is noticed.
     #[test]
-    fn the_watch_outlives_a_slow_catalog_and_a_failed_look() {
-        let (mut s, mut pump, gateway) =
-            live(vec![Answer::fail(), Answer::ok(catalog(&["codex"]))]);
+    fn the_watch_outlives_a_missing_catalog_and_a_failed_look() {
+        let (mut s, mut pump, _gateway) = live(vec![
+            Answer::fail(),
+            Answer::ok(catalog(&[])),
+            Answer::fail(),
+            Answer::ok(catalog(&["codex"])),
+        ]);
         s.pages.providers.runtimes = None;
         watch(&mut s, |_| true);
-        pump.run_for(&mut s, WATCH_EVERY * 5);
-        assert_eq!(
-            gateway.requests_to(RESCAN),
-            0,
-            "nothing asked while loading"
-        );
-        s.pages.providers.runtimes = Some(vec![]);
+        assert!(pump.until(&mut s, WAIT, |s| s.pages.providers.runtimes.is_some()));
+        assert!(s.pages.providers.notice.is_none());
         assert!(pump.until(&mut s, WAIT, |s| s.pages.providers.notice.is_some()));
         assert_eq!(
             s.pages.providers.notice.as_deref(),
             Some("Codex CLI is installed. Sign in to use it.")
         );
+    }
+
+    /// Re-review 2: a watch answer listing the agent while its installer
+    /// still runs leaves the row (and its Cancel) alone.
+    #[test]
+    fn a_watch_answer_never_releases_a_running_installer() {
+        let (mut s, mut pump, _gateway) = live(vec![]);
+        begin(&mut s, "codex", "echo started; sleep 30");
+        installed(&mut s, "codex");
+        assert_eq!(s.cli_installs.get("codex").unwrap().phase, Phase::Running);
+        cancel(&mut s, "codex");
+        assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
+    }
+
+    /// Re-review 4: an install done after a restart began needs its own;
+    /// one done before joins it, while that restart is still coming back.
+    #[test]
+    fn only_a_restart_begun_after_an_install_serves_it() {
+        let at = Instant::now();
+        let restart = Some(Restart {
+            at,
+            until: at + RESTART_WAIT,
+        });
+        let before = at - Duration::from_secs(1);
+        let after = at + Duration::from_millis(1);
+        assert!(joinable_restart(restart, before, at).is_some());
+        assert!(joinable_restart(restart, after, at).is_none());
+        assert!(joinable_restart(restart, before, at + RESTART_WAIT).is_none());
+        assert!(joinable_restart(None, before, at).is_none());
     }
 
     /// An open CLI list notices an agent installed outside the app.

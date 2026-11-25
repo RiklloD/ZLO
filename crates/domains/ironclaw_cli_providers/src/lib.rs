@@ -190,12 +190,21 @@ pub struct CliRuntimeDiscovery {
 #[derive(Default)]
 struct DiscoveryMemo {
     /// The registered `antigravity` runtime is the legacy one, which the
-    /// native `agy` replaces once it is installed.
+    /// native `agy` replaces once it is installed (while idle).
     antigravity_legacy: bool,
-    /// An `agy` that `agy --version` turned down (too old, or no answer),
-    /// by path and modification time: not asked again until it changes.
-    agy_rejected: Option<(PathBuf, std::time::SystemTime)>,
+    /// An `agy` whose `agy --version` ruled it out (too old, not a
+    /// version), by path and modification time: not asked again until the
+    /// binary changes.
+    agy_rejected: Option<AgyKey>,
+    /// An `agy` that did not answer, and when: asked again after
+    /// [`AGY_RETRY`].
+    agy_unanswered: Option<(AgyKey, std::time::Instant)>,
 }
+
+type AgyKey = (PathBuf, std::time::SystemTime);
+
+/// How long an `agy` that did not answer `--version` waits for another try.
+const AGY_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl CliRuntimeDiscovery {
     pub fn new(bridge: Arc<bridge::CliBridge>, skills: skill_listing::CliSkillUsage) -> Self {
@@ -233,28 +242,48 @@ impl CliRuntimeDiscovery {
 
     /// Antigravity: its native `agy` when it answers, else the legacy
     /// runtime. A legacy runtime already registered is replaced once `agy`
-    /// is installed, as a backend restart would: its sessions end there.
+    /// is installed, as a backend restart would, but only while none of its
+    /// threads runs a turn ([`Engine::replace_runtime_when_idle`]); a busy
+    /// one is left for a later look.
     async fn discover_antigravity(&self, engine: &Arc<Engine>, memo: &mut DiscoveryMemo) -> usize {
+        use antigravity::launch::{AgentLaunch, CliProbe};
         let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
             return 0;
         };
-        let agy = rpc::find_on_path(&home, "agy").map(|path| {
-            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-            (path, modified)
-        });
-        let key = agy
-            .as_ref()
-            .and_then(|(path, modified)| Some((path.clone(), (*modified)?)));
-        let rejected = key.is_some() && key == memo.agy_rejected;
-        let native = match &agy {
-            Some(_) if !rejected => antigravity::launch::find_cli(&home).await,
-            _ => None,
+        let native = match rpc::find_on_path(&home, "agy") {
+            Some(agy) => {
+                let key = std::fs::metadata(&agy)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|modified| (agy.clone(), modified));
+                let rejected = key.is_some() && key == memo.agy_rejected;
+                let waiting = memo
+                    .agy_unanswered
+                    .as_ref()
+                    .is_some_and(|(k, at)| Some(k) == key.as_ref() && at.elapsed() < AGY_RETRY);
+                if rejected || waiting {
+                    None
+                } else {
+                    match antigravity::launch::probe_cli(&agy).await {
+                        CliProbe::Usable => {
+                            memo.agy_unanswered = None;
+                            Some(agy)
+                        }
+                        CliProbe::Rejected => {
+                            memo.agy_rejected = key;
+                            None
+                        }
+                        CliProbe::Unanswered => {
+                            memo.agy_unanswered = key.map(|k| (k, std::time::Instant::now()));
+                            None
+                        }
+                    }
+                }
+            }
+            None => None,
         };
-        if native.is_none() && !rejected && key.is_some() {
-            memo.agy_rejected = key;
-        }
         let launch = match native {
-            Some(agy) => antigravity::launch::AgentLaunch::Cli { agy },
+            Some(agy) => AgentLaunch::Cli { agy },
             // Already running on the legacy runtime: nothing new to add.
             None if memo.antigravity_legacy => return 0,
             None => match antigravity::launch::find_runtime(&home) {
@@ -267,26 +296,41 @@ impl CliRuntimeDiscovery {
                 }
             },
         };
-        let legacy = matches!(launch, antigravity::launch::AgentLaunch::Runtime { .. });
+        let legacy = matches!(launch, AgentLaunch::Runtime { .. });
         let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
         let config = antigravity::config_for(&home, launch);
-        match antigravity::AntigravityRuntime::new(config, sink, Some(Arc::clone(&self.bridge))) {
-            Ok(runtime) => {
-                let runtime = Arc::new(runtime.with_skill_usage(self.skills.clone()));
-                if memo.antigravity_legacy {
-                    tracing::debug!("antigravity: agy installed; it replaces the legacy runtime");
-                    engine.register_runtime(runtime);
-                } else if !engine.register_runtime_if_absent(runtime) {
-                    return 0;
-                }
-                memo.antigravity_legacy = legacy;
-                1
-            }
+        let runtime = match antigravity::AntigravityRuntime::new(
+            config,
+            sink,
+            Some(Arc::clone(&self.bridge)),
+        ) {
+            Ok(runtime) => Arc::new(runtime.with_skill_usage(self.skills.clone())),
             Err(error) => {
                 tracing::debug!(%error, "antigravity runtime id rejected");
-                0
+                return 0;
             }
+        };
+        let added = if memo.antigravity_legacy {
+            match engine.replace_runtime_when_idle(runtime).await {
+                Ok(replaced) => {
+                    tracing::debug!(
+                        replaced,
+                        "antigravity: agy installed over the legacy runtime"
+                    );
+                    replaced
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "antigravity: could not check its running threads");
+                    false
+                }
+            }
+        } else {
+            engine.register_runtime_if_absent(runtime)
+        };
+        if added {
+            memo.antigravity_legacy = legacy;
         }
+        usize::from(added)
     }
 }
 
