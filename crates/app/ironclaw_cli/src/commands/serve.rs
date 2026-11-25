@@ -132,6 +132,9 @@ pub(crate) struct ServeCommand {
 impl ServeCommand {
     pub(crate) fn execute(self, context: RebornCliContext) -> anyhow::Result<()> {
         crate::runtime::init_tracing();
+        // Folders the desktop app was given one at a time: opened in this
+        // process before anything reads files (`folder_grants.rs`).
+        crate::folder_grants::open_from_app();
 
         // Build the runtime config from the operator's TOML. Built first so
         // the unrestricted standalone host-access disclosure gate fires before any

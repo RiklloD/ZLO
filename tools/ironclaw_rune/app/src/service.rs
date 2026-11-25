@@ -469,15 +469,37 @@ fn spawn(paths: &Paths) -> std::io::Result<(Child, fs::File, u64)> {
     // A Finder-opened app has launchd's PATH: give the backend a terminal's,
     // so it finds the coding-agent CLIs (and imports their sessions).
     command.env("PATH", crate::login_path::path());
-    // This backend gets the granted folders as they are now; a later change
-    // waits for its restart (`folder_access::pending`).
-    crate::folder_access::note_backend_spawn();
-    let child = command
+    // This backend gets the granted folders as they are now, handed over on
+    // its stdin (never argv, env or logs); a later change waits for its
+    // restart (`folder_access::pending`).
+    let grants = crate::folder_access::handoff_for_backend_spawn();
+    if grants.is_empty() {
+        command.stdin(Stdio::null());
+    } else {
+        command
+            .env("ZLO_FOLDER_GRANTS", "stdin")
+            .stdin(Stdio::piped());
+    }
+    let mut child = command
         .current_dir(&workspace)
-        .stdin(Stdio::null())
         .stdout(log("serve.stdout.log")?)
         .stderr(stderr_log.try_clone()?)
         .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // Off the supervisor thread: a backend that never reads cannot
+        // block it. EOF when the thread drops the pipe.
+        let spawned = std::thread::Builder::new()
+            .name("zlo-folder-grants".into())
+            .spawn(move || {
+                use std::io::Write;
+                if let Err(e) = stdin.write_all(grants.as_bytes()) {
+                    tracing::debug!(error = %e, "backend did not take the folder grants");
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::debug!(error = %e, "could not hand the folder grants over");
+        }
+    }
     Ok((child, stderr_log, from))
 }
 

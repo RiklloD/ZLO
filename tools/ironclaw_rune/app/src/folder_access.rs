@@ -7,9 +7,10 @@
 //! does offer is the open panel (the "Powerbox"): a folder the person picks
 //! there is readable and writable without the whole-folder switch. ZLO
 //! keeps each pick as a security-scoped bookmark and opens it again at
-//! launch, before it starts the backend, so the backend can use exactly
-//! those folders. (That the child gets the parent's access is checked on a
-//! signed install; if it does not, the bookmarks go to the backend itself.)
+//! launch, before it starts the backend. macOS ties that access to the
+//! process holding it, so each backend start also gets the folders handed
+//! over ([`handoff`], written to its stdin by `service.rs`; opened there by
+//! `ironclaw_cli`'s `folder_grants.rs`).
 //!
 //! The list is saved next to the appearance prefs as `folder-access.json`
 //! (path plus bookmark, base64). A folder that does not open at launch (a
@@ -123,9 +124,23 @@ pub fn restore() {
     *grants() = opened;
 }
 
-/// The service is about to start a backend: it gets the list as it is now.
-pub fn note_backend_spawn() {
+/// The service is about to start a backend: it gets the list as it is now,
+/// as one hex bookmark per line for its stdin (empty: nothing to hand
+/// over). Implicitly scoped bookmarks, made from the URLs this process is
+/// accessing, are how macOS passes that access to another process. Never
+/// logged: they are capabilities.
+pub fn handoff_for_backend_spawn() -> String {
     APPLIED.store(REVISION.load(Ordering::SeqCst), Ordering::SeqCst);
+    let mut out = String::new();
+    for g in grants().iter() {
+        if let Some(data) = g.url.and_then(mac::implicit_bookmark) {
+            for b in data {
+                out.push_str(&format!("{b:02x}"));
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Whether the running backend started before the last change to the list,
@@ -295,6 +310,18 @@ mod mac {
 
     /// Bookmark data for a file URL, base64. Call inside a pool.
     unsafe fn bookmark_of(url: *mut AnyObject) -> Option<String> {
+        let raw = unsafe { bookmark_bytes(url, CREATE_SCOPED) }?;
+        Some(base64::engine::general_purpose::STANDARD.encode(raw))
+    }
+
+    /// An implicitly scoped bookmark of a URL from [`resolve`] (accessing
+    /// now): another process that resolves it gets the same access.
+    pub fn implicit_bookmark(url: usize) -> Option<Vec<u8>> {
+        autoreleasepool(|_| unsafe { bookmark_bytes(url as *mut AnyObject, 0) })
+    }
+
+    /// Bookmark bytes for a file URL with `options`. Call inside a pool.
+    unsafe fn bookmark_bytes(url: *mut AnyObject, options: usize) -> Option<Vec<u8>> {
         if url.is_null() {
             return None;
         }
@@ -302,7 +329,7 @@ mod mac {
         let data: *mut AnyObject = unsafe {
             msg_send![
                 url,
-                bookmarkDataWithOptions: CREATE_SCOPED,
+                bookmarkDataWithOptions: options,
                 includingResourceValuesForKeys: std::ptr::null_mut::<AnyObject>(),
                 relativeToURL: std::ptr::null_mut::<AnyObject>(),
                 error: &mut error
@@ -318,7 +345,7 @@ mod mac {
         }
         // SAFETY: NSData owns `len` bytes at `bytes` while the pool lives.
         let slice = unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), len) };
-        Some(base64::engine::general_purpose::STANDARD.encode(slice))
+        Some(slice.to_vec())
     }
 
     /// Resolve bookmark data and start accessing it: the retained URL (as an
@@ -393,6 +420,9 @@ mod mac {
         None
     }
     pub fn release(_: usize) {}
+    pub fn implicit_bookmark(_: usize) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -451,6 +481,7 @@ mod tests {
         let (url, resolved, fresh) = mac::resolve(&data).expect("resolve");
         assert_eq!(resolved.canonicalize().unwrap(), path);
         assert!(fresh.is_none(), "a new bookmark is not stale");
+        assert!(mac::implicit_bookmark(url).is_some_and(|b| !b.is_empty()));
         mac::release(url);
     }
 }
