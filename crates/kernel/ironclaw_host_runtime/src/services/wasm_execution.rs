@@ -816,7 +816,7 @@ mod tests {
         let world = resolve
             .select_world(&[package], Some("sandboxed-tool"))
             .expect("sandboxed-tool world must exist");
-        embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8)
+        embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8, false)
             .expect("component metadata must embed");
         ComponentEncoder::default()
             .module(&module)

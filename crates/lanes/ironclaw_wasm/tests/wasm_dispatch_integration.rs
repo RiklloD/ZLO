@@ -1093,7 +1093,7 @@ fn tool_component(wat_src: &str) -> Vec<u8> {
         .select_world(&[package], Some("sandboxed-tool"))
         .expect("sandboxed-tool world must exist");
 
-    embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8)
+    embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8, false)
         .expect("component metadata must embed");
 
     let mut encoder = ComponentEncoder::default();
