@@ -361,6 +361,21 @@ pub const SCENES: &[Scene] = &[
     ("traces", |s| {
         page_with(s, Page::Traces, crate::pages::settings::fixture)
     }),
+    ("update-available", |s| {
+        crate::workspace::fixtures::fixture_update(s, "available")
+    }),
+    ("update-confirm", |s| {
+        crate::workspace::fixtures::fixture_update(s, "confirm")
+    }),
+    ("update-confirm-many", |s| {
+        crate::workspace::fixtures::fixture_update(s, "confirm-many")
+    }),
+    ("update-failed", |s| {
+        crate::workspace::fixtures::fixture_update(s, "failed")
+    }),
+    ("update-running", |s| {
+        crate::workspace::fixtures::fixture_update(s, "running")
+    }),
     ("usage", usage),
     ("usage-compactions", usage_compactions),
     ("usage-history", usage_history),

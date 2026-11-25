@@ -145,6 +145,11 @@ pub static DASH: Icon = Icon {
     view: 24.0,
     body: r##"<path fill="none" stroke="black" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14"/>"##,
 };
+pub static DOWNLOAD: Icon = Icon {
+    name: "download",
+    view: 24.0,
+    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M12 15V3" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m7 10 5 5 5-5" />"##,
+};
 pub static DELETE: Icon = Icon {
     name: "delete",
     view: 24.0,

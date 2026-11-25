@@ -181,6 +181,20 @@ impl Inbox {
         }
     }
 
+    /// Threads with a run going now (as drawn: a prompt just sent counts).
+    pub fn running(&self) -> usize {
+        self.list
+            .rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    self.shown_status(row),
+                    Some(InboxStatus::Working | InboxStatus::Background)
+                )
+            })
+            .count()
+    }
+
     fn any_sent_live(&self) -> bool {
         self.sent.values().any(Sent::live)
     }
