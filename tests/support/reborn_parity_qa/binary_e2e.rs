@@ -1386,6 +1386,10 @@ impl RebornBinaryE2EHarness {
         self.model_gateway.requests()
     }
 
+    pub fn advertised_tool_capability_ids(&self) -> Vec<Vec<CapabilityId>> {
+        self.model_gateway.advertised_tool_capability_ids()
+    }
+
     pub fn remaining_model_responses(&self) -> usize {
         self.model_gateway.remaining_responses()
     }
