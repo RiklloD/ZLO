@@ -160,17 +160,55 @@ impl Primed {
 /// Register every installed coding-agent CLI on `engine`, all with their
 /// tools behind `bridge`'s approvals, which are recorded in the engine's
 /// store, and their skills listed from `skills` (the shared skill usage
-/// ledger). Returns how many runtimes were registered.
+/// ledger), and wire a [`CliRuntimeDiscovery`] that finds the ones
+/// installed later. Returns how many runtimes were registered; one already
+/// registered is left as it is.
 pub async fn register_cli_runtimes(
     engine: &Arc<Engine>,
     bridge: &Arc<bridge::CliBridge>,
     skills: &skill_listing::CliSkillUsage,
 ) -> usize {
     bridge.record_to(engine.store().clone());
+    // A CLI installed later (the desktop app's Install) is found on a rescan.
+    engine.set_runtime_discovery(Arc::new(CliRuntimeDiscovery::new(
+        Arc::clone(bridge),
+        skills.clone(),
+    )));
+    register_installed(engine, bridge, skills).await
+}
+
+async fn register_installed(
+    engine: &Arc<Engine>,
+    bridge: &Arc<bridge::CliBridge>,
+    skills: &skill_listing::CliSkillUsage,
+) -> usize {
     register_claude_runtimes(engine, Some(Arc::clone(bridge)), skills)
         + register_antigravity_runtime(engine, Some(Arc::clone(bridge)), skills).await
         + register_muse_runtime(engine, Some(Arc::clone(bridge)), skills)
         + register_codex_runtime(engine, Some(Arc::clone(bridge)), skills)
+}
+
+/// Finds coding-agent CLIs installed after the backend started (the
+/// desktop app's Install button, or the person's own terminal), wired on the
+/// engine with [`Engine::set_runtime_discovery`].
+pub struct CliRuntimeDiscovery {
+    bridge: Arc<bridge::CliBridge>,
+    skills: skill_listing::CliSkillUsage,
+}
+
+impl CliRuntimeDiscovery {
+    pub fn new(bridge: Arc<bridge::CliBridge>, skills: skill_listing::CliSkillUsage) -> Self {
+        Self { bridge, skills }
+    }
+}
+
+#[async_trait::async_trait]
+impl ironclaw_orchestrator::engine::RuntimeDiscovery for CliRuntimeDiscovery {
+    async fn discover(&self, engine: &Arc<Engine>) -> usize {
+        let added = register_installed(engine, &self.bridge, &self.skills).await;
+        tracing::debug!(added, "looked again for coding-agent CLIs");
+        added
+    }
 }
 
 /// Register the Codex CLI runtime when a `codex` binary is installed. With
@@ -191,10 +229,9 @@ pub fn register_codex_runtime(
     };
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     match codex::CodexRuntime::new(codex::default_config(&home, &binary), sink, bridge) {
-        Ok(runtime) => {
-            engine.register_runtime(Arc::new(runtime.with_skill_usage(skills.clone())));
-            1
-        }
+        Ok(runtime) => usize::from(
+            engine.register_runtime_if_absent(Arc::new(runtime.with_skill_usage(skills.clone()))),
+        ),
         Err(error) => {
             tracing::debug!(%error, "codex runtime id rejected");
             0
@@ -223,8 +260,7 @@ pub fn register_claude_runtimes(
     for config in claude::default_accounts(&home, &binary, skills) {
         match claude::ClaudeCliRuntime::new(config, sink.clone(), bridge.clone()) {
             Ok(runtime) => {
-                engine.register_runtime(Arc::new(runtime));
-                registered += 1;
+                registered += usize::from(engine.register_runtime_if_absent(Arc::new(runtime)));
             }
             Err(error) => tracing::debug!(%error, "claude runtime id rejected"),
         }
@@ -276,10 +312,9 @@ pub async fn register_antigravity_runtime(
     };
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     match antigravity::AntigravityRuntime::new(config, sink, bridge) {
-        Ok(runtime) => {
-            engine.register_runtime(Arc::new(runtime.with_skill_usage(skills.clone())));
-            1
-        }
+        Ok(runtime) => usize::from(
+            engine.register_runtime_if_absent(Arc::new(runtime.with_skill_usage(skills.clone()))),
+        ),
         Err(error) => {
             tracing::debug!(%error, "antigravity runtime id rejected");
             0
@@ -305,10 +340,9 @@ pub fn register_muse_runtime(
     };
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     match muse::MuseRuntime::new(muse::default_config(&home, &binary), sink, bridge) {
-        Ok(runtime) => {
-            engine.register_runtime(Arc::new(runtime.with_skill_usage(skills.clone())));
-            1
-        }
+        Ok(runtime) => usize::from(
+            engine.register_runtime_if_absent(Arc::new(runtime.with_skill_usage(skills.clone()))),
+        ),
         Err(error) => {
             tracing::debug!(%error, "muse runtime id rejected");
             0

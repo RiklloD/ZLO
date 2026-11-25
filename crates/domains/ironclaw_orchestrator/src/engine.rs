@@ -95,6 +95,17 @@ pub struct Engine {
     pub(crate) request_waiters: StdMutex<HashMap<String, Arc<Notify>>>,
     /// One admission path per thread (`crate::admission`).
     pub(crate) admission: crate::admission::AdmissionLocks,
+    /// Finds runtimes installed after boot, plugged in by the host.
+    runtime_discovery: OnceLock<Arc<dyn RuntimeDiscovery>>,
+}
+
+/// Looks again for runtimes the host can run (coding-agent CLIs installed
+/// after the backend started) and registers the ones not registered yet.
+/// Never replaces a registered runtime: its live sessions stay.
+#[async_trait::async_trait]
+pub trait RuntimeDiscovery: Send + Sync {
+    /// Register what is new on `engine`; returns how many were added.
+    async fn discover(&self, engine: &Arc<Engine>) -> usize;
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -150,6 +161,7 @@ impl Engine {
             consoles: Default::default(),
             peer_links: OnceLock::new(),
             secret_vault: OnceLock::new(),
+            runtime_discovery: OnceLock::new(),
             request_waiters: StdMutex::new(HashMap::new()),
             admission: StdMutex::new(HashMap::new()),
         }))
@@ -231,6 +243,38 @@ impl Engine {
             "defaultRuntime": self.default_runtime.as_str(), "runtimes": runtimes,
             "settings": self.store.settings().await?,
         }))
+    }
+
+    /// Wire what [`Self::rediscover_runtimes`] runs (first call wins).
+    pub fn set_runtime_discovery(&self, discovery: Arc<dyn RuntimeDiscovery>) {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "first call wins: the host wires one discovery per process"
+        )]
+        let _ = self.runtime_discovery.set(discovery);
+    }
+
+    /// Register runtimes installed since boot; returns how many were added.
+    /// Without a discovery wired, nothing is.
+    pub async fn rediscover_runtimes(self: &Arc<Self>) -> usize {
+        match self.runtime_discovery.get() {
+            Some(discovery) => discovery.discover(self).await,
+            None => 0,
+        }
+    }
+
+    /// Register `runtime` unless one with its id is registered already;
+    /// returns whether it was added.
+    pub fn register_runtime_if_absent(&self, runtime: Arc<dyn TurnRuntime>) -> bool {
+        let Ok(mut map) = self.runtimes.write() else {
+            return false;
+        };
+        let id = runtime.id();
+        if map.contains_key(&id) {
+            return false;
+        }
+        map.insert(id, runtime);
+        true
     }
 
     /// Register (or replace) a runtime. The engine looks runtimes up by the

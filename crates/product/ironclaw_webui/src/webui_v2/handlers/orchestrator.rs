@@ -98,6 +98,23 @@ pub async fn orchestrator_providers(
     ))
 }
 
+/// `POST /api/webchat/v2/providers/rescan` — registers coding-agent CLIs
+/// installed since the backend started; answers the providers view.
+pub async fn orchestrator_providers_rescan(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    Ok(Json(
+        invoke_product_command(
+            state.services(),
+            caller,
+            ORCHESTRATOR_PROVIDERS_RESCAN_COMMAND,
+            serde_json::json!({}),
+        )
+        .await?,
+    ))
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrchestratorRouteBody {

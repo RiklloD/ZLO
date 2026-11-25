@@ -2066,3 +2066,46 @@ async fn history_sources_read_external_transcripts_whole_and_listeners_fan_out()
     finish(&h.engine, &loop_thread, TurnOutcome::completed(None)).await;
     assert_eq!(*count.0.lock().unwrap(), vec![loop_thread]);
 }
+
+/// A CLI installed after boot: the host's discovery registers it on a
+/// rescan, the providers view lists it, and a second rescan (or a runtime
+/// already running under that id) changes nothing.
+#[tokio::test]
+async fn a_rescan_registers_a_runtime_installed_after_boot_and_never_replaces_one() {
+    struct LateInstall;
+    #[async_trait]
+    impl crate::engine::RuntimeDiscovery for LateInstall {
+        async fn discover(&self, engine: &Arc<Engine>) -> usize {
+            usize::from(engine.register_runtime_if_absent(Arc::new(FakeRuntime {
+                name: Some("late-cli"),
+                ..Default::default()
+            })))
+        }
+    }
+    let h = harness().await;
+    let listed = |view: &serde_json::Value| {
+        view["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["provider"] == "late-cli")
+    };
+    // Without a discovery wired, a rescan adds nothing.
+    assert_eq!(h.engine.rediscover_runtimes().await, 0);
+    h.engine.set_runtime_discovery(Arc::new(LateInstall));
+    assert!(!listed(&h.engine.providers_view(&scope()).await.unwrap()));
+
+    assert_eq!(h.engine.rediscover_runtimes().await, 1);
+    assert!(listed(&h.engine.providers_view(&scope()).await.unwrap()));
+    let first = h
+        .engine
+        .runtime(&RuntimeId::new("late-cli").unwrap())
+        .unwrap();
+
+    assert_eq!(h.engine.rediscover_runtimes().await, 0, "already registered");
+    let still = h
+        .engine
+        .runtime(&RuntimeId::new("late-cli").unwrap())
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &still), "a running runtime is kept");
+}

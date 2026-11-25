@@ -299,6 +299,15 @@ impl ContextLevel {
     }
 }
 
+/// Look again for coding-agent CLIs installed since the backend started and
+/// register the new ones (never replacing a running one). Answers
+/// `{added, providers, picker, idleCompact}`: the providers view after it.
+pub const ORCHESTRATOR_PROVIDERS_RESCAN_COMMAND_ID: &str = "orchestrator.providers_rescan";
+pub const ORCHESTRATOR_PROVIDERS_RESCAN_COMMAND: ProductSurfaceCommandDescriptor<
+    serde_json::Value,
+    serde_json::Value,
+> = ProductSurfaceCommandDescriptor::new(ORCHESTRATOR_PROVIDERS_RESCAN_COMMAND_ID);
+
 pub const ORCHESTRATOR_TASK_CANCEL_COMMAND_ID: &str = "orchestrator.task_cancel";
 pub const ORCHESTRATOR_TASK_CANCEL_COMMAND: ProductSurfaceCommandDescriptor<
     OrchestratorTaskCancelRequest,

@@ -182,6 +182,8 @@ pub const WEBUI_V2_ROUTE_THREAD_CONSOLE_CONTROL: &str =
     "webui.v2.orchestrator.thread_console_control";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_THREAD_ACTION: &str = "webui.v2.orchestrator.thread_action";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS: &str = "webui.v2.orchestrator.providers";
+pub const WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS_RESCAN: &str =
+    "webui.v2.orchestrator.providers_rescan";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_TASK: &str = "webui.v2.orchestrator.task";
 pub const WEBUI_V2_ROUTE_ORCHESTRATOR_TASK_CANCEL: &str = "webui.v2.orchestrator.task_cancel";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_TASKS: &str =
@@ -215,6 +217,8 @@ pub const WEBUI_V2_PATTERN_THREAD_CONSOLE: &str = "/api/webchat/v2/threads/{thre
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_THREAD_ACTION: &str =
     "/api/webchat/v2/threads/{thread_id}/action";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS: &str = "/api/webchat/v2/providers";
+/// Look again for coding-agent CLIs installed since the backend started.
+pub const WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS_RESCAN: &str = "/api/webchat/v2/providers/rescan";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK: &str = "/api/webchat/v2/tasks/{task_id}";
 pub const WEBUI_V2_PATTERN_ORCHESTRATOR_TASK_CANCEL: &str =
     "/api/webchat/v2/tasks/{task_id}/cancel";
@@ -521,6 +525,7 @@ pub fn webui_v2_routes_with_artifact_flags(
         orchestrator_thread_route_descriptor(),
         orchestrator_thread_route_set_descriptor(),
         orchestrator_providers_descriptor(),
+        orchestrator_providers_rescan_descriptor(),
         orchestrator_thread_merge_back_descriptor(),
         orchestrator_thread_worktree_descriptor(),
         thread_git_descriptor(),
@@ -1573,6 +1578,14 @@ fn orchestrator_providers_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS,
+    )
+}
+
+fn orchestrator_providers_rescan_descriptor() -> IngressRouteDescriptor {
+    bodyless_mutation_route(
+        WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS_RESCAN,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_ORCHESTRATOR_PROVIDERS_RESCAN,
     )
 }
 

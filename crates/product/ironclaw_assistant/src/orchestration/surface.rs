@@ -575,6 +575,17 @@ impl OrchestratedProductSurface {
             ORCHESTRATOR_SCHEDULE_MUTATE_COMMAND_ID => {
                 super::schedules::mutate(engine, decode(input)?, scope).await
             }
+            ORCHESTRATOR_PROVIDERS_RESCAN_COMMAND_ID => answer(
+                async {
+                    let added = engine.rediscover_runtimes().await;
+                    let mut view = engine.providers_view(scope).await?;
+                    if let Some(map) = view.as_object_mut() {
+                        map.insert("added".into(), serde_json::json!(added));
+                    }
+                    Ok(view)
+                }
+                .await,
+            ),
             ORCHESTRATOR_TASK_CANCEL_COMMAND_ID => {
                 let req: OrchestratorTaskCancelRequest = decode(input)?;
                 answer(
