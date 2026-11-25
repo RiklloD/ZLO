@@ -123,6 +123,8 @@ url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+# The webui_v2_serve bundle-shape checks match minified JS guard conditions.
+regex = { workspace = true }
 # Test builds resolve an unset Trace Commons base to an isolated temp dir
 # (`ironclaw_trace_commons::location::base_dir`, `test-support`), so tests that
 # reach Trace Commons through the runtime never touch the developer's real

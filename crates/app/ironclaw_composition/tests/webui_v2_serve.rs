@@ -1282,75 +1282,74 @@ fn bundle_segment<'a>(body: &'a str, start: &str, end: &str) -> &'a str {
     &after_start[..end_rel]
 }
 
-/// True when `segment` (the minified `setLang` body from stamping the ref up
-/// to, not including, the `localStorage.setItem` commit) guards the commit so
-/// only the latest request lands. The comparator is matched together with
-/// its branch shape, in either minified polarity:
+const JS_IDENT: &str = r"[A-Za-z_$][\w$]*";
+
+/// True when the minified i18n provider's `setLang` callback commits a loaded
+/// pack only while it is still the latest request. The matcher anchors on the
+/// callback itself — `P=>{R.current=P,` stamps the requested language `P` into
+/// the ref `R` — and then, between that stamp and `localStorage.setItem`,
+/// requires one guard whose condition is EXACTLY one of:
 ///
-/// - early return on `!==`: `if(!t||u.current!==e)return;`
-/// - guarded block on `===` that is still open at the commit:
-///   `if(t&&u.current===e){…`
+/// - early return on `!==`: `if(!t||R.current!==P)return;` (either clause order)
+/// - guarded block on `===`, still open at `localStorage.setItem`:
+///   `if(t&&R.current===P){…` (either clause order)
 ///
-/// A reversed guard (`if(!t||u.current===e)return`, or a `!==` block) drops
-/// the latest request and commits the stale one, so it does not match.
-fn commits_only_latest_request(segment: &str) -> bool {
-    let mut from = 0;
-    while let Some(rel) = segment[from..].find(".current") {
-        let at = from + rel;
-        from = at + ".current".len();
-        let rest = &segment[from..];
-        let not_equal = if rest.starts_with("!==") {
-            true
-        } else if rest.starts_with("===") {
-            false
-        } else {
+/// Matching the whole condition (no parentheses, `t` a bare identifier) rules
+/// out a reversed comparator, a negated one (`!(R.current!==P)`, `!!t`), and a
+/// comparison against any variable other than `setLang`'s own parameter. The
+/// guard must also precede every state commit (`setX(P)`, i.e. a call with
+/// `P` that is not the `load(P).then` pack request), so a guard that only
+/// protects localStorage after React state already changed does not match.
+fn commits_only_latest_request(provider: &str) -> bool {
+    let stamp = regex::Regex::new(&format!(
+        r"\(?({JS_IDENT})\)?=>\{{({JS_IDENT})\.current=({JS_IDENT})[,;]"
+    ))
+    .expect("stamp regex");
+    let guard = regex::Regex::new(r"if\(([^()]*)\)").expect("guard regex");
+    for stamped in stamp.captures_iter(provider) {
+        let (param, reference) = (&stamped[1], &stamped[2]);
+        if stamped[3] != *param {
+            continue;
+        }
+        let Some(body_start) = stamped.get(0).map(|m| m.end()) else {
             continue;
         };
-        let Some(if_start) = segment[..at].rfind("if(") else {
+        let rest = &provider[body_start..];
+        let Some(commit_at) = rest.find("localStorage.setItem") else {
             continue;
         };
-        let cond_start = if_start + "if(".len();
-        let mut depth = 1usize;
-        let mut cond_end = None;
-        for (offset, ch) in segment[cond_start..].char_indices() {
-            match ch {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        cond_end = Some(cond_start + offset);
-                        break;
-                    }
-                }
-                _ => {}
+        let body = &rest[..commit_at];
+        let (p, r) = (regex::escape(param), regex::escape(reference));
+        let early_return = regex::Regex::new(&format!(
+            r"^(?:!{JS_IDENT}\|\|{r}\.current!=={p}|{r}\.current!=={p}\|\|!{JS_IDENT})$"
+        ))
+        .expect("early-return regex");
+        let guarded_block = regex::Regex::new(&format!(
+            r"^(?:{JS_IDENT}&&{r}\.current==={p}|{r}\.current==={p}&&{JS_IDENT})$"
+        ))
+        .expect("guarded-block regex");
+        let state_commit = regex::Regex::new(&format!(r"(?:^|[^\w$.]){JS_IDENT}\({p}\)"))
+            .expect("state-commit regex");
+        let commits = |text: &str| {
+            state_commit
+                .find_iter(text)
+                .any(|call| !text[call.end()..].starts_with(".then"))
+        };
+        for found in guard.captures_iter(body) {
+            let (Some(whole), Some(cond)) = (found.get(0), found.get(1)) else {
+                continue;
+            };
+            let after = &body[whole.end()..];
+            let shaped = if early_return.is_match(cond.as_str()) {
+                after.starts_with("return;") || after.starts_with("return}")
+            } else if guarded_block.is_match(cond.as_str()) {
+                after.starts_with('{') && block_open_through_end(&after[1..])
+            } else {
+                false
+            };
+            if shaped && !commits(&body[..whole.start()]) && commits(after) {
+                return true;
             }
-        }
-        let Some(cond_end) = cond_end else {
-            continue;
-        };
-        if cond_end < at {
-            continue;
-        }
-        let cond = &segment[cond_start..cond_end];
-        let after = &segment[cond_end + 1..];
-        let matched = if not_equal {
-            // Reject on any failing clause: `!loaded||ref.current!==next`.
-            !cond.contains("&&")
-                && cond
-                    .split("||")
-                    .all(|clause| clause.starts_with('!') || clause.contains("!=="))
-                && (after.starts_with("return;") || after.starts_with("return}"))
-        } else {
-            // Commit only when every clause holds: `loaded&&ref.current===next`.
-            !cond.contains("||")
-                && cond
-                    .split("&&")
-                    .all(|clause| !clause.starts_with('!') && !clause.contains("!=="))
-                && after.starts_with('{')
-                && block_open_through_end(&after[1..])
-        };
-        if matched {
-            return true;
         }
     }
     false
@@ -1376,28 +1375,26 @@ fn block_open_through_end(body: &str) -> bool {
 
 #[test]
 fn latest_request_guard_matcher_rejects_reversed_guards() {
+    const STAMP: &str = "d=i.useCallback(e=>{u.current=e,p(e).then(t=>{";
+    const COMMIT: &str = "try{localStorage.setItem(s,e)}catch{}}})},[])";
+    let accepts = |guarded: &str| commits_only_latest_request(&format!("{STAMP}{guarded}{COMMIT}"));
     // Both minified polarities of the real guard pass.
-    assert!(commits_only_latest_request(
-        "u.current=e;let t=await n(e);if(!t||u.current!==e)return;r(t),"
-    ));
-    assert!(commits_only_latest_request(
-        "u.current=e;let t=await n(e);if(t&&u.current===e){r(t),"
-    ));
-    // Reversed guards commit the stale request and must be rejected.
-    assert!(!commits_only_latest_request(
-        "u.current=e;let t=await n(e);if(!t||u.current===e)return;r(t),"
-    ));
-    assert!(!commits_only_latest_request(
-        "u.current=e;let t=await n(e);if(t&&u.current!==e){r(t),"
-    ));
+    assert!(accepts("if(!t||u.current!==e)return;n(e),a(t);"));
+    assert!(accepts("if(t&&u.current===e){n(e),a(t);"));
+    // Reversed guards commit the stale request.
+    assert!(!accepts("if(!t||u.current===e)return;n(e),a(t);"));
+    assert!(!accepts("if(t&&u.current!==e){n(e),a(t);"));
+    // A negated comparator inverts the guard.
+    assert!(!accepts("if(!t||!(u.current!==e))return;n(e),a(t);"));
+    assert!(!accepts("if(!!t&&u.current===e){n(e),a(t);"));
+    // Comparing against a variable other than setLang's parameter.
+    assert!(!accepts("if(t&&u.current===r){n(e),a(t);"));
+    // State already committed before the guard; only localStorage is guarded.
+    assert!(!accepts("n(e),a(t);if(t&&u.current===e){"));
     // A `===` block that closes before the commit does not guard it.
-    assert!(!commits_only_latest_request(
-        "u.current=e;let t=await n(e);if(t&&u.current===e){r(t)}"
-    ));
+    assert!(!accepts("if(t&&u.current===e){n(e),a(t)}"));
     // A bare comparator with no branch is not a guard.
-    assert!(!commits_only_latest_request(
-        "u.current=e;let t=u.current!==e;"
-    ));
+    assert!(!accepts("let x=u.current!==e;n(e),a(t);"));
 }
 
 // ─── tests ────────────────────────────────────────────────────────────
@@ -2873,12 +2870,12 @@ async fn static_i18n_module_guards_locale_race_and_clears_failed_pack_cache() {
     // minifier's choice: Vite 8.1 kept the source's early return
     // (`if(!t||u.current!==e)return`), while Vite 8.3 (dependabot batch
     // baaed6a6a) inverts it into a guarded block (`if(t&&u.current===e){…}`).
-    // Both encode the same guard, so accept either — but only on the
-    // setLang commit path, not the mount effect's separate `===` check.
-    let set_lang_commit = bundle_segment(provider_segment, ".current=", "localStorage.setItem");
+    // Both encode the same guard, so accept either — but only inside the
+    // setLang callback (anchored on its parameter), not the mount effect's
+    // separate `===` check.
     assert!(
-        commits_only_latest_request(set_lang_commit),
-        "a resolved pack load must be ignored after a newer language request: {set_lang_commit}",
+        commits_only_latest_request(provider_segment),
+        "a resolved pack load must be ignored after a newer language request: {provider_segment}",
     );
     assert_eq!(
         loader_segment.matches("delete ").count(),
