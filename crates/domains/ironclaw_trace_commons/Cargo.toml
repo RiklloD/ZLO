@@ -16,7 +16,7 @@ layer = "substrates"
 # (`location::base_dir`) and exposes the leak probe, so no test build can read
 # or write the developer's real `~/.ironclaw/trace_contributions`. Shipping
 # builds never enable it; the `zlo` binary binds its home explicitly.
-test-support = []
+test-support = ["dep:tempfile"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -45,6 +45,8 @@ tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v5", "serde"] }
+# `test-support` only: private temp bases (`location::private_test_dir`).
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 axum = { workspace = true, features = ["ws"] }

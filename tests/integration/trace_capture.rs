@@ -51,16 +51,15 @@ const CONSENT_CONTROL_ACTOR_ID: &str = "host-user-trace-consent-control";
 
 static BASE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-/// Bind the Trace Commons base to a process-owned dir before any code
+/// Bind the Trace Commons base to a private temp dir before any code
 /// resolves it (first bind wins, `location::set_base_dir`). Must be the first
 /// call in every test in this binary.
 fn setup_base_dir() -> &'static std::path::Path {
     BASE_DIR.get_or_init(|| {
-        // A process-owned dir under the shared sweep root, not a `TempDir` in
-        // a static (which never drops): a later test process reclaims it once
-        // this one has exited.
-        let dir = ironclaw_trace_commons::location::owned_test_dir()
-            .expect("owned dir for the Trace Commons base");
+        // A fresh mkdtemp dir kept for the process (a `TempDir` in a static
+        // never drops anyway); the OS temp cleaner reclaims it.
+        let dir = ironclaw_trace_commons::location::private_test_dir()
+            .expect("private dir for the Trace Commons base");
         ironclaw_trace_commons::location::set_base_dir(dir.clone())
             .expect("bind Trace Commons base before any resolution");
         dir
