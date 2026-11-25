@@ -8,6 +8,13 @@
 //! writes `<ZLO_HOME>/triage/<time>-<random>/`, and runs the agent there. A
 //! broken setting it can work around (an unknown `ZLO_PROFILE`) does not
 //! stop it: the session is written and the problem is listed in its context.
+//!
+//! Agents are looked for on `PATH`, then in the home folders the native
+//! installers use (`~/.local/bin`, `~/.claude/local`), which they do not
+//! always add to `PATH` — the app's own CLI finders look there too
+//! (`ironclaw_cli_providers::claude::find_binary`, `rpc::find_on_path`,
+//! `ironclaw_usage::probe::find_binary`). With none found and a terminal to
+//! ask on, triage offers to run one's installer, then starts it.
 
 use std::ffi::OsStr;
 use std::io::{BufRead, IsTerminal as _, Write};
@@ -39,6 +46,17 @@ pub(crate) struct TriageAgent {
     state_dir_env: &'static str,
     default_state_dir: &'static str,
     prompt_args: &'static [&'static str],
+    /// The native installer (no Node or npm needed), as the app's
+    /// "Connect your agents" runs it (`KnownCli::install` in the desktop
+    /// app's provider catalog). macOS and Linux only.
+    install: &'static str,
+}
+
+impl TriageAgent {
+    /// The installer command, where it runs (not on Windows).
+    pub(crate) fn install_command(&self) -> Option<&'static str> {
+        (!cfg!(windows)).then_some(self.install)
+    }
 }
 
 pub(crate) const TRIAGE_AGENTS: [TriageAgent; 3] = [
@@ -50,6 +68,7 @@ pub(crate) const TRIAGE_AGENTS: [TriageAgent; 3] = [
         state_dir_env: "CLAUDE_CONFIG_DIR",
         default_state_dir: ".claude",
         prompt_args: &[],
+        install: "curl -fsSL https://claude.ai/install.sh | bash",
     },
     TriageAgent {
         id: AgentId::Codex,
@@ -59,6 +78,7 @@ pub(crate) const TRIAGE_AGENTS: [TriageAgent; 3] = [
         state_dir_env: "CODEX_HOME",
         default_state_dir: ".codex",
         prompt_args: &[],
+        install: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
     },
     TriageAgent {
         id: AgentId::Antigravity,
@@ -68,6 +88,7 @@ pub(crate) const TRIAGE_AGENTS: [TriageAgent; 3] = [
         state_dir_env: "GEMINI_HOME",
         default_state_dir: ".gemini",
         prompt_args: &["--prompt-interactive"],
+        install: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
     },
 ];
 
@@ -118,15 +139,62 @@ pub(crate) fn pick_agent(
     }
 }
 
-/// The picker on this terminal; Ctrl+C cancels it like end of input.
-fn pick_agent_on_terminal(agents: &[&'static TriageAgent]) -> anyhow::Result<Option<usize>> {
+/// With no agent found: which one to install, by number or name, each
+/// shown with its installer. `None` on an empty answer (Enter skips), end
+/// of input, or a raw Ctrl+C / Ctrl+D byte. Choosing one is the consent to
+/// run its installer.
+pub(crate) fn pick_install(
+    agents: &[&TriageAgent],
+    mut input: impl BufRead,
+    mut output: impl Write,
+) -> std::io::Result<Option<usize>> {
+    let menu: Vec<String> = agents
+        .iter()
+        .enumerate()
+        .map(|(index, agent)| {
+            format!(
+                "  [{}] {}: {}",
+                index + 1,
+                agent.label,
+                agent.install_command().unwrap_or_default()
+            )
+        })
+        .collect();
+    loop {
+        write!(
+            output,
+            "Install one now and start triage with it?\n{}\nPress Enter to skip.\n> ",
+            menu.join("\n")
+        )?;
+        output.flush()?;
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0
+            || line.contains(['\u{3}', '\u{4}'])
+            || line.trim().is_empty()
+        {
+            return Ok(None);
+        }
+        if let Some(index) = match_agent_answer(agents, &line) {
+            return Ok(Some(index));
+        }
+    }
+}
+
+type Picker = fn(
+    &[&TriageAgent],
+    std::io::StdinLock<'static>,
+    std::io::Stdout,
+) -> std::io::Result<Option<usize>>;
+
+/// `ask` on this terminal; Ctrl+C cancels it like end of input.
+fn pick_on_terminal(agents: &[&'static TriageAgent], ask: Picker) -> anyhow::Result<Option<usize>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let owned: Vec<&'static TriageAgent> = agents.to_vec();
     let picked = runtime.block_on(async move {
         let ask = tokio::task::spawn_blocking(move || {
-            pick_agent(&owned, std::io::stdin().lock(), std::io::stdout())
+            ask(&owned, std::io::stdin().lock(), std::io::stdout())
         });
         tokio::select! {
             answer = ask => answer.map_err(anyhow::Error::from)?.map_err(anyhow::Error::from),
@@ -148,13 +216,108 @@ pub(crate) fn find_on_path(
     cwd: &Path,
     extensions: &[String],
 ) -> Option<PathBuf> {
-    let names: Vec<String> = std::iter::once(command.to_string())
-        .chain(extensions.iter().map(|ext| format!("{command}{ext}")))
-        .collect();
+    let names = candidate_names(command, extensions);
     std::env::split_paths(path)
         .filter(|dir| !dir.as_os_str().is_empty())
-        .flat_map(|dir| names.iter().map(move |name| cwd.join(&dir).join(name)))
+        .find_map(|dir| find_in_dir(&cwd.join(dir), &names))
+}
+
+/// The bare name, then the name with each executable extension.
+fn candidate_names(command: &str, extensions: &[String]) -> Vec<String> {
+    std::iter::once(command.to_string())
+        .chain(extensions.iter().map(|ext| format!("{command}{ext}")))
+        .collect()
+}
+
+fn find_in_dir(dir: &Path, names: &[String]) -> Option<PathBuf> {
+    names
+        .iter()
+        .map(|name| dir.join(name))
         .find(|candidate| is_executable(candidate))
+}
+
+/// Where the native installers put an agent CLI in the user's home without
+/// always adding it to `PATH`: Claude Code, Codex and Antigravity all use
+/// `~/.local/bin`; older Claude Code installs used `~/.claude/local` behind
+/// a shell alias, which a child process cannot see.
+pub(crate) fn home_agent_dirs(user_home: &Path) -> [PathBuf; 2] {
+    [
+        user_home.join(".local").join("bin"),
+        user_home.join(".claude").join("local"),
+    ]
+}
+
+/// An agent CLI found for triage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FoundAgent {
+    /// Absolute path to start.
+    pub(crate) path: PathBuf,
+    /// The home folder it was found in when it is not on `PATH`.
+    pub(crate) off_path_dir: Option<PathBuf>,
+}
+
+/// `command` on `path` (see [`find_on_path`]), else in the first of
+/// `home_dirs` that has it.
+pub(crate) fn locate_agent(
+    command: &str,
+    path: &OsStr,
+    cwd: &Path,
+    extensions: &[String],
+    home_dirs: &[PathBuf],
+) -> Option<FoundAgent> {
+    if let Some(found) = find_on_path(command, path, cwd, extensions) {
+        return Some(FoundAgent {
+            path: found,
+            off_path_dir: None,
+        });
+    }
+    let names = candidate_names(command, extensions);
+    home_dirs.iter().find_map(|dir| {
+        find_in_dir(dir, &names).map(|found| FoundAgent {
+            path: found,
+            off_path_dir: Some(dir.clone()),
+        })
+    })
+}
+
+/// One line for context.md, which is inlined as trusted text: no control
+/// characters (no new heading) and no backticks (no broken code span).
+fn flatten_for_context(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| match c {
+            c if c.is_control() => ' ',
+            '`' => '\'',
+            c => c,
+        })
+        .collect()
+}
+
+/// The context line for an agent found outside `PATH`.
+pub(crate) fn off_path_diagnostic(agent: &TriageAgent, found: &FoundAgent) -> Option<String> {
+    let dir = found.off_path_dir.as_ref()?;
+    Some(format!(
+        "`{}` ({}) was found at `{}`, which is not on this terminal's PATH: ZLO finds it, \
+         but commands typed in this shell will not until `{}` is added to PATH in the shell \
+         profile (for example `~/.zshrc`).",
+        agent.command,
+        agent.label,
+        flatten_for_context(&found.path.display().to_string()),
+        flatten_for_context(&dir.display().to_string()),
+    ))
+}
+
+/// The `PATH` for an agent found outside it: its folder first, so what it
+/// starts by name (itself, its helpers) is found too. `None` keeps ours.
+fn child_path(found: &FoundAgent, path: &OsStr) -> Option<std::ffi::OsString> {
+    let dir = found.off_path_dir.as_ref()?;
+    match std::env::join_paths(std::iter::once(dir.clone()).chain(std::env::split_paths(path))) {
+        Ok(joined) => Some(joined),
+        Err(error) => {
+            tracing::debug!(%error, "agent folder cannot join PATH; PATH unchanged");
+            None
+        }
+    }
 }
 
 /// Executable extensions: Windows' `PATHEXT` (`.COM;.EXE;.BAT;.CMD` when
@@ -226,12 +389,81 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// The installers, for the "none found" message.
+fn describe_installers() -> Vec<String> {
+    let lines: Vec<String> = TRIAGE_AGENTS
+        .iter()
+        .filter_map(|agent| Some(format!("  {}: {}", agent.label, agent.install_command()?)))
+        .collect();
+    if lines.is_empty() {
+        return lines;
+    }
+    std::iter::once("Or install one, then run `zlo triage` again:".to_string())
+        .chain(lines)
+        .collect()
+}
+
 fn describe_files(session: &TriageSession) -> Vec<String> {
     vec![
         "The triage prompt and machine context were written to:".into(),
         format!("  {}", session.prompt_file.display()),
         format!("  {}", session.context_file.display()),
     ]
+}
+
+/// With no agent found, on a terminal: offer each installer, run the chosen
+/// one in this terminal, then find that agent again. `None` when skipped,
+/// when the installer fails, or when the agent is still not found.
+fn offer_install(
+    locate: &dyn Fn(&TriageAgent) -> Option<FoundAgent>,
+) -> anyhow::Result<Option<(&'static TriageAgent, FoundAgent)>> {
+    let installable: Vec<&'static TriageAgent> = TRIAGE_AGENTS
+        .iter()
+        .filter(|agent| agent.install_command().is_some())
+        .collect();
+    if installable.is_empty() {
+        return Ok(None);
+    }
+    println!("No supported agent CLI (claude, codex, agy) was found on this machine.\n");
+    let Some(agent) = pick_on_terminal(&installable, pick_install)?
+        .and_then(|index| installable.get(index).copied())
+    else {
+        println!();
+        return Ok(None);
+    };
+    let Some(install) = agent.install_command() else {
+        return Ok(None);
+    };
+    println!("\nInstalling {} with:\n  {install}\n", agent.label);
+    let status = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(install)
+        .status();
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            println!("\nThe {} installer exited with {status}.\n", agent.label);
+            return Ok(None);
+        }
+        Err(error) => {
+            println!("\nCould not run the {} installer: {error}\n", agent.label);
+            return Ok(None);
+        }
+    }
+    match locate(agent) {
+        Some(found) => {
+            println!();
+            Ok(Some((agent, found)))
+        }
+        None => {
+            println!(
+                "\n{} was installed, but `{}` is not on PATH or in ~/.local/bin. Open a new \
+                 terminal and run `zlo triage` again.\n",
+                agent.label, agent.command
+            );
+            Ok(None)
+        }
+    }
 }
 
 impl TriageCommand {
@@ -262,6 +494,23 @@ impl TriageCommand {
             cli_version: crate::triage::describe_build(&build),
             launched_as,
         };
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let cwd = std::env::current_dir()?;
+        let extensions = executable_extensions(std::env::var_os("PATHEXT").as_deref());
+        let home_dirs = home_agent_dirs(&user_home);
+        let locate =
+            |agent: &TriageAgent| locate_agent(agent.command, &path, &cwd, &extensions, &home_dirs);
+        let installed: Vec<(&'static TriageAgent, FoundAgent)> = TRIAGE_AGENTS
+            .iter()
+            .filter_map(|agent| Some((agent, locate(agent)?)))
+            .collect();
+        let mut diagnostics = diagnostics;
+        diagnostics.extend(
+            installed
+                .iter()
+                .filter_map(|(agent, found)| off_path_diagnostic(agent, found)),
+        );
+
         let pid_file = read_pid_file(&paths.desktop_backend_pid_file, is_zlo_process);
         let server = describe_backend(&pid_file, crate::commands::status::resolve_service_state());
         let session = write_session(&SessionInput {
@@ -276,20 +525,8 @@ impl TriageCommand {
             tracing::debug!(%reason, "desktop backend pid file unreadable");
         }
 
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        let cwd = std::env::current_dir()?;
-        let extensions = executable_extensions(std::env::var_os("PATHEXT").as_deref());
-        let installed: Vec<(&'static TriageAgent, PathBuf)> = TRIAGE_AGENTS
-            .iter()
-            .filter_map(|agent| {
-                Some((
-                    agent,
-                    find_on_path(agent.command, &path, &cwd, &extensions)?,
-                ))
-            })
-            .collect();
-
-        let selected = match self.agent {
+        let on_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+        let mut selected: Option<(&'static TriageAgent, FoundAgent)> = match self.agent {
             Some(requested) => {
                 let Some(found) = installed.iter().find(|(agent, _)| agent.id == requested) else {
                     let command = TRIAGE_AGENTS
@@ -298,12 +535,12 @@ impl TriageCommand {
                         .map_or("agent", |agent| agent.command);
                     anyhow::bail!("`{command}` is not installed or was not found on PATH.");
                 };
-                Some(found)
+                Some(found.clone())
             }
-            None if installed.len() == 1 => installed.first(),
+            None if installed.len() == 1 => installed.first().cloned(),
             None if installed.len() > 1 => {
                 // The picker needs terminal output too, or its invisible prompt hangs.
-                if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                if !on_terminal {
                     anyhow::bail!(
                         "Multiple supported agent CLIs are installed and there is no terminal \
                          to ask which to use. Re-run with --agent claude, --agent codex, or \
@@ -312,8 +549,8 @@ impl TriageCommand {
                 }
                 let agents: Vec<&'static TriageAgent> =
                     installed.iter().map(|(agent, _)| *agent).collect();
-                match pick_agent_on_terminal(&agents)? {
-                    Some(index) => installed.get(index),
+                match pick_on_terminal(&agents, pick_agent)? {
+                    Some(index) => installed.get(index).cloned(),
                     None => {
                         println!("\nNo agent started.");
                         return Ok(());
@@ -323,7 +560,11 @@ impl TriageCommand {
             None => None,
         };
 
-        let Some((agent, command)) = selected else {
+        if selected.is_none() && on_terminal {
+            selected = offer_install(&locate)?;
+        }
+
+        let Some((agent, found)) = selected else {
             let mut lines = vec![
                 "No supported agent CLI (claude, codex, agy) was found on this machine.".into(),
                 String::new(),
@@ -331,9 +572,21 @@ impl TriageCommand {
             lines.extend(describe_files(&session));
             lines.push(String::new());
             lines.push("Paste the prompt file into any coding agent to run triage by hand.".into());
+            let installers = describe_installers();
+            if !installers.is_empty() {
+                lines.push(String::new());
+                lines.extend(installers);
+            }
             println!("{}", lines.join("\n"));
             return Ok(());
         };
+        if let Some(dir) = &found.off_path_dir {
+            println!(
+                "Found {} in {} (not on your PATH).",
+                agent.label,
+                dir.display()
+            );
+        }
 
         let launch = launch_prompt(&session.prompt_file);
         let mut args: Vec<String> = Vec::new();
@@ -343,9 +596,12 @@ impl TriageCommand {
         args.extend(agent.prompt_args.iter().map(|arg| (*arg).to_string()));
         args.push(launch.clone());
         println!("Starting {}. It will ask what went wrong.\n", agent.label);
-        let status = std::process::Command::new(command)
-            .args(&args)
-            .current_dir(&session.session_dir)
+        let mut child = std::process::Command::new(&found.path);
+        child.args(&args).current_dir(&session.session_dir);
+        if let Some(child_path) = child_path(&found, &path) {
+            child.env("PATH", child_path);
+        }
+        let status = child
             .status()
             .map_err(|error| anyhow::anyhow!("Could not start `{}`: {error}", agent.command))?;
         let code = status
@@ -487,6 +743,103 @@ mod tests {
         } else {
             assert!(executable_extensions(Some(OsStr::new(".EXE"))).is_empty());
         }
+    }
+
+    #[cfg(unix)]
+    fn executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(path, "#!/bin/sh\n").expect("write");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+
+    /// `PATH` first, then the home folders in order; only a home match
+    /// carries the folder it came from.
+    #[cfg(unix)]
+    #[test]
+    fn agents_are_found_on_path_before_the_home_folders() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let dirs = home_agent_dirs(tmp.path());
+        executable(&dirs[1].join("claude"));
+        let empty = OsStr::new("");
+        assert_eq!(
+            locate_agent("claude", empty, tmp.path(), &[], &dirs),
+            Some(FoundAgent {
+                path: dirs[1].join("claude"),
+                off_path_dir: Some(dirs[1].clone()),
+            })
+        );
+        executable(&dirs[0].join("claude"));
+        assert_eq!(
+            locate_agent("claude", empty, tmp.path(), &[], &dirs).and_then(|f| f.off_path_dir),
+            Some(dirs[0].clone())
+        );
+        executable(&tmp.path().join("bin/claude"));
+        let found = locate_agent("claude", OsStr::new("bin"), tmp.path(), &[], &dirs);
+        assert_eq!(
+            found,
+            Some(FoundAgent {
+                path: tmp.path().join("bin/claude"),
+                off_path_dir: None,
+            })
+        );
+        assert_eq!(locate_agent("codex", empty, tmp.path(), &[], &dirs), None);
+    }
+
+    #[test]
+    fn an_off_path_agent_gets_one_flat_context_line_and_leads_the_child_path() {
+        let found = FoundAgent {
+            path: PathBuf::from("/h`x\n## y/.local/bin/claude"),
+            off_path_dir: Some(PathBuf::from("/h`x\n## y/.local/bin")),
+        };
+        let line = off_path_diagnostic(&TRIAGE_AGENTS[0], &found).expect("a line");
+        assert!(!line.contains('\n'), "{line}");
+        assert!(line.contains("/h'x ## y/.local/bin/claude"), "{line}");
+        assert!(line.contains("not on this terminal's PATH"), "{line}");
+        let on_path = FoundAgent {
+            path: PathBuf::from("/usr/bin/claude"),
+            off_path_dir: None,
+        };
+        assert_eq!(off_path_diagnostic(&TRIAGE_AGENTS[0], &on_path), None);
+        assert_eq!(child_path(&on_path, OsStr::new("/usr/bin")), None);
+        #[cfg(unix)]
+        {
+            let home = FoundAgent {
+                path: PathBuf::from("/h/.local/bin/claude"),
+                off_path_dir: Some(PathBuf::from("/h/.local/bin")),
+            };
+            assert_eq!(
+                child_path(&home, OsStr::new("/usr/bin:/bin")),
+                Some("/h/.local/bin:/usr/bin:/bin".into())
+            );
+        }
+    }
+
+    #[test]
+    fn the_install_offer_is_skipped_by_enter_and_reads_numbers_and_names() {
+        let agents: Vec<&TriageAgent> = TRIAGE_AGENTS.iter().collect();
+        for (input, picked) in [
+            ("\n", None),
+            ("", None),
+            ("\u{3}", None),
+            ("nope\n3\n", Some(2)),
+            ("Codex\n", Some(1)),
+        ] {
+            let mut output = Vec::new();
+            let answer = pick_install(&agents, input.as_bytes(), &mut output).expect("io");
+            assert_eq!(answer, picked, "{input:?}");
+        }
+        let mut output = Vec::new();
+        pick_install(&agents, "\n".as_bytes(), &mut output).expect("io");
+        let shown = String::from_utf8(output).expect("utf-8");
+        if cfg!(windows) {
+            return;
+        }
+        assert!(
+            shown.contains("  [1] Claude Code: curl -fsSL https://claude.ai/install.sh | bash"),
+            "{shown}"
+        );
+        assert!(shown.contains("Press Enter to skip."), "{shown}");
     }
 
     #[test]
