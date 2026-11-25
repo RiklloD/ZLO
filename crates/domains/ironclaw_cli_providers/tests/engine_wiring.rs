@@ -85,7 +85,6 @@ async fn wired(after: &str) -> Wired {
             display_name: "Claude CLI".into(),
             binary: script(&path, after),
             config_dir: None,
-            listed: true,
             work_dir: path.join("work"),
             login_file: path.join(".claude.json"),
             projects_dir: path.join("projects"),

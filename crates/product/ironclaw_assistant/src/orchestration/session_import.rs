@@ -220,7 +220,6 @@ mod tests {
                 display_name: "Claude CLI".into(),
                 binary: root.join("claude"),
                 config_dir: None,
-                listed: true,
                 work_dir: root.join("work"),
                 login_file: root.join(".claude.json"),
                 projects_dir: projects.clone(),

@@ -268,14 +268,16 @@ fn the_second_login_is_used_only_for_a_different_signed_in_account() {
     assert_eq!(ids(), one, "a login file that never signed in");
     write(second.clone(), Some("acct-a"));
     assert_eq!(ids(), one, "the same account twice");
-    write(second, Some("acct-b"));
-    assert_eq!(
-        ids(),
-        (
-            vec!["claude_cli".to_string(), "claude_cli_2".into()],
-            vec!["claude_cli".into(), "claude_cli_2".into(), "codex".into()]
-        )
+    write(second.clone(), Some("acct-b"));
+    let two = (
+        vec!["claude_cli".to_string(), "claude_cli_2".into()],
+        vec!["claude_cli".into(), "claude_cli_2".into(), "codex".into()],
     );
+    assert_eq!(ids(), two);
+    // Used before: its history and card stay, as its runtime does.
+    std::fs::remove_file(&second).unwrap();
+    std::fs::create_dir_all(home.join(".claude-account2/projects/-work")).unwrap();
+    assert_eq!(ids(), two);
 }
 
 #[tokio::test(start_paused = true)]

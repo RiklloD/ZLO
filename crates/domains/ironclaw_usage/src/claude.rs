@@ -505,15 +505,24 @@ fn hex8(text: &str) -> String {
         .collect()
 }
 
-/// `~/.claude-account2` when a different Claude account than the CLI
-/// default is signed in there. Mirrors `ironclaw_cli_providers`'
-/// `claude::second_account_dir`, which decides whether the runtime exists;
-/// the two must agree so the Usage page lists the accounts the picker does.
+/// `~/.claude-account2` when it is a different signed-in Claude account
+/// than the CLI default, or already has transcripts. Mirrors
+/// `ironclaw_cli_providers`' `claude::second_account`, which decides whether
+/// the `claude-cli-2` runtime exists; the two must agree so the Usage page
+/// lists the accounts the picker does.
 pub(crate) fn second_login_dir(home: &Path) -> Option<PathBuf> {
     let dir = home.join(".claude-account2");
-    let second = signed_in_account(&dir.join(".claude.json"))?;
-    let first = signed_in_account(&home.join(".claude.json"));
-    (first.as_deref() != Some(second.as_str())).then_some(dir)
+    let different = signed_in_account(&dir.join(".claude.json")).is_some_and(|second| {
+        signed_in_account(&home.join(".claude.json")).as_deref() != Some(second.as_str())
+    });
+    let used = match std::fs::read_dir(dir.join("projects")) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(error) => {
+            tracing::debug!(%error, "claude usage: no second-login transcripts");
+            false
+        }
+    };
+    (different || used).then_some(dir)
 }
 
 /// The `oauthAccount.accountUuid` a CLI login file is signed in to. The CLI

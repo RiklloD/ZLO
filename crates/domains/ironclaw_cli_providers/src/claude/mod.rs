@@ -114,10 +114,6 @@ pub struct ClaudeCliConfig {
     /// `CLAUDE_CONFIG_DIR`; `None` is the CLI default (`~/.claude`), and an
     /// inherited `CLAUDE_CONFIG_DIR` is cleared so it matches `login_file`.
     pub config_dir: Option<PathBuf>,
-    /// Whether the account is offered in the catalog. `false` keeps an
-    /// account registered only so threads already on it still read, switch
-    /// and drain (the legacy second login that duplicated the first).
-    pub listed: bool,
     /// Working directory of every session; transcripts are filed under it.
     pub work_dir: PathBuf,
     /// Where the account's login lives (`~/.claude.json` or
@@ -1225,9 +1221,6 @@ impl TurnRuntime for ClaudeCliRuntime {
     }
 
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
-        if !self.config.listed {
-            return Ok(Vec::new());
-        }
         Ok(vec![CatalogProvider {
             provider: self.config.runtime_id.clone(),
             name: self.config.display_name.clone(),
@@ -1346,7 +1339,6 @@ pub fn default_accounts(
         display_name: "Claude CLI".into(),
         binary: binary.to_path_buf(),
         config_dir: None,
-        listed: true,
         work_dir: work_dir.clone(),
         login_file: home.join(".claude.json"),
         projects_dir: home.join(".claude").join("projects"),
@@ -1355,13 +1347,12 @@ pub fn default_accounts(
         artifacts: false,
         skills: listing("claude-cli"),
     }];
-    if let Some((second, listed)) = second_account(home) {
+    if let Some(second) = second_account(home) {
         accounts.push(ClaudeCliConfig {
             runtime_id: "claude-cli-2".into(),
             display_name: "Claude CLI 2".into(),
             binary: binary.to_path_buf(),
             config_dir: Some(second.clone()),
-            listed,
             work_dir,
             login_file: second.join(".claude.json"),
             projects_dir: second.join("projects"),
@@ -1374,31 +1365,37 @@ pub fn default_accounts(
     accounts
 }
 
-/// The second account's config dir, `~/.claude-account2`, and whether it is
-/// listed. Most people have one Claude login, so the second account is
+/// The second account's config dir, `~/.claude-account2`, when it gets a
+/// runtime. Most people have one Claude login, so the second account is
 /// opt-in: sign it in with
 /// `CLAUDE_CONFIG_DIR=~/.claude-account2 claude /login` and restart. It is
-/// listed only when signed in to a different account than the CLI default.
-/// A login file that is not that (older builds created one on every
-/// install) still registers the runtime, unlisted, so threads already on
-/// `claude-cli-2` keep their history, route switches and queue. `None` when
-/// there is no login file: a fresh install has no second runtime.
-pub fn second_account(home: &Path) -> Option<(PathBuf, bool)> {
+/// used when a different account than the CLI default is signed in there,
+/// or when it already has transcripts (`projects/`): threads, profiles and
+/// queued messages may name `claude-cli-2`, and a missing runtime breaks
+/// them. A folder older builds created by probing it, never used, is not
+/// enough, so a fresh install has no second runtime.
+pub fn second_account(home: &Path) -> Option<PathBuf> {
     let dir = home.join(SECOND_ACCOUNT_DIR);
-    let file = dir.join(".claude.json");
-    if !file.is_file() {
-        return None;
+    let different = login::account_at(&dir.join(".claude.json")).is_some_and(|second| {
+        login::account_at(&home.join(".claude.json")).as_deref() != Some(second.as_str())
+    });
+    if different || has_entries(&dir.join("projects")) {
+        Some(dir)
+    } else {
+        tracing::debug!("claude cli: no distinct or used second login; not registered");
+        None
     }
-    let listed = match login::account_at(&file) {
-        Some(second) => {
-            login::account_at(&home.join(".claude.json")).as_deref() != Some(second.as_str())
+}
+
+/// Whether `dir` exists and holds anything.
+fn has_entries(dir: &Path) -> bool {
+    match std::fs::read_dir(dir) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(error) => {
+            tracing::debug!(%error, "claude cli: no second-login transcripts");
+            false
         }
-        None => false,
-    };
-    if !listed {
-        tracing::debug!("claude cli: second login unsigned or the same account; kept unlisted");
     }
-    Some((dir, listed))
 }
 
 /// Where the optional second Claude login lives, under `$HOME`.
@@ -1418,45 +1415,44 @@ mod tests {
         std::fs::write(path, body.to_string()).unwrap();
     }
 
-    /// `(runtime id, listed)` per registered account.
-    fn runtimes(home: &std::path::Path) -> Vec<(String, bool)> {
+    fn runtimes(home: &std::path::Path) -> Vec<String> {
         default_accounts(home, &home.join("claude"), &CliSkillUsage::default())
             .into_iter()
-            .map(|c| (c.runtime_id, c.listed))
+            .map(|c| c.runtime_id)
             .collect()
     }
 
     /// The bug: a fresh install listed "Claude CLI 2" beside "Claude CLI",
-    /// both Ready, both the same login. The second account is listed only
-    /// when a different account is signed in under `~/.claude-account2`; a
-    /// leftover login file keeps it registered, unlisted, for old threads.
+    /// both Ready, both the same login. The second account runs only for a
+    /// different signed-in login, or one that already has transcripts (its
+    /// threads and profiles must keep resolving).
     #[test]
-    fn the_second_account_is_listed_only_for_a_different_signed_in_login() {
+    fn the_second_account_runs_only_when_distinct_or_already_used() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();
         let first = home.join(".claude.json");
-        let second = home.join(SECOND_ACCOUNT_DIR).join(".claude.json");
-        let cli = ("claude-cli".to_string(), true);
-        let cli2 = |listed| ("claude-cli-2".to_string(), listed);
+        let dir = home.join(SECOND_ACCOUNT_DIR);
+        let second = dir.join(".claude.json");
         login(&first, Some("acct-a"));
-        assert_eq!(runtimes(home), [cli.clone()], "no second login");
+        assert_eq!(runtimes(home), ["claude-cli"], "no second login");
 
         login(&second, None);
         assert_eq!(
             runtimes(home),
-            [cli.clone(), cli2(false)],
-            "never signed in"
+            ["claude-cli"],
+            "a login file that never signed in"
         );
 
         login(&second, Some(" acct-a "));
-        assert_eq!(
-            runtimes(home),
-            [cli.clone(), cli2(false)],
-            "the same account"
-        );
+        assert_eq!(runtimes(home), ["claude-cli"], "the same account");
 
         login(&second, Some("acct-b"));
-        assert_eq!(runtimes(home), [cli, cli2(true)]);
+        assert_eq!(runtimes(home), ["claude-cli", "claude-cli-2"]);
+
+        // Used before: kept even as a duplicate, or with its login gone.
+        std::fs::remove_file(&second).unwrap();
+        std::fs::create_dir_all(dir.join("projects").join("-work")).unwrap();
+        assert_eq!(runtimes(home), ["claude-cli", "claude-cli-2"]);
     }
 
     #[test]
