@@ -37,6 +37,8 @@ const ACTIVE_MARK: f32 = 26.;
 /// The level a model without a thinking knob (or Auto) is rated at.
 const DEFAULT_LEVEL: &str = "high";
 const LABEL_H: f32 = 15.;
+/// Three 28 pt rows of unscored models and their gaps.
+const UNRATED_MAX_H: f32 = 3. * 28. + 2. * 4.;
 
 /// Artificial Analysis Intelligence Index v5.0.1 scores per reasoning level
 /// and list price (USD per 1M tokens), as published on 2026-11-24
@@ -237,6 +239,54 @@ impl Bench {
     }
 }
 
+/// The thread's pick, with IronClaw's profile `default` resolved to the
+/// model that actually runs (its provider's first).
+fn resolved_current(m: &ModelPickerState) -> Option<(String, String)> {
+    let (pv, md) = m.current.as_ref()?;
+    if md != "default" {
+        return Some((pv.clone(), md.clone()));
+    }
+    let first = m
+        .providers()
+        .iter()
+        .find(|p| &p.provider == pv)?
+        .models
+        .first()?;
+    Some((pv.clone(), first.clone()))
+}
+
+/// The pair the chart highlights: the one under a drag, else the pick.
+fn active_pair(m: &ModelPickerState) -> Option<(String, String)> {
+    m.matrix_drag.clone().or_else(|| resolved_current(m))
+}
+
+/// The thinking level `model` would run at if picked now: the chart's level
+/// mapped to the nearest one it takes. `None` keeps Auto, or the model has
+/// no knob.
+fn level_for(m: &ModelPickerState, provider: &str, model: &str) -> Option<String> {
+    let level = chart_level(m)?;
+    nearest(
+        m.efforts_of(provider, model).iter().map(String::as_str),
+        level_rank(&level),
+    )
+    .map(str::to_string)
+}
+
+/// Pick from the chart, carrying the level it previewed: Fable at Max picks
+/// GPT 6.2 Sol at Extra High, the nearest it takes, rather than dropping to
+/// Auto.
+fn pick_at_level(s: &mut State, slot: &Slot, provider: String, model: String) {
+    if let Some(m) = slot.get_mut(s)
+        && !m.busy
+    {
+        let level = level_for(m, &provider, &model);
+        if level.is_some() {
+            m.effort = level;
+        }
+    }
+    pick(s, slot.clone(), provider, model);
+}
+
 /// The level the chart shows: the one the Thinking slider is on, or the one
 /// it would pick while it's being dragged. `None` is Auto.
 fn chart_level(m: &ModelPickerState) -> Option<String> {
@@ -317,7 +367,10 @@ fn label_w(label: &str) -> f32 {
 pub(crate) fn build(m: &ModelPickerState) -> Matrix {
     let level = chart_level(m);
     let rank = level_rank(level.as_deref().unwrap_or(DEFAULT_LEVEL));
-    let active_pair = m.matrix_drag.as_ref().or(m.current.as_ref());
+    // The IronClaw copy rule keys on the pick itself, not on a drag, so the
+    // plot doesn't change under the pointer while scrubbing.
+    let current = resolved_current(m);
+    let active = active_pair(m);
 
     let connected: Vec<&RouteProvider> = m
         .providers()
@@ -339,27 +392,26 @@ pub(crate) fn build(m: &ModelPickerState) -> Matrix {
 
     let mut points = Vec::new();
     let mut unrated = Vec::new();
-    let mut seen_unrated: HashSet<&str> = HashSet::new();
     for provider in connected {
         for model in &provider.models {
             if m.prefs.model_hidden(&provider.provider, model) {
                 continue;
             }
-            let is_active =
-                active_pair.is_some_and(|(pv, md)| pv == &provider.provider && md == model);
-            if provider.provider == NATIVE && !is_active && dedicated.contains(model.as_str()) {
+            let is_current = current
+                .as_ref()
+                .is_some_and(|(pv, md)| pv == &provider.provider && md == model);
+            if provider.provider == NATIVE && !is_current && dedicated.contains(model.as_str()) {
                 continue;
             }
             let Some(b) = bench_for(model) else {
-                if seen_unrated.insert(model.as_str()) || is_active {
-                    unrated.push(Unrated {
-                        provider: provider.provider.clone(),
-                        provider_name: provider.name.clone(),
-                        runtime: provider.runtime.clone(),
-                        brand: provider.brand.clone(),
-                        model: model.clone(),
-                    });
-                }
+                // Each provider's copy is its own route, so each is listed.
+                unrated.push(Unrated {
+                    provider: provider.provider.clone(),
+                    provider_name: provider.name.clone(),
+                    runtime: provider.runtime.clone(),
+                    brand: provider.brand.clone(),
+                    model: model.clone(),
+                });
                 continue;
             };
             let knob = provider.efforts_for(model);
@@ -403,9 +455,19 @@ pub(crate) fn build(m: &ModelPickerState) -> Matrix {
     } else {
         (lo, hi)
     };
-    let y_step = if hi - lo > 30. { 10. } else { 5. };
-    let y_lo = lo - 1.;
-    let y_hi = hi + 1.;
+    let range = hi - lo;
+    let y_step = if range > 30. {
+        10.
+    } else if range > 8. {
+        5.
+    } else if range > 3. {
+        2.
+    } else {
+        1.
+    };
+    // At least one tick always falls inside.
+    let y_lo = (lo - 1.).min((lo / y_step).floor() * y_step);
+    let y_hi = (hi + 1.).max((hi / y_step).ceil() * y_step);
     let (plo, phi) = points.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
         (lo.min(p.price.log10()), hi.max(p.price.log10()))
     });
@@ -440,7 +502,7 @@ pub(crate) fn build(m: &ModelPickerState) -> Matrix {
         points[i].frontier = !dominated;
     }
 
-    place_labels(&mut points, active_pair);
+    place_labels(&mut points, active.as_ref());
     Matrix {
         points,
         unrated,
@@ -456,7 +518,8 @@ pub(crate) fn build(m: &ModelPickerState) -> Matrix {
 /// each other: push such pairs apart sideways, just enough to show both.
 fn spread_markers(points: &mut [MatrixPoint]) {
     let min = MARK + 3.;
-    for _ in 0..6 {
+    let (left, right) = (AREA_L + MARK * 0.5, PLOT_W - MARK * 0.5 - 2.);
+    for _ in 0..16 {
         let mut moved = false;
         for i in 0..points.len() {
             for j in i + 1..points.len() {
@@ -477,17 +540,20 @@ fn spread_markers(points: &mut [MatrixPoint]) {
                 } else {
                     -1.
                 };
-                points[i].x -= push * dir;
-                points[j].x += push * dir;
+                // A marker held by the plot's edge leaves the whole push to
+                // the other one.
+                let (xi, xj) = (points[i].x - push * dir, points[j].x + push * dir);
+                let (ci, cj) = (xi.clamp(left, right), xj.clamp(left, right));
+                points[i].x = ci - (xj - cj);
+                points[j].x = cj - (xi - ci);
+                points[i].x = points[i].x.clamp(left, right);
+                points[j].x = points[j].x.clamp(left, right);
                 moved = true;
             }
         }
         if !moved {
             break;
         }
-    }
-    for p in points.iter_mut() {
-        p.x = p.x.clamp(AREA_L + MARK * 0.5, PLOT_W - MARK * 0.5 - 2.);
     }
 }
 
@@ -545,13 +611,7 @@ fn place_labels(points: &mut [MatrixPoint], active: Option<&(String, String)>) {
                     .enumerate()
                     .any(|(j, d)| j != i && overlaps(r, *d))
         };
-        let spot = candidates.iter().find(|c| fits(c)).copied().or_else(|| {
-            act.then(|| {
-                let (lx, ly) = candidates[0];
-                (lx.min(PLOT_W - w - 4.), ly)
-            })
-        });
-        if let Some((lx, ly)) = spot {
+        if let Some(&(lx, ly)) = candidates.iter().find(|c| fits(c)) {
             placed.push((lx, ly, w, h));
             points[i].label = Some((lx, ly, w));
         }
@@ -633,8 +693,8 @@ fn matrix_canvas_shape(p: &Palette, mx: &Matrix) -> Shape {
 pub(super) fn matrix_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &Kit) -> El {
     let p = &s.palette;
     let mx = build(m);
-    let active_pair = m.matrix_drag.as_ref().or(m.current.as_ref());
-    let active_point = active_pair.and_then(|(pv, md)| {
+    let active_pair = active_pair(m);
+    let active_point = active_pair.as_ref().and_then(|(pv, md)| {
         mx.points
             .iter()
             .find(|pt| &pt.provider == pv && &pt.model == md)
@@ -660,8 +720,16 @@ pub(super) fn matrix_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &K
         }
     };
     // What the active model scores and costs, beside its name.
-    let stats =
-        active_point.map(|pt| format!("Index {:.1} · ${}/M", pt.score, price_text(pt.price)));
+    // Auto runs at the provider's own default, which the chart can only
+    // estimate (as High).
+    let approx = if chart_level(m).is_none() { "≈" } else { "" };
+    let stats = active_point.map(|pt| {
+        format!(
+            "Index {approx}{:.1} · ${}/M",
+            pt.score,
+            price_text(pt.price)
+        )
+    });
 
     let mut name_row = row().gap(6.).center_y().child(provider_mark(
         s,
@@ -726,7 +794,7 @@ pub(super) fn matrix_popover(s: &State, m: &ModelPickerState, slot: &Slot, k: &K
     if !mx.unrated.is_empty() {
         body = body
             .child(el().h(1.).w_full().fill(p.border))
-            .child(unrated_list(s, &mx.unrated, active_pair, slot));
+            .child(unrated_list(s, &mx.unrated, active_pair.as_ref(), slot));
     }
 
     if let Some(bar) = thinking_row(s, m, slot, k) {
@@ -934,7 +1002,9 @@ fn unrated_list(
                 .fill(if on { p.active } else { Color::TRANSPARENT })
                 .hover(if on { p.active } else { p.hover })
                 .cursor(Cursor::Pointer)
-                .on_press(move |s: &mut State| pick(s, pick_slot.clone(), pv.clone(), md.clone()))
+                .on_press(move |s: &mut State| {
+                    pick_at_level(s, &pick_slot, pv.clone(), md.clone());
+                })
                 .child(provider_mark(
                     s,
                     u.brand.as_deref(),
@@ -966,7 +1036,19 @@ fn unrated_list(
                     .single_line(),
             ),
         )
-        .child(grid)
+        .child(
+            // Three rows show; a longer list scrolls, so the Thinking
+            // slider under it stays in the panel.
+            col()
+                .key("matrix-unrated-scroll")
+                .max_h(UNRATED_MAX_H)
+                .min_h(0.)
+                .scroll(rune::ScrollSpec {
+                    stick_bottom: false,
+                })
+                .scroll_edge_fade(12.)
+                .child(grid),
+        )
 }
 
 /// A press or drag on the plot scrubs to the nearest model; letting go
@@ -984,15 +1066,19 @@ fn matrix_drag(s: &mut State, slot: &Slot, d: &mut rune::Drag) {
             }
         }
         Phase::Up => {
-            let target = slot
-                .get_mut(s)
-                .and_then(|m| m.matrix_drag.take())
-                .or(snapped);
+            let cached = slot.get_mut(s).and_then(|m| m.matrix_drag.take());
             if d.cancelled() {
                 return;
             }
+            // A catalog refresh may have hidden or dropped the model the
+            // drag was on: only a model still plotted is picked.
+            let Some(m) = slot.get(s) else { return };
+            let plotted = build(m).points;
+            let target = cached
+                .filter(|(pv, md)| plotted.iter().any(|p| &p.provider == pv && &p.model == md))
+                .or(snapped);
             if let Some((pv, md)) = target {
-                pick(s, slot.clone(), pv, md);
+                pick_at_level(s, slot, pv, md);
             }
         }
     }
@@ -1100,6 +1186,76 @@ mod tests {
         assert_eq!(seen[0].0, 54.8, "held at its default level");
     }
 
+    fn providers_mut(m: &mut ModelPickerState) -> &mut Vec<RouteProvider> {
+        &mut m.route.as_mut().expect("fixture route").providers
+    }
+
+    #[test]
+    fn each_providers_unscored_copy_is_its_own_row() {
+        let mut m = fixture_matrix();
+        let inception = providers_mut(&mut m)
+            .iter_mut()
+            .find(|p| p.provider == "inception")
+            .expect("inception");
+        inception.models.push("glm-5.4".into());
+        let mx = build(&m);
+        let glm: Vec<_> = mx.unrated.iter().filter(|u| u.model == "glm-5.4").collect();
+        assert_eq!(glm.len(), 2, "GLM and Inception both offer it");
+    }
+
+    #[test]
+    fn a_profile_default_pick_highlights_the_model_that_runs() {
+        let mut m = fixture_matrix();
+        m.current = Some((NATIVE.into(), "default".into()));
+        assert_eq!(active_pair(&m), Some((NATIVE.into(), "gpt-6.2-sol".into())));
+        find(&build(&m), NATIVE, "gpt-6.2-sol");
+    }
+
+    #[test]
+    fn one_rated_model_still_gets_score_ticks() {
+        let mut m = fixture_matrix();
+        providers_mut(&mut m).retain(|p| p.provider == "kimi");
+        m.current = Some(("kimi".into(), "kimi-k3.1-pro".into()));
+        let mx = build(&m);
+        assert_eq!(mx.points.len(), 1);
+        assert!(!y_ticks(&mx).is_empty());
+        assert!(!x_ticks(&mx).is_empty() || mx.x_hi > mx.x_lo);
+    }
+
+    #[test]
+    fn same_price_copies_stay_apart_and_pickable_at_the_edge() {
+        let mut m = fixture_matrix();
+        let template = providers_mut(&mut m)
+            .iter()
+            .find(|p| p.provider == "antigravity")
+            .cloned()
+            .expect("antigravity");
+        providers_mut(&mut m).retain(|p| p.provider == "claude-cli");
+        for ix in 0..4 {
+            let mut copy = template.clone();
+            copy.provider = format!("copy{ix}");
+            copy.models = vec!["gemini-4-carbon".into()];
+            providers_mut(&mut m).push(copy);
+        }
+        let mx = build(&m);
+        let carbons: Vec<_> = mx
+            .points
+            .iter()
+            .filter(|p| p.model == "gemini-4-carbon")
+            .collect();
+        assert_eq!(carbons.len(), 4);
+        for (i, a) in carbons.iter().enumerate() {
+            for b in &carbons[i + 1..] {
+                assert!((a.x - b.x).hypot(a.y - b.y) >= MARK, "{a:?} on {b:?}");
+            }
+            assert_eq!(
+                nearest_point(&mx.points, a.x, a.y),
+                Some((a.provider.clone(), a.model.clone())),
+                "each copy is reachable"
+            );
+        }
+    }
+
     #[test]
     fn frontier_is_non_dominated_and_labels_never_collide() {
         let mx = build(&fixture_matrix());
@@ -1155,8 +1311,13 @@ mod tests {
         assert!(rt.presented("thinking-track").is_some(), "slider kept");
         assert!(rt.presented("matrix-unrated").is_some(), "unscored listed");
 
-        // Press on a dot (Opus), drag onto another (Carbon), let go.
+        // At Max, press on Opus, drag onto Carbon (rated up to Extra High),
+        // let go.
         let slot = Slot::chat("t1");
+        if let Some(m) = slot.get_mut(&mut rt.state) {
+            m.effort = Some("max".into());
+        }
+        rt.frame(1.05);
         let (opus, _) = rt
             .presented("matrix-node-claude-cli-claude-opus-5-5")
             .expect("opus dot");
@@ -1191,6 +1352,13 @@ mod tests {
             rt.state.prefs.recent_models.first(),
             Some(&("antigravity".to_string(), "gemini-4-carbon".to_string())),
             "the dot under the pointer was picked"
+        );
+        assert_eq!(
+            slot.get(&rt.state)
+                .and_then(|m| m.effort.clone())
+                .as_deref(),
+            Some("xhigh"),
+            "the pick carries the level the chart showed, not Auto"
         );
     }
 }
