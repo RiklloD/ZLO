@@ -210,6 +210,47 @@ fn not_found(s: &State, k: &Kit, known: &'static KnownCli) -> (El, Option<El>, O
                 Some(why),
             )
         }
+        Some((Phase::NeedsRestart(why), _)) => {
+            let restarting = crate::cli_install::restarting(s);
+            let mut restart = small(
+                if restarting {
+                    "Restarting…"
+                } else {
+                    "Restart IronClaw"
+                },
+                Look::Outline,
+            )
+            .disabled(restarting || !crate::cli_install::backend_on_this_mac(s));
+            if !restarting {
+                restart = restart.on_press(|s: &mut State| crate::cli_install::restart_now(s));
+            }
+            let why = row()
+                .key("install-restart")
+                .pt(8.)
+                .pl(LOGO + 12.)
+                .gap(8.)
+                .center_y()
+                .child(
+                    text(why.clone())
+                        .font(xs())
+                        .color(p.text_muted)
+                        .wrap()
+                        .grow(1.)
+                        .min_w(0.),
+                )
+                .child(
+                    icon_button_sized(&icons::CLOSE, "Dismiss", Size::XSmall)
+                        .on_press(move |s: &mut State| crate::cli_install::dismiss(s, runtime))
+                        .build(k)
+                        .press_scale(motion::PRESS),
+                )
+                .transition(motion::reveal());
+            (
+                outlined_tag(p, Tone::Secondary, "Installed").key("installed"),
+                Some(pressable(restart.build(k)).key(format!("cli-install-restart-{runtime}"))),
+                Some(why),
+            )
+        }
         None => {
             let status = if known.planned {
                 outlined_tag(p, Tone::Secondary, "Driver coming next")

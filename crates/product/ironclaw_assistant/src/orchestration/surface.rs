@@ -577,10 +577,14 @@ impl OrchestratedProductSurface {
             }
             ORCHESTRATOR_PROVIDERS_RESCAN_COMMAND_ID => answer(
                 async {
-                    let added = engine.rediscover_runtimes().await;
+                    let report = engine.rediscover_runtimes().await;
                     let mut view = engine.providers_view(scope).await?;
                     if let Some(map) = view.as_object_mut() {
-                        map.insert("added".into(), serde_json::json!(added));
+                        map.insert("added".into(), serde_json::json!(report.added));
+                        map.insert(
+                            "restartNeeded".into(),
+                            serde_json::json!(report.restart_needed),
+                        );
                     }
                     Ok(view)
                 }

@@ -101,11 +101,23 @@ pub struct Engine {
 
 /// Looks again for runtimes the host can run (coding-agent CLIs installed
 /// after the backend started) and registers the ones not registered yet.
-/// Never replaces a registered runtime: its live sessions stay.
+/// Never replaces a registered runtime: its live turns and sessions stay
+/// with it. One that a backend restart would replace is reported instead.
 #[async_trait::async_trait]
 pub trait RuntimeDiscovery: Send + Sync {
-    /// Register what is new on `engine`; returns how many were added.
-    async fn discover(&self, engine: &Arc<Engine>) -> usize;
+    /// Register what is new on `engine`.
+    async fn discover(&self, engine: &Arc<Engine>) -> DiscoveryReport;
+}
+
+/// What one look for runtimes found.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DiscoveryReport {
+    /// Runtimes registered by this look.
+    pub added: usize,
+    /// Runtime ids that a newer program now on this host would replace,
+    /// once the backend restarts (Antigravity's legacy runtime, once its
+    /// CLI is installed).
+    pub restart_needed: Vec<String>,
 }
 
 /// Work the host runs after a thread's turn completes. Called on the
@@ -254,12 +266,12 @@ impl Engine {
         let _ = self.runtime_discovery.set(discovery);
     }
 
-    /// Register runtimes installed since boot; returns how many were added.
-    /// Without a discovery wired, nothing is.
-    pub async fn rediscover_runtimes(self: &Arc<Self>) -> usize {
+    /// Register runtimes installed since boot. Without a discovery wired,
+    /// nothing is.
+    pub async fn rediscover_runtimes(self: &Arc<Self>) -> DiscoveryReport {
         match self.runtime_discovery.get() {
             Some(discovery) => discovery.discover(self).await,
-            None => 0,
+            None => DiscoveryReport::default(),
         }
     }
 
@@ -275,20 +287,6 @@ impl Engine {
         }
         map.insert(id, runtime);
         true
-    }
-
-    /// Replace the runtime registered under `runtime`'s id, only while none
-    /// of its threads runs a turn: turn admission waits on the same lock,
-    /// so no turn starts on the old one meanwhile, and a Stop always finds
-    /// the runtime that runs its turn. Returns whether it was replaced; a
-    /// busy runtime is left for a later look.
-    pub async fn replace_runtime_when_idle(&self, runtime: Arc<dyn TurnRuntime>) -> Result<bool> {
-        let _admission = self.dispatch.lock().await;
-        if self.store.running_threads_on(&runtime.id()).await? > 0 {
-            return Ok(false);
-        }
-        self.register_runtime(runtime);
-        Ok(true)
     }
 
     /// Register (or replace) a runtime. The engine looks runtimes up by the

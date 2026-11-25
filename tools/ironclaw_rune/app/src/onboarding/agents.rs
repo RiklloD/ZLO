@@ -881,6 +881,33 @@ fn install_shown(s: &State, k: &Kit, driver: Driver) -> Option<(String, El)> {
                 .transition(motion::fade())
                 .child(breathing("Finding it…")),
         ),
+        Phase::NeedsRestart(why) => {
+            let restarting = crate::cli_install::restarting(s);
+            let mut restart = small(
+                if restarting {
+                    "Restarting…"
+                } else {
+                    "Restart IronClaw"
+                },
+                Look::Outline,
+            )
+            .disabled(restarting || !crate::cli_install::backend_on_this_mac(s));
+            if !restarting {
+                restart = restart.on_press(|s: &mut State| crate::cli_install::restart_now(s));
+            }
+            (
+                why.clone(),
+                row()
+                    .key("install-restart")
+                    .transition(motion::fade())
+                    .child(
+                        restart
+                            .build(k)
+                            .key(format!("agent-install-restart-{runtime}"))
+                            .press_scale(motion::PRESS),
+                    ),
+            )
+        }
         Phase::Failed(why) => (
             why.clone(),
             row()

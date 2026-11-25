@@ -452,18 +452,3 @@ impl Engine {
 fn is_fresh(thread: &ThreadRecord) -> bool {
     thread.last_user_at.is_none() && thread.turn_started_at.is_none()
 }
-
-impl crate::store::Store {
-    /// Threads of `runtime` with a turn running now.
-    pub async fn running_threads_on(&self, runtime: &RuntimeId) -> Result<u32> {
-        let n = self
-            .row(
-                "SELECT COUNT(*) FROM orch_threads WHERE turn_state = 'running' AND runtime_id = ?1",
-                vec![crate::store::s(runtime.as_str())],
-                |r| crate::store::Cols::new(r).int(),
-            )
-            .await?
-            .unwrap_or(0);
-        Ok(u32::try_from(n).unwrap_or(u32::MAX))
-    }
-}

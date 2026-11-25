@@ -439,10 +439,15 @@ async fn cli_version(agy: &Path) -> VersionProbe {
     let outcome = tokio::time::timeout(VERSION_PROBE_TIMEOUT, probe).await;
     drop(group);
     match outcome {
-        Ok((Ok(_), Ok(_), line)) => match parse_version(&line) {
-            Some(version) => VersionProbe::Version(version),
-            None => VersionProbe::Unparsable,
-        },
+        // Only a clean exit with output is an answer: a failing or silent
+        // run may be passing (a wrapper's error on stderr), so it is asked
+        // again later rather than ruled out.
+        Ok((Ok(_), Ok(status), line)) if status.success() && !line.trim().is_empty() => {
+            match parse_version(&line) {
+                Some(version) => VersionProbe::Version(version),
+                None => VersionProbe::Unparsable,
+            }
+        }
         Ok((read, exited, _)) => {
             tracing::debug!(?read, ?exited, "antigravity: agy --version unreadable");
             VersionProbe::Unanswered

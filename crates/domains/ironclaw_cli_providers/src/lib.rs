@@ -34,7 +34,7 @@ use std::sync::{Arc, Weak};
 
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_host_api::reply_visuals::REPLY_VISUALS_PROMPT;
-use ironclaw_orchestrator::engine::Engine;
+use ironclaw_orchestrator::engine::{DiscoveryReport, Engine};
 use ironclaw_orchestrator::runtime::{TurnEventSink, TurnProfile};
 use ironclaw_orchestrator::tools::DELEGATION_PROMPT;
 
@@ -171,7 +171,7 @@ pub async fn register_cli_runtimes(
     // Boot and every later rescan (the desktop app's Install) take the
     // same path, so the discovery remembers what boot found.
     let discovery = Arc::new(CliRuntimeDiscovery::new(Arc::clone(bridge), skills.clone()));
-    let registered = discovery.run(engine).await;
+    let registered = discovery.run(engine).await.added;
     engine.set_runtime_discovery(discovery);
     registered
 }
@@ -189,8 +189,8 @@ pub struct CliRuntimeDiscovery {
 /// What earlier looks learned about Antigravity.
 #[derive(Default)]
 struct DiscoveryMemo {
-    /// The registered `antigravity` runtime is the legacy one, which the
-    /// native `agy` replaces once it is installed (while idle).
+    /// The registered `antigravity` runtime is the legacy one: an `agy`
+    /// installed since is reported as needing a backend restart.
     antigravity_legacy: bool,
     /// An `agy` whose `agy --version` ruled it out (too old, not a
     /// version), by path and modification time: not asked again until the
@@ -215,7 +215,7 @@ impl CliRuntimeDiscovery {
         }
     }
 
-    async fn run(&self, engine: &Arc<Engine>) -> usize {
+    async fn run(&self, engine: &Arc<Engine>) -> DiscoveryReport {
         let mut memo = self.memo.lock().await;
         // A kind already running is skipped before its binary is even looked
         // for: a client watching for installs asks every few seconds.
@@ -228,8 +228,13 @@ impl CliRuntimeDiscovery {
         if !has("claude-cli") {
             added += register_claude_runtimes(engine, bridge(), skills);
         }
+        let mut restart_needed = Vec::new();
         if !has("antigravity") || memo.antigravity_legacy {
-            added += self.discover_antigravity(engine, &mut memo).await;
+            match self.discover_antigravity(engine, &mut memo).await {
+                Antigravity::Added => added += 1,
+                Antigravity::Nothing => {}
+                Antigravity::RestartNeeded => restart_needed.push("antigravity".to_string()),
+            }
         }
         if !has("muse-code") {
             added += register_muse_runtime(engine, bridge(), skills);
@@ -237,18 +242,24 @@ impl CliRuntimeDiscovery {
         if !has("codex") {
             added += register_codex_runtime(engine, bridge(), skills);
         }
-        added
+        DiscoveryReport {
+            added,
+            restart_needed,
+        }
     }
 
     /// Antigravity: its native `agy` when it answers, else the legacy
-    /// runtime. A legacy runtime already registered is replaced once `agy`
-    /// is installed, as a backend restart would, but only while none of its
-    /// threads runs a turn ([`Engine::replace_runtime_when_idle`]); a busy
-    /// one is left for a later look.
-    async fn discover_antigravity(&self, engine: &Arc<Engine>, memo: &mut DiscoveryMemo) -> usize {
+    /// runtime. A registered legacy runtime is never replaced live (its
+    /// turns and their Stop belong to it): an `agy` installed since is
+    /// reported, for a backend restart to pick up.
+    async fn discover_antigravity(
+        &self,
+        engine: &Arc<Engine>,
+        memo: &mut DiscoveryMemo,
+    ) -> Antigravity {
         use antigravity::launch::{AgentLaunch, CliProbe};
         let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-            return 0;
+            return Antigravity::Nothing;
         };
         let native = match rpc::find_on_path(&home, "agy") {
             Some(agy) => {
@@ -283,16 +294,17 @@ impl CliRuntimeDiscovery {
             None => None,
         };
         let launch = match native {
+            // Running on the legacy runtime: the CLI takes over at restart.
+            Some(_) if memo.antigravity_legacy => return Antigravity::RestartNeeded,
             Some(agy) => AgentLaunch::Cli { agy },
-            // Already running on the legacy runtime: nothing new to add.
-            None if memo.antigravity_legacy => return 0,
+            None if memo.antigravity_legacy => return Antigravity::Nothing,
             None => match antigravity::launch::find_runtime(&home) {
                 Some(launch) => launch,
                 None => {
                     tracing::debug!(
                         "antigravity agent (agy acp or the ACP runtime) not found; antigravity runtime not registered"
                     );
-                    return 0;
+                    return Antigravity::Nothing;
                 }
             },
         };
@@ -307,39 +319,31 @@ impl CliRuntimeDiscovery {
             Ok(runtime) => Arc::new(runtime.with_skill_usage(self.skills.clone())),
             Err(error) => {
                 tracing::debug!(%error, "antigravity runtime id rejected");
-                return 0;
+                return Antigravity::Nothing;
             }
         };
-        let added = if memo.antigravity_legacy {
-            match engine.replace_runtime_when_idle(runtime).await {
-                Ok(replaced) => {
-                    tracing::debug!(
-                        replaced,
-                        "antigravity: agy installed over the legacy runtime"
-                    );
-                    replaced
-                }
-                Err(error) => {
-                    tracing::debug!(%error, "antigravity: could not check its running threads");
-                    false
-                }
-            }
-        } else {
-            engine.register_runtime_if_absent(runtime)
-        };
-        if added {
-            memo.antigravity_legacy = legacy;
+        if !engine.register_runtime_if_absent(runtime) {
+            return Antigravity::Nothing;
         }
-        usize::from(added)
+        memo.antigravity_legacy = legacy;
+        Antigravity::Added
     }
+}
+
+/// What one look found for Antigravity.
+enum Antigravity {
+    Added,
+    Nothing,
+    /// Its CLI is installed over the registered legacy runtime.
+    RestartNeeded,
 }
 
 #[async_trait::async_trait]
 impl ironclaw_orchestrator::engine::RuntimeDiscovery for CliRuntimeDiscovery {
-    async fn discover(&self, engine: &Arc<Engine>) -> usize {
-        let added = self.run(engine).await;
-        tracing::debug!(added, "looked again for coding-agent CLIs");
-        added
+    async fn discover(&self, engine: &Arc<Engine>) -> DiscoveryReport {
+        let report = self.run(engine).await;
+        tracing::debug!(?report, "looked again for coding-agent CLIs");
+        report
     }
 }
 

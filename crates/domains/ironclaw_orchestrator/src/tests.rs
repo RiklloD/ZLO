@@ -2075,11 +2075,14 @@ async fn a_rescan_registers_a_runtime_installed_after_boot_and_never_replaces_on
     struct LateInstall;
     #[async_trait]
     impl crate::engine::RuntimeDiscovery for LateInstall {
-        async fn discover(&self, engine: &Arc<Engine>) -> usize {
-            usize::from(engine.register_runtime_if_absent(Arc::new(FakeRuntime {
-                name: Some("late-cli"),
-                ..Default::default()
-            })))
+        async fn discover(&self, engine: &Arc<Engine>) -> crate::engine::DiscoveryReport {
+            crate::engine::DiscoveryReport {
+                added: usize::from(engine.register_runtime_if_absent(Arc::new(FakeRuntime {
+                    name: Some("late-cli"),
+                    ..Default::default()
+                }))),
+                restart_needed: Vec::new(),
+            }
         }
     }
     let h = harness().await;
@@ -2091,11 +2094,11 @@ async fn a_rescan_registers_a_runtime_installed_after_boot_and_never_replaces_on
             .any(|p| p["provider"] == "late-cli")
     };
     // Without a discovery wired, a rescan adds nothing.
-    assert_eq!(h.engine.rediscover_runtimes().await, 0);
+    assert_eq!(h.engine.rediscover_runtimes().await.added, 0);
     h.engine.set_runtime_discovery(Arc::new(LateInstall));
     assert!(!listed(&h.engine.providers_view(&scope()).await.unwrap()));
 
-    assert_eq!(h.engine.rediscover_runtimes().await, 1);
+    assert_eq!(h.engine.rediscover_runtimes().await.added, 1);
     assert!(listed(&h.engine.providers_view(&scope()).await.unwrap()));
     let first = h
         .engine
@@ -2103,7 +2106,7 @@ async fn a_rescan_registers_a_runtime_installed_after_boot_and_never_replaces_on
         .unwrap();
 
     assert_eq!(
-        h.engine.rediscover_runtimes().await,
+        h.engine.rediscover_runtimes().await.added,
         0,
         "already registered"
     );
@@ -2112,48 +2115,4 @@ async fn a_rescan_registers_a_runtime_installed_after_boot_and_never_replaces_on
         .runtime(&RuntimeId::new("late-cli").unwrap())
         .unwrap();
     assert!(Arc::ptr_eq(&first, &still), "a running runtime is kept");
-}
-
-/// A runtime is swapped (Antigravity's legacy runtime for its CLI) only
-/// while none of its threads runs a turn: a Stop must reach the runtime
-/// that runs the turn.
-#[tokio::test]
-async fn a_runtime_is_replaced_only_while_its_threads_are_idle() {
-    let h = harness().await;
-    let a = tid("a");
-    h.engine.ensure_thread(&a, &scope(), None).await.unwrap();
-    let thread = h.engine.store().thread(&a).await.unwrap().unwrap();
-    assert_eq!(thread.runtime_id, h.rt.id());
-    let original = h.engine.runtime(&h.rt.id()).unwrap();
-    h.engine
-        .store()
-        .set_turn_running(&a, None, 1)
-        .await
-        .unwrap();
-    let replaced = h
-        .engine
-        .replace_runtime_when_idle(Arc::new(FakeRuntime::default()))
-        .await
-        .unwrap();
-    assert!(!replaced, "a running turn keeps its runtime");
-    assert!(Arc::ptr_eq(
-        &original,
-        &h.engine.runtime(&h.rt.id()).unwrap()
-    ));
-
-    h.db.connect()
-        .unwrap()
-        .execute("UPDATE orch_threads SET turn_state = 'idle'", ())
-        .await
-        .unwrap();
-    let replaced = h
-        .engine
-        .replace_runtime_when_idle(Arc::new(FakeRuntime::default()))
-        .await
-        .unwrap();
-    assert!(replaced);
-    assert!(!Arc::ptr_eq(
-        &original,
-        &h.engine.runtime(&h.rt.id()).unwrap()
-    ));
 }

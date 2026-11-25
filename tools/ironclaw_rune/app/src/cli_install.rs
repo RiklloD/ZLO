@@ -75,6 +75,9 @@ pub enum Phase {
     Finding,
     /// It stopped, or the agent was not found after it.
     Failed(String),
+    /// Installed, and only a backend restart puts it to use: the person
+    /// decides when (a restart stops the threads running now).
+    NeedsRestart(String),
 }
 
 impl Phase {
@@ -91,9 +94,6 @@ pub struct Install {
     /// Set to ask the worker to stop the installer.
     stop: Arc<AtomicBool>,
     generation: u64,
-    /// When the installer exited cleanly: a backend restarted before then
-    /// started too early to find it.
-    exited_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -103,16 +103,9 @@ pub struct Installs {
     /// The watch's generation: a newer [`watch`] or a closed list ends the
     /// older chain.
     watch_generation: u64,
-    /// The last backend restart (this module's or setup's) and until when
-    /// it may still be coming back: an install that exited before it
-    /// started waits for it instead of restarting again.
-    restart: Option<Restart>,
-}
-
-#[derive(Clone, Copy)]
-struct Restart {
-    at: Instant,
-    until: Instant,
+    /// A backend restart (asked here or by setup) may still be coming back
+    /// until then: Restart is not offered again meanwhile.
+    restart_until: Option<Instant>,
 }
 
 impl Installs {
@@ -149,7 +142,37 @@ pub fn listed(catalog: &[RouteProvider], known: &KnownCli) -> bool {
 /// Whether this app can run `known`'s installer here: it has one, and the
 /// backend runs on this Mac.
 pub fn can_install_here(s: &State, known: &KnownCli) -> bool {
-    known.install.is_some() && !crate::remote::backend_is_remote(s)
+    known.install.is_some() && backend_on_this_mac(s)
+}
+
+/// The backend is this Mac's: not another computer, and reached over
+/// loopback (an `IRONCLAW_DESKTOP_URL` pointing elsewhere is not this Mac's
+/// whatever the connection is labelled).
+pub fn backend_on_this_mac(s: &State) -> bool {
+    if crate::remote::backend_is_remote(s) {
+        return false;
+    }
+    if s.fixture {
+        return true;
+    }
+    s.rt.backend
+        .as_ref()
+        .is_some_and(|b| is_loopback(&b.client().connection().base_url))
+}
+
+fn is_loopback(base_url: &str) -> bool {
+    let rest = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest);
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Run `runtime`'s installer.
@@ -182,7 +205,6 @@ fn begin(s: &mut State, runtime: &'static str, command: &'static str) {
             tail: VecDeque::new(),
             stop: Arc::clone(&stop),
             generation,
-            exited_at: None,
         },
     );
     if s.fixture {
@@ -210,7 +232,6 @@ pub fn fixture(s: &mut State, runtime: &'static str, phase: Phase, tail: &[&str]
             tail: tail.iter().map(|l| l.to_string()).collect(),
             stop: Arc::new(AtomicBool::new(false)),
             generation,
-            exited_at: None,
         },
     );
 }
@@ -226,7 +247,7 @@ pub fn cancel(s: &mut State, runtime: &str) {
             install.phase = Phase::Stopping;
         }
         Phase::Stopping => {}
-        Phase::Finding | Phase::Failed(_) => {
+        Phase::Finding | Phase::Failed(_) | Phase::NeedsRestart(_) => {
             s.cli_installs.by_runtime.remove(runtime);
         }
     }
@@ -236,7 +257,7 @@ pub fn cancel(s: &mut State, runtime: &str) {
 pub fn dismiss(s: &mut State, runtime: &str) {
     if s.cli_installs
         .get(runtime)
-        .is_some_and(|i| matches!(i.phase, Phase::Failed(_)))
+        .is_some_and(|i| matches!(i.phase, Phase::Failed(_) | Phase::NeedsRestart(_)))
     {
         s.cli_installs.by_runtime.remove(runtime);
     }
@@ -247,7 +268,7 @@ pub fn dismiss(s: &mut State, runtime: &str) {
 /// being looked for is forgotten.
 pub fn computer_switched(s: &mut State) {
     let installs = &mut s.cli_installs;
-    installs.restart = None;
+    installs.restart_until = None;
     installs
         .by_runtime
         .retain(|_, install| match install.phase {
@@ -256,7 +277,7 @@ pub fn computer_switched(s: &mut State) {
                 install.phase = Phase::Stopping;
                 true
             }
-            Phase::Finding | Phase::Failed(_) => false,
+            Phase::Finding | Phase::Failed(_) | Phase::NeedsRestart(_) => false,
         });
 }
 
@@ -301,6 +322,9 @@ fn run_installer(
         Err(e) => return Exit::Failed(format!("Could not start the installer: {e}")),
     };
     let pgid = child.id();
+    // From here on every way out (a stop, the deadline, a clean or failed
+    // exit) ends the whole group before the row is released.
+    let _group = LiveGroup::new(pgid);
     let (lines_tx, lines_rx) = mpsc::channel::<String>();
     for stream in [
         child
@@ -405,8 +429,7 @@ fn run_installer(
         if !pipes_open || (stopping.is_none() && at.elapsed() > PIPE_GRACE) {
             // Whatever of the group lives on past the installer (a stage
             // that closed its pipes, a descendant still holding them) goes
-            // with it, on every way out: the row is released next.
-            signal_group(pgid, "-KILL");
+            // with it when `_group` drops, before the row is released.
             if let Some((why, _)) = stopping {
                 return why;
             }
@@ -474,6 +497,65 @@ fn clean_line(raw: &str) -> Option<String> {
     })
 }
 
+/// Installer process groups alive now, for [`stop_all`] at quit.
+fn live_groups() -> &'static std::sync::Mutex<std::collections::HashSet<u32>> {
+    static LIVE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<u32>>> =
+        std::sync::OnceLock::new();
+    LIVE.get_or_init(Default::default)
+}
+
+/// How long a killed group gets to be gone before the worker moves on.
+const GROUP_GONE_WAIT: Duration = Duration::from_secs(2);
+
+/// One installer's process group while its worker owns it. Dropping it
+/// SIGKILLs the group and waits (bounded) until no member is left.
+struct LiveGroup(u32);
+
+impl LiveGroup {
+    fn new(pgid: u32) -> Self {
+        if let Ok(mut live) = live_groups().lock() {
+            live.insert(pgid);
+        }
+        Self(pgid)
+    }
+}
+
+impl Drop for LiveGroup {
+    fn drop(&mut self) {
+        signal_group(self.0, "-KILL");
+        let deadline = Instant::now() + GROUP_GONE_WAIT;
+        while group_alive(self.0) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if group_alive(self.0) {
+            tracing::debug!(pgid = self.0, "installer group outlived its SIGKILL wait");
+        }
+        if let Ok(mut live) = live_groups().lock() {
+            live.remove(&self.0);
+        }
+    }
+}
+
+fn group_alive(pgid: u32) -> bool {
+    Command::new("/bin/kill")
+        .args(["-0", "--", &format!("-{pgid}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// The app is quitting: no installer outlives it.
+pub fn stop_all() {
+    let groups: Vec<u32> = live_groups()
+        .lock()
+        .map(|live| live.iter().copied().collect())
+        .unwrap_or_default();
+    for pgid in groups {
+        signal_group(pgid, "-KILL");
+    }
+}
+
 fn signal_group(pgid: u32, signal: &str) {
     // silent-ok: the group may have exited already.
     let _ = Command::new("/bin/kill")
@@ -494,7 +576,6 @@ fn finished(s: &mut State, runtime: &'static str, generation: u64, exit: Exit) {
         }
         (Phase::Running, Exit::Success) => {
             install.phase = Phase::Finding;
-            install.exited_at = Some(Instant::now());
             find(s, runtime, generation, 1);
         }
         (Phase::Running, Exit::Failed(why)) => install.phase = Phase::Failed(why),
@@ -504,7 +585,7 @@ fn finished(s: &mut State, runtime: &'static str, generation: u64, exit: Exit) {
                     .into(),
             )
         }
-        (Phase::Finding | Phase::Failed(_), _) => {}
+        (Phase::Finding | Phase::Failed(_) | Phase::NeedsRestart(_), _) => {}
     }
 }
 
@@ -532,16 +613,17 @@ fn find(s: &mut State, runtime: &'static str, generation: u64, attempt: u32) {
             match result {
                 Ok(catalog) => {
                     let found = known(runtime).is_some_and(|k| listed(&catalog.providers, k));
+                    let flagged = catalog.restart_needed.iter().any(|r| r == runtime);
                     landed(s, catalog);
                     if found {
                         installed(s, runtime);
                     } else {
-                        restart_to_find(s, runtime, generation);
+                        needs_restart(s, runtime, generation, flagged);
                     }
                 }
                 Err(e) if e.is_not_found() => {
-                    tracing::debug!("backend has no rescan; restarting it instead");
-                    restart_to_find(s, runtime, generation);
+                    tracing::debug!("backend has no rescan; a restart finds the agent");
+                    needs_restart(s, runtime, generation, false);
                 }
                 Err(e) if attempt < RESCAN_TRIES => {
                     tracing::debug!(error = %e, attempt, "rescan failed; asking again");
@@ -565,44 +647,67 @@ fn unanswered(runtime: &str, e: &ClientError) -> String {
     )
 }
 
-/// The backend answered without the agent: restart this Mac's backend,
-/// which looks for every CLI as it starts. One restart serves every
-/// install waiting on it.
-fn restart_to_find(s: &mut State, runtime: &'static str, generation: u64) {
+/// The backend answered without the agent (or cannot look again): only a
+/// restart puts it to use, and a restart stops the threads running now, so
+/// the row asks (Restart IronClaw) instead of restarting on its own.
+fn needs_restart(s: &mut State, runtime: &'static str, generation: u64, flagged: bool) {
     let name = known(runtime).map_or(runtime, |k| k.name);
-    if crate::remote::backend_is_remote(s) {
-        fail(
-            s,
-            runtime,
-            generation,
-            format!("{name} is installed. Restart IronClaw on that computer so it finds it."),
-        );
+    let why = if !backend_on_this_mac(s) {
+        format!("{name} is installed. Restart IronClaw on that computer so it finds it.")
+    } else if flagged {
+        format!("{name} is installed. Restart IronClaw to switch to it; threads running now stop.")
+    } else {
+        format!(
+            "{name} is installed, but IronClaw does not see it yet. Restart IronClaw to look again; threads running now stop."
+        )
+    };
+    if let Some(install) = s.cli_installs.current_mut(runtime, generation) {
+        install.phase = Phase::NeedsRestart(why);
+    }
+}
+
+/// A restart this app asked for may still be coming back.
+pub fn restarting(s: &State) -> bool {
+    s.cli_installs
+        .restart_until
+        .is_some_and(|until| Instant::now() < until)
+}
+
+/// The person pressed Restart IronClaw: restart this Mac's backend once,
+/// and look for every agent waiting on it as it comes back.
+pub fn restart_now(s: &mut State) {
+    if restarting(s) || !backend_on_this_mac(s) {
         return;
     }
-    let now = Instant::now();
-    let exited_at = s
+    let waiting: Vec<(&'static str, u64)> = s
         .cli_installs
-        .current(runtime, generation)
-        .and_then(|i| i.exited_at)
-        .unwrap_or(now);
-    let joinable = joinable_restart(s.cli_installs.restart, exited_at, now);
-    let deadline = match joinable {
-        Some(r) => r.until,
-        None => {
-            if !crate::service::restart() {
-                fail(
-                    s,
-                    runtime,
-                    generation,
-                    format!("{name} is installed. Restart IronClaw so it finds it."),
-                );
-                return;
-            }
-            note_restart(s);
-            now + RESTART_WAIT
+        .by_runtime
+        .iter()
+        .filter(|(_, i)| matches!(i.phase, Phase::NeedsRestart(_)))
+        .map(|(runtime, i)| (*runtime, i.generation))
+        .collect();
+    if !crate::service::restart() {
+        for (runtime, generation) in waiting {
+            let name = known(runtime).map_or(runtime, |k| k.name);
+            fail(
+                s,
+                runtime,
+                generation,
+                format!(
+                    "{name} is installed. This app did not start IronClaw, so restart it yourself."
+                ),
+            );
         }
-    };
-    poll_restarted(s, runtime, generation, deadline);
+        return;
+    }
+    note_restart(s);
+    let deadline = Instant::now() + RESTART_WAIT;
+    for (runtime, generation) in waiting {
+        if let Some(install) = s.cli_installs.current_mut(runtime, generation) {
+            install.phase = Phase::Finding;
+        }
+        poll_restarted(s, runtime, generation, deadline);
+    }
 }
 
 fn poll_restarted(s: &mut State, runtime: &'static str, generation: u64, deadline: Instant) {
@@ -662,20 +767,10 @@ fn fail(s: &mut State, runtime: &str, generation: u64, why: String) {
     }
 }
 
-/// A restart still coming back that began after the install was done finds
-/// it as it starts; one that began earlier does not.
-fn joinable_restart(restart: Option<Restart>, exited_at: Instant, now: Instant) -> Option<Restart> {
-    restart.filter(|r| r.until > now && r.at >= exited_at)
-}
-
 /// This Mac's backend was just restarted (here, or by setup's own install
-/// path): installs done before now wait for it rather than restart again.
+/// path): Restart is not offered again while it comes back.
 pub fn note_restart(s: &mut State) {
-    let at = Instant::now();
-    s.cli_installs.restart = Some(Restart {
-        at,
-        until: at + RESTART_WAIT,
-    });
+    s.cli_installs.restart_until = Some(Instant::now() + RESTART_WAIT);
 }
 
 /// The agent is listed: its row turns into the found agent's row (sign in,
@@ -761,6 +856,12 @@ fn tick(s: &mut State, generation: u64, open: fn(&State) -> bool) {
                         let Some(before) = before else {
                             let first = s.pages.providers.runtimes.is_none();
                             if first {
+                                // The page's own read failed: the picker
+                                // comes with it, unless an edit set it since.
+                                let p = &mut s.pages.providers;
+                                if p.picker.is_none() {
+                                    p.picker = Some(catalog.picker.clone());
+                                }
                                 landed(s, catalog);
                             }
                             tick(s, generation, open);
@@ -905,12 +1006,8 @@ mod tests {
         (dir, path)
     }
 
-    fn group_alive(pgid: &str) -> bool {
-        Command::new("/bin/kill")
-            .args(["-0", "--", &format!("-{pgid}")])
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|st| st.success())
+    fn group_alive_str(pgid: &str) -> bool {
+        pgid.parse().is_ok_and(group_alive)
     }
 
     fn leak(s: String) -> &'static str {
@@ -937,7 +1034,10 @@ mod tests {
         assert_eq!(s.cli_installs.get("codex").unwrap().generation, generation);
         assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
         if let Ok(pgid) = std::fs::read_to_string(&file) {
-            assert!(!group_alive(pgid.trim()), "the installer's group is gone");
+            assert!(
+                !group_alive_str(pgid.trim()),
+                "the installer's group is gone"
+            );
         }
         assert_eq!(gateway.requests_to(RESCAN), 0);
     }
@@ -960,7 +1060,7 @@ mod tests {
         let pgid = std::fs::read_to_string(&file).unwrap();
         cancel(&mut s, "codex");
         assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
-        assert!(!group_alive(pgid.trim()));
+        assert!(!group_alive_str(pgid.trim()));
     }
 
     /// An installer that never ends is stopped at the deadline, and says so.
@@ -995,7 +1095,7 @@ mod tests {
         begin(&mut s, "codex", "echo done");
         assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
         assert_eq!(gateway.requests_to(RESCAN), 2);
-        assert!(s.cli_installs.restart.is_none(), "no restart");
+        assert!(s.cli_installs.restart_until.is_none(), "no restart");
         assert!(s.pages.providers.notice.is_some());
     }
 
@@ -1033,21 +1133,61 @@ mod tests {
         assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
     }
 
-    /// Re-review 4: an install done after a restart began needs its own;
-    /// one done before joins it, while that restart is still coming back.
+    /// Re-review 3 P1: a backend that answers without the agent (here,
+    /// Antigravity's CLI over its running legacy runtime) gets no restart
+    /// on its own: the row asks, since a restart stops running threads.
     #[test]
-    fn only_a_restart_begun_after_an_install_serves_it() {
-        let at = Instant::now();
-        let restart = Some(Restart {
-            at,
-            until: at + RESTART_WAIT,
-        });
-        let before = at - Duration::from_secs(1);
-        let after = at + Duration::from_millis(1);
-        assert!(joinable_restart(restart, before, at).is_some());
-        assert!(joinable_restart(restart, after, at).is_none());
-        assert!(joinable_restart(restart, before, at + RESTART_WAIT).is_none());
-        assert!(joinable_restart(None, before, at).is_none());
+    fn an_install_needing_a_restart_asks_for_it() {
+        let answer = serde_json::json!({
+            "providers": [{"provider": "antigravity", "runtime": "antigravity", "launch": "legacy"}],
+            "picker": {},
+            "restartNeeded": ["antigravity"],
+        })
+        .to_string();
+        let (mut s, mut pump, gateway) = live(vec![Answer::ok(answer)]);
+        begin(&mut s, "antigravity", "echo done");
+        assert!(pump.until(&mut s, WAIT, |s| {
+            s.cli_installs
+                .get("antigravity")
+                .is_some_and(|i| matches!(i.phase, Phase::NeedsRestart(_)))
+        }));
+        let Phase::NeedsRestart(why) = &s.cli_installs.get("antigravity").unwrap().phase else {
+            unreachable!()
+        };
+        assert!(why.contains("switch to it"), "{why}");
+        assert!(s.cli_installs.restart_until.is_none(), "nothing restarted");
+        pump.run_for(&mut s, Duration::from_millis(200));
+        assert_eq!(gateway.requests_to(RESCAN), 1);
+        assert!(!restarting(&s));
+    }
+
+    /// Re-review 3 P2: a clean install leaves nothing of its group behind.
+    #[test]
+    fn a_clean_install_leaves_no_process_behind() {
+        let (mut s, mut pump, _gateway) = live(vec![Answer::ok(catalog(&["codex"]))]);
+        let (_dir, file) = pid_file();
+        let command = leak(format!(
+            "sleep 30 > /dev/null 2>&1 & echo $! > {}; echo done",
+            file.display()
+        ));
+        begin(&mut s, "codex", command);
+        assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
+        let pid = std::fs::read_to_string(&file).unwrap();
+        let alive = Command::new("/bin/kill")
+            .args(["-0", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|st| st.success());
+        assert!(!alive, "the installer's background child was ended");
+    }
+
+    #[test]
+    fn only_a_loopback_backend_is_this_macs() {
+        assert!(is_loopback("http://127.0.0.1:3000"));
+        assert!(is_loopback("http://localhost:3000/"));
+        assert!(is_loopback("http://[::1]:3000"));
+        assert!(!is_loopback("https://mac-mini.tail1234.ts.net:3000"));
+        assert!(!is_loopback("http://192.168.1.20:3000"));
     }
 
     /// An open CLI list notices an agent installed outside the app.

@@ -908,6 +908,9 @@ pub struct ThreadRoute {
 pub struct ProviderCatalog {
     pub providers: Vec<RouteProvider>,
     pub picker: PickerPrefs,
+    /// A rescan's runtime ids that a program installed since would replace
+    /// once the backend restarts (`POST /providers/rescan` only).
+    pub restart_needed: Vec<String>,
 }
 
 /// One model of one provider in the picker preferences.
