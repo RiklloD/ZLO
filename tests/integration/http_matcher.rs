@@ -73,7 +73,15 @@ async fn multi_tool_turn_survives_failed_forced_compaction_after_results() {
         "x".repeat(33_500)
     );
 
+    // Forced post-capability compaction trips when one turn's results exceed
+    // 20% of the model window (`BudgetFractionStrategy`, the default since
+    // 95e3eba04 retired the fixed 32 KB cap). Pin a 32k-token window so the
+    // ~33.5 KB orders body (> 25.6 KB) still forces compaction; the harness
+    // default 128k window would put the threshold at ~102 KB.
+    const FORCE_COMPACTION_WINDOW_TOKENS: u32 = 32_000;
+
     let h = RebornIntegrationHarness::test_default()
+        .with_model_context_window_for_test(FORCE_COMPACTION_WINDOW_TOKENS)
         .with_keyed_http_responses([
             ScriptedHttpResponse::for_url(ITEMS_URL, br#"{"marker":"items-body"}"#),
             ScriptedHttpResponse::for_url(ORDERS_URL, large_orders_body.into_bytes())
