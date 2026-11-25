@@ -2205,6 +2205,7 @@ impl<'g> RebornThreadBuilder<'g> {
             baseline_network_count,
             baseline_security_audit_count,
             baseline_turn_event_count,
+            run_state_settle_timeout: super::builder::RUN_STATE_SETTLE_TIMEOUT,
             baseline_milestone_count,
         })
     }

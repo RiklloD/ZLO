@@ -123,6 +123,11 @@ url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+# Test builds resolve an unset Trace Commons base to an isolated temp dir
+# (`ironclaw_trace_commons::location::base_dir`, `test-support`), so tests that
+# reach Trace Commons through the runtime never touch the developer's real
+# `~/.ironclaw/trace_contributions`.
+ironclaw_trace_commons = { path = "../../domains/ironclaw_trace_commons", features = ["test-support"] }
 ironclaw_auth = { path = "../../domains/ironclaw_auth", features = ["test-support"] }
 ironclaw_extension_host = { path = "../../extensions/ironclaw_extension_host", features = ["test-support"] }
 ironclaw_extension_manager = { path = "../../extensions/ironclaw_extension_manager", features = ["test-support"] }

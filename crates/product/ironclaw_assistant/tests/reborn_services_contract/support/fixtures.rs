@@ -10,6 +10,10 @@ pub(crate) fn session_services(
     thread_service: Arc<dyn SessionThreadService>,
     turn_coordinator: Arc<dyn TurnCoordinator>,
 ) -> RebornServices {
+    // Trace views read local Trace Commons state from the process base; keep
+    // it off the developer's real (possibly enrolled) base.
+    ironclaw_trace_commons::location::bind_isolated_base_dir_for_tests()
+        .expect("bind isolated Trace Commons base dir");
     ironclaw_assistant::RebornServices::new(thread_service, turn_coordinator)
         .with_session_channel_directory(Arc::new(StaticSessionChannelDirectory {
             session_channels: vec!["web-app"],

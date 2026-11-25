@@ -2720,10 +2720,9 @@ async fn static_i18n_module_guards_locale_race_and_clears_failed_pack_cache() {
     // settles so a transient import failure does not cache a permanent
     // miss. It also locks the follow-up cleanup that removed the
     // `version` counter in favor of committing the loaded pack to state.
-    // There is no JS test harness in this workspace (see the route-shape
-    // note below), so this locks the served bundle shape; a behavioral provider
-    // test driving `setLang('es')` through an unloaded pack belongs in
-    // the deferred JS/e2e scaffold.
+    // This test only locks what the served bundle can show: the module is
+    // served and still carries these guards. The provider's behaviour is
+    // pinned by the vitest suite in `frontend/src/lib/i18n.test.ts`.
     let body = served_bundled_javascript().await;
     let loader_segment = bundle_segment(&body, "ironclaw_language", "createContext({lang:");
     // End the provider segment on the next literal from the i18n module itself
@@ -2750,9 +2749,20 @@ async fn static_i18n_module_guards_locale_race_and_clears_failed_pack_cache() {
         loader_segment.contains("Promise.resolve(null)"),
         "a resolved pack load must only commit when the pack is available and still the latest request",
     );
+    // Served-bundle presence only: the setLang staleness guard (the ref
+    // compared against the latest requested language) still ships in the
+    // i18n module. Its BEHAVIOUR — out-of-order loads leave the latest
+    // request's language, pack and persistence in place — is pinned at the
+    // right tier in `frontend/src/lib/i18n.test.ts` ("setLang: two rapid
+    // switches commit only the latest language and pack"). The minifier
+    // picks the polarity (Vite 8.1 kept `if(!t||u.current!==e)return`,
+    // Vite 8.3 emits `if(t&&u.current===e){…}`), so accept either.
+    // Searched only between setLang's ref stamp and its commit, so the mount
+    // effect's separate `===` check cannot satisfy it.
+    let set_lang_commit = bundle_segment(provider_segment, ".current=", "localStorage.setItem");
     assert!(
-        provider_segment.contains(".current!=="),
-        "a resolved pack load must be ignored after a newer language request",
+        set_lang_commit.contains(".current!==") || set_lang_commit.contains(".current==="),
+        "the served setLang must still compare its latest-request ref before committing",
     );
     assert_eq!(
         loader_segment.matches("delete ").count(),

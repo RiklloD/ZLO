@@ -751,6 +751,10 @@ impl RebornBinaryE2EHarness {
         installation_id: &str,
         initial_actor_id: &str,
     ) -> HarnessResult<Self> {
+        // Trace capture/flush and Trace Commons tools resolve local state
+        // from the process base; never let a run see or write the
+        // developer's real one.
+        ironclaw_trace_commons::location::bind_isolated_base_dir_for_tests()?;
         let ingress = RebornTestIngress::new(adapter_id, installation_id)?;
         let product_harness = if let Some(storage) = shared_storage.as_ref() {
             RebornProductSurfaceHarness::filesystem_shared_backend(
@@ -1384,6 +1388,10 @@ impl RebornBinaryE2EHarness {
 
     pub fn model_requests(&self) -> Vec<HostManagedModelRequest> {
         self.model_gateway.requests()
+    }
+
+    pub fn advertised_tool_capability_ids(&self) -> Vec<Vec<CapabilityId>> {
+        self.model_gateway.advertised_tool_capability_ids()
     }
 
     pub fn remaining_model_responses(&self) -> usize {

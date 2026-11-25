@@ -9,6 +9,12 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+# `ironclaw_trace_commons` is a dev-dependency only to switch on its
+# `test-support` feature (isolated Trace Commons base in tests); no test
+# code names it, so cargo-shear cannot see the use.
+[package.metadata.cargo-shear]
+ignored = ["ironclaw_trace_commons"]
+
 [package.metadata.ironclaw]
 layer = "loops"
 
@@ -83,6 +89,11 @@ ironclaw_skills = { path = "../../domains/ironclaw_skills" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# Test builds resolve an unset Trace Commons base to an isolated temp dir
+# (`ironclaw_trace_commons::location::base_dir`, `test-support`), so tests that
+# reach Trace Commons through the runtime never touch the developer's real
+# `~/.ironclaw/trace_contributions`.
+ironclaw_trace_commons = { path = "../../domains/ironclaw_trace_commons", features = ["test-support"] }
 # Property testing for the shared ingress verifier (#6524 workstream 9).
 proptest = { workspace = true }
 ironclaw_auth = { path = "../../domains/ironclaw_auth", features = ["test-support"] }

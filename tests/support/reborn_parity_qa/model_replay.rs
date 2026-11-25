@@ -129,6 +129,9 @@ impl RebornScriptedProviderToolCall {
 struct ReplayState {
     steps: VecDeque<ReplayStep>,
     requests: Vec<HostManagedModelRequest>,
+    /// Capability ids of the native provider tool definitions (`tools[]`)
+    /// advertised on each capability-aware model call, in call order.
+    advertised_tools: Vec<Vec<CapabilityId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +295,7 @@ impl RebornTraceReplayModelGateway {
             inner: Arc::new(Mutex::new(ReplayState {
                 steps,
                 requests: Vec::new(),
+                advertised_tools: Vec::new(),
             })),
         }
     }
@@ -301,6 +305,20 @@ impl RebornTraceReplayModelGateway {
             .lock()
             .expect("trace replay lock poisoned")
             .requests
+            .clone()
+    }
+
+    /// Capability ids advertised to the model as native provider tools on
+    /// each capability-aware model call, in call order. Since the surface
+    /// section of the instruction bundle stopped duplicating descriptors
+    /// (096bfd8a8), `tools[]` is the only channel a capability reaches the
+    /// model through, so surface-parity assertions read this, not messages.
+    #[allow(dead_code)]
+    pub fn advertised_tool_capability_ids(&self) -> Vec<Vec<CapabilityId>> {
+        self.inner
+            .lock()
+            .expect("trace replay lock poisoned")
+            .advertised_tools
             .clone()
     }
 
@@ -323,7 +341,7 @@ impl HostManagedModelGateway for RebornTraceReplayModelGateway {
         &self,
         request: HostManagedModelRequest,
     ) -> Result<HostManagedModelResponse, HostManagedModelError> {
-        let step = self.take_step(request)?;
+        let step = self.take_step(request, None)?;
         match step.output {
             ReplayOutput::Response(response) => Ok(response),
             ReplayOutput::AssertProviderToolsThenResponse { .. } => {
@@ -357,7 +375,13 @@ impl HostManagedModelGateway for RebornTraceReplayModelGateway {
         request: HostManagedModelRequest,
         capabilities: Arc<dyn LoopCapabilityPort>,
     ) -> Result<HostManagedModelResponse, HostManagedModelError> {
-        let step = self.take_step(request.clone())?;
+        let advertised = capabilities
+            .tool_definitions()
+            .map_err(capability_host_error)?
+            .into_iter()
+            .map(|definition| definition.capability_id)
+            .collect();
+        let step = self.take_step(request.clone(), Some(advertised))?;
         match step.output {
             ReplayOutput::Response(response) => {
                 provider_tool_calls_response_from_replayed_response(
@@ -396,9 +420,15 @@ impl HostManagedModelGateway for RebornTraceReplayModelGateway {
 }
 
 impl RebornTraceReplayModelGateway {
+    /// Match `request` to a replay step and, only once it validates, record
+    /// the request and (for capability-aware calls) the tools it advertised
+    /// together under one lock: a rejected request records neither, and a
+    /// concurrent call cannot land between the two pushes, so the advertised
+    /// tools stay in the same order as the capability-aware requests.
     fn take_step(
         &self,
         request: HostManagedModelRequest,
+        advertised: Option<Vec<CapabilityId>>,
     ) -> Result<ReplayStep, HostManagedModelError> {
         let mut state = self.inner.lock().map_err(|_| {
             HostManagedModelError::safe(
@@ -435,6 +465,9 @@ impl RebornTraceReplayModelGateway {
             .expect("matched replay step position")
             .clone();
         validate_expected_tool_results(&request, &step.expected_tool_results)?;
+        if let Some(advertised) = advertised {
+            state.advertised_tools.push(advertised);
+        }
         state.requests.push(request);
         Ok(state
             .steps

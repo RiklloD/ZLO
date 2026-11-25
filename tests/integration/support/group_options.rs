@@ -111,9 +111,11 @@ impl RebornIntegrationGroupBuilder {
     /// recipe `build_reborn_runtime` composes. Read the seeded scope back with
     /// `RebornIntegrationGroup::trace_capture_scope()`. Composes with
     /// `.with_turn_event_sink()` through the group's fan-out. NOTE: capture
-    /// resolves policy/queue paths through `IRONCLAW_BASE_DIR` (a process-wide
-    /// `LazyLock`) — the consuming test binary must point it at a tempdir as
-    /// its FIRST action (see `tests/integration/trace_capture.rs`).
+    /// resolves policy/queue paths through the process-wide Trace Commons base
+    /// (`ironclaw_trace_commons::location::base_dir`) — a test binary that reads
+    /// those paths itself binds its own tempdir as its FIRST action (see
+    /// `tests/integration/trace_capture.rs`); otherwise test builds bind an
+    /// isolated temp base on first use.
     pub fn with_trace_capture(mut self) -> Self {
         self.trace_capture = true;
         self

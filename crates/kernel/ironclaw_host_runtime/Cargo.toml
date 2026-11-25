@@ -76,6 +76,10 @@ url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+# Binds the process-global Trace Commons base to a temp dir in tests
+# (`location::bind_isolated_base_dir_for_tests`) so they never read or write
+# the developer's real `~/.ironclaw/trace_contributions`.
+ironclaw_trace_commons = { path = "../../domains/ironclaw_trace_commons", features = ["test-support"] }
 libsql = { workspace = true, features = ["remote", "tls"] }
 axum = { workspace = true, features = ["json"] }
 hex = { workspace = true }

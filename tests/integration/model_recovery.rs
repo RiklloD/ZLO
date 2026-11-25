@@ -190,9 +190,15 @@ async fn content_filtered_completion_recovers_with_model_visible_observation() {
 #[tokio::test]
 async fn long_tool_run_keeps_the_original_task_after_raw_history_exceeds_window_limit() {
     const ORIGINAL_TASK: &str = "retain this exact original task through the long tool run";
+    // The production text-only history window (`TextOnlyLoopHostConfig`'s
+    // default `max_messages`, matching `DefaultContextStrategy`). 5501e694c
+    // raised it from 128 to 512 on purpose; the run must outgrow it to force
+    // the window-eviction compaction this test pins.
+    const WINDOW_MESSAGES: usize = 512;
+    const TOOL_ITERATIONS: usize = WINDOW_MESSAGES + 2;
     let mut script = Vec::new();
-    for index in 0..130 {
-        if index == 128 {
+    for index in 0..TOOL_ITERATIONS {
+        if index == WINDOW_MESSAGES {
             script.push(RebornScriptedReply::text(format!(
                 "durable window compaction summary before iteration {index}"
             )));
@@ -204,7 +210,15 @@ async fn long_tool_run_keeps_the_original_task_after_raw_history_exceeds_window_
     }
     script.push(RebornScriptedReply::text("long tool run complete"));
     let harness = RebornIntegrationHarness::test_default()
-        .with_iteration_limit_for_test(NonZeroU32::new(140).expect("non-zero test limit"))
+        .with_iteration_limit_for_test(
+            NonZeroU32::new(u32::try_from(TOOL_ITERATIONS + 16).expect("fits u32"))
+                .expect("non-zero test limit"),
+        )
+        // 514 real tool iterations over a 512-message history run ~65 s in a
+        // debug build, past the default 60 s settle bound. This bound starts
+        // after setup, so `.config/nextest.toml` gives this test a 300 s
+        // terminate-after window instead of the default 180 s.
+        .with_run_state_settle_timeout_for_test(std::time::Duration::from_secs(170))
         .script(script)
         .build()
         .await
@@ -215,9 +229,9 @@ async fn long_tool_run_keeps_the_original_task_after_raw_history_exceeds_window_
         .await
         .expect("long tool run completes");
     harness
-        .assert_conversation_history_message_count_at_least(132)
+        .assert_conversation_history_message_count_at_least(WINDOW_MESSAGES + 4)
         .await
-        .expect("durable tool results exceed the 128-message window");
+        .expect("durable tool results exceed the 512-message window");
     harness
         .assert_summary_artifact_count_at_least(1)
         .await

@@ -5,7 +5,7 @@
 //! purpose: it provisions the process-global instance policy (scope `None`),
 //! which would otherwise bleed into the personal-invite suite whose tests rely
 //! on per-user not-enrolled defaults. A distinct binary = a fresh process = a
-//! private `IRONCLAW_BASE_DIR`, so the two suites cannot interfere.
+//! private Trace Commons base tempdir, so the two suites cannot interfere.
 //!
 //! It pins the fix for the CodeRabbit #5 finding at the layer it manifests: an
 //! instance-only-enrolled user (admin-provisioned instance policy, no personal
@@ -190,7 +190,7 @@ async fn instance_only_user_passes_dispatch_gate_and_mints_login_link() {
     );
 
     // The one-time URL is delivered out-of-band to a private 0600 file.
-    let persisted = find_persisted_login_link(setup_base_dir().path())
+    let persisted = find_persisted_login_link(setup_base_dir())
         .expect("the login URL must be persisted to the private account-login-link file");
     assert!(
         persisted.contains("/account/login?code=instancecode456"),

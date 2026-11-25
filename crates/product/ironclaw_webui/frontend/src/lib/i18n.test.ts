@@ -355,25 +355,89 @@ test("ensurePack: a failed import resolves null, never rejects, and is retryable
   assert.equal(calls, 2, "a failed import is not cached: the retry invokes the loader again");
 });
 
-test("setLang: a stale pack load resolving last does not clobber the newer language", async () => {
-  const { I18nProvider, registerPack, loaders, setItemCalls } = loadI18n();
+// `i18n.tsx`'s localStorage key for the selected language.
+const STORAGE_KEY = "ironclaw_language";
+// `I18nProvider`'s `useState` order: 0 = selected language, 1 = loaded pack.
+const LANG_STATE = 0;
+const PACK_STATE = 1;
 
-  const defer = () => {
-    let resolve;
-    const promise = new Promise((r) => {
-      resolve = r;
-    });
-    return { promise, resolve };
-  };
-  const esLoad = defer();
-  const frLoad = defer();
+function committedState(stateSetters, index) {
+  const writes = stateSetters.filter((write) => write.index === index);
+  return writes.length ? writes[writes.length - 1].value : undefined;
+}
+
+for (const order of [
+  { name: "newer request resolves first, stale one last", first: "fr", last: "es" },
+  { name: "stale request resolves first, newer one last", first: "es", last: "fr" },
+]) {
+  test(`setLang: two rapid switches commit only the latest language and pack (${order.name})`, async () => {
+    const { I18nProvider, registerPack, loaders, setItemCalls, stateSetters } = loadI18n();
+
+    const defer = () => {
+      let resolve;
+      const promise = new Promise((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    };
+    const loads = { es: defer(), fr: defer() };
+    loaders.es = () => {
+      registerPack("es", { greet: "hola" });
+      return loads.es.promise;
+    };
+    loaders.fr = () => {
+      registerPack("fr", { greet: "bonjour" });
+      return loads.fr.promise;
+    };
+
+    const tree = I18nProvider({ children: null });
+    const ctx = tree.values.find(
+      (value) => value && typeof value === "object" && typeof value.setLang === "function",
+    );
+    assert.ok(ctx, "provider context exposes setLang");
+
+    // Two rapid switches before either pack has loaded: fr is the latest.
+    ctx.setLang("es");
+    ctx.setLang("fr");
+
+    loads[order.first].resolve();
+    await tick();
+    loads[order.last].resolve();
+    await tick();
+
+    // The React state the UI renders from: the selected language AND the
+    // pack it renders with must both be the latest request's. A pack
+    // setter that runs before the staleness guard leaves `fr` selected
+    // but renders the `es` pack.
+    assert.equal(committedState(stateSetters, LANG_STATE), "fr", "selected language");
+    assert.deepEqual(
+      committedState(stateSetters, PACK_STATE),
+      { greet: "bonjour" },
+      "rendered pack belongs to the selected language",
+    );
+    assert.ok(
+      stateSetters.every((write) => write.value !== "es" && write.value?.greet !== "hola"),
+      `the stale es request never reaches React state: ${JSON.stringify(stateSetters)}`,
+    );
+    assert.deepEqual(
+      setItemCalls,
+      [{ key: STORAGE_KEY, value: "fr" }],
+      "only the most recently requested language is persisted, under the language key",
+    );
+  });
+}
+
+test("setLang: switching back to the current language before the pending pack lands keeps it", async () => {
+  const { I18nProvider, registerPack, loaders, setItemCalls, stateSetters } = loadI18n();
+  const english = { greet: "hello" };
+  registerPack("en", english);
+  let resolveEs;
+  const esLoad = new Promise((resolve) => {
+    resolveEs = resolve;
+  });
   loaders.es = () => {
     registerPack("es", { greet: "hola" });
-    return esLoad.promise;
-  };
-  loaders.fr = () => {
-    registerPack("fr", { greet: "bonjour" });
-    return frLoad.promise;
+    return esLoad;
   };
 
   const tree = I18nProvider({ children: null });
@@ -382,21 +446,25 @@ test("setLang: a stale pack load resolving last does not clobber the newer langu
   );
   assert.ok(ctx, "provider context exposes setLang");
 
-  // Two rapid switches before either pack has loaded.
+  // Current language is en; pick es (pending), then go back to en before es
+  // resolves. Going back must still count as the latest request: an
+  // `if (next === lang) return` early-out before the stamp would let es win.
   ctx.setLang("es");
-  ctx.setLang("fr");
-
-  // Resolve the NEWER request (fr) first, then let the older es import
-  // land last — the out-of-order case the staleness guard defends.
-  frLoad.resolve();
+  ctx.setLang("en");
   await tick();
-  esLoad.resolve();
+  resolveEs();
   await tick();
 
+  assert.equal(committedState(stateSetters, LANG_STATE), "en", "en stays selected");
+  assert.equal(committedState(stateSetters, PACK_STATE), english, "en pack stays");
+  assert.ok(
+    stateSetters.every((write) => write.value !== "es" && write.value?.greet !== "hola"),
+    `the abandoned es request never reaches React state: ${JSON.stringify(stateSetters)}`,
+  );
   assert.deepEqual(
-    setItemCalls.map((call) => call.value),
-    ["fr"],
-    "only the most recently requested language is committed/persisted",
+    setItemCalls,
+    [{ key: STORAGE_KEY, value: "en" }],
+    "only en is persisted, under the language key",
   );
 });
 

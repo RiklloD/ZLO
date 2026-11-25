@@ -111,6 +111,10 @@ zip = { workspace = true, features = ["deflate"] }
 libc = { workspace = true }
 
 [dev-dependencies]
+# Binds the process-global Trace Commons base to a temp dir in tests
+# (`location::bind_isolated_base_dir_for_tests`) so they never read or write
+# the developer's real `~/.ironclaw/trace_contributions`.
+ironclaw_trace_commons = { path = "../../domains/ironclaw_trace_commons", features = ["test-support"] }
 # Enable the composition crate's `test-support` seam for CLI unit tests so
 # `open_reborn_identity_resolver` (the test-only standalone resolver opener)
 # is available when building this crate's tests. Production code uses the

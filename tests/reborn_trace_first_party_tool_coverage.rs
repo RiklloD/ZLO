@@ -209,16 +209,29 @@ async fn reborn_trace_process_first_party_tools_parity() {
     assert_eq!(requests.len(), 2);
     // The loop approval-gates shell execution; the product-live adapter e2e
     // covers direct shell execution while this test guards model-surface parity.
+    // Capabilities reach the model only as native provider tools (`tools[]`):
+    // 096bfd8a8 made the instruction bundle's surface section a static policy
+    // message with no per-capability descriptor dump, so the model-facing
+    // surface is asserted on the advertised tool definitions, not on messages.
+    let advertised = harness.advertised_tool_capability_ids();
+    assert_eq!(
+        advertised.len(),
+        requests.len(),
+        "every model call records its advertised tools"
+    );
     assert!(
-        requests[0]
-            .messages
-            .iter()
-            .any(|message| message.content.contains(shell.as_str())),
-        "shell must be advertised on the Reborn model-facing first-party surface"
+        advertised[0].contains(&shell),
+        "shell must be advertised on the Reborn model-facing first-party surface: {:?}",
+        advertised[0]
     );
     // TEMP(disable-spawn-subagents): spawn_subagent is temporarily disabled via
     // the outermost capability deny filter in the default planned runtime, so it
-    // must NOT appear on the model-facing surface.
+    // must NOT appear on the model-facing surface — neither as a tool nor in
+    // any message text.
+    assert!(
+        !advertised[0].contains(&spawn_subagent),
+        "spawn_subagent must NOT be advertised while temporarily disabled"
+    );
     assert!(
         !requests[0]
             .messages

@@ -41,6 +41,9 @@ fn lock_global_policy_for_test() -> (
     std::sync::MutexGuard<'static, ()>,
 ) {
     let env = crate::runtime::test_env::lock_runtime_env();
+    // Never resolve `policy_path()` against the developer's real base.
+    ironclaw_trace_commons::location::bind_isolated_base_dir_for_tests()
+        .expect("bind isolated Trace Commons base dir");
     let policy = GLOBAL_POLICY_TEST_MUTEX
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

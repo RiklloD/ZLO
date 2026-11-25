@@ -59,6 +59,18 @@ slow-timeout = { period = "300s", terminate-after = 2 }
 filter = "test(~e2e_thread_scheduling) | test(~heavy_integration)"
 slow-timeout = { period = "300s", terminate-after = 2 }
 
+# The long tool-run scenario must outgrow the production 512-message history
+# window (514 real tool iterations, ~65 s in a debug build; its run-state
+# settle bound is 170 s and only starts after harness setup). 60s/5 = 300s
+# covers setup plus that bound without raising the default for every test.
+[[profile.default.overrides]]
+filter = "binary(reborn_integration_suite_turns) & test(~long_tool_run_keeps_the_original_task_after_raw_history_exceeds_window_limit)"
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[[profile.ci.overrides]]
+filter = "binary(reborn_integration_suite_turns) & test(~long_tool_run_keeps_the_original_task_after_raw_history_exceeds_window_limit)"
+slow-timeout = { period = "60s", terminate-after = 5 }
+
 # Group binaries may contain several independent top-level tests. Nextest runs
 # each in its own process; scenarios inside one test remain sequential.
 [[profile.ci.overrides]]

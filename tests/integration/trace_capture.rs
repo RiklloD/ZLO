@@ -20,9 +20,9 @@
 //! fallback). Live-issuer onboarding stays a named follow-on with the other
 //! network paths.
 //!
-//! This binary owns `IRONCLAW_BASE_DIR`: trace policy/queue paths resolve
-//! through `ironclaw_common`'s process-wide `LazyLock`, so the tempdir env
-//! var is set as the FIRST action, before any read (same pattern as
+//! This binary owns the process-wide Trace Commons base: trace policy/queue
+//! paths resolve through `ironclaw_trace_commons::location::base_dir`, so the
+//! tempdir is bound as the FIRST action, before any read (same pattern as
 //! `crates/kernel/ironclaw_host_runtime/tests/trace_commons_dispatch_e2e.rs`).
 //! Keep this suite a single sequenced `#[tokio::test]`: enrollment state is
 //! process-global (per scope), so concurrent tests in this binary would race.
@@ -42,7 +42,6 @@ use ironclaw_trace_commons::contribution::{
 };
 use reborn_support::group::RebornIntegrationGroup;
 use reborn_support::reply::RebornScriptedReply;
-use tempfile::TempDir;
 
 const ONBOARD_CAPABILITY_ID: &str = "builtin.trace_commons.onboard";
 
@@ -50,24 +49,19 @@ const ONBOARD_CAPABILITY_ID: &str = "builtin.trace_commons.onboard";
 /// see the scope-isolation note on `completed_turn_queues_trace_contribution_for_enrolled_scope`.
 const CONSENT_CONTROL_ACTOR_ID: &str = "host-user-trace-consent-control";
 
-static BASE_DIR: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+static BASE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-/// Point `IRONCLAW_BASE_DIR` at a process-lifetime tempdir before any code
-/// reads it through `ironclaw_common`'s `LazyLock`. Must be the first call
-/// in every test in this binary.
-fn setup_base_dir() -> &'static TempDir {
+/// Bind the Trace Commons base to a private temp dir before any code
+/// resolves it (first bind wins, `location::set_base_dir`). Must be the first
+/// call in every test in this binary.
+fn setup_base_dir() -> &'static std::path::Path {
     BASE_DIR.get_or_init(|| {
-        let dir = tempfile::tempdir().expect("tempdir for IRONCLAW_BASE_DIR");
-        // Serialize against every other env-mutating test in this binary (same
-        // guard `apply_hermetic_env` takes) before touching the process env.
-        let _env_guard = ironclaw_common::env_helpers::lock_env();
-        // SAFETY: the `lock_env()` guard above serializes against all other
-        // env-mutating tests in this binary; `OnceLock::get_or_init` additionally
-        // guarantees this closure body runs exactly once, before any base-dir
-        // read (this fn is called as the first action of every test here).
-        unsafe {
-            std::env::set_var("IRONCLAW_BASE_DIR", dir.path());
-        }
+        // A fresh mkdtemp dir kept for the process (a `TempDir` in a static
+        // never drops anyway); the OS temp cleaner reclaims it.
+        let dir = ironclaw_trace_commons::location::private_test_dir()
+            .expect("private dir for the Trace Commons base");
+        ironclaw_trace_commons::location::set_base_dir(dir.clone())
+            .expect("bind Trace Commons base before any resolution");
         dir
     })
 }

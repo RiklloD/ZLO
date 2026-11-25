@@ -61,6 +61,10 @@ uuid = { workspace = true, features = ["v4"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# Binds the process-global Trace Commons base to a temp dir in tests
+# (`location::bind_isolated_base_dir_for_tests`) so they never read or write
+# the developer's real `~/.ironclaw/trace_contributions`.
+ironclaw_trace_commons = { path = "../../domains/ironclaw_trace_commons", features = ["test-support"] }
 ironclaw_turn_runner = { path = ".", features = ["test-support"] }
 ironclaw_loop_host = { path = "../ironclaw_loop_host", features = ["test-support"] }
 chrono = { workspace = true, default-features = true }
