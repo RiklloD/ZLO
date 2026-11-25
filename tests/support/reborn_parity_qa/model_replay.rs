@@ -341,7 +341,7 @@ impl HostManagedModelGateway for RebornTraceReplayModelGateway {
         &self,
         request: HostManagedModelRequest,
     ) -> Result<HostManagedModelResponse, HostManagedModelError> {
-        let step = self.take_step(request)?;
+        let step = self.take_step(request, None)?;
         match step.output {
             ReplayOutput::Response(response) => Ok(response),
             ReplayOutput::AssertProviderToolsThenResponse { .. } => {
@@ -381,17 +381,7 @@ impl HostManagedModelGateway for RebornTraceReplayModelGateway {
             .into_iter()
             .map(|definition| definition.capability_id)
             .collect();
-        self.inner
-            .lock()
-            .map_err(|_| {
-                HostManagedModelError::safe(
-                    HostManagedModelErrorKind::Unavailable,
-                    "trace replay lock poisoned",
-                )
-            })?
-            .advertised_tools
-            .push(advertised);
-        let step = self.take_step(request.clone())?;
+        let step = self.take_step(request.clone(), Some(advertised))?;
         match step.output {
             ReplayOutput::Response(response) => {
                 provider_tool_calls_response_from_replayed_response(
@@ -430,9 +420,15 @@ impl HostManagedModelGateway for RebornTraceReplayModelGateway {
 }
 
 impl RebornTraceReplayModelGateway {
+    /// Match `request` to a replay step and, only once it validates, record
+    /// the request and (for capability-aware calls) the tools it advertised
+    /// together under one lock: a rejected request records neither, and a
+    /// concurrent call cannot land between the two pushes, so the advertised
+    /// tools stay in the same order as the capability-aware requests.
     fn take_step(
         &self,
         request: HostManagedModelRequest,
+        advertised: Option<Vec<CapabilityId>>,
     ) -> Result<ReplayStep, HostManagedModelError> {
         let mut state = self.inner.lock().map_err(|_| {
             HostManagedModelError::safe(
@@ -469,6 +465,9 @@ impl RebornTraceReplayModelGateway {
             .expect("matched replay step position")
             .clone();
         validate_expected_tool_results(&request, &step.expected_tool_results)?;
+        if let Some(advertised) = advertised {
+            state.advertised_tools.push(advertised);
+        }
         state.requests.push(request);
         Ok(state
             .steps
