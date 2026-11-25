@@ -143,6 +143,8 @@ pub struct WorkspaceState {
     pub(crate) painted: std::cell::Cell<bool>,
     /// The thread whose delete is being confirmed.
     pub confirm_delete: Option<String>,
+    /// The footer's update button asked to update: its dialog is open.
+    pub confirm_update: bool,
     pub timers: Timers,
     /// A scene shows the quick composer's card over the shell.
     pub quick_fixture: bool,
@@ -179,6 +181,7 @@ impl Default for WorkspaceState {
             sidebar_slid: Default::default(),
             painted: Default::default(),
             confirm_delete: None,
+            confirm_update: false,
             timers: Timers::default(),
             quick_fixture: false,
             session_import_launched: false,

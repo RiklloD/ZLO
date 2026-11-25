@@ -565,3 +565,57 @@ pub fn fixture_quick(s: &mut State) {
     let quick = crate::voice::Composer::Quick;
     crate::voice::fixtures::with_status(s, &["click", "words"], Some(quick));
 }
+
+/// The sidebar footer's update button (`shell::update_button`): `available`
+/// (This Mac behind), `confirm` (its dialog open), `confirm-many` (two
+/// computers behind), `running` (This Mac building), `failed`.
+pub fn fixture_update(s: &mut State, which: &str) {
+    use crate::pages::computers::fixtures::{STUDIO, base};
+    use crate::remote::updates::{Pending, RowState};
+    use zlo_client::environments::THIS_MAC;
+    fixture_shell(s);
+    let pending = |behind: u32| Pending {
+        behind,
+        from: Some("68d1df2e7c0ffee0000000000000000000000000".into()),
+        to: "a4f19b3d2e0000000000000000000000000000000".into(),
+        subjects: [
+            "feat(rune): update button in the sidebar footer",
+            "fix(webui): pin the storage key for setLang",
+            "test(trace-commons): one mkdtemp dir per call",
+            "chore(deps): pin TypeScript to 6.0.3 for the WebUI frontend",
+            "fix(rune): the Working shelf keeps its fold across switches",
+        ]
+        .into_iter()
+        .take(behind as usize)
+        .map(String::from)
+        .collect(),
+    };
+    let u = &mut s.remote.updates;
+    match which {
+        "running" => {
+            u.updating = true;
+            u.rows.insert(
+                THIS_MAC.into(),
+                RowState::Updating("Building ZLO.app".into()),
+            );
+        }
+        "failed" => {
+            u.failed_run = true;
+            u.rows.insert(
+                THIS_MAC.into(),
+                RowState::Failed("The checkout has local changes".into()),
+            );
+        }
+        _ => {
+            u.rows.insert(THIS_MAC.into(), RowState::Behind(pending(7)));
+        }
+    }
+    if which == "confirm-many" {
+        base(s);
+        s.remote
+            .updates
+            .rows
+            .insert(STUDIO.into(), RowState::Behind(pending(3)));
+    }
+    s.workspace.confirm_update = which.starts_with("confirm");
+}
