@@ -16,7 +16,7 @@ use crate::state::State;
 use super::super::view::{StepView, step_shell};
 use super::{
     SCAN_LIMIT_MESSAGE, Scan, group, listed, run_import, scan, selected, set_keys, short_age, skip,
-    split_path,
+    skip_label, split_path,
 };
 
 pub(super) fn view(s: &State, k: &Kit) -> StepView {
@@ -48,7 +48,7 @@ pub(super) fn view(s: &State, k: &Kit) -> StepView {
                                 .color(p.text_muted),
                         ),
                 );
-            return StepView::new(body).action(skip_button(k, busy));
+            return StepView::new(body).action(skip_button(s, k, busy));
         }
         _ => {}
     }
@@ -187,17 +187,21 @@ pub(super) fn view(s: &State, k: &Kit) -> StepView {
             .press_scale(motion::PRESS)
     };
     StepView::new(body)
-        .action(skip_button(k, busy))
+        .action(skip_button(s, k, busy))
         .action(import)
 }
 
-fn skip_button(k: &Kit, busy: bool) -> El {
-    button_sized("Do not import projects", Look::Ghost, Size::Small)
-        .disabled(busy)
-        .on_press(skip)
-        .build(k)
-        .key("projects-skip")
-        .press_scale(motion::PRESS)
+fn skip_button(s: &State, k: &Kit, busy: bool) -> El {
+    button_sized(
+        skip_label(s.onboarding.projects.scan.as_ref()),
+        Look::Ghost,
+        Size::Small,
+    )
+    .disabled(busy)
+    .on_press(skip)
+    .build(k)
+    .key("projects-skip")
+    .press_scale(motion::PRESS)
 }
 
 fn group_open(s: &State, key: &str, default: bool) -> bool {

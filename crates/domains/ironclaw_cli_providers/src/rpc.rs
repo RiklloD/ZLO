@@ -530,18 +530,7 @@ pub(crate) fn kill_group(pgid: i32, context: &'static str) {
 /// The binary `name`: `PATH` first, then the installers' usual homes (a
 /// desktop-launched backend often runs with a minimal `PATH`).
 pub(crate) fn find_on_path(home: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    let from_path = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .unwrap_or_default();
-    from_path
-        .into_iter()
-        .chain([
-            home.join(".local/bin"),
-            std::path::PathBuf::from("/opt/homebrew/bin"),
-            std::path::PathBuf::from("/usr/local/bin"),
-        ])
-        .map(|dir| dir.join(name))
-        .find(|p| p.is_file())
+    crate::binaries::find(home, name)
 }
 
 #[cfg(test)]

@@ -940,6 +940,9 @@ fn restart_settled(s: &mut State) {
 /// The agent is listed: its row turns into the found agent's row (sign in,
 /// or ready), and both screens say so.
 fn installed(s: &mut State, runtime: &'static str) {
+    // Its terminal sessions were never read: the launch import is due for
+    // them now (the backend decides; held while first-run setup is open).
+    crate::workspace::cli_found(s);
     // Only the worker releases a row whose installer still runs: Cancel and
     // a computer switch need its stop flag until the process is gone.
     if s.cli_installs

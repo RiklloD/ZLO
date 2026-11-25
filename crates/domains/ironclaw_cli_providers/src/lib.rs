@@ -10,6 +10,7 @@
 
 pub mod approval_reason;
 mod attachments;
+mod binaries;
 pub mod bridge;
 pub mod bridge_tools;
 pub mod claude;
