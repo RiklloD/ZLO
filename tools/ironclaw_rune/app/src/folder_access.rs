@@ -11,8 +11,12 @@
 //! those folders.
 //!
 //! The list is saved next to the appearance prefs as `folder-access.json`
-//! (path plus bookmark, base64). Removing a folder stops ZLO's access and
-//! restarts the backend so its new process no longer has it.
+//! (path plus bookmark, base64).
+//!
+//! A backend already running keeps the folders it started with: a change
+//! reaches it only when it restarts. Nothing here restarts it (that would
+//! stop running threads); [`pending`] tells Settings to offer Restart
+//! IronClaw, and otherwise the change applies at the next start.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -36,6 +40,11 @@ struct Grant {
 }
 
 static GRANTS: Mutex<Vec<Grant>> = Mutex::new(Vec::new());
+
+/// The pid of the backend that was running when the list last changed: it
+/// does not have the change. Any later backend (a restart, a new launch)
+/// does.
+static CHANGED_UNDER: Mutex<Option<u32>> = Mutex::new(None);
 
 fn grants() -> std::sync::MutexGuard<'static, Vec<Grant>> {
     GRANTS.lock().unwrap_or_else(|e| e.into_inner())
@@ -100,14 +109,32 @@ pub fn restore() {
     }
 }
 
+/// The list changed: the backend running now (if any) misses it until it
+/// restarts.
+fn mark_changed() {
+    let running = crate::service::backend_pid();
+    *CHANGED_UNDER.lock().unwrap_or_else(|e| e.into_inner()) = running;
+}
+
+/// Whether the running backend started before the last change to the list,
+/// so only a restart gives it the change.
+pub fn pending() -> bool {
+    let changed_under = *CHANGED_UNDER.lock().unwrap_or_else(|e| e.into_inner());
+    misses_change(changed_under, crate::service::backend_pid())
+}
+
+fn misses_change(changed_under: Option<u32>, running: Option<u32>) -> bool {
+    changed_under.is_some() && changed_under == running
+}
+
 /// The granted folders, for Settings.
 pub fn list() -> Vec<PathBuf> {
     grants().iter().map(|g| g.path.clone()).collect()
 }
 
 /// Keep a folder the person just picked in the open panel. `Ok(true)` when
-/// it is newly covered (the backend needs a restart to get it), `Ok(false)`
-/// when a granted folder already holds it.
+/// it is newly covered (a running backend gets it at its next start, see
+/// [`pending`]), `Ok(false)` when a granted folder already holds it.
 pub fn add(path: &Path) -> Result<bool, String> {
     let mut list = grants();
     if covered(list.iter().map(|g| g.path.as_path()), path) {
@@ -131,6 +158,7 @@ pub fn add(path: &Path) -> Result<bool, String> {
         url,
     });
     save(&list);
+    mark_changed();
     Ok(true)
 }
 
@@ -143,12 +171,13 @@ pub fn remove(path: &Path) -> bool {
     let gone = list.remove(ix);
     mac::release(gone.url);
     save(&list);
+    mark_changed();
     true
 }
 
 /// A folder the open panel just handed over (a project folder, say): kept
 /// when macOS guards where it lives and no granted folder holds it yet.
-/// `true` when the backend should restart to get it.
+/// `true` when it was newly kept (see [`pending`]).
 pub fn adopt_pick(path: &Path) -> bool {
     let Some(home) = dirs::home_dir() else {
         return false;
@@ -324,6 +353,15 @@ mod tests {
         assert!(guarded(Path::new("/Volumes/USB/x"), home));
         assert!(!guarded(Path::new("/Users/me/code/site"), home));
         assert!(!guarded(Path::new("/Users/me/Documentsy"), home));
+    }
+
+    #[test]
+    fn only_the_backend_from_before_a_change_misses_it() {
+        assert!(misses_change(Some(7), Some(7)));
+        // Restarted since, or none was running: the new one has the list.
+        assert!(!misses_change(Some(7), Some(8)));
+        assert!(!misses_change(Some(7), None));
+        assert!(!misses_change(None, Some(7)));
     }
 
     #[test]
