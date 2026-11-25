@@ -15,6 +15,7 @@ mod alerts;
 mod backdrop;
 mod bench;
 mod chat;
+mod cli_link;
 mod design;
 mod drafts;
 mod energy;
@@ -121,6 +122,8 @@ fn main() {
         service::start();
         service::stop_on_terminate();
         energy::start();
+        // Keep `~/.zlo/bin/zlo` pointing at this bundle (`cli_link.rs`).
+        cli_link::refresh_in_background();
     }
     let spec = AppSpec::<State> {
         min_size: Some((720.0, 480.0)),

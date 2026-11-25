@@ -47,7 +47,17 @@ On an Apple Silicon Mac, paste this into Terminal:
 curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
 ```
 
-It builds ZLO from source and installs it to `~/Applications/ZLO.app`. If the Xcode command-line tools are missing, it opens their installer and asks you to run the command again. It installs Rust if you don't have it. The first build takes 10 to 20 minutes. Run the same command again to update.
+It builds ZLO from source and installs it to `~/Applications/ZLO.app`. If the Xcode command-line tools are missing, it opens their installer and asks you to run the command again. It installs Rust if you don't have it. The first build takes 10 to 20 minutes.
+
+It also puts the `zlo` command on your `PATH`: `~/.zlo/bin/zlo` links to the CLI inside the app, and one marked block in your login shell's profile (`~/.zprofile` for zsh) adds `~/.zlo/bin`. Open a new terminal afterwards. Set `ZLO_NO_MODIFY_PATH=1` to leave your profile alone. The app keeps the link pointing at itself each time it opens, so moving or reinstalling it never breaks `zlo`.
+
+| To | Run |
+| --- | --- |
+| Update | `zlo update` (or `zlo upgrade`), or the install command again |
+| Investigate a problem | `zlo triage` |
+| Check the installation | `zlo doctor` |
+
+The installer turns on self-update for the copy of the source it downloaded, so `zlo update` and ZLO's **Update available** work with no setup. If `zlo` is not found, run the app's copy directly: `~/Applications/ZLO.app/Contents/MacOS/zlo-backend triage`.
 
 To build a branch other than `main`, set `ZLO_REF`:
 

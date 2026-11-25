@@ -1814,6 +1814,7 @@ dependencies = [
  "rune-kit",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

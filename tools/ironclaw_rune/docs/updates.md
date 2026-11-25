@@ -12,13 +12,19 @@ ZLO is built from source, so updating a machine means pulling this repository an
 
 ## This Mac
 
-Run the installer again:
+```sh
+zlo update        # or: zlo upgrade
+```
+
+The installer turns self-update on for the source it downloads, so this works with no setup, and so does ZLO's **Update available**. Running the installer again also updates:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
 ```
 
-or, from your checkout, `git pull && sh tools/ironclaw_rune/bundle.sh`. Both rebuild ZLO and its backend, reinstall the app, and reopen it.
+or, from your own checkout, `git pull && sh tools/ironclaw_rune/bundle.sh`. All three rebuild ZLO and its backend, reinstall the app, and reopen it.
+
+`zlo` is `~/.zlo/bin/zlo`, a link the installer makes (and ZLO refreshes each time it opens) to `~/Applications/ZLO.app/Contents/MacOS/zlo-backend`; if your terminal does not find it, open a new terminal or use that full path.
 
 ## Turn on self-update for a machine
 

@@ -8,6 +8,12 @@ ZLO's backend ships as a single binary named `zlo` (built from the `ironclaw` Ca
 package: `cargo build --release -p ironclaw`). Every command is a subcommand — running
 `zlo` on its own prints usage and exits without starting anything.
 
+On a Mac, the installer (`curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh`)
+puts it on your `PATH`: `~/.zlo/bin/zlo` links to `~/Applications/ZLO.app/Contents/MacOS/zlo-backend`
+(the same binary), and a marked block in your login shell's profile adds `~/.zlo/bin`
+(skip that with `ZLO_NO_MODIFY_PATH=1`). ZLO refreshes the link each time it opens. If
+`zlo` is not found, open a new terminal, or run the app's copy by its full path.
+
 Its data folder is `~/.zlo` (override with `ZLO_HOME`). On first run, an existing
 `~/.ironclaw/reborn` is moved there and the old path is left as a link to it. The older
 `IRONCLAW_REBORN_*` variable names keep working.
@@ -136,11 +142,13 @@ Imported files are readable by their owner only.
 | Command | What it does |
 | --- | --- |
 | `zlo update enable` | Turn self-update on from the checkout this ZLO was built from (`--repo <checkout>` to name another, `--branch <name>` to follow another branch); takes effect at once. `zlo update disable` turns it off |
-| `zlo update` | Update this machine from its source checkout: fast-forward pull, rebuild only when the new commits change what this machine runs, reinstall, restart |
+| `zlo update` | Update this machine from its source checkout: fast-forward pull, rebuild only when the new commits change what this machine runs, reinstall, restart. `zlo upgrade` is the same command |
 
 `zlo update --check` fetches and reports how many commits the running build is
 behind, with their subjects, and changes nothing; `--json` prints the same status the
-desktop app reads. Updates are off until `config.toml` names the checkout:
+desktop app reads. The Mac installer turns updates on for the source it downloads
+(`~/Library/Caches/ZLO/src`); elsewhere they are off until `config.toml` names the
+checkout, and `zlo update` says how to turn them on (or to re-run the installer):
 
 ```toml
 [update]

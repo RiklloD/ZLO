@@ -1,5 +1,6 @@
-//! `zlo update [--check] [--json]` — update this installation from its
-//! source checkout (`[update] method = "source"`).
+//! `zlo update [--check] [--json]` (also `zlo upgrade`) — update this
+//! installation from its source checkout (`[update] method = "source"`).
+//! `install.sh` turns this on for the checkout it clones.
 //!
 //! - `enable [--repo <checkout>] [--branch <name>]`: turn self-update on.
 //!   The checkout defaults to the one this binary was built from, so on a
@@ -50,7 +51,7 @@ pub(crate) fn self_update_routes(
 }
 
 /// How to turn self-update on, shown wherever it is off.
-pub(crate) const ENABLE_HINT: &str = "Self-update is not set up. Run `zlo update enable` (add `--repo /path/to/checkout` if it does not find its source checkout).";
+pub(crate) const ENABLE_HINT: &str = "Self-update is not set up. Run `zlo update enable` (add `--repo /path/to/checkout` if it does not find its source checkout), or update by running the installer again: curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh";
 
 /// What to do when this binary knows no usable source checkout.
 pub(crate) const NO_CHECKOUT_HINT: &str = "This ZLO does not know a source checkout it was built from. On this computer, clone the source and run `zlo update enable --repo /path/to/checkout`.";
@@ -99,6 +100,14 @@ pub(crate) fn current_build() -> BuildInfo {
             .filter(|c| git::is_full_hash(c))
             .map(str::to_string),
     }
+}
+
+/// This process's binary with symlinks resolved: `~/.zlo/bin/zlo` is a link
+/// to `ZLO.app/Contents/MacOS/zlo-backend` (`install.sh`), and update must
+/// rebuild the app it points into, never replace the link with a binary.
+pub(crate) fn running_binary() -> anyhow::Result<PathBuf> {
+    let exe = std::env::current_exe().context("resolve the running binary")?;
+    std::fs::canonicalize(&exe).with_context(|| format!("resolve {}", exe.display()))
 }
 
 /// The source checkout this binary was built from (`build.rs`), when it was
@@ -261,7 +270,7 @@ impl UpdateCommand {
             return Ok(());
         }
 
-        let exe = std::env::current_exe().context("resolve the running binary")?;
+        let exe = running_binary()?;
         let service = SourceSelfUpdate::new(
             &home,
             settings.clone(),

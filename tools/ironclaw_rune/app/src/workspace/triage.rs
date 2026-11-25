@@ -239,8 +239,13 @@ pub(super) fn prepared(
         Ok(_) => Some(failure_text(
             "that computer's playbook link cannot be opened here",
             false,
+            cli_fallback(computer),
         )),
-        Err(error) => Some(failure_text(&error.to_string(), error.is_not_found())),
+        Err(error) => Some(failure_text(
+            &error.to_string(),
+            error.is_not_found(),
+            cli_fallback(computer),
+        )),
     };
     match failure {
         None => {
@@ -258,13 +263,44 @@ pub(super) fn prepared(
 }
 
 /// The draft's error line when the backend could not start triage.
-fn failure_text(error: &str, too_old: bool) -> String {
+fn failure_text(error: &str, too_old: bool, fallback: Option<String>) -> String {
     let why = if too_old {
         "That backend is too old for in-app triage.".to_string()
     } else {
         format!("Could not start triage: {error}.")
     };
-    format!("{why} Run `{TRIAGE_CLI_COMMAND}` in a terminal on that computer instead.")
+    let mut text =
+        format!("{why} Run `{TRIAGE_CLI_COMMAND}` in a terminal on that computer instead.");
+    if let Some(full) = fallback {
+        text.push_str(&format!(
+            " If the terminal says `zlo` is not found, run `{full}`."
+        ));
+    }
+    text
+}
+
+/// The full path to this Mac's bundled CLI, offered only when triage ran
+/// on this Mac and the `zlo` command link is missing (`cli_link.rs`).
+fn cli_fallback(computer: &str) -> Option<String> {
+    if computer != zlo_client::environments::THIS_MAC || crate::cli_link::command_works() {
+        return None;
+    }
+    let backend = crate::cli_link::bundled_backend()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "~/Applications/ZLO.app/Contents/MacOS/zlo-backend".into());
+    Some(format!("{} triage", shell_quote(&backend)))
+}
+
+/// Single-quote a path for a POSIX shell when it needs it.
+fn shell_quote(path: &str) -> String {
+    if path
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-~".contains(c))
+    {
+        path.to_string()
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
 }
 
 /// Put `prompt` (text with the playbook link) in front of what the
@@ -407,8 +443,14 @@ mod tests {
 
     #[test]
     fn a_failure_points_at_the_terminal() {
-        let text = failure_text("cannot reach the IronClaw gateway", false);
+        let text = failure_text("cannot reach the IronClaw gateway", false, None);
         assert!(text.contains("zlo triage"));
-        assert!(failure_text("", true).contains("too old"));
+        assert!(failure_text("", true, None).contains("too old"));
+        let text = failure_text(
+            "x",
+            false,
+            Some("~/Applications/ZLO.app/Contents/MacOS/zlo-backend triage".into()),
+        );
+        assert!(text.contains("zlo-backend triage"), "{text}");
     }
 }

@@ -72,4 +72,12 @@ mod tests {
 
         assert!(error.to_string().contains("unexpected argument 'status'"));
     }
+
+    #[test]
+    fn upgrade_is_update() {
+        for args in [&["zlo", "upgrade"][..], &["zlo", "upgrade", "--check"]] {
+            let cli = Cli::try_parse_from(args).expect("`zlo upgrade` should parse");
+            assert!(matches!(cli.command, Some(Command::Update(_))), "{args:?}");
+        }
+    }
 }

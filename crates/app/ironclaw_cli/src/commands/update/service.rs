@@ -95,7 +95,7 @@ impl SourceSelfUpdate {
         build: BuildInfo,
         build_checkout: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
-        let exe = std::env::current_exe()?;
+        let exe = super::running_binary()?;
         Ok(Self {
             settings: Settings::File(config_path),
             build_checkout,

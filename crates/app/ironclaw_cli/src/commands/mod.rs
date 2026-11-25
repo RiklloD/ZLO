@@ -86,6 +86,8 @@ pub(crate) enum Command {
     /// Antigravity, and help file a good issue.
     Triage(triage::TriageCommand),
     /// Update this installation from its source checkout (`[update]`).
+    /// `zlo upgrade` is the same command.
+    #[command(visible_alias = "upgrade")]
     Update(update::UpdateCommand),
 }
 
