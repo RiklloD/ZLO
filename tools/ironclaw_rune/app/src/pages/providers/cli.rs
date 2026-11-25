@@ -161,6 +161,7 @@ fn not_found(s: &State, k: &Kit, known: &'static KnownCli) -> (El, Option<El>, O
                 Some(lines.transition(motion::reveal())),
             )
         }
+        Some((Phase::Stopping, _)) => (breathing("Stopping…").key("stopping"), None, None),
         Some((Phase::Finding, _)) => (breathing("Finding it…").key("finding"), None, None),
         Some((Phase::Failed(why), _)) => {
             let buttons = row()
@@ -232,15 +233,18 @@ fn not_found(s: &State, k: &Kit, known: &'static KnownCli) -> (El, Option<El>, O
                 .pt(6.);
                 return (status, None, Some(hint));
             }
-            let install = pressable(
-                small("Install", Look::Outline)
-                    .on_press(move |s: &mut State| crate::cli_install::start(s, runtime))
-                    .build(k),
-            )
-            .key(format!("cli-install-{runtime}"));
-            (status, Some(install), None)
+            (status, Some(install_button(k, runtime)), None)
         }
     }
+}
+
+fn install_button(k: &Kit, runtime: &'static str) -> El {
+    pressable(
+        button_sized("Install", Look::Outline, Size::XSmall)
+            .on_press(move |s: &mut State| crate::cli_install::start(s, runtime))
+            .build(k),
+    )
+    .key(format!("cli-install-{runtime}"))
 }
 
 /// A CLI row's copy button: the copy glyph turns into a check for
@@ -314,6 +318,19 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                 outlined_tag(p, Tone::Warning, "Not signed in")
             };
             let commands = super::catalog::next_steps(known, r);
+            // Found only through Antigravity's legacy runtime: the CLI
+            // installs from this row, as from a row not found.
+            let legacy = known.legacy_runtime
+                && r.launch == Some(zlo_client::orchestration::CatalogLaunch::Legacy);
+            let (status, action, below) = if legacy && s.cli_installs.get(known.runtime).is_some() {
+                not_found(s, k, known)
+            } else {
+                let action = (legacy
+                    && r.needs_native_cli()
+                    && crate::cli_install::can_install_here(s, known))
+                .then(|| install_button(k, known.runtime));
+                (status, action, None)
+            };
             rows.push(cli_row(
                 s,
                 k,
@@ -327,8 +344,8 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                     remove: ps.picker.is_some().then(|| (r.provider.clone(), hidden)),
                     models: (!hidden && r.authenticated && !r.models.is_empty())
                         .then(|| super::view::render_picker_models(s, k, r)),
-                    action: None,
-                    below: None,
+                    action,
+                    below,
                 },
             ));
         }

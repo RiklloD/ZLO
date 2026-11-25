@@ -3,11 +3,14 @@
 //!
 //! The installer (the catalog's fixed `install` command, never anything
 //! typed) runs in this Mac's login shell with no terminal attached, its last
-//! lines shown under the row. Once it exits cleanly the backend is asked to
-//! look again for CLIs (`POST /providers/rescan`), so the agent turns up
-//! without cutting any running thread. Only when that does not find it (an
-//! older backend, a runtime already registered under the agent's id) is
-//! this Mac's backend restarted, as setup did before.
+//! lines shown under the row. Its worker thread owns it to the end: a stop
+//! (Cancel, the deadline, a computer switch) is a request the worker turns
+//! into SIGTERM and then SIGKILL for the installer's process group, and the
+//! row stays busy until the process is gone. Once it exits cleanly the
+//! backend is asked to look again for CLIs (`POST /providers/rescan`), so
+//! the agent turns up without cutting any running thread. Only when the
+//! backend answers without it (or has no rescan) is this Mac's backend
+//! restarted, once, as setup did before.
 //!
 //! An agent of another computer is installed there: the row shows the
 //! command to run on it, and [`watch`] notices it once that backend finds
@@ -16,9 +19,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use zlo_client::ClientError;
 use zlo_client::orchestration::{CatalogLaunch, ProviderCatalog, RouteProvider};
 
 use crate::jobs;
@@ -26,13 +32,30 @@ use crate::pages::providers::catalog::{KNOWN_CLIS, KnownCli, known_cli};
 use crate::state::State;
 
 /// How long an installer may run before it is stopped.
+#[cfg(not(test))]
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+#[cfg(test)]
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a stopped installer gets after SIGTERM before SIGKILL.
+#[cfg(not(test))]
+const KILL_GRACE: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const KILL_GRACE: Duration = Duration::from_millis(300);
+/// How long output may keep coming after the installer exited (a
+/// descendant holding its pipes) before the worker stops reading.
+const PIPE_GRACE: Duration = Duration::from_secs(1);
 /// Lines of installer output kept for the row.
 const TAIL_LINES: usize = 3;
 /// Longest output line shown, in characters.
 const LINE_CHARS: usize = 160;
 /// How often the row's output may redraw while the installer prints.
 const TAIL_EVERY: Duration = Duration::from_millis(250);
+/// Rescans after a clean install before it gives up on the backend.
+const RESCAN_TRIES: u32 = 3;
+#[cfg(not(test))]
+const RESCAN_RETRY: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const RESCAN_RETRY: Duration = Duration::from_millis(20);
 /// How long a restarted backend gets to come back and list the agent.
 const RESTART_WAIT: Duration = Duration::from_secs(45);
 const RESTART_POLL: Duration = Duration::from_secs(1);
@@ -46,18 +69,27 @@ const WATCH_EVERY: Duration = Duration::from_millis(20);
 pub enum Phase {
     /// The installer is running.
     Running,
+    /// A stop was asked; the installer is not gone yet.
+    Stopping,
     /// It exited cleanly; the backend is looking for the agent.
     Finding,
     /// It stopped, or the agent was not found after it.
     Failed(String),
 }
 
+impl Phase {
+    /// The attempt still owns its row: no second installer may start.
+    fn busy(&self) -> bool {
+        matches!(self, Phase::Running | Phase::Stopping | Phase::Finding)
+    }
+}
+
 pub struct Install {
     pub phase: Phase,
     /// The installer's last lines, oldest first.
     pub tail: VecDeque<String>,
-    /// The installer's process group, while it runs.
-    pgid: Option<u32>,
+    /// Set to ask the worker to stop the installer.
+    stop: Arc<AtomicBool>,
     generation: u64,
 }
 
@@ -65,9 +97,12 @@ pub struct Install {
 pub struct Installs {
     by_runtime: HashMap<&'static str, Install>,
     next_generation: u64,
-    /// The watch's generation: bumped to stop a running one.
+    /// The watch's generation: a newer [`watch`] or a closed list ends the
+    /// older chain.
     watch_generation: u64,
-    watching: bool,
+    /// A restart this module asked for is still coming back: another
+    /// install waits for it instead of restarting again.
+    restart_until: Option<Instant>,
 }
 
 impl Installs {
@@ -124,20 +159,18 @@ pub fn start(s: &mut State, runtime: &'static str) {
 /// Run `command` as `runtime`'s installer.
 fn begin(s: &mut State, runtime: &'static str, command: &'static str) {
     let installs = &mut s.cli_installs;
-    if installs
-        .get(runtime)
-        .is_some_and(|i| matches!(i.phase, Phase::Running | Phase::Finding))
-    {
+    if installs.get(runtime).is_some_and(|i| i.phase.busy()) {
         return;
     }
     installs.next_generation += 1;
     let generation = installs.next_generation;
+    let stop = Arc::new(AtomicBool::new(false));
     installs.by_runtime.insert(
         runtime,
         Install {
             phase: Phase::Running,
             tail: VecDeque::new(),
-            pgid: None,
+            stop: Arc::clone(&stop),
             generation,
         },
     );
@@ -146,30 +179,12 @@ fn begin(s: &mut State, runtime: &'static str, command: &'static str) {
     }
     let ui = jobs::ui_queue(s);
     std::thread::spawn(move || {
-        let exit = run_installer(command, generation, runtime, &ui);
+        let exit = run_installer(command, &stop, generation, runtime, &ui);
         ui.deliver(move |s, tx| {
             tx.animated();
             finished(s, runtime, generation, exit);
             true
         });
-    });
-    // Stop an installer that hangs (a prompt with no terminal to answer).
-    jobs::after_if(s, INSTALL_TIMEOUT, move |s, tx| {
-        let Some(install) = s.cli_installs.current_mut(runtime, generation) else {
-            return false;
-        };
-        if install.phase != Phase::Running {
-            return false;
-        }
-        if let Some(pgid) = install.pgid.take() {
-            kill_group(pgid);
-        }
-        install.phase = Phase::Failed(
-            "The installer ran for 10 minutes without finishing, so it was stopped. Run it in Terminal instead."
-                .into(),
-        );
-        tx.animated();
-        true
     });
 }
 
@@ -182,18 +197,26 @@ pub fn fixture(s: &mut State, runtime: &'static str, phase: Phase, tail: &[&str]
         Install {
             phase,
             tail: tail.iter().map(|l| l.to_string()).collect(),
-            pgid: None,
+            stop: Arc::new(AtomicBool::new(false)),
             generation,
         },
     );
 }
 
-/// Stop `runtime`'s installer and put the row back.
+/// Stop `runtime`'s installer; its row comes back once the process is gone.
 pub fn cancel(s: &mut State, runtime: &str) {
-    if let Some(install) = s.cli_installs.by_runtime.remove(runtime)
-        && let Some(pgid) = install.pgid
-    {
-        kill_group(pgid);
+    let Some(install) = s.cli_installs.by_runtime.get_mut(runtime) else {
+        return;
+    };
+    match install.phase {
+        Phase::Running => {
+            install.stop.store(true, Ordering::SeqCst);
+            install.phase = Phase::Stopping;
+        }
+        Phase::Stopping => {}
+        Phase::Finding | Phase::Failed(_) => {
+            s.cli_installs.by_runtime.remove(runtime);
+        }
     }
 }
 
@@ -207,10 +230,31 @@ pub fn dismiss(s: &mut State, runtime: &str) {
     }
 }
 
+/// The app moved to another computer: what was being installed here is
+/// stopped (its rescan would land on the other backend), and what was
+/// being looked for is forgotten.
+pub fn computer_switched(s: &mut State) {
+    let installs = &mut s.cli_installs;
+    installs.restart_until = None;
+    installs
+        .by_runtime
+        .retain(|_, install| match install.phase {
+            Phase::Running | Phase::Stopping => {
+                install.stop.store(true, Ordering::SeqCst);
+                install.phase = Phase::Stopping;
+                true
+            }
+            Phase::Finding | Phase::Failed(_) => false,
+        });
+}
+
 /// How an installer ended.
 enum Exit {
     Success,
     Failed(String),
+    /// Stopped on request.
+    Stopped,
+    TimedOut,
 }
 
 /// The shell line run: fail when any stage of the `curl … | bash` pipe
@@ -221,17 +265,19 @@ fn shell_line(command: &str) -> String {
 
 fn run_installer(
     command: &'static str,
+    stop: &AtomicBool,
     generation: u64,
     runtime: &'static str,
     ui: &jobs::UiQueue,
 ) -> Exit {
     use std::os::unix::process::CommandExt as _;
+    let started = Instant::now();
     let spawned = Command::new("/bin/zsh")
         .args(["-lc", &shell_line(command)])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // Its own process group: Cancel stops the whole pipe.
+        // Its own process group: a stop ends the whole pipe.
         .process_group(0)
         .spawn();
     let mut child = match spawned {
@@ -239,14 +285,8 @@ fn run_installer(
         Err(e) => return Exit::Failed(format!("Could not start the installer: {e}")),
     };
     let pgid = child.id();
-    ui.deliver(move |s, _| {
-        if let Some(install) = s.cli_installs.current_mut(runtime, generation) {
-            install.pgid = Some(pgid);
-        }
-        false
-    });
     let (lines_tx, lines_rx) = mpsc::channel::<String>();
-    let readers: Vec<_> = [
+    for stream in [
         child
             .stdout
             .take()
@@ -258,35 +298,73 @@ fn run_installer(
     ]
     .into_iter()
     .flatten()
-    .map(|stream| {
+    {
         let tx = lines_tx.clone();
+        // Detached: a descendant may hold the pipe after the installer is
+        // gone; the reader ends with the pipe.
         std::thread::spawn(move || {
             for chunk in BufReader::new(stream).split(b'\n').map_while(Result::ok) {
                 if let Some(line) = clean_line(&String::from_utf8_lossy(&chunk)) {
-                    // silent-ok: the receiver is gone only once the installer has ended.
+                    // silent-ok: the receiver is gone only once the worker has finished.
                     if tx.send(line).is_err() {
                         break;
                     }
                 }
             }
-        })
-    })
-    .collect();
+        });
+    }
     drop(lines_tx);
     let mut tail: VecDeque<String> = VecDeque::new();
     let mut last_shown = Instant::now() - TAIL_EVERY;
     let mut dirty = false;
+    let mut pipes_open = true;
+    let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
+    // Why the worker is stopping it, and when SIGTERM went.
+    let mut stopping: Option<(Exit, Instant)> = None;
+    let mut killed = false;
     loop {
-        match lines_rx.recv_timeout(TAIL_EVERY) {
-            Ok(line) => {
-                if tail.len() == TAIL_LINES {
-                    tail.pop_front();
+        if pipes_open {
+            match lines_rx.recv_timeout(TAIL_EVERY) {
+                Ok(line) => {
+                    if tail.len() == TAIL_LINES {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line);
+                    dirty = true;
                 }
-                tail.push_back(line);
-                dirty = true;
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => pipes_open = false,
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        } else {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if exited.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => exited = Some((status, Instant::now())),
+                Ok(None) => {}
+                Err(e) => tracing::debug!(error = %e, "installer wait failed; trying again"),
+            }
+        }
+        if stopping.is_none() {
+            let why = if stop.load(Ordering::SeqCst) {
+                Some(Exit::Stopped)
+            } else if started.elapsed() > INSTALL_TIMEOUT {
+                Some(Exit::TimedOut)
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                signal_group(pgid, "-TERM");
+                stopping = Some((why, Instant::now()));
+            }
+        }
+        if let Some((_, at)) = &stopping
+            && !killed
+            && at.elapsed() > KILL_GRACE
+        {
+            // Ignored SIGTERM, or still going: the whole group goes.
+            signal_group(pgid, "-KILL");
+            killed = true;
         }
         if dirty && last_shown.elapsed() >= TAIL_EVERY {
             dirty = false;
@@ -303,15 +381,31 @@ fn run_installer(
                 true
             });
         }
+        let Some((status, at)) = exited else {
+            continue;
+        };
+        // A stop also waits for the rest of the group (the pipe's other
+        // stages) to be gone, which the closed pipes show.
+        if !pipes_open || (stopping.is_none() && at.elapsed() > PIPE_GRACE) {
+            if let Some((why, _)) = stopping {
+                if !killed {
+                    // Whatever of the group closed its pipes but lives on.
+                    signal_group(pgid, "-KILL");
+                }
+                return why;
+            }
+            return outcome(status, &tail);
+        }
+        if stopping.is_some() && killed && at.elapsed() > PIPE_GRACE {
+            // Killed, and a descendant outside the group holds the pipes.
+            if let Some((why, _)) = stopping {
+                return why;
+            }
+        }
     }
-    for reader in readers {
-        // silent-ok: a reader only ends with its stream.
-        let _ = reader.join();
-    }
-    let status = match child.wait() {
-        Ok(status) => status,
-        Err(e) => return Exit::Failed(format!("Lost the installer: {e}")),
-    };
+}
+
+fn outcome(status: std::process::ExitStatus, tail: &VecDeque<String>) -> Exit {
     if status.success() {
         return Exit::Success;
     }
@@ -364,10 +458,10 @@ fn clean_line(raw: &str) -> Option<String> {
     })
 }
 
-fn kill_group(pgid: u32) {
+fn signal_group(pgid: u32, signal: &str) {
     // silent-ok: the group may have exited already.
     let _ = Command::new("/bin/kill")
-        .args(["-TERM", &format!("-{pgid}")])
+        .args([signal, "--", &format!("-{pgid}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
@@ -377,64 +471,116 @@ fn finished(s: &mut State, runtime: &'static str, generation: u64, exit: Exit) {
     let Some(install) = s.cli_installs.current_mut(runtime, generation) else {
         return;
     };
-    if install.phase != Phase::Running {
-        return;
-    }
-    install.pgid = None;
-    match exit {
-        Exit::Failed(why) => install.phase = Phase::Failed(why),
-        Exit::Success => {
-            install.phase = Phase::Finding;
-            find(s, runtime, generation);
+    match (&install.phase, exit) {
+        // A stop asked for: the process is gone, the row comes back.
+        (Phase::Stopping, _) | (Phase::Running, Exit::Stopped) => {
+            s.cli_installs.by_runtime.remove(runtime);
         }
+        (Phase::Running, Exit::Success) => {
+            install.phase = Phase::Finding;
+            find(s, runtime, generation, 1);
+        }
+        (Phase::Running, Exit::Failed(why)) => install.phase = Phase::Failed(why),
+        (Phase::Running, Exit::TimedOut) => {
+            install.phase = Phase::Failed(
+                "The installer ran for 10 minutes without finishing, so it was stopped. Run it in Terminal instead."
+                    .into(),
+            )
+        }
+        (Phase::Finding | Phase::Failed(_), _) => {}
     }
 }
 
-/// The installer is done: ask the backend to look again.
-fn find(s: &mut State, runtime: &'static str, generation: u64) {
-    jobs::run(
+/// The installer is done: ask the backend to look again. A backend that
+/// answers without the agent, or has no rescan, gets a restart; one that
+/// does not answer is asked again, and never restarted for it.
+fn find(s: &mut State, runtime: &'static str, generation: u64, attempt: u32) {
+    jobs::run_rerouted(
         s,
         "cli-install",
         |c| async move { c.rescan_providers().await },
-        move |s, result, tx| {
+        move |s, reply, tx| {
             if s.cli_installs.current(runtime, generation).is_none() {
-                return;
+                return false;
             }
+            let result = match reply {
+                jobs::Reply::Fresh(result) => result,
+                // The same backend over a new connection: ask it again.
+                jobs::Reply::Rerouted => {
+                    find(s, runtime, generation, attempt);
+                    return false;
+                }
+            };
             tx.animated();
-            let found = match result {
+            match result {
                 Ok(catalog) => {
                     let found = known(runtime).is_some_and(|k| listed(&catalog.providers, k));
                     landed(s, catalog);
-                    found
+                    if found {
+                        installed(s, runtime);
+                    } else {
+                        restart_to_find(s, runtime, generation);
+                    }
                 }
-                Err(e) => {
-                    tracing::debug!(error = %e, "rescan failed; restarting the backend instead");
-                    false
+                Err(e) if e.is_not_found() => {
+                    tracing::debug!("backend has no rescan; restarting it instead");
+                    restart_to_find(s, runtime, generation);
                 }
-            };
-            if found {
-                installed(s, runtime);
-            } else {
-                restart_to_find(s, runtime, generation);
+                Err(e) if attempt < RESCAN_TRIES => {
+                    tracing::debug!(error = %e, attempt, "rescan failed; asking again");
+                    jobs::after(s, RESCAN_RETRY, move |s, _| {
+                        if s.cli_installs.current(runtime, generation).is_some() {
+                            find(s, runtime, generation, attempt + 1);
+                        }
+                    });
+                }
+                Err(e) => fail(s, runtime, generation, unanswered(runtime, &e)),
             }
+            true
         },
     );
 }
 
-/// The rescan did not turn the agent up: restart this Mac's backend, which
-/// looks for every CLI as it starts.
+fn unanswered(runtime: &str, e: &ClientError) -> String {
+    let name = known(runtime).map_or(runtime, |k| k.name);
+    format!(
+        "{name} is installed, but IronClaw did not answer ({e}). It shows up here once IronClaw finds it."
+    )
+}
+
+/// The backend answered without the agent: restart this Mac's backend,
+/// which looks for every CLI as it starts. One restart serves every
+/// install waiting on it.
 fn restart_to_find(s: &mut State, runtime: &'static str, generation: u64) {
     let name = known(runtime).map_or(runtime, |k| k.name);
-    if !crate::service::restart() {
+    if crate::remote::backend_is_remote(s) {
         fail(
             s,
             runtime,
             generation,
-            format!("{name} is installed. Restart IronClaw so it finds it."),
+            format!("{name} is installed. Restart IronClaw on that computer so it finds it."),
         );
         return;
     }
-    poll_restarted(s, runtime, generation, Instant::now() + RESTART_WAIT);
+    let now = Instant::now();
+    let deadline = match s.cli_installs.restart_until {
+        Some(until) if until > now => until,
+        _ => {
+            if !crate::service::restart() {
+                fail(
+                    s,
+                    runtime,
+                    generation,
+                    format!("{name} is installed. Restart IronClaw so it finds it."),
+                );
+                return;
+            }
+            let until = now + RESTART_WAIT;
+            s.cli_installs.restart_until = Some(until);
+            until
+        }
+    };
+    poll_restarted(s, runtime, generation, deadline);
 }
 
 fn poll_restarted(s: &mut State, runtime: &'static str, generation: u64, deadline: Instant) {
@@ -442,42 +588,47 @@ fn poll_restarted(s: &mut State, runtime: &'static str, generation: u64, deadlin
         if s.cli_installs.current(runtime, generation).is_none() {
             return;
         }
-        jobs::run(
+        jobs::run_rerouted(
             s,
             "cli-install",
             |c| async move { c.providers().await },
-            move |s, result, tx| {
+            move |s, reply, tx| {
                 if s.cli_installs.current(runtime, generation).is_none() {
-                    return;
+                    return false;
                 }
-                let found = match &result {
-                    Ok(catalog) => known(runtime).is_some_and(|k| listed(&catalog.providers, k)),
-                    // The backend is still coming back.
-                    Err(_) => false,
+                let found = match reply {
+                    jobs::Reply::Fresh(Ok(catalog)) => {
+                        let found = known(runtime).is_some_and(|k| listed(&catalog.providers, k));
+                        landed(s, catalog);
+                        found
+                    }
+                    // The backend is still coming back, or reconnecting.
+                    jobs::Reply::Fresh(Err(_)) | jobs::Reply::Rerouted => false,
                 };
-                if let Ok(catalog) = result {
-                    landed(s, catalog);
-                }
                 if found {
                     tx.animated();
                     installed(s, runtime);
-                } else if Instant::now() < deadline {
-                    poll_restarted(s, runtime, generation, deadline);
-                } else {
-                    tx.animated();
-                    let k = known(runtime);
-                    fail(
-                        s,
-                        runtime,
-                        generation,
-                        format!(
-                            "{} installed, but IronClaw cannot find `{}`. Open a new terminal, check `{} --version` runs, then restart IronClaw.",
-                            k.map_or(runtime, |k| k.name),
-                            k.map_or(runtime, |k| k.binary),
-                            k.map_or(runtime, |k| k.binary),
-                        ),
-                    );
+                    return true;
                 }
+                if Instant::now() < deadline {
+                    poll_restarted(s, runtime, generation, deadline);
+                    return false;
+                }
+                tx.animated();
+                let k = known(runtime);
+                let (name, binary) = (
+                    k.map_or(runtime, |k| k.name),
+                    k.map_or(runtime, |k| k.binary),
+                );
+                fail(
+                    s,
+                    runtime,
+                    generation,
+                    format!(
+                        "{name} installed, but IronClaw cannot find `{binary}`. Open a new terminal, check `{binary} --version` runs, then restart IronClaw."
+                    ),
+                );
+                true
             },
         );
     });
@@ -510,74 +661,63 @@ fn landed(s: &mut State, catalog: ProviderCatalog) {
 /// While a CLI list is open with an agent not found, ask the backend every
 /// [`WATCH_EVERY`] to look again, so an install made anywhere (another
 /// computer, the person's own terminal) turns up on its own. `open` says
-/// whether a list is still on screen; the watch stops once it is not.
+/// whether a list is still on screen. Each call starts a fresh watch (the
+/// older one ends), so opening the page again always re-arms it; the watch
+/// ends once the list closes, every agent is found, or the backend has no
+/// rescan.
 pub fn watch(s: &mut State, open: fn(&State) -> bool) {
-    let installs = &mut s.cli_installs;
-    if installs.watching || s.fixture {
+    if s.fixture {
         return;
     }
-    installs.watching = true;
-    installs.watch_generation += 1;
-    let generation = installs.watch_generation;
+    s.cli_installs.watch_generation += 1;
+    let generation = s.cli_installs.watch_generation;
     tick(s, generation, open);
 }
 
 fn tick(s: &mut State, generation: u64, open: fn(&State) -> bool) {
     jobs::after_if(s, WATCH_EVERY, move |s, _| {
-        if s.cli_installs.watch_generation != generation {
+        if s.cli_installs.watch_generation != generation || !open(s) {
             return false;
         }
-        let missing = |s: &State| {
-            s.pages.providers.runtimes.as_ref().is_some_and(|c| {
-                KNOWN_CLIS
-                    .iter()
-                    .any(|k| !k.planned && k.install.is_some() && !listed(c, k))
-            })
+        // Still loading the catalog: look again on the next tick.
+        let Some(catalog) = s.pages.providers.runtimes.as_deref() else {
+            tick(s, generation, open);
+            return false;
         };
-        // An install from the app looks for its agent itself.
-        let busy = s
-            .cli_installs
-            .by_runtime
-            .values()
-            .any(|i| matches!(i.phase, Phase::Running | Phase::Finding));
-        if !open(s) || !missing(s) {
-            s.cli_installs.watching = false;
+        let missing = KNOWN_CLIS
+            .iter()
+            .any(|k| !k.planned && k.install.is_some() && !listed(catalog, k));
+        if !missing {
             return false;
         }
-        if busy {
+        // An install from the app looks for its agent itself.
+        if s.cli_installs.by_runtime.values().any(|i| i.phase.busy()) {
             tick(s, generation, open);
             return false;
         }
-        let before: Vec<&'static str> = s
-            .pages
-            .providers
-            .runtimes
-            .as_deref()
-            .map(|c| {
-                KNOWN_CLIS
-                    .iter()
-                    .filter(|k| listed(c, k))
-                    .map(|k| k.runtime)
-                    .collect()
-            })
-            .unwrap_or_default();
-        jobs::run(
+        let before: Vec<&'static str> = KNOWN_CLIS
+            .iter()
+            .filter(|k| listed(catalog, k))
+            .map(|k| k.runtime)
+            .collect();
+        jobs::run_rerouted(
             s,
             "cli-install",
             |c| async move { c.rescan_providers().await },
-            move |s, result, tx| {
+            move |s, reply, tx| {
                 if s.cli_installs.watch_generation != generation {
-                    return;
+                    return false;
                 }
-                match result {
-                    Ok(catalog) => {
+                match reply {
+                    jobs::Reply::Fresh(Ok(catalog)) => {
                         let new: Vec<&'static KnownCli> = KNOWN_CLIS
                             .iter()
                             .filter(|k| {
                                 listed(&catalog.providers, k) && !before.contains(&k.runtime)
                             })
                             .collect();
-                        if !new.is_empty() {
+                        let changed = !new.is_empty();
+                        if changed {
                             tx.animated();
                             landed(s, catalog);
                             for k in new {
@@ -585,11 +725,17 @@ fn tick(s: &mut State, generation: u64, open: fn(&State) -> bool) {
                             }
                         }
                         tick(s, generation, open);
+                        changed
                     }
                     // An older backend without the rescan: nothing to watch with.
-                    Err(e) => {
-                        tracing::debug!(error = %e, "providers rescan unavailable; CLI watch stops");
-                        s.cli_installs.watching = false;
+                    jobs::Reply::Fresh(Err(e)) if e.is_not_found() => {
+                        tracing::debug!("backend has no providers rescan; CLI watch stops");
+                        false
+                    }
+                    // A failed look or a new connection: the next tick asks again.
+                    jobs::Reply::Fresh(Err(_)) | jobs::Reply::Rerouted => {
+                        tick(s, generation, open);
+                        false
                     }
                 }
             },
@@ -696,35 +842,127 @@ mod tests {
         assert!(s.cli_installs.get("codex").is_none());
     }
 
-    /// Cancel stops the whole installer and puts the row back; its late
-    /// exit changes nothing.
+    /// The installer's process group, written by the installer itself.
+    fn pid_file() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pgid");
+        (dir, path)
+    }
+
+    fn group_alive(pgid: &str) -> bool {
+        Command::new("/bin/kill")
+            .args(["-0", "--", &format!("-{pgid}")])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|st| st.success())
+    }
+
+    fn leak(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+
+    /// Review 1: Cancel pressed before the installer even started, against
+    /// an installer that ignores SIGTERM: the row stays busy (no second
+    /// installer) until the whole group is gone, then comes back.
     #[test]
-    fn cancel_stops_the_installer() {
+    fn cancel_ends_even_an_installer_that_ignores_sigterm() {
         let (mut s, mut pump, gateway) = live(vec![]);
-        begin(&mut s, "codex", "echo started; sleep 30 | cat");
+        let (_dir, file) = pid_file();
+        let command = leak(format!(
+            "trap '' TERM; echo $$ > {}; echo started; sleep 30 | cat",
+            file.display()
+        ));
+        begin(&mut s, "codex", command);
+        cancel(&mut s, "codex");
+        assert_eq!(s.cli_installs.get("codex").unwrap().phase, Phase::Stopping);
+        // A second press while it stops starts nothing.
+        let generation = s.cli_installs.get("codex").unwrap().generation;
+        begin(&mut s, "codex", "echo second");
+        assert_eq!(s.cli_installs.get("codex").unwrap().generation, generation);
+        assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
+        if let Ok(pgid) = std::fs::read_to_string(&file) {
+            assert!(!group_alive(pgid.trim()), "the installer's group is gone");
+        }
+        assert_eq!(gateway.requests_to(RESCAN), 0);
+    }
+
+    /// The same, once it runs: SIGTERM is ignored, SIGKILL follows.
+    #[test]
+    fn cancel_while_running_kills_the_group() {
+        let (mut s, mut pump, _gateway) = live(vec![]);
+        let (_dir, file) = pid_file();
+        let command = leak(format!(
+            "trap '' TERM; echo $$ > {}; echo started; sleep 30 | cat",
+            file.display()
+        ));
+        begin(&mut s, "codex", command);
         assert!(pump.until(&mut s, WAIT, |s| {
             s.cli_installs
                 .get("codex")
-                .is_some_and(|i| i.pgid.is_some())
+                .is_some_and(|i| !i.tail.is_empty())
         }));
-        let pgid = s.cli_installs.get("codex").unwrap().pgid.unwrap();
+        let pgid = std::fs::read_to_string(&file).unwrap();
         cancel(&mut s, "codex");
-        assert!(s.cli_installs.get("codex").is_none());
-        let alive = || {
-            Command::new("/bin/kill")
-                .args(["-0", &format!("-{pgid}")])
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|st| st.success())
-        };
-        let deadline = Instant::now() + WAIT;
-        while alive() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(!alive(), "the installer's group is gone");
-        pump.run_for(&mut s, Duration::from_millis(200));
-        assert!(s.cli_installs.get("codex").is_none());
+        assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
+        assert!(!group_alive(pgid.trim()));
+    }
+
+    /// An installer that never ends is stopped at the deadline, and says so.
+    #[test]
+    fn a_hung_installer_times_out() {
+        let (mut s, mut pump, _gateway) = live(vec![]);
+        begin(&mut s, "codex", "trap '' TERM; sleep 30 | cat");
+        assert!(pump.until(&mut s, WAIT, |s| {
+            s.cli_installs.get("codex").is_some_and(
+                |i| matches!(&i.phase, Phase::Failed(w) if w.contains("without finishing")),
+            )
+        }));
+    }
+
+    /// Review 2: switching computers stops the installer, and nothing of
+    /// it reaches the other computer's backend.
+    #[test]
+    fn a_computer_switch_stops_the_install() {
+        let (mut s, mut pump, gateway) = live(vec![]);
+        begin(&mut s, "codex", "echo started; sleep 30");
+        computer_switched(&mut s);
+        assert_eq!(s.cli_installs.get("codex").unwrap().phase, Phase::Stopping);
+        assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
         assert_eq!(gateway.requests_to(RESCAN), 0);
+    }
+
+    /// Review 3: a rescan that fails once is asked again; nothing restarts.
+    #[test]
+    fn a_transient_rescan_error_is_retried() {
+        let (mut s, mut pump, gateway) =
+            live(vec![Answer::fail(), Answer::ok(catalog(&["codex"]))]);
+        begin(&mut s, "codex", "echo done");
+        assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.get("codex").is_none()));
+        assert_eq!(gateway.requests_to(RESCAN), 2);
+        assert!(s.cli_installs.restart_until.is_none(), "no restart");
+        assert!(s.pages.providers.notice.is_some());
+    }
+
+    /// Review 4: a catalog still loading when the watch starts, and a
+    /// failed look, do not end the watch.
+    #[test]
+    fn the_watch_outlives_a_slow_catalog_and_a_failed_look() {
+        let (mut s, mut pump, gateway) =
+            live(vec![Answer::fail(), Answer::ok(catalog(&["codex"]))]);
+        s.pages.providers.runtimes = None;
+        watch(&mut s, |_| true);
+        pump.run_for(&mut s, WATCH_EVERY * 5);
+        assert_eq!(
+            gateway.requests_to(RESCAN),
+            0,
+            "nothing asked while loading"
+        );
+        s.pages.providers.runtimes = Some(vec![]);
+        assert!(pump.until(&mut s, WAIT, |s| s.pages.providers.notice.is_some()));
+        assert_eq!(
+            s.pages.providers.notice.as_deref(),
+            Some("Codex CLI is installed. Sign in to use it.")
+        );
     }
 
     /// An open CLI list notices an agent installed outside the app.

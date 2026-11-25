@@ -866,6 +866,13 @@ fn install_shown(s: &State, k: &Kit, driver: Driver) -> Option<(String, El)> {
                         .press_scale(motion::PRESS),
                 ),
         ),
+        Phase::Stopping => (
+            "Stopping the installer…".into(),
+            row()
+                .key("stopping")
+                .transition(motion::fade())
+                .child(breathing("Stopping…")),
+        ),
         Phase::Finding => (
             "Installed. Finding it…".into(),
             row()
