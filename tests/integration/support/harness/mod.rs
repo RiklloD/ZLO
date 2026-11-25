@@ -772,6 +772,9 @@ impl HostRuntimeCapabilityHarness {
         user_id: UserId,
         options: HostRuntimeHarnessOptions,
     ) -> HarnessResult<Self> {
+        // Trace Commons tools and capture resolve local state from the
+        // process base; never let a run see or write the developer's real one.
+        ironclaw_trace_commons::location::bind_isolated_base_dir_for_tests()?;
         let HostRuntimeHarnessOptions {
             mounts,
             runtime_policy,

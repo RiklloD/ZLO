@@ -123,6 +123,8 @@ impl TraceCaptureTurnEventSink {
         history: Arc<dyn TraceCaptureHistorySource>,
         observed_scopes: ObservedTraceScopes,
     ) -> Self {
+        ironclaw_trace_commons::location::bind_isolated_base_dir_for_tests()
+            .expect("bind isolated Trace Commons base dir"); // safety: cfg(test)-only constructor
         Self {
             history,
             observed_scopes,
@@ -437,7 +439,15 @@ mod tests {
     }
 
     fn unique_scope(label: &str) -> String {
+        isolate_trace_base();
         format!("reborn-trace-capture-{label}-{}", Uuid::new_v4())
+    }
+
+    /// Capture resolves enrollment from the process base; keep it off the
+    /// developer's real (possibly enrolled) base.
+    fn isolate_trace_base() {
+        ironclaw_trace_commons::location::bind_isolated_base_dir_for_tests()
+            .expect("bind isolated Trace Commons base dir");
     }
 
     fn queue_dir(scope: &str) -> std::path::PathBuf {

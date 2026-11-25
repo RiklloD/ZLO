@@ -1373,6 +1373,10 @@ mod tests {
     /// Build a minimal `FirstPartyCapabilityRequest` for unit tests.
     /// Uses the system scope so no validated user/tenant id is needed.
     fn test_request(input: Value) -> FirstPartyCapabilityRequest {
+        // Dispatch resolves enrollment from the process base; keep it off
+        // the developer's real (possibly enrolled) base.
+        ironclaw_trace_commons::location::bind_isolated_base_dir_for_tests()
+            .expect("bind isolated Trace Commons base dir");
         FirstPartyCapabilityRequest {
             origin: None,
             run_id: None,
@@ -1862,6 +1866,27 @@ mod tests {
             message.contains("Onboard with the operator invite link first"),
             "agent-visible guidance should direct the user to onboard first"
         );
+    }
+
+    /// Regression: a developer enrolled in Trace Commons (enabled instance
+    /// policy under the real default base) must not flip dispatch tests to
+    /// "enrolled". Runs the not-enrolled path in a child process whose HOME
+    /// carries exactly that enrollment.
+    #[tokio::test]
+    async fn dispatch_ignores_enrolled_real_home() {
+        if !ironclaw_trace_commons::location::leak_probe::is_child() {
+            ironclaw_trace_commons::location::leak_probe::run_child_with_enrolled_fake_home(
+                "first_party_tools::trace_commons::tests::dispatch_ignores_enrolled_real_home",
+            )
+            .unwrap_or_else(|failure| panic!("{failure}"));
+            return;
+        }
+        let request = test_request(json!({
+            "display_handle": "pilot_zaki",
+            "confirmed": true
+        }));
+        let result = dispatch_profile_set(&request).await.unwrap();
+        assert_eq!(result["error_code"], json!("NotEnrolled"));
     }
 
     #[tokio::test]

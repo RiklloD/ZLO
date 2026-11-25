@@ -10,6 +10,13 @@ publish = false
 [package.metadata.ironclaw]
 layer = "substrates"
 
+[features]
+# Dev-only seam (`.claude/rules/cargo-features.md`: dev-only seam). Exposes
+# `location::bind_isolated_base_dir_for_tests` so downstream test suites bind
+# the process-global Trace Commons base to a temp dir instead of reading and
+# writing the developer's real `~/.ironclaw/trace_contributions`.
+test-support = []
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
