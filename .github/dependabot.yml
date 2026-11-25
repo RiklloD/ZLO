@@ -138,6 +138,12 @@ updates:
         dependency-type: "development"
         patterns:
           - "*"
+    ignore:
+      # TypeScript 7 ships no JS compiler API (`ts.transpileModule`, `ts.sys`),
+      # which src/test/vm-tsx-setup.ts, vm-module-harness.ts and
+      # scripts/check-source-conventions.ts use. Lift this once they move off it.
+      - dependency-name: "typescript"
+        versions: [">=7"]
 
   - package-ecosystem: github-actions
     directory: "/"
