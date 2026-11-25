@@ -479,16 +479,23 @@ pub(crate) fn triage_in_terminal(s: &mut State) {
     if s.fixture {
         return;
     }
+    let shown = command.clone();
     jobs::blocking(
         s,
         move || crate::terminal::run(&command),
-        |s, result, _| {
+        move |s, result, _| {
             if let Err(e) = result {
                 tracing::warn!(error = %e, "Terminal did not open for triage");
-                note_on_failure(s, &e);
+                note_on_failure(s, &terminal_failed_note(&shown));
             }
         },
     );
+}
+
+/// Terminal would not open: say exactly what to run, rather than "copy the
+/// command" with no command on screen.
+fn terminal_failed_note(command: &str) -> String {
+    format!("Terminal did not open. In a terminal, run:\n{command}")
 }
 
 /// The shell line for [`triage_in_terminal`].
@@ -1067,6 +1074,9 @@ mod tests {
         assert!(
             !super::triage_command(backend, Some(std::ffi::OsStr::new(""))).contains("ZLO_HOME")
         );
+        // No Terminal: the screen shows the command itself.
+        let line = super::triage_command(backend, None);
+        assert!(super::terminal_failed_note(&line).ends_with(&line));
     }
 
     #[test]
