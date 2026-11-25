@@ -285,6 +285,7 @@ async fn engine(home: &Home) -> Arc<Engine> {
             display_name: "Claude CLI".into(),
             binary: claude_bin,
             config_dir: None,
+            listed: true,
             work_dir: home.root.join(".ironclaw").join("claude-cli"),
             login_file: home.root.join(".claude.json"),
             projects_dir: home.root.join(".claude").join("projects"),

@@ -142,6 +142,7 @@ fn claude_config(dir: &Path, binary: PathBuf, autocompact: Option<u64>) -> Claud
         display_name: "Claude CLI".into(),
         binary,
         config_dir: None,
+        listed: true,
         work_dir: dir.join("work"),
         login_file: dir.join(".claude.json"),
         projects_dir: dir.join("projects"),
@@ -322,6 +323,40 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
 /// Stop restart keeps it; a session that began in the shared folder stays
 /// there; a worktree-bound thread runs in its worktree; history finds a
 /// transcript in either folder.
+/// Ready means signed in (the CLI writes `.claude.json` either way), and an
+/// unlisted account (the legacy duplicate second login) offers nothing in
+/// the catalog while its runtime still serves its existing threads.
+#[tokio::test]
+async fn the_catalog_offers_only_a_listed_signed_in_login() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let sink: Weak<dyn TurnEventSink> = Arc::downgrade(&recorder) as Weak<dyn TurnEventSink>;
+    let scope = ThreadScope {
+        tenant_id: TenantId::new("t").unwrap(),
+        user_id: UserId::new("u").unwrap(),
+        agent_id: None,
+        project_id: None,
+    };
+    let login = dir.path().join(".claude.json");
+    let catalog = |listed: bool| {
+        let mut config = claude_config(dir.path(), dir.path().join("claude"), None);
+        config.listed = listed;
+        let rt = ClaudeCliRuntime::new(config, sink.clone(), None).unwrap();
+        let scope = scope.clone();
+        async move { rt.catalog(&scope).await.unwrap() }
+    };
+    if std::env::var_os("ANTHROPIC_API_KEY").is_none() {
+        std::fs::write(&login, r#"{"numStartups":1}"#).unwrap();
+        assert!(
+            !catalog(true).await[0].authenticated,
+            "a file is not a sign-in"
+        );
+    }
+    std::fs::write(&login, r#"{"oauthAccount":{"accountUuid":"a"}}"#).unwrap();
+    assert!(catalog(true).await[0].authenticated);
+    assert!(catalog(false).await.is_empty(), "unlisted offers nothing");
+}
+
 #[tokio::test]
 async fn a_compact_turn_reports_the_context_it_left() {
     let dir = tempfile::tempdir().unwrap();

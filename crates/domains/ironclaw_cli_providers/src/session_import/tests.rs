@@ -129,6 +129,7 @@ async fn harness() -> Harness {
             display_name: "Claude CLI".into(),
             binary: root.join("claude"),
             config_dir: None,
+            listed: true,
             work_dir: work.clone(),
             login_file: root.join(".claude.json"),
             projects_dir: root.join(".claude/projects"),
