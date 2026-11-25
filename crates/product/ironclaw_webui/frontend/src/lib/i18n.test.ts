@@ -355,6 +355,8 @@ test("ensurePack: a failed import resolves null, never rejects, and is retryable
   assert.equal(calls, 2, "a failed import is not cached: the retry invokes the loader again");
 });
 
+// `i18n.tsx`'s localStorage key for the selected language.
+const STORAGE_KEY = "ironclaw_language";
 // `I18nProvider`'s `useState` order: 0 = selected language, 1 = loaded pack.
 const LANG_STATE = 0;
 const PACK_STATE = 1;
@@ -418,12 +420,53 @@ for (const order of [
       `the stale es request never reaches React state: ${JSON.stringify(stateSetters)}`,
     );
     assert.deepEqual(
-      setItemCalls.map((call) => call.value),
-      ["fr"],
-      "only the most recently requested language is persisted",
+      setItemCalls,
+      [{ key: STORAGE_KEY, value: "fr" }],
+      "only the most recently requested language is persisted, under the language key",
     );
   });
 }
+
+test("setLang: switching back to the current language before the pending pack lands keeps it", async () => {
+  const { I18nProvider, registerPack, loaders, setItemCalls, stateSetters } = loadI18n();
+  const english = { greet: "hello" };
+  registerPack("en", english);
+  let resolveEs;
+  const esLoad = new Promise((resolve) => {
+    resolveEs = resolve;
+  });
+  loaders.es = () => {
+    registerPack("es", { greet: "hola" });
+    return esLoad;
+  };
+
+  const tree = I18nProvider({ children: null });
+  const ctx = tree.values.find(
+    (value) => value && typeof value === "object" && typeof value.setLang === "function",
+  );
+  assert.ok(ctx, "provider context exposes setLang");
+
+  // Current language is en; pick es (pending), then go back to en before es
+  // resolves. Going back must still count as the latest request: an
+  // `if (next === lang) return` early-out before the stamp would let es win.
+  ctx.setLang("es");
+  ctx.setLang("en");
+  await tick();
+  resolveEs();
+  await tick();
+
+  assert.equal(committedState(stateSetters, LANG_STATE), "en", "en stays selected");
+  assert.equal(committedState(stateSetters, PACK_STATE), english, "en pack stays");
+  assert.ok(
+    stateSetters.every((write) => write.value !== "es" && write.value?.greet !== "hola"),
+    `the abandoned es request never reaches React state: ${JSON.stringify(stateSetters)}`,
+  );
+  assert.deepEqual(
+    setItemCalls,
+    [{ key: STORAGE_KEY, value: "en" }],
+    "only en is persisted, under the language key",
+  );
+});
 
 test("locale packs include skill auto-activation controls", () => {
   const requiredKeys = [
