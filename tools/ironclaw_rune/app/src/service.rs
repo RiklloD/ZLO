@@ -28,6 +28,8 @@ use std::time::{Duration, Instant};
 const LAUNCHD_LABELS: [&str; 2] = ["com.ironclaw.reborn", "com.zlo.serve"];
 /// Read by `zlo triage` to report whether this app's backend runs.
 const PID_FILE: &str = ironclaw_config::DESKTOP_BACKEND_PID_FILE;
+/// The backend's stderr, under `<home>/logs`.
+const STDERR_LOG: &str = "serve.stderr.log";
 const STOP_GRACE: Duration = Duration::from_secs(6);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// A run this long resets the restart backoff.
@@ -75,6 +77,8 @@ pub fn is_running() -> bool {
 struct Paths {
     backend: PathBuf,
     home: PathBuf,
+    /// `backend` is this app bundle's own `zlo-backend`.
+    bundled: bool,
 }
 
 fn paths() -> Option<Paths> {
@@ -90,10 +94,26 @@ fn paths() -> Option<Paths> {
             return None;
         }
     };
+    let backend = backend_binary()?;
+    let bundled = paths_bundled(Some(&backend));
     Some(Paths {
-        backend: backend_binary()?,
+        backend,
         home,
+        bundled,
     })
+}
+
+/// The backend this app would run is its own bundled `zlo-backend`, the
+/// one that makes its token on a first start (`--create-token-if-missing`).
+pub fn provisions_token() -> bool {
+    !light_bundle() && paths_bundled(backend_binary().as_deref())
+}
+
+fn paths_bundled(backend: Option<&Path>) -> bool {
+    let own = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("zlo-backend")));
+    backend.is_some_and(|b| own.as_deref() == Some(b))
 }
 
 /// The backend binary this app runs: the bundled `zlo-backend`, else the
@@ -150,12 +170,15 @@ pub fn start() {
         return;
     }
     sup.stopping.store(false, Ordering::SeqCst);
+    // A new supervising lifecycle: an earlier one's error is history.
+    let lifecycle = new_lifecycle();
+    clear_startup_failure();
     std::thread::Builder::new()
         .name("zlo-backend".into())
         .spawn(move || {
             retire_launchd_jobs(&paths.home);
             stop_stale(&paths.home);
-            supervise(&sup, &paths);
+            supervise(&sup, &paths, lifecycle);
             sup.running.store(false, Ordering::SeqCst);
         })
         .ok();
@@ -237,6 +260,8 @@ pub fn stop_on_terminate() {}
 pub fn stop() {
     let sup = supervisor();
     sup.stopping.store(true, Ordering::SeqCst);
+    new_lifecycle();
+    clear_startup_failure();
     if let Some(pid) = backend_pid() {
         terminate(pid);
     }
@@ -247,14 +272,148 @@ pub fn backend_pid() -> Option<u32> {
     Some(supervisor().pid.load(Ordering::SeqCst)).filter(|pid| *pid != 0)
 }
 
-fn supervise(sup: &Supervisor, paths: &Paths) {
+/// Why this app's backend last stopped on its own (its own `Error:`
+/// output, or why it could not be spawned). Lives for one supervisor
+/// lifecycle: cleared when the app starts or stops supervising, and when
+/// it connects to This Mac. The connect screen shows it (for This Mac's
+/// retryable failures only) instead of waiting out the startup grace.
+#[cfg(not(test))]
+static STARTUP_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(not(test))]
+fn with_failure<T>(f: impl FnOnce(&mut Option<String>) -> T) -> Option<T> {
+    STARTUP_FAILURE.lock().ok().map(|mut g| f(&mut g))
+}
+
+// Tests never run a supervisor; each test thread gets its own slot, so a
+// test that connects can't clear another's.
+#[cfg(test)]
+thread_local! {
+    static STARTUP_FAILURE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn with_failure<T>(f: impl FnOnce(&mut Option<String>) -> T) -> Option<T> {
+    Some(STARTUP_FAILURE.with(|c| f(&mut c.borrow_mut())))
+}
+
+/// Bumped whenever the app starts or stops supervising: a supervisor only
+/// publishes a failure while its own lifecycle is the current one, so a
+/// stopped one can't bring back an error a later start already cleared.
+static LIFECYCLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn new_lifecycle() -> u64 {
+    LIFECYCLE.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Publish (or clear) `line` for `lifecycle`, unless a newer one began.
+fn publish_failure(lifecycle: u64, line: Option<String>) {
+    with_failure(|f| {
+        if LIFECYCLE.load(Ordering::SeqCst) == lifecycle {
+            *f = line;
+        }
+    });
+}
+
+pub fn startup_failure() -> Option<String> {
+    with_failure(|f| f.clone()).flatten()
+}
+
+pub fn clear_startup_failure() {
+    with_failure(|f| *f = None);
+}
+
+#[cfg(test)]
+pub(crate) fn set_startup_failure(line: Option<String>) {
+    with_failure(|f| *f = line);
+}
+
+/// The error a backend printed before it exited: from its last `Error:`
+/// line on (anyhow's message and causes), ANSI colours stripped, bounded.
+/// `None` when it printed none (killed, or it never got that far).
+fn startup_error(stderr: &str) -> Option<String> {
+    let plain = strip_ansi(stderr);
+    let lines: Vec<&str> = plain.lines().collect();
+    let start = lines.iter().rposition(|l| l.starts_with("Error: "))?;
+    let mut out = lines[start..]
+        .iter()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty())
+        .take(8)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if out.len() > 800 {
+        let mut end = 800;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+        out.push('…');
+    }
+    Some(out)
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // CSI: ESC [ … final byte in @..~
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// What this child wrote to `serve.stderr.log`: read through the app's
+/// own handle to the file it gave the child (the same inode, whatever a
+/// rename does to the path), from the length it had at spawn (or the start,
+/// if it was truncated since), at most the last 64 KiB — anyhow prints the
+/// error last, right before the exit.
+#[cfg(unix)]
+fn child_stderr(log: &fs::File, from: u64) -> String {
+    use std::os::unix::fs::FileExt as _;
+    const MAX: u64 = 64 * 1024;
+    let Ok(len) = log.metadata().map(|m| m.len()) else {
+        return String::new();
+    };
+    let from = if len < from { 0 } else { from }.max(len.saturating_sub(MAX));
+    let mut buf = vec![0_u8; usize::try_from(len - from).unwrap_or(0)];
+    match log.read_exact_at(&mut buf, from) {
+        Ok(()) => String::from_utf8_lossy(&buf).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+#[cfg(not(unix))]
+fn child_stderr(_log: &fs::File, _from: u64) -> String {
+    String::new()
+}
+
+fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) {
     let mut backoff = Duration::from_secs(1);
     while !sup.stopping.load(Ordering::SeqCst) {
         let started = Instant::now();
-        let mut child = match spawn(paths) {
-            Ok(child) => child,
+        let (mut child, log, log_from) = match spawn(paths) {
+            Ok(spawned) => spawned,
             Err(e) => {
                 tracing::error!(error = %e, backend = %paths.backend.display(), "backend failed to start");
+                publish_failure(
+                    lifecycle,
+                    Some(format!(
+                        "ZLO could not start {}: {e}",
+                        paths.backend.display()
+                    )),
+                );
                 return;
             }
         };
@@ -273,13 +432,17 @@ fn supervise(sup: &Supervisor, paths: &Paths) {
         if started.elapsed() > HEALTHY_RUN {
             backoff = Duration::from_secs(1);
         }
+        // Its own words, however long it ran; `None` when it said nothing.
+        publish_failure(lifecycle, startup_error(&child_stderr(&log, log_from)));
         tracing::warn!(?status, retry_in = ?backoff, "backend exited; restarting");
         std::thread::sleep(backoff);
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
 }
 
-fn spawn(paths: &Paths) -> std::io::Result<Child> {
+/// Start one backend: the child, the app's handle to the stderr log the
+/// child appends to, and that log's length at spawn.
+fn spawn(paths: &Paths) -> std::io::Result<(Child, fs::File, u64)> {
     let logs = paths.home.join("logs");
     let workspace = paths.home.join("workspace");
     fs::create_dir_all(&logs)?;
@@ -288,17 +451,28 @@ fn spawn(paths: &Paths) -> std::io::Result<Child> {
         OpenOptions::new()
             .create(true)
             .append(true)
+            .read(true)
             .open(logs.join(name))
     };
+    let stderr_log = log(STDERR_LOG)?;
+    let from = stderr_log.metadata()?.len();
     let mut command = Command::new(&paths.backend);
     command.arg("serve");
+    // On a fresh Mac nothing has made the WebUI token yet: this backend
+    // makes it on its first start (loopback only, never replacing one).
+    // Only the bundled backend, which matches this app, gets the flag: an
+    // older installed CLI would refuse it.
+    if paths.bundled {
+        command.arg("--create-token-if-missing");
+    }
     set_home_env(&mut command, &paths.home);
-    command
+    let child = command
         .current_dir(&workspace)
         .stdin(Stdio::null())
         .stdout(log("serve.stdout.log")?)
-        .stderr(log("serve.stderr.log")?)
-        .spawn()
+        .stderr(stderr_log.try_clone()?)
+        .spawn()?;
+    Ok((child, stderr_log, from))
 }
 
 fn terminate(pid: u32) {
@@ -409,6 +583,32 @@ mod tests {
         fs::create_dir_all(&not_app).unwrap();
         assert!(!is_light_bundle(&not_app.join("zlo")));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_backend_that_stops_is_reported_by_its_own_error() {
+        let log = "\u{1b}[2m2026-11-25T11:46:19Z\u{1b}[0m \u{1b}[33m WARN\u{1b}[0m no LLM selection configured\n\
+                   Error: failed to assemble Reborn runtime for `serve`\n\n\
+                   Caused by:\n    0: workspace root must not overlap default skill root /skills\n";
+        assert_eq!(
+            startup_error(log).as_deref(),
+            Some(
+                "Error: failed to assemble Reborn runtime for `serve`\nCaused by:\n    0: workspace root must not overlap default skill root /skills"
+            )
+        );
+        // A supervisor that was stopped (or replaced) can't publish its
+        // error over a newer lifecycle's state.
+        let stale = new_lifecycle();
+        let current = new_lifecycle();
+        clear_startup_failure();
+        publish_failure(stale, Some("Error: old".into()));
+        assert_eq!(startup_failure(), None);
+        publish_failure(current, Some("Error: new".into()));
+        assert_eq!(startup_failure().as_deref(), Some("Error: new"));
+        clear_startup_failure();
+
+        // Killed, or still starting: nothing it said is an error.
+        assert_eq!(startup_error("\u{1b}[33m WARN\u{1b}[0m slow start\n"), None);
     }
 
     #[test]

@@ -20,6 +20,11 @@ pub struct ApiErrorBody {
 pub enum ClientError {
     #[error("{0}")]
     Config(String),
+    /// This Mac's backend has not written its `webui-token` yet: it makes
+    /// one on its first start (`zlo serve`), so this is "still starting"
+    /// while ZLO runs that backend, never a step for the person.
+    #[error("ZLO's engine on this Mac has not finished its first start (no key at {}).", .0.display())]
+    NoToken(std::path::PathBuf),
     #[error("cannot reach the IronClaw gateway: {0}")]
     Network(#[from] reqwest::Error),
     #[error("{message} (HTTP {status})")]
@@ -37,6 +42,11 @@ pub enum ClientError {
 }
 
 impl ClientError {
+    /// [`ClientError::NoToken`]: the local backend has not started yet.
+    pub fn is_no_token(&self) -> bool {
+        matches!(self, Self::NoToken(_))
+    }
+
     pub fn is_unauthorized(&self) -> bool {
         matches!(self, Self::Api { status: 401, .. })
     }

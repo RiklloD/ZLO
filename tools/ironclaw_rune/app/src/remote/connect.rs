@@ -198,8 +198,11 @@ fn start(s: &mut State, mode: Mode) {
     };
     let tokens = s.remote.tokens.clone();
     let handle = s.rt.handle.clone();
+    // Only a backend this app starts, its own bundled one, makes its token
+    // on first start (`cargo run` on an installed CLI does not).
+    let own_backend = super::runs_local_backend(s) && crate::service::provisions_token();
     net.spawn(async move {
-        let resolved = resolve(target, tokens).await;
+        let resolved = resolve(target, tokens, own_backend).await;
         handle.update(move |s, _| {
             if s.fixture || s.workspace.connect_gen != generation {
                 return;
@@ -212,10 +215,14 @@ fn start(s: &mut State, mode: Mode) {
     });
 }
 
-async fn resolve(target: Target, tokens: Arc<dyn TokenStore>) -> Result<Resolved, Problem> {
+async fn resolve(
+    target: Target,
+    tokens: Arc<dyn TokenStore>,
+    own_backend: bool,
+) -> Result<Resolved, Problem> {
     match target {
-        Target::ThisMac => this_mac(false).await,
-        Target::Override => this_mac(true).await,
+        Target::ThisMac => this_mac(false, own_backend).await,
+        Target::Override => this_mac(true, false).await,
         Target::Environment(env) => environment(env, tokens).await,
         Target::Legacy(legacy) => {
             let host = host_of(&legacy.url).to_string();
@@ -253,8 +260,8 @@ async fn store_token(
         .map_err(|e| Problem::Blocked(e.to_string()))
 }
 
-async fn this_mac(override_url: bool) -> Result<Resolved, Problem> {
-    let conn = Connection::discover().map_err(|e| Problem::Blocked(e.to_string()))?;
+async fn this_mac(override_url: bool, own_backend: bool) -> Result<Resolved, Problem> {
+    let conn = Connection::discover().map_err(|e| discover_problem(&e, own_backend))?;
     if override_url {
         check_transport(&conn.base_url).map_err(|e| {
             Problem::Blocked(format!("IRONCLAW_DESKTOP_URL ({}): {e}", conn.base_url))
@@ -283,6 +290,20 @@ async fn this_mac(override_url: bool) -> Result<Resolved, Problem> {
         tunnel: None,
         route_rank: 0,
     })
+}
+
+/// Why This Mac could not be found. A missing token, when this app runs
+/// the backend, means it has not finished its first start (it writes the
+/// token then): unreachable, so the launch keeps waiting and retries
+/// instead of stopping on a screen that asks for a terminal command. A
+/// backend the app does not start (the switch off, `IRONCLAW_DESKTOP_URL`)
+/// makes no token, so there it stays the person's to fix.
+pub(super) fn discover_problem(e: &ClientError, own_backend: bool) -> Problem {
+    if e.is_no_token() && own_backend {
+        Problem::Unreachable(e.to_string())
+    } else {
+        Problem::Blocked(e.to_string())
+    }
 }
 
 /// Open (or reuse) the tunnel of an SSH route: its key and the origin the
@@ -567,7 +588,9 @@ fn problem_of(computer: &Computer, e: &ClientError) -> Problem {
             r.label
         )),
         (e, Computer::ThisMac) if e.is_unauthorized() => Problem::Blocked(format!(
-            "{e}\n\nThe WebUI token was rejected. Re-run `zlo onboard` to refresh it."
+            "{e}\n\nThe program answering on this Mac's ZLO address turned ZLO's key down. \
+             Another app may be using that address, or ZLO's engine was set up by hand. \
+             Triage looks into it for you."
         )),
         (e, _) => Problem::Blocked(e.to_string()),
     }

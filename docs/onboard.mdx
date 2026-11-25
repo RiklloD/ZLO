@@ -65,7 +65,11 @@ your API key. Non-interactive sessions skip this step — see below.
 <Step title="Web Login Token">
 
 A bearer token is written to `webui-token` and used by `ironclaw serve` whenever
-`IRONCLAW_REBORN_WEBUI_TOKEN` is unset. Onboarding prints a ready-to-use login link:
+`IRONCLAW_REBORN_WEBUI_TOKEN` is unset. The ZLO desktop app does not need this
+step: the backend it starts creates the file on its first start (random, mode
+`0600`) and never replaces an existing one. A `serve` started any other way (a
+service, a container, a terminal) still stops when neither the variable nor the
+file exists. Onboarding prints a ready-to-use login link:
 
 ```
 login_link: http://127.0.0.1:3000/login?token=<your-token>

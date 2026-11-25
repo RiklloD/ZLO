@@ -120,6 +120,13 @@ pub(crate) struct ServeCommand {
     /// Confirm trusted-laptop host filesystem access for the unrestricted standalone profile.
     #[arg(long = "confirm-host-access")]
     confirm_host_access: bool,
+
+    /// Create `<home>/webui-token` on this start when neither the token env
+    /// var nor the file exists (loopback listeners only; an existing file is
+    /// never replaced). The ZLO desktop app passes it to the backend it
+    /// starts, so a fresh Mac needs no `zlo onboard`.
+    #[arg(long = "create-token-if-missing")]
+    create_token_if_missing: bool,
 }
 
 impl ServeCommand {
@@ -169,6 +176,42 @@ impl ServeCommand {
             .and_then(|section| section.env_user_id_var.as_deref())
             .unwrap_or(default_env_user_id_var());
 
+        // Resolve listen address with explicit precedence:
+        //   CLI flag (Some(...)) > config file > compile-time default.
+        // Both `host` and `port` are `Option<>` in the clap struct so
+        // we can distinguish "operator omitted the flag" from "operator
+        // passed the default value explicitly".
+        let host: IpAddr = if let Some(value) = self.host {
+            value
+        } else if let Some(raw) = webui_section.and_then(|s| s.listen_host.as_deref()) {
+            IpAddr::from_str(raw)
+                .map_err(|err| anyhow!("[webui].listen_host `{raw}` invalid: {err}"))?
+        } else {
+            IpAddr::from_str(DEFAULT_SERVE_HOST).map_err(|err| {
+                anyhow!("DEFAULT_SERVE_HOST `{DEFAULT_SERVE_HOST}` invalid: {err}")
+            })?
+        };
+        // `port = 0` tells the OS to pick a free port — useful when a
+        // test harness passes `--port 0` and reads the port the banner
+        // reports, but wrong in a config file, where a fixed, documented
+        // port is what an operator and every client of it need. Allow
+        // `--port 0` from the CLI flag, reject `0` from
+        // `[webui].listen_port`.
+        let port: u16 = if let Some(value) = self.port {
+            value
+        } else if let Some(value) = webui_section.and_then(|s| s.listen_port) {
+            if value == 0 {
+                anyhow::bail!(
+                    "[webui].listen_port = 0 from config is not supported: the OS would pick \
+                     an ephemeral port that no client of this config can know. Set a fixed \
+                     port in config, or pass `--port 0` on the CLI when you genuinely want \
+                     an ephemeral port (the startup banner then reports the port the OS chose)."
+                );
+            }
+            value
+        } else {
+            DEFAULT_SERVE_PORT
+        };
         // Precedence: `env_token_var` (if set and non-empty), else
         // `<reborn_home>/webui-token` (the `onboard`-provisioned fallback a
         // service-installed serve, whose unit environment carries only
@@ -178,9 +221,52 @@ impl ServeCommand {
         // `session_signing_secret` below) so a weak or missing token fails
         // closed here rather than starting the server and having it reject
         // the value opaquely.
+        //
+        // The desktop app's own backend on a fresh Mac (and only it — it
+        // passes `--create-token-if-missing` to the one child it starts, a
+        // flag nothing inherits): with no env token and no file, make the
+        // file now rather than demanding a `zlo onboard` first. Loopback
+        // only, so a published listener never boots on a credential nobody
+        // configured. Auth stays on — the token is random and only readable
+        // from the 0600 file — and an existing file, valid or not, is never
+        // touched. Everything else still fails closed below.
+        //
+        // Two more guards: no `[remote]` listener (it binds beyond
+        // loopback), and the port must be free — a token minted for a start
+        // that then fails to bind would be read by the desktop app and sent
+        // to whatever else holds the port.
+        let env_token_value = present_unicode_env_var(env_token_var)?;
+        let may_create_token = self.create_token_if_missing
+            && host.is_loopback()
+            && config_file
+                .as_ref()
+                .and_then(|file| file.remote.as_ref())
+                .and_then(ironclaw_config::RemoteSection::resolve)
+                .is_none()
+            && env_token_value.as_deref().is_none_or(str::is_empty);
+        if may_create_token
+            && !crate::webui_token::webui_token_file_path(boot_config.home().path()).exists()
+        {
+            // Dropped at once; the real bind below takes the port.
+            std::net::TcpListener::bind(SocketAddr::new(host, port)).map_err(|error| {
+                anyhow!(
+                    "cannot listen on {host}:{port} ({error}); another program is using it. \
+                     Quit it, or set `[webui].listen_port` in {}.",
+                    boot_config.home().config_file_path().display()
+                )
+            })?;
+        }
+        if may_create_token
+            && crate::webui_token::provision_missing_webui_token_file(boot_config.home().path())?
+        {
+            tracing::debug!(
+                home = %boot_config.home().path().display(),
+                "created the WebChat v2 token file on first start"
+            );
+        }
         let resolved_token = crate::webui_token::resolve_webui_token(
             env_token_var,
-            present_unicode_env_var(env_token_var)?.as_deref(),
+            env_token_value.as_deref(),
             boot_config.home().path(),
         )?;
         let webui_token_source = resolved_token.source;
@@ -249,42 +335,6 @@ impl ServeCommand {
             runtime_input.with_admin_api_token_minter(Arc::new(SignedSessionTokenMinter {
                 session_store: admin_session_store,
             }));
-        // Resolve listen address with explicit precedence:
-        //   CLI flag (Some(...)) > config file > compile-time default.
-        // Both `host` and `port` are `Option<>` in the clap struct so
-        // we can distinguish "operator omitted the flag" from "operator
-        // passed the default value explicitly".
-        let host: IpAddr = if let Some(value) = self.host {
-            value
-        } else if let Some(raw) = webui_section.and_then(|s| s.listen_host.as_deref()) {
-            IpAddr::from_str(raw)
-                .map_err(|err| anyhow!("[webui].listen_host `{raw}` invalid: {err}"))?
-        } else {
-            IpAddr::from_str(DEFAULT_SERVE_HOST).map_err(|err| {
-                anyhow!("DEFAULT_SERVE_HOST `{DEFAULT_SERVE_HOST}` invalid: {err}")
-            })?
-        };
-        // `port = 0` tells the OS to pick a free port — useful when a
-        // test harness passes `--port 0` and reads the port the banner
-        // reports, but wrong in a config file, where a fixed, documented
-        // port is what an operator and every client of it need. Allow
-        // `--port 0` from the CLI flag, reject `0` from
-        // `[webui].listen_port`.
-        let port: u16 = if let Some(value) = self.port {
-            value
-        } else if let Some(value) = webui_section.and_then(|s| s.listen_port) {
-            if value == 0 {
-                anyhow::bail!(
-                    "[webui].listen_port = 0 from config is not supported: the OS would pick \
-                     an ephemeral port that no client of this config can know. Set a fixed \
-                     port in config, or pass `--port 0` on the CLI when you genuinely want \
-                     an ephemeral port (the startup banner then reports the port the OS chose)."
-                );
-            }
-            value
-        } else {
-            DEFAULT_SERVE_PORT
-        };
         // Canonical host the product-auth callback origin is derived
         // from. Validate as `host` or `host:port` — refuse multi-segment
         // paths or scheme prefixes, which would build a malformed origin.
