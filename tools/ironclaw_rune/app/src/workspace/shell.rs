@@ -189,9 +189,11 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
     let remote = (crate::remote::backend_is_remote(s) || s.remote.registry_error.is_some())
         && !s.remote.app_only;
     // Triage in Terminal looks at this Mac's own backend: only when that
-    // is what failed (never for a paired computer, nor a Light bundle,
-    // which has no backend of its own).
-    let local_triage = !crate::remote::backend_is_remote(s) && !s.remote.app_only;
+    // is what failed (never for a paired computer, a Light bundle, which
+    // has no backend of its own, or an `IRONCLAW_DESKTOP_URL` gateway).
+    let local_triage = !crate::remote::backend_is_remote(s)
+        && !s.remote.app_only
+        && !crate::remote::env_override();
     let mut c = col()
         .key("failed")
         .w_full()

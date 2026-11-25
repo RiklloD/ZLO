@@ -191,6 +191,27 @@ impl ServeCommand {
                 anyhow!("DEFAULT_SERVE_HOST `{DEFAULT_SERVE_HOST}` invalid: {err}")
             })?
         };
+        // `port = 0` tells the OS to pick a free port — useful when a
+        // test harness passes `--port 0` and reads the port the banner
+        // reports, but wrong in a config file, where a fixed, documented
+        // port is what an operator and every client of it need. Allow
+        // `--port 0` from the CLI flag, reject `0` from
+        // `[webui].listen_port`.
+        let port: u16 = if let Some(value) = self.port {
+            value
+        } else if let Some(value) = webui_section.and_then(|s| s.listen_port) {
+            if value == 0 {
+                anyhow::bail!(
+                    "[webui].listen_port = 0 from config is not supported: the OS would pick \
+                     an ephemeral port that no client of this config can know. Set a fixed \
+                     port in config, or pass `--port 0` on the CLI when you genuinely want \
+                     an ephemeral port (the startup banner then reports the port the OS chose)."
+                );
+            }
+            value
+        } else {
+            DEFAULT_SERVE_PORT
+        };
         // Precedence: `env_token_var` (if set and non-empty), else
         // `<reborn_home>/webui-token` (the `onboard`-provisioned fallback a
         // service-installed serve, whose unit environment carries only
@@ -209,10 +230,33 @@ impl ServeCommand {
         // configured. Auth stays on — the token is random and only readable
         // from the 0600 file — and an existing file, valid or not, is never
         // touched. Everything else still fails closed below.
+        //
+        // Two more guards: no `[remote]` listener (it binds beyond
+        // loopback), and the port must be free — a token minted for a start
+        // that then fails to bind would be read by the desktop app and sent
+        // to whatever else holds the port.
         let env_token_value = present_unicode_env_var(env_token_var)?;
-        if self.create_token_if_missing
+        let may_create_token = self.create_token_if_missing
             && host.is_loopback()
-            && env_token_value.as_deref().is_none_or(str::is_empty)
+            && config_file
+                .as_ref()
+                .and_then(|file| file.remote.as_ref())
+                .and_then(ironclaw_config::RemoteSection::resolve)
+                .is_none()
+            && env_token_value.as_deref().is_none_or(str::is_empty);
+        if may_create_token
+            && !crate::webui_token::webui_token_file_path(boot_config.home().path()).exists()
+        {
+            // Dropped at once; the real bind below takes the port.
+            std::net::TcpListener::bind(SocketAddr::new(host, port)).map_err(|error| {
+                anyhow!(
+                    "cannot listen on {host}:{port} ({error}); another program is using it. \
+                     Quit it, or set `[webui].listen_port` in {}.",
+                    boot_config.home().config_file_path().display()
+                )
+            })?;
+        }
+        if may_create_token
             && crate::webui_token::provision_missing_webui_token_file(boot_config.home().path())?
         {
             tracing::debug!(
@@ -291,27 +335,6 @@ impl ServeCommand {
             runtime_input.with_admin_api_token_minter(Arc::new(SignedSessionTokenMinter {
                 session_store: admin_session_store,
             }));
-        // `port = 0` tells the OS to pick a free port — useful when a
-        // test harness passes `--port 0` and reads the port the banner
-        // reports, but wrong in a config file, where a fixed, documented
-        // port is what an operator and every client of it need. Allow
-        // `--port 0` from the CLI flag, reject `0` from
-        // `[webui].listen_port`.
-        let port: u16 = if let Some(value) = self.port {
-            value
-        } else if let Some(value) = webui_section.and_then(|s| s.listen_port) {
-            if value == 0 {
-                anyhow::bail!(
-                    "[webui].listen_port = 0 from config is not supported: the OS would pick \
-                     an ephemeral port that no client of this config can know. Set a fixed \
-                     port in config, or pass `--port 0` on the CLI when you genuinely want \
-                     an ephemeral port (the startup banner then reports the port the OS chose)."
-                );
-            }
-            value
-        } else {
-            DEFAULT_SERVE_PORT
-        };
         // Canonical host the product-auth callback origin is derived
         // from. Validate as `host` or `host:port` — refuse multi-segment
         // paths or scheme prefixes, which would build a malformed origin.

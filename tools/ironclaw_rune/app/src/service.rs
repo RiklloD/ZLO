@@ -95,15 +95,25 @@ fn paths() -> Option<Paths> {
         }
     };
     let backend = backend_binary()?;
-    let bundled = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("zlo-backend")))
-        .is_some_and(|own| own == backend);
+    let bundled = paths_bundled(Some(&backend));
     Some(Paths {
         backend,
         home,
         bundled,
     })
+}
+
+/// The backend this app would run is its own bundled `zlo-backend`, the
+/// one that makes its token on a first start (`--create-token-if-missing`).
+pub fn provisions_token() -> bool {
+    !light_bundle() && paths_bundled(backend_binary().as_deref())
+}
+
+fn paths_bundled(backend: Option<&Path>) -> bool {
+    let own = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("zlo-backend")));
+    backend.is_some_and(|b| own.as_deref() == Some(b))
 }
 
 /// The backend binary this app runs: the bundled `zlo-backend`, else the
@@ -161,13 +171,14 @@ pub fn start() {
     }
     sup.stopping.store(false, Ordering::SeqCst);
     // A new supervising lifecycle: an earlier one's error is history.
+    let lifecycle = new_lifecycle();
     clear_startup_failure();
     std::thread::Builder::new()
         .name("zlo-backend".into())
         .spawn(move || {
             retire_launchd_jobs(&paths.home);
             stop_stale(&paths.home);
-            supervise(&sup, &paths);
+            supervise(&sup, &paths, lifecycle);
             sup.running.store(false, Ordering::SeqCst);
         })
         .ok();
@@ -248,6 +259,7 @@ pub fn stop_on_terminate() {}
 pub fn stop() {
     let sup = supervisor();
     sup.stopping.store(true, Ordering::SeqCst);
+    new_lifecycle();
     clear_startup_failure();
     if let Some(pid) = backend_pid() {
         terminate(pid);
@@ -285,6 +297,24 @@ fn with_failure<T>(f: impl FnOnce(&mut Option<String>) -> T) -> Option<T> {
     Some(STARTUP_FAILURE.with(|c| f(&mut c.borrow_mut())))
 }
 
+/// Bumped whenever the app starts or stops supervising: a supervisor only
+/// publishes a failure while its own lifecycle is the current one, so a
+/// stopped one can't bring back an error a later start already cleared.
+static LIFECYCLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn new_lifecycle() -> u64 {
+    LIFECYCLE.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Publish (or clear) `line` for `lifecycle`, unless a newer one began.
+fn publish_failure(lifecycle: u64, line: Option<String>) {
+    with_failure(|f| {
+        if LIFECYCLE.load(Ordering::SeqCst) == lifecycle {
+            *f = line;
+        }
+    });
+}
+
 pub fn startup_failure() -> Option<String> {
     with_failure(|f| f.clone()).flatten()
 }
@@ -293,6 +323,7 @@ pub fn clear_startup_failure() {
     with_failure(|f| *f = None);
 }
 
+#[cfg(test)]
 pub(crate) fn set_startup_failure(line: Option<String>) {
     with_failure(|f| *f = line);
 }
@@ -342,87 +373,46 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Lines kept from one backend's stderr: enough for anyhow's error and
-/// its causes, bounded whatever the backend prints.
-const TAIL_LINES: usize = 200;
-const TAIL_LINE_BYTES: usize = 2048;
-
-/// The last [`TAIL_LINES`] lines one backend wrote to stderr, copied from
-/// its pipe while every line still goes to `serve.stderr.log`. Per child,
-/// so log rotation, truncation or another writer can't mix in.
-#[derive(Clone, Default)]
-struct StderrTail {
-    lines: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
-    done: Arc<AtomicBool>,
-}
-
-impl StderrTail {
-    fn follow(&self, pipe: std::process::ChildStderr, mut log: fs::File) {
-        use std::io::{BufRead as _, Write as _};
-        let tail = self.clone();
-        let spawned = std::thread::Builder::new()
-            .name("zlo-backend-stderr".into())
-            .spawn(move || {
-                let mut reader = std::io::BufReader::new(pipe);
-                let mut buf = Vec::new();
-                loop {
-                    buf.clear();
-                    match reader.read_until(b'\n', &mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
-                    }
-                    if log.write_all(&buf).is_err() {
-                        tracing::debug!("backend stderr log not written");
-                    }
-                    let mut line = String::from_utf8_lossy(&buf).trim_end().to_string();
-                    if line.len() > TAIL_LINE_BYTES {
-                        let mut end = TAIL_LINE_BYTES;
-                        while !line.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        line.truncate(end);
-                    }
-                    if let Ok(mut lines) = tail.lines.lock() {
-                        if lines.len() == TAIL_LINES {
-                            lines.pop_front();
-                        }
-                        lines.push_back(line);
-                    }
-                }
-                tail.done.store(true, Ordering::SeqCst);
-            });
-        if let Err(e) = spawned {
-            tracing::debug!(error = %e, "backend stderr not followed");
-        }
-    }
-
-    /// The tail once the backend exited. Its pipe can outlive it (a
-    /// process it started may hold stderr), so wait briefly, not for EOF.
-    fn after_exit(&self) -> String {
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while !self.done.load(Ordering::SeqCst) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        self.lines
-            .lock()
-            .map(|l| l.iter().cloned().collect::<Vec<_>>().join("\n"))
-            .unwrap_or_default()
+/// What this child wrote to `serve.stderr.log`: read through the app's
+/// own handle to the file it gave the child (the same inode, whatever a
+/// rename does to the path), from the length it had at spawn (or the start,
+/// if it was truncated since), at most the last 64 KiB — anyhow prints the
+/// error last, right before the exit.
+#[cfg(unix)]
+fn child_stderr(log: &fs::File, from: u64) -> String {
+    use std::os::unix::fs::FileExt as _;
+    const MAX: u64 = 64 * 1024;
+    let Ok(len) = log.metadata().map(|m| m.len()) else {
+        return String::new();
+    };
+    let from = if len < from { 0 } else { from }.max(len.saturating_sub(MAX));
+    let mut buf = vec![0_u8; usize::try_from(len - from).unwrap_or(0)];
+    match log.read_exact_at(&mut buf, from) {
+        Ok(()) => String::from_utf8_lossy(&buf).into_owned(),
+        Err(_) => String::new(),
     }
 }
 
-fn supervise(sup: &Supervisor, paths: &Paths) {
+#[cfg(not(unix))]
+fn child_stderr(_log: &fs::File, _from: u64) -> String {
+    String::new()
+}
+
+fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) {
     let mut backoff = Duration::from_secs(1);
     while !sup.stopping.load(Ordering::SeqCst) {
         let started = Instant::now();
-        let tail = StderrTail::default();
-        let mut child = match spawn(paths, &tail) {
-            Ok(child) => child,
+        let (mut child, log, log_from) = match spawn(paths) {
+            Ok(spawned) => spawned,
             Err(e) => {
                 tracing::error!(error = %e, backend = %paths.backend.display(), "backend failed to start");
-                set_startup_failure(Some(format!(
-                    "ZLO could not start {}: {e}",
-                    paths.backend.display()
-                )));
+                publish_failure(
+                    lifecycle,
+                    Some(format!(
+                        "ZLO could not start {}: {e}",
+                        paths.backend.display()
+                    )),
+                );
                 return;
             }
         };
@@ -442,14 +432,16 @@ fn supervise(sup: &Supervisor, paths: &Paths) {
             backoff = Duration::from_secs(1);
         }
         // Its own words, however long it ran; `None` when it said nothing.
-        set_startup_failure(startup_error(&tail.after_exit()));
+        publish_failure(lifecycle, startup_error(&child_stderr(&log, log_from)));
         tracing::warn!(?status, retry_in = ?backoff, "backend exited; restarting");
         std::thread::sleep(backoff);
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
 }
 
-fn spawn(paths: &Paths, tail: &StderrTail) -> std::io::Result<Child> {
+/// Start one backend: the child, the app's handle to the stderr log the
+/// child appends to, and that log's length at spawn.
+fn spawn(paths: &Paths) -> std::io::Result<(Child, fs::File, u64)> {
     let logs = paths.home.join("logs");
     let workspace = paths.home.join("workspace");
     fs::create_dir_all(&logs)?;
@@ -458,9 +450,11 @@ fn spawn(paths: &Paths, tail: &StderrTail) -> std::io::Result<Child> {
         OpenOptions::new()
             .create(true)
             .append(true)
+            .read(true)
             .open(logs.join(name))
     };
     let stderr_log = log(STDERR_LOG)?;
+    let from = stderr_log.metadata()?.len();
     let mut command = Command::new(&paths.backend);
     command.arg("serve");
     // On a fresh Mac nothing has made the WebUI token yet: this backend
@@ -471,16 +465,13 @@ fn spawn(paths: &Paths, tail: &StderrTail) -> std::io::Result<Child> {
         command.arg("--create-token-if-missing");
     }
     set_home_env(&mut command, &paths.home);
-    let mut child = command
+    let child = command
         .current_dir(&workspace)
         .stdin(Stdio::null())
         .stdout(log("serve.stdout.log")?)
-        .stderr(Stdio::piped())
+        .stderr(stderr_log.try_clone()?)
         .spawn()?;
-    if let Some(pipe) = child.stderr.take() {
-        tail.follow(pipe, stderr_log);
-    }
-    Ok(child)
+    Ok((child, stderr_log, from))
 }
 
 fn terminate(pid: u32) {
@@ -604,6 +595,17 @@ mod tests {
                 "Error: failed to assemble Reborn runtime for `serve`\nCaused by:\n    0: workspace root must not overlap default skill root /skills"
             )
         );
+        // A supervisor that was stopped (or replaced) can't publish its
+        // error over a newer lifecycle's state.
+        let stale = new_lifecycle();
+        let current = new_lifecycle();
+        clear_startup_failure();
+        publish_failure(stale, Some("Error: old".into()));
+        assert_eq!(startup_failure(), None);
+        publish_failure(current, Some("Error: new".into()));
+        assert_eq!(startup_failure().as_deref(), Some("Error: new"));
+        clear_startup_failure();
+
         // Killed, or still starting: nothing it said is an error.
         assert_eq!(startup_error("\u{1b}[33m WARN\u{1b}[0m slow start\n"), None);
     }

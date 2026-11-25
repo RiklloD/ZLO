@@ -198,8 +198,9 @@ fn start(s: &mut State, mode: Mode) {
     };
     let tokens = s.remote.tokens.clone();
     let handle = s.rt.handle.clone();
-    // Only a backend this app starts makes its token on first start.
-    let own_backend = super::runs_local_backend(s);
+    // Only a backend this app starts, its own bundled one, makes its token
+    // on first start (`cargo run` on an installed CLI does not).
+    let own_backend = super::runs_local_backend(s) && crate::service::provisions_token();
     net.spawn(async move {
         let resolved = resolve(target, tokens, own_backend).await;
         handle.update(move |s, _| {
@@ -587,7 +588,9 @@ fn problem_of(computer: &Computer, e: &ClientError) -> Problem {
             r.label
         )),
         (e, Computer::ThisMac) if e.is_unauthorized() => Problem::Blocked(format!(
-            "{e}\n\nThe WebUI token was rejected. Re-run `zlo onboard` to refresh it."
+            "{e}\n\nThe program answering on this Mac's ZLO address turned ZLO's key down. \
+             Another app may be using that address, or ZLO's engine was set up by hand. \
+             Triage looks into it for you."
         )),
         (e, _) => Problem::Blocked(e.to_string()),
     }

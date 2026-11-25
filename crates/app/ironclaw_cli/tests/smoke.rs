@@ -2535,6 +2535,41 @@ fn serve_creates_its_token_file_on_first_start_of_an_empty_home() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
+    // Never minted for a start that can't listen: another program holds
+    // the port, or `[remote]` would publish a second listener.
+    let busy = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupy a port");
+    let busy_port = busy.local_addr().expect("busy addr").port();
+    let refused = |port: u16| {
+        let output = reborn_command()
+            .args([
+                "serve",
+                "--create-token-if-missing",
+                "--host",
+                "127.0.0.1",
+                "--port",
+            ])
+            .arg(port.to_string())
+            .current_dir(&working_directory)
+            .env("HOME", &home)
+            .env("ZLO_HOME", &reborn_home)
+            .output()
+            .expect("serve should run and exit");
+        assert!(!output.status.success(), "serve must not start: {output:?}");
+        assert!(!token_path.exists(), "no token may be created: {output:?}");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let stderr = refused(busy_port);
+    assert!(stderr.contains("another program is using it"), "{stderr}");
+    drop(busy);
+    std::fs::write(
+        reborn_home.join("config.toml"),
+        "[remote]\nenabled = true\ntailnet_url = \"https://mac.tail1.ts.net\"\n",
+    )
+    .expect("write remote config");
+    let stderr = refused(unused_local_port());
+    assert!(stderr.contains("must be set"), "{stderr}");
+    std::fs::remove_file(reborn_home.join("config.toml")).expect("remove remote config");
+
     let mut first_token = None;
     for start in ["first", "second"] {
         let port = unused_local_port();
