@@ -77,6 +77,8 @@ pub fn is_running() -> bool {
 struct Paths {
     backend: PathBuf,
     home: PathBuf,
+    /// `backend` is this app bundle's own `zlo-backend`.
+    bundled: bool,
 }
 
 fn paths() -> Option<Paths> {
@@ -92,9 +94,15 @@ fn paths() -> Option<Paths> {
             return None;
         }
     };
+    let backend = backend_binary()?;
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("zlo-backend")))
+        .is_some_and(|own| own == backend);
     Some(Paths {
-        backend: backend_binary()?,
+        backend,
         home,
+        bundled,
     })
 }
 
@@ -152,6 +160,8 @@ pub fn start() {
         return;
     }
     sup.stopping.store(false, Ordering::SeqCst);
+    // A new supervising lifecycle: an earlier one's error is history.
+    clear_startup_failure();
     std::thread::Builder::new()
         .name("zlo-backend".into())
         .spawn(move || {
@@ -238,6 +248,7 @@ pub fn stop_on_terminate() {}
 pub fn stop() {
     let sup = supervisor();
     sup.stopping.store(true, Ordering::SeqCst);
+    clear_startup_failure();
     if let Some(pid) = backend_pid() {
         terminate(pid);
     }
@@ -248,25 +259,42 @@ pub fn backend_pid() -> Option<u32> {
     Some(supervisor().pid.load(Ordering::SeqCst)).filter(|pid| *pid != 0)
 }
 
-/// Why this app's backend last stopped on its own (its own error, from
-/// `serve.stderr.log`), until it runs healthily or the app connects. The
-/// connect screen shows it instead of waiting out the startup grace.
+/// Why this app's backend last stopped on its own (its own `Error:`
+/// output, or why it could not be spawned). Lives for one supervisor
+/// lifecycle: cleared when the app starts or stops supervising, and when
+/// it connects to This Mac. The connect screen shows it (for This Mac's
+/// retryable failures only) instead of waiting out the startup grace.
+#[cfg(not(test))]
 static STARTUP_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+#[cfg(not(test))]
+fn with_failure<T>(f: impl FnOnce(&mut Option<String>) -> T) -> Option<T> {
+    STARTUP_FAILURE.lock().ok().map(|mut g| f(&mut g))
+}
+
+// Tests never run a supervisor; each test thread gets its own slot, so a
+// test that connects can't clear another's.
+#[cfg(test)]
+thread_local! {
+    static STARTUP_FAILURE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn with_failure<T>(f: impl FnOnce(&mut Option<String>) -> T) -> Option<T> {
+    Some(STARTUP_FAILURE.with(|c| f(&mut c.borrow_mut())))
+}
+
 pub fn startup_failure() -> Option<String> {
-    STARTUP_FAILURE.lock().ok().and_then(|f| f.clone())
+    with_failure(|f| f.clone()).flatten()
 }
 
 pub fn clear_startup_failure() {
-    if let Ok(mut f) = STARTUP_FAILURE.lock() {
-        *f = None;
-    }
+    with_failure(|f| *f = None);
 }
 
 pub(crate) fn set_startup_failure(line: Option<String>) {
-    if let Ok(mut f) = STARTUP_FAILURE.lock() {
-        *f = line;
-    }
+    with_failure(|f| *f = line);
 }
 
 /// The error a backend printed before it exited: from its last `Error:`
@@ -314,38 +342,87 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// What the backend wrote to `serve.stderr.log` since byte `from` (this
-/// run only), at most the last 64 KiB of it.
-fn stderr_since(home: &Path, from: u64) -> String {
-    use std::io::{Read as _, Seek as _, SeekFrom};
-    let Ok(mut file) = fs::File::open(home.join("logs").join(STDERR_LOG)) else {
-        return String::new();
-    };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let from = from.max(len.saturating_sub(64 * 1024));
-    if from >= len || file.seek(SeekFrom::Start(from)).is_err() {
-        return String::new();
-    }
-    let mut buf = Vec::new();
-    if file.take(len - from).read_to_end(&mut buf).is_err() {
-        return String::new();
-    }
-    String::from_utf8_lossy(&buf).into_owned()
+/// Lines kept from one backend's stderr: enough for anyhow's error and
+/// its causes, bounded whatever the backend prints.
+const TAIL_LINES: usize = 200;
+const TAIL_LINE_BYTES: usize = 2048;
+
+/// The last [`TAIL_LINES`] lines one backend wrote to stderr, copied from
+/// its pipe while every line still goes to `serve.stderr.log`. Per child,
+/// so log rotation, truncation or another writer can't mix in.
+#[derive(Clone, Default)]
+struct StderrTail {
+    lines: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    done: Arc<AtomicBool>,
 }
 
-fn stderr_len(home: &Path) -> u64 {
-    fs::metadata(home.join("logs").join(STDERR_LOG)).map_or(0, |m| m.len())
+impl StderrTail {
+    fn follow(&self, pipe: std::process::ChildStderr, mut log: fs::File) {
+        use std::io::{BufRead as _, Write as _};
+        let tail = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("zlo-backend-stderr".into())
+            .spawn(move || {
+                let mut reader = std::io::BufReader::new(pipe);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match reader.read_until(b'\n', &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    if log.write_all(&buf).is_err() {
+                        tracing::debug!("backend stderr log not written");
+                    }
+                    let mut line = String::from_utf8_lossy(&buf).trim_end().to_string();
+                    if line.len() > TAIL_LINE_BYTES {
+                        let mut end = TAIL_LINE_BYTES;
+                        while !line.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        line.truncate(end);
+                    }
+                    if let Ok(mut lines) = tail.lines.lock() {
+                        if lines.len() == TAIL_LINES {
+                            lines.pop_front();
+                        }
+                        lines.push_back(line);
+                    }
+                }
+                tail.done.store(true, Ordering::SeqCst);
+            });
+        if let Err(e) = spawned {
+            tracing::debug!(error = %e, "backend stderr not followed");
+        }
+    }
+
+    /// The tail once the backend exited. Its pipe can outlive it (a
+    /// process it started may hold stderr), so wait briefly, not for EOF.
+    fn after_exit(&self) -> String {
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while !self.done.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.lines
+            .lock()
+            .map(|l| l.iter().cloned().collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default()
+    }
 }
 
 fn supervise(sup: &Supervisor, paths: &Paths) {
     let mut backoff = Duration::from_secs(1);
     while !sup.stopping.load(Ordering::SeqCst) {
         let started = Instant::now();
-        let log_from = stderr_len(&paths.home);
-        let mut child = match spawn(paths) {
+        let tail = StderrTail::default();
+        let mut child = match spawn(paths, &tail) {
             Ok(child) => child,
             Err(e) => {
                 tracing::error!(error = %e, backend = %paths.backend.display(), "backend failed to start");
+                set_startup_failure(Some(format!(
+                    "ZLO could not start {}: {e}",
+                    paths.backend.display()
+                )));
                 return;
             }
         };
@@ -363,17 +440,16 @@ fn supervise(sup: &Supervisor, paths: &Paths) {
         }
         if started.elapsed() > HEALTHY_RUN {
             backoff = Duration::from_secs(1);
-            set_startup_failure(None);
-        } else {
-            set_startup_failure(startup_error(&stderr_since(&paths.home, log_from)));
         }
+        // Its own words, however long it ran; `None` when it said nothing.
+        set_startup_failure(startup_error(&tail.after_exit()));
         tracing::warn!(?status, retry_in = ?backoff, "backend exited; restarting");
         std::thread::sleep(backoff);
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
 }
 
-fn spawn(paths: &Paths) -> std::io::Result<Child> {
+fn spawn(paths: &Paths, tail: &StderrTail) -> std::io::Result<Child> {
     let logs = paths.home.join("logs");
     let workspace = paths.home.join("workspace");
     fs::create_dir_all(&logs)?;
@@ -384,19 +460,27 @@ fn spawn(paths: &Paths) -> std::io::Result<Child> {
             .append(true)
             .open(logs.join(name))
     };
+    let stderr_log = log(STDERR_LOG)?;
     let mut command = Command::new(&paths.backend);
     command.arg("serve");
-    set_home_env(&mut command, &paths.home);
     // On a fresh Mac nothing has made the WebUI token yet: this backend
-    // makes it on its first start (and never replaces one). Only this app
-    // asks for that; services and deployments still fail closed.
-    command.env(ironclaw_config::PROVISION_WEBUI_TOKEN_ENV, "1");
-    command
+    // makes it on its first start (loopback only, never replacing one).
+    // Only the bundled backend, which matches this app, gets the flag: an
+    // older installed CLI would refuse it.
+    if paths.bundled {
+        command.arg("--create-token-if-missing");
+    }
+    set_home_env(&mut command, &paths.home);
+    let mut child = command
         .current_dir(&workspace)
         .stdin(Stdio::null())
         .stdout(log("serve.stdout.log")?)
-        .stderr(log(STDERR_LOG)?)
-        .spawn()
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(pipe) = child.stderr.take() {
+        tail.follow(pipe, stderr_log);
+    }
+    Ok(child)
 }
 
 fn terminate(pid: u32) {

@@ -296,7 +296,10 @@ pub(crate) fn connected(
         tx.animated();
     }
     s.workspace.connect_attempt = 0;
-    crate::service::clear_startup_failure();
+    if !crate::remote::backend_is_remote(s) {
+        // This Mac's backend answers: its last startup error is history.
+        crate::service::clear_startup_failure();
+    }
     s.session = Some(session);
     inbox::apply(s, list);
     s.conn = Conn::Ready;
@@ -413,7 +416,7 @@ pub(crate) fn connect_failed(s: &mut State, problem: crate::remote::connect::Pro
     let local = !crate::remote::backend_is_remote(s);
     // This app's backend already stopped with its own error: show that now
     // rather than waiting out the grace and then a vaguer symptom.
-    let crashed = (local && crate::remote::runs_local_backend(s))
+    let crashed = (network && local && crate::remote::runs_local_backend(s))
         .then(crate::service::startup_failure)
         .flatten();
     if network

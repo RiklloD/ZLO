@@ -10,8 +10,8 @@
 //! fallback file so a service-installed `serve` (launchd/systemd), whose
 //! unit environment carries only `HOME`/`PROFILE` (see
 //! `serve_invocation.rs`), still has a token to read. The desktop app's own
-//! `serve` (only it sets `ZLO_PROVISION_WEBUI_TOKEN=1`) creates the file on
-//! first start when no env token is set and no file exists yet
+//! `serve` (only it passes `--create-token-if-missing`, loopback only)
+//! creates the file on first start when no env token is set and no file exists yet
 //! ([`provision_missing_webui_token_file`]): it starts on a fresh Mac before
 //! anything else has run, and must not need a terminal step first. It never
 //! replaces an existing file.
@@ -257,23 +257,25 @@ pub(crate) fn webui_token_file_is_valid(reborn_home: &Path) -> anyhow::Result<bo
 /// (never silently treated as "missing, go ahead and overwrite it").
 pub(crate) fn ensure_webui_token_file(reborn_home: &Path) -> anyhow::Result<FileWriteAction> {
     let file_path = webui_token_file_path(reborn_home);
-    if webui_token_file_is_valid(reborn_home)? {
-        repair_token_file_mode(&file_path)?;
-        return Ok(FileWriteAction::Preserved);
-    }
-    if !file_path.exists() {
-        // No file: create it the same no-clobber way `serve` does, so an
-        // `onboard` racing the app's first backend start keeps the token
-        // that backend already accepted instead of renaming over it.
-        return Ok(if provision_missing_webui_token_file(reborn_home)? {
+    // One read decides: a second look could see a file the desktop app's
+    // backend created (and already accepted) in between, and replace it.
+    match read_token_file_checked(&file_path)? {
+        // No file: create it the same no-clobber way `serve` does; losing
+        // that race keeps the winner's token.
+        None => Ok(if provision_missing_webui_token_file(reborn_home)? {
             FileWriteAction::Wrote
         } else {
             FileWriteAction::Preserved
-        });
+        }),
+        Some(contents) if contents.trim().len() >= WEBUI_TOKEN_MIN_BYTES => {
+            repair_token_file_mode(&file_path)?;
+            Ok(FileWriteAction::Preserved)
+        }
+        Some(_) => {
+            write_token_file(&file_path, &generate_webui_token())?;
+            Ok(FileWriteAction::Overwrote)
+        }
     }
-    let token = generate_webui_token();
-    write_token_file(&file_path, &token)?;
-    Ok(FileWriteAction::Overwrote)
 }
 
 /// Unconditionally replace `<reborn_home>/webui-token` with a freshly
@@ -653,7 +655,11 @@ mod tests {
                         if i % 2 == 0 {
                             provision_missing_webui_token_file(home).expect("provision")
                         } else {
-                            ensure_webui_token_file(home).expect("ensure") == FileWriteAction::Wrote
+                            let action = ensure_webui_token_file(home).expect("ensure");
+                            // Never a rename over the token another start
+                            // already created (and a backend accepted).
+                            assert_ne!(action, FileWriteAction::Overwrote);
+                            action == FileWriteAction::Wrote
                         }
                     })
                 })

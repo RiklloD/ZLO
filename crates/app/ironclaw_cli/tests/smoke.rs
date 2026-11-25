@@ -2456,36 +2456,61 @@ fn serve_help_mentions_host_and_port() {
 fn serve_fails_closed_when_env_bearer_token_var_is_unset() {
     // The standalone CLI's env-bearer authenticator reads the token
     // value out of the env var named by `[webui].env_token_var`
-    // (defaulting to IRONCLAW_REBORN_WEBUI_TOKEN). When that var is
-    // absent the CLI must exit non-zero before binding any listener —
-    // we never want a half-configured serve loop running with auth
-    // disabled.
+    // (defaulting to ZLO_WEBUI_TOKEN). When that var is absent, no token
+    // file exists and `--create-token-if-missing` (the desktop app's
+    // opt-in) is not passed, the CLI must exit non-zero before binding any
+    // listener — we never want a half-configured serve loop running.
     let temp = tempfile::tempdir().expect("tempdir");
+    let reborn_home = temp.path().join("reborn-home");
+    let working_directory = reborn_home.join("workspace");
+    std::fs::create_dir_all(&working_directory).expect("working directory");
 
-    let output = Command::new(reborn_bin())
-        .arg("serve")
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg("0")
-        .env("ZLO_HOME", temp.path().join("reborn-home"))
-        .env_remove("ZLO_PROFILE")
-        .env_remove("IRONCLAW_REBORN_PROFILE")
-        .env_remove("IRONCLAW_REBORN_WEBUI_TOKEN")
-        .env_remove("IRONCLAW_REBORN_WEBUI_USER_ID")
-        // Only the desktop app opts in to creating the token file.
-        .env_remove("ZLO_PROVISION_WEBUI_TOKEN")
-        .output()
-        .expect("ironclaw-reborn serve should run");
+    // `reborn_command` clears the environment, so no inherited token (or
+    // `.env` beside the caller's cwd) can let this one start serving.
+    let mut child = reborn_command()
+        .args(["serve", "--host", "127.0.0.1", "--port", "0"])
+        .current_dir(&working_directory)
+        .env("HOME", temp.path())
+        .env("ZLO_HOME", &reborn_home)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("serve should run");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("serve child status") {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
+            let _ = child.kill();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "test teardown; the child may already have exited"
+            )]
+            let _ = child.wait();
+            panic!("serve kept running without a token; it must fail closed");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().expect("stderr piped"), &mut stderr)
+        .expect("read stderr");
 
     assert!(
-        !output.status.success(),
+        !status.success(),
         "serve must fail closed when the bearer token env var is unset"
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("ZLO_WEBUI_TOKEN must be set"),
         "stderr should explain which env var is missing: {stderr}"
+    );
+    assert!(
+        !reborn_home.join("webui-token").exists(),
+        "without the desktop opt-in no token file is created"
     );
 }
 
@@ -2494,9 +2519,9 @@ fn serve_fails_closed_when_env_bearer_token_var_is_unset() {
 /// file, `serve` creates `<home>/webui-token` (0600, random) and boots —
 /// auth stays on, nobody holds the token until they read the file — and a
 /// second start keeps the same token. Launched exactly as the app does it
-/// (cwd `<home>/workspace`, `ZLO_HOME` and the app's
-/// `ZLO_PROVISION_WEBUI_TOKEN=1` opt-in; without it, the test above
-/// still fails closed).
+/// (cwd `<home>/workspace`, `ZLO_HOME`, and the app's
+/// `--create-token-if-missing`; without it the test above still fails
+/// closed).
 #[test]
 fn serve_creates_its_token_file_on_first_start_of_an_empty_home() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -2514,7 +2539,13 @@ fn serve_creates_its_token_file_on_first_start_of_an_empty_home() {
     for start in ["first", "second"] {
         let port = unused_local_port();
         let mut child = reborn_command()
-            .args(["serve", "--host", "127.0.0.1", "--port"])
+            .args([
+                "serve",
+                "--create-token-if-missing",
+                "--host",
+                "127.0.0.1",
+                "--port",
+            ])
             .arg(port.to_string())
             .current_dir(&working_directory)
             .env("HOME", &home)
@@ -2524,7 +2555,6 @@ fn serve_creates_its_token_file_on_first_start_of_an_empty_home() {
             .env_remove("ZLO_WEBUI_TOKEN")
             .env_remove("IRONCLAW_REBORN_WEBUI_TOKEN")
             .env_remove("IRONCLAW_REBORN_WEBUI_USER_ID")
-            .env("ZLO_PROVISION_WEBUI_TOKEN", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

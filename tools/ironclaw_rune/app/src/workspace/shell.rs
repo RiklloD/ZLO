@@ -188,6 +188,10 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
     // backend of its own to go back to).
     let remote = (crate::remote::backend_is_remote(s) || s.remote.registry_error.is_some())
         && !s.remote.app_only;
+    // Triage in Terminal looks at this Mac's own backend: only when that
+    // is what failed (never for a paired computer, nor a Light bundle,
+    // which has no backend of its own).
+    let local_triage = !crate::remote::backend_is_remote(s) && !s.remote.app_only;
     let mut c = col()
         .key("failed")
         .w_full()
@@ -227,7 +231,7 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
                     .on_press(crate::remote::use_this_mac)
                     .build(k)
             }))
-            .children((!remote).then(|| {
+            .children(local_triage.then(|| {
                 // This Mac's backend is down, so in-app triage (which runs
                 // on it) is out of reach: `zlo triage` in Terminal needs no
                 // backend and no PATH (the bundled CLI, by full path).

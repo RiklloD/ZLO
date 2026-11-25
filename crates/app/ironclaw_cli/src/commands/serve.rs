@@ -69,12 +69,6 @@ pub(crate) fn present_unicode_env_var(name: &str) -> anyhow::Result<Option<Strin
     }
 }
 
-/// Whether the desktop app asked this `serve` to create its token file
-/// (`ironclaw_config::PROVISION_WEBUI_TOKEN_ENV` = `1`).
-fn desktop_token_provisioning_requested() -> bool {
-    env::var_os(ironclaw_config::PROVISION_WEBUI_TOKEN_ENV).is_some_and(|value| value == "1")
-}
-
 /// Mints the admin-created-user API bearer over a signed session store. The
 /// store is deterministic in its signing key (operator secret + tenant), so a
 /// token minted here validates under the SSO login surface's own store.
@@ -126,6 +120,13 @@ pub(crate) struct ServeCommand {
     /// Confirm trusted-laptop host filesystem access for the unrestricted standalone profile.
     #[arg(long = "confirm-host-access")]
     confirm_host_access: bool,
+
+    /// Create `<home>/webui-token` on this start when neither the token env
+    /// var nor the file exists (loopback listeners only; an existing file is
+    /// never replaced). The ZLO desktop app passes it to the backend it
+    /// starts, so a fresh Mac needs no `zlo onboard`.
+    #[arg(long = "create-token-if-missing")]
+    create_token_if_missing: bool,
 }
 
 impl ServeCommand {
@@ -175,6 +176,21 @@ impl ServeCommand {
             .and_then(|section| section.env_user_id_var.as_deref())
             .unwrap_or(default_env_user_id_var());
 
+        // Resolve listen address with explicit precedence:
+        //   CLI flag (Some(...)) > config file > compile-time default.
+        // Both `host` and `port` are `Option<>` in the clap struct so
+        // we can distinguish "operator omitted the flag" from "operator
+        // passed the default value explicitly".
+        let host: IpAddr = if let Some(value) = self.host {
+            value
+        } else if let Some(raw) = webui_section.and_then(|s| s.listen_host.as_deref()) {
+            IpAddr::from_str(raw)
+                .map_err(|err| anyhow!("[webui].listen_host `{raw}` invalid: {err}"))?
+        } else {
+            IpAddr::from_str(DEFAULT_SERVE_HOST).map_err(|err| {
+                anyhow!("DEFAULT_SERVE_HOST `{DEFAULT_SERVE_HOST}` invalid: {err}")
+            })?
+        };
         // Precedence: `env_token_var` (if set and non-empty), else
         // `<reborn_home>/webui-token` (the `onboard`-provisioned fallback a
         // service-installed serve, whose unit environment carries only
@@ -186,14 +202,16 @@ impl ServeCommand {
         // the value opaquely.
         //
         // The desktop app's own backend on a fresh Mac (and only it — it
-        // sets `ZLO_PROVISION_WEBUI_TOKEN=1`): with no env token and no
-        // file, make the file now rather than demanding a `zlo onboard`
-        // first. Auth stays on — the token is random and only readable from
-        // the 0600 file — and an existing file, valid or not, is never
-        // touched. Services and deployments never set the variable, so a
-        // missing secret there still fails closed below.
+        // passes `--create-token-if-missing` to the one child it starts, a
+        // flag nothing inherits): with no env token and no file, make the
+        // file now rather than demanding a `zlo onboard` first. Loopback
+        // only, so a published listener never boots on a credential nobody
+        // configured. Auth stays on — the token is random and only readable
+        // from the 0600 file — and an existing file, valid or not, is never
+        // touched. Everything else still fails closed below.
         let env_token_value = present_unicode_env_var(env_token_var)?;
-        if desktop_token_provisioning_requested()
+        if self.create_token_if_missing
+            && host.is_loopback()
             && env_token_value.as_deref().is_none_or(str::is_empty)
             && crate::webui_token::provision_missing_webui_token_file(boot_config.home().path())?
         {
@@ -273,21 +291,6 @@ impl ServeCommand {
             runtime_input.with_admin_api_token_minter(Arc::new(SignedSessionTokenMinter {
                 session_store: admin_session_store,
             }));
-        // Resolve listen address with explicit precedence:
-        //   CLI flag (Some(...)) > config file > compile-time default.
-        // Both `host` and `port` are `Option<>` in the clap struct so
-        // we can distinguish "operator omitted the flag" from "operator
-        // passed the default value explicitly".
-        let host: IpAddr = if let Some(value) = self.host {
-            value
-        } else if let Some(raw) = webui_section.and_then(|s| s.listen_host.as_deref()) {
-            IpAddr::from_str(raw)
-                .map_err(|err| anyhow!("[webui].listen_host `{raw}` invalid: {err}"))?
-        } else {
-            IpAddr::from_str(DEFAULT_SERVE_HOST).map_err(|err| {
-                anyhow!("DEFAULT_SERVE_HOST `{DEFAULT_SERVE_HOST}` invalid: {err}")
-            })?
-        };
         // `port = 0` tells the OS to pick a free port — useful when a
         // test harness passes `--port 0` and reads the port the banner
         // reports, but wrong in a config file, where a fixed, documented

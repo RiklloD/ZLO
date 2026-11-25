@@ -683,7 +683,9 @@ pub fn view(s: &State, k: &Kit) -> StepView {
 /// up later in Settings), but says so here rather than at the first send.
 fn nothing_can_answer(s: &State) -> bool {
     let a = &s.onboarding.agents;
-    if a.restarting {
+    // Only a catalog the computer actually sent counts: after a failed
+    // check, a signed-in agent may just not have been seen.
+    if a.restarting || a.catalog_error.is_some() {
         return false;
     }
     let (Some(catalog), Some(llm)) = (a.catalog.as_deref(), &s.pages.providers.llm) else {
@@ -944,6 +946,10 @@ mod tests {
         );
         // A fresh Mac: no agent signed in, no provider active.
         assert!(nothing_can_answer(&s));
+        // …unless the agent check failed: then it doesn't know.
+        s.onboarding.agents.catalog_error = Some("timed out".into());
+        assert!(!nothing_can_answer(&s));
+        s.onboarding.agents.catalog_error = None;
         // One signed-in agent is enough.
         s.onboarding.agents.catalog = Some(vec![route("codex", "codex", true)]);
         assert!(!nothing_can_answer(&s));

@@ -198,8 +198,10 @@ fn start(s: &mut State, mode: Mode) {
     };
     let tokens = s.remote.tokens.clone();
     let handle = s.rt.handle.clone();
+    // Only a backend this app starts makes its token on first start.
+    let own_backend = super::runs_local_backend(s);
     net.spawn(async move {
-        let resolved = resolve(target, tokens).await;
+        let resolved = resolve(target, tokens, own_backend).await;
         handle.update(move |s, _| {
             if s.fixture || s.workspace.connect_gen != generation {
                 return;
@@ -212,10 +214,14 @@ fn start(s: &mut State, mode: Mode) {
     });
 }
 
-async fn resolve(target: Target, tokens: Arc<dyn TokenStore>) -> Result<Resolved, Problem> {
+async fn resolve(
+    target: Target,
+    tokens: Arc<dyn TokenStore>,
+    own_backend: bool,
+) -> Result<Resolved, Problem> {
     match target {
-        Target::ThisMac => this_mac(false).await,
-        Target::Override => this_mac(true).await,
+        Target::ThisMac => this_mac(false, own_backend).await,
+        Target::Override => this_mac(true, false).await,
         Target::Environment(env) => environment(env, tokens).await,
         Target::Legacy(legacy) => {
             let host = host_of(&legacy.url).to_string();
@@ -253,8 +259,8 @@ async fn store_token(
         .map_err(|e| Problem::Blocked(e.to_string()))
 }
 
-async fn this_mac(override_url: bool) -> Result<Resolved, Problem> {
-    let conn = Connection::discover().map_err(|e| discover_problem(&e, override_url))?;
+async fn this_mac(override_url: bool, own_backend: bool) -> Result<Resolved, Problem> {
+    let conn = Connection::discover().map_err(|e| discover_problem(&e, own_backend))?;
     if override_url {
         check_transport(&conn.base_url).map_err(|e| {
             Problem::Blocked(format!("IRONCLAW_DESKTOP_URL ({}): {e}", conn.base_url))
@@ -285,13 +291,14 @@ async fn this_mac(override_url: bool) -> Result<Resolved, Problem> {
     })
 }
 
-/// Why This Mac could not be found. A missing token means its backend has
-/// not finished its first start (it writes the token then): unreachable, so
-/// the launch keeps waiting and retries instead of stopping on a screen
-/// that asks for a terminal command. Under `IRONCLAW_DESKTOP_URL` the
-/// gateway is someone else's, so a missing token stays the person's to fix.
-pub(super) fn discover_problem(e: &ClientError, override_url: bool) -> Problem {
-    if e.is_no_token() && !override_url {
+/// Why This Mac could not be found. A missing token, when this app runs
+/// the backend, means it has not finished its first start (it writes the
+/// token then): unreachable, so the launch keeps waiting and retries
+/// instead of stopping on a screen that asks for a terminal command. A
+/// backend the app does not start (the switch off, `IRONCLAW_DESKTOP_URL`)
+/// makes no token, so there it stays the person's to fix.
+pub(super) fn discover_problem(e: &ClientError, own_backend: bool) -> Problem {
+    if e.is_no_token() && own_backend {
         Problem::Unreachable(e.to_string())
     } else {
         Problem::Blocked(e.to_string())
