@@ -229,6 +229,57 @@ fn second_login_keychain_item_follows_the_cli_naming() {
     );
 }
 
+/// The Usage page lists (and probes) the second Claude login, and scans its
+/// history, only for a different signed-in account; probing an unused one
+/// created `~/.claude-account2` on a fresh install.
+#[test]
+fn the_second_login_is_used_only_for_a_different_signed_in_account() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let write = |path: PathBuf, uuid: Option<&str>| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = match uuid {
+            Some(uuid) => serde_json::json!({"oauthAccount": {"accountUuid": uuid}}),
+            None => serde_json::json!({"numStartups": 1}),
+        };
+        std::fs::write(path, body.to_string()).unwrap();
+    };
+    let ids = || -> (Vec<String>, Vec<String>) {
+        (
+            ClaudeAccount::defaults(home)
+                .into_iter()
+                .map(|a| a.provider_id)
+                .collect(),
+            crate::history::HistorySource::defaults(home)
+                .into_iter()
+                .map(|h| h.provider)
+                .collect(),
+        )
+    };
+    let one = (
+        vec!["claude_cli".to_string()],
+        vec!["claude_cli".into(), "codex".into()],
+    );
+    let second = home.join(".claude-account2").join(".claude.json");
+    write(home.join(".claude.json"), Some("acct-a"));
+    assert_eq!(ids(), one, "no second login");
+    assert!(!home.join(".claude-account2").exists(), "nothing created");
+    write(second.clone(), None);
+    assert_eq!(ids(), one, "a login file that never signed in");
+    write(second.clone(), Some("acct-a"));
+    assert_eq!(ids(), one, "the same account twice");
+    write(second.clone(), Some("acct-b"));
+    let two = (
+        vec!["claude_cli".to_string(), "claude_cli_2".into()],
+        vec!["claude_cli".into(), "claude_cli_2".into(), "codex".into()],
+    );
+    assert_eq!(ids(), two);
+    // Used before: its history and card stay, as its runtime does.
+    std::fs::remove_file(&second).unwrap();
+    std::fs::create_dir_all(home.join(".claude-account2/projects/-work")).unwrap();
+    assert_eq!(ids(), two);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_failing_endpoint_falls_back_to_the_clis_own_reading() {
     let dir = tempfile::tempdir().unwrap();

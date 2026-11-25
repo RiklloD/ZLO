@@ -26,6 +26,7 @@ mod compact;
 mod control;
 pub(crate) mod import;
 mod input;
+mod login;
 mod skills;
 mod steer;
 mod stream;
@@ -110,12 +111,14 @@ pub struct ClaudeCliConfig {
     pub runtime_id: String,
     pub display_name: String,
     pub binary: PathBuf,
-    /// `CLAUDE_CONFIG_DIR`; `None` is the CLI default (`~/.claude`).
+    /// `CLAUDE_CONFIG_DIR`; `None` is the CLI default (`~/.claude`), and an
+    /// inherited `CLAUDE_CONFIG_DIR` is cleared so it matches `login_file`.
     pub config_dir: Option<PathBuf>,
     /// Working directory of every session; transcripts are filed under it.
     pub work_dir: PathBuf,
     /// Where the account's login lives (`~/.claude.json` or
-    /// `<config_dir>/.claude.json`); its presence is "authenticated".
+    /// `<config_dir>/.claude.json`); "authenticated" when it holds a
+    /// signed-in `oauthAccount` (the CLI writes the file signed in or not).
     pub login_file: PathBuf,
     /// Where the account's transcripts live (`<config>/projects`).
     pub projects_dir: PathBuf,
@@ -469,9 +472,10 @@ impl ClaudeCliRuntime {
         } else {
             cmd.args(["--session-id", session_id]);
         }
-        if let Some(dir) = &self.config.config_dir {
-            cmd.env("CLAUDE_CONFIG_DIR", dir);
-        }
+        match &self.config.config_dir {
+            Some(dir) => cmd.env("CLAUDE_CONFIG_DIR", dir),
+            None => cmd.env_remove("CLAUDE_CONFIG_DIR"),
+        };
         cmd.current_dir(&plan.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1220,7 +1224,7 @@ impl TurnRuntime for ClaudeCliRuntime {
         Ok(vec![CatalogProvider {
             provider: self.config.runtime_id.clone(),
             name: self.config.display_name.clone(),
-            authenticated: self.config.login_file.is_file(),
+            authenticated: login::signed_in(&self.config.login_file).await,
             current: false,
             models: MODELS.iter().map(|m| m.to_string()).collect(),
             efforts: EFFORTS.iter().map(|e| e.to_string()).collect(),
@@ -1282,7 +1286,6 @@ pub fn find_binary(home: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// The two accounts Lorik runs: the CLI default and `~/.claude-account2`.
 /// Persist the CLI's own limit reading (atomic replace). Losing one is
 /// harmless: the next turn writes another.
 async fn write_limit_windows(path: &Path, windows: &serde_json::Value, at: i64) {
@@ -1316,6 +1319,8 @@ pub fn autocompact_setting(raw: Option<&str>) -> Option<u64> {
     }
 }
 
+/// The CLI default login, plus `~/.claude-account2` as [`second_account`]
+/// decides.
 pub fn default_accounts(
     home: &Path,
     binary: &Path,
@@ -1329,22 +1334,21 @@ pub fn default_accounts(
         usage: usage.clone(),
         legacy_state_file: Some(skills_dir.join(format!("{id}.json"))),
     };
-    let second = home.join(".claude-account2");
-    vec![
-        ClaudeCliConfig {
-            runtime_id: "claude-cli".into(),
-            display_name: "Claude CLI".into(),
-            binary: binary.to_path_buf(),
-            config_dir: None,
-            work_dir: work_dir.clone(),
-            login_file: home.join(".claude.json"),
-            projects_dir: home.join(".claude").join("projects"),
-            usage_file: Some(usage_dir.join("claude-cli.json")),
-            autocompact,
-            artifacts: false,
-            skills: listing("claude-cli"),
-        },
-        ClaudeCliConfig {
+    let mut accounts = vec![ClaudeCliConfig {
+        runtime_id: "claude-cli".into(),
+        display_name: "Claude CLI".into(),
+        binary: binary.to_path_buf(),
+        config_dir: None,
+        work_dir: work_dir.clone(),
+        login_file: home.join(".claude.json"),
+        projects_dir: home.join(".claude").join("projects"),
+        usage_file: Some(usage_dir.join("claude-cli.json")),
+        autocompact,
+        artifacts: false,
+        skills: listing("claude-cli"),
+    }];
+    if let Some(second) = second_account(home) {
+        accounts.push(ClaudeCliConfig {
             runtime_id: "claude-cli-2".into(),
             display_name: "Claude CLI 2".into(),
             binary: binary.to_path_buf(),
@@ -1356,13 +1360,100 @@ pub fn default_accounts(
             autocompact,
             artifacts: false,
             skills: listing("claude-cli-2"),
-        },
-    ]
+        });
+    }
+    accounts
 }
+
+/// The second account's config dir, `~/.claude-account2`, when it gets a
+/// runtime. Most people have one Claude login, so the second account is
+/// opt-in: sign it in with
+/// `CLAUDE_CONFIG_DIR=~/.claude-account2 claude /login` and restart. It is
+/// used when a different account than the CLI default is signed in there,
+/// or when it already has transcripts (`projects/`): threads, profiles and
+/// queued messages may name `claude-cli-2`, and a missing runtime breaks
+/// them. A folder older builds created by probing it, never used, is not
+/// enough, so a fresh install has no second runtime.
+pub fn second_account(home: &Path) -> Option<PathBuf> {
+    let dir = home.join(SECOND_ACCOUNT_DIR);
+    let different = login::account_at(&dir.join(".claude.json")).is_some_and(|second| {
+        login::account_at(&home.join(".claude.json")).as_deref() != Some(second.as_str())
+    });
+    if different || has_entries(&dir.join("projects")) {
+        Some(dir)
+    } else {
+        tracing::debug!("claude cli: no distinct or used second login; not registered");
+        None
+    }
+}
+
+/// Whether `dir` exists and holds anything.
+fn has_entries(dir: &Path) -> bool {
+    match std::fs::read_dir(dir) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(error) => {
+            tracing::debug!(%error, "claude cli: no second-login transcripts");
+            false
+        }
+    }
+}
+
+/// Where the optional second Claude login lives, under `$HOME`.
+pub const SECOND_ACCOUNT_DIR: &str = ".claude-account2";
 
 #[cfg(test)]
 mod tests {
-    use super::autocompact_setting;
+    use super::{SECOND_ACCOUNT_DIR, autocompact_setting, default_accounts};
+    use crate::skill_listing::CliSkillUsage;
+
+    fn login(path: &std::path::Path, uuid: Option<&str>) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = match uuid {
+            Some(uuid) => serde_json::json!({"oauthAccount": {"accountUuid": uuid}}),
+            None => serde_json::json!({"numStartups": 1}),
+        };
+        std::fs::write(path, body.to_string()).unwrap();
+    }
+
+    fn runtimes(home: &std::path::Path) -> Vec<String> {
+        default_accounts(home, &home.join("claude"), &CliSkillUsage::default())
+            .into_iter()
+            .map(|c| c.runtime_id)
+            .collect()
+    }
+
+    /// The bug: a fresh install listed "Claude CLI 2" beside "Claude CLI",
+    /// both Ready, both the same login. The second account runs only for a
+    /// different signed-in login, or one that already has transcripts (its
+    /// threads and profiles must keep resolving).
+    #[test]
+    fn the_second_account_runs_only_when_distinct_or_already_used() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let first = home.join(".claude.json");
+        let dir = home.join(SECOND_ACCOUNT_DIR);
+        let second = dir.join(".claude.json");
+        login(&first, Some("acct-a"));
+        assert_eq!(runtimes(home), ["claude-cli"], "no second login");
+
+        login(&second, None);
+        assert_eq!(
+            runtimes(home),
+            ["claude-cli"],
+            "a login file that never signed in"
+        );
+
+        login(&second, Some(" acct-a "));
+        assert_eq!(runtimes(home), ["claude-cli"], "the same account");
+
+        login(&second, Some("acct-b"));
+        assert_eq!(runtimes(home), ["claude-cli", "claude-cli-2"]);
+
+        // Used before: kept even as a duplicate, or with its login gone.
+        std::fs::remove_file(&second).unwrap();
+        std::fs::create_dir_all(dir.join("projects").join("-work")).unwrap();
+        assert_eq!(runtimes(home), ["claude-cli", "claude-cli-2"]);
+    }
 
     #[test]
     fn autocompact_takes_only_what_the_cli_accepts() {

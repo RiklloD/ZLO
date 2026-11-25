@@ -16,7 +16,7 @@ resets. The provider logic is ported from
 | Id | Source | Credentials |
 |---|---|---|
 | `claude_cli` | `claude -p` `get_usage` control request, then `GET api.anthropic.com/api/oauth/usage` | the CLI's own login; for the endpoint, the live one of `~/.claude/.credentials.json` and Keychain `Claude Code-credentials` |
-| `claude_cli_2` | same, with `CLAUDE_CONFIG_DIR=~/.claude-account2` | same; Keychain `Claude Code-credentials-<sha256(dir)[..8]>` |
+| `claude_cli_2` | same, with `CLAUDE_CONFIG_DIR=~/.claude-account2`; listed only when a different account is signed in there | same; Keychain `Claude Code-credentials-<sha256(dir)[..8]>` |
 | `codex` | `codex app-server` `account/rateLimits/read` | the CLI's ChatGPT login |
 | `zai` | `GET api.z.ai/api/monitor/usage/quota/limit` | operator secret `llm_provider_{zai,glm}_api_key` |
 | `antigravity` | `v1internal:retrieveUserQuotaSummary` (fallback `fetchAvailableModels`) | refresh token in the ACP profile's `antigravity-acp/acp_token.json` |

@@ -51,9 +51,13 @@ zlo triage --agent codex
 ```
 
 Pass `--model <model-id>` to choose a model, or leave it out to use the CLI's default.
-Antigravity needs Google's standalone `agy` CLI on your `PATH` and its own sign-in.
-If none of the three is installed, `zlo triage` prints where it wrote the prompt so you
-can paste it into any coding agent.
+Antigravity needs Google's standalone `agy` CLI and its own sign-in.
+`zlo triage` looks for each agent on your `PATH`, then in `~/.local/bin` and
+`~/.claude/local`, where the installers put them even when they do not add that folder
+to your `PATH`. If it starts one from there, it says so.
+If none of the three is installed, `zlo triage` offers to install one in your terminal
+and then starts it. Press Enter to skip; it then prints where it wrote the prompt so
+you can paste it into any coding agent, and the install commands.
 
 `zlo triage` reads no configuration and opens no database, so it works when the
 backend will not start, and a setting it can work around (such as an unknown

@@ -1,9 +1,10 @@
 # ironclaw_cli_providers
 
 Coding-agent CLIs as `ironclaw_orchestrator` turn runtimes: the Claude CLI,
-registered twice: `claude-cli` (default account) and `claude-cli-2`
-(`CLAUDE_CONFIG_DIR=~/.claude-account2`), only when a `claude` binary is
-found; `antigravity` (Google's Antigravity agent over ACP), `muse-code` (Meta's Muse Code)
+registered as `claude-cli` (default account) when a `claude` binary is
+found, plus `claude-cli-2` (`CLAUDE_CONFIG_DIR=~/.claude-account2`) only when
+a different account is signed in there (opt-in:
+`CLAUDE_CONFIG_DIR=~/.claude-account2 claude /login`, then restart); `antigravity` (Google's Antigravity agent over ACP), `muse-code` (Meta's Muse Code)
 and `codex` (OpenAI's Codex CLI over `codex app-server`, on the user's own
 `codex login`), each registered when installed
 (`register_antigravity_runtime`, `register_muse_runtime`,

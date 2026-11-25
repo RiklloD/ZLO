@@ -373,17 +373,39 @@ fn a_removed_computer_leaves_no_update_prompt_behind() {
     use super::updates::{RowState, set_row, waiting};
     let mut s = state();
     s.remote.registry.upsert(studio());
-    set_row(&mut s, "env-studio".into(), RowState::Behind(2));
+    set_row(&mut s, "env-studio".into(), RowState::behind(2));
     assert_eq!(waiting(&s.remote.updates), 1);
     super::pairing::remove(&mut s, "env-studio".into());
     assert_eq!(waiting(&s.remote.updates), 0);
     // A poll that was already on its way answers after the removal.
-    set_row(&mut s, "env-studio".into(), RowState::Behind(2));
+    set_row(&mut s, "env-studio".into(), RowState::behind(2));
     assert_eq!(
         waiting(&s.remote.updates),
         0,
         "no row for a computer that is gone"
     );
+}
+
+#[test]
+fn the_update_dialog_closes_when_its_updates_are_gone() {
+    use super::updates::{RowState, set_row};
+    let mut s = state();
+    s.remote.registry.upsert(studio());
+    set_row(&mut s, "env-studio".into(), RowState::behind(2));
+    s.workspace.confirm_update = Some(vec!["env-studio".into()]);
+    // Another computer's news leaves it open.
+    set_row(
+        &mut s,
+        zlo_client::environments::THIS_MAC.into(),
+        RowState::behind(1),
+    );
+    assert!(s.workspace.confirm_update.is_some());
+    // Its own computer got updated elsewhere: it closes, and stays closed
+    // when that computer falls behind again later.
+    set_row(&mut s, "env-studio".into(), RowState::UpToDate);
+    assert!(s.workspace.confirm_update.is_none());
+    set_row(&mut s, "env-studio".into(), RowState::behind(3));
+    assert!(s.workspace.confirm_update.is_none());
 }
 
 mod triage_switch {
@@ -637,4 +659,71 @@ mod triage_switch {
         assert_ne!(text.as_deref(), Some("plain words"));
         assert!(s.workspace.triage.is_none());
     }
+}
+
+#[test]
+fn a_fresh_mac_without_a_token_keeps_waiting_for_its_first_start() {
+    // A fresh install: the app starts its backend, which writes the token on
+    // its first start. Until then This Mac has no token — the launch must
+    // keep waiting (and retry), never stop on a screen that asks for
+    // `zlo onboard`.
+    let missing = zlo_client::ClientError::NoToken("/nonexistent/.zlo/webui-token".into());
+    assert!(!missing.to_string().contains("onboard"), "{missing}");
+    let problem = connect::discover_problem(&missing, true);
+    assert!(
+        matches!(problem, connect::Problem::Unreachable(_)),
+        "{problem:?}"
+    );
+    // A backend this app does not start (switch off, IRONCLAW_DESKTOP_URL)
+    // makes no token: the person's to fix.
+    assert!(matches!(
+        connect::discover_problem(&missing, false),
+        connect::Problem::Blocked(_)
+    ));
+    // Any other config problem still waits for the person.
+    let other = zlo_client::ClientError::Config("cannot parse config.toml".into());
+    assert!(matches!(
+        connect::discover_problem(&other, true),
+        connect::Problem::Blocked(_)
+    ));
+
+    // Through the caller: within the startup grace the app stays on its
+    // connecting screen and knocks again.
+    crate::service::clear_startup_failure();
+    let mut s = state();
+    assert!(runs_local_backend(&s));
+    s.launched = std::time::Instant::now();
+    crate::workspace::connect_failed(&mut s, problem);
+    assert!(matches!(s.conn, Conn::Connecting), "{:?}", s.conn);
+
+    // Past the grace it shows why, without terminal steps, and retries.
+    let mut s = state();
+    s.launched = std::time::Instant::now() - std::time::Duration::from_secs(120);
+    crate::workspace::connect_failed(&mut s, connect::discover_problem(&missing, true));
+    match &s.conn {
+        Conn::Failed { message, retry_in } => {
+            assert!(
+                retry_in.is_some(),
+                "a first start still under way is retried"
+            );
+            assert!(!message.contains("zlo onboard"), "{message}");
+            assert!(!message.contains("zlo service install"), "{message}");
+        }
+        other => panic!("expected a retrying failure, got {other:?}"),
+    }
+
+    // The backend already stopped with its own error: shown at once (no
+    // grace), still retried, and gone once the app connects.
+    crate::service::set_startup_failure(Some("Error: bad config.toml".into()));
+    let mut s = state();
+    s.launched = std::time::Instant::now();
+    crate::workspace::connect_failed(&mut s, connect::discover_problem(&missing, true));
+    match &s.conn {
+        Conn::Failed { message, retry_in } => {
+            assert!(message.contains("Error: bad config.toml"), "{message}");
+            assert!(retry_in.is_some());
+        }
+        other => panic!("expected the backend's own error, got {other:?}"),
+    }
+    crate::service::clear_startup_failure();
 }

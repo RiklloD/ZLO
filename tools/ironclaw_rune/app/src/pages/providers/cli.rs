@@ -1,12 +1,14 @@
 //! Providers → CLI agents: one row per known coding-agent CLI, with its
-//! install or sign-in command to copy and the remove / add-back button.
+//! install or sign-in command to copy and the remove / add-back button. An
+//! agent this Mac does not have yet installs from its row (`cli_install`).
 
 use rune::{El, col, row, text};
 use rune_kit::Kit;
 use zlo_client::orchestration::RouteProvider;
 
-use super::catalog::KNOWN_CLIS;
+use super::catalog::{KNOWN_CLIS, KnownCli};
 use super::view::LOGO;
+use crate::cli_install::Phase;
 use crate::design::brands::provider_logo;
 use crate::design::{kit, motion};
 use crate::icons;
@@ -29,6 +31,10 @@ struct CliRow {
     remove: Option<(String, bool)>,
     /// The agent's models in the picker, while it is ready.
     models: Option<El>,
+    /// Install / Cancel / Retry beside the status, for an agent not found.
+    action: Option<El>,
+    /// Under the row: the installer's output, or why it failed.
+    below: Option<El>,
 }
 
 fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
@@ -64,6 +70,9 @@ fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
         .child(provider_logo(s, &ids, LOGO))
         .child(info)
         .child(r.status);
+    if let Some(action) = r.action {
+        line = line.child(action);
+    }
     if let Some((provider, hidden)) = r.remove {
         let b = if hidden {
             pressable(
@@ -92,10 +101,191 @@ fn cli_row(s: &State, k: &Kit, r: CliRow) -> El {
         .opacity_motion(motion::SLIDE)
         .opacity(if hidden { 0.6 } else { 1. })
         .child(line);
+    if let Some(below) = r.below {
+        c = c.child(below);
+    }
     if let Some(models) = r.models {
         c = c.child(models);
     }
     c
+}
+
+/// An agent not found: its status, and what its row offers. This Mac runs
+/// the installer from the row; another computer gets the command to run
+/// there.
+fn not_found(s: &State, k: &Kit, known: &'static KnownCli) -> (El, Option<El>, Option<El>) {
+    let p = &s.palette;
+    let ps = &s.pages.providers;
+    let breathing = |label: &'static str| {
+        outlined_tag(p, Tone::Secondary, label).cycle(crate::design::kit::loops::breathe(
+            1.6,
+            0.,
+            &crate::design::kit::loops::BREATH_55,
+        ))
+    };
+    let small = |label: &'static str, look: Look| button_sized(label, look, Size::XSmall);
+    let runtime = known.runtime;
+    match s.cli_installs.get(runtime).map(|i| (&i.phase, &i.tail)) {
+        Some((Phase::Running, tail)) => {
+            let mut lines = col()
+                .key("install-tail")
+                .pt(8.)
+                .pl(LOGO + 12.)
+                .gap(2.)
+                .min_w(0.);
+            if tail.is_empty() {
+                lines = lines.child(
+                    text("Starting the installer…")
+                        .font(MONO_XS)
+                        .color(p.text_muted),
+                );
+            }
+            for (i, line) in tail.iter().enumerate() {
+                lines = lines.child(
+                    text(line.clone())
+                        .key(format!("tail-{i}"))
+                        .font(MONO_XS)
+                        .color(p.text_muted)
+                        .truncate(),
+                );
+            }
+            let cancel = pressable(
+                small("Cancel", Look::Ghost)
+                    .on_press(move |s: &mut State| crate::cli_install::cancel(s, runtime))
+                    .build(k),
+            )
+            .key(format!("cli-install-cancel-{runtime}"));
+            (
+                breathing("Installing…").key("installing"),
+                Some(cancel),
+                Some(lines.transition(motion::reveal())),
+            )
+        }
+        Some((Phase::Stopping, _)) => (breathing("Stopping…").key("stopping"), None, None),
+        Some((Phase::Finding, _)) => (breathing("Finding it…").key("finding"), None, None),
+        Some((Phase::Failed(why), _)) => {
+            let buttons = row()
+                .gap(4.)
+                .center_y()
+                .child(
+                    pressable(
+                        small("Retry", Look::Outline)
+                            .on_press(move |s: &mut State| crate::cli_install::start(s, runtime))
+                            .build(k),
+                    )
+                    .key(format!("cli-install-retry-{runtime}")),
+                )
+                .child(
+                    pressable(
+                        small("Open in Terminal", Look::Ghost)
+                            .on_press(move |s: &mut State| super::install_in_terminal(s, runtime))
+                            .build(k),
+                    )
+                    .key(format!("cli-install-terminal-{runtime}")),
+                );
+            let why = row()
+                .key("install-failed")
+                .pt(8.)
+                .pl(LOGO + 12.)
+                .gap(8.)
+                .center_y()
+                .child(
+                    text(why.clone())
+                        .font(xs())
+                        .color(p.warning)
+                        .wrap()
+                        .grow(1.)
+                        .min_w(0.),
+                )
+                .child(
+                    icon_button_sized(&icons::CLOSE, "Dismiss", Size::XSmall)
+                        .on_press(move |s: &mut State| crate::cli_install::dismiss(s, runtime))
+                        .build(k)
+                        .press_scale(motion::PRESS),
+                )
+                .transition(motion::reveal());
+            (
+                outlined_tag(p, Tone::Warning, "Install failed").key("failed"),
+                Some(buttons),
+                Some(why),
+            )
+        }
+        Some((Phase::NeedsRestart(why), _)) => {
+            let restarting = crate::cli_install::restarting(s);
+            let mut restart = small(
+                if restarting {
+                    "Restarting…"
+                } else {
+                    "Restart IronClaw"
+                },
+                Look::Outline,
+            )
+            .disabled(restarting || !crate::cli_install::backend_on_this_mac(s));
+            if !restarting {
+                restart = restart.on_press(|s: &mut State| crate::cli_install::restart_now(s));
+            }
+            let why = row()
+                .key("install-restart")
+                .pt(8.)
+                .pl(LOGO + 12.)
+                .gap(8.)
+                .center_y()
+                .child(
+                    text(why.clone())
+                        .font(xs())
+                        .color(p.text_muted)
+                        .wrap()
+                        .grow(1.)
+                        .min_w(0.),
+                )
+                .child(
+                    icon_button_sized(&icons::CLOSE, "Dismiss", Size::XSmall)
+                        .on_press(move |s: &mut State| crate::cli_install::dismiss(s, runtime))
+                        .build(k)
+                        .press_scale(motion::PRESS),
+                )
+                .transition(motion::reveal());
+            (
+                outlined_tag(p, Tone::Secondary, "Installed").key("installed"),
+                Some(pressable(restart.build(k)).key(format!("cli-install-restart-{runtime}"))),
+                Some(why),
+            )
+        }
+        None => {
+            let status = if known.planned {
+                outlined_tag(p, Tone::Secondary, "Driver coming next")
+            } else if ps.runtimes.is_none() {
+                outlined_tag(p, Tone::Secondary, "Unknown")
+            } else {
+                outlined_tag(p, Tone::Warning, "Not detected")
+            };
+            if known.planned || known.install.is_none() {
+                return (status, None, None);
+            }
+            if !crate::cli_install::can_install_here(s, known) {
+                let host = crate::cli_install::backend_host(s);
+                let hint = text(format!(
+                    "Run this on {host}. It shows up here once it is installed."
+                ))
+                .key("install-remote")
+                .font(xs())
+                .color(p.text_muted)
+                .wrap()
+                .pt(6.);
+                return (status, None, Some(hint));
+            }
+            (status, Some(install_button(k, runtime)), None)
+        }
+    }
+}
+
+fn install_button(k: &Kit, runtime: &'static str) -> El {
+    pressable(
+        button_sized("Install", Look::Outline, Size::XSmall)
+            .on_press(move |s: &mut State| crate::cli_install::start(s, runtime))
+            .build(k),
+    )
+    .key(format!("cli-install-{runtime}"))
 }
 
 /// A CLI row's copy button: the copy glyph turns into a check for
@@ -130,14 +320,14 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                 r.provider.starts_with(known.runtime) || r.runtime.starts_with(known.runtime)
             })
             .collect();
-        if found.is_empty() {
-            let status = if known.planned {
-                outlined_tag(p, Tone::Secondary, "Driver coming next")
-            } else if ps.runtimes.is_none() {
-                outlined_tag(p, Tone::Secondary, "Unknown")
-            } else {
-                outlined_tag(p, Tone::Warning, "Not detected")
-            };
+        // While its installer runs, the row stays the install's (with its
+        // Cancel), even once the backend lists the new agent.
+        let installing = s
+            .cli_installs
+            .get(known.runtime)
+            .is_some_and(|i| i.phase.busy());
+        if found.is_empty() || installing {
+            let (status, action, below) = not_found(s, k, known);
             rows.push(cli_row(
                 s,
                 k,
@@ -150,6 +340,8 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                     commands: known.install.map(|c| ("Install", c)).into_iter().collect(),
                     remove: None,
                     models: None,
+                    action,
+                    below,
                 },
             ));
             continue;
@@ -173,6 +365,19 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                 outlined_tag(p, Tone::Warning, "Not signed in")
             };
             let commands = super::catalog::next_steps(known, r);
+            // Found only through Antigravity's legacy runtime: the CLI
+            // installs from this row, as from a row not found.
+            let legacy = known.legacy_runtime
+                && r.launch == Some(zlo_client::orchestration::CatalogLaunch::Legacy);
+            let (status, action, below) = if legacy && s.cli_installs.get(known.runtime).is_some() {
+                not_found(s, k, known)
+            } else {
+                let action = (legacy
+                    && r.needs_native_cli()
+                    && crate::cli_install::can_install_here(s, known))
+                .then(|| install_button(k, known.runtime));
+                (status, action, None)
+            };
             rows.push(cli_row(
                 s,
                 k,
@@ -186,6 +391,8 @@ pub(super) fn render_cli(s: &State, k: &Kit) -> El {
                     remove: ps.picker.is_some().then(|| (r.provider.clone(), hidden)),
                     models: (!hidden && r.authenticated && !r.models.is_empty())
                         .then(|| super::view::render_picker_models(s, k, r)),
+                    action,
+                    below,
                 },
             ));
         }

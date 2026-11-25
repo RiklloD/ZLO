@@ -22,7 +22,7 @@ impl Fixture {
             write_script(
                 &bin.join(command),
                 &format!(
-                    "#!/bin/sh\n{{ echo \"{command}\"; for a in \"$@\"; do echo \"arg:$a\"; done; echo \"cwd:$(pwd -P)\"; }} > \"$TRIAGE_TEST_RECORD\"\n"
+                    "#!/bin/sh\n{{ echo \"{command}\"; for a in \"$@\"; do echo \"arg:$a\"; done; echo \"cwd:$(pwd -P)\"; echo \"path:$PATH\"; }} > \"$TRIAGE_TEST_RECORD\"\n"
                 ),
             );
         }
@@ -55,6 +55,29 @@ impl Fixture {
 
     fn run(&self, args: &[&str]) -> Output {
         self.command(args).output().expect("run zlo")
+    }
+
+    /// A fake `command` in `<root>/<dir>` (a folder under the fake `HOME`),
+    /// recording itself as `<name>` like the ones on `PATH`.
+    fn install_in_home(&self, dir: &str, command: &str, name: &str) -> PathBuf {
+        let folder = self.path().join(dir);
+        std::fs::create_dir_all(&folder).expect("folder");
+        write_script(
+            &folder.join(command),
+            &format!(
+                "#!/bin/sh\n{{ echo \"{name}\"; for a in \"$@\"; do echo \"arg:$a\"; done; echo \"cwd:$(pwd -P)\"; echo \"path:$PATH\"; }} > \"$TRIAGE_TEST_RECORD\"\n"
+            ),
+        );
+        folder
+    }
+
+    /// The `PATH` the fake agent started with.
+    fn launch_path(&self) -> String {
+        let text = std::fs::read_to_string(self.record()).expect("agent ran");
+        text.lines()
+            .find_map(|line| line.strip_prefix("path:"))
+            .expect("path recorded")
+            .to_string()
     }
 
     /// `(command, args, cwd)` the fake agent recorded.
@@ -189,6 +212,84 @@ fn with_no_agent_installed_it_points_at_the_prompt_file() {
     assert!(all.contains("No supported agent CLI (claude, codex, agy) was found"));
     assert!(all.contains("triage-playbook.md"));
     assert!(all.contains("Paste the prompt file into any coding agent"));
+    // Without a terminal nothing is installed, but the commands are shown.
+    assert!(
+        all.contains("curl -fsSL https://claude.ai/install.sh | bash"),
+        "{all}"
+    );
+    assert!(
+        all.contains("curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
+        "{all}"
+    );
+    assert!(!fixture.record().exists());
+}
+
+/// The native installers put the CLI in `~/.local/bin` (Claude's also in
+/// `~/.claude/local`) and do not always add it to `PATH`: the app finds it
+/// there, so triage must too, and say so.
+#[test]
+fn an_agent_installed_off_path_in_the_home_is_found_and_started() {
+    for dir in [".local/bin", ".claude/local"] {
+        let fixture = Fixture::new(&[]);
+        let folder = fixture.install_in_home(dir, "claude", "claude");
+        let output = fixture.run(&[]);
+        assert!(output.status.success(), "{dir}: {}", text(&output));
+        let all = text(&output);
+        assert!(
+            all.contains(&format!(
+                "Found Claude Code in {} (not on your PATH).",
+                folder.display()
+            )),
+            "{dir}: {all}"
+        );
+        let (command, _, cwd) = fixture.launch();
+        assert_eq!(command, "claude", "{dir}");
+        // Its folder leads the agent's PATH, so what it starts is found too.
+        let path = fixture.launch_path();
+        assert!(
+            path.starts_with(&format!("{}:", folder.display())),
+            "{dir}: {path}"
+        );
+        let context = std::fs::read_to_string(cwd.join("context.md")).expect("context");
+        assert!(
+            context.contains("## Problems found while starting triage"),
+            "{context}"
+        );
+        assert!(
+            context.contains(&folder.join("claude").display().to_string()),
+            "{context}"
+        );
+        assert!(context.contains("not on this terminal's PATH"), "{context}");
+    }
+}
+
+#[test]
+fn an_agent_on_path_wins_over_one_in_the_home() {
+    let fixture = Fixture::new(&["claude"]);
+    fixture.install_in_home(".local/bin", "claude", "home-claude");
+    let output = fixture.run(&["--agent", "claude"]);
+    assert!(output.status.success(), "{}", text(&output));
+    assert!(!text(&output).contains("not on your PATH"));
+    let (command, _, _) = fixture.launch();
+    assert_eq!(command, "claude");
+    assert_eq!(
+        fixture.launch_path(),
+        fixture.path().join("bin").display().to_string()
+    );
+}
+
+/// Two agents, one only in the home folder: both count, so with no
+/// terminal triage asks for `--agent` instead of starting the one on PATH.
+#[test]
+fn agents_in_the_home_count_toward_the_choice() {
+    let fixture = Fixture::new(&["codex"]);
+    fixture.install_in_home(".local/bin", "agy", "agy");
+    let output = fixture.run(&[]);
+    assert!(!output.status.success(), "{}", text(&output));
+    assert!(text(&output).contains("--agent antigravity"));
+    let output = fixture.run(&["--agent", "antigravity"]);
+    assert!(output.status.success(), "{}", text(&output));
+    assert_eq!(fixture.launch().0, "agy");
 }
 
 #[test]

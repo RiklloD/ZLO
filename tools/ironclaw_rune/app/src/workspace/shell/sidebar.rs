@@ -138,8 +138,8 @@ pub(super) fn sidebar(
     )
 }
 
-/// Zeron's footer: the account chip on the left ("Local": this Mac's
-/// gateway), icon buttons on the right at 32 px.
+/// Zeron's footer: the update button on the left (t3code's sidebar update
+/// pill), icon buttons on the right at 32 px.
 fn footer(s: &State, p: &Palette) -> El {
     let unread = s.workspace.unread;
     let foot = |key: &'static str, i: &'static rune::Icon, label: &'static str| {
@@ -184,38 +184,18 @@ fn footer(s: &State, p: &Palette) -> El {
         .padding(8.)
         .gap(4.)
         .center_y()
+        // The update button takes the free width: a capsule grows into it.
         .child(
             row()
-                .key("account-local")
-                .gap(8.)
-                .px(6.)
-                .h(design::SIDEBAR_CONTROL)
+                .grow(1.0)
+                .min_w(0.)
                 .center_y()
-                .radius(8.)
-                .child(
-                    row()
-                        .size(18., 18.)
-                        .radius(9.)
-                        .fill(p.accent)
-                        .center()
-                        .child(tw("L", 10., SEMIBOLD, p.on_accent())),
-                )
-                .child(ui::side_t(
-                    "Local",
-                    design::SIDEBAR_TITLE_SIZE,
-                    p.text.alpha(0.8),
-                )),
+                .child(super::update_button::button(s, p)),
         )
-        .child(el().grow(1.0))
         .child(bell)
         .child(
             foot("open-usage", &icons::CHART_PIE, "Usage")
                 .on_press(|s: &mut State| super::super::show(s, Page::Usage)),
-        )
-        .child(
-            foot("open-browser", &icons::EXTERNAL_LINK, "Open in browser").on_press_tx(
-                |s: &mut State, tx: &mut rune::Tx| super::super::open_in_browser(s, tx),
-            ),
         )
         .child(
             foot("open-settings", &icons::SETTINGS, "Settings")

@@ -59,31 +59,34 @@ pub(crate) struct HistorySource {
 }
 
 impl HistorySource {
-    /// Both Claude logins and Codex under `home`, matching the limit cards.
+    /// The Claude logins and Codex under `home`, matching the limit cards
+    /// (the second Claude login only when it is a different signed-in
+    /// account, as `crate::claude::second_login_dir` decides).
     pub(crate) fn defaults(home: &Path) -> Vec<Self> {
-        vec![
-            Self {
-                provider: "claude_cli".into(),
-                label: "Claude CLI".into(),
-                format: Format::Claude,
-                roots: vec![home.join(".claude").join("projects")],
-            },
-            Self {
-                provider: "claude_cli_2".into(),
-                label: "Claude CLI 2".into(),
-                format: Format::Claude,
-                roots: vec![home.join(".claude-account2").join("projects")],
-            },
-            Self {
-                provider: "codex".into(),
-                label: "Codex".into(),
-                format: Format::Codex,
-                roots: vec![
-                    home.join(".codex").join("sessions"),
-                    home.join(".codex").join("archived_sessions"),
-                ],
-            },
-        ]
+        let second = crate::claude::second_login_dir(home).map(|dir| Self {
+            provider: "claude_cli_2".into(),
+            label: "Claude CLI 2".into(),
+            format: Format::Claude,
+            roots: vec![dir.join("projects")],
+        });
+        [Self {
+            provider: "claude_cli".into(),
+            label: "Claude CLI".into(),
+            format: Format::Claude,
+            roots: vec![home.join(".claude").join("projects")],
+        }]
+        .into_iter()
+        .chain(second)
+        .chain([Self {
+            provider: "codex".into(),
+            label: "Codex".into(),
+            format: Format::Codex,
+            roots: vec![
+                home.join(".codex").join("sessions"),
+                home.join(".codex").join("archived_sessions"),
+            ],
+        }])
+        .collect()
     }
 }
 

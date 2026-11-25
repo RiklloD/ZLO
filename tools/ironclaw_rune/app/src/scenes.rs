@@ -297,6 +297,10 @@ pub const SCENES: &[Scene] = &[
         crate::pages::providers::fixtures::catalog,
     ),
     ("providers-cli", crate::pages::providers::fixtures::cli),
+    (
+        "providers-cli-install",
+        crate::pages::providers::fixtures::cli_install,
+    ),
     ("quick-composer", ws::fixture_quick),
     ("settings", |s| {
         page_with(s, Page::Settings, crate::pages::settings::fixture)
@@ -360,6 +364,21 @@ pub const SCENES: &[Scene] = &[
     ("thread-drag-draft", ws::fixture_thread_drag_draft),
     ("traces", |s| {
         page_with(s, Page::Traces, crate::pages::settings::fixture)
+    }),
+    ("update-available", |s| {
+        crate::workspace::fixtures::fixture_update(s, "available")
+    }),
+    ("update-confirm", |s| {
+        crate::workspace::fixtures::fixture_update(s, "confirm")
+    }),
+    ("update-confirm-many", |s| {
+        crate::workspace::fixtures::fixture_update(s, "confirm-many")
+    }),
+    ("update-failed", |s| {
+        crate::workspace::fixtures::fixture_update(s, "failed")
+    }),
+    ("update-running", |s| {
+        crate::workspace::fixtures::fixture_update(s, "running")
     }),
     ("usage", usage),
     ("usage-compactions", usage_compactions),

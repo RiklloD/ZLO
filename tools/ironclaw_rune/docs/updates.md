@@ -57,8 +57,8 @@ The checkout always comes from the machine itself. Nothing a client sends can ch
 ## The everyday loop
 
 1. Change the code and push it to the branch the machines follow.
-2. Within a couple of minutes ZLO's status bar shows **Update available**. Each backend checks its own source every two minutes, and ZLO reads the answer once a minute.
-3. Click it. Every computer that is behind updates, This Mac last.
+2. Within a couple of minutes the update button at the bottom left of the sidebar shows **Update** with a dot. Each backend checks its own source every two minutes, and ZLO reads the answer once a minute.
+3. Click it. A dialog shows the commit range, what changed, which computers update and how many running threads will be interrupted. Nothing starts until you press **Update** there (Cancel or Escape leaves everything as it was). Every computer that is behind then updates, This Mac last, and the button shows the step until it is done.
 
 A machine only rebuilds when the new commits change something it runs:
 
@@ -70,14 +70,14 @@ A machine only rebuilds when the new commits change something it runs:
 
 So an app-only change never restarts a remote backend or interrupts its chats, and its row stays **up to date**.
 
-The status bar must be visible for the prompt (it is by default); Settings → Computers always shows each computer's state.
+When nothing is waiting, the same button checks for updates. Settings → Computers always shows each computer's state.
 
 ## Update all machines from ZLO
 
 **Settings → Computers → Updates**:
 
 - **Check for updates** asks every saved computer to fetch right now, instead of waiting for its next check. Each row shows **up to date**, **N commits behind**, or **Updates are off**.
-- **Update all machines** updates the other computers in parallel, then This Mac last, because its update reinstalls and reopens ZLO. Each row shows **updating…** with the current step, then **updated** or **failed:** with the reason. The **Update available** prompt in the status bar does the same thing.
+- **Update all machines** updates the other computers in parallel, then This Mac last, because its update reinstalls and reopens ZLO. Each row shows **updating…** with the current step, then **updated** or **failed:** with the reason. The sidebar's update button does the same for the computers that are behind, after its confirm dialog.
 
 While a machine rebuilds, its backend restarts and drops off for a while. ZLO keeps checking every few seconds, finds it again, and reads the result (it waits up to 45 minutes for a slow build). The progress survives closing the window, but not quitting ZLO.
 

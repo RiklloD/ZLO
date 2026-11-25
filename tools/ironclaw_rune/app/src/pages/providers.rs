@@ -157,6 +157,40 @@ pub fn opened(s: &mut State) {
         .map(|r| r.thread_id.clone());
     set_catalog_thread(s, catalog);
     refresh(s);
+    // An agent installed anywhere while the page is open turns up here.
+    crate::cli_install::watch(s, providers_open);
+}
+
+/// Run `runtime`'s installer in Terminal, the way out when it failed here
+/// (one that asks a question needs a terminal to answer it).
+fn install_in_terminal(s: &mut State, runtime: &'static str) {
+    let Some(command) = catalog::KNOWN_CLIS
+        .iter()
+        .find(|k| k.runtime == runtime)
+        .and_then(|k| k.install)
+    else {
+        return;
+    };
+    crate::cli_install::dismiss(s, runtime);
+    if !crate::cli_install::backend_on_this_mac(s) {
+        return;
+    }
+    jobs::blocking(
+        s,
+        move || crate::terminal::run(command),
+        |s, result, tx| {
+            tx.animated();
+            if let Err(e) = result {
+                fail(s, e);
+            }
+        },
+    );
+    // Terminal's install is noticed like any other made outside the app.
+    crate::cli_install::watch(s, providers_open);
+}
+
+fn providers_open(s: &State) -> bool {
+    s.page == crate::state::Page::Providers
 }
 
 pub fn set_catalog_thread(s: &mut State, thread: Option<String>) {

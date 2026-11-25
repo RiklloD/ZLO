@@ -322,6 +322,36 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
 /// Stop restart keeps it; a session that began in the shared folder stays
 /// there; a worktree-bound thread runs in its worktree; history finds a
 /// transcript in either folder.
+/// Ready means signed in: the CLI writes `.claude.json` either way.
+#[tokio::test]
+async fn the_catalog_is_ready_only_for_a_signed_in_login() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let sink: Weak<dyn TurnEventSink> = Arc::downgrade(&recorder) as Weak<dyn TurnEventSink>;
+    let scope = ThreadScope {
+        tenant_id: TenantId::new("t").unwrap(),
+        user_id: UserId::new("u").unwrap(),
+        agent_id: None,
+        project_id: None,
+    };
+    let rt = ClaudeCliRuntime::new(
+        claude_config(dir.path(), dir.path().join("claude"), None),
+        sink,
+        None,
+    )
+    .unwrap();
+    let login = dir.path().join(".claude.json");
+    if std::env::var_os("ANTHROPIC_API_KEY").is_none() {
+        std::fs::write(&login, r#"{"numStartups":1}"#).unwrap();
+        assert!(
+            !rt.catalog(&scope).await.unwrap()[0].authenticated,
+            "a file is not a sign-in"
+        );
+    }
+    std::fs::write(&login, r#"{"oauthAccount":{"accountUuid":"a"}}"#).unwrap();
+    assert!(rt.catalog(&scope).await.unwrap()[0].authenticated);
+}
+
 #[tokio::test]
 async fn a_compact_turn_reports_the_context_it_left() {
     let dir = tempfile::tempdir().unwrap();

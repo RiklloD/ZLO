@@ -763,7 +763,7 @@ fn updates_card(s: &State, k: &Kit) -> El {
     let note = if u.updating {
         "Updating… This Mac goes last; ZLO reopens when it is done."
     } else {
-        "ZLO checks by itself and says so in the status bar. An update fast-forwards each computer's checkout and rebuilds only what changed there."
+        "ZLO checks by itself and says so on the sidebar's update button. An update fast-forwards each computer's checkout and rebuilds only what changed there."
     };
     let mut buttons = vec![press_button(
         k,

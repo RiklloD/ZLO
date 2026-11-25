@@ -333,10 +333,35 @@ const VERSION_PROBE_CAP: u64 = 4096;
 /// `agy --version` with a clean environment and a short deadline.
 pub async fn find_cli(home: &Path) -> Option<PathBuf> {
     let agy = crate::rpc::find_on_path(home, "agy")?;
-    let version = cli_version(&agy).await?;
+    match probe_cli(&agy).await {
+        CliProbe::Usable => Some(agy),
+        CliProbe::Rejected | CliProbe::Unanswered => None,
+    }
+}
+
+/// What `agy --version` said about one binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliProbe {
+    /// New enough to serve ACP.
+    Usable,
+    /// It answered, and the answer rules it out (too old, or not a
+    /// version): asking the same binary again gives the same answer.
+    Rejected,
+    /// It did not start, did not answer in time, or its answer could not be
+    /// read: worth asking again later.
+    Unanswered,
+}
+
+/// Ask `agy` at `agy` whether it can serve ACP.
+pub async fn probe_cli(agy: &Path) -> CliProbe {
+    let version = match cli_version(agy).await {
+        VersionProbe::Version(version) => version,
+        VersionProbe::Unparsable => return CliProbe::Rejected,
+        VersionProbe::Unanswered => return CliProbe::Unanswered,
+    };
     if version < FIRST_ACP_CLI {
         tracing::debug!(?version, "antigravity: agy has no ACP server");
-        return None;
+        return CliProbe::Rejected;
     }
     if parse_version(EXPECTED_CLI_VERSION) != Some(version) {
         tracing::debug!(
@@ -345,14 +370,35 @@ pub async fn find_cli(home: &Path) -> Option<PathBuf> {
             "antigravity: agy version differs from the checked release"
         );
     }
-    Some(agy)
+    CliProbe::Usable
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum VersionProbe {
+    Version((u64, u64, u64)),
+    /// It answered something that is not a version.
+    Unparsable,
+    Unanswered,
+}
+
+/// SIGKILLs a probe's process group when dropped: also when the request
+/// that asked is dropped mid-probe, where `kill_on_drop` covers only the
+/// leader.
+struct GroupKill(Option<i32>);
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        if let Some(pgid) = self.0 {
+            crate::rpc::kill_group(pgid, "antigravity: agy --version group");
+        }
+    }
 }
 
 /// `agy --version`, bounded: one deadline covers the first output line
 /// (read up to [`VERSION_PROBE_CAP`]) and the exit, and the probe's whole
 /// process group is killed afterwards, so a descendant holding stdout open
 /// neither blocks the probe nor outlives it.
-async fn cli_version(agy: &Path) -> Option<(u64, u64, u64)> {
+async fn cli_version(agy: &Path) -> VersionProbe {
     use tokio::io::AsyncBufReadExt;
     let child = Command::new(agy)
         .arg("--version")
@@ -375,11 +421,13 @@ async fn cli_version(agy: &Path) -> Option<(u64, u64, u64)> {
         Err(error) => {
             // An agy that does not start is no ACP agent.
             tracing::debug!(%error, "antigravity: agy --version did not start");
-            return None;
+            return VersionProbe::Unanswered;
         }
     };
-    let pgid = crate::rpc::group_of(&child);
-    let stdout = child.stdout.take()?;
+    let group = GroupKill(crate::rpc::group_of(&child));
+    let Some(stdout) = child.stdout.take() else {
+        return VersionProbe::Unanswered;
+    };
     let probe = async {
         let mut line = String::new();
         let mut reader =
@@ -389,21 +437,27 @@ async fn cli_version(agy: &Path) -> Option<(u64, u64, u64)> {
         (read, exited, line)
     };
     let outcome = tokio::time::timeout(VERSION_PROBE_TIMEOUT, probe).await;
-    if let Some(pgid) = pgid {
-        crate::rpc::kill_group(pgid, "antigravity: agy --version group");
-    }
+    drop(group);
     match outcome {
-        Ok((Ok(_), Ok(_), line)) => parse_version(&line),
+        // Only a clean exit with output is an answer: a failing or silent
+        // run may be passing (a wrapper's error on stderr), so it is asked
+        // again later rather than ruled out.
+        Ok((Ok(_), Ok(status), line)) if status.success() && !line.trim().is_empty() => {
+            match parse_version(&line) {
+                Some(version) => VersionProbe::Version(version),
+                None => VersionProbe::Unparsable,
+            }
+        }
         Ok((read, exited, _)) => {
             tracing::debug!(?read, ?exited, "antigravity: agy --version unreadable");
-            None
+            VersionProbe::Unanswered
         }
         Err(_elapsed) => {
             tracing::debug!("antigravity: agy --version timed out");
             if let Err(error) = child.kill().await {
                 tracing::debug!(%error, "antigravity: agy --version not stopped");
             }
-            None
+            VersionProbe::Unanswered
         }
     }
 }
@@ -659,7 +713,7 @@ mod tests {
             "probe blocked for {:?}",
             started.elapsed()
         );
-        assert_eq!(version, Some((1, 5, 11)));
+        assert_eq!(version, VersionProbe::Version((1, 5, 11)));
         let pid = std::fs::read_to_string(&pid_file).unwrap();
         let alive = std::process::Command::new("kill")
             .args(["-0", pid.trim()])

@@ -52,6 +52,25 @@ impl Rt {
     }
 }
 
+/// A handle a worker thread keeps to queue several updates onto the UI
+/// thread (a long command's progress), where [`blocking`] has one reply.
+/// Updates are dropped in a headless scene's fixture state.
+#[derive(Clone)]
+pub struct UiQueue(Rt);
+
+impl UiQueue {
+    pub fn deliver(&self, f: impl FnOnce(&mut State, &mut Tx) -> bool + Send + 'static) {
+        self.0.deliver(move |s, tx| {
+            crate::energy::hit(crate::energy::C::UpdateBlocking);
+            !s.fixture && f(s, tx)
+        });
+    }
+}
+
+pub fn ui_queue(s: &State) -> UiQueue {
+    UiQueue(s.rt.clone())
+}
+
 pub fn flatten<T>(
     joined: Result<Result<T, ClientError>, tokio::task::JoinError>,
 ) -> Result<T, ClientError> {
