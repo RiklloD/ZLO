@@ -405,12 +405,15 @@ async fn terminal_sessions_import_settled_once_grow_and_resume_natively() {
     assert_eq!(
         counts[CLAUDE_CODE],
         SessionImportCounts {
-            found: 3,
+            // The session under the app's own folder is listed, then skipped
+            // by the folder it recorded (no name-prefix skip: that hid
+            // siblings such as `~/.zlo-archive`).
+            found: 4,
             imported: 1,
-            skipped: 2,
+            skipped: 3,
             ..SessionImportCounts::default()
         },
-        "the app's own session and the empty one are skipped"
+        "the app's own sessions and the empty one are skipped"
     );
     assert_eq!(
         counts[CODEX],
@@ -1039,8 +1042,9 @@ async fn discovery_ignores_symlinks_and_special_files() {
     .await
     .expect("a FIFO never blocks the scan")
     .unwrap();
-    // Only the three regular transcripts and the three regular rollouts.
-    assert_eq!(counts[CLAUDE_CODE].found, 3, "{counts:?}");
+    // Only the regular transcripts (four, the one under the app's own folder
+    // included) and the three regular rollouts.
+    assert_eq!(counts[CLAUDE_CODE].found, 4, "{counts:?}");
     assert_eq!(counts[CODEX].found, 3, "{counts:?}");
     let owner = ProfileOwner::from(&scope());
     let claude = engine
@@ -1050,4 +1054,5 @@ async fn discovery_ignores_symlinks_and_special_files() {
         .unwrap();
     let codex = engine.store().import_ledger(&owner, CODEX).await.unwrap();
     assert!(!claude.contains_key(stray) && !codex.contains_key(linked));
+    assert!(!claude.contains_key("own-2"), "never from the app's own folder");
 }
