@@ -1,11 +1,10 @@
-//! Question forms (GPUI `chat/question_form.rs`): an agent's structured
-//! question drawn as a card the person fills in, instead of a raw tool row.
-//! One form shape covers every source (Claude's `AskUserQuestion`, Codex's
-//! `requestUserInput`, MCP elicitation, Antigravity's questions): choices as
-//! chips (one or several, plus "Other" where allowed), text and number
-//! inputs, yes/no. Submit sends the answers through the gate route; Dismiss
-//! tells the agent the person declined. Both wait for the stream to close
-//! the form, like an approval.
+//! Question forms: an agent's structured question drawn as a card the person
+//! fills in, instead of a raw tool row. One form shape covers every source
+//! (Claude's `AskUserQuestion`, Codex's `requestUserInput`, MCP elicitation,
+//! Antigravity's questions): choices as chips (one or several, plus "Other"
+//! where allowed), text and number inputs, yes/no. Submit sends the answers
+//! through the gate route; Dismiss tells the agent the person declined. Both
+//! wait for the stream to close the form, like an approval.
 
 use std::collections::HashMap;
 
