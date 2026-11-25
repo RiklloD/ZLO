@@ -247,14 +247,17 @@ impl ServeCommand {
         if may_create_token
             && !crate::webui_token::webui_token_file_path(boot_config.home().path()).exists()
         {
-            // Dropped at once; the real bind below takes the port.
-            std::net::TcpListener::bind(SocketAddr::new(host, port)).map_err(|error| {
-                anyhow!(
-                    "cannot listen on {host}:{port} ({error}); another program is using it. \
-                     Quit it, or set `[webui].listen_port` in {}.",
-                    boot_config.home().config_file_path().display()
-                )
-            })?;
+            // Through the WebUI's own bind (the one place a listener may be
+            // bound); dropped at once, the real bind below takes the port.
+            let probe_addr = SocketAddr::new(host, port);
+            crate::runtime::block_on_cli(async move { bind_webui_v2(probe_addr).await.map(drop) })
+                .map_err(|error| {
+                    anyhow!(
+                        "cannot listen on {host}:{port} ({error:#}); another program is using \
+                         it. Quit it, or set `[webui].listen_port` in {}.",
+                        boot_config.home().config_file_path().display()
+                    )
+                })?;
         }
         if may_create_token
             && crate::webui_token::provision_missing_webui_token_file(boot_config.home().path())?
