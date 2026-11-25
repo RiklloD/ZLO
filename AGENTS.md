@@ -1,5 +1,7 @@
 # Agent Rules
 
+> Asked to **install** ZLO rather than change it? Follow [Instructions for agents](README.md#instructions-for-agents) in the README; the rest of this file is for working on the code.
+
 ## Purpose and precedence
 
 `AGENTS.md` is the canonical agent contract for this repository — the commands, hard invariants, and routing an agent cannot infer from the tree. It is not the full architecture specification: before changing a complex area, read the owning crate's `AGENTS.md`, then its `CONTRACT.md` or `README.md` when present; cross-crate behavior is specified under `docs/internal/reborn/contracts/`. (`CLAUDE.md` files are Claude Code adapters and pointer stubs; content lives here and in the files this one names.)

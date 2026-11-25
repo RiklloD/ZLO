@@ -41,7 +41,7 @@ Local storage doesn't mean every task stays on the machine. Using a remote model
 
 ## Install
 
-On an Apple Silicon Mac, paste this into Terminal:
+On an Apple Silicon Mac, paste this into Terminal (or have a coding agent do it: see [Install with a coding agent](#install-with-a-coding-agent)):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
@@ -66,6 +66,56 @@ curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | ZLO_R
 ```
 
 Without an Apple Development signing identity the app is signed ad-hoc, so macOS asks for Accessibility and Screen Recording again after each update.
+
+## Install with a coding agent
+
+You can have Claude Code, Codex, Antigravity or another coding agent install ZLO for you. Paste this into the agent:
+
+```text
+Install ZLO on this Mac. Follow the "Instructions for agents" in
+https://github.com/RiklloD/ZLO#instructions-for-agents exactly.
+```
+
+### Instructions for agents
+
+You are installing ZLO, a macOS desktop app built from source, for the person you are working with. Follow these steps in order. Don't improvise around a failure; report it.
+
+1. **Check the machine.** `uname -s` must print `Darwin` and `uname -m` must print `arm64`. ZLO runs only on Apple Silicon Macs. On anything else, stop and tell the person.
+2. **Check the Xcode command-line tools.** Run `xcode-select -p`. If it fails, run `xcode-select --install`. That opens a macOS dialog only the person can click through. Ask them to finish it, wait until `xcode-select -p` succeeds, then continue.
+3. **Ask one question before you run the installer:** may it add one line to their shell profile (`~/.zprofile` for zsh), so the `zlo` command works in new terminals? If they say no, set `ZLO_NO_MODIFY_PATH=1` in step 4.
+4. **Run the installer** from a shell, in the foreground or as a background job with a timeout of at least 30 minutes. The first build takes 10 to 20 minutes, and later ones are faster.
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
+   ```
+
+   Rules:
+   - Never use `sudo`; the installer needs no admin rights.
+   - Don't pass flags it doesn't document. The supported settings are environment variables: `ZLO_REF=<branch or tag>` (default `main`), `ZLO_SRC=<path>` (default `~/Library/Caches/ZLO/src`) and `ZLO_NO_MODIFY_PATH=1`.
+   - If Rust is missing, the installer installs it through rustup by itself.
+   - If it stops with a message, relay that message to the person instead of working around it. Messages you may see include missing Xcode tools, "has local changes" for a `ZLO_SRC` with uncommitted edits, and "has no branch or tag named …".
+   - Exit status 0 means installed. Any other status means it failed.
+5. **Verify it.** The installer's PATH change applies only to new terminals, so call the CLI by its full path:
+
+   ```sh
+   ~/.zlo/bin/zlo --version          # prints "zlo <version>"
+   ~/.zlo/bin/zlo doctor             # every line ✔, exit status 0
+   ls ~/Applications/ZLO.app         # the app exists
+   ```
+
+   If `~/.zlo/bin/zlo` is missing, use the copy inside the app: `~/Applications/ZLO.app/Contents/MacOS/zlo-backend`. It is the same program.
+6. **Hand over.** The installer opens ZLO when it finishes, and the app guides the person through connecting their agents. Tell them to open a new terminal to use `zlo`, and that macOS will ask them to allow Accessibility and Screen Recording the first time computer use runs.
+
+Later, the same agent can use these commands:
+
+| The person wants to | Run |
+| --- | --- |
+| Update ZLO | `zlo update` (or `zlo upgrade`). It works in the background; `zlo update --json` shows progress. Re-running the install command also updates. |
+| Find out why something is broken | `zlo triage` starts a coding agent with ZLO's triage playbook. If you are that agent, follow [`.github/triage/PLAYBOOK.md`](.github/triage/PLAYBOOK.md). |
+| Check the setup | `zlo doctor` |
+| Find ZLO's data folder | `zlo config path --home` (usually `~/.zlo`) |
+
+Never read the secrets in ZLO's data folder or any agent's sign-in files, and don't delete `~/.zlo`: it holds the person's threads, memory and settings.
 
 ## Using another computer
 
