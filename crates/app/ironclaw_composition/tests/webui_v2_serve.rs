@@ -1282,6 +1282,124 @@ fn bundle_segment<'a>(body: &'a str, start: &str, end: &str) -> &'a str {
     &after_start[..end_rel]
 }
 
+/// True when `segment` (the minified `setLang` body from stamping the ref up
+/// to, not including, the `localStorage.setItem` commit) guards the commit so
+/// only the latest request lands. The comparator is matched together with
+/// its branch shape, in either minified polarity:
+///
+/// - early return on `!==`: `if(!t||u.current!==e)return;`
+/// - guarded block on `===` that is still open at the commit:
+///   `if(t&&u.current===e){…`
+///
+/// A reversed guard (`if(!t||u.current===e)return`, or a `!==` block) drops
+/// the latest request and commits the stale one, so it does not match.
+fn commits_only_latest_request(segment: &str) -> bool {
+    let mut from = 0;
+    while let Some(rel) = segment[from..].find(".current") {
+        let at = from + rel;
+        from = at + ".current".len();
+        let rest = &segment[from..];
+        let not_equal = if rest.starts_with("!==") {
+            true
+        } else if rest.starts_with("===") {
+            false
+        } else {
+            continue;
+        };
+        let Some(if_start) = segment[..at].rfind("if(") else {
+            continue;
+        };
+        let cond_start = if_start + "if(".len();
+        let mut depth = 1usize;
+        let mut cond_end = None;
+        for (offset, ch) in segment[cond_start..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        cond_end = Some(cond_start + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(cond_end) = cond_end else {
+            continue;
+        };
+        if cond_end < at {
+            continue;
+        }
+        let cond = &segment[cond_start..cond_end];
+        let after = &segment[cond_end + 1..];
+        let matched = if not_equal {
+            // Reject on any failing clause: `!loaded||ref.current!==next`.
+            !cond.contains("&&")
+                && cond
+                    .split("||")
+                    .all(|clause| clause.starts_with('!') || clause.contains("!=="))
+                && (after.starts_with("return;") || after.starts_with("return}"))
+        } else {
+            // Commit only when every clause holds: `loaded&&ref.current===next`.
+            !cond.contains("||")
+                && cond
+                    .split("&&")
+                    .all(|clause| !clause.starts_with('!') && !clause.contains("!=="))
+                && after.starts_with('{')
+                && block_open_through_end(&after[1..])
+        };
+        if matched {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when a `{` opened just before `body` is never closed within it.
+fn block_open_through_end(body: &str) -> bool {
+    let mut depth = 1usize;
+    for ch in body.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+#[test]
+fn latest_request_guard_matcher_rejects_reversed_guards() {
+    // Both minified polarities of the real guard pass.
+    assert!(commits_only_latest_request(
+        "u.current=e;let t=await n(e);if(!t||u.current!==e)return;r(t),"
+    ));
+    assert!(commits_only_latest_request(
+        "u.current=e;let t=await n(e);if(t&&u.current===e){r(t),"
+    ));
+    // Reversed guards commit the stale request and must be rejected.
+    assert!(!commits_only_latest_request(
+        "u.current=e;let t=await n(e);if(!t||u.current===e)return;r(t),"
+    ));
+    assert!(!commits_only_latest_request(
+        "u.current=e;let t=await n(e);if(t&&u.current!==e){r(t),"
+    ));
+    // A `===` block that closes before the commit does not guard it.
+    assert!(!commits_only_latest_request(
+        "u.current=e;let t=await n(e);if(t&&u.current===e){r(t)}"
+    ));
+    // A bare comparator with no branch is not a guard.
+    assert!(!commits_only_latest_request(
+        "u.current=e;let t=u.current!==e;"
+    ));
+}
+
 // ─── tests ────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -2759,8 +2877,8 @@ async fn static_i18n_module_guards_locale_race_and_clears_failed_pack_cache() {
     // setLang commit path, not the mount effect's separate `===` check.
     let set_lang_commit = bundle_segment(provider_segment, ".current=", "localStorage.setItem");
     assert!(
-        set_lang_commit.contains(".current!==") || set_lang_commit.contains(".current==="),
-        "a resolved pack load must be ignored after a newer language request",
+        commits_only_latest_request(set_lang_commit),
+        "a resolved pack load must be ignored after a newer language request: {set_lang_commit}",
     );
     assert_eq!(
         loader_segment.matches("delete ").count(),
