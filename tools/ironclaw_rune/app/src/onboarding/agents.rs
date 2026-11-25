@@ -391,7 +391,7 @@ pub(super) fn open_terminal(s: &mut State, driver: Driver, install: bool) {
     }
     jobs::blocking(
         s,
-        move || run_in_terminal(command),
+        move || crate::terminal::run(command),
         move |s, result, tx| {
             let Some(t) = s.onboarding.agents.terminal.as_mut() else {
                 return;
@@ -410,36 +410,6 @@ pub(super) fn open_terminal(s: &mut State, driver: Driver, install: bool) {
             };
         },
     );
-}
-
-/// The shell line Terminal runs: show the command, wait for Enter, run it.
-pub fn terminal_script(command: &str) -> String {
-    let shown = command.replace('\'', "'\\''");
-    format!(
-        "clear; printf '\\n  %s\\n\\n' '{shown}'; printf 'Press Enter to run it, or close this window to cancel. '; read _ && {command}"
-    )
-}
-
-/// AppleScript string literal of `s`.
-fn applescript_string(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-fn run_in_terminal(command: &str) -> Result<(), String> {
-    let script = format!(
-        "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
-        applescript_string(&terminal_script(command))
-    );
-    let out = std::process::Command::new("/usr/bin/osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|e| format!("Could not open Terminal: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err("Could not open Terminal. Copy the command and run it yourself.".into())
-    }
 }
 
 /// t3code closes its terminal and refreshes the providers. An install is
@@ -687,6 +657,17 @@ pub fn view(s: &State, k: &Kit) -> StepView {
                 .transition(motion::reveal()),
         );
     }
+    if nothing_can_answer(s) {
+        body = body.child(
+            muted(
+                p,
+                "Nothing can answer yet. Sign in to one agent, or connect a provider below.",
+            )
+            .key("agents-none-ready")
+            .pt(10.)
+            .transition(motion::reveal()),
+        );
+    }
     StepView::new(body.child(providers::section(s, k))).action(
         button_sized("Continue", Look::Primary, Size::Small)
             .icon(&crate::icons::ARROW_RIGHT)
@@ -695,6 +676,23 @@ pub fn view(s: &State, k: &Kit) -> StepView {
             .key("agents-continue")
             .press_scale(motion::PRESS),
     )
+}
+
+/// Both lists are in and nothing can run a turn: no agent signed in, no
+/// provider active. Setup still lets the person go on (they may set one
+/// up later in Settings), but says so here rather than at the first send.
+fn nothing_can_answer(s: &State) -> bool {
+    let a = &s.onboarding.agents;
+    if a.restarting {
+        return false;
+    }
+    let (Some(catalog), Some(llm)) = (a.catalog.as_deref(), &s.pages.providers.llm) else {
+        return false;
+    };
+    llm.active.is_none()
+        && !listed(Some(catalog))
+            .into_iter()
+            .any(|d| agent_state(Some(catalog), &a.hidden, d) == AgentState::Ready)
 }
 
 fn agent_row(s: &State, k: &Kit, driver: Driver) -> El {
@@ -933,6 +931,22 @@ mod tests {
             agent_state(Some(&catalog), &["claude-cli-2".into()], Driver::ClaudeCode),
             AgentState::SignIn
         );
+
+        // Setup says when nothing can answer yet (fresh Mac).
+        let mut s = crate::chat::fixtures::test_state();
+        // Still loading either list: say nothing.
+        assert!(!nothing_can_answer(&s));
+        s.onboarding.agents.catalog = Some(vec![route("codex", "codex", false)]);
+        assert!(!nothing_can_answer(&s), "providers not read yet");
+        s.pages.providers.llm = Some(
+            serde_json::from_value(serde_json::json!({ "providers": [] }))
+                .expect("empty llm snapshot"),
+        );
+        // A fresh Mac: no agent signed in, no provider active.
+        assert!(nothing_can_answer(&s));
+        // One signed-in agent is enough.
+        s.onboarding.agents.catalog = Some(vec![route("codex", "codex", true)]);
+        assert!(!nothing_can_answer(&s));
     }
 
     #[test]
@@ -1272,9 +1286,5 @@ mod tests {
     #[test]
     fn terminal_shows_the_command_and_waits_for_enter() {
         assert_eq!(Driver::ClaudeCode.login(), Some("claude auth login"));
-        let line = terminal_script("claude auth login");
-        assert!(line.contains("'claude auth login'"));
-        assert!(line.ends_with("read _ && claude auth login"));
-        assert_eq!(applescript_string(r#"a "b" \c"#), r#""a \"b\" \\c""#);
     }
 }

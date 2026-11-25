@@ -348,10 +348,15 @@ install_zlo_command() {
   backend=$1
   if ! home=$(zlo_home_of "$backend"); then
     warn "could not ask ZLO for its data folder, so \`zlo\` is not linked; run $(sh_quote "$backend") directly"
+    zlo_cmd_note="run $(sh_quote "$backend") where you would run \`zlo\`."
     return 0
   fi
   bin="$home/bin"
+  # The last thing the installer says (main): new terminals find `zlo`;
+  # this one, and the agent's shell that ran the install, do not.
+  zlo_cmd_note="\`zlo\` works in new terminal windows. In this one, run $(sh_quote "$bin/zlo")."
   if ! mkdir -p "$bin" 2>/dev/null || ! link_under_lock "$bin" "$backend"; then
+    zlo_cmd_note="run $(sh_quote "$backend") where you would run \`zlo\`."
     warn "\`zlo\` is not linked; run $(sh_quote "$backend") instead"
     return 0
   fi
@@ -366,9 +371,14 @@ install_zlo_command() {
     if [ "${ZLO_NO_MODIFY_PATH:-}" = 1 ]; then
       say "add $bin to your PATH to use \`zlo\`:"
       printf '  %s\n' "$line"
+      zlo_cmd_note="\`zlo\` is not on your PATH (ZLO_NO_MODIFY_PATH=1); run $(sh_quote "$bin/zlo")."
     elif write_path_block "$profile" "$line"; then
       say "open a new terminal (or run: $(path_line "$bin" | sed 's/^contains.*; or //')) to use \`zlo\`"
+    else
+      zlo_cmd_note="\`zlo\` is not on your PATH yet (see above); run $(sh_quote "$bin/zlo")."
     fi
+  else
+    zlo_cmd_note="\`zlo\` is ready in this terminal."
   fi
 
   # Another `zlo` (a cargo install, an older link) may answer first.
@@ -531,10 +541,13 @@ main() {
     *) die "the download, build or install failed (exit $status)" ;;
   esac
 
+  zlo_cmd_note=
   install_zlo_command "$backend"
 
   open "$app"
   say "installed $app"
+  say "ZLO is open: its setup connects your agents. Nothing else to run."
+  [ -z "$zlo_cmd_note" ] || say "$zlo_cmd_note"
 }
 
 main "$@"

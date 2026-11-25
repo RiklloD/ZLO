@@ -444,12 +444,63 @@ pub(crate) fn connect_failed(s: &mut State, problem: crate::remote::connect::Pro
     });
 }
 
+/// The failure screen's "Triage": `zlo triage` in Terminal, by the full
+/// path of this Mac's backend binary, so it works with the backend down
+/// and without `zlo` on the PATH (triage reads no config and starts no
+/// runtime). Runs with the app's data folder when the app was given one.
+pub(crate) fn triage_in_terminal(s: &mut State) {
+    let Some(backend) = crate::service::backend_binary() else {
+        note_on_failure(
+            s,
+            "ZLO could not find its command-line tool. Reinstall ZLO, then try again.",
+        );
+        return;
+    };
+    let command = triage_command(&backend, std::env::var_os("ZLO_HOME").as_deref());
+    if s.fixture {
+        return;
+    }
+    jobs::blocking(
+        s,
+        move || crate::terminal::run(&command),
+        |s, result, _| {
+            if let Err(e) = result {
+                tracing::warn!(error = %e, "Terminal did not open for triage");
+                note_on_failure(s, &e);
+            }
+        },
+    );
+}
+
+/// The shell line for [`triage_in_terminal`].
+fn triage_command(backend: &std::path::Path, zlo_home: Option<&std::ffi::OsStr>) -> String {
+    use crate::terminal::shell_quote;
+    let run = format!("{} triage", shell_quote(&backend.display().to_string()));
+    match zlo_home.filter(|h| !h.is_empty()) {
+        Some(home) => format!(
+            "ZLO_HOME={} {run}",
+            shell_quote(&std::path::Path::new(home).display().to_string())
+        ),
+        None => run,
+    }
+}
+
+/// Add `line` under the failure screen's message, once.
+fn note_on_failure(s: &mut State, line: &str) {
+    if let Conn::Failed { message, .. } = &mut s.conn
+        && !message.contains(line)
+    {
+        message.push_str("\n\n");
+        message.push_str(line);
+    }
+}
+
 /// This Mac's gateway is not answering: say what to do.
 fn friendly_unreachable(message: &str, runs_local: bool) -> String {
     if runs_local {
         format!(
-            "{message}\n\nIronClaw starts its service when the app opens. If this persists, \
-             run `zlo service install` once, then try again."
+            "{message}\n\nZLO starts its engine when the app opens; the first start can take \
+             a minute. If this keeps happening, Triage looks into it for you."
         )
     } else {
         format!(
@@ -983,6 +1034,23 @@ mod tests {
     /// The seam the motion tests read: a fresh `Tx` asks nothing, and
     /// `animated` is what sets the flag (`motion` alone does not).
     #[test]
+    fn triage_runs_the_bundled_cli_by_full_path() {
+        let backend =
+            std::path::Path::new("/Users/a b/Applications/ZLO.app/Contents/MacOS/zlo-backend");
+        assert_eq!(
+            super::triage_command(backend, None),
+            "'/Users/a b/Applications/ZLO.app/Contents/MacOS/zlo-backend' triage"
+        );
+        assert_eq!(
+            super::triage_command(backend, Some(std::ffi::OsStr::new("/tmp/zh"))),
+            "ZLO_HOME=/tmp/zh '/Users/a b/Applications/ZLO.app/Contents/MacOS/zlo-backend' triage"
+        );
+        assert!(
+            !super::triage_command(backend, Some(std::ffi::OsStr::new(""))).contains("ZLO_HOME")
+        );
+    }
+
+    #[test]
     fn asked_motion_reads_the_flag() {
         let mut tx = Tx::default();
         assert!(!asked_motion(&tx) && !asked_color_motion(&tx));
@@ -996,7 +1064,11 @@ mod tests {
 
     #[test]
     fn an_unreachable_mac_says_what_to_do() {
-        assert!(friendly_unreachable("down", true).contains("zlo service install"));
+        // ZLO runs this Mac's engine itself: no terminal steps (a
+        // `zlo service install` would even be retired by the app on start).
+        let own = friendly_unreachable("down", true);
+        assert!(own.contains("Triage"), "{own}");
+        assert!(!own.contains("zlo "), "{own}");
         assert!(friendly_unreachable("down", false).contains("Run IronClaw on this Mac"));
     }
 

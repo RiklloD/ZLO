@@ -65,7 +65,10 @@ your API key. Non-interactive sessions skip this step — see below.
 <Step title="Web Login Token">
 
 A bearer token is written to `webui-token` and used by `ironclaw serve` whenever
-`IRONCLAW_REBORN_WEBUI_TOKEN` is unset. Onboarding prints a ready-to-use login link:
+`IRONCLAW_REBORN_WEBUI_TOKEN` is unset. If onboarding never ran, `serve` creates
+the file itself on its first start (random, mode `0600`), so the desktop app works
+on a fresh Mac without this step; an existing file is never replaced. Onboarding
+prints a ready-to-use login link:
 
 ```
 login_link: http://127.0.0.1:3000/login?token=<your-token>

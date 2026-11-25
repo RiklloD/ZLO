@@ -254,7 +254,7 @@ async fn store_token(
 }
 
 async fn this_mac(override_url: bool) -> Result<Resolved, Problem> {
-    let conn = Connection::discover().map_err(|e| Problem::Blocked(e.to_string()))?;
+    let conn = Connection::discover().map_err(|e| discover_problem(&e, override_url))?;
     if override_url {
         check_transport(&conn.base_url).map_err(|e| {
             Problem::Blocked(format!("IRONCLAW_DESKTOP_URL ({}): {e}", conn.base_url))
@@ -283,6 +283,19 @@ async fn this_mac(override_url: bool) -> Result<Resolved, Problem> {
         tunnel: None,
         route_rank: 0,
     })
+}
+
+/// Why This Mac could not be found. A missing token means its backend has
+/// not finished its first start (it writes the token then): unreachable, so
+/// the launch keeps waiting and retries instead of stopping on a screen
+/// that asks for a terminal command. Under `IRONCLAW_DESKTOP_URL` the
+/// gateway is someone else's, so a missing token stays the person's to fix.
+pub(super) fn discover_problem(e: &ClientError, override_url: bool) -> Problem {
+    if e.is_no_token() && !override_url {
+        Problem::Unreachable(e.to_string())
+    } else {
+        Problem::Blocked(e.to_string())
+    }
 }
 
 /// Open (or reuse) the tunnel of an SSH route: its key and the origin the

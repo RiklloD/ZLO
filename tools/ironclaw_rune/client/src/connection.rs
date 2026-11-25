@@ -6,7 +6,8 @@
 //!   from `$ZLO_HOME/config.toml` `[webui]`, else `http://127.0.0.1:3000`.
 //! - Token: the env var named by `[webui] env_token_var` (default
 //!   `ZLO_WEBUI_TOKEN`, or the older `IRONCLAW_REBORN_WEBUI_TOKEN`), else
-//!   `$ZLO_HOME/webui-token` (written by `zlo onboard`).
+//!   `$ZLO_HOME/webui-token` (written by the backend's first `zlo serve`,
+//!   or `zlo onboard`).
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -161,10 +162,7 @@ fn read_config(path: &Path) -> Result<ConfigFile, ClientError> {
 fn read_token_file(path: &Path) -> Result<Token, ClientError> {
     let meta = std::fs::metadata(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            ClientError::Config(format!(
-                "no WebUI token at {}. Run `zlo onboard` first.",
-                path.display()
-            ))
+            ClientError::NoToken(path.to_path_buf())
         } else {
             ClientError::Config(format!("cannot read {}: {e}", path.display()))
         }

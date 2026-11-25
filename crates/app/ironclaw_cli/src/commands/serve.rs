@@ -178,9 +178,24 @@ impl ServeCommand {
         // `session_signing_secret` below) so a weak or missing token fails
         // closed here rather than starting the server and having it reject
         // the value opaquely.
+        //
+        // First start on a fresh home (the desktop app's child backend, a
+        // bare `zlo serve`): with no env token and no file, make the file
+        // now rather than demanding a `zlo onboard` first. Auth stays on —
+        // the token is random and only readable from the 0600 file — and an
+        // existing file, valid or not, is never touched.
+        let env_token_value = present_unicode_env_var(env_token_var)?;
+        if env_token_value.as_deref().is_none_or(str::is_empty)
+            && crate::webui_token::provision_missing_webui_token_file(boot_config.home().path())?
+        {
+            tracing::debug!(
+                home = %boot_config.home().path().display(),
+                "created the WebChat v2 token file on first start"
+            );
+        }
         let resolved_token = crate::webui_token::resolve_webui_token(
             env_token_var,
-            present_unicode_env_var(env_token_var)?.as_deref(),
+            env_token_value.as_deref(),
             boot_config.home().path(),
         )?;
         let webui_token_source = resolved_token.source;

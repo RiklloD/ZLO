@@ -9,9 +9,13 @@
 //! `onboard` (unconditional — [`ensure_webui_token_file`]) provisions the
 //! fallback file so a service-installed `serve` (launchd/systemd), whose
 //! unit environment carries only `HOME`/`PROFILE` (see
-//! `serve_invocation.rs`), still has a token to read. `serve`
-//! ([`resolve_webui_token`]) reads through this same precedence and entropy
-//! validation.
+//! `serve_invocation.rs`), still has a token to read. `serve` itself
+//! creates the file on first start when no env token is set and no file
+//! exists yet ([`provision_missing_webui_token_file`]): the desktop app
+//! starts `serve` on a fresh Mac before anything else has run, and must
+//! not need a terminal step first. It never replaces an existing file.
+//! `serve` then reads ([`resolve_webui_token`]) through this same
+//! precedence and entropy validation.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -281,6 +285,27 @@ pub(crate) fn rotate_webui_token_file(reborn_home: &Path) -> anyhow::Result<()> 
     write_token_file(&file_path, &token)
 }
 
+/// Create `<reborn_home>/webui-token` with a fresh token when no file is
+/// there yet; `Ok(true)` when this call created it.
+///
+/// Never replaces an existing file — not even an invalid one: a short or
+/// unreadable file is the operator's to fix, and [`resolve_webui_token`]
+/// still fails closed on it. The create is atomic and no-clobber (a temp
+/// file, then `persist_noclobber`), so two processes starting `serve` on
+/// the same home at once agree on one token instead of each keeping its own.
+pub(crate) fn provision_missing_webui_token_file(reborn_home: &Path) -> anyhow::Result<bool> {
+    let file_path = webui_token_file_path(reborn_home);
+    if read_token_file_checked(&file_path)?.is_some() {
+        return Ok(false);
+    }
+    let token = generate_webui_token();
+    match write_token_file_inner(&file_path, &token, Persist::NoClobber) {
+        Ok(()) => Ok(true),
+        Err(WriteTokenError::AlreadyExists) => Ok(false),
+        Err(WriteTokenError::Other(error)) => Err(error),
+    }
+}
+
 /// Generate a cryptographically-random token comfortably over the
 /// entropy floor: [`WEBUI_TOKEN_MIN_BYTES`] random bytes, hex-encoded
 /// (twice the byte length as ASCII characters).
@@ -294,6 +319,37 @@ fn generate_webui_token() -> String {
 /// Write `token` to `path` atomically (temp file + rename) with `0600`
 /// permissions on unix, creating the parent directory if needed.
 fn write_token_file(path: &Path, token: &str) -> anyhow::Result<()> {
+    match write_token_file_inner(path, token, Persist::Replace) {
+        Ok(()) => Ok(()),
+        Err(WriteTokenError::AlreadyExists) => Err(anyhow::anyhow!(
+            "{} appeared while it was being replaced",
+            path.display()
+        )),
+        Err(WriteTokenError::Other(error)) => Err(error),
+    }
+}
+
+/// How the temp file lands on the token path.
+#[derive(Clone, Copy)]
+enum Persist {
+    /// Rename over whatever is there.
+    Replace,
+    /// Only when nothing is there ([`WriteTokenError::AlreadyExists`] else).
+    NoClobber,
+}
+
+enum WriteTokenError {
+    AlreadyExists,
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for WriteTokenError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Other(error)
+    }
+}
+
+fn write_token_file_inner(path: &Path, token: &str, mode: Persist) -> Result<(), WriteTokenError> {
     use std::io::Write as _;
 
     let parent = path
@@ -316,15 +372,22 @@ fn write_token_file(path: &Path, token: &str) -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("write {}: {error}", tmp.path().display()))?;
     tmp.flush()
         .map_err(|error| anyhow::anyhow!("flush {}: {error}", tmp.path().display()))?;
-    tmp.persist(path).map_err(|error| {
-        anyhow::anyhow!(
+    let persisted = match mode {
+        Persist::Replace => tmp.persist(path),
+        Persist::NoClobber => tmp.persist_noclobber(path),
+    };
+    match persisted {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(WriteTokenError::AlreadyExists)
+        }
+        Err(error) => Err(WriteTokenError::Other(anyhow::anyhow!(
             "persist {} -> {}: {}",
             error.file.path().display(),
             path.display(),
             error.error
-        )
-    })?;
-    Ok(())
+        ))),
+    }
 }
 
 /// Which of [`resolve_webui_token`]'s two sources produced the resolved
@@ -569,6 +632,35 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600, "token file must be 0600, got {mode:o}");
         }
+    }
+
+    #[test]
+    fn provision_missing_webui_token_file_races_settle_on_one_token() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().to_path_buf();
+        let created: Vec<bool> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| provision_missing_webui_token_file(&home).expect("provision"))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("join"))
+                .collect()
+        });
+        assert_eq!(
+            created.iter().filter(|c| **c).count(),
+            1,
+            "exactly one concurrent start creates the token: {created:?}"
+        );
+        let resolved = resolve_webui_token("ZLO_WEBUI_TOKEN", None, &home).expect("resolves");
+        assert_eq!(
+            resolved.value,
+            fs::read_to_string(webui_token_file_path(&home))
+                .expect("read")
+                .trim()
+        );
     }
 
     #[test]

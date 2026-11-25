@@ -35,6 +35,7 @@ mod scenes;
 mod service;
 mod snapshot;
 mod state;
+mod terminal;
 #[cfg(test)]
 mod test_gateway;
 mod titles;

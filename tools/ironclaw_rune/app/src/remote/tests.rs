@@ -638,3 +638,53 @@ mod triage_switch {
         assert!(s.workspace.triage.is_none());
     }
 }
+
+#[test]
+fn a_fresh_mac_without_a_token_keeps_waiting_for_its_first_start() {
+    // A fresh install: the app starts its backend, which writes the token on
+    // its first start. Until then This Mac has no token — the launch must
+    // keep waiting (and retry), never stop on a screen that asks for
+    // `zlo onboard`.
+    let missing = zlo_client::ClientError::NoToken("/nonexistent/.zlo/webui-token".into());
+    assert!(!missing.to_string().contains("onboard"), "{missing}");
+    let problem = connect::discover_problem(&missing, false);
+    assert!(
+        matches!(problem, connect::Problem::Unreachable(_)),
+        "{problem:?}"
+    );
+    // Someone else's gateway (IRONCLAW_DESKTOP_URL): the person's to fix.
+    assert!(matches!(
+        connect::discover_problem(&missing, true),
+        connect::Problem::Blocked(_)
+    ));
+    // Any other config problem still waits for the person.
+    let other = zlo_client::ClientError::Config("cannot parse config.toml".into());
+    assert!(matches!(
+        connect::discover_problem(&other, false),
+        connect::Problem::Blocked(_)
+    ));
+
+    // Through the caller: within the startup grace the app stays on its
+    // connecting screen and knocks again.
+    let mut s = state();
+    assert!(runs_local_backend(&s));
+    s.launched = std::time::Instant::now();
+    crate::workspace::connect_failed(&mut s, problem);
+    assert!(matches!(s.conn, Conn::Connecting), "{:?}", s.conn);
+
+    // Past the grace it shows why, without terminal steps, and retries.
+    let mut s = state();
+    s.launched = std::time::Instant::now() - std::time::Duration::from_secs(120);
+    crate::workspace::connect_failed(&mut s, connect::discover_problem(&missing, false));
+    match &s.conn {
+        Conn::Failed { message, retry_in } => {
+            assert!(
+                retry_in.is_some(),
+                "a first start still under way is retried"
+            );
+            assert!(!message.contains("zlo onboard"), "{message}");
+            assert!(!message.contains("zlo service install"), "{message}");
+        }
+        other => panic!("expected a retrying failure, got {other:?}"),
+    }
+}
