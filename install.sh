@@ -108,7 +108,10 @@ zlo_data_home() {
       if [ -z "$linked" ]; then
         if [ ! -e "$h" ] && [ ! -L "$h" ]; then
           h=$legacy
-        elif [ -d "$h" ] && [ ! -L "$h" ] && [ -z "$(ls -A "$h" 2>/dev/null)" ]; then
+        elif [ -d "$h" ] && [ ! -L "$h" ] &&
+          [ -z "$(ls -A "$h" 2>/dev/null | grep -vx '.DS_Store')" ]; then
+          # Empty or Finder's .DS_Store only, as the resolver counts it
+          # (home_migration.rs `is_empty_dir`).
           h=$legacy
         fi
       fi
@@ -389,7 +392,8 @@ install_zlo_command() {
 # The installer's cache (~/Library/Caches/ZLO/src, marked by
 # .git/zlo-install-cache) is reset to $ref by force. A ZLO_SRC of your own
 # is never reset: it is refused when it has local changes, a branch only
-# fast-forwards, and an existing tag is never moved.
+# fast-forwards, an existing tag is never moved, and git refuses rather than
+# overwrite an ignored file of yours (--no-overwrite-ignore).
 zlo_sync_and_build='
 set -eu
 src=$1 ref=$2 kind=$3 url=$4 default_cache=$5 backend=$6
@@ -401,11 +405,10 @@ if [ ! -d "$src/.git" ]; then
   mkdir -p "$src"
   git init -q "$src"
   git -C "$src" remote add origin "$url"
+  # Only a checkout this installer creates is ever its own: an existing one
+  # without the marker (an older install, or another clone) is treated
+  # as yours below, never reset by force.
   [ "$default_cache" = 1 ] && : >"$src/.git/zlo-install-cache"
-elif [ "$default_cache" = 1 ] && [ ! -e "$src/.git/zlo-install-cache" ] &&
-  [ "$(git -C "$src" rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
-  # A cache an earlier installer cloned (shallow) at the default place.
-  : >"$src/.git/zlo-install-cache"
 fi
 owned=
 [ "$default_cache" = 1 ] && [ -f "$src/.git/zlo-install-cache" ] && owned=1
@@ -425,15 +428,15 @@ else
     if git -C "$src" show-ref --verify --quiet "refs/heads/$ref"; then
       git -C "$src" merge-base --is-ancestor "refs/heads/$ref" "refs/remotes/origin/$ref" ||
         fail "$ref in $src has commits origin/$ref does not; it can only fast-forward, so ZLO left it as it is"
-      git -C "$src" switch -q "$ref"
-      git -C "$src" merge -q --ff-only "refs/remotes/origin/$ref"
+      git -C "$src" switch -q --no-overwrite-ignore "$ref"
+      git -C "$src" merge -q --ff-only --no-overwrite-ignore "refs/remotes/origin/$ref"
     else
-      git -C "$src" switch -q -c "$ref" "refs/remotes/origin/$ref"
+      git -C "$src" switch -q --no-overwrite-ignore -c "$ref" "refs/remotes/origin/$ref"
     fi
   else
     # No +: a tag of that name already here is never moved.
     git -C "$src" fetch -q origin "refs/tags/$ref:refs/tags/$ref"
-    git -C "$src" checkout -q --detach "refs/tags/$ref"
+    git -C "$src" checkout -q --no-overwrite-ignore --detach "refs/tags/$ref"
   fi
 fi
 echo "zlo: building (10 to 20 minutes the first time)"

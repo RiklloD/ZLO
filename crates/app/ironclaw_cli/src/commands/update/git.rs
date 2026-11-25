@@ -412,8 +412,19 @@ impl Checkout {
                 upstream: tracking.upstream_name(),
             });
         }
-        self.git(&["merge", "--ff-only", "--quiet", &upstream], LOCAL_TIMEOUT)
-            .map_err(|e| e.refusal("merge --ff-only"))?;
+        // `status` lists no ignored files, so a file of yours that upstream
+        // starts tracking would be overwritten silently: git refuses instead.
+        self.git(
+            &[
+                "merge",
+                "--ff-only",
+                "--no-overwrite-ignore",
+                "--quiet",
+                &upstream,
+            ],
+            LOCAL_TIMEOUT,
+        )
+        .map_err(|e| e.refusal("merge --ff-only"))?;
         self.head()
     }
 
@@ -839,6 +850,32 @@ pub(crate) mod tests {
         assert_eq!(
             std::fs::read_to_string(r.checkout.join("README")).expect("read"),
             "edited\n"
+        );
+    }
+
+    /// `status` lists no ignored files, so the checkout reads clean; when
+    /// upstream starts tracking an ignored file of the user's, the update
+    /// is refused rather than overwrite it.
+    #[test]
+    fn an_ignored_file_upstream_starts_tracking_is_never_overwritten() {
+        let r = repos();
+        commit(&r.other, ".gitignore", "local.txt\n", "Ignore local");
+        sh(&r.other, &["push", "-q", "origin", "main"]);
+        sh(&r.checkout, &["pull", "-q", "--ff-only"]);
+        std::fs::write(r.checkout.join("local.txt"), "mine\n").expect("write");
+        std::fs::write(r.other.join("local.txt"), "upstream\n").expect("write");
+        sh(&r.other, &["add", "-f", "local.txt"]);
+        sh(&r.other, &["commit", "-q", "-m", "Track local"]);
+        sh(&r.other, &["push", "-q", "origin", "main"]);
+        let checkout = Checkout::open(&r.checkout).expect("opens");
+        let head = checkout.head().expect("head");
+        let tracking = checkout.tracking(None).expect("tracking");
+        checkout.fetch(&tracking).expect("fetch");
+        assert!(checkout.fast_forward(&tracking).is_err(), "refused");
+        assert_eq!(checkout.head().expect("head"), head);
+        assert_eq!(
+            std::fs::read_to_string(r.checkout.join("local.txt")).expect("read"),
+            "mine\n"
         );
     }
 

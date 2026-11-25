@@ -686,6 +686,9 @@ mod tests {
         same(user, None); // the data is still in the pre-ZLO folder
         std::fs::create_dir_all(user.join(DEFAULT_HOME_DIR_NAME)).expect("empty .zlo");
         same(user, None); // an empty ~/.zlo does not count yet
+        std::fs::write(user.join(DEFAULT_HOME_DIR_NAME).join(".DS_Store"), "")
+            .expect("finder metadata");
+        same(user, None); // nor one holding only Finder's .DS_Store
 
         // After the move the installer's answer is ~/.zlo, and the lock it
         // took before the move is the same file the backend now locks.
