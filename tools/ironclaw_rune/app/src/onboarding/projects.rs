@@ -54,16 +54,39 @@ pub fn default_pick(projects: &[SessionImportProject]) -> BTreeSet<String> {
     projects.iter().map(|p| p.path.clone()).collect()
 }
 
-/// What "Do not import projects" saves: no folder, unless there was
-/// nothing to decline (the list came back empty: no CLI found yet) or the
-/// gateway cannot limit the import. Then it saves nothing, so a CLI found
-/// later still brings its sessions in. A list that failed to load still
-/// saves the decline: the person said no.
+/// What the step's secondary button saves. With folders listed (or still
+/// loading, or a list that failed) it is "Do not import projects" and saves
+/// no folder: the person said no, and a CLI found later imports nothing.
+/// With nothing to decline (the list came back empty: no CLI found yet) or
+/// a gateway that cannot limit the import, it is "Continue" and saves
+/// nothing, so a CLI found later still brings its sessions in.
 pub(super) fn skip_limit(scan: Option<&Scan>) -> Option<ProjectSelection> {
     match scan {
         Some(Scan::Unsupported) => None,
         Some(Scan::Ready(list)) if list.projects.is_empty() => None,
         _ => Some(ProjectSelection::Only(BTreeSet::new())),
+    }
+}
+
+/// The secondary button's label, matching what [`skip_limit`] saves.
+pub(super) fn skip_label(scan: Option<&Scan>) -> &'static str {
+    match skip_limit(scan) {
+        Some(_) => "Do not import projects",
+        None => "Continue",
+    }
+}
+
+/// The limit "Import N projects" saves: every folder (also ones found later,
+/// by a CLI installed since or past a truncated list) when every listed one
+/// is picked, else just the pick.
+pub(super) fn import_limit(
+    pick: BTreeSet<String>,
+    projects: &[SessionImportProject],
+) -> ProjectSelection {
+    if !projects.is_empty() && projects.iter().all(|p| pick.contains(&p.path)) {
+        ProjectSelection::All
+    } else {
+        ProjectSelection::Only(pick)
     }
 }
 
@@ -269,7 +292,7 @@ fn run_import(s: &mut State) {
     p.error = None;
     let generation = p.import_gen.bump();
     let request = SessionImportRequest {
-        projects: Some(ProjectSelection::Only(pick)),
+        projects: Some(import_limit(pick, listed(s))),
         run: Some(ImportTrigger::Manual),
         ..SessionImportRequest::default()
     };
@@ -491,6 +514,25 @@ mod tests {
             none
         );
         assert_eq!(skip_limit(Some(&Scan::Failed("down".into()))), none);
+        assert_eq!(skip_limit(Some(&Scan::Pending)), none);
+        // The button says what it does.
+        assert_eq!(skip_label(Some(&ready(vec![]))), "Continue");
+        assert_eq!(skip_label(Some(&Scan::Pending)), "Do not import projects");
+    }
+
+    #[test]
+    fn the_whole_list_picked_imports_every_folder_found_later_too() {
+        let list = vec![
+            project("/w/app", None, 1, None),
+            project("/w/lib", None, 1, None),
+        ];
+        let all: BTreeSet<String> = ["/w/app", "/w/lib"].map(String::from).into();
+        assert_eq!(import_limit(all, &list), ProjectSelection::All);
+        let some: BTreeSet<String> = ["/w/app".to_string()].into();
+        assert_eq!(
+            import_limit(some.clone(), &list),
+            ProjectSelection::Only(some)
+        );
     }
 
     #[test]

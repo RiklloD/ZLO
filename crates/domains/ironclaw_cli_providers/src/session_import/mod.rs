@@ -111,9 +111,27 @@ impl ImportPaths {
             codex_sessions: codex_home.join("sessions"),
             codex_state: crate::codex::state_dir(home),
             claude_imports: crate::claude::imports_dir(&home.join(".ironclaw").join("claude-cli")),
-            own_roots: vec![home.join(".ironclaw")],
+            own_roots: own_roots(
+                home,
+                ["ZLO_HOME", "IRONCLAW_REBORN_HOME"]
+                    .into_iter()
+                    .filter_map(std::env::var_os)
+                    .map(PathBuf::from),
+            ),
         }
     }
+}
+
+/// This app's own folders: the pre-ZLO `~/.ironclaw`, ZLO's `~/.zlo`, and
+/// the home it was started with (`ZLO_HOME`, a custom one included).
+fn own_roots(home: &Path, configured: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut roots = vec![home.join(".ironclaw"), home.join(".zlo")];
+    for root in configured {
+        if root.is_absolute() && !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
 }
 
 /// A regular file as found on disk.
@@ -376,9 +394,11 @@ impl SessionImporter {
             // A run that reached its limits goes on with what it left, as
             // long as each round gets somewhere: a first import finishes
             // now, not one rescan interval at a time.
+            let mut total = BTreeMap::new();
             for _ in 0..=FOLLOW_UP_RUNS {
-                let counts = this.run_held(&engine, &scope, trigger).await;
-                if !continues(&counts) {
+                let round = this.run_held(&engine, &scope, trigger, &total).await;
+                total = combined(&total, &round);
+                if !continues(&round) {
                     break;
                 }
             }
@@ -401,17 +421,22 @@ impl SessionImporter {
         {
             return None;
         }
-        let counts = self.run_held(engine, scope, trigger).await;
+        let counts = self
+            .run_held(engine, scope, trigger, &BTreeMap::new())
+            .await;
         self.running.store(false, Ordering::SeqCst);
         Some(counts)
     }
 
-    /// The run itself, with the running flag held; records the outcome.
+    /// The run itself, with the running flag held; records the outcome,
+    /// added to `earlier` (the rounds of the same request before it), and
+    /// answers this round's counts.
     async fn run_held(
         &self,
         engine: &Engine,
         scope: &ThreadScope,
         trigger: ImportTrigger,
+        earlier: &BTreeMap<String, SessionImportCounts>,
     ) -> BTreeMap<String, SessionImportCounts> {
         let owner = ProfileOwner::from(scope);
         let store = engine.store();
@@ -435,9 +460,7 @@ impl SessionImporter {
                 state.last_error = error;
                 // Per source: one not scanned this run (its CLI gone, or
                 // turned off) keeps its last counts, so it is not "never read".
-                state
-                    .last_counts
-                    .extend(counts.iter().map(|(id, c)| (id.clone(), *c)));
+                state.last_counts.extend(combined(earlier, &counts));
                 if let Err(error) = store.put_session_import_state(&owner, &state).await {
                     tracing::debug!(%error, "session import: run not recorded");
                 }
@@ -722,6 +745,28 @@ fn continues(counts: &BTreeMap<String, SessionImportCounts>) -> bool {
     left && moved
 }
 
+/// A request's counts so far plus one more round: what came in adds up;
+/// what was looked at, skipped, failed or is still left is the latest
+/// round's.
+fn combined(
+    earlier: &BTreeMap<String, SessionImportCounts>,
+    round: &BTreeMap<String, SessionImportCounts>,
+) -> BTreeMap<String, SessionImportCounts> {
+    let mut out = earlier.clone();
+    for (id, now) in round {
+        let before = earlier.get(id).copied().unwrap_or_default();
+        out.insert(
+            id.clone(),
+            SessionImportCounts {
+                imported: before.imported + now.imported,
+                updated: before.updated + now.updated,
+                ..*now
+            },
+        );
+    }
+    out
+}
+
 /// The sources a run would read now: enabled, their CLI's runtime found.
 fn scannable(engine: &Engine, state: &SessionImportState) -> Vec<&'static str> {
     SOURCES
@@ -755,7 +800,9 @@ pub fn due(
         ImportTrigger::Background => {
             state.settings.background
                 && (unread
-                    || state.last_counts.values().any(|c| c.deferred > 0)
+                    || scannable
+                        .iter()
+                        .any(|id| state.last_counts.get(*id).is_some_and(|c| c.deferred > 0))
                     || state
                         .last_run_at
                         .is_none_or(|at| now - at >= BACKGROUND_RESCAN_MIN_MS))

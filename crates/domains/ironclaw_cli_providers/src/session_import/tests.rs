@@ -506,6 +506,8 @@ async fn one_import_request_goes_on_until_nothing_is_deferred() {
         .unwrap();
     let codex = status.sources.iter().find(|s| s.source == CODEX).unwrap();
     assert_eq!(codex.counts.unwrap().deferred, 0, "{status:?}");
+    // The request's result counts the thread its first round brought in.
+    assert_eq!(codex.counts.unwrap().imported, 1, "{status:?}");
     assert_eq!(h.codex_history().await, expected);
 }
 
@@ -584,4 +586,73 @@ fn work_left_deferred_is_picked_up_without_waiting_the_interval() {
     assert!(!due(&state, ImportTrigger::Launch, 2_000, &[CODEX]));
     state.settings.background = false;
     assert!(!due(&state, ImportTrigger::Background, 2_000, &[CODEX]));
+}
+
+#[test]
+fn work_deferred_by_a_source_that_cannot_run_now_does_not_keep_runs_due() {
+    let mut state = SessionImportState::default();
+    state.last_run_at = Some(1_000);
+    for id in [CLAUDE_CODE, CODEX] {
+        state
+            .last_counts
+            .insert(id.to_string(), SessionImportCounts::default());
+    }
+    state.last_counts.get_mut(CODEX).unwrap().deferred = 4;
+    // Codex turned off (or gone): its left work is no reason to run.
+    assert!(!due(
+        &state,
+        ImportTrigger::Background,
+        2_000,
+        &[CLAUDE_CODE]
+    ));
+    assert!(due(
+        &state,
+        ImportTrigger::Background,
+        2_000,
+        &[CLAUDE_CODE, CODEX]
+    ));
+}
+
+#[test]
+fn the_apps_own_homes_are_never_imported_from() {
+    let home = Path::new("/Users/me");
+    let roots = own_roots(
+        home,
+        [
+            PathBuf::from("/Volumes/data/zlo"),
+            PathBuf::from("/Users/me/.zlo"),
+            PathBuf::from("relative"),
+        ],
+    );
+    assert_eq!(
+        roots,
+        vec![
+            home.join(".ironclaw"),
+            home.join(".zlo"),
+            PathBuf::from("/Volumes/data/zlo"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn sessions_run_in_the_zlo_home_are_not_imported() {
+    let mut h = harness().await;
+    let zlo = h.root.join(".zlo/workspace");
+    std::fs::create_dir_all(&zlo).unwrap();
+    let dir = h
+        .root
+        .join(".claude/projects")
+        .join(claude_codes::transcript::encode_project_dir(&zlo));
+    let row = serde_json::json!({
+        "type": "user", "sessionId": "z1", "cwd": zlo, "timestamp": "2026-10-01T10:00:00Z",
+        "message": {"role": "user", "content": "inside the app's own home"},
+    })
+    .to_string();
+    write(&dir.join("z1.jsonl"), &[row]);
+    h.importer.paths.own_roots = own_roots(&h.root, []);
+    let counts = h.run().await;
+    assert_eq!(
+        counts[CLAUDE_CODE].imported, 1,
+        "only the app folder's session: {counts:?}"
+    );
 }
