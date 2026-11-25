@@ -214,6 +214,7 @@ pub fn stop_on_terminate() {
         }
         let block = RcBlock::new(|_note: *mut AnyObject| {
             crate::persist::global().flush(Duration::from_secs(3));
+            crate::cli_install::stop_all();
             stop();
             crate::remote::tunnel::close();
         });

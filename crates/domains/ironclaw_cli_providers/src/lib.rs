@@ -34,7 +34,7 @@ use std::sync::{Arc, Weak};
 
 use ironclaw_host_api::ids::ThreadId;
 use ironclaw_host_api::reply_visuals::REPLY_VISUALS_PROMPT;
-use ironclaw_orchestrator::engine::Engine;
+use ironclaw_orchestrator::engine::{DiscoveryReport, Engine};
 use ironclaw_orchestrator::runtime::{TurnEventSink, TurnProfile};
 use ironclaw_orchestrator::tools::DELEGATION_PROMPT;
 
@@ -160,17 +160,191 @@ impl Primed {
 /// Register every installed coding-agent CLI on `engine`, all with their
 /// tools behind `bridge`'s approvals, which are recorded in the engine's
 /// store, and their skills listed from `skills` (the shared skill usage
-/// ledger). Returns how many runtimes were registered.
+/// ledger), and wire a [`CliRuntimeDiscovery`] that finds the ones
+/// installed later. Returns how many runtimes were registered.
 pub async fn register_cli_runtimes(
     engine: &Arc<Engine>,
     bridge: &Arc<bridge::CliBridge>,
     skills: &skill_listing::CliSkillUsage,
 ) -> usize {
     bridge.record_to(engine.store().clone());
-    register_claude_runtimes(engine, Some(Arc::clone(bridge)), skills)
-        + register_antigravity_runtime(engine, Some(Arc::clone(bridge)), skills).await
-        + register_muse_runtime(engine, Some(Arc::clone(bridge)), skills)
-        + register_codex_runtime(engine, Some(Arc::clone(bridge)), skills)
+    // Boot and every later rescan (the desktop app's Install) take the
+    // same path, so the discovery remembers what boot found.
+    let discovery = Arc::new(CliRuntimeDiscovery::new(Arc::clone(bridge), skills.clone()));
+    let registered = discovery.run(engine).await.added;
+    engine.set_runtime_discovery(discovery);
+    registered
+}
+
+/// Finds coding-agent CLIs installed after the backend started (the
+/// desktop app's Install button, or the person's own terminal), wired on the
+/// engine with [`Engine::set_runtime_discovery`]. One look runs at a time,
+/// however many clients ask.
+pub struct CliRuntimeDiscovery {
+    bridge: Arc<bridge::CliBridge>,
+    skills: skill_listing::CliSkillUsage,
+    memo: tokio::sync::Mutex<DiscoveryMemo>,
+}
+
+/// What earlier looks learned about Antigravity.
+#[derive(Default)]
+struct DiscoveryMemo {
+    /// The registered `antigravity` runtime is the legacy one: an `agy`
+    /// installed since is reported as needing a backend restart.
+    antigravity_legacy: bool,
+    /// An `agy` whose `agy --version` ruled it out (too old, not a
+    /// version), by path and modification time: not asked again until the
+    /// binary changes.
+    agy_rejected: Option<AgyKey>,
+    /// An `agy` that did not answer, and when: asked again after
+    /// [`AGY_RETRY`].
+    agy_unanswered: Option<(AgyKey, std::time::Instant)>,
+}
+
+type AgyKey = (PathBuf, std::time::SystemTime);
+
+/// How long an `agy` that did not answer `--version` waits for another try.
+const AGY_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl CliRuntimeDiscovery {
+    pub fn new(bridge: Arc<bridge::CliBridge>, skills: skill_listing::CliSkillUsage) -> Self {
+        Self {
+            bridge,
+            skills,
+            memo: tokio::sync::Mutex::new(DiscoveryMemo::default()),
+        }
+    }
+
+    async fn run(&self, engine: &Arc<Engine>) -> DiscoveryReport {
+        let mut memo = self.memo.lock().await;
+        // A kind already running is skipped before its binary is even looked
+        // for: a client watching for installs asks every few seconds.
+        let has = |id: &str| {
+            ironclaw_orchestrator::model::RuntimeId::new(id).is_ok_and(|id| engine.has_runtime(&id))
+        };
+        let bridge = || Some(Arc::clone(&self.bridge));
+        let skills = &self.skills;
+        let mut added = 0;
+        if !has("claude-cli") {
+            added += register_claude_runtimes(engine, bridge(), skills);
+        }
+        let mut restart_needed = Vec::new();
+        if !has("antigravity") || memo.antigravity_legacy {
+            match self.discover_antigravity(engine, &mut memo).await {
+                Antigravity::Added => added += 1,
+                Antigravity::Nothing => {}
+                Antigravity::RestartNeeded => restart_needed.push("antigravity".to_string()),
+            }
+        }
+        if !has("muse-code") {
+            added += register_muse_runtime(engine, bridge(), skills);
+        }
+        if !has("codex") {
+            added += register_codex_runtime(engine, bridge(), skills);
+        }
+        DiscoveryReport {
+            added,
+            restart_needed,
+        }
+    }
+
+    /// Antigravity: its native `agy` when it answers, else the legacy
+    /// runtime. A registered legacy runtime is never replaced live (its
+    /// turns and their Stop belong to it): an `agy` installed since is
+    /// reported, for a backend restart to pick up.
+    async fn discover_antigravity(
+        &self,
+        engine: &Arc<Engine>,
+        memo: &mut DiscoveryMemo,
+    ) -> Antigravity {
+        use antigravity::launch::{AgentLaunch, CliProbe};
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return Antigravity::Nothing;
+        };
+        let native = match rpc::find_on_path(&home, "agy") {
+            Some(agy) => {
+                let key = std::fs::metadata(&agy)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|modified| (agy.clone(), modified));
+                let rejected = key.is_some() && key == memo.agy_rejected;
+                let waiting = memo
+                    .agy_unanswered
+                    .as_ref()
+                    .is_some_and(|(k, at)| Some(k) == key.as_ref() && at.elapsed() < AGY_RETRY);
+                if rejected || waiting {
+                    None
+                } else {
+                    match antigravity::launch::probe_cli(&agy).await {
+                        CliProbe::Usable => {
+                            memo.agy_unanswered = None;
+                            Some(agy)
+                        }
+                        CliProbe::Rejected => {
+                            memo.agy_rejected = key;
+                            None
+                        }
+                        CliProbe::Unanswered => {
+                            memo.agy_unanswered = key.map(|k| (k, std::time::Instant::now()));
+                            None
+                        }
+                    }
+                }
+            }
+            None => None,
+        };
+        let launch = match native {
+            // Running on the legacy runtime: the CLI takes over at restart.
+            Some(_) if memo.antigravity_legacy => return Antigravity::RestartNeeded,
+            Some(agy) => AgentLaunch::Cli { agy },
+            None if memo.antigravity_legacy => return Antigravity::Nothing,
+            None => match antigravity::launch::find_runtime(&home) {
+                Some(launch) => launch,
+                None => {
+                    tracing::debug!(
+                        "antigravity agent (agy acp or the ACP runtime) not found; antigravity runtime not registered"
+                    );
+                    return Antigravity::Nothing;
+                }
+            },
+        };
+        let legacy = matches!(launch, AgentLaunch::Runtime { .. });
+        let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
+        let config = antigravity::config_for(&home, launch);
+        let runtime = match antigravity::AntigravityRuntime::new(
+            config,
+            sink,
+            Some(Arc::clone(&self.bridge)),
+        ) {
+            Ok(runtime) => Arc::new(runtime.with_skill_usage(self.skills.clone())),
+            Err(error) => {
+                tracing::debug!(%error, "antigravity runtime id rejected");
+                return Antigravity::Nothing;
+            }
+        };
+        if !engine.register_runtime_if_absent(runtime) {
+            return Antigravity::Nothing;
+        }
+        memo.antigravity_legacy = legacy;
+        Antigravity::Added
+    }
+}
+
+/// What one look found for Antigravity.
+enum Antigravity {
+    Added,
+    Nothing,
+    /// Its CLI is installed over the registered legacy runtime.
+    RestartNeeded,
+}
+
+#[async_trait::async_trait]
+impl ironclaw_orchestrator::engine::RuntimeDiscovery for CliRuntimeDiscovery {
+    async fn discover(&self, engine: &Arc<Engine>) -> DiscoveryReport {
+        let report = self.run(engine).await;
+        tracing::debug!(?report, "looked again for coding-agent CLIs");
+        report
+    }
 }
 
 /// Register the Codex CLI runtime when a `codex` binary is installed. With
@@ -191,10 +365,9 @@ pub fn register_codex_runtime(
     };
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     match codex::CodexRuntime::new(codex::default_config(&home, &binary), sink, bridge) {
-        Ok(runtime) => {
-            engine.register_runtime(Arc::new(runtime.with_skill_usage(skills.clone())));
-            1
-        }
+        Ok(runtime) => usize::from(
+            engine.register_runtime_if_absent(Arc::new(runtime.with_skill_usage(skills.clone()))),
+        ),
         Err(error) => {
             tracing::debug!(%error, "codex runtime id rejected");
             0
@@ -223,8 +396,7 @@ pub fn register_claude_runtimes(
     for config in claude::default_accounts(&home, &binary, skills) {
         match claude::ClaudeCliRuntime::new(config, sink.clone(), bridge.clone()) {
             Ok(runtime) => {
-                engine.register_runtime(Arc::new(runtime));
-                registered += 1;
+                registered += usize::from(engine.register_runtime_if_absent(Arc::new(runtime)));
             }
             Err(error) => tracing::debug!(%error, "claude runtime id rejected"),
         }
@@ -256,37 +428,6 @@ fn spawn_version_check(binary: PathBuf) {
     });
 }
 
-/// Register the Antigravity runtime when its ACP server is installed. With
-/// `bridge`, its permission requests become IronClaw approvals; without,
-/// they are denied. Returns how many were registered (0 or 1). Finding the
-/// agent asks `agy --version` under a short deadline, without blocking.
-pub async fn register_antigravity_runtime(
-    engine: &Arc<Engine>,
-    bridge: Option<Arc<bridge::CliBridge>>,
-    skills: &skill_listing::CliSkillUsage,
-) -> usize {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return 0;
-    };
-    let Some(config) = antigravity::default_config(&home).await else {
-        tracing::debug!(
-            "antigravity agent (agy acp or the ACP runtime) not found; antigravity runtime not registered"
-        );
-        return 0;
-    };
-    let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
-    match antigravity::AntigravityRuntime::new(config, sink, bridge) {
-        Ok(runtime) => {
-            engine.register_runtime(Arc::new(runtime.with_skill_usage(skills.clone())));
-            1
-        }
-        Err(error) => {
-            tracing::debug!(%error, "antigravity runtime id rejected");
-            0
-        }
-    }
-}
-
 /// Register the Muse Code runtime when a `muse` binary is installed. With
 /// `bridge`, shell and writes are on and every approval Muse asks for is an
 /// IronClaw approval; without, both stay off and approvals are denied.
@@ -305,10 +446,9 @@ pub fn register_muse_runtime(
     };
     let sink: Weak<dyn TurnEventSink> = Arc::downgrade(engine) as Weak<dyn TurnEventSink>;
     match muse::MuseRuntime::new(muse::default_config(&home, &binary), sink, bridge) {
-        Ok(runtime) => {
-            engine.register_runtime(Arc::new(runtime.with_skill_usage(skills.clone())));
-            1
-        }
+        Ok(runtime) => usize::from(
+            engine.register_runtime_if_absent(Arc::new(runtime.with_skill_usage(skills.clone()))),
+        ),
         Err(error) => {
             tracing::debug!(%error, "muse runtime id rejected");
             0

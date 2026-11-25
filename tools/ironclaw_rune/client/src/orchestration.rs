@@ -908,6 +908,9 @@ pub struct ThreadRoute {
 pub struct ProviderCatalog {
     pub providers: Vec<RouteProvider>,
     pub picker: PickerPrefs,
+    /// A rescan's runtime ids that a program installed since would replace
+    /// once the backend restarts (`POST /providers/rescan` only).
+    pub restart_needed: Vec<String>,
 }
 
 /// One model of one provider in the picker preferences.
@@ -1022,6 +1025,17 @@ impl Client {
     /// The thread route's provider lists without a thread (`GET /providers`).
     pub async fn providers(&self) -> Result<ProviderCatalog, ClientError> {
         self.orch_get(format!("{V2}/providers")).await
+    }
+
+    /// Ask the backend to look again for coding-agent CLIs installed since
+    /// it started (`POST /providers/rescan`); answers the catalog after it.
+    /// An older backend answers 404: restarting it is the only way then.
+    pub async fn rescan_providers(&self) -> Result<ProviderCatalog, ClientError> {
+        let path = format!("{V2}/providers/rescan");
+        decode(
+            self.send::<Value>(self.request(reqwest::Method::POST, &path))
+                .await?,
+        )
     }
 
     pub async fn thread_route(&self, thread_id: &str) -> Result<ThreadRoute, ClientError> {

@@ -1,7 +1,9 @@
 //! Updates for every computer: a quiet background read for the rows in
-//! Settings → Computers, "Turn on" for a computer that has updates off, and
-//! "Check for updates" / "Update all machines" there (the only place an
-//! update starts; the status bar never offers one):
+//! Settings → Computers and the sidebar footer's update button
+//! (`workspace::shell::update_button`), "Turn on" for a computer that has
+//! updates off, and "Check for updates" / "Update all machines". An update
+//! starts from Settings → Computers or from the footer button, which always
+//! asks first in a dialog listing what changes:
 //! every saved computer, and This Mac, through its own backend's operator
 //! self-update routes (`zlo_client::update_calls`). Each machine updates
 //! itself from its local `[update]` config; ZLO only says "go" and watches.
@@ -25,7 +27,7 @@ use zlo_client::environments::{
     RouteKind, SavedEnvironment, THIS_MAC, check_descriptor, check_transport, preferred_routes,
 };
 use zlo_client::keychain::TokenStore;
-use zlo_client::self_update::{UpdateMethod, UpdateRunState, UpdateStatus};
+use zlo_client::self_update::{AvailableUpdate, UpdateMethod, UpdateRunState, UpdateStatus};
 use zlo_client::update_calls::UpdateCallError;
 use zlo_client::{Client, Connection, Token};
 
@@ -48,7 +50,8 @@ pub const ENABLE_HINT: &str = "Where \"Turn on\" is not offered, run on that com
 pub enum RowState {
     Checking,
     UpToDate,
-    Behind(u32),
+    /// An update is waiting there.
+    Behind(Pending),
     /// Updates are off there. `can_enable`: that backend knows the source
     /// checkout it was built from, so ZLO can turn them on in one click.
     NotSetUp {
@@ -61,13 +64,53 @@ pub enum RowState {
     Failed(String),
 }
 
+/// What a computer's last check found upstream, kept for the confirm
+/// dialog (what changes, from which build to which).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pending {
+    pub behind: u32,
+    /// The running build's commit, when its build knew it.
+    pub from: Option<String>,
+    /// The upstream tip the update goes to.
+    pub to: String,
+    /// Newest first, at most `MAX_UPDATE_SUBJECTS`.
+    pub subjects: Vec<String>,
+}
+
+impl Pending {
+    fn of(status: &UpdateStatus, available: &AvailableUpdate) -> Self {
+        Self {
+            behind: available.behind,
+            from: status.current.commit.clone(),
+            to: available.commit.clone(),
+            subjects: available.subjects.clone(),
+        }
+    }
+}
+
+/// A commit's short form, as `git log --oneline` shows it.
+pub fn short(commit: &str) -> &str {
+    commit.get(..7).unwrap_or(commit)
+}
+
 impl RowState {
+    /// A row that is `n` commits behind the test fixtures' tip.
+    #[cfg(test)]
+    pub fn behind(n: u32) -> Self {
+        Self::Behind(Pending {
+            behind: n,
+            from: None,
+            to: "b".repeat(40),
+            subjects: vec![],
+        })
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::Checking => "Checking…".into(),
             Self::UpToDate => "Up to date".into(),
-            Self::Behind(1) => "1 commit behind".into(),
-            Self::Behind(n) => format!("{n} commits behind"),
+            Self::Behind(p) if p.behind == 1 => "1 commit behind".into(),
+            Self::Behind(p) => format!("{} commits behind", p.behind),
             Self::NotSetUp { can_enable: true } => "Updates are off".into(),
             Self::NotSetUp { can_enable: false } => {
                 "Updates are off (run `zlo update enable` there)".into()
@@ -85,6 +128,9 @@ pub struct UpdatesState {
     pub rows: HashMap<String, RowState>,
     pub checking: bool,
     pub updating: bool,
+    /// The last update run ended with a computer failing; cleared by the
+    /// next check or update. The footer button shows it.
+    pub failed_run: bool,
 }
 
 // ── decisions (pure) ─────────────────────────────────────────────────────
@@ -99,7 +145,7 @@ pub fn from_check(result: Result<&UpdateStatus, &UpdateCallError>) -> RowState {
             RowState::Updating(status.last_run.message.clone().unwrap_or_default())
         }
         Ok(status) => match &status.available {
-            Some(a) if a.behind > 0 => RowState::Behind(a.behind),
+            Some(a) if a.behind > 0 => RowState::Behind(Pending::of(status, a)),
             _ => RowState::UpToDate,
         },
         Err(UpdateCallError::NotSetUp(_)) => RowState::NotSetUp { can_enable: false },
@@ -133,7 +179,6 @@ pub fn from_poll(
 }
 
 /// How many computers have an update waiting.
-#[cfg(test)]
 pub fn waiting(updates: &UpdatesState) -> usize {
     updates
         .rows
@@ -459,6 +504,16 @@ pub(crate) fn set_row(s: &mut State, key: String, row: RowState) {
     if is_member(s, &key) {
         s.remote.updates.rows.insert(key, row);
     }
+    // The footer's dialog closes once none of its computers has an update
+    // waiting any more (so it never comes back by itself later).
+    let gone = s.workspace.confirm_update.as_ref().is_some_and(|keys| {
+        !keys
+            .iter()
+            .any(|k| matches!(s.remote.updates.rows.get(k), Some(RowState::Behind(_))))
+    });
+    if gone {
+        s.workspace.confirm_update = None;
+    }
 }
 
 /// A computer was removed from this Mac: its row goes with it.
@@ -487,6 +542,7 @@ pub fn check(s: &mut State) {
     } = machines(s);
     all.extend(this_mac);
     s.remote.updates.checking = true;
+    s.remote.updates.failed_run = false;
     let report = reporter(s);
     let handle = s.rt.handle.clone();
     net.spawn(async move {
@@ -604,6 +660,29 @@ pub(crate) async fn enable_one(m: Arc<dyn Machine>, report: Report) {
 
 /// "Update all machines".
 pub fn update_everything(s: &mut State) {
+    run_update(s, |_| true);
+}
+
+/// The footer dialog's "Update": exactly the computers it listed, never
+/// one whose update arrived after the dialog drew.
+pub fn update_keys(s: &mut State, keys: Vec<String>) {
+    run_update(s, move |key| keys.iter().any(|k| k == key));
+}
+
+/// The computers with an update waiting: the others by key, This Mac last
+/// (the order an update runs them in).
+pub fn waiting_keys(updates: &UpdatesState) -> Vec<String> {
+    let mut keys: Vec<String> = updates
+        .rows
+        .iter()
+        .filter(|(_, row)| matches!(row, RowState::Behind(_)))
+        .map(|(key, _)| key.clone())
+        .collect();
+    keys.sort_by_key(|key| (key == THIS_MAC, key.clone()));
+    keys
+}
+
+fn run_update(s: &mut State, keep: impl Fn(&str) -> bool) {
     if s.fixture || s.remote.updates.updating {
         return;
     }
@@ -611,18 +690,35 @@ pub fn update_everything(s: &mut State) {
         return;
     };
     let Fleet { remotes, this_mac } = machines(s);
+    let remotes: Vec<_> = remotes.into_iter().filter(|m| keep(m.key())).collect();
+    let this_mac = this_mac.filter(|m| keep(m.key()));
+    let keys: Vec<String> = remotes
+        .iter()
+        .chain(this_mac.iter())
+        .map(|m| m.key().to_string())
+        .collect();
+    if keys.is_empty() {
+        return;
+    }
     s.remote.updates.updating = true;
+    s.remote.updates.failed_run = false;
     let report = reporter(s);
     let handle = s.rt.handle.clone();
     net.spawn(async move {
         update_all(remotes, this_mac, report, Timing::default()).await;
-        handle.update(|s, _| s.remote.updates.updating = false);
+        handle.update(move |s, _| {
+            let u = &mut s.remote.updates;
+            u.updating = false;
+            u.failed_run = keys
+                .iter()
+                .any(|k| matches!(u.rows.get(k), Some(RowState::Failed(_))));
+        });
     });
 }
 
 #[cfg(test)]
 mod tests {
-    use zlo_client::self_update::{AvailableUpdate, BuildInfo, UpdateRun};
+    use zlo_client::self_update::{BuildInfo, UpdateRun};
 
     use super::*;
 
@@ -659,7 +755,7 @@ mod tests {
             subjects: vec![],
             checked_at: at(0),
         });
-        assert_eq!(from_check(Ok(&behind)), RowState::Behind(3));
+        assert_eq!(from_check(Ok(&behind)), RowState::behind(3));
         assert_eq!(
             from_check(Ok(&status(UpdateRunState::Succeeded, Some(0), "x"))),
             RowState::UpToDate
@@ -685,8 +781,8 @@ mod tests {
             ))),
             RowState::Failed("The checkout has local changes".into())
         );
-        assert_eq!(RowState::Behind(1).label(), "1 commit behind");
-        assert_eq!(RowState::Behind(4).label(), "4 commits behind");
+        assert_eq!(RowState::behind(1).label(), "1 commit behind");
+        assert_eq!(RowState::behind(4).label(), "4 commits behind");
         assert_eq!(
             RowState::NotSetUp { can_enable: true }.label(),
             "Updates are off"
@@ -708,16 +804,16 @@ mod tests {
     #[test]
     fn the_background_read_only_changes_rows_with_something_new() {
         // Nothing shown yet: the first read fills the row.
-        assert_eq!(from_poll(None, Ok(&behind(2))), Some(RowState::Behind(2)));
+        assert_eq!(from_poll(None, Ok(&behind(2))), Some(RowState::behind(2)));
         // The same answer again changes nothing (no repaint).
-        assert_eq!(from_poll(Some(&RowState::Behind(2)), Ok(&behind(2))), None);
+        assert_eq!(from_poll(Some(&RowState::behind(2)), Ok(&behind(2))), None);
         assert_eq!(
-            from_poll(Some(&RowState::Behind(2)), Ok(&behind(3))),
-            Some(RowState::Behind(3))
+            from_poll(Some(&RowState::behind(2)), Ok(&behind(3))),
+            Some(RowState::behind(3))
         );
         // Asleep or offline: the row keeps what it last said.
         let asleep = UpdateCallError::Unreachable("no route".into());
-        assert_eq!(from_poll(Some(&RowState::Behind(2)), Err(&asleep)), None);
+        assert_eq!(from_poll(Some(&RowState::behind(2)), Err(&asleep)), None);
         assert_eq!(from_poll(None, Err(&asleep)), None);
         // Why the last update failed stays until something else happens there.
         let mut failed = behind(2);
@@ -728,7 +824,7 @@ mod tests {
         );
         assert_eq!(
             from_poll(Some(&RowState::Failed("dirty".into())), Ok(&behind(2))),
-            Some(RowState::Behind(2)),
+            Some(RowState::behind(2)),
             "a newer check replaces an old failure"
         );
         // "Updated" stays until there is a newer update.
@@ -741,14 +837,14 @@ mod tests {
         newer.last_run.state = UpdateRunState::Succeeded;
         assert_eq!(
             from_poll(Some(&RowState::Updated("Updated to b".into())), Ok(&newer)),
-            Some(RowState::Behind(1))
+            Some(RowState::behind(1))
         );
 
         let mut u = UpdatesState::default();
         assert_eq!(waiting(&u), 0);
-        u.rows.insert("a".into(), RowState::Behind(2));
+        u.rows.insert("a".into(), RowState::behind(2));
         u.rows.insert("b".into(), RowState::UpToDate);
-        u.rows.insert("c".into(), RowState::Behind(1));
+        u.rows.insert("c".into(), RowState::behind(1));
         assert_eq!(waiting(&u), 2);
     }
 
@@ -773,9 +869,9 @@ mod tests {
         // Predates the route: still on there, so the row says what it is.
         let old = Fake::machine("old", &log, Ok(behind(2)), vec![Ok(behind(2))]);
         disable_one(old, report).await;
-        assert_eq!(last(&seen.lock().unwrap(), "old"), RowState::Behind(2));
+        assert_eq!(last(&seen.lock().unwrap(), "old"), RowState::behind(2));
         // Offered only where updates are on and nothing is in flight.
-        assert!(can_turn_off(&RowState::Behind(2)));
+        assert!(can_turn_off(&RowState::behind(2)));
         assert!(!can_turn_off(&RowState::NotSetUp { can_enable: true }));
         assert!(!can_turn_off(&RowState::Updating(String::new())));
         assert!(!can_turn_off(&RowState::Checking));
@@ -794,7 +890,7 @@ mod tests {
         let (report, seen) = recorder();
         enable_one(studio, report.clone()).await;
         assert_eq!(*log.lock().unwrap(), vec!["enable:studio", "check:studio"]);
-        assert_eq!(last(&seen.lock().unwrap(), "studio"), RowState::Behind(4));
+        assert_eq!(last(&seen.lock().unwrap(), "studio"), RowState::behind(4));
 
         // A backend from before the enable route.
         let old = Fake::machine("old", &log, Ok(behind(1)), vec![Ok(behind(1))]);
@@ -1111,7 +1207,7 @@ mod tests {
         let (report, seen) = recorder();
         check_all(vec![a, b], report).await;
         let seen = seen.lock().unwrap().clone();
-        assert_eq!(last(&seen, "a"), RowState::Behind(2));
+        assert_eq!(last(&seen, "a"), RowState::behind(2));
         assert_eq!(last(&seen, "b"), RowState::NotSetUp { can_enable: false });
         assert!(seen.contains(&("a".into(), RowState::Checking)));
     }

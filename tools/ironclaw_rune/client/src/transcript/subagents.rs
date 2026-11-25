@@ -146,14 +146,10 @@ impl Transcript {
                 .filter(shown)
                 .find(|m| m.turn_run_id.as_deref() == Some(run.as_str())),
             // From before runs were recorded: the last prompt sent before it.
-            None => self
-                .durable
-                .iter()
-                .filter(shown)
-                .rfind(|m| {
-                    m.created_at
-                        .is_some_and(|at| at.timestamp_millis() <= task.created_at)
-                }),
+            None => self.durable.iter().filter(shown).rfind(|m| {
+                m.created_at
+                    .is_some_and(|at| at.timestamp_millis() <= task.created_at)
+            }),
         };
         if let Some(m) = prompt {
             return Anchor::Turn(self.key_of_message(&m.message_id));

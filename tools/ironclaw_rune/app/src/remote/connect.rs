@@ -651,6 +651,9 @@ pub(crate) fn adopt(s: &mut State, computer: Computer, descriptor: Option<Enviro
 pub(crate) fn reset_for_switch(s: &mut State) {
     s.chat = None;
     s.pages = Default::default();
+    // An installer of this Mac's agents stops: its rescan would reach the
+    // other computer.
+    crate::cli_install::computer_switched(s);
     // An unsent triage draft moves to the next computer instead.
     crate::workspace::carry_triage(s);
     s.workspace.draft = None;
