@@ -22,6 +22,8 @@ struct Harness {
     rollout: PathBuf,
     engine: Arc<Engine>,
     importer: SessionImporter,
+    /// Built but not registered yet (`harness_without_runtimes`).
+    pending: Vec<Arc<dyn ironclaw_orchestrator::runtime::TurnRuntime>>,
 }
 
 fn scope() -> ThreadScope {
@@ -61,6 +63,13 @@ fn append(path: &Path, lines: &[String]) {
 }
 
 async fn harness() -> Harness {
+    let mut h = harness_without_runtimes().await;
+    h.install_clis();
+    h
+}
+
+/// A laptop whose CLIs the backend has not found yet.
+async fn harness_without_runtimes() -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let app = root.join("app");
@@ -121,7 +130,6 @@ async fn harness() -> Harness {
         None,
     )
     .unwrap();
-    engine.register_runtime(Arc::new(codex));
     let work = root.join(".ironclaw/claude-cli");
     let claude = ClaudeCliRuntime::new(
         ClaudeCliConfig {
@@ -141,7 +149,8 @@ async fn harness() -> Harness {
         None,
     )
     .unwrap();
-    engine.register_runtime(Arc::new(claude));
+    let pending: Vec<Arc<dyn ironclaw_orchestrator::runtime::TurnRuntime>> =
+        vec![Arc::new(codex), Arc::new(claude)];
     let importer = SessionImporter::new(ImportPaths {
         claude_projects: root.join(".claude/projects"),
         codex_sessions: root.join(".codex/sessions"),
@@ -156,10 +165,18 @@ async fn harness() -> Harness {
         rollout,
         engine,
         importer,
+        pending,
     }
 }
 
 impl Harness {
+    /// The backend found the CLIs (boot, or the live rescan).
+    fn install_clis(&mut self) {
+        for runtime in self.pending.drain(..) {
+            self.engine.register_runtime(runtime);
+        }
+    }
+
     async fn run(&self) -> BTreeMap<String, SessionImportCounts> {
         self.importer
             .run(&self.engine, &scope(), ImportTrigger::Manual)
@@ -360,4 +377,211 @@ async fn a_long_rollout_imports_in_bounded_batches_across_runs() {
         "every message once, in order"
     );
     let _ = &h.app;
+}
+
+#[tokio::test]
+async fn a_spent_budget_on_one_source_does_not_defer_the_other() {
+    let mut h = harness().await;
+    // The first source read spends the whole byte budget.
+    h.importer.set_limits(Limits {
+        bytes: 1,
+        ..Limits::default()
+    });
+    let counts = h.run().await;
+    assert_eq!(counts[CLAUDE_CODE].imported, 1);
+    assert_eq!(counts[CODEX].deferred, 0, "{counts:?}");
+    assert_eq!(counts[CODEX].imported, 1, "{counts:?}");
+}
+
+#[tokio::test]
+async fn a_launch_that_found_no_cli_does_not_use_up_the_launch_import() {
+    let mut h = harness_without_runtimes().await;
+    let importer = Arc::new(std::mem::replace(
+        &mut h.importer,
+        SessionImporter::new(ImportPaths::from_home(&h.root)),
+    ));
+    let launch = SessionImportRequest {
+        run: Some(ImportTrigger::Launch),
+        ..SessionImportRequest::default()
+    };
+    let wait = |importer: Arc<SessionImporter>| async move {
+        for _ in 0..400 {
+            if !importer.is_running() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the run did not end");
+    };
+    let first = importer
+        .request(&h.engine, &scope(), &launch)
+        .await
+        .unwrap();
+    assert!(first.started, "the first launch runs");
+    wait(Arc::clone(&importer)).await;
+    // Nothing was scannable, so nothing was imported or counted.
+    let status = importer
+        .status(&h.engine, &ProfileOwner::from(&scope()))
+        .await
+        .unwrap();
+    assert!(status.last_run_at.is_some());
+    assert!(status.sources.iter().all(|s| s.counts.is_none()));
+
+    // The CLIs turn up (an install, then the live rescan or a relaunch).
+    h.install_clis();
+    let again = importer
+        .request(&h.engine, &scope(), &launch)
+        .await
+        .unwrap();
+    assert!(again.started, "a source never scanned makes the launch due");
+    wait(Arc::clone(&importer)).await;
+    let status = importer
+        .status(&h.engine, &ProfileOwner::from(&scope()))
+        .await
+        .unwrap();
+    let imported = |id: &str| {
+        status
+            .sources
+            .iter()
+            .find(|s| s.source == id)
+            .and_then(|s| s.counts)
+            .map(|c| c.imported)
+    };
+    assert_eq!(imported(CLAUDE_CODE), Some(1));
+    assert_eq!(imported(CODEX), Some(1));
+
+    // Both scanned: a further launch is not due.
+    let third = importer
+        .request(&h.engine, &scope(), &launch)
+        .await
+        .unwrap();
+    assert!(!third.started);
+}
+
+#[tokio::test]
+async fn one_import_request_goes_on_until_nothing_is_deferred() {
+    let mut h = harness().await;
+    let mut expected = vec![
+        "Why is CI red?".to_string(),
+        "A snapshot drifted.".to_string(),
+    ];
+    let mut more = Vec::new();
+    for n in 0..4 {
+        let at = format!("2026-10-02T11:{n:02}:00.000Z");
+        more.push(message("user", &at, &format!("step {n}")));
+        expected.push(format!("step {n}"));
+    }
+    append(&h.rollout, &more);
+    // One batch of two per round: the rollout needs several rounds.
+    h.importer.set_limits(Limits {
+        bytes: 1,
+        batch: 2,
+        ..Limits::default()
+    });
+    let importer = Arc::new(std::mem::replace(
+        &mut h.importer,
+        SessionImporter::new(ImportPaths::from_home(&h.root)),
+    ));
+    let manual = SessionImportRequest {
+        run: Some(ImportTrigger::Manual),
+        ..SessionImportRequest::default()
+    };
+    assert!(
+        importer
+            .request(&h.engine, &scope(), &manual)
+            .await
+            .unwrap()
+            .started
+    );
+    for _ in 0..400 {
+        if !importer.is_running() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!importer.is_running());
+    let status = importer
+        .status(&h.engine, &ProfileOwner::from(&scope()))
+        .await
+        .unwrap();
+    let codex = status.sources.iter().find(|s| s.source == CODEX).unwrap();
+    assert_eq!(codex.counts.unwrap().deferred, 0, "{status:?}");
+    assert_eq!(h.codex_history().await, expected);
+}
+
+// ── when a run is due ─────────────────────────────────────────────────
+
+#[test]
+fn launch_runs_once_and_background_waits_its_interval() {
+    let both = [CLAUDE_CODE, CODEX];
+    let mut state = SessionImportState::default();
+    assert!(due(&state, ImportTrigger::Launch, 0, &both));
+    assert!(due(&state, ImportTrigger::Background, 0, &both));
+    state.last_run_at = Some(1_000);
+    for id in both {
+        state
+            .last_counts
+            .insert(id.to_string(), SessionImportCounts::default());
+    }
+    assert!(!due(&state, ImportTrigger::Launch, 2_000, &both));
+    assert!(!due(&state, ImportTrigger::Background, 2_000, &both));
+    assert!(due(
+        &state,
+        ImportTrigger::Background,
+        1_000 + BACKGROUND_RESCAN_MIN_MS,
+        &both
+    ));
+    assert!(due(&state, ImportTrigger::Manual, 2_000, &both));
+    state.settings.background = false;
+    assert!(!due(
+        &state,
+        ImportTrigger::Background,
+        1_000 + BACKGROUND_RESCAN_MIN_MS,
+        &both
+    ));
+}
+
+#[test]
+fn a_source_never_scanned_makes_the_launch_due_again() {
+    let mut state = SessionImportState::default();
+    state.last_run_at = Some(1_000);
+    state
+        .last_counts
+        .insert(CLAUDE_CODE.to_string(), SessionImportCounts::default());
+    assert!(!due(&state, ImportTrigger::Launch, 2_000, &[CLAUDE_CODE]));
+    // Codex was found since: its sessions were never read.
+    assert!(due(
+        &state,
+        ImportTrigger::Launch,
+        2_000,
+        &[CLAUDE_CODE, CODEX]
+    ));
+    assert!(due(
+        &state,
+        ImportTrigger::Background,
+        2_000,
+        &[CLAUDE_CODE, CODEX]
+    ));
+    // A first launch that found no CLI at all is not the launch import.
+    let mut none = SessionImportState::default();
+    none.last_run_at = Some(1_000);
+    assert!(!due(&none, ImportTrigger::Launch, 2_000, &[]));
+    assert!(due(&none, ImportTrigger::Launch, 2_000, &[CODEX]));
+}
+
+#[test]
+fn work_left_deferred_is_picked_up_without_waiting_the_interval() {
+    let mut state = SessionImportState::default();
+    state.last_run_at = Some(1_000);
+    state.last_counts.insert(
+        CODEX.to_string(),
+        SessionImportCounts {
+            deferred: 3,
+            ..SessionImportCounts::default()
+        },
+    );
+    assert!(due(&state, ImportTrigger::Background, 2_000, &[CODEX]));
+    assert!(!due(&state, ImportTrigger::Launch, 2_000, &[CODEX]));
+    state.settings.background = false;
+    assert!(!due(&state, ImportTrigger::Background, 2_000, &[CODEX]));
 }

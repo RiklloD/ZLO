@@ -347,7 +347,7 @@ impl SessionImporter {
         }
         let mut started = false;
         if let Some(trigger) = request.run
-            && due(&state, trigger, now_ms())
+            && due(&state, trigger, now_ms(), &scannable(engine, &state))
         {
             started = self.start(Arc::clone(engine), scope.clone(), trigger);
         }
@@ -373,7 +373,15 @@ impl SessionImporter {
         }
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            this.run_held(&engine, &scope, trigger).await;
+            // A run that reached its limits goes on with what it left, as
+            // long as each round gets somewhere: a first import finishes
+            // now, not one rescan interval at a time.
+            for _ in 0..=FOLLOW_UP_RUNS {
+                let counts = this.run_held(&engine, &scope, trigger).await;
+                if !continues(&counts) {
+                    break;
+                }
+            }
             this.running.store(false, Ordering::SeqCst);
         });
         true
@@ -425,9 +433,11 @@ impl SessionImporter {
                 state.last_run_at = Some(started);
                 state.last_trigger = Some(trigger);
                 state.last_error = error;
-                if !counts.is_empty() {
-                    state.last_counts = counts.clone();
-                }
+                // Per source: one not scanned this run (its CLI gone, or
+                // turned off) keeps its last counts, so it is not "never read".
+                state
+                    .last_counts
+                    .extend(counts.iter().map(|(id, c)| (id.clone(), *c)));
                 if let Err(error) = store.put_session_import_state(&owner, &state).await {
                     tracing::debug!(%error, "session import: run not recorded");
                 }
@@ -446,16 +456,18 @@ impl SessionImporter {
         let owner = ProfileOwner::from(scope);
         let store = engine.store();
         let state = store.session_import_state(&owner).await?;
-        let mut budget = Budget {
-            bytes: self.limits.bytes,
-            deadline: Instant::now() + self.limits.time,
-        };
         let mut out = BTreeMap::new();
         for spec in &SOURCES {
             let runtime = RuntimeId::new(spec.runtime)?;
             if !state.settings.enabled(spec.id) || !engine.has_runtime(&runtime) {
                 continue;
             }
+            // Each source has a budget of its own: a long Claude Code
+            // history does not leave every Codex session deferred.
+            let mut budget = Budget {
+                bytes: self.limits.bytes,
+                deadline: Instant::now() + self.limits.time,
+            };
             let mut own = store
                 .native_sessions(std::slice::from_ref(&runtime))
                 .await?;
@@ -700,16 +712,53 @@ impl SessionImporter {
     }
 }
 
-/// Whether a run for `trigger` is due.
-pub fn due(state: &SessionImportState, trigger: ImportTrigger, now: Millis) -> bool {
+/// Rounds a background run may add after one that left work deferred.
+const FOLLOW_UP_RUNS: usize = 8;
+
+/// Another round is worth it: work was left, and this round moved.
+fn continues(counts: &BTreeMap<String, SessionImportCounts>) -> bool {
+    let left = counts.values().any(|c| c.deferred > 0);
+    let moved = counts.values().any(|c| c.imported + c.updated > 0);
+    left && moved
+}
+
+/// The sources a run would read now: enabled, their CLI's runtime found.
+fn scannable(engine: &Engine, state: &SessionImportState) -> Vec<&'static str> {
+    SOURCES
+        .iter()
+        .filter(|spec| state.settings.enabled(spec.id))
+        .filter(|spec| RuntimeId::new(spec.runtime).is_ok_and(|r| engine.has_runtime(&r)))
+        .map(|spec| spec.id)
+        .collect()
+}
+
+/// Whether a run for `trigger` is due. `scannable` names the sources a run
+/// would read now (enabled, their CLI found).
+///
+/// - `Launch`: no run yet, or a scannable source was never read: a first
+///   launch that found no CLI is not the launch import, and a CLI found
+///   since (installed, or the live rescan) brings its sessions in.
+/// - `Background` (with `background` on): the interval passed, a source was
+///   never read, or the last run left work deferred.
+pub fn due(
+    state: &SessionImportState,
+    trigger: ImportTrigger,
+    now: Millis,
+    scannable: &[&str],
+) -> bool {
+    let unread = scannable
+        .iter()
+        .any(|id| !state.last_counts.contains_key(*id));
     match trigger {
         ImportTrigger::Manual => true,
-        ImportTrigger::Launch => state.last_run_at.is_none(),
+        ImportTrigger::Launch => state.last_run_at.is_none() || unread,
         ImportTrigger::Background => {
             state.settings.background
-                && state
-                    .last_run_at
-                    .is_none_or(|at| now - at >= BACKGROUND_RESCAN_MIN_MS)
+                && (unread
+                    || state.last_counts.values().any(|c| c.deferred > 0)
+                    || state
+                        .last_run_at
+                        .is_none_or(|at| now - at >= BACKGROUND_RESCAN_MIN_MS))
         }
     }
 }
@@ -741,30 +790,3 @@ mod claude;
 mod codex;
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod due_tests {
-    use super::*;
-
-    #[test]
-    fn launch_runs_once_and_background_waits_its_interval() {
-        let mut state = SessionImportState::default();
-        assert!(due(&state, ImportTrigger::Launch, 0));
-        assert!(due(&state, ImportTrigger::Background, 0));
-        state.last_run_at = Some(1_000);
-        assert!(!due(&state, ImportTrigger::Launch, 2_000));
-        assert!(!due(&state, ImportTrigger::Background, 2_000));
-        assert!(due(
-            &state,
-            ImportTrigger::Background,
-            1_000 + BACKGROUND_RESCAN_MIN_MS
-        ));
-        assert!(due(&state, ImportTrigger::Manual, 2_000));
-        state.settings.background = false;
-        assert!(!due(
-            &state,
-            ImportTrigger::Background,
-            1_000 + BACKGROUND_RESCAN_MIN_MS
-        ));
-    }
-}

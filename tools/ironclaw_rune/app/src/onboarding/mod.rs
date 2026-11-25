@@ -12,7 +12,7 @@
 //!    instead of a CLI, a provider (ChatGPT plan, an API key) that
 //!    IronClaw's own agent runs on (`agents.rs`).
 //! 3. **Projects** — folders Claude Code and Codex sessions ran in, the
-//!    recent repositories picked, imported as threads (`projects.rs`); the
+//!    every one picked, imported as threads (`projects.rs`); the
 //!    pick limits the session import to those folders.
 //!
 //! The gate (t3code `resolveFirstRunDecision`): setup done before (the
