@@ -48,6 +48,7 @@ pub use draft::{
     composer_edit, send as send_draft, stage_snapshot, start_in_profile, voice_composer,
 };
 pub use inbox::title_of as row_title;
+pub use inbox::{ProfileChange, profiles_changed};
 pub use keys::{menu_items, on_close, quit};
 
 /// The inbox has no live stream, so the badge polls. One tiny request.

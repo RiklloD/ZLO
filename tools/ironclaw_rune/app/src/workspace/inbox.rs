@@ -21,7 +21,7 @@ use zlo_client::ClientError;
 use zlo_client::inbox::{
     InboxAction, InboxEngine, InboxListResponse, InboxProfile, InboxRow, InboxState, InboxStatus,
 };
-use zlo_client::profiles::DEFAULT_PROFILE_ID;
+use zlo_client::profiles::{DEFAULT_PROFILE_ID, ProfileInfo};
 
 use super::{active_id, draft};
 use crate::jobs;
@@ -440,6 +440,53 @@ pub fn note_sent(s: &mut State, thread_id: &str) {
     let timer = &mut s.workspace.timers.inbox;
     *timer = Some(timer.map_or(soon, |at| at.min(soon)));
     ensure_tick(s);
+}
+
+/// What Settings › Profiles just did to a profile, as the server answered.
+pub enum ProfileChange<'a> {
+    /// Created or updated: the server's saved record.
+    Saved(&'a ProfileInfo),
+    /// Archived.
+    Deleted(&'a str),
+    /// Several changed at once (an import): only a re-read knows how.
+    Reloaded,
+}
+
+/// A profile changed in Settings: the picker reads the inbox's profile
+/// list, which otherwise only catches up on a thread event. The server's
+/// own answer lands at once, then a re-read brings the order, branch and
+/// last-used profile in line.
+pub fn profiles_changed(s: &mut State, change: ProfileChange<'_>) {
+    let list = &mut s.workspace.inbox.list;
+    match change {
+        // Before the first read the picker shows a stand-in Default: a
+        // one-row list would hide it until the read lands.
+        ProfileChange::Saved(_) if list.profiles.is_empty() => {}
+        ProfileChange::Saved(saved) => {
+            let profile = InboxProfile {
+                profile_id: saved.profile_id.clone(),
+                display_name: saved.settings.display_name.clone(),
+                git_branch: saved.git_branch.clone(),
+                last_used_at: saved.last_used_at,
+            };
+            match list
+                .profiles
+                .iter_mut()
+                .find(|p| p.profile_id == profile.profile_id)
+            {
+                Some(row) => *row = profile,
+                None => list.profiles.push(profile),
+            }
+        }
+        ProfileChange::Deleted(id) => {
+            list.profiles.retain(|p| p.profile_id != id);
+            if list.last_used_profile_id.as_deref() == Some(id) {
+                list.last_used_profile_id = None;
+            }
+        }
+        ProfileChange::Reloaded => {}
+    }
+    refresh(s);
 }
 
 /// The run of `thread_id` ended (or its send failed): stop claiming it.

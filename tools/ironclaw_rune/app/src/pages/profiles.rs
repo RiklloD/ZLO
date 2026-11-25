@@ -12,6 +12,8 @@ mod fixtures;
 #[cfg(test)]
 mod motion_tests;
 mod pickers;
+#[cfg(test)]
+mod refresh_tests;
 mod view;
 
 pub use fixtures::{fixture_editor, fixture_list, fixture_pickers};
@@ -290,6 +292,11 @@ fn save(s: &mut State) {
             ps.saving = false;
             match result {
                 Ok(saved) => {
+                    crate::workspace::profiles_changed(
+                        s,
+                        crate::workspace::ProfileChange::Saved(&saved),
+                    );
+                    let ps = &mut s.pages.profiles;
                     let id = saved.profile_id.clone();
                     match ps.items.iter_mut().find(|p| p.profile_id == id) {
                         Some(row) => *row = saved,
@@ -327,6 +334,10 @@ fn delete(s: &mut State) {
             tx.animated();
             match result {
                 Ok(()) => {
+                    crate::workspace::profiles_changed(
+                        s,
+                        crate::workspace::ProfileChange::Deleted(&id),
+                    );
                     s.pages.profiles.items.retain(|p| p.profile_id != id);
                     back(s);
                 }
@@ -369,6 +380,10 @@ fn import(s: &mut State) {
                     ps.notice = Some(view::import_summary(&report));
                     ps.error = None;
                     refresh(s);
+                    crate::workspace::profiles_changed(
+                        s,
+                        crate::workspace::ProfileChange::Reloaded,
+                    );
                 }
                 Err(e) => ps.error = Some(e.to_string()),
             }
