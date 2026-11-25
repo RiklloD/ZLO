@@ -26,6 +26,7 @@ mod compact;
 mod control;
 pub(crate) mod import;
 mod input;
+mod login;
 mod skills;
 mod steer;
 mod stream;
@@ -115,7 +116,8 @@ pub struct ClaudeCliConfig {
     /// Working directory of every session; transcripts are filed under it.
     pub work_dir: PathBuf,
     /// Where the account's login lives (`~/.claude.json` or
-    /// `<config_dir>/.claude.json`); its presence is "authenticated".
+    /// `<config_dir>/.claude.json`); "authenticated" when it holds a
+    /// signed-in `oauthAccount` (the CLI writes the file signed in or not).
     pub login_file: PathBuf,
     /// Where the account's transcripts live (`<config>/projects`).
     pub projects_dir: PathBuf,
@@ -1220,7 +1222,7 @@ impl TurnRuntime for ClaudeCliRuntime {
         Ok(vec![CatalogProvider {
             provider: self.config.runtime_id.clone(),
             name: self.config.display_name.clone(),
-            authenticated: self.config.login_file.is_file(),
+            authenticated: login::signed_in(&self.config.login_file).await,
             current: false,
             models: MODELS.iter().map(|m| m.to_string()).collect(),
             efforts: EFFORTS.iter().map(|e| e.to_string()).collect(),
@@ -1282,7 +1284,6 @@ pub fn find_binary(home: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// The two accounts Lorik runs: the CLI default and `~/.claude-account2`.
 /// Persist the CLI's own limit reading (atomic replace). Losing one is
 /// harmless: the next turn writes another.
 async fn write_limit_windows(path: &Path, windows: &serde_json::Value, at: i64) {
@@ -1316,6 +1317,8 @@ pub fn autocompact_setting(raw: Option<&str>) -> Option<u64> {
     }
 }
 
+/// The CLI default login, plus `~/.claude-account2` when
+/// [`second_account_dir`] finds a different account signed in there.
 pub fn default_accounts(
     home: &Path,
     binary: &Path,
@@ -1329,22 +1332,21 @@ pub fn default_accounts(
         usage: usage.clone(),
         legacy_state_file: Some(skills_dir.join(format!("{id}.json"))),
     };
-    let second = home.join(".claude-account2");
-    vec![
-        ClaudeCliConfig {
-            runtime_id: "claude-cli".into(),
-            display_name: "Claude CLI".into(),
-            binary: binary.to_path_buf(),
-            config_dir: None,
-            work_dir: work_dir.clone(),
-            login_file: home.join(".claude.json"),
-            projects_dir: home.join(".claude").join("projects"),
-            usage_file: Some(usage_dir.join("claude-cli.json")),
-            autocompact,
-            artifacts: false,
-            skills: listing("claude-cli"),
-        },
-        ClaudeCliConfig {
+    let mut accounts = vec![ClaudeCliConfig {
+        runtime_id: "claude-cli".into(),
+        display_name: "Claude CLI".into(),
+        binary: binary.to_path_buf(),
+        config_dir: None,
+        work_dir: work_dir.clone(),
+        login_file: home.join(".claude.json"),
+        projects_dir: home.join(".claude").join("projects"),
+        usage_file: Some(usage_dir.join("claude-cli.json")),
+        autocompact,
+        artifacts: false,
+        skills: listing("claude-cli"),
+    }];
+    if let Some(second) = second_account_dir(home) {
+        accounts.push(ClaudeCliConfig {
             runtime_id: "claude-cli-2".into(),
             display_name: "Claude CLI 2".into(),
             binary: binary.to_path_buf(),
@@ -1356,13 +1358,76 @@ pub fn default_accounts(
             autocompact,
             artifacts: false,
             skills: listing("claude-cli-2"),
-        },
-    ]
+        });
+    }
+    accounts
 }
+
+/// The second account's config dir, `~/.claude-account2`, when it is worth
+/// a runtime of its own: signed in, and to a different account than the CLI
+/// default. Most people have one Claude login, so the second account is
+/// opt-in: sign it in with
+/// `CLAUDE_CONFIG_DIR=~/.claude-account2 claude /login` and restart.
+pub fn second_account_dir(home: &Path) -> Option<PathBuf> {
+    let dir = home.join(SECOND_ACCOUNT_DIR);
+    let second = login::account_at(&dir.join(".claude.json"))?;
+    let first = login::account_at(&home.join(".claude.json"));
+    if first.as_deref() == Some(second.as_str()) {
+        tracing::debug!("claude cli: the second login is the same account; not listed");
+        return None;
+    }
+    Some(dir)
+}
+
+/// Where the optional second Claude login lives, under `$HOME`.
+pub const SECOND_ACCOUNT_DIR: &str = ".claude-account2";
 
 #[cfg(test)]
 mod tests {
-    use super::autocompact_setting;
+    use super::{SECOND_ACCOUNT_DIR, autocompact_setting, default_accounts};
+    use crate::skill_listing::CliSkillUsage;
+
+    fn login(path: &std::path::Path, uuid: Option<&str>) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = match uuid {
+            Some(uuid) => serde_json::json!({"oauthAccount": {"accountUuid": uuid}}),
+            None => serde_json::json!({"numStartups": 1}),
+        };
+        std::fs::write(path, body.to_string()).unwrap();
+    }
+
+    fn runtimes(home: &std::path::Path) -> Vec<String> {
+        default_accounts(home, &home.join("claude"), &CliSkillUsage::default())
+            .into_iter()
+            .map(|c| c.runtime_id)
+            .collect()
+    }
+
+    /// The bug: a fresh install listed "Claude CLI 2" beside "Claude CLI",
+    /// both Ready, both the same login. The second account appears only
+    /// when a different account is signed in under `~/.claude-account2`.
+    #[test]
+    fn the_second_account_is_listed_only_for_a_different_signed_in_login() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let first = home.join(".claude.json");
+        let second = home.join(SECOND_ACCOUNT_DIR).join(".claude.json");
+        login(&first, Some("acct-a"));
+        assert_eq!(runtimes(home), ["claude-cli"], "no second login");
+
+        login(&second, None);
+        assert_eq!(
+            runtimes(home),
+            ["claude-cli"],
+            "a login file that never signed in"
+        );
+
+        login(&second, Some("acct-a"));
+        assert_eq!(runtimes(home), ["claude-cli"], "the same account twice");
+
+        login(&second, Some("acct-b"));
+        assert_eq!(runtimes(home), ["claude-cli", "claude-cli-2"]);
+    }
 
     #[test]
     fn autocompact_takes_only_what_the_cli_accepts() {

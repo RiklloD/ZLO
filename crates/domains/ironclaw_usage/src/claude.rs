@@ -99,37 +99,38 @@ impl ClaudeAccount {
         self
     }
 
-    /// CLI 1 (`~/.claude`) and CLI 2 (`~/.claude-account2`). A config dir set
-    /// through `CLAUDE_CONFIG_DIR` gets the Keychain item
-    /// `Claude Code-credentials-<first 8 hex of sha256(dir)>`.
+    /// CLI 1 (`~/.claude`), and CLI 2 (`~/.claude-account2`) only when
+    /// [`second_login_dir`] finds a different account signed in there, so a
+    /// one-login machine is never probed with a second config dir (the probe
+    /// would create it). A config dir set through `CLAUDE_CONFIG_DIR` gets
+    /// the Keychain item `Claude Code-credentials-<first 8 hex of sha256(dir)>`.
     pub fn defaults(home: &Path) -> Vec<Self> {
         let keychain = cfg!(target_os = "macos");
         let binary = probe::find_binary(home, "claude");
-        let second = home.join(".claude-account2");
         let observed = home.join(".ironclaw").join("usage");
-        let second_service = format!("{KEYCHAIN_SERVICE}-{}", hex8(&second.to_string_lossy()));
-        let accounts = vec![
-            (
-                Self::new(
-                    "claude_cli",
-                    "Claude CLI",
-                    home.join(".claude"),
-                    keychain.then(|| KEYCHAIN_SERVICE.to_string()),
-                )
-                .with_observed_file(observed.join("claude-cli.json")),
-                false,
-            ),
-            (
+        let mut accounts = vec![(
+            Self::new(
+                "claude_cli",
+                "Claude CLI",
+                home.join(".claude"),
+                keychain.then(|| KEYCHAIN_SERVICE.to_string()),
+            )
+            .with_observed_file(observed.join("claude-cli.json")),
+            false,
+        )];
+        if let Some(second) = second_login_dir(home) {
+            let service = format!("{KEYCHAIN_SERVICE}-{}", hex8(&second.to_string_lossy()));
+            accounts.push((
                 Self::new(
                     "claude_cli_2",
                     "Claude CLI 2",
                     second,
-                    keychain.then_some(second_service),
+                    keychain.then_some(service),
                 )
                 .with_observed_file(observed.join("claude-cli-2.json")),
                 true,
-            ),
-        ];
+            ));
+        }
         accounts
             .into_iter()
             .map(|(account, custom)| match &binary {
@@ -502,6 +503,42 @@ fn hex8(text: &str) -> String {
         .take(4)
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// `~/.claude-account2` when a different Claude account than the CLI
+/// default is signed in there. Mirrors `ironclaw_cli_providers`'
+/// `claude::second_account_dir`, which decides whether the runtime exists;
+/// the two must agree so the Usage page lists the accounts the picker does.
+pub(crate) fn second_login_dir(home: &Path) -> Option<PathBuf> {
+    let dir = home.join(".claude-account2");
+    let second = signed_in_account(&dir.join(".claude.json"))?;
+    let first = signed_in_account(&home.join(".claude.json"));
+    (first.as_deref() != Some(second.as_str())).then_some(dir)
+}
+
+/// The `oauthAccount.accountUuid` a CLI login file is signed in to. The CLI
+/// writes the file signed in or not, so its presence alone means nothing.
+fn signed_in_account(path: &Path) -> Option<String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            tracing::debug!(%error, "claude usage: no login file");
+            return None;
+        }
+    };
+    let login: Value = match serde_json::from_str(&text) {
+        Ok(login) => login,
+        Err(error) => {
+            tracing::debug!(%error, "claude usage: login file is not JSON");
+            return None;
+        }
+    };
+    login
+        .pointer("/oauthAccount/accountUuid")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|uuid| !uuid.is_empty())
+        .map(str::to_string)
 }
 
 #[cfg(test)]

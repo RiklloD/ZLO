@@ -1,7 +1,7 @@
 //! Coding-agent CLIs as `ironclaw_orchestrator` turn runtimes.
 //!
-//! The Claude CLI, as two runtimes (`claude-cli` on the default account,
-//! `claude-cli-2` on `~/.claude-account2`), the Antigravity ACP agent
+//! The Claude CLI (`claude-cli` on the default account, plus `claude-cli-2`
+//! on `~/.claude-account2` when a different account is signed in there), the Antigravity ACP agent
 //! (`antigravity`), Meta's Muse Code (`muse-code`) and OpenAI's Codex CLI
 //! (`codex`). Every tool call any
 //! of them asks to make waits for an IronClaw approval in
