@@ -439,7 +439,7 @@ impl CompactRun {
 /// Revokes the run's MCP token and removes its config file even when a new
 /// turn aborts the compaction mid-run.
 struct McpGuard {
-    // arch-exempt: optional_arc, mirrors ClaudeCliRuntime::bridge (tools-off hosts), plan #v3-cli-bridge
+    // arch-exempt: optional_arc, mirrors ClaudeCliRuntime::bridge (tools-off hosts), plan #25
     bridge: Option<Arc<CliBridge>>,
     token: String,
     file: PathBuf,

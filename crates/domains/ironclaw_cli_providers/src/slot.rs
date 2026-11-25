@@ -252,7 +252,7 @@ impl<T> Drop for Claim<T> {
 /// engine gets `turn_finished`, best effort from a spawned task.
 pub(crate) struct ReportGuard {
     sink: Weak<dyn TurnEventSink>,
-    // arch-exempt: optional_arc, a host without the gateway has no live view to end, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, a host without the gateway has no live view to end, plan #25
     bridge: Option<Arc<CliBridge>>,
     thread: ThreadId,
     run: String,

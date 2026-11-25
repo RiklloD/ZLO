@@ -62,7 +62,7 @@ pub struct OrchestratedProductSurface {
     /// `None` when the process has no home folder: profile routes then fail.
     home: Option<ProfileHome>,
     /// Live turns and pending tool calls of CLI threads.
-    // arch-exempt: optional_arc, deployments without CLI runtimes have no bridge, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, deployments without CLI runtimes have no bridge, plan #25
     bridge: Option<Arc<CliBridge>>,
     /// Terminal session import; `None` when the process has no home folder
     /// (its routes then answer a correctable error).

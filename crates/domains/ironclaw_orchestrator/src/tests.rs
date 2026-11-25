@@ -1,3 +1,4 @@
+// arch-exempt: large_file, orchestrator unit tests (delegation, routes, threads) await a split by area, plan #25
 //! Engine core tests over a real libSQL file and a scripted runtime.
 
 use std::collections::HashMap;

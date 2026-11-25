@@ -147,7 +147,7 @@ pub struct MuseRuntime {
     id: RuntimeId,
     config: Arc<MuseConfig>,
     sink: Weak<dyn TurnEventSink>,
-    // arch-exempt: optional_arc, a host without the gateway keeps shell and writes off, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, a host without the gateway keeps shell and writes off, plan #25
     bridge: Option<Arc<CliBridge>>,
     active: Slots,
     catalog: Arc<tokio::sync::Mutex<Catalog>>,
@@ -599,7 +599,7 @@ struct Turn {
     /// What the prompt carries for the context meter; recorded once Muse
     /// admitted the turn.
     delivery: crate::context_meter::Delivery,
-    // arch-exempt: optional_arc, a host without the gateway denies every approval, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, a host without the gateway denies every approval, plan #25
     bridge: Option<Arc<CliBridge>>,
     thread_id: ThreadId,
     run_id: String,

@@ -483,7 +483,7 @@ pub struct RebornRuntime {
     // arch-exempt: optional_arc, libSQL-only engine absent on other backends, plan #orchestrator-stage-3
     pub(crate) orchestrator: Option<Arc<ironclaw_orchestrator::engine::Engine>>,
     /// Approvals, live stream and MCP tokens of CLI threads; set with `orchestrator`.
-    // arch-exempt: optional_arc, libSQL-only like the engine it serves, plan #v3-cli-bridge
+    // arch-exempt: optional_arc, libSQL-only like the engine it serves, plan #25
     pub(crate) cli_bridge: Option<Arc<ironclaw_cli_providers::bridge::CliBridge>>,
     /// See `factory`'s field of the same name.
     pub(crate) workspace_host_root: Option<std::path::PathBuf>,

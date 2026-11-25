@@ -1,4 +1,4 @@
-// arch-exempt: large_file, one fake-CLI suite for the Claude driver (turns, steering, skill listing) awaits a split by concern, plan #v3-cli-bridge
+// arch-exempt: large_file, one fake-CLI suite for the Claude driver (turns, steering, skill listing) awaits a split by concern, plan #25
 //! The Claude driver against a fake `claude` script: arguments (fail-closed
 //! tool flags, session start then resume), stream folding into outcome,
 //! usage and telemetry, Stop killing the whole process group, and the
