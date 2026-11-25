@@ -57,7 +57,10 @@ const RESCAN_RETRY: Duration = Duration::from_secs(1);
 #[cfg(test)]
 const RESCAN_RETRY: Duration = Duration::from_millis(20);
 /// How long a restarted backend gets to come back and list the agent.
+#[cfg(not(test))]
 const RESTART_WAIT: Duration = Duration::from_secs(45);
+#[cfg(test)]
+const RESTART_WAIT: Duration = Duration::from_millis(300);
 const RESTART_POLL: Duration = Duration::from_secs(1);
 /// How often an open CLI list asks the backend to look again.
 #[cfg(not(test))]
@@ -285,6 +288,12 @@ fn after_terminal_install_with(
     if s.cli_installs.get(runtime).is_some_and(|i| i.phase.busy()) || s.fixture {
         return;
     }
+    // Another computer's Terminal: nothing here can tell whether it ran.
+    // The Providers watch and setup's catalog notice it once that backend
+    // lists it (or says it needs a restart).
+    if !backend_on_this_mac(s) {
+        return;
+    }
     let installs = &mut s.cli_installs;
     installs.next_generation += 1;
     let generation = installs.next_generation;
@@ -297,11 +306,6 @@ fn after_terminal_install_with(
             generation,
         },
     );
-    if !backend_on_this_mac(s) {
-        // Installed on the backend's computer: its rescan says.
-        find(s, runtime, generation, 1);
-        return;
-    }
     jobs::blocking(s, present, move |s, present, tx| {
         if s.cli_installs.current(runtime, generation).is_none() {
             return;
@@ -315,14 +319,37 @@ fn after_terminal_install_with(
     });
 }
 
-/// The program is on the login shell's PATH (where installers put it).
+/// How long the login shell gets to say where a program is.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The program is on the login shell's PATH (where installers put it). A
+/// shell that takes longer than [`LOOKUP_TIMEOUT`] (a slow profile) is
+/// stopped, with its group, and counts as not found.
 fn binary_on_login_path(binary: &str) -> bool {
-    Command::new("/bin/zsh")
+    use std::os::unix::process::CommandExt as _;
+    let Ok(mut child) = Command::new("/bin/zsh")
         .args(["-lc", &format!("command -v {binary}")])
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .process_group(0)
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = Instant::now() + LOOKUP_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                signal_group(child.id(), "-KILL");
+                // silent-ok: reaping a child just killed; its status is not used.
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 /// Where the backend runs, for "run this on …" lines: the computer's name,
@@ -852,6 +879,7 @@ fn poll_restarted(s: &mut State, runtime: &'static str, generation: u64, deadlin
                 };
                 if found {
                     tx.animated();
+                    restart_settled(s);
                     installed(s, runtime);
                     return true;
                 }
@@ -860,6 +888,7 @@ fn poll_restarted(s: &mut State, runtime: &'static str, generation: u64, deadlin
                     return false;
                 }
                 tx.animated();
+                restart_settled(s);
                 let k = known(runtime);
                 let (name, binary) = (
                     k.map_or(runtime, |k| k.name),
@@ -888,8 +917,24 @@ fn fail(s: &mut State, runtime: &str, generation: u64, why: String) {
 /// This Mac's backend was just restarted (here, or by setup's own install
 /// path): Restart is not offered again while it comes back.
 pub fn note_restart(s: &mut State) {
-    s.cli_installs.restart_until = Some(Instant::now() + RESTART_WAIT);
+    let until = Instant::now() + RESTART_WAIT;
+    s.cli_installs.restart_until = Some(until);
     s.cli_installs.restart_dismissed.clear();
+    // Settled at the latest when the wait is over, with a redraw: setup
+    // shows its agents as Checking until then.
+    jobs::after_if(s, RESTART_WAIT, move |s, tx| {
+        if s.cli_installs.restart_until != Some(until) {
+            return false;
+        }
+        s.cli_installs.restart_until = None;
+        tx.animated();
+        true
+    });
+}
+
+/// The restarted backend answered: the restart is over.
+fn restart_settled(s: &mut State) {
+    s.cli_installs.restart_until = None;
 }
 
 /// The agent is listed: its row turns into the found agent's row (sign in,
@@ -999,7 +1044,11 @@ fn tick(s: &mut State, generation: u64, open: fn(&State) -> bool) {
                             .map(|k| k.runtime)
                             .filter(|r| {
                                 catalog.restart_needed.iter().any(|n| n == r)
-                                    && s.cli_installs.get(r).is_none()
+                                    // A failure since is older news; an
+                                    // install in progress owns its row.
+                                    && s.cli_installs
+                                        .get(r)
+                                        .is_none_or(|i| matches!(i.phase, Phase::Failed(_)))
                                     && !s.cli_installs.restart_dismissed.contains(r)
                             })
                             .collect();
@@ -1358,6 +1407,29 @@ mod tests {
             s.cli_installs.get("antigravity").is_none(),
             "stays dismissed"
         );
+    }
+
+    /// Re-review 5: Done on another computer's Terminal claims nothing;
+    /// the watch notices that computer's install itself.
+    #[test]
+    fn a_remote_terminal_done_claims_nothing() {
+        let (mut s, mut pump, gateway) = live(vec![Answer::ok(catalog(&[]))]);
+        s.onboarding.computer =
+            crate::onboarding::gateway::Computer::remote("env-1", "studio.local");
+        after_terminal_install_with(&mut s, "codex", || true);
+        assert!(s.cli_installs.get("codex").is_none());
+        pump.run_for(&mut s, Duration::from_millis(100));
+        assert_eq!(gateway.requests_to(RESCAN), 0);
+    }
+
+    /// Re-review 5: a restart's busy state ends on its own, so setup's
+    /// agents do not stay Checking.
+    #[test]
+    fn a_restart_window_settles_by_itself() {
+        let (mut s, mut pump, _gateway) = live(vec![]);
+        note_restart(&mut s);
+        assert!(restarting(&s));
+        assert!(pump.until(&mut s, WAIT, |s| s.cli_installs.restart_until.is_none()));
     }
 
     #[test]

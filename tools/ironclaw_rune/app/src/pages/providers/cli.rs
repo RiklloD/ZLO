@@ -263,7 +263,7 @@ fn not_found(s: &State, k: &Kit, known: &'static KnownCli) -> (El, Option<El>, O
                 return (status, None, None);
             }
             if !crate::cli_install::can_install_here(s, known) {
-                let host = crate::remote::computer_label(s);
+                let host = crate::cli_install::backend_host(s);
                 let hint = text(format!(
                     "Run this on {host}. It shows up here once it is installed."
                 ))

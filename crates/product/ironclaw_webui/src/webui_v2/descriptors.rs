@@ -914,6 +914,9 @@ pub fn is_webui_v2_operator_webui_config_route_id(route_id: &str) -> bool {
             | WEBUI_V2_ROUTE_THREAD_GIT_CHANGE
             | WEBUI_V2_ROUTE_THREAD_CONSOLE
             | WEBUI_V2_ROUTE_THREAD_CONSOLE_CONTROL
+            // Looks for coding-agent CLIs on the backend's host and registers
+            // them on the shared engine: operator only.
+            | WEBUI_V2_ROUTE_ORCHESTRATOR_PROVIDERS_RESCAN
     )
 }
 

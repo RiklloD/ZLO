@@ -103,7 +103,11 @@ pub async fn orchestrator_providers(
 pub async fn orchestrator_providers_rescan(
     State(state): State<WebUiV2State>,
     Extension(caller): Extension<ProductSurfaceCaller>,
+    Extension(capabilities): Extension<super::WebUiV2Capabilities>,
 ) -> Result<Json<Value>, WebUiV2HttpError> {
+    // Host-wide (probes host CLIs, registers runtimes for every caller):
+    // the operator gate already stops other callers; checked here too.
+    super::require_operator_webui_config(capabilities)?;
     Ok(Json(
         invoke_product_command(
             state.services(),
