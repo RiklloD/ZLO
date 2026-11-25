@@ -21,12 +21,11 @@ impl SessionImporter {
             let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            // This app's own folders (the encoding is lossy: `/` and `.`
-            // both become `-`, so a sibling folder may be skipped too).
-            if own
-                .iter()
-                .any(|o| name == o || name.starts_with(&format!("{o}-")))
-            {
+            // This app's own folder itself. Its subfolders are left to the
+            // session's recorded folder (`own_folder`): the encoding is lossy
+            // (`/` and `.` both become `-`), so a name prefix would also hide
+            // siblings such as `~/.zlo-archive` or `~/.ironclaw-wt`.
+            if own.iter().any(|o| name == o) {
                 continue;
             }
             for (path, file) in files::regular_files(&dir, cap).await {

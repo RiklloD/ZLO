@@ -417,7 +417,13 @@ mod tests {
         let mut s = state();
         s.onboarding.decision = Decision::Wizard;
         s.onboarding.step = Step::Projects;
+        // The decline is on its way: setup cannot be closed under it.
+        s.onboarding.projects.importing = true;
+        view::close(&mut s);
+        assert_eq!(s.onboarding.decision, Decision::Wizard);
+        assert!(holds_launch_import(&s));
         projects::skip_saved(&mut s, Err(zlo_client::ClientError::Config("down".into())));
+        assert!(!s.onboarding.projects.importing, "the controls come back");
         assert_eq!(s.onboarding.decision, Decision::Wizard);
         assert!(holds_launch_import(&s), "nothing may import yet");
         assert!(s.onboarding.projects.error.is_some());

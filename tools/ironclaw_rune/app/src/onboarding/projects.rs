@@ -252,6 +252,10 @@ fn skip(s: &mut State) {
         projects: Some(none),
         ..SessionImportRequest::default()
     };
+    // Busy until the decline is saved: closing setup meanwhile would release
+    // the held import under the old, unlimited settings.
+    s.onboarding.projects.importing = true;
+    s.onboarding.projects.error = None;
     jobs::run(
         s,
         "onboarding",
@@ -267,6 +271,7 @@ fn skip(s: &mut State) {
 /// held import bring in every folder, the opposite of what was asked: the
 /// wizard stays, says so, and the button tries again.
 pub(super) fn skip_saved(s: &mut State, result: Result<(), zlo_client::ClientError>) {
+    s.onboarding.projects.importing = false;
     match result {
         Ok(()) => super::finish(s, finish_with(0, None)),
         Err(e) => {

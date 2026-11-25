@@ -545,8 +545,10 @@ fn launch_runs_once_and_background_waits_its_interval() {
 
 #[test]
 fn a_source_never_scanned_makes_the_launch_due_again() {
-    let mut state = SessionImportState::default();
-    state.last_run_at = Some(1_000);
+    let mut state = SessionImportState {
+        last_run_at: Some(1_000),
+        ..SessionImportState::default()
+    };
     state
         .last_counts
         .insert(CLAUDE_CODE.to_string(), SessionImportCounts::default());
@@ -565,16 +567,20 @@ fn a_source_never_scanned_makes_the_launch_due_again() {
         &[CLAUDE_CODE, CODEX]
     ));
     // A first launch that found no CLI at all is not the launch import.
-    let mut none = SessionImportState::default();
-    none.last_run_at = Some(1_000);
+    let none = SessionImportState {
+        last_run_at: Some(1_000),
+        ..SessionImportState::default()
+    };
     assert!(!due(&none, ImportTrigger::Launch, 2_000, &[]));
     assert!(due(&none, ImportTrigger::Launch, 2_000, &[CODEX]));
 }
 
 #[test]
 fn work_left_deferred_is_picked_up_without_waiting_the_interval() {
-    let mut state = SessionImportState::default();
-    state.last_run_at = Some(1_000);
+    let mut state = SessionImportState {
+        last_run_at: Some(1_000),
+        ..SessionImportState::default()
+    };
     state.last_counts.insert(
         CODEX.to_string(),
         SessionImportCounts {
@@ -590,8 +596,10 @@ fn work_left_deferred_is_picked_up_without_waiting_the_interval() {
 
 #[test]
 fn work_deferred_by_a_source_that_cannot_run_now_does_not_keep_runs_due() {
-    let mut state = SessionImportState::default();
-    state.last_run_at = Some(1_000);
+    let mut state = SessionImportState {
+        last_run_at: Some(1_000),
+        ..SessionImportState::default()
+    };
     for id in [CLAUDE_CODE, CODEX] {
         state
             .last_counts
@@ -649,10 +657,31 @@ async fn sessions_run_in_the_zlo_home_are_not_imported() {
     })
     .to_string();
     write(&dir.join("z1.jsonl"), &[row]);
+    // A sibling whose encoded name looks like a child of `.zlo`.
+    let sibling = h.root.join(".zlo-archive");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let dir = h
+        .root
+        .join(".claude/projects")
+        .join(claude_codes::transcript::encode_project_dir(&sibling));
+    let row = serde_json::json!({
+        "type": "user", "sessionId": "s1", "cwd": sibling, "timestamp": "2026-10-01T10:00:00Z",
+        "message": {"role": "user", "content": "an unrelated folder"},
+    })
+    .to_string();
+    write(&dir.join("s1.jsonl"), &[row]);
     h.importer.paths.own_roots = own_roots(&h.root, []);
     let counts = h.run().await;
-    assert_eq!(
-        counts[CLAUDE_CODE].imported, 1,
-        "only the app folder's session: {counts:?}"
+    let owner = ProfileOwner::from(&scope());
+    let ledger = h
+        .engine
+        .store()
+        .import_ledger(&owner, CLAUDE_CODE)
+        .await
+        .unwrap();
+    assert!(
+        ledger.contains_key("c1") && ledger.contains_key("s1"),
+        "{counts:?}"
     );
+    assert!(!ledger.contains_key("z1"), "the app's own home: {counts:?}");
 }

@@ -295,8 +295,13 @@ impl SessionImporter {
         engine: &Engine,
         owner: &ProfileOwner,
     ) -> Result<SessionImportStatus, OrchestratorError> {
+        // Sampled before the row: a run clears the flag only after its last
+        // write, so "not running" here means the row read next is final.
+        let running = self.is_running();
         let state = engine.store().session_import_state(owner).await?;
-        Ok(self.status_of(engine, &state))
+        let mut status = self.status_of(engine, &state);
+        status.running = running;
+        Ok(status)
     }
 
     fn status_of(&self, engine: &Engine, state: &SessionImportState) -> SessionImportStatus {
