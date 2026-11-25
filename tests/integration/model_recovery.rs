@@ -215,8 +215,9 @@ async fn long_tool_run_keeps_the_original_task_after_raw_history_exceeds_window_
                 .expect("non-zero test limit"),
         )
         // 514 real tool iterations over a 512-message history run ~65 s in a
-        // debug build, past the default 60 s settle bound. Stay under
-        // nextest's 180 s terminate-after (`.config/nextest.toml`).
+        // debug build, past the default 60 s settle bound. This bound starts
+        // after setup, so `.config/nextest.toml` gives this test a 300 s
+        // terminate-after window instead of the default 180 s.
         .with_run_state_settle_timeout_for_test(std::time::Duration::from_secs(170))
         .script(script)
         .build()
