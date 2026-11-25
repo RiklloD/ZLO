@@ -83,12 +83,74 @@ pub fn bind_isolated_base_dir_for_tests() -> std::io::Result<PathBuf> {
     Ok(bound)
 }
 
-/// Parent of every test process's isolated base and owned fixture dir. One
-/// fixed directory under the system temp dir, so dirs left by dead processes
-/// are found and reclaimed instead of accumulating.
+/// Parent of every test process's isolated base and owned fixture dir: one
+/// fixed directory per user under the system temp dir, so dirs left by dead
+/// processes are found and reclaimed instead of accumulating.
+///
+/// On Unix the name carries the user's uid (`ironclaw-trace-commons-tests-<uid>`):
+/// on a shared `/tmp` a single fixed name would be created by whichever
+/// account ran first, with that account's permissions, and every other
+/// account's fixtures would fail to write there.
+/// Windows `%TEMP%` is already per user, so the name stays fixed there.
 #[cfg(any(test, feature = "test-support"))]
 pub fn isolated_test_root() -> PathBuf {
-    std::env::temp_dir().join("ironclaw-trace-commons-tests")
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        std::env::temp_dir().join(format!("ironclaw-trace-commons-tests{}", owner_suffix()))
+    })
+    .clone()
+}
+
+#[cfg(all(unix, any(test, feature = "test-support")))]
+fn owner_suffix() -> String {
+    if let Some(uid) = current_uid() {
+        return format!("-{uid}");
+    }
+    // No uid (temp dir not writable yet): fall back to the account name.
+    let name: String = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_default()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+        .collect();
+    format!("-{}", if name.is_empty() { "user" } else { &name })
+}
+
+#[cfg(all(not(unix), any(test, feature = "test-support")))]
+fn owner_suffix() -> String {
+    String::new()
+}
+
+/// This process's uid, read from the metadata of a file it just created
+/// (no libc needed). `None` when the temp dir is not writable.
+#[cfg(all(unix, any(test, feature = "test-support")))]
+fn current_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    static UID: OnceLock<Option<u32>> = OnceLock::new();
+    *UID.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default();
+        let probe = std::env::temp_dir().join(format!(
+            ".ironclaw-trace-commons-uid-{}-{nanos}",
+            std::process::id()
+        ));
+        let file = std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+            .ok()?;
+        let uid = file.metadata().ok().map(|meta| meta.uid());
+        drop(file);
+        if let Err(error) = std::fs::remove_file(&probe) {
+            eprintln!(
+                "trace commons tests: could not remove uid probe {}: {error}",
+                probe.display()
+            );
+        }
+        uid
+    })
 }
 
 /// Create a fresh directory under [`isolated_test_root`] that this process
@@ -111,7 +173,11 @@ fn bind_isolated_or_existing() -> PathBuf {
         owned_test_dir().unwrap_or_else(|error| {
             // Still a private temp path, never the real base; it is just not
             // reclaimable by the sweep.
-            let fallback = isolated_test_root().join(format!("unowned-{}", std::process::id()));
+            // Outside the sweep root, which may be the thing that failed.
+            let fallback = std::env::temp_dir().join(format!(
+                "ironclaw-trace-commons-unowned-{}",
+                std::process::id()
+            ));
             eprintln!(
                 "trace commons tests: could not create an owned isolated base ({error}); \
                  using {}",
@@ -151,7 +217,7 @@ mod owned_dirs {
 
     pub(super) fn create_under(root: &Path) -> std::io::Result<PathBuf> {
         static SEQ: AtomicU64 = AtomicU64::new(0);
-        std::fs::create_dir_all(root)?;
+        ensure_private_root(root)?;
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos())
@@ -175,6 +241,33 @@ mod owned_dirs {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(owner);
         Ok(dir)
+    }
+
+    /// Create `root` (owner-only on Unix) or accept an existing one only if
+    /// it is a real directory this user owns, so a dir squatted by another
+    /// account, or a symlink, never receives this user's test state.
+    pub(super) fn ensure_private_root(root: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(root)?;
+            let meta = std::fs::symlink_metadata(root)?;
+            let foreign = super::current_uid().is_some_and(|uid| meta.uid() != uid);
+            if !meta.is_dir() || foreign {
+                return Err(std::io::Error::other(format!(
+                    "{} is not a directory owned by this user",
+                    root.display()
+                )));
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir_all(root)
+        }
     }
 
     pub(super) fn is_owned_dir_name(name: &str) -> bool {
@@ -336,6 +429,37 @@ pub mod leak_probe {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn sweep_root_is_private_to_the_current_user() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let scratch = tempfile::tempdir().expect("scratch");
+        let probe = scratch.path().join("probe");
+        std::fs::write(&probe, b"").expect("probe file");
+        let uid = std::fs::metadata(&probe).expect("probe meta").uid();
+
+        let root = super::isolated_test_root();
+        assert_eq!(
+            root.file_name().and_then(|name| name.to_str()),
+            Some(format!("ironclaw-trace-commons-tests-{uid}").as_str()),
+            "the shared sweep root must be per user"
+        );
+
+        let fresh = scratch.path().join("root");
+        super::owned_dirs::create_under(&fresh).expect("owned dir under a fresh root");
+        let meta = std::fs::metadata(&fresh).expect("root meta");
+        assert_eq!(meta.uid(), uid, "root is owned by this user");
+        assert_eq!(meta.permissions().mode() & 0o077, 0, "root is owner-only");
+
+        // A symlinked root is refused rather than followed.
+        let target = scratch.path().join("elsewhere");
+        std::fs::create_dir(&target).expect("symlink target");
+        let linked = scratch.path().join("linked-root");
+        std::os::unix::fs::symlink(&target, &linked).expect("symlink");
+        assert!(super::owned_dirs::create_under(&linked).is_err());
+        assert_eq!(std::fs::read_dir(&target).expect("target").count(), 0);
+    }
+
     #[test]
     fn sweep_reclaims_only_abandoned_owned_dirs() {
         let root = tempfile::tempdir().expect("sweep root");
