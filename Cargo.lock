@@ -3866,7 +3866,6 @@ dependencies = [
  "ironclaw_webui",
  "libsql",
  "rand 0.10.4",
- "regex",
  "rust_decimal",
  "rust_decimal_macros",
  "secrecy",

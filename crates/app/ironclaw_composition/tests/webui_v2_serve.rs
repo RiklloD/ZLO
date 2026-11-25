@@ -1282,121 +1282,6 @@ fn bundle_segment<'a>(body: &'a str, start: &str, end: &str) -> &'a str {
     &after_start[..end_rel]
 }
 
-const JS_IDENT: &str = r"[A-Za-z_$][\w$]*";
-
-/// True when the minified i18n provider's `setLang` callback commits a loaded
-/// pack only while it is still the latest request. The matcher anchors on the
-/// callback itself — `P=>{R.current=P,` stamps the requested language `P` into
-/// the ref `R` — and then, between that stamp and `localStorage.setItem`,
-/// requires one guard whose condition is EXACTLY one of:
-///
-/// - early return on `!==`: `if(!t||R.current!==P)return;` (either clause order)
-/// - guarded block on `===`, still open at `localStorage.setItem`:
-///   `if(t&&R.current===P){…` (either clause order)
-///
-/// Matching the whole condition (no parentheses, `t` a bare identifier) rules
-/// out a reversed comparator, a negated one (`!(R.current!==P)`, `!!t`), and a
-/// comparison against any variable other than `setLang`'s own parameter. The
-/// guard must also precede every state commit (`setX(P)`, i.e. a call with
-/// `P` that is not the `load(P).then` pack request), so a guard that only
-/// protects localStorage after React state already changed does not match.
-fn commits_only_latest_request(provider: &str) -> bool {
-    let stamp = regex::Regex::new(&format!(
-        r"\(?({JS_IDENT})\)?=>\{{({JS_IDENT})\.current=({JS_IDENT})[,;]"
-    ))
-    .expect("stamp regex");
-    let guard = regex::Regex::new(r"if\(([^()]*)\)").expect("guard regex");
-    for stamped in stamp.captures_iter(provider) {
-        let (param, reference) = (&stamped[1], &stamped[2]);
-        if stamped[3] != *param {
-            continue;
-        }
-        let Some(body_start) = stamped.get(0).map(|m| m.end()) else {
-            continue;
-        };
-        let rest = &provider[body_start..];
-        let Some(commit_at) = rest.find("localStorage.setItem") else {
-            continue;
-        };
-        let body = &rest[..commit_at];
-        let (p, r) = (regex::escape(param), regex::escape(reference));
-        let early_return = regex::Regex::new(&format!(
-            r"^(?:!{JS_IDENT}\|\|{r}\.current!=={p}|{r}\.current!=={p}\|\|!{JS_IDENT})$"
-        ))
-        .expect("early-return regex");
-        let guarded_block = regex::Regex::new(&format!(
-            r"^(?:{JS_IDENT}&&{r}\.current==={p}|{r}\.current==={p}&&{JS_IDENT})$"
-        ))
-        .expect("guarded-block regex");
-        let state_commit = regex::Regex::new(&format!(r"(?:^|[^\w$.]){JS_IDENT}\({p}\)"))
-            .expect("state-commit regex");
-        let commits = |text: &str| {
-            state_commit
-                .find_iter(text)
-                .any(|call| !text[call.end()..].starts_with(".then"))
-        };
-        for found in guard.captures_iter(body) {
-            let (Some(whole), Some(cond)) = (found.get(0), found.get(1)) else {
-                continue;
-            };
-            let after = &body[whole.end()..];
-            let shaped = if early_return.is_match(cond.as_str()) {
-                after.starts_with("return;") || after.starts_with("return}")
-            } else if guarded_block.is_match(cond.as_str()) {
-                after.starts_with('{') && block_open_through_end(&after[1..])
-            } else {
-                false
-            };
-            if shaped && !commits(&body[..whole.start()]) && commits(after) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// True when a `{` opened just before `body` is never closed within it.
-fn block_open_through_end(body: &str) -> bool {
-    let mut depth = 1usize;
-    for ch in body.chars() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return false;
-                }
-            }
-            _ => {}
-        }
-    }
-    true
-}
-
-#[test]
-fn latest_request_guard_matcher_rejects_reversed_guards() {
-    const STAMP: &str = "d=i.useCallback(e=>{u.current=e,p(e).then(t=>{";
-    const COMMIT: &str = "try{localStorage.setItem(s,e)}catch{}}})},[])";
-    let accepts = |guarded: &str| commits_only_latest_request(&format!("{STAMP}{guarded}{COMMIT}"));
-    // Both minified polarities of the real guard pass.
-    assert!(accepts("if(!t||u.current!==e)return;n(e),a(t);"));
-    assert!(accepts("if(t&&u.current===e){n(e),a(t);"));
-    // Reversed guards commit the stale request.
-    assert!(!accepts("if(!t||u.current===e)return;n(e),a(t);"));
-    assert!(!accepts("if(t&&u.current!==e){n(e),a(t);"));
-    // A negated comparator inverts the guard.
-    assert!(!accepts("if(!t||!(u.current!==e))return;n(e),a(t);"));
-    assert!(!accepts("if(!!t&&u.current===e){n(e),a(t);"));
-    // Comparing against a variable other than setLang's parameter.
-    assert!(!accepts("if(t&&u.current===r){n(e),a(t);"));
-    // State already committed before the guard; only localStorage is guarded.
-    assert!(!accepts("n(e),a(t);if(t&&u.current===e){"));
-    // A `===` block that closes before the commit does not guard it.
-    assert!(!accepts("if(t&&u.current===e){n(e),a(t)}"));
-    // A bare comparator with no branch is not a guard.
-    assert!(!accepts("let x=u.current!==e;n(e),a(t);"));
-}
-
 // ─── tests ────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -2835,10 +2720,9 @@ async fn static_i18n_module_guards_locale_race_and_clears_failed_pack_cache() {
     // settles so a transient import failure does not cache a permanent
     // miss. It also locks the follow-up cleanup that removed the
     // `version` counter in favor of committing the loaded pack to state.
-    // There is no JS test harness in this workspace (see the route-shape
-    // note below), so this locks the served bundle shape; a behavioral provider
-    // test driving `setLang('es')` through an unloaded pack belongs in
-    // the deferred JS/e2e scaffold.
+    // This test only locks what the served bundle can show: the module is
+    // served and still carries these guards. The provider's behaviour is
+    // pinned by the vitest suite in `frontend/src/lib/i18n.test.ts`.
     let body = served_bundled_javascript().await;
     let loader_segment = bundle_segment(&body, "ironclaw_language", "createContext({lang:");
     // End the provider segment on the next literal from the i18n module itself
@@ -2865,17 +2749,20 @@ async fn static_i18n_module_guards_locale_race_and_clears_failed_pack_cache() {
         loader_segment.contains("Promise.resolve(null)"),
         "a resolved pack load must only commit when the pack is available and still the latest request",
     );
-    // The staleness check must sit inside `setLang`, between stamping the
-    // ref and the commit (`localStorage.setItem`). Its polarity is the
-    // minifier's choice: Vite 8.1 kept the source's early return
-    // (`if(!t||u.current!==e)return`), while Vite 8.3 (dependabot batch
-    // baaed6a6a) inverts it into a guarded block (`if(t&&u.current===e){…}`).
-    // Both encode the same guard, so accept either — but only inside the
-    // setLang callback (anchored on its parameter), not the mount effect's
-    // separate `===` check.
+    // Served-bundle presence only: the setLang staleness guard (the ref
+    // compared against the latest requested language) still ships in the
+    // i18n module. Its BEHAVIOUR — out-of-order loads leave the latest
+    // request's language, pack and persistence in place — is pinned at the
+    // right tier in `frontend/src/lib/i18n.test.ts` ("setLang: two rapid
+    // switches commit only the latest language and pack"). The minifier
+    // picks the polarity (Vite 8.1 kept `if(!t||u.current!==e)return`,
+    // Vite 8.3 emits `if(t&&u.current===e){…}`), so accept either.
+    // Searched only between setLang's ref stamp and its commit, so the mount
+    // effect's separate `===` check cannot satisfy it.
+    let set_lang_commit = bundle_segment(provider_segment, ".current=", "localStorage.setItem");
     assert!(
-        commits_only_latest_request(provider_segment),
-        "a resolved pack load must be ignored after a newer language request: {provider_segment}",
+        set_lang_commit.contains(".current!==") || set_lang_commit.contains(".current==="),
+        "the served setLang must still compare its latest-request ref before committing",
     );
     assert_eq!(
         loader_segment.matches("delete ").count(),

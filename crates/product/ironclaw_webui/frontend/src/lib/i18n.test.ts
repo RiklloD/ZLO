@@ -355,50 +355,75 @@ test("ensurePack: a failed import resolves null, never rejects, and is retryable
   assert.equal(calls, 2, "a failed import is not cached: the retry invokes the loader again");
 });
 
-test("setLang: a stale pack load resolving last does not clobber the newer language", async () => {
-  const { I18nProvider, registerPack, loaders, setItemCalls } = loadI18n();
+// `I18nProvider`'s `useState` order: 0 = selected language, 1 = loaded pack.
+const LANG_STATE = 0;
+const PACK_STATE = 1;
 
-  const defer = () => {
-    let resolve;
-    const promise = new Promise((r) => {
-      resolve = r;
-    });
-    return { promise, resolve };
-  };
-  const esLoad = defer();
-  const frLoad = defer();
-  loaders.es = () => {
-    registerPack("es", { greet: "hola" });
-    return esLoad.promise;
-  };
-  loaders.fr = () => {
-    registerPack("fr", { greet: "bonjour" });
-    return frLoad.promise;
-  };
+function committedState(stateSetters, index) {
+  const writes = stateSetters.filter((write) => write.index === index);
+  return writes.length ? writes[writes.length - 1].value : undefined;
+}
 
-  const tree = I18nProvider({ children: null });
-  const ctx = tree.values.find(
-    (value) => value && typeof value === "object" && typeof value.setLang === "function",
-  );
-  assert.ok(ctx, "provider context exposes setLang");
+for (const order of [
+  { name: "newer request resolves first, stale one last", first: "fr", last: "es" },
+  { name: "stale request resolves first, newer one last", first: "es", last: "fr" },
+]) {
+  test(`setLang: two rapid switches commit only the latest language and pack (${order.name})`, async () => {
+    const { I18nProvider, registerPack, loaders, setItemCalls, stateSetters } = loadI18n();
 
-  // Two rapid switches before either pack has loaded.
-  ctx.setLang("es");
-  ctx.setLang("fr");
+    const defer = () => {
+      let resolve;
+      const promise = new Promise((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    };
+    const loads = { es: defer(), fr: defer() };
+    loaders.es = () => {
+      registerPack("es", { greet: "hola" });
+      return loads.es.promise;
+    };
+    loaders.fr = () => {
+      registerPack("fr", { greet: "bonjour" });
+      return loads.fr.promise;
+    };
 
-  // Resolve the NEWER request (fr) first, then let the older es import
-  // land last — the out-of-order case the staleness guard defends.
-  frLoad.resolve();
-  await tick();
-  esLoad.resolve();
-  await tick();
+    const tree = I18nProvider({ children: null });
+    const ctx = tree.values.find(
+      (value) => value && typeof value === "object" && typeof value.setLang === "function",
+    );
+    assert.ok(ctx, "provider context exposes setLang");
 
-  assert.deepEqual(
-    setItemCalls.map((call) => call.value),
-    ["fr"],
-    "only the most recently requested language is committed/persisted",
-  );
-});
+    // Two rapid switches before either pack has loaded: fr is the latest.
+    ctx.setLang("es");
+    ctx.setLang("fr");
+
+    loads[order.first].resolve();
+    await tick();
+    loads[order.last].resolve();
+    await tick();
+
+    // The React state the UI renders from: the selected language AND the
+    // pack it renders with must both be the latest request's. A pack
+    // setter that runs before the staleness guard leaves `fr` selected
+    // but renders the `es` pack.
+    assert.equal(committedState(stateSetters, LANG_STATE), "fr", "selected language");
+    assert.deepEqual(
+      committedState(stateSetters, PACK_STATE),
+      { greet: "bonjour" },
+      "rendered pack belongs to the selected language",
+    );
+    assert.ok(
+      stateSetters.every((write) => write.value !== "es" && write.value?.greet !== "hola"),
+      `the stale es request never reaches React state: ${JSON.stringify(stateSetters)}`,
+    );
+    assert.deepEqual(
+      setItemCalls.map((call) => call.value),
+      ["fr"],
+      "only the most recently requested language is persisted",
+    );
+  });
+}
 
 test("locale packs include skill auto-activation controls", () => {
   const requiredKeys = [
