@@ -279,16 +279,19 @@ fn failure_text(error: &str, too_old: bool, fallback: Option<String>) -> String 
     text
 }
 
-/// The full path to this Mac's bundled CLI, offered only when triage ran
-/// on this Mac and the `zlo` command link is missing (`cli_link.rs`).
+/// The full path to this Mac's bundled CLI, offered whenever triage ran on
+/// this Mac: the `zlo` link can exist while its folder is not on the PATH
+/// (`ZLO_NO_MODIFY_PATH=1`, a shell that skips the login profile). Only a
+/// path verified to be this bundle's backend (`cli_link.rs`) is offered.
 fn cli_fallback(computer: &str) -> Option<String> {
-    if computer != zlo_client::environments::THIS_MAC || crate::cli_link::command_works() {
+    if computer != zlo_client::environments::THIS_MAC {
         return None;
     }
-    let backend = crate::cli_link::bundled_backend()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "~/Applications/ZLO.app/Contents/MacOS/zlo-backend".into());
-    Some(format!("{} triage", shell_quote(&backend)))
+    let backend = crate::cli_link::bundled_backend()?;
+    Some(format!(
+        "{} triage",
+        shell_quote(&backend.display().to_string())
+    ))
 }
 
 /// Single-quote a path for a POSIX shell when it needs it.

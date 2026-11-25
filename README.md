@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
 
 It builds ZLO from source and installs it to `~/Applications/ZLO.app`. If the Xcode command-line tools are missing, it opens their installer and asks you to run the command again. It installs Rust if you don't have it. The first build takes 10 to 20 minutes.
 
-It also puts the `zlo` command on your `PATH`: `~/.zlo/bin/zlo` links to the CLI inside the app, and one marked block in your login shell's profile (`~/.zprofile` for zsh) adds `~/.zlo/bin`. Open a new terminal afterwards. Set `ZLO_NO_MODIFY_PATH=1` to leave your profile alone. The app keeps the link pointing at itself each time it opens, so moving or reinstalling it never breaks `zlo`.
+It also puts the `zlo` command on your `PATH`: `~/.zlo/bin/zlo` links to the CLI inside the app, and one marked block in your login shell's profile (`~/.zprofile` for zsh) adds `~/.zlo/bin`. Open a new terminal afterwards. Set `ZLO_NO_MODIFY_PATH=1` to leave your profile alone. A `zlo` there that ZLO did not make is never replaced. If you move the app, it repairs the link the next time it opens; `zlo update` rebuilds the app where it is. `ZLO_REF=<branch>` installs and follows another branch; a tag pins the install and turns self-update off.
 
 | To | Run |
 | --- | --- |

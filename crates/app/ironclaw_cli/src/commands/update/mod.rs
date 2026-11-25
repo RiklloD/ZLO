@@ -15,6 +15,9 @@
 //!   `bundle.sh` for the `zlo-backend` inside a ZLO.app, else
 //!   `cargo build --release -p ironclaw` and an atomic replace of this
 //!   binary), then restart through `zlo service` when it is installed.
+//!   For ZLO.app the CLI hands the job to the detached updater and returns:
+//!   `bundle.sh` waits until nothing under the bundle runs, which would
+//!   include a CLI started from inside it.
 //!
 //! The backend runs the same job detached for `POST /api/operator/update`
 //! (`job.rs`); its records live under `<reborn_home>/update/`
@@ -102,12 +105,22 @@ pub(crate) fn current_build() -> BuildInfo {
     }
 }
 
-/// This process's binary with symlinks resolved: `~/.zlo/bin/zlo` is a link
-/// to `ZLO.app/Contents/MacOS/zlo-backend` (`install.sh`), and update must
-/// rebuild the app it points into, never replace the link with a binary.
+/// The install this process updates. `~/.zlo/bin/zlo` is a link to
+/// `ZLO.app/Contents/MacOS/zlo-backend` (`install.sh`), so the resolved
+/// path is used to *detect* a bundle (update rebuilds that app, never
+/// replaces the link with a binary). A standalone binary keeps its own
+/// path, as invoked; a symlinked standalone is refused at install time
+/// ([`job::refuse_symlinked_binary`]).
 pub(crate) fn running_binary() -> anyhow::Result<PathBuf> {
     let exe = std::env::current_exe().context("resolve the running binary")?;
-    std::fs::canonicalize(&exe).with_context(|| format!("resolve {}", exe.display()))
+    Ok(install_path_for(exe))
+}
+
+fn install_path_for(exe: PathBuf) -> PathBuf {
+    match std::fs::canonicalize(&exe) {
+        Ok(real) if job::InstallKind::scope_of(&real) == git::Scope::App => real,
+        _ => exe, // silent-ok: an unresolvable path is no bundle; update keeps the path as invoked
+    }
 }
 
 /// The source checkout this binary was built from (`build.rs`), when it was
@@ -331,6 +344,9 @@ impl UpdateCommand {
             );
         }
         let install = job::InstallKind::detect(&exe, &settings.repo);
+        if matches!(install, job::InstallKind::Zlo { .. }) {
+            return self.hand_off(&paths, &exe, &home, &service);
+        }
         let json = self.json;
         let outcome = job::run_job(
             job::JobInput {
@@ -365,6 +381,35 @@ impl UpdateCommand {
                     .unwrap_or_else(|| "update failed".into())
             );
         }
+        Ok(())
+    }
+
+    /// ZLO.app updates run as the detached job the app's own update button
+    /// starts: `bundle.sh` quits ZLO and waits until nothing under the
+    /// bundle runs, which would include this process when it was started as
+    /// `…/ZLO.app/Contents/MacOS/zlo-backend update`.
+    fn hand_off(
+        &self,
+        paths: &records::UpdatePaths,
+        exe: &Path,
+        home: &Path,
+        service: &SourceSelfUpdate,
+    ) -> anyhow::Result<()> {
+        if records::is_locked(paths)? {
+            anyhow::bail!("another update is already running");
+        }
+        job::spawn_detached(paths, exe, home)?;
+        if self.json {
+            let status = service.status_blocking()?;
+            println!("{}", serde_json::to_string_pretty(&status)?);
+            return Ok(());
+        }
+        eprintln!(
+            "zlo update: updating in the background. ZLO builds (a few minutes), then quits, \
+             installs and reopens itself."
+        );
+        eprintln!("follow along: tail -f {}", paths.log_file().display());
+        eprintln!("afterwards: `zlo update --check` shows the installed build");
         Ok(())
     }
 

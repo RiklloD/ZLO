@@ -560,4 +560,64 @@ mod tests {
         assert_eq!(home.source_label(), LEGACY_REBORN_HOME_ENV);
         assert_eq!(home.path(), temp.path().join("old"));
     }
+
+    /// `install.sh` and the app's `zlo` link live in `<home>/bin`. They ask
+    /// the resolver for the home first (`zlo config path`, which migrates)
+    /// and write the link only into what it returns: a `~/.zlo/bin` made
+    /// before the move would leave the pre-ZLO data stranded behind an empty
+    /// `~/.zlo` (BothExist).
+    #[cfg(unix)]
+    #[test]
+    fn the_command_link_is_written_after_the_home_migrates_so_legacy_data_moves() {
+        let user = tempfile::tempdir().expect("user home");
+        let legacy = crate::legacy_home_path(user.path());
+        std::fs::create_dir_all(legacy.join("threads")).expect("legacy home");
+        std::fs::write(legacy.join("config.toml"), "[update]\n").expect("legacy config");
+        let resolve = || {
+            RebornHome::resolve_from_env_parts_migrating(
+                None,
+                Some(user.path().as_os_str().to_owned()),
+                None,
+            )
+            .expect("resolves")
+        };
+
+        // The install step: resolve (and migrate), then link into its bin/.
+        let home = resolve();
+        assert_eq!(home.path(), user.path().join(".zlo"));
+        assert!(matches!(home.migration(), HomeMigration::Migrated { .. }));
+        let bin = home.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(
+            "/Applications/ZLO.app/Contents/MacOS/zlo-backend",
+            bin.join("zlo"),
+        )
+        .expect("link");
+
+        // The data moved with it, the legacy path follows, and the next start
+        // sees one settled home rather than two.
+        assert!(home.path().join("config.toml").is_file());
+        assert!(home.path().join("threads").is_dir());
+        assert!(
+            std::fs::symlink_metadata(&legacy)
+                .expect("legacy")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(resolve().migration(), &HomeMigration::NotNeeded);
+
+        // The order matters: a bin/ made before resolving is what strands it.
+        let other = tempfile::tempdir().expect("user home");
+        let legacy = crate::legacy_home_path(other.path());
+        std::fs::create_dir_all(&legacy).expect("legacy home");
+        std::fs::write(legacy.join("config.toml"), "").expect("legacy config");
+        std::fs::create_dir_all(other.path().join(".zlo/bin")).expect("early bin");
+        let early = RebornHome::resolve_from_env_parts_migrating(
+            None,
+            Some(other.path().as_os_str().to_owned()),
+            None,
+        )
+        .expect("resolves");
+        assert!(matches!(early.migration(), HomeMigration::BothExist { .. }));
+    }
 }

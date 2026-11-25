@@ -15,7 +15,12 @@
 # item trusts.
 #
 # Signing: IRONCLAW_SIGN_IDENTITY, else the first "Apple Development"
-# identity; ZLO_ALLOW_ADHOC=1 forces ad-hoc signing.
+# identity; ZLO_ALLOW_ADHOC=1 allows ad-hoc signing when there is none
+# (`zlo update` passes it on when the installed app is signed ad-hoc).
+#
+# ZLO_INSTALL_DEST=/path/ZLO.app installs there instead of
+# ~/Applications/ZLO.app (`zlo update` passes the bundle it updates, so a
+# moved app is rebuilt where it is).
 #
 # The backend is built from this repo (cargo build --release -p ironclaw
 # --bin zlo: the package keeps its IronClaw name, the binary is `zlo`)
@@ -64,7 +69,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 icon_src="$here/app/assets/icon.png"
 app="$here/target/$NAME.app"
-dest="$HOME/Applications/$NAME.app"
+dest="${ZLO_INSTALL_DEST:-$HOME/Applications/$NAME.app}"
+case "$dest" in
+  /*.app) dest=${dest%/} ;;
+  *) echo "ZLO_INSTALL_DEST must be an absolute path to a .app (got $dest)" >&2; exit 2 ;;
+esac
 engine_name="ZLO Computer Use.app"
 
 if [ -z "$light" ]; then
@@ -192,7 +201,7 @@ if pgrep -f "$dest/Contents/MacOS/$EXE" >/dev/null; then
     sleep 0.5
   done
 fi
-mkdir -p "$HOME/Applications"
+mkdir -p "$(dirname "$dest")"
 rm -rf "$dest"
 cp -R "$app" "$dest"
 echo "Installed $dest"

@@ -11,7 +11,7 @@ package: `cargo build --release -p ironclaw`). Every command is a subcommand —
 On a Mac, the installer (`curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh`)
 puts it on your `PATH`: `~/.zlo/bin/zlo` links to `~/Applications/ZLO.app/Contents/MacOS/zlo-backend`
 (the same binary), and a marked block in your login shell's profile adds `~/.zlo/bin`
-(skip that with `ZLO_NO_MODIFY_PATH=1`). ZLO refreshes the link each time it opens. If
+(skip that with `ZLO_NO_MODIFY_PATH=1`). ZLO repairs the link when it opens after a move. If
 `zlo` is not found, open a new terminal, or run the app's copy by its full path.
 
 Its data folder is `~/.zlo` (override with `ZLO_HOME`). On first run, an existing

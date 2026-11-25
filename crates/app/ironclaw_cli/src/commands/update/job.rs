@@ -40,9 +40,13 @@ const BUILT_BINARY: &str = "target/release/zlo";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InstallKind {
     /// `…/ZLO.app/Contents/MacOS/zlo-backend`: rebuilt by the repo's
-    /// `tools/ironclaw_rune/bundle.sh`, which installs ZLO.app and reopens
-    /// it; ZLO then starts its new backend.
-    Zlo { bundle_script: PathBuf },
+    /// `tools/ironclaw_rune/bundle.sh`, which installs over `app` (wherever
+    /// that bundle lives, `ZLO_INSTALL_DEST`) and reopens it; ZLO then
+    /// starts its new backend.
+    Zlo {
+        bundle_script: PathBuf,
+        app: PathBuf,
+    },
     /// A plain `zlo` binary (or a pre-ZLO `ironclaw` one): `cargo build
     /// --release -p ironclaw` (the package keeps that name; its binary is
     /// `zlo`), then the file at `target` is replaced atomically.
@@ -74,9 +78,16 @@ impl InstallKind {
     }
 
     pub(crate) fn detect(install_path: &Path, repo: &Path) -> Self {
-        if Self::scope_of(install_path) == Scope::App {
+        // `scope_of` checked the shape `<app>/Contents/MacOS/zlo-backend`.
+        let app = install_path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .filter(|_| Self::scope_of(install_path) == Scope::App);
+        if let Some(app) = app {
             Self::Zlo {
                 bundle_script: repo.join("tools/ironclaw_rune/bundle.sh"),
+                app: app.to_path_buf(),
             }
         } else {
             Self::Binary {
@@ -341,6 +352,64 @@ pub(crate) fn copy_executable(src: &Path, dest: &Path) -> anyhow::Result<()> {
 
 // ── the production host ──────────────────────────────────────────────────
 
+/// What `bundle.sh` needs to rebuild `app` in place: its destination (a
+/// moved ZLO.app is rebuilt where it is, not into `~/Applications`) and,
+/// when the installed app is signed ad-hoc (`install.sh` on a Mac with no
+/// Apple Development identity), permission to sign the new one that way.
+pub(crate) fn bundle_env(app: &Path, adhoc: bool) -> Vec<(&'static str, OsString)> {
+    let mut env = vec![("ZLO_INSTALL_DEST", app.as_os_str().to_owned())];
+    if adhoc {
+        env.push(("ZLO_ALLOW_ADHOC", "1".into()));
+    }
+    env
+}
+
+/// Whether `codesign -dv` says `app` is signed ad-hoc. Unreadable reads as
+/// no: `bundle.sh` then asks for an identity, as it always did.
+fn signed_adhoc(app: &Path) -> bool {
+    match Command::new("/usr/bin/codesign")
+        .arg("-dv")
+        .arg(app)
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(out) => is_adhoc_signature(&String::from_utf8_lossy(&out.stderr)),
+        Err(error) => {
+            tracing::debug!(%error, "update: could not read the app's signature");
+            false
+        }
+    }
+}
+
+/// `codesign -dv` output (on stderr) for an ad-hoc signature carries
+/// `Signature=adhoc` and the `adhoc` code-directory flag.
+pub(crate) fn is_adhoc_signature(codesign_dv: &str) -> bool {
+    codesign_dv.lines().any(|line| {
+        let line = line.trim();
+        line == "Signature=adhoc" || (line.starts_with("CodeDirectory") && line.contains("(adhoc"))
+    })
+}
+
+/// A plain binary is replaced at the path it was started from. When that
+/// path is itself a symlink, replacing it would turn the link into a copy
+/// and leave the binary it pointed at stale, so refuse and name the binary.
+pub(crate) fn refuse_symlinked_binary(target: &Path) -> anyhow::Result<()> {
+    let is_link = std::fs::symlink_metadata(target)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false); // silent-ok: a missing target is created by the copy; nothing to refuse
+    if is_link {
+        let real = std::fs::canonicalize(target)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "its target".into()); // silent-ok: only names the target in the message
+        anyhow::bail!(
+            "{} is a symlink to {real}; update will not replace a link with a copy. \
+             Run `{real} update` to update that binary.",
+            target.display()
+        );
+    }
+    Ok(())
+}
+
 /// Runs the real build, install and restart.
 pub(crate) struct SystemUpdateHost;
 
@@ -400,15 +469,17 @@ impl UpdateHost for SystemUpdateHost {
         log: &std::fs::File,
     ) -> anyhow::Result<()> {
         match kind {
-            InstallKind::Zlo { bundle_script } => {
+            InstallKind::Zlo { bundle_script, app } => {
                 if !bundle_script.is_file() {
                     anyhow::bail!("{} is missing from the checkout", bundle_script.display());
                 }
                 let mut command = Self::command("/bin/sh", repo, log)?;
                 command.arg(bundle_script);
+                command.envs(bundle_env(app, signed_adhoc(app)));
                 run_checked(command, "bundle.sh")
             }
             InstallKind::Binary { target } => {
+                refuse_symlinked_binary(target)?;
                 let mut command = Self::command("cargo", repo, log)?;
                 command.args(["build", "--release", "-p", "ironclaw", "--bin", "zlo"]);
                 run_checked(command, "cargo build")?;
@@ -480,7 +551,8 @@ mod tests {
                 repo
             ),
             InstallKind::Zlo {
-                bundle_script: PathBuf::from("/src/ironclaw/tools/ironclaw_rune/bundle.sh")
+                bundle_script: PathBuf::from("/src/ironclaw/tools/ironclaw_rune/bundle.sh"),
+                app: PathBuf::from("/Users/me/Applications/ZLO.app"),
             }
         );
         for plain in [
@@ -496,6 +568,80 @@ mod tests {
                 "{plain}"
             );
         }
+    }
+
+    #[test]
+    fn a_moved_or_ad_hoc_signed_app_is_rebuilt_where_it_is_and_the_same_way() {
+        let moved = Path::new("/Volumes/Work/Apps/ZLO.app/Contents/MacOS/zlo-backend");
+        let InstallKind::Zlo { app, .. } = InstallKind::detect(moved, Path::new("/src")) else {
+            panic!("a bundle backend is a ZLO install");
+        };
+        assert_eq!(app, Path::new("/Volumes/Work/Apps/ZLO.app"));
+        assert_eq!(
+            bundle_env(&app, false),
+            vec![(
+                "ZLO_INSTALL_DEST",
+                OsString::from("/Volumes/Work/Apps/ZLO.app")
+            )]
+        );
+        assert!(bundle_env(&app, true).contains(&("ZLO_ALLOW_ADHOC", OsString::from("1"))));
+
+        let adhoc = "Executable=/x/ZLO.app/Contents/MacOS/zlo\nCodeDirectory v=20400 size=1 flags=0x2(adhoc) hashes=1+7 location=embedded\nSignature=adhoc\nTeamIdentifier=not set\n";
+        assert!(is_adhoc_signature(adhoc));
+        let developer = "Executable=/x/ZLO.app/Contents/MacOS/zlo\nCodeDirectory v=20500 size=1 flags=0x0(none) hashes=1+7 location=embedded\nAuthority=Apple Development: Someone (ABCDE12345)\nTeamIdentifier=ABCDE12345\n";
+        assert!(!is_adhoc_signature(developer));
+        assert!(!is_adhoc_signature(
+            "/x/ZLO.app: code object is not signed at all"
+        ));
+    }
+
+    #[test]
+    fn a_standalone_binary_is_replaced_at_its_own_path_and_a_symlink_is_refused() {
+        let dir = tempfile::tempdir().expect("dir");
+        let real = dir.path().join("zlo");
+        std::fs::write(&real, b"bin").expect("binary");
+        let link = dir.path().join("zlo-link");
+        std::os::unix::fs::symlink(&real, &link).expect("link");
+
+        // The path as started is kept for a standalone binary, never its
+        // resolved target; only a bundle backend resolves through the link.
+        assert_eq!(super::super::install_path_for(real.clone()), real);
+        assert_eq!(super::super::install_path_for(link.clone()), link);
+        assert!(refuse_symlinked_binary(&real).is_ok());
+        let refused = refuse_symlinked_binary(&link).expect_err("a symlink is refused");
+        assert!(refused.to_string().contains("is a symlink"), "{refused}");
+        // And the refusal comes before any build: nothing was run or replaced.
+        let log = tempfile::tempfile().expect("log");
+        let err = SystemUpdateHost
+            .build_and_install(
+                &InstallKind::Binary {
+                    target: link.clone(),
+                },
+                dir.path(),
+                &log,
+            )
+            .expect_err("refused");
+        assert!(err.to_string().contains("is a symlink"), "{err}");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("link")
+                .file_type()
+                .is_symlink()
+        );
+
+        // A link into a ZLO.app resolves to the bundle, so update rebuilds the app.
+        let macos = dir.path().join("Apps/ZLO.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).expect("bundle");
+        std::fs::write(macos.join("zlo-backend"), b"bin").expect("backend");
+        let cli = dir.path().join("bin/zlo");
+        std::fs::create_dir_all(cli.parent().expect("bin")).expect("bin");
+        std::os::unix::fs::symlink(macos.join("zlo-backend"), &cli).expect("cli link");
+        let resolved = super::super::install_path_for(cli);
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize(macos.join("zlo-backend")).expect("canonical")
+        );
+        assert_eq!(InstallKind::scope_of(&resolved), Scope::App);
     }
 
     #[test]
@@ -635,6 +781,7 @@ mod tests {
         // ZLO.app is built from them: it rebuilds.
         let app = InstallKind::Zlo {
             bundle_script: r.checkout.join("tools/ironclaw_rune/bundle.sh"),
+            app: PathBuf::from("/Users/me/Applications/ZLO.app"),
         };
         let host = RecordingHost::default();
         let record = run(app.clone(), &host);

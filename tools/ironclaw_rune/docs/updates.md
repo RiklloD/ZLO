@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/RiklloD/ZLO/main/install.sh | sh
 
 or, from your own checkout, `git pull && sh tools/ironclaw_rune/bundle.sh`. All three rebuild ZLO and its backend, reinstall the app, and reopen it.
 
-`zlo` is `~/.zlo/bin/zlo`, a link the installer makes (and ZLO refreshes each time it opens) to `~/Applications/ZLO.app/Contents/MacOS/zlo-backend`; if your terminal does not find it, open a new terminal or use that full path.
+`zlo` is `~/.zlo/bin/zlo`, a link the installer makes (and ZLO repairs when it opens after a move) to `~/Applications/ZLO.app/Contents/MacOS/zlo-backend`; if your terminal does not find it, open a new terminal or use that full path. For the app, `zlo update` hands off to the same background job as **Update available** (its log is `~/.zlo/update/update.log`), rebuilds the app where it is installed, and signs it ad-hoc again when it was signed that way.
 
 ## Turn on self-update for a machine
 

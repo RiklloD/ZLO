@@ -80,6 +80,8 @@ impl ConfigPathCommand {
         };
 
         println!("IronClaw Reborn config path");
+        // `install.sh` and the app's `zlo` link (`tools/ironclaw_rune/app/src/cli_link.rs`)
+        // read this line to learn the migrated home: keep its `reborn_home: ` prefix.
         println!("reborn_home: {}", report.home_path().display());
         println!("home_source: {}", report.home_source_label());
         println!("profile: {}", profile);
