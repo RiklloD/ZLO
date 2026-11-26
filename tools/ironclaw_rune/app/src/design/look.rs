@@ -102,8 +102,8 @@ pub fn reload(s: &mut State) {
     wallpaper::reload(s);
 }
 
-/// [`reload`] for a change the person just made (a picture, effect, fit,
-/// theme or scheme picked): the new picture crossfades in.
+/// [`reload`] for a picture, effect or fit the person just picked: the new
+/// picture crossfades in.
 pub fn reload_picked(s: &mut State) {
     wallpaper::reload_picked(s);
 }

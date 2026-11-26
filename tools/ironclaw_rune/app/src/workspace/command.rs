@@ -295,7 +295,7 @@ fn run(s: &mut State, cmd: Cmd, tx: &mut Tx) {
         Cmd::Scheme(value) => {
             crate::design::motion::color_morph(tx);
             s.update_prefs(|p| p.scheme = value.into());
-            crate::design::look::reload_picked(s);
+            crate::design::look::reload(s);
         }
         Cmd::StatusBar => super::toggle_status_bar(s),
         Cmd::ToggleScheme => super::toggle_scheme(s, tx),

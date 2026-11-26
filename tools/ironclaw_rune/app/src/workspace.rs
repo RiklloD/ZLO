@@ -238,7 +238,7 @@ pub fn toggle_scheme(s: &mut State, tx: &mut Tx) {
     crate::design::motion::color_morph(tx);
     let dark = crate::design::scheme_is_dark(&s.prefs, s.system_dark);
     s.update_prefs(|p| p.scheme = if dark { "light" } else { "dark" }.into());
-    crate::design::look::reload_picked(s);
+    crate::design::look::reload(s);
 }
 
 use sidebar_pane::persist_sidebar;

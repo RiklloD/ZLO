@@ -203,7 +203,7 @@ fn set_theme(s: &mut State, id: &str, tx: &mut Tx) {
             p.theme = id;
         }
     });
-    look::reload_picked(s);
+    look::reload(s);
 }
 
 fn set_wallpaper(s: &mut State, choice: Wallpaper) {
