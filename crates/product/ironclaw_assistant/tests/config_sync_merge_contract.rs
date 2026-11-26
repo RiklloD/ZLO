@@ -982,3 +982,92 @@ async fn a_document_archived_after_it_was_agreed_stays_archived_when_the_other_s
     assert_eq!(boxed.documents.get("notes/a.md"), None, "resurrected");
     assert_eq!(mac.documents.get("notes/a.md").as_deref(), Some("v1\n"));
 }
+
+#[tokio::test]
+async fn a_skill_that_holds_a_key_is_carried_neither_out_nor_over() {
+    let (mac, boxed) = (host(MAC), host(BOX));
+    let key = b"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n".to_vec();
+    let bundle_of = |name: &str, extra: (&str, Vec<u8>)| {
+        let manifest = format!("---\nname: {name}\ndescription: test\n---\n# {name}\n");
+        vec![
+            ("SKILL.md".to_string(), manifest.into_bytes()),
+            (extra.0.to_string(), extra.1),
+        ]
+    };
+    // On the Mac: a skill with a key file is not exported, and says so.
+    mac.skills
+        .replace_bundle_for_scope(
+            scope(),
+            "deploy",
+            bundle_of("deploy", ("deploy.pem", key.clone())),
+        )
+        .await
+        .expect("mac skill");
+    let warnings = sync(&mac, &boxed, ConfigSyncDomain::Skills).await;
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("deploy.pem"), "{warnings:?}");
+    assert!(
+        boxed
+            .skills
+            .read_content_for_scope(scope(), "deploy")
+            .await
+            .is_err()
+    );
+
+    // On the box: a skill that holds a key of its own is not replaced.
+    mac.skills
+        .replace_bundle_for_scope(
+            scope(),
+            "review",
+            bundle_of("review", ("notes.md", b"new\n".to_vec())),
+        )
+        .await
+        .expect("mac skill");
+    boxed
+        .skills
+        .replace_bundle_for_scope(
+            scope(),
+            "review",
+            bundle_of("review", ("notes.md", key.clone())),
+        )
+        .await
+        .expect("box skill");
+    let warnings = sync(&mac, &boxed, ConfigSyncDomain::Skills).await;
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("the one here holds a key")),
+        "{warnings:?}"
+    );
+    let kept = boxed
+        .skills
+        .export_bundle_for_scope(scope(), "review")
+        .await
+        .expect("bundle");
+    assert!(
+        kept.iter().any(|(_, bytes)| *bytes == key),
+        "the key is still there"
+    );
+
+    // A bundle that names a path as a file and as a folder is refused
+    // before anything of the skill in place is touched.
+    let malformed = vec![
+        ("SKILL.md".to_string(), DEPLOY.as_bytes().to_vec()),
+        ("notes.md".to_string(), b"changed\n".to_vec()),
+        ("z".to_string(), b"x".to_vec()),
+        ("z/run.sh".to_string(), b"x".to_vec()),
+    ];
+    assert!(
+        boxed
+            .skills
+            .replace_bundle_for_scope(scope(), "review", malformed)
+            .await
+            .is_err()
+    );
+    let after = boxed
+        .skills
+        .export_bundle_for_scope(scope(), "review")
+        .await
+        .expect("bundle");
+    assert!(after.iter().any(|(_, bytes)| *bytes == key), "untouched");
+}

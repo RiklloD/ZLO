@@ -38,6 +38,47 @@ pub struct PageRequest {
     pub peer: Option<String>,
 }
 
+/// A file name under which a key, a certificate bundle or a cluster
+/// sign-in is conventionally kept. Judged on the lowercased name.
+pub fn key_file_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let (stem, extensions) = lower.split_once('.').unwrap_or((lower.as_str(), ""));
+    const STEMS: [&str; 6] = [
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "kubeconfig",
+        "netrc",
+        "npmrc",
+    ];
+    const EXTENSIONS: [&str; 15] = [
+        "pem", "key", "p12", "pfx", "jks", "keystore", "kdbx", "ppk", "gpg", "asc", "der", "p8",
+        "netrc", "npmrc", "pypirc",
+    ];
+    STEMS.contains(&stem)
+        || stem.starts_with("id_ed25519")
+        || extensions.split('.').any(|ext| EXTENSIONS.contains(&ext))
+}
+
+/// Bytes that hold a secret in one of the forms tools write them: a
+/// private key block, a cluster or cloud sign-in field, a stored token.
+pub fn secret_bytes(bytes: &[u8]) -> bool {
+    const MARKS: [&[u8]; 9] = [
+        b"PRIVATE KEY-----",
+        b"client-key-data",
+        b"aws_secret_access_key",
+        b"\"access_token\"",
+        b"\"refresh_token\"",
+        b"\"accessToken\"",
+        b"\"refreshToken\"",
+        b"\"client_secret\"",
+        b"\"private_key\"",
+    ];
+    MARKS
+        .iter()
+        .any(|mark| bytes.windows(mark.len()).any(|window| window == *mark))
+}
+
 /// `sha256:<hex>` of bytes.
 pub fn sha256(bytes: &[u8]) -> String {
     format!("sha256:{}", hex_lower(&Sha256::digest(bytes)))

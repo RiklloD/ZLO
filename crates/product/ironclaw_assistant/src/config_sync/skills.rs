@@ -31,12 +31,14 @@ impl SkillsDomainHandler {
         Self { skills }
     }
 
-    /// The person's skills here: name to bundle digest.
+    /// The person's skills here: name to bundle digest, and the skills
+    /// held back because a file in them is a key or holds a secret.
     async fn index(
         &self,
         scope: &ResourceScope,
-    ) -> Result<BTreeMap<String, String>, ConfigSyncError> {
+    ) -> Result<(BTreeMap<String, String>, Vec<String>), ConfigSyncError> {
         let mut out = BTreeMap::new();
+        let mut held_back = Vec::new();
         for skill in self
             .skills
             .list_for_scope(scope.clone())
@@ -46,15 +48,44 @@ impl SkillsDomainHandler {
             if skill.source == ManagedSkillSource::System {
                 continue;
             }
-            let files = self
+            // A skill that cannot be read whole (its folder and its
+            // manifest disagree on its name, or it went away) is left out;
+            // the others still sync.
+            let files = match self
                 .skills
                 .export_bundle_for_scope(scope.clone(), &skill.name)
                 .await
-                .map_err(store_error)?;
+            {
+                Ok(files) => files,
+                Err(error) => {
+                    tracing::debug!(skill = %skill.name, %error, "config sync: skill not read");
+                    continue;
+                }
+            };
+            if let Some(path) = keeps_a_secret(&files) {
+                held_back.push(format!(
+                    "{} (`{path}` is a key or holds a secret)",
+                    skill.name
+                ));
+                continue;
+            }
             out.insert(skill.name, items::files_hash(&files));
         }
-        Ok(out)
+        Ok((out, held_back))
     }
+}
+
+/// The first file of a bundle that is a key file by name or holds a
+/// secret: such a bundle is carried neither out nor in, whole (taking only
+/// its other files would delete the key's copy on the receiver).
+fn keeps_a_secret(files: &[(String, Vec<u8>)]) -> Option<&str> {
+    files
+        .iter()
+        .find(|(path, bytes)| {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            items::key_file_name(name) || items::secret_bytes(bytes)
+        })
+        .map(|(path, _)| path.as_str())
 }
 
 fn store_error(error: ScopedSkillManagementError) -> ConfigSyncError {
@@ -74,7 +105,7 @@ impl ConfigSyncDomainHandler for SkillsDomainHandler {
         &self,
         ctx: &ConfigSyncContext,
     ) -> Result<ConfigSyncDomainDigest, ConfigSyncError> {
-        let index = self.index(&caller_skill_scope(ctx.caller.clone())).await?;
+        let (index, _) = self.index(&caller_skill_scope(ctx.caller.clone())).await?;
         Ok(ConfigSyncDomainDigest {
             hash: items::domain_hash(&index),
             updated_at: None,
@@ -87,8 +118,8 @@ impl ConfigSyncDomainHandler for SkillsDomainHandler {
         ctx: &ConfigSyncContext,
     ) -> Result<ConfigSyncDomainPayload, ConfigSyncError> {
         let scope = caller_skill_scope(ctx.caller.clone());
-        let index = self.index(&scope).await?;
-        let page = items::page(&index, &ctx.page, |name| {
+        let (index, held_back) = self.index(&scope).await?;
+        let mut page = items::page(&index, &ctx.page, |name| {
             let skills = Arc::clone(&self.skills);
             let scope = scope.clone();
             async move {
@@ -100,6 +131,11 @@ impl ConfigSyncDomainHandler for SkillsDomainHandler {
             }
         })
         .await?;
+        // Said once, with the first page.
+        if ctx.page.after.is_none() {
+            let room = items::PAGE_NOTES.saturating_sub(page.not_carried.len());
+            page.not_carried.extend(held_back.into_iter().take(room));
+        }
         Ok(ConfigSyncDomainPayload::Skills(page))
     }
 
@@ -129,7 +165,7 @@ impl ConfigSyncDomainHandler for SkillsDomainHandler {
             return Ok(DomainApplyResult::unchanged(page.items.len() as u64));
         }
         let scope = caller_skill_scope(ctx.caller.clone());
-        let held = self.index(&scope).await?;
+        let (held, kept_here) = self.index(&scope).await?;
         let (mut applied, mut skipped) = (0u64, 0u64);
         let mut warnings: Vec<String> = page
             .not_carried
@@ -142,6 +178,25 @@ impl ConfigSyncDomainHandler for SkillsDomainHandler {
                 continue;
             };
             if held.get(&item.key) == Some(&items::files_hash(&files)) {
+                skipped += 1;
+                continue;
+            }
+            if let Some(path) = keeps_a_secret(&files) {
+                warnings.push(format!(
+                    "skill {} was not synced: `{path}` is a key or holds a secret",
+                    item.key
+                ));
+                skipped += 1;
+                continue;
+            }
+            // This computer's skill of that name holds a secret of its
+            // own: replacing the bundle would delete it.
+            let prefix = format!("{} (", item.key);
+            if kept_here.iter().any(|note| note.starts_with(&prefix)) {
+                warnings.push(format!(
+                    "skill {} was not synced: the one here holds a key or a secret",
+                    item.key
+                ));
                 skipped += 1;
                 continue;
             }

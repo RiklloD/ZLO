@@ -624,5 +624,25 @@ Phases 1, 2 and 5 are in. What differs from the sketch above:
     replacing; a relative root is not used; every name read counts
     toward the scan limit and writes run off the async workers.
 
+- **After the fifth review (2026-11-26).**
+  - Keys and secrets are recognised in one place (`items::key_file_name`,
+    `items::secret_bytes`: key and certificate-container names, private
+    key blocks, cluster and cloud sign-in fields, stored tokens).
+  - Skills: a bundle with such a file is not exported and not applied,
+    whole; a receiver's skill that holds one is not replaced. A bundle
+    that names a path twice, or as a file and as a folder, is refused
+    before the first write. A skill that cannot be read is left out of
+    the listing instead of failing the domain.
+  - `cli_home`: the file in an incoming file's place is read before it is
+    replaced and kept when it holds a secret; a scan that stops at its
+    limit always says so.
+  - Known and left (the old text survives in each case): a receiver that
+    deliberately restored an earlier text after a pass was cut short
+    takes the sender's newer text without a conflict copy (the provider's
+    version history has it); a document archived in the instant between
+    the listing and the read can be recreated (its archive copy stays);
+    `notes/a` on one side and `notes/a/b.md` on the other never settle
+    and are reported at every pass.
+
 Left: phase 3 (provider catalog and keys), phase 4 (extensions, hooks,
 automations).

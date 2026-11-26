@@ -110,6 +110,8 @@ struct Listing {
     more_not_carried: usize,
     /// Names looked at so far.
     visited: usize,
+    /// The scan stopped at its limit, and has said so.
+    truncated: bool,
     /// The digests of this listing, to answer the next one.
     seen: BTreeMap<String, (Stamp, String)>,
 }
@@ -127,6 +129,17 @@ fn rx(error: rustix::io::Errno) -> io::Error {
 }
 
 impl Listing {
+    /// The scan hit its limit: said once, and ahead of the capped notes.
+    fn say_truncated(&mut self) {
+        if !self.truncated {
+            self.truncated = true;
+            self.not_carried.insert(
+                0,
+                format!("everything past the first {MAX_VISITED} names (too many to look at)"),
+            );
+        }
+    }
+
     fn note(&mut self, line: String) {
         if self.not_carried.len() < MAX_NOTES {
             self.not_carried.push(line);
@@ -162,7 +175,7 @@ fn withheld(name: &str) -> bool {
         return true;
     }
     let (stem, extensions) = lower.split_once('.').unwrap_or((lower.as_str(), ""));
-    const STEMS: [&str; 14] = [
+    const STEMS: [&str; 11] = [
         "settings",
         "auth",
         "credentials",
@@ -174,9 +187,6 @@ fn withheld(name: &str) -> bool {
         "password",
         "passwords",
         "oauth_creds",
-        "id_rsa",
-        "id_dsa",
-        "id_ecdsa",
     ];
     const ENDINGS: [&str; 8] = [
         "token",
@@ -188,23 +198,22 @@ fn withheld(name: &str) -> bool {
         "passwords",
         "key",
     ];
-    const EXTENSIONS: [&str; 12] = [
-        "pem", "key", "p12", "pfx", "jks", "keystore", "kdbx", "env", "ppk", "gpg", "asc", "netrc",
-    ];
-    STEMS.contains(&stem)
-        || stem.starts_with("id_ed25519")
+    items::key_file_name(name)
+        || STEMS.contains(&stem)
+        // `api_token`, `access-key`, and the run-together `accesstoken`.
         || ENDINGS.iter().any(|end| {
-            stem.strip_suffix(end)
-                .is_some_and(|rest| rest.ends_with(['_', '-']))
+            stem.strip_suffix(end).is_some_and(|rest| {
+                rest.ends_with(['_', '-'])
+                    || (*end != "key" && !rest.is_empty() && rest.len() <= 12)
+            })
         })
-        || extensions.split('.').any(|ext| EXTENSIONS.contains(&ext))
+        || extensions.split('.').any(|ext| ext == "env")
         || lower == "config.toml"
 }
 
-/// Bytes that are a private key, whatever the file is called.
+/// Bytes that hold a secret, whatever the file is called.
 fn is_private_key(bytes: &[u8]) -> bool {
-    const MARK: &[u8] = b"PRIVATE KEY-----";
-    bytes.windows(MARK.len()).any(|window| window == MARK)
+    items::secret_bytes(bytes)
 }
 
 /// The root folder, opened without following a link at its last name,
@@ -464,6 +473,18 @@ impl CliHomeDomainHandler {
             if stat.st_nlink > 1 {
                 return Err(io::Error::other("a hard link is in its place"));
             }
+            // What is there may be something the listing held back (a key
+            // under an ordinary name): it is read before it is replaced,
+            // and a file too large to read is left alone.
+            let held = rustix::fs::openat(dir.as_fd(), *last, ANY_FLAGS, Mode::empty())
+                .map_err(rx)
+                .and_then(|fd| read_all(fd, items::ITEM_CONTENT_BYTES))
+                .map_err(|_| io::Error::other("the file in its place could not be checked"))?;
+            if is_private_key(&held) {
+                return Err(io::Error::other(
+                    "the file in its place holds a key or a sign-in and is kept",
+                ));
+            }
         }
         let temporary = format!(".zlo-sync-{}.tmp", Uuid::new_v4());
         let mode = if exec {
@@ -523,11 +544,7 @@ fn walk(
 ) {
     out.visited += 1;
     if out.visited > MAX_VISITED {
-        if out.visited == MAX_VISITED + 1 {
-            out.note(format!(
-                "everything past the first {MAX_VISITED} names (too many to look at)"
-            ));
-        }
+        out.say_truncated();
         return;
     }
     // A link fails to open; so does anything that went away.
@@ -586,6 +603,7 @@ fn walk(
                 read += 1;
                 out.visited += 1;
                 if out.visited > MAX_VISITED {
+                    out.say_truncated();
                     break;
                 }
                 if read > MAX_FOLDER_NAMES {
@@ -1132,6 +1150,34 @@ mod tests {
         assert!(!Path::new("relative-root").exists());
     }
 
+    #[tokio::test]
+    async fn a_key_the_receiver_keeps_under_an_ordinary_name_is_not_replaced() {
+        let (mac, boxed) = (Host::new(), Host::new());
+        let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n";
+        boxed.put(".alpha/skills/deploy/notes.txt", key);
+        mac.put(".alpha/skills/deploy/notes.txt", "ordinary notes\n");
+        mac.put(
+            ".alpha/skills/deploy/kube.yaml",
+            "users:\n- user:\n    client-key-data: AAAA\n",
+        );
+        let result = carry(&mac, &boxed).await;
+        assert_eq!(result.outcome.applied_count, 0, "{:?}", result.outcome);
+        assert_eq!(
+            boxed.get(".alpha/skills/deploy/notes.txt").as_deref(),
+            Some(key)
+        );
+        assert_eq!(boxed.get(".alpha/skills/deploy/kube.yaml"), None);
+        assert!(
+            result
+                .outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("is kept")),
+            "{:?}",
+            result.outcome
+        );
+    }
+
     #[test]
     fn names_that_keep_a_sign_in_are_withheld_and_ordinary_ones_are_not() {
         for name in [
@@ -1149,6 +1195,10 @@ mod tests {
             ".hidden",
             "config.toml",
             "db_password",
+            "kubeconfig",
+            "accessToken.json",
+            "signing.der",
+            "AuthKey_ABC.p8",
         ] {
             assert!(withheld(name), "{name}");
         }

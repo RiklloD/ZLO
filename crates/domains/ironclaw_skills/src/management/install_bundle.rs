@@ -226,6 +226,26 @@ pub(crate) async fn replace_skill_bundle(
             SkillManagementErrorKind::InvalidSkill,
         ));
     }
+    // A bundle that names a path twice, or names one both as a file and as
+    // a folder of others, can only fail partway.
+    for (at, (path, _, _)) in incoming.iter().enumerate() {
+        let clash = incoming
+            .iter()
+            .enumerate()
+            .any(|(other_at, (other, _, _))| {
+                other_at != at
+                    && (other == path
+                        || other
+                            .strip_prefix(path.as_str())
+                            .is_some_and(|rest| rest.starts_with('/')))
+            });
+        if clash {
+            return Err(SkillManagementError::with_reason(
+                SkillManagementErrorKind::InvalidSkill,
+                format!("`{path}` appears twice, or as a file and as a folder"),
+            ));
+        }
+    }
     // The manifest goes last: until it is written the old one still names
     // a skill whose other files are a superset of what it needs.
     incoming.sort_by_key(|(path, _, _)| (path == SKILL_FILE_NAME, path.clone()));
