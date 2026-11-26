@@ -891,6 +891,17 @@ async fn setup_extension_projects_and_routes_channel_config_values() {
     let view = query_extension_setup(&services, caller(), "github")
         .await
         .expect("setup view");
+    // The lifecycle result survives into the setup response, its rows in the
+    // public vocabulary (the host's `configured` checkpoint reads as
+    // `setup_needed`), so a typed client decodes exactly what is sent.
+    match &view.payload {
+        Some(LifecycleProductPayload::ExtensionList { extensions, count }) => {
+            assert_eq!(*count, 1);
+            assert_eq!(extensions[0].summary.package_ref.id.as_str(), "github");
+            assert_eq!(extensions[0].phase, LifecyclePublicState::SetupNeeded);
+        }
+        other => panic!("setup response keeps the extension list payload: {other:?}"),
+    }
     assert_eq!(view.fields.len(), 1);
     assert_eq!(view.fields[0].name, "public_url");
     assert_eq!(view.fields[0].prompt, "Public webhook URL");
