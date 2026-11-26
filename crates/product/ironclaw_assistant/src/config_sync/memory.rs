@@ -34,8 +34,9 @@ const DOMAIN: ConfigSyncDomain = ConfigSyncDomain::Memory;
 /// Where the receiver's text goes when both sides changed a document.
 pub const CONFLICTS_ROOT: &str = "sync-conflicts";
 /// How long a computed index answers manifests before documents are read
-/// again (a manifest is asked for often and reads every document).
-pub const INDEX_TTL: Duration = Duration::from_secs(20);
+/// again. Short: it only spares the reads when several computers are
+/// checked at the same moment; an edit must show at the next check.
+pub const INDEX_TTL: Duration = Duration::from_secs(2);
 
 /// The content last agreed with one other computer: document path to
 /// digest. Machine-local state of this backend; never synced itself.
