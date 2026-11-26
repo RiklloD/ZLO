@@ -91,8 +91,8 @@ use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_EXTENSION_SETTING, WEBUI_V2_PATTERN_EXTENSION_SETTINGS,
 };
 use crate::webui_v2::descriptors::{
-    WEBUI_V2_PATTERN_HISTORY_SEARCH, WEBUI_V2_PATTERN_INBOX, WEBUI_V2_PATTERN_INBOX_THREAD,
-    WEBUI_V2_PATTERN_TASK_MODELS, WEBUI_V2_PATTERN_THREAD_GOAL,
+    WEBUI_V2_PATTERN_HISTORY_SEARCH, WEBUI_V2_PATTERN_INBOX, WEBUI_V2_PATTERN_INBOX_EVENTS,
+    WEBUI_V2_PATTERN_INBOX_THREAD, WEBUI_V2_PATTERN_TASK_MODELS, WEBUI_V2_PATTERN_THREAD_GOAL,
 };
 use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_HOOKS, WEBUI_V2_PATTERN_MEMORY_ARCHIVE, WEBUI_V2_PATTERN_MEMORY_DOCUMENT,
@@ -143,6 +143,7 @@ impl WebUiV2RouteOptions {
 pub struct WebUiV2State {
     services: Arc<dyn ProductSurface>,
     sse_capacity: Arc<SseCapacity>,
+    inbox_sse_capacity: Arc<SseCapacity>,
     reborn_projects_enabled: bool,
     workspace_requires_scoped_projection: bool,
     regression_artifact_export_enabled: bool,
@@ -163,6 +164,7 @@ impl WebUiV2State {
         Self {
             services,
             sse_capacity: Arc::new(SseCapacity::new(max_concurrent_streams_per_caller)),
+            inbox_sse_capacity: Arc::new(SseCapacity::new(max_concurrent_streams_per_caller)),
             reborn_projects_enabled: false,
             workspace_requires_scoped_projection: false,
             regression_artifact_export_enabled: false,
@@ -250,6 +252,10 @@ impl WebUiV2State {
 
     pub(crate) fn sse_capacity(&self) -> &Arc<SseCapacity> {
         &self.sse_capacity
+    }
+
+    pub(crate) fn inbox_sse_capacity(&self) -> &Arc<SseCapacity> {
+        &self.inbox_sse_capacity
     }
 }
 
@@ -510,6 +516,7 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
             put(handlers::extension_setting_set),
         )
         .route(WEBUI_V2_PATTERN_INBOX, get(handlers::inbox_list))
+        .route(WEBUI_V2_PATTERN_INBOX_EVENTS, get(handlers::inbox_events))
         .route(
             WEBUI_V2_PATTERN_HISTORY_SEARCH,
             get(handlers::history_search),

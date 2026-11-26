@@ -93,6 +93,7 @@ pub struct RebornProjectionServices {
     live_sequence: Arc<AtomicU64>,
     live_epoch: Arc<str>,
     turn_event_wake_source: Arc<TurnEventWakeSource>,
+    inbox_hints: Arc<crate::inbox_hints::InboxHintBus>,
     turn_events: TurnEventBridge,
     // arch-exempt: optional_arc, approval prompt enrichment is absent in minimal projection graphs, plan #4539
     approval_requests: Option<Arc<dyn ApprovalRequestStorePort>>,
@@ -218,7 +219,17 @@ impl RebornProjectionServices {
     pub fn turn_event_wake_sink(&self) -> Arc<dyn TurnEventSink> {
         Arc::new(TurnEventWakeSink {
             source: Arc::clone(&self.turn_event_wake_source),
+            inbox_hints: Arc::clone(&self.inbox_hints),
         })
+    }
+
+    pub fn inbox_hints(&self) -> Arc<crate::inbox_hints::InboxHintBus> {
+        Arc::clone(&self.inbox_hints)
+    }
+
+    pub fn with_inbox_hints(mut self, inbox_hints: Arc<crate::inbox_hints::InboxHintBus>) -> Self {
+        self.inbox_hints = inbox_hints;
+        self
     }
 }
 
@@ -247,6 +258,7 @@ pub fn build_reborn_projection_services(
         live_sequence,
         live_epoch,
         turn_event_wake_source: Arc::new(TurnEventWakeSource::new()),
+        inbox_hints: Arc::new(crate::inbox_hints::InboxHintBus::new()),
         turn_events: TurnEventBridge::default(),
         approval_requests: None,
         display_previews: Arc::new(NoopCapabilityDisplayPreviewSource),
@@ -291,12 +303,14 @@ impl TurnEventWakeSource {
 
 struct TurnEventWakeSink {
     source: Arc<TurnEventWakeSource>,
+    inbox_hints: Arc<crate::inbox_hints::InboxHintBus>,
 }
 
 #[async_trait]
 impl TurnEventSink for TurnEventWakeSink {
     async fn publish(&self, event: TurnLifecycleEvent) -> Result<(), TurnError> {
         self.source.publish(&event);
+        self.inbox_hints.notify_turn_event(&event);
         Ok(())
     }
 }

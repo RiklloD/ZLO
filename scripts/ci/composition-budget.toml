@@ -492,7 +492,12 @@ observed_date = "2026-11-17"
 #   `model_gateway_assembly`, plus the live-adapter flag that replays
 #   pre-tool assistant text.
 # Measured with `bash scripts/ci/check-composition-budget.sh --print`.
-loc_ceiling = 34609
+# ✎ 2026-11-26 (inbox push stream): 34609 -> 34626, observed 34759 -> 34776,
+# zero hidden headroom. +17 lines of wiring only: one `InboxHintBus` built in
+# `runtime/assembly.rs`, held in `runtime/handles.rs` and handed to
+# `orchestrate` in `product_surface.rs`. The bus, its turn-event sink and the
+# notification decorator live in `ironclaw_assistant::inbox_hints`.
+loc_ceiling = 34626
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to

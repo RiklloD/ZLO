@@ -2875,3 +2875,104 @@ fn google_admin_configuration_values() -> Value {
         {"handle": "google_oauth_client_secret", "value": "readiness-client-secret"}
     ])
 }
+
+/// Drives a real scripted turn with `ParkingModelGate` while subscribed to
+/// `GET /api/webchat/v2/inbox/events`: asserts an `inbox_changed` hint arrives
+/// before the run completes (on start) and again when the run ends.
+#[tokio::test]
+async fn inbox_events_stream_emits_on_run_start_and_completion() {
+    use http_body_util::BodyExt;
+    use ironclaw_assistant::inbox_hints::InboxHintBus;
+    use ironclaw_product_contracts::inbox::INBOX_CHANGED_EVENT_KIND;
+    use ironclaw_turns::TurnStatus;
+    use reborn_support::scripted_provider::ParkingModelGate;
+
+    let bus = Arc::new(InboxHintBus::with_coalesce_window(Duration::from_millis(
+        40,
+    )));
+    let gate = ParkingModelGate::new();
+    let h = RebornIntegrationHarness::test_default()
+        .park_model(gate.clone())
+        .with_inbox_hints_for_test(Arc::clone(&bus))
+        .script([RebornScriptedReply::text("inbox push stream ok")])
+        .build()
+        .await
+        .expect("harness builds");
+
+    let services = RebornServices::new(h.thread_harness.service.clone(), h.coordinator.clone())
+        .with_inbox_hints(Arc::clone(&bus));
+    let caller = webui_caller_for(&h.binding);
+    let router = mount_webui_v2_router(Arc::new(services), caller);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/webchat/v2/inbox/events")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("sse response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+
+    // Helper to read until the next `inbox_changed` SSE frame arrives.
+    async fn next_inbox_changed(body: &mut Body) -> String {
+        let mut buf = String::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(2), body.frame()).await {
+                Ok(Some(Ok(frame))) => {
+                    if let Some(data) = frame.data_ref() {
+                        buf.push_str(&String::from_utf8_lossy(data));
+                        if buf.contains(INBOX_CHANGED_EVENT_KIND) {
+                            return buf;
+                        }
+                    }
+                }
+                Ok(Some(Err(e))) => panic!("SSE body error: {e}"),
+                Ok(None) => panic!("SSE stream closed early: {buf}"),
+                Err(_) => panic!("timed out waiting for inbox_changed SSE frame; saw: {buf}"),
+            }
+        }
+        panic!("deadline exceeded waiting for inbox_changed; saw: {buf}");
+    }
+
+    // Start the run; it parks inside the scripted model before completing.
+    let run_id = h
+        .submit_turn_async("start work")
+        .await
+        .expect("turn submitted");
+    tokio::time::timeout(Duration::from_secs(10), gate.wait_until_parked())
+        .await
+        .expect("model call parks");
+
+    // 1. A hint must arrive while the run is still parked (before completion).
+    let start_frame = next_inbox_changed(&mut body).await;
+    assert!(
+        start_frame.contains(r#""kind":"inbox_changed""#),
+        "expected inbox_changed on run start, got: {start_frame}"
+    );
+    assert!(
+        start_frame.contains(h.binding.thread_id.as_str()),
+        "expected thread_id in start hint, got: {start_frame}"
+    );
+
+    // Wait past the coalesce window, then release the parked model so the run ends.
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    gate.release();
+    h.wait_for_status(run_id, TurnStatus::Completed)
+        .await
+        .expect("run completes");
+
+    // 2. A second hint must arrive when the run completes.
+    let end_frame = next_inbox_changed(&mut body).await;
+    assert!(
+        end_frame.contains(r#""kind":"inbox_changed""#),
+        "expected inbox_changed on run completion, got: {end_frame}"
+    );
+    assert!(
+        end_frame.contains(h.binding.thread_id.as_str()),
+        "expected thread_id in completion hint, got: {end_frame}"
+    );
+}

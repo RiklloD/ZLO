@@ -19,6 +19,7 @@
 
 pub(crate) mod connect;
 pub(crate) mod failback;
+pub mod inbox_stream;
 pub mod linked;
 pub mod pairing;
 pub mod peers;
@@ -88,6 +89,8 @@ pub struct RemoteState {
     /// focus lands there (`peers::focus_thread`). Takes precedence over the
     /// draft default computer and `last_thread`, even when absent from inbox.
     pub pending_thread: Option<PendingThread>,
+    /// The inbox push streams open now (`inbox_stream`).
+    pub inbox_streams: inbox_stream::InboxStreams,
     /// Bumped by every explicit move of the focus (`peers::focus`,
     /// `peers::focus_thread`): a deferred handover runs only while it is
     /// still the latest one asked. Connect retries do not touch it.
@@ -153,6 +156,7 @@ impl Default for RemoteState {
             problems: HashMap::new(),
             last_thread: HashMap::new(),
             pending_thread: None,
+            inbox_streams: Default::default(),
             navigation: Default::default(),
             switching: None,
             page: Default::default(),

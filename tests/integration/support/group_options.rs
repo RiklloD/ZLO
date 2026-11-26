@@ -141,6 +141,17 @@ impl RebornIntegrationGroupBuilder {
         self
     }
 
+    /// Wire production's [`ironclaw_assistant::inbox_hints::InboxHintTurnEventSink`]
+    /// into the group's planned runtime so real turn lifecycle transitions emit
+    /// hints into `bus`.
+    pub fn with_inbox_hints_for_test(
+        mut self,
+        bus: Arc<ironclaw_assistant::inbox_hints::InboxHintBus>,
+    ) -> Self {
+        self.inbox_hints = Some(bus);
+        self
+    }
+
     /// Force `ToolDisclosureMode::Bridged` into the group's ONE planned
     /// runtime config (enabler (b)), regardless of `REBORN_TOOL_DISCLOSURE` —
     /// avoids the shared-process env-var race `apply_hermetic_env()` already

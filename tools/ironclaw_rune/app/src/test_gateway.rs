@@ -62,6 +62,42 @@ struct Shared {
     paths: Mutex<Vec<String>>,
     in_flight: AtomicUsize,
     max_in_flight: AtomicUsize,
+    /// The inbox push stream (`/inbox/events`): `None` answers 404 as a
+    /// backend without the route does; `Some` holds the open connections.
+    /// Never takes a scripted answer.
+    inbox_events: Mutex<Option<Vec<std::sync::mpsc::Sender<String>>>>,
+}
+
+/// One `/inbox/events` connection: 404 when the route is off, else an open
+/// event stream fed by [`Gateway::hint_inbox_changed`] until the client goes.
+fn serve_inbox_events(shared: &Shared, mut sock: std::net::TcpStream) {
+    let rx = {
+        let mut open = shared
+            .inbox_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(open) = open.as_mut() else {
+            let _ =
+                sock.write_all(b"HTTP/1.1 404 X\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        open.push(tx);
+        rx
+    };
+    if sock
+        .write_all(
+            b"HTTP/1.1 200 X\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n: connected\n\n",
+        )
+        .is_err()
+    {
+        return;
+    }
+    while let Ok(frame) = rx.recv() {
+        if sock.write_all(frame.as_bytes()).is_err() || sock.flush().is_err() {
+            return;
+        }
+    }
 }
 
 pub struct Gateway {
@@ -97,7 +133,10 @@ impl Gateway {
                         .paths
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .push(path);
+                        .push(path.clone());
+                    if path.contains("/inbox/events") {
+                        return serve_inbox_events(&shared, sock);
+                    }
                     let now = shared.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                     shared.max_in_flight.fetch_max(now, Ordering::SeqCst);
                     let answer = {
@@ -126,6 +165,58 @@ impl Gateway {
             }
         });
         Gateway { base_url, shared }
+    }
+
+    /// Serve the inbox push stream from now on (a backend that has it).
+    pub fn serve_inbox_events(&self) {
+        *self
+            .shared
+            .inbox_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Vec::new());
+    }
+
+    /// Send one `inbox_changed` hint to every open inbox stream.
+    pub fn hint_inbox_changed(&self) {
+        let frame = "event: inbox_changed\ndata: {\"kind\":\"inbox_changed\"}\n\n".to_string();
+        if let Some(open) = self
+            .shared
+            .inbox_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            open.retain(|tx| tx.send(frame.clone()).is_ok());
+        }
+    }
+
+    /// How many inbox streams are open now.
+    pub fn inbox_streams_open(&self) -> usize {
+        self.hint_keepalive();
+        self.shared
+            .inbox_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, Vec::len)
+    }
+
+    /// Comment frames tell a closed connection apart: the first write to
+    /// one still succeeds, a later one fails and its writer thread ends,
+    /// which the next send to it then sees.
+    fn hint_keepalive(&self) {
+        for _ in 0..4 {
+            if let Some(open) = self
+                .shared
+                .inbox_events
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_mut()
+            {
+                open.retain(|tx| tx.send(": ping\n\n".to_string()).is_ok());
+            }
+            std::thread::sleep(Duration::from_millis(80));
+        }
     }
 
     /// Replace what the next requests get.

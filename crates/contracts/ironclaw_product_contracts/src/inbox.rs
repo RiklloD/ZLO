@@ -298,3 +298,32 @@ pub const THREAD_GOAL_SET_COMMAND: ProductSurfaceCommandDescriptor<
     ThreadGoalSetRequest,
     serde_json::Value,
 > = ProductSurfaceCommandDescriptor::new(THREAD_GOAL_SET_COMMAND_ID);
+
+/// Reserved `ProductSurfaceStreamRequest::stream_id` for the caller-scoped
+/// inbox push stream (`GET /api/webchat/v2/inbox/events`). Contains `:` so it
+/// can never collide with a valid `ThreadId`.
+pub const INBOX_EVENTS_STREAM_ID: &str = "stream:inbox";
+
+/// Wire `kind` field (and SSE `event:` name) for an inbox invalidation hint.
+pub const INBOX_CHANGED_EVENT_KIND: &str = "inbox_changed";
+
+/// Ephemeral hint emitted on `GET /api/webchat/v2/inbox/events` whenever the
+/// caller's inbox list or unread notifications may have changed.
+///
+/// Clients answer by re-reading `GET /inbox` (and unread notifications). Hints
+/// carry no message content or durable state and are coalesced per connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxChangedEvent {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread_ids: Vec<String>,
+}
+
+impl InboxChangedEvent {
+    pub fn new(thread_ids: Vec<String>) -> Self {
+        Self {
+            kind: INBOX_CHANGED_EVENT_KIND.to_string(),
+            thread_ids,
+        }
+    }
+}

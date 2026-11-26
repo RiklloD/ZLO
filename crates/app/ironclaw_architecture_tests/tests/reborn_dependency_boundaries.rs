@@ -1747,7 +1747,11 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // the WebUI route and the ZLO client share. Vocabulary only: the
         // rescan lives in the orchestrator domain. The tree measures 17_196;
         // the pin is the minimum that passes (17_196 - 150 slack).
-        ("ironclaw_product_contracts", 17_046),
+        // 17_046 -> 17_225 (2026-11-26, inbox push stream): the crate sat at
+        // the top of its working slack (17_196); +29 lines for the
+        // `InboxChangedEvent` hint DTO and its stream id, a wire shape the
+        // desktop client shares with the gateway. No behavior.
+        ("ironclaw_product_contracts", 17_225),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

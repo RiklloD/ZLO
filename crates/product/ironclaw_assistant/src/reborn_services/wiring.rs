@@ -24,6 +24,11 @@ where
         self
     }
 
+    pub fn with_inbox_hints(mut self, inbox_hints: Arc<crate::inbox_hints::InboxHintBus>) -> Self {
+        self.inbox_hints = inbox_hints;
+        self
+    }
+
     pub fn with_suggestions(
         mut self,
         store: Arc<dyn crate::suggestions_store::SuggestionsStore>,

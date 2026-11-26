@@ -312,12 +312,14 @@ pub const WEBUI_V2_ROUTE_COMPUTER_USE_READINESS: &str = "webui.v2.computer_use.r
 pub const WEBUI_V2_PATTERN_COMPUTER_USE_READINESS: &str = "/api/webchat/v2/computer-use/readiness";
 // Inbox and goal routes (v2 stage 5).
 pub const WEBUI_V2_ROUTE_INBOX_LIST: &str = "webui.v2.inbox.list";
+pub const WEBUI_V2_ROUTE_INBOX_EVENTS: &str = "webui.v2.inbox.events";
 pub const WEBUI_V2_ROUTE_INBOX_MUTATE: &str = "webui.v2.inbox.mutate";
 pub const WEBUI_V2_ROUTE_THREAD_GOAL_GET: &str = "webui.v2.goals.get";
 pub const WEBUI_V2_ROUTE_THREAD_GOAL_SET: &str = "webui.v2.goals.set";
 pub const WEBUI_V2_ROUTE_TASK_MODELS_GET: &str = "webui.v2.task_models.get";
 pub const WEBUI_V2_ROUTE_TASK_MODELS_SET: &str = "webui.v2.task_models.set";
 pub const WEBUI_V2_PATTERN_INBOX: &str = "/api/webchat/v2/inbox";
+pub const WEBUI_V2_PATTERN_INBOX_EVENTS: &str = "/api/webchat/v2/inbox/events";
 // History search across the caller's past chats.
 pub const WEBUI_V2_ROUTE_HISTORY_SEARCH: &str = "webui.v2.history.search";
 pub const WEBUI_V2_PATTERN_HISTORY_SEARCH: &str = "/api/webchat/v2/history/search";
@@ -709,6 +711,7 @@ pub fn webui_v2_routes_with_artifact_flags(
             NetworkMethod::Get,
             WEBUI_V2_PATTERN_INBOX,
         ),
+        inbox_events_descriptor(),
         profile_route_descriptor(
             WEBUI_V2_ROUTE_INBOX_MUTATE,
             NetworkMethod::Post,
@@ -1278,6 +1281,20 @@ fn stream_events_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_ROUTE_STREAM_EVENTS,
         NetworkMethod::Get,
         WEBUI_V2_PATTERN_STREAM_EVENTS,
+        read_policy(
+            stream_rate_limit(),
+            AuditTraceClass::StreamingSubscription,
+            AllowedEffectPath::ProjectionOnly,
+            StreamingMode::Sse,
+        ),
+    )
+}
+
+fn inbox_events_descriptor() -> IngressRouteDescriptor {
+    descriptor(
+        WEBUI_V2_ROUTE_INBOX_EVENTS,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_INBOX_EVENTS,
         read_policy(
             stream_rate_limit(),
             AuditTraceClass::StreamingSubscription,

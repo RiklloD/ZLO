@@ -56,7 +56,8 @@ mod plugin_ui;
 pub use plugin_ui::{plugin_ui_event, plugin_ui_render, plugin_ui_slots};
 mod inbox;
 pub use inbox::{
-    inbox_list, inbox_mutate, task_models_get, task_models_set, thread_goal, thread_goal_set,
+    inbox_events, inbox_list, inbox_mutate, task_models_get, task_models_set, thread_goal,
+    thread_goal_set,
 };
 pub use inbox::{session_import_projects, session_import_run, session_import_status};
 mod run_artifact;

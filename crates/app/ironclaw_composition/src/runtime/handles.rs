@@ -465,6 +465,10 @@ impl RebornRuntime {
         self.projection_services.product_event_stream()
     }
 
+    pub(crate) fn inbox_hints(&self) -> Arc<ironclaw_assistant::inbox_hints::InboxHintBus> {
+        self.projection_services.inbox_hints()
+    }
+
     pub(crate) fn webui_approval_interaction_service(&self) -> Arc<dyn ApprovalInteractionService> {
         self.approval_interaction_service.clone()
     }

@@ -55,6 +55,7 @@ pub mod history_search;
 pub mod hooks_page;
 mod in_memory_ledger;
 mod inbound_turn;
+pub mod inbox_hints;
 pub mod inspector_store;
 mod ledger;
 mod lifecycle;
