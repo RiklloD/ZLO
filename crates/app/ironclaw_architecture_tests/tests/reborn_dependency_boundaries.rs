@@ -1758,7 +1758,14 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // desktop client that carries a snapshot between two backends. The
         // orchestrator settings travel as an opaque document, so no mirror
         // of another crate's types lives here.
-        ("ironclaw_product_contracts", 17_587),
+        // 17_587 -> 17_803 (2026-11-26, Settings → Keys + local wiki): the
+        // tree measures 17_953; the pin is the minimum that passes. +366
+        // lines: `service_keys.rs` (the Keys page wire DTOs, plus the two
+        // ports a service-owning crate implements: `ServiceKeyVerifier`,
+        // `ServiceKeyImportSource`) and the `memory.wiki.*` descriptors in
+        // `memory_page.rs`. Shared by the Supermemory domain, the assistant
+        // decorator, the WebUI routes and the desktop client; no behavior.
+        ("ironclaw_product_contracts", 17_803),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.
