@@ -47,6 +47,8 @@ pub(crate) mod ui;
 pub use draft::{
     composer_edit, send as send_draft, stage_snapshot, start_in_profile, voice_composer,
 };
+#[cfg(test)]
+pub use inbox::RowId;
 pub use inbox::title_of as row_title;
 pub use inbox::{ProfileChange, profiles_changed};
 pub use keys::{menu_items, on_close, quit};
@@ -152,7 +154,7 @@ pub struct WorkspaceState {
     /// flips morph instead of landing.
     pub(crate) painted: std::cell::Cell<bool>,
     /// The thread whose delete is being confirmed.
-    pub confirm_delete: Option<String>,
+    pub confirm_delete: Option<inbox::RowId>,
     /// The footer's update dialog is open, for these computers (the ones
     /// with an update waiting when it opened): only they are ever listed or
     /// updated from it.

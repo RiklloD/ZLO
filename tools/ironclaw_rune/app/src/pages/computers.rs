@@ -20,7 +20,7 @@ use crate::remote::pairing::{self, Issued};
 use crate::remote::updates::{self, RowState};
 use crate::remote::{self, EnvState};
 use crate::state::State;
-use zlo_client::environments::{Active, SavedEnvironment, THIS_MAC};
+use zlo_client::environments::{SavedEnvironment, THIS_MAC};
 
 pub(crate) mod default_computer;
 pub mod fixtures;
@@ -183,7 +183,7 @@ fn this_mac(s: &State, k: &Kit) -> El {
             Btn::Secondary,
             None,
             false,
-            |s| remote::switch_to(s, Active::ThisMac),
+            |s| remote::peers::focus(s, THIS_MAC),
         ));
     }
     let runs = s.remote.registry.run_local_backend;
@@ -301,7 +301,7 @@ fn saved_row(s: &State, k: &Kit, env: &SavedEnvironment) -> El {
                 Btn::Secondary,
                 None,
                 false,
-                move |s| remote::switch_to(s, Active::Environment(target.clone())),
+                move |s| remote::peers::focus(s, &target),
             ));
         }
         let target = id.clone();

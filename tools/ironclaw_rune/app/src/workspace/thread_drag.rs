@@ -29,6 +29,7 @@ pub const SLOP: f32 = 4.;
 /// The thread being dragged.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dragged {
+    pub computer: String,
     pub id: String,
     pub title: String,
     /// The pointer in window points.
@@ -59,14 +60,15 @@ fn contains(r: [f32; 4], [x, y]: [f32; 2]) -> bool {
     x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]
 }
 
-/// An inbox row's `on_drag`: start, follow and drop `id`.
-pub fn drag(s: &mut State, id: &str, title: &str, d: &Drag, tx: &mut Tx) {
+/// An inbox row's `on_drag`: start, follow and drop `(computer, id)`.
+pub fn drag(s: &mut State, computer: &str, id: &str, title: &str, d: &Drag, tx: &mut Tx) {
     let at = d.window_point();
     let state = &mut s.workspace.thread_drag;
     match d.phase {
         Phase::Down => {
             state.swallow_press = false;
             state.dragged = Some(Dragged {
+                computer: computer.to_string(),
                 id: id.to_string(),
                 title: title.to_string(),
                 at,
@@ -147,6 +149,9 @@ pub fn target_at(s: &State, at: [f32; 2]) -> Option<Target> {
 
 /// Attach `dragged` to the target under its pointer, if any.
 pub fn drop_at(s: &mut State, dragged: Dragged) {
+    if dragged.computer != s.onboarding.computer.key() {
+        return;
+    }
     match target_at(s, dragged.at) {
         Some(Target::Chat(id)) => {
             crate::chat::actions::attach_thread(s, &id, dragged.id, dragged.title);
@@ -258,6 +263,7 @@ pub fn fixture(s: &mut State, id: &str, title: &str, at: [f32; 2], rect: [f32; 4
         _ => {}
     }
     state.dragged = Some(Dragged {
+        computer: s.onboarding.computer.key(),
         id: id.into(),
         title: title.into(),
         at,
@@ -322,7 +328,7 @@ mod tests {
                     s.page = Page::Settings;
                 }
             })
-            .on_drag(|s: &mut State, d, tx| drag(s, "t2", "Other thread", d, tx));
+            .on_drag(|s: &mut State, d, tx| drag(s, "this-mac", "t2", "Other thread", d, tx));
         let target = el()
             .key("target")
             .pin(Some(200.), Some(150.), None, None)

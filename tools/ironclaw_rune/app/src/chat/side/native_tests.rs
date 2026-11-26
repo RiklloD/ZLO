@@ -71,7 +71,7 @@ fn a_tab_switch_hides_and_shows_the_page_in_the_same_frame() {
 fn an_overlay_hides_the_page_in_the_same_frame_and_closing_it_shows_it_again() {
     let mut rt = browsing();
     one_frame(&mut rt, |s| {
-        s.workspace.confirm_delete = Some("t-pin".into())
+        s.workspace.confirm_delete = Some(crate::workspace::RowId::focused(s, "t-pin"))
     });
     assert!(!shown(&rt), "a dialog covers the window: the page hides");
     one_frame(&mut rt, |s| s.workspace.confirm_delete = None);

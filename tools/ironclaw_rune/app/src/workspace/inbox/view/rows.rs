@@ -9,43 +9,53 @@ use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 use crate::design::{self, Palette, motion};
 use crate::icons;
 use crate::state::State;
+use crate::workspace::inbox::merged::{Entry, RowId};
 use crate::workspace::inbox::subagents::Tree;
 use crate::workspace::inbox::{
-    branch_tail, mark, settle, settle_blocker, short_age, snooze_presets, subagents, title_of,
-    wake_label,
+    branch_tail, delete_row, mark_row, open_row, settle_blocker, settle_row, short_age,
+    snooze_presets, subagents, title_of, wake_label,
 };
 use crate::workspace::ui::{self, SEMIBOLD, XS, t, tw};
 use crate::workspace::{message_search, thread_drag};
 
 use super::selected_bg;
 
+/// Per-row display flags passed from the virtual list to `card` / `slim`.
+pub(super) struct RowMeta {
+    pub active: bool,
+    pub jump: Option<usize>,
+    pub show_computer: bool,
+    pub now: i64,
+}
+
 /// Card row: profile · branch with the status or age, then the title;
 /// hover actions pin, snooze, settle. No model readout: the profile names it.
-pub(super) fn card(
-    s: &State,
-    tree: &Tree,
-    row_data: &InboxRow,
-    active: bool,
-    jump: Option<usize>,
-    now: i64,
-    k: &Kit,
-) -> El {
+pub(super) fn card(s: &State, tree: &Tree, entry: &Entry<'_>, meta_flags: RowMeta, k: &Kit) -> El {
+    let RowMeta {
+        active,
+        jump,
+        show_computer,
+        now,
+    } = meta_flags;
     let p = &s.palette;
     let inbox = &s.workspace.inbox;
-    let id = row_data.thread_id.clone();
-    let profile = inbox.profile(&row_data.profile_id);
-    let name = profile.map_or_else(|| row_data.profile_id.clone(), |p| p.display_name.clone());
+    let row_data = entry.row;
+    let row_id = entry.id.clone();
+    let row_key = row_id.key();
+    let focused = entry.focused;
+    let profile = entry.profile();
+    let name = entry.profile_name();
     // A thread in its own worktree shows that branch, not the profile's.
     let branch = row_data
         .worktree_branch
         .clone()
         .or_else(|| profile.and_then(|p| p.git_branch.clone()));
     let pinned = row_data.state == InboxState::Pinned;
-    let menu_open = inbox.snooze_menu.as_deref() == Some(id.as_str());
-    let unread = inbox.unread.contains(&id);
-    let recede = !active && inbox.shown_status(row_data).is_none() && !unread;
-    // An unsent draft waits here: t3code's pen mark and warm tint.
-    let drafted = !active && crate::drafts::has(s, &id);
+    let menu_open = inbox.snooze_menu.as_ref() == Some(&row_id);
+    let unread = inbox.unread.contains(&row_id);
+    let recede = !active && entry.shown_status(inbox).is_none() && !unread;
+    // An unsent draft waits here: t3code's pen mark and warm tint (focused only).
+    let drafted = focused && !active && crate::drafts::has(s, &row_data.thread_id);
     let rest = if active {
         ui::selected_wash(p)
     } else if drafted {
@@ -64,7 +74,7 @@ pub(super) fn card(
     let blocker = settle_blocker(row_data);
 
     // Like t3code: on hover the actions take the status slot's place.
-    let (pin_id, snooze_id, settle_id) = (id.clone(), id.clone(), id.clone());
+    let (pin_id, snooze_id, settle_id) = (row_id.clone(), row_id.clone(), row_id.clone());
     let actions = row()
         .gap(1.)
         .center_y()
@@ -80,7 +90,7 @@ pub(super) fn card(
                 } else {
                     InboxAction::Pin
                 };
-                mark(s, pin_id.clone(), action, None)
+                mark_row(s, pin_id.clone(), action, None)
             },
         ))
         .child(
@@ -102,7 +112,7 @@ pub(super) fn card(
                 ),
             )
             // The snooze menu (`snooze_menu`) hangs off this button.
-            .key(format!("{}-trigger", snooze_key(&id))),
+            .key(format!("{}-trigger", snooze_key(&row_id))),
         )
         .child(
             rune_kit::Button::new("Settle")
@@ -114,12 +124,12 @@ pub(super) fn card(
                     Some(why) => format!("Can't settle: it {why}, snooze it instead"),
                     None => "Settle session".into(),
                 })
-                .on_press(move |s: &mut State| settle(s, settle_id.clone()))
+                .on_press(move |s: &mut State| settle_row(s, settle_id.clone()))
                 .build(k),
         );
     let end = match jump {
         Some(ix) => ui::shortcut_badge(p, ix),
-        None => status_label(s, row_data, active, now),
+        None => status_label(s, &row_id, focused, row_data, active, now),
     };
     let mut meta = row().gap(7.).center_y();
     if drafted {
@@ -158,11 +168,16 @@ pub(super) fn card(
         },
         title_of(row_data)
     );
-    let open_id = id.clone();
-    let (menu_id, warm_id) = (id.clone(), id.clone());
-    let (drag_id, drag_title) = (id.clone(), title_of(row_data).to_string());
+    let open_id = row_id.clone();
+    let menu_id = row_id.clone();
+    let warm_id = row_data.thread_id.clone();
+    let (drag_computer, drag_id, drag_title) = (
+        row_id.computer.clone(),
+        row_data.thread_id.clone(),
+        title_of(row_data).to_string(),
+    );
     let mut card = col()
-        .key(format!("row-{id}"))
+        .key(format!("row-{row_key}"))
         .role("button")
         .label(title_of(row_data).to_string())
         .w_full()
@@ -182,22 +197,26 @@ pub(super) fn card(
         .press_scale(motion::PRESS_CARD)
         .on_press(move |s: &mut State| {
             if !thread_drag::take_press(s) {
-                crate::workspace::open_thread(s, open_id.clone());
+                open_row(s, &open_id);
             }
         })
         .on_secondary_press(move |s: &mut State, at, tx| {
             crate::workspace::inbox::open_row_menu(s, &menu_id, at, tx)
         })
-        // Resting on it warms the thread for the click (`chat::prewarm`).
+        // Resting on it warms the thread for the click (`chat::prewarm`, focused only).
         .on_hover_change(move |s: &mut State, inside, tx| {
-            crate::chat::prewarm::hover(s, &warm_id, inside, tx)
+            if focused {
+                crate::chat::prewarm::hover(s, &warm_id, inside, tx);
+            }
         })
         // Drop it on a chat to hand that chat this thread's transcript.
-        .on_drag(move |s: &mut State, d, tx| thread_drag::drag(s, &drag_id, &drag_title, d, tx))
+        .on_drag(move |s: &mut State, d, tx| {
+            thread_drag::drag(s, &drag_computer, &drag_id, &drag_title, d, tx)
+        })
         .child(meta)
         .child(
-            // Plugins' badges end the title line, once they have landed;
-            // the title gives way to them.
+            // Plugins' badges (focused) or the quiet computer tag (peer) end
+            // the title line; the title gives way to them.
             row()
                 .w_full()
                 .gap(6.)
@@ -216,30 +235,46 @@ pub(super) fn card(
                         .truncate(),
                     ),
                 )
-                .children(crate::plugins::badges::row_badges(s, row_data)),
+                .children(if focused {
+                    crate::plugins::badges::row_badges(s, row_data)
+                } else if show_computer {
+                    vec![computer_tag(p, &entry.label, &row_key)]
+                } else {
+                    Vec::new()
+                }),
         );
-    if let Some(snippet) = message_snippet(s, row_data) {
+    if focused && let Some(snippet) = message_snippet(s, &row_id, row_data) {
         card = card.child(snippet);
     }
-    if let Some(line) = subagents::line(s, tree, row_data, false) {
+    if let Some(line) = subagents::line(s, tree, entry, false) {
         card = card.child(line);
     }
-    // A resorted row glides to its new place. Not `card-{id}`: that is the list
-    // line holding it (`list::Ctx::key`).
+    // A resorted row glides to its new place. Not `card-{key}`: that is the
+    // list line holding it (`list::Ctx::key`).
     let mut out = col()
-        .key(format!("card-box-{id}"))
+        .key(format!("card-box-{row_key}"))
         .w_full()
         .motion(motion::ROW_RESORT)
         .child(card);
-    if let Some(list) = subagents::list(s, tree, row_data, now, k) {
+    if let Some(list) = subagents::list(s, tree, entry, now, k) {
         out = out.child(list);
     }
     out
 }
 
+/// Quiet muted text tag for a row from another computer (flat look: no fill,
+/// no border, no new colour).
+fn computer_tag(p: &Palette, label: &str, row_key: &str) -> El {
+    el().key(format!("computer-tag-{row_key}"))
+        .max_w(84.)
+        .min_w(0.0)
+        .shrink()
+        .child(t(label.to_string(), XS, p.text_faint).truncate())
+}
+
 /// Under a row that matched by message text (not by its title): the
 /// matching snippet; a click opens the thread at that message.
-fn message_snippet(s: &State, row_data: &InboxRow) -> Option<El> {
+fn message_snippet(s: &State, row_id: &RowId, row_data: &InboxRow) -> Option<El> {
     let query = s.workspace.inbox.query();
     if query.is_empty() || title_of(row_data).to_lowercase().contains(&query) {
         return None;
@@ -251,7 +286,7 @@ fn message_snippet(s: &State, row_data: &InboxRow) -> Option<El> {
     let p = &s.palette;
     let (thread_id, message_id) = (row_data.thread_id.clone(), hit.message_id.clone());
     Some(
-        el().key(format!("row-hit-{}", row_data.thread_id))
+        el().key(format!("row-hit-{}", row_id.key()))
             .w_full()
             .min_w(0.0)
             .child(message_search::snippet_text(p, hit, design::SIDEBAR_META_SIZE).truncate())
@@ -262,8 +297,8 @@ fn message_snippet(s: &State, row_data: &InboxRow) -> Option<El> {
 }
 
 /// The snooze menu's key; its button is keyed `{key}-trigger`.
-fn snooze_key(thread_id: &str) -> String {
-    format!("snooze-{thread_id}")
+fn snooze_key(id: &RowId) -> String {
+    format!("snooze-{}", id.key())
 }
 
 /// The open snooze menu as rune-kit's `Menu`, under its card's alarm
@@ -283,7 +318,7 @@ pub(super) fn snooze_menu(s: &State, k: &Kit, layer: &mut Vec<El>) {
         let id = id.clone();
         menu = menu.item(
             rune_kit::MenuItem::new(label).on_select(move |s: &mut State| {
-                mark(s, id.clone(), InboxAction::Snooze, Some(until))
+                mark_row(s, id.clone(), InboxAction::Snooze, Some(until))
             }),
         );
     }
@@ -295,20 +330,20 @@ pub(super) fn snooze_menu(s: &State, k: &Kit, layer: &mut Vec<El>) {
 pub(super) fn slim(
     s: &State,
     tree: &Tree,
-    row_data: &InboxRow,
+    entry: &Entry<'_>,
     active: bool,
+    show_computer: bool,
     now: i64,
     k: &Kit,
 ) -> El {
     let p = &s.palette;
-    let id = row_data.thread_id.clone();
-    let name = s
-        .workspace
-        .inbox
-        .profile(&row_data.profile_id)
-        .map_or_else(|| row_data.profile_id.clone(), |p| p.display_name.clone());
+    let row_data = entry.row;
+    let row_id = entry.id.clone();
+    let row_key = row_id.key();
+    let focused = entry.focused;
+    let name = entry.profile_name();
     let snoozed = row_data.state == InboxState::Snoozed;
-    let unread = s.workspace.inbox.unread.contains(&id);
+    let unread = s.workspace.inbox.unread.contains(&row_id);
     let label = match (snoozed, row_data.snooze_until) {
         (true, Some(at)) => wake_label(at),
         _ => short_age(
@@ -316,8 +351,13 @@ pub(super) fn slim(
             now,
         ),
     };
-    let (undo_id, delete_id, open_id, menu_id) = (id.clone(), id.clone(), id.clone(), id.clone());
-    let warm_id = id.clone();
+    let (undo_id, delete_id, open_id, menu_id) = (
+        row_id.clone(),
+        row_id.clone(),
+        row_id.clone(),
+        row_id.clone(),
+    );
+    let warm_id = row_data.thread_id.clone();
     let undo_label = if snoozed {
         "Wake now"
     } else {
@@ -343,7 +383,7 @@ pub(super) fn slim(
                 } else {
                     InboxAction::Unsettle
                 };
-                mark(s, undo_id.clone(), action, None)
+                mark_row(s, undo_id.clone(), action, None)
             },
         ));
     if !snoozed {
@@ -352,7 +392,7 @@ pub(super) fn slim(
             &icons::DELETE,
             "Delete conversation",
             ControlSize::Mini,
-            move |s| crate::workspace::delete_thread(s, delete_id.clone()),
+            move |s| delete_row(s, delete_id.clone()),
         ));
     }
     let mut when = row().gap(4.).center_y().group_opacity(1., 0.);
@@ -360,8 +400,8 @@ pub(super) fn slim(
         when = when.child(ui::glyph(&icons::ALARM_CLOCK, 12., p.accent));
     }
     when = when.child(t(label, XS, if snoozed { p.accent } else { p.text_faint }));
-    let slim = row()
-        .key(format!("slim-row-{id}"))
+    let mut slim = row()
+        .key(format!("slim-row-{row_key}"))
         .role("button")
         .label(title_of(row_data).to_string())
         .w_full()
@@ -384,13 +424,15 @@ pub(super) fn slim(
         .hover_group()
         .hover_motion(motion::HOVER, motion::HOVER)
         .press_scale(motion::PRESS_CARD)
-        .on_press(move |s: &mut State| crate::workspace::open_thread(s, open_id.clone()))
+        .on_press(move |s: &mut State| open_row(s, &open_id))
         .on_secondary_press(move |s: &mut State, at, tx| {
             crate::workspace::inbox::open_row_menu(s, &menu_id, at, tx)
         })
-        // Resting on it warms the thread for the click (`chat::prewarm`).
+        // Resting on it warms the thread for the click (`chat::prewarm`, focused only).
         .on_hover_change(move |s: &mut State, inside, tx| {
-            crate::chat::prewarm::hover(s, &warm_id, inside, tx)
+            if focused {
+                crate::chat::prewarm::hover(s, &warm_id, inside, tx);
+            }
         })
         .child(
             el().opacity(0.4)
@@ -406,14 +448,17 @@ pub(super) fn slim(
                 )
                 .truncate(),
             ),
-        )
-        .child(el().child(when).child(buttons));
-    let line = subagents::line(s, tree, row_data, true);
-    let list = subagents::list(s, tree, row_data, now, k);
+        );
+    if show_computer {
+        slim = slim.child(computer_tag(p, &entry.label, &row_key));
+    }
+    let slim = slim.child(el().child(when).child(buttons));
+    let line = subagents::line(s, tree, entry, true);
+    let list = subagents::list(s, tree, entry, now, k);
     // Always in its box, so a subagent line arriving never re-parents the
-    // row (that would remount it). Not `slim-{id}`: that is the list line.
+    // row (that would remount it). Not `slim-{key}`: that is the list line.
     let mut out = col()
-        .key(format!("slim-box-{id}"))
+        .key(format!("slim-box-{row_key}"))
         .w_full()
         .motion(motion::ROW_RESORT)
         .child(slim);
@@ -492,18 +537,29 @@ pub(in crate::workspace) fn branch_label(p: &Palette, branch: &str) -> El {
 /// shows no Done or Woke: the person is looking at it.
 pub(in crate::workspace) fn status_label(
     s: &State,
+    row_id: &RowId,
+    focused: bool,
     row_data: &InboxRow,
     active: bool,
     now: i64,
 ) -> El {
     let p = &s.palette;
-    let status = s
-        .workspace
-        .inbox
-        .shown_status(row_data)
-        .filter(|st| !(active && matches!(st, InboxStatus::Done | InboxStatus::Woke)));
-    let key = format!("status-{}-{:?}", row_data.thread_id, status);
+    let raw_status = if focused {
+        s.workspace.inbox.shown_status(row_data)
+    } else {
+        row_data.status
+    };
+    let status =
+        raw_status.filter(|st| !(active && matches!(st, InboxStatus::Done | InboxStatus::Woke)));
+    let key = format!("status-{}-{:?}", row_id.key(), status);
     let plain = |text: String, color: Color| t(text, XS, color);
+    let elapsed_secs = if focused {
+        crate::run_clock::elapsed(s, &row_data.thread_id)
+    } else {
+        row_data
+            .working_since
+            .map(|since| ((now - since).max(0) / 1000) as u64)
+    };
     let body =
         match status {
             Some(InboxStatus::Working) => row()
@@ -511,7 +567,7 @@ pub(in crate::workspace) fn status_label(
                 .center_y()
                 .child(pulse_dots(p.accent))
                 .child(t(
-                    match crate::run_clock::elapsed(s, &row_data.thread_id) {
+                    match elapsed_secs {
                         Some(secs) => format!("Working {}", format_elapsed(secs)),
                         None => "Working".into(),
                     },

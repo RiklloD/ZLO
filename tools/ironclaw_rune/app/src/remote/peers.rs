@@ -250,6 +250,41 @@ pub fn refresh(s: &mut State) {
     }
 }
 
+/// Re-read one ready peer's inbox and notifications now.
+pub fn refresh_one(s: &mut State, key: &str) {
+    if s.fixture {
+        return;
+    }
+    io::refresh_peer(s, key);
+}
+
+/// Apply an updated inbox list returned by a mark on `key` and re-arm its
+/// working-row poll when needed.
+pub fn apply_inbox(s: &mut State, key: &str, list: InboxListResponse, tx: &mut Tx) {
+    let arm_poll = s.workspace.window_active && !crate::design::look::saving(s);
+    let Some(peer) = s.remote.peers.get_mut(key) else {
+        return;
+    };
+    peer.inbox = Some(list);
+    if arm_poll && peer_needs_poll(peer) {
+        if peer.poll_at.is_none() {
+            peer.poll_at = Some(Instant::now() + POLL);
+            tx.wake_after(POLL);
+        }
+    } else {
+        peer.poll_at = None;
+    }
+}
+
+/// Remove a deleted thread from `key`'s cached inbox list.
+pub fn remove_row(s: &mut State, key: &str, thread_id: &str) {
+    if let Some(peer) = s.remote.peers.get_mut(key)
+        && let Some(inbox) = peer.inbox.as_mut()
+    {
+        inbox.rows.retain(|r| r.thread_id != thread_id);
+    }
+}
+
 /// The module's share of the app poll: retries and the working-row poll.
 /// Returns `true` when peer state changed.
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {

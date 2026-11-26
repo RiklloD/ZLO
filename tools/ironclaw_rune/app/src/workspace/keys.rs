@@ -188,8 +188,8 @@ pub(super) fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         if in_settings(s) {
             return false;
         }
-        if let Some(id) = inbox::jump_target(s, n as usize) {
-            super::open_thread(s, id);
+        if let Some(target) = inbox::jump_target(s, n as usize) {
+            inbox::open_row(s, &target);
             return true;
         }
     }

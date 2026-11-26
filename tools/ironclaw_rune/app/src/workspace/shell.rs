@@ -263,10 +263,7 @@ fn confirm_delete(s: &State, k: &Kit, layer: &mut Vec<El>) {
     let Some(id) = s.workspace.confirm_delete.clone() else {
         return;
     };
-    let title = s
-        .workspace
-        .inbox
-        .row(&id)
+    let title = super::inbox::merged::find_row(s, &id)
         .map_or("this conversation", super::row_title)
         .to_string();
     let delete_id = id.clone();
@@ -289,7 +286,7 @@ fn confirm_delete(s: &State, k: &Kit, layer: &mut Vec<El>) {
                         .variant(rune_kit::ButtonVariant::Danger)
                         .on_press(move |s: &mut State| {
                             s.workspace.confirm_delete = None;
-                            super::delete_thread(s, delete_id.clone());
+                            super::inbox::delete_row(s, delete_id.clone());
                         })
                         .build(k),
                 ),
@@ -352,7 +349,9 @@ mod tests {
             "and they come back when it closes"
         );
 
-        rt.update(|s, _| s.workspace.confirm_delete = Some("t-pin".into()));
+        rt.update(|s, _| {
+            s.workspace.confirm_delete = Some(crate::workspace::RowId::focused(s, "t-pin"))
+        });
         rt.frame(1. / 60.);
         assert!(rt.state.native.covered(), "a dialog covers them too");
     }

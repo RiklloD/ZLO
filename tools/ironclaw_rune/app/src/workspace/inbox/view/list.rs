@@ -5,22 +5,21 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use chrono::Utc;
 use rune::{El, GrowthSpec, ScrollSpec, col, el};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
 
+use super::super::merged::{self, Entry, RowId};
 use super::super::subagents::Tree;
 use super::super::{SETTLED_PAGE, shelves};
-use super::rows::{card, slim};
+use super::rows::{RowMeta, card, slim};
 use super::{fold, new_draft_card};
 use crate::design;
 use crate::design::motion;
 use crate::icons;
-use crate::state::{Page, State};
-use crate::workspace::active_id;
+use crate::state::State;
 use crate::workspace::ui::{XS, t};
 
 /// The scroll viewport's key.
@@ -91,9 +90,12 @@ enum Line {
     Searching,
     Draft,
     DraftRule,
-    /// A full card: index into `inbox.list.rows`, its ⌘N badge.
+    /// A full card: `(computer_ix, row_ix)` into focused/peer rows, its
+    /// stable `(computer, thread_id)` key, and its ⌘N badge.
     Card {
-        ix: usize,
+        computer_ix: usize,
+        row_ix: usize,
+        id: RowId,
         jump: Option<usize>,
     },
     Empty,
@@ -105,9 +107,11 @@ enum Line {
         count: usize,
         open: bool,
     },
-    /// A shelf's slim row: index into `inbox.list.rows`.
+    /// A shelf's slim row.
     Slim {
-        ix: usize,
+        computer_ix: usize,
+        row_ix: usize,
+        id: RowId,
     },
     More,
 }
@@ -116,24 +120,23 @@ enum Line {
 struct Ctx {
     lines: Vec<Line>,
     tree: Tree,
-    active: Option<String>,
+    active: Option<RowId>,
+    multi: bool,
     now: i64,
     kit: Kit,
 }
 
 impl Ctx {
-    fn key<'a>(&self, s: &'a State, i: usize) -> Cow<'a, str> {
-        let rows = &s.workspace.inbox.list.rows;
-        let id = |ix: usize| rows.get(ix).map_or("", |r| r.thread_id.as_str());
+    fn key<'a>(&self, _s: &'a State, i: usize) -> Cow<'a, str> {
         match self.lines.get(i) {
             Some(Line::Searching) => "inbox-searching".into(),
             Some(Line::Draft) => "row-new-draft".into(),
             Some(Line::DraftRule) => "draft-rule".into(),
-            Some(Line::Card { ix, .. }) => format!("card-{}", id(*ix)).into(),
+            Some(Line::Card { id, .. }) => format!("card-{}", id.key()).into(),
             Some(Line::Empty) => "inbox-empty".into(),
             Some(Line::Gap) | None => "shelf-gap".into(),
             Some(Line::Fold { key, .. }) => format!("fold-{key}").into(),
-            Some(Line::Slim { ix }) => format!("slim-{}", id(*ix)).into(),
+            Some(Line::Slim { id, .. }) => format!("slim-{}", id.key()).into(),
             Some(Line::More) => "inbox-more".into(),
         }
     }
@@ -141,9 +144,6 @@ impl Ctx {
     fn build(&self, s: &State, i: usize) -> El {
         let p = &s.palette;
         let k = &self.kit;
-        let rows = &s.workspace.inbox.list.rows;
-        let is_active =
-            |ix: usize| self.active.as_deref() == rows.get(ix).map(|r| r.thread_id.as_str());
         let body = match self.lines.get(i) {
             // It breathes on the small loaders' 15 fps clock while the
             // index catches up (still under Reduce Motion).
@@ -162,8 +162,21 @@ impl Ctx {
             ),
             Some(Line::Draft) => new_draft_card(s, k).unwrap_or_else(el),
             Some(Line::DraftRule) => el().mx(12.).my(6.).h(1.).fill(p.border),
-            Some(Line::Card { ix, jump }) => match rows.get(*ix) {
-                Some(r) => card(s, &self.tree, r, is_active(*ix), *jump, self.now, k),
+            Some(Line::Card {
+                computer_ix,
+                row_ix,
+                id,
+                jump,
+            }) => match merged::entry_at(s, *computer_ix, *row_ix) {
+                Some(entry) => {
+                    let meta = RowMeta {
+                        active: self.active.as_ref() == Some(id),
+                        jump: *jump,
+                        show_computer: self.multi && !entry.focused,
+                        now: self.now,
+                    };
+                    card(s, &self.tree, &entry, meta, k)
+                }
                 None => el(),
             },
             Some(Line::Empty) => {
@@ -178,8 +191,16 @@ impl Ctx {
                 count,
                 open,
             }) => fold(p, k, key, label, *count, *open),
-            Some(Line::Slim { ix }) => match rows.get(*ix) {
-                Some(r) => slim(s, &self.tree, r, is_active(*ix), self.now, k),
+            Some(Line::Slim {
+                computer_ix,
+                row_ix,
+                id,
+            }) => match merged::entry_at(s, *computer_ix, *row_ix) {
+                Some(entry) => {
+                    let active = self.active.as_ref() == Some(id);
+                    let show_computer = self.multi && !entry.focused;
+                    slim(s, &self.tree, &entry, active, show_computer, self.now, k)
+                }
                 None => el(),
             },
             // The next page grows in under the rows already shown.
@@ -216,13 +237,7 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
     let inbox = &s.workspace.inbox;
     let query = inbox.query();
     let sh = shelves(s);
-    let rows = &inbox.list.rows;
-    let index: HashMap<&str, usize> = rows
-        .iter()
-        .enumerate()
-        .map(|(ix, r)| (r.thread_id.as_str(), ix))
-        .collect();
-    let ix_of = |id: &str| index.get(id).copied().unwrap_or(usize::MAX);
+    let any_rows = !inbox.list.rows.is_empty() || merged::has_peer_rows(s);
     let mut lines = Vec::new();
     // Message text is searched too; say so while older chats are indexed.
     if !query.is_empty() && s.workspace.message_search.indexing(&query) {
@@ -233,17 +248,19 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
         lines.push(Line::Draft);
         lines.push(Line::DraftRule);
     }
-    let card_line = |id: &str| Line::Card {
-        ix: ix_of(id),
+    let card_line = |entry: &Entry<'_>| Line::Card {
+        computer_ix: entry.computer_ix,
+        row_ix: entry.row_ix,
+        id: entry.id.clone(),
         // The open profile menu numbers its own rows on ⌘.
         jump: (inbox.cmd_held && !crate::workspace::inbox::picker::is_open(s))
-            .then(|| sh.jump.iter().position(|j| j == id))
+            .then(|| sh.jump.iter().position(|j| j == &entry.id))
             .flatten(),
     };
-    for row in sh.pinned.iter().chain(sh.main.iter()) {
-        lines.push(card_line(&row.thread_id));
+    for entry in sh.pinned.iter().chain(sh.main.iter()) {
+        lines.push(card_line(entry));
     }
-    if sh.main.is_empty() && sh.pinned.is_empty() && sh.working.is_empty() && rows.is_empty() {
+    if sh.main.is_empty() && sh.pinned.is_empty() && sh.working.is_empty() && !any_rows {
         lines.push(Line::Empty);
     }
     // Like t3code: Working, Snoozed and Settled sit at the bottom of the
@@ -260,8 +277,8 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
             open: sh.working_open,
         });
         if sh.working_open {
-            for row in &sh.working {
-                lines.push(card_line(&row.thread_id));
+            for entry in &sh.working {
+                lines.push(card_line(entry));
             }
         }
     }
@@ -295,8 +312,10 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
             open,
         });
         if open {
-            lines.extend(items.iter().take(limit).map(|r| Line::Slim {
-                ix: ix_of(&r.thread_id),
+            lines.extend(items.iter().take(limit).map(|e| Line::Slim {
+                computer_ix: e.computer_ix,
+                row_ix: e.row_ix,
+                id: e.id.clone(),
             }));
             if items.len() > limit {
                 lines.push(Line::More);
@@ -313,10 +332,8 @@ pub(super) fn list(s: &State, k: &Kit) -> El {
     let ctx = Rc::new(Ctx {
         lines,
         tree: sh.tree,
-        active: (s.page == Page::Chat)
-            .then(|| active_id(s))
-            .flatten()
-            .map(str::to_string),
+        active: merged::active_row(s),
+        multi: merged::multi_connected(s),
         now: Utc::now().timestamp_millis(),
         kit: k.clone(),
     });

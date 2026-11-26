@@ -251,8 +251,11 @@ pub fn fixture_inbox(s: &mut State) {
     fixture_shell(s);
     s.workspace.inbox.cmd_held = true;
     s.workspace.inbox.filters_open = true;
-    s.workspace.inbox.snooze_menu = Some("t-plain".into());
-    s.workspace.inbox.unread.insert("t-plain".into());
+    s.workspace.inbox.snooze_menu = Some(super::inbox::RowId::focused(s, "t-plain"));
+    s.workspace
+        .inbox
+        .unread
+        .insert(super::inbox::RowId::focused(s, "t-plain"));
     s.workspace
         .drafts_fixture("Sketch the onboarding flow", Some("work"));
 }
@@ -373,8 +376,10 @@ pub fn fixture_inbox_subagents(s: &mut State) {
     ];
     rows.append(&mut s.workspace.inbox.list.rows);
     s.workspace.inbox.list.rows = rows;
-    s.workspace.inbox.expanded.insert("t-parent".into());
-    s.workspace.inbox.expanded.insert("t-a".into());
+    let p_id = super::inbox::RowId::focused(s, "t-parent");
+    let a_id = super::inbox::RowId::focused(s, "t-a");
+    s.workspace.inbox.expanded.insert(p_id);
+    s.workspace.inbox.expanded.insert(a_id);
     open(s, "t-b");
 }
 
@@ -651,4 +656,97 @@ pub fn fixture_computers_default_pref(s: &mut State) {
     use crate::pages::computers::fixtures::STUDIO;
     crate::pages::computers::fixtures::computers(s);
     s.prefs.default_computer = Some(STUDIO.into());
+}
+
+// ── Stage 2a: one sidebar across computers ───────────────────────────────
+
+/// Two computers connected (This Mac focused, Studio as a ready peer): rows
+/// merged by recency across Pinned, Inbox, Working, Snoozed and Settled, with
+/// quiet computer tags on Studio's rows.
+pub fn fixture_inbox_two_computers(s: &mut State) {
+    use crate::onboarding::gateway::Computer;
+    use crate::pages::computers::fixtures::STUDIO;
+    use crate::remote::peers::{Peer, PeerConn};
+    fixture_shell(s);
+    let now = Utc::now().timestamp_millis();
+    let mut studio_pin = row(
+        "s-pin",
+        "Benchmark the CUDA runner",
+        "infra",
+        InboxState::Pinned,
+        15,
+    );
+    studio_pin.worktree_branch = Some("feat/cuda-runner".into());
+    let mut studio_needs = row(
+        "s-needs",
+        "Review the Linux release build",
+        "infra",
+        InboxState::Inbox,
+        3,
+    );
+    studio_needs.status = Some(InboxStatus::NeedsInput);
+    let mut studio_work = row(
+        "s-work",
+        "Index the monorepo symbols",
+        "infra",
+        InboxState::Working,
+        1,
+    );
+    studio_work.status = Some(InboxStatus::Working);
+    studio_work.working_since = Some(now - 92_000);
+    let mut studio_done = row(
+        "s-done",
+        "Run the nightly fuzz targets",
+        "default",
+        InboxState::Inbox,
+        20,
+    );
+    studio_done.status = Some(InboxStatus::Done);
+    let mut studio_settled = row(
+        "s-settled",
+        "Upgrade the staging Postgres image",
+        "infra",
+        InboxState::Settled,
+        1400,
+    );
+    studio_settled.settled_at = Some(now - 43_200_000);
+    let mut peer = Peer::fixture(Computer::remote(STUDIO, "Studio"), PeerConn::Ready);
+    peer.inbox = Some(InboxListResponse {
+        rows: vec![
+            studio_pin,
+            studio_needs,
+            studio_done,
+            studio_work,
+            studio_settled,
+        ],
+        profiles: vec![
+            InboxProfile {
+                profile_id: "default".into(),
+                display_name: "Default".into(),
+                git_branch: None,
+                last_used_at: None,
+            },
+            InboxProfile {
+                profile_id: "infra".into(),
+                display_name: "Infra".into(),
+                git_branch: Some("main".into()),
+                last_used_at: None,
+            },
+        ],
+        last_used_profile_id: Some("infra".into()),
+    });
+    s.remote.peers.insert_fixture(peer);
+}
+
+/// One computer connected, one peer asleep: quiet status line at the sidebar's
+/// foot ("Studio is asleep"), no computer tags on the focused rows.
+pub fn fixture_inbox_peer_asleep(s: &mut State) {
+    use crate::onboarding::gateway::Computer;
+    use crate::pages::computers::fixtures::STUDIO;
+    use crate::remote::peers::{Peer, PeerConn};
+    fixture_shell(s);
+    s.remote.peers.insert_fixture(Peer::fixture(
+        Computer::remote(STUDIO, "Studio"),
+        PeerConn::Asleep,
+    ));
 }
