@@ -238,6 +238,12 @@ impl SourceSelfUpdate {
             return Err(SelfUpdateError::NotConfigured);
         }
         let spawner = self.spawner.as_ref().ok_or(SelfUpdateError::Unavailable)?;
+        // A download is installed only over the build it was made for
+        // (`StagedRecord::offer`); a build that does not know its commit
+        // could never be matched, so it updates in one go.
+        if job == UpdateJob::Download && self.build.commit.is_none() {
+            return Err(SelfUpdateError::DownloadUnsupported);
+        }
         if job == UpdateJob::Install
             && self
                 .status_blocking()
@@ -592,6 +598,27 @@ mod tests {
             .expect("staged");
             assert_eq!(routes.status().await.expect("status").staged, None);
         }
+    }
+
+    #[tokio::test]
+    async fn a_build_without_its_commit_updates_in_one_go() {
+        let home = tempfile::tempdir().expect("home");
+        let spawner = Arc::new(RecordingSpawner::default());
+        let routes = SelfUpdateRoutes(Arc::new(SourceSelfUpdate::with_spawner(
+            home.path(),
+            Some(SourceUpdateSettings {
+                repo: home.path().to_path_buf(),
+                branch: None,
+            }),
+            build(None),
+            spawner.clone(),
+        )));
+        assert_eq!(
+            routes.download().await.expect_err("no commit"),
+            SelfUpdateError::DownloadUnsupported
+        );
+        assert_eq!(*spawner.spawned.lock().expect("lock"), 0);
+        routes.start().await.expect("a whole update still starts");
     }
 
     #[tokio::test]

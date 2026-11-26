@@ -45,12 +45,31 @@ use super::records::{self, RunRecord, StagedRecord, UpdatePaths};
 const BUILT_BINARY: &str = "target/release/zlo";
 /// Where `bundle.sh --no-install` leaves the app.
 const BUILT_APP: &str = "tools/ironclaw_rune/target/ZLO.app";
-/// The scripts that swap a built ZLO.app in (quit, replace, reopen), staged
-/// with the app so the install never depends on the checkout's state then.
-const INSTALL_SCRIPTS: [&str; 2] = [
-    "tools/ironclaw_rune/install_app.sh",
-    "tools/ironclaw_rune/running.sh",
-];
+/// The scripts that swap a built ZLO.app in (quit, replace, reopen), as
+/// this updater was built with them: written next to the staged app at
+/// install time, so the install depends neither on the checkout (moved,
+/// deleted, or on a branch with older scripts) nor on what it built.
+/// macOS only, where a ZLO.app exists (and a container build of the
+/// backend, which copies only `crates/`, never reads `tools/`).
+#[cfg(target_os = "macos")]
+fn install_scripts() -> &'static [(&'static str, &'static str)] {
+    &[
+        (
+            "install_app.sh",
+            include_str!("../../../../../../tools/ironclaw_rune/install_app.sh"),
+        ),
+        (
+            "running.sh",
+            include_str!("../../../../../../tools/ironclaw_rune/running.sh"),
+        ),
+    ]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_scripts() -> &'static [(&'static str, &'static str)] {
+    &[]
+}
+
 /// Tells `running.sh` the pid of the detached updater, where its walk up
 /// the process tree stops: the ZLO above it is what the install quits.
 const UPDATER_PID_ENV: &str = "ZLO_UPDATER_PID";
@@ -146,7 +165,6 @@ pub(crate) trait UpdateHost {
     fn install_staged(
         &self,
         kind: &InstallKind,
-        repo: &Path,
         staging: &Path,
         log: &std::fs::File,
     ) -> anyhow::Result<()>;
@@ -357,13 +375,8 @@ fn install(
     };
     let short = short(&staged.commit).to_string();
     step(record, &format!("Installing {short}; restarting"), log)?;
-    host.install_staged(
-        &input.install,
-        &input.settings.repo,
-        &input.paths.staged_dir(),
-        log,
-    )
-    .map_err(|e| anyhow::anyhow!("Installing {short} failed: {e:#}. See the log."))?;
+    host.install_staged(&input.install, &input.paths.staged_dir(), log)
+        .map_err(|e| anyhow::anyhow!("Installing {short} failed: {e:#}. See the log."))?;
     // Installed: the staged copy is spent (the install copied it).
     records::clear_staged(input.paths)?;
     let restarted = host
@@ -662,16 +675,7 @@ impl UpdateHost for SystemUpdateHost {
                 // signature intact.
                 let mut copy = Self::command("/usr/bin/ditto", repo, log)?;
                 copy.arg(&built).arg(staging.join("ZLO.app"));
-                run_checked(copy, "ditto")?;
-                for script in INSTALL_SCRIPTS {
-                    let from = repo.join(script);
-                    let name = from
-                        .file_name()
-                        .ok_or_else(|| anyhow::anyhow!("{script} has no file name"))?;
-                    std::fs::copy(&from, staging.join(name))
-                        .with_context(|| format!("stage {}", from.display()))?;
-                }
-                Ok(())
+                run_checked(copy, "ditto")
             }
             InstallKind::Binary { target } => {
                 refuse_symlinked_binary(target)?;
@@ -686,7 +690,6 @@ impl UpdateHost for SystemUpdateHost {
     fn install_staged(
         &self,
         kind: &InstallKind,
-        repo: &Path,
         staging: &Path,
         log: &std::fs::File,
     ) -> anyhow::Result<()> {
@@ -696,13 +699,17 @@ impl UpdateHost for SystemUpdateHost {
                 if !built.is_dir() {
                     anyhow::bail!("the downloaded app is missing ({})", built.display());
                 }
-                // The scripts staged with the app, never the checkout's
-                // (it may have moved on, or back, since the download).
-                let script = staging.join("install_app.sh");
-                if !script.is_file() || !staging.join("running.sh").is_file() {
-                    anyhow::bail!("the downloaded update is missing its install script");
+                // This updater's own scripts, run from the staging folder:
+                // nothing here reads the checkout.
+                if install_scripts().is_empty() {
+                    anyhow::bail!("ZLO.app installs only on macOS");
                 }
-                let mut command = Self::command("/bin/sh", repo, log)?;
+                for (name, text) in install_scripts() {
+                    std::fs::write(staging.join(name), text)
+                        .with_context(|| format!("write {name} to {}", staging.display()))?;
+                }
+                let script = staging.join("install_app.sh");
+                let mut command = Self::command("/bin/sh", staging, log)?;
                 command
                     .arg(script)
                     .arg(&built)
@@ -772,7 +779,6 @@ mod tests {
         fn install_staged(
             &self,
             _kind: &InstallKind,
-            _repo: &Path,
             staging: &Path,
             _log: &std::fs::File,
         ) -> anyhow::Result<()> {
@@ -874,7 +880,7 @@ mod tests {
         std::fs::create_dir_all(&staging).expect("staging");
         std::fs::write(staging.join("zlo"), b"new").expect("staged");
         let err = SystemUpdateHost
-            .install_staged(&kind, dir.path(), &staging, &log)
+            .install_staged(&kind, &staging, &log)
             .expect_err("refused");
         assert!(err.to_string().contains("is a symlink"), "{err}");
         assert!(

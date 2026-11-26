@@ -31,7 +31,13 @@ mkdir -p "$parent"
 # rename), while the old ZLO still runs: a full disk or a crash here leaves
 # the installed app untouched.
 new="$parent/.$name.app.new.$$"
-old="$parent/.$name.app.old.$$"
+# A fixed name: a run killed between the two renames below left the
+# installed app here, and the next run puts it back before anything else.
+old="$parent/.$name.app.old"
+if [ ! -e "$dest" ] && [ -d "$old/Contents/MacOS" ]; then
+  mv "$old" "$dest"
+fi
+rm -rf "$old"
 trap 'rm -rf "$new"' EXIT
 rm -rf "$new"
 cp -R "$src" "$new"

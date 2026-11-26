@@ -81,6 +81,9 @@ pub enum SelfUpdateError {
     /// An install was asked for, but nothing is downloaded.
     #[error("no downloaded update to install")]
     NothingStaged,
+    /// This build cannot download now and install later.
+    #[error("this build updates in one go")]
+    DownloadUnsupported,
     /// The update records or the job could not be read or started; the
     /// implementor logged the cause.
     #[error("self-update is unavailable")]
@@ -161,6 +164,11 @@ fn service_error(error: SelfUpdateError) -> Response {
             StatusCode::CONFLICT,
             UpdateErrorCode::NothingStaged.as_str(),
             "No update is downloaded on this machine. Download it first.".into(),
+        ),
+        SelfUpdateError::DownloadUnsupported => error_response(
+            StatusCode::CONFLICT,
+            UpdateErrorCode::DownloadUnsupported.as_str(),
+            "This build does not know its commit, so it updates in one go.".into(),
         ),
         SelfUpdateError::CheckFailed(message) => error_response(
             StatusCode::BAD_GATEWAY,

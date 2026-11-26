@@ -57,6 +57,11 @@ fn classify(status: u16, text: &str) -> UpdateCallError {
     match (status, code) {
         (401, _) => UpdateCallError::Unauthorized,
         (404 | 405, _) => UpdateCallError::TooOld,
+        // Can update, just not in two steps: the same path as a backend
+        // from before the download route.
+        (_, Some(c)) if c == UpdateErrorCode::DownloadUnsupported.as_str() => {
+            UpdateCallError::TooOld
+        }
         (_, Some(c)) if c == UpdateErrorCode::NotConfigured.as_str() => {
             UpdateCallError::NotSetUp(message)
         }
@@ -221,6 +226,11 @@ mod tests {
                 UpdateCallError::Refused("Download it first.".into()),
             ),
             (404, "", UpdateCallError::TooOld),
+            (
+                409,
+                r#"{"error":"download_unsupported","message":"one go"}"#,
+                UpdateCallError::TooOld,
+            ),
             (401, "", UpdateCallError::Unauthorized),
         ] {
             let (url, _) = serve(status, body).await;

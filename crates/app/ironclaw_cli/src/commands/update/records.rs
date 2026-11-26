@@ -217,11 +217,12 @@ impl StagedRecord {
     /// What the wire offers while `running` runs: the staged build, when
     /// it was downloaded over exactly this build and is not this build.
     pub(crate) fn offer(&self, running: Option<&str>) -> Option<StagedUpdate> {
-        (self.base.as_deref() == running && running != Some(self.commit.as_str())).then(|| {
-            StagedUpdate {
-                commit: self.commit.clone(),
-                staged_at: self.staged_at,
-            }
+        // A build that does not know its commit cannot tell an older
+        // download from a newer one: nothing is offered over it.
+        let running = running?;
+        (self.base.as_deref() == Some(running) && running != self.commit).then(|| StagedUpdate {
+            commit: self.commit.clone(),
+            staged_at: self.staged_at,
         })
     }
 }
@@ -464,7 +465,12 @@ mod tests {
             None,
             "something else was installed since: installing it could go backwards"
         );
-        assert_eq!(staged.offer(None), None);
+        assert_eq!(staged.offer(None), None, "a build without a commit");
+        let unstamped = StagedRecord {
+            base: None,
+            ..staged.clone()
+        };
+        assert_eq!(unstamped.offer(None), None);
         clear_staged(&paths).expect("clear");
         assert_eq!(read_staged(&paths).expect("read"), None);
         assert!(!paths.staged_dir().exists());

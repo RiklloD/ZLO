@@ -162,6 +162,9 @@ pub enum UpdateErrorCode {
     NoCheckout,
     /// An install was asked for, but nothing is downloaded.
     NothingStaged,
+    /// This build cannot download and install later (it does not know its
+    /// own commit); it updates in one go ([`OPERATOR_UPDATE_PATH`]).
+    DownloadUnsupported,
 }
 
 impl UpdateErrorCode {
@@ -172,6 +175,7 @@ impl UpdateErrorCode {
             Self::CheckFailed => "check_failed",
             Self::NoCheckout => "no_checkout",
             Self::NothingStaged => "nothing_staged",
+            Self::DownloadUnsupported => "download_unsupported",
         }
     }
 }
