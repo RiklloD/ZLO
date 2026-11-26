@@ -964,18 +964,21 @@ pub(crate) fn multiple_computers_connected(s: &State) -> bool {
     (usize::from(focused_ready) + peer_ready) > 1
 }
 
+/// Clear focused-computer workspace state that must not carry across a
+/// computer switch (called from `remote::connect::reset_for_switch`).
+pub(crate) fn reset_for_switch(s: &mut State) {
+    s.workspace.message_search.reset_for_switch();
+    s.workspace.inbox.sent.clear();
+    s.workspace.thread_drag.reset_for_switch();
+}
+
 /// Recompute the bell badge count from the focused computer plus every ready
-/// peer's unread notifications.
+/// peer's server-reported unread total.
 pub(crate) fn sync_unread(s: &mut State) {
     let peer_unread: usize = crate::remote::peers::list(s)
         .into_iter()
         .filter(|p| p.conn == crate::remote::peers::PeerConn::Ready)
-        .map(|p| {
-            p.notifications
-                .iter()
-                .filter(|n| n.read_at.is_none())
-                .count()
-        })
+        .map(|p| p.unread_count)
         .sum();
     s.workspace.unread = s.workspace.focused_unread + peer_unread;
 }
@@ -983,6 +986,7 @@ pub(crate) fn sync_unread(s: &mut State) {
 /// A ready peer's unread notifications page landed (`remote::peers_io`):
 /// prime or post system notifications for new items and update the bell count.
 pub(crate) fn peer_notifications_landed(s: &mut State, key: &str) {
+    crate::pages::notifications::peer_list_landed(s, key);
     let Some(peer) = crate::remote::peers::get(s, key) else {
         sync_unread(s);
         return;
@@ -1095,7 +1099,7 @@ pub fn alert_clicked(s: &mut State, tag: &str) {
     let Some(id) = target.notification_id else {
         return;
     };
-    if s.onboarding.computer.key() == target.computer {
+    if s.onboarding.computer.key() == target.computer && matches!(s.conn, Conn::Ready) {
         jobs::run(
             s,
             "notifications",

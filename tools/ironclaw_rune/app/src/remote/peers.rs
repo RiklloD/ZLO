@@ -51,6 +51,9 @@ pub struct Peer {
     pub session: Option<SessionInfo>,
     pub inbox: Option<InboxListResponse>,
     pub notifications: Vec<ProductNotification>,
+    /// Total unread notifications reported by this peer's gateway (covers
+    /// older unread items beyond the latest page in `notifications`).
+    pub unread_count: usize,
     /// Cached computer-use readiness, probed on demand (never on a timer).
     pub computer_readiness: Option<ComputerUseReadiness>,
     computer_readiness_probed: bool,
@@ -77,6 +80,7 @@ impl Peer {
             session: None,
             inbox: None,
             notifications: Vec::new(),
+            unread_count: 0,
             computer_readiness: None,
             computer_readiness_probed: false,
             backend: None,
@@ -581,7 +585,9 @@ fn handover(s: &mut State, key: &str) {
     let old_tunnel = s.remote.tunnel.take();
     let old_route_rank = s.remote.route_rank;
     let old_readiness = s.remote.focused_computer_readiness.take();
+    let old_unread = s.workspace.focused_unread;
     let peer_readiness = peer.computer_readiness.take();
+    let peer_unread = peer.unread_count;
     if matches!(s.conn, Conn::Ready)
         && let (Some(b), Some(sess)) = (old_backend, old_session)
     {
@@ -589,6 +595,7 @@ fn handover(s: &mut State, key: &str) {
         demoted.backend = Some(b);
         demoted.session = Some(sess);
         demoted.inbox = Some(old_inbox);
+        demoted.unread_count = old_unread;
         demoted.computer_readiness = old_readiness;
         demoted.computer_readiness_probed = demoted.computer_readiness.is_some();
         demoted.descriptor = old_descriptor;
@@ -621,6 +628,7 @@ fn handover(s: &mut State, key: &str) {
         &mut tx,
     );
     s.remote.focused_computer_readiness = peer_readiness;
+    crate::workspace::set_unread(s, peer_unread);
     // 4. `connect::switched` runs `peers::sync(s)` and reopens `last_thread`.
 }
 

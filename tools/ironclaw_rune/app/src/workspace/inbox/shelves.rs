@@ -30,12 +30,16 @@ pub(in crate::workspace) fn shelves(s: &State) -> Shelves<'_> {
     let query = inbox.query();
     let multi = merged::multi_connected(s);
     let merge_sort = merged::has_peer_rows(s);
-    let side_chats: std::collections::HashSet<&str> = s
+    let side_chats: std::collections::HashSet<(&str, &str)> = s
         .prefs
         .side_chats
-        .values()
-        .flatten()
-        .map(String::as_str)
+        .iter()
+        .flat_map(|(k, children)| {
+            let computer = k
+                .split_once('~')
+                .map_or(zlo_client::environments::THIS_MAC, |(c, _)| c);
+            children.iter().map(move |child| (computer, child.as_str()))
+        })
         .collect();
     let search = &s.workspace.message_search;
     let entries: Vec<Entry<'_>> = merged::entries(s)
@@ -48,10 +52,11 @@ pub(in crate::workspace) fn shelves(s: &State) -> Shelves<'_> {
                     && search.hit(&query, &e.row.thread_id).is_some()
                     && merged::matches_entry(s, e, "", multi))
         })
-        // Side chats live under their parent on the focused computer; a search
+        // Side chats live under their parent on their own computer; a search
         // still finds them.
         .filter(|e| {
-            !e.focused || !query.is_empty() || !side_chats.contains(e.row.thread_id.as_str())
+            !query.is_empty()
+                || !side_chats.contains(&(e.id.computer.as_str(), e.row.thread_id.as_str()))
         })
         .collect();
     // Subagents fold under their parent on the same computer; the rest of the

@@ -3,7 +3,7 @@
 
 use rune::{Cursor, Cx, El, col, el, row};
 use rune_kit::Kit;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use rune::Tx;
 use zlo_client::notification_inbox::{
@@ -46,10 +46,9 @@ pub struct NotificationsState {
     /// The person's changes the view already shows (so they ride the
     /// click) while the gateway has not confirmed them, by what they change.
     pending: HashMap<Change, Pending>,
-    /// Optimistically archived peer notifications: `(computer_key, id)`.
-    peer_archived: HashSet<(String, String)>,
-    /// Optimistically read peer notifications: `(computer_key, id)`.
-    peer_read: HashSet<(String, String)>,
+    /// Optimistic peer changes in flight or confirmed awaiting the peer's next
+    /// notifications read.
+    peer_pending: HashMap<PeerChange, Pending>,
     /// The listing whose answer may land; every newer listing or change
     /// replaces it, so an older answer never overwrites newer state.
     list_gen: jobs::Generation,
@@ -61,6 +60,24 @@ enum Change {
     Archive(String),
     Read(String),
     ReadAll,
+}
+
+/// One optimistic change on a background peer's notifications.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum PeerChange {
+    Archive { computer: String, id: String },
+    Read { computer: String, id: String },
+    ReadAll { computer: String },
+}
+
+impl PeerChange {
+    fn computer(&self) -> &str {
+        match self {
+            PeerChange::Archive { computer, .. }
+            | PeerChange::Read { computer, .. }
+            | PeerChange::ReadAll { computer } => computer,
+        }
+    }
 }
 
 /// A change in flight, or confirmed and waiting for a listing that shows it.
@@ -84,6 +101,50 @@ impl NotificationsState {
             && !self.pending.contains_key(&Change::ReadAll)
             && !self.pending.contains_key(&Change::Read(n.id.clone()))
     }
+
+    fn peer_archived(&self, computer: &str, id: &str) -> bool {
+        self.peer_pending.contains_key(&PeerChange::Archive {
+            computer: computer.to_string(),
+            id: id.to_string(),
+        })
+    }
+
+    fn peer_unread(&self, computer: &str, item: &ProductNotification) -> bool {
+        item.read_at.is_none()
+            && !self.peer_pending.contains_key(&PeerChange::ReadAll {
+                computer: computer.to_string(),
+            })
+            && !self.peer_pending.contains_key(&PeerChange::Read {
+                computer: computer.to_string(),
+                id: item.id.clone(),
+            })
+    }
+
+    fn peer_has_unread(&self, peer: &crate::remote::peers::Peer) -> bool {
+        if peer.conn != crate::remote::peers::PeerConn::Ready {
+            return false;
+        }
+        let key = peer.computer.key();
+        if self.peer_pending.contains_key(&PeerChange::ReadAll {
+            computer: key.clone(),
+        }) {
+            return false;
+        }
+        peer.unread_count > 0
+            || peer
+                .notifications
+                .iter()
+                .any(|n| !self.peer_archived(&key, &n.id) && self.peer_unread(&key, n))
+    }
+}
+
+/// A peer's notifications listing landed: drop any confirmed optimistic peer
+/// changes for `computer` now that the server's updated list carries them.
+pub(crate) fn peer_list_landed(s: &mut State, computer: &str) {
+    s.pages
+        .notifications
+        .peer_pending
+        .retain(|change, p| !(change.computer() == computer && p.confirmed));
 }
 
 /// The page became visible: load on first visit, refresh after.
@@ -272,36 +333,31 @@ fn archive(s: &mut State, id: String) {
 }
 
 fn mark_all_read(s: &mut State) {
-    mutate(s, Change::ReadAll, |c| async move {
-        c.mark_all_notifications_read().await
-    });
+    let focused_has_unread = s.workspace.focused_unread > 0
+        || s.pages
+            .notifications
+            .shown()
+            .any(|n| s.pages.notifications.unread(n));
+    if focused_has_unread {
+        mutate(s, Change::ReadAll, |c| async move {
+            c.mark_all_notifications_read().await
+        });
+    }
     let peer_keys: Vec<String> = crate::remote::peers::list(s)
         .into_iter()
         .filter(|p| {
             p.conn == crate::remote::peers::PeerConn::Ready
-                && p.notifications.iter().any(|n| n.read_at.is_none())
+                && (p.unread_count > 0 || p.notifications.iter().any(|n| n.read_at.is_none()))
         })
         .map(|p| p.computer.key())
         .collect();
     for key in peer_keys {
-        let ids: Vec<String> = crate::remote::peers::get(s, &key)
-            .map(|p| {
-                p.notifications
-                    .iter()
-                    .filter(|n| n.read_at.is_none())
-                    .map(|n| n.id.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        for id in ids {
-            s.pages.notifications.peer_read.insert((key.clone(), id));
-        }
-        crate::remote::peers::run(
+        mutate_peer(
             s,
-            &key,
-            "notifications",
+            PeerChange::ReadAll {
+                computer: key.clone(),
+            },
             |c| async move { c.mark_all_notifications_read().await },
-            |s, _, _| crate::remote::peers::refresh(s),
         );
     }
 }
@@ -309,12 +365,6 @@ fn mark_all_read(s: &mut State) {
 /// Open a notification belonging to a background peer: focus that computer
 /// (and its thread when the notification names one) and mark it read.
 fn open_peer(s: &mut State, computer: String, id: String, thread: Option<String>, unread: bool) {
-    if unread {
-        s.pages
-            .notifications
-            .peer_read
-            .insert((computer.clone(), id.clone()));
-    }
     if let Some(thread) = thread {
         crate::remote::peers::focus_thread(s, &computer, thread);
     } else {
@@ -323,7 +373,7 @@ fn open_peer(s: &mut State, computer: String, id: String, thread: Option<String>
     if !unread {
         return;
     }
-    if s.onboarding.computer.key() == computer {
+    if s.onboarding.computer.key() == computer && matches!(s.conn, crate::state::Conn::Ready) {
         jobs::run(
             s,
             "notifications",
@@ -331,37 +381,78 @@ fn open_peer(s: &mut State, computer: String, id: String, thread: Option<String>
             |s, _, _| crate::workspace::refresh_unread(s),
         );
     } else {
-        crate::remote::peers::run(
-            s,
-            &computer,
-            "notifications",
-            move |c| async move { c.mark_notification_read(&id).await },
-            |s, _, _| crate::remote::peers::refresh(s),
-        );
+        let mark_id = id.clone();
+        mutate_peer(s, PeerChange::Read { computer, id }, move |c| async move {
+            c.mark_notification_read(&mark_id).await
+        });
     }
 }
 
 /// Archive a notification belonging to a background peer.
 fn archive_peer(s: &mut State, computer: String, id: String) {
-    s.pages
-        .notifications
-        .peer_archived
-        .insert((computer.clone(), id.clone()));
-    let rollback_key = (computer.clone(), id.clone());
-    crate::remote::peers::run(
+    let archive_id = id.clone();
+    mutate_peer(
         s,
-        &computer,
-        "notifications",
-        move |c| async move { c.archive_notification(&id).await },
-        move |s, result, tx| match result {
-            Ok(_) => crate::remote::peers::refresh(s),
-            Err(e) => {
-                tx.animated();
-                s.pages.notifications.peer_archived.remove(&rollback_key);
-                s.pages.notifications.error = Some(e.to_string());
-            }
+        PeerChange::Archive { computer, id },
+        move |c| async move { c.archive_notification(&archive_id).await },
+    );
+}
+
+/// Apply an optimistic change to a peer's notifications and reconcile or roll
+/// back when the peer gateway replies.
+fn mutate_peer<F, Fut, T>(s: &mut State, change: PeerChange, f: F)
+where
+    F: FnOnce(Client) -> Fut,
+    Fut: std::future::Future<Output = Result<T, ClientError>> + Send + 'static,
+    T: Send + 'static,
+{
+    let computer = change.computer().to_string();
+    let asked = jobs::Generation::unique();
+    s.pages.notifications.peer_pending.insert(
+        change.clone(),
+        Pending {
+            asked,
+            confirmed: false,
         },
     );
+    crate::remote::peers::run(s, &computer, "notifications", f, move |s, result, tx| {
+        peer_change_landed(
+            s,
+            &change,
+            asked,
+            result.map(|_| ()).map_err(|e| e.to_string()),
+            tx,
+        )
+    });
+}
+
+fn peer_change_landed(
+    s: &mut State,
+    change: &PeerChange,
+    asked: jobs::Generation,
+    result: Result<(), String>,
+    tx: &mut Tx,
+) {
+    let this = &mut s.pages.notifications;
+    let ours = this
+        .peer_pending
+        .get(change)
+        .is_some_and(|p| p.asked == asked);
+    match result {
+        Ok(()) => {
+            if ours && let Some(p) = this.peer_pending.get_mut(change) {
+                p.confirmed = true;
+            }
+            crate::remote::peers::refresh_one(s, change.computer());
+        }
+        Err(e) => {
+            tx.animated();
+            if ours {
+                this.peer_pending.remove(change);
+            }
+            this.error = Some(e);
+        }
+    }
 }
 
 /// Show `change` now and send it. Any listing still on its way was asked
@@ -511,12 +602,7 @@ fn render_peer_row(
         ProductNotificationSeverity::Success => p.success,
         ProductNotificationSeverity::Info => p.text_muted,
     };
-    let unread = item.read_at.is_none()
-        && !s
-            .pages
-            .notifications
-            .peer_read
-            .contains(&(peer_key.to_string(), item.id.clone()));
+    let unread = s.pages.notifications.peer_unread(peer_key, item);
     let thread = thread_of(item).map(str::to_string);
     let subtitle = thread
         .as_ref()
@@ -610,16 +696,10 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     let p = &s.palette;
     let this = &s.pages.notifications;
     let peers = crate::remote::peers::list(s);
-    let peer_has_unread = peers.iter().any(|peer| {
-        peer.conn == crate::remote::peers::PeerConn::Ready
-            && peer.notifications.iter().any(|n| {
-                let key = (peer.computer.key(), n.id.clone());
-                !this.peer_archived.contains(&key)
-                    && n.read_at.is_none()
-                    && !this.peer_read.contains(&key)
-            })
-    });
-    let has_unread = this.shown().any(|n| this.unread(n)) || peer_has_unread;
+    let peer_has_unread = peers.iter().any(|peer| this.peer_has_unread(peer));
+    let focused_has_unread = this.shown().any(|n| this.unread(n))
+        || (s.workspace.focused_unread > 0 && !this.pending.contains_key(&Change::ReadAll));
+    let has_unread = focused_has_unread || peer_has_unread;
     let mut head = Vec::new();
     if has_unread {
         head.push(
@@ -641,10 +721,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
         let peer_key = peer.computer.key();
         let peer_label = peer.computer.label();
         for item in &peer.notifications {
-            if this
-                .peer_archived
-                .contains(&(peer_key.clone(), item.id.clone()))
-            {
+            if this.peer_archived(&peer_key, &item.id) {
                 continue;
             }
             let thread_title = thread_of(item).and_then(|tid| {

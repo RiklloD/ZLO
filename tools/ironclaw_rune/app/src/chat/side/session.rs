@@ -22,6 +22,17 @@ use crate::state::State;
 
 const TOGGLE_KEY: &str = "side-session-toggle";
 
+/// Scope a parent thread id by computer key (`this-mac` stays unprefixed for
+/// backward compatibility with existing prefs; remote computers are prefixed
+/// with `{scope}~`, matching `drafts.rs`).
+fn scoped_key(scope: &str, parent: &str) -> String {
+    if scope == zlo_client::environments::THIS_MAC {
+        parent.to_string()
+    } else {
+        format!("{scope}~{parent}")
+    }
+}
+
 /// Fork this conversation into a side chat and show it (⌥⌘N). Area A's
 /// embedded side chat must not call this: only top-level chats have side
 /// chats (Zeron's rule).
@@ -41,6 +52,7 @@ pub fn new_side_chat(s: &mut State) {
     if let Some(x) = side_mut(s) {
         x.chat_busy = true;
     }
+    let scope = crate::remote::scope(s);
     let asked = parent.clone();
     jobs::run(
         s,
@@ -61,7 +73,7 @@ pub fn new_side_chat(s: &mut State) {
             // as a stray thread.
             if let Ok(forked) = &result {
                 let child = forked.fork_thread_id.clone();
-                let key = parent.clone();
+                let key = scoped_key(&scope, &parent);
                 s.update_prefs(|p| p.side_chats.entry(key).or_default().push(child));
             }
             let Some(x) = super::side_of(s, &parent) else {
@@ -103,9 +115,10 @@ fn close(s: &mut State) {
 
 /// The side chats of this thread, newest first.
 pub(super) fn chats(s: &State) -> Vec<String> {
+    let scope = crate::remote::scope(s);
     s.chat
         .as_ref()
-        .and_then(|c| s.prefs.side_chats.get(&c.thread_id))
+        .and_then(|c| s.prefs.side_chats.get(&scoped_key(&scope, &c.thread_id)))
         .map(|ids| ids.iter().rev().cloned().collect())
         .unwrap_or_default()
 }

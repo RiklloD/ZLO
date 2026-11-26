@@ -157,6 +157,18 @@ fn two_gateways(
     studio_profiles: &[(&str, &str)],
     studio_tail: Vec<Answer>,
 ) -> (State, Pump, Gateway, Gateway) {
+    two_gateways_full(
+        studio_profiles,
+        r#"{"notifications":[],"unread_count":0}"#.into(),
+        studio_tail,
+    )
+}
+
+fn two_gateways_full(
+    studio_profiles: &[(&str, &str)],
+    studio_notifs_json: String,
+    studio_tail: Vec<Answer>,
+) -> (State, Pump, Gateway, Gateway) {
     let mut s = crate::chat::fixtures::test_state();
     s.fixture = false;
     let mut pump = Pump::install(&mut s);
@@ -166,7 +178,7 @@ fn two_gateways(
         Answer::ok(descriptor_json("studio", "Studio")),
         Answer::ok(session_json()),
         Answer::ok(inbox_json("t-studio", "Studio thread", studio_profiles)),
-        Answer::ok(r#"{"notifications":[],"unread_count":0}"#),
+        Answer::ok(studio_notifs_json),
     ];
     studio_script.extend(studio_tail);
     let studio_gw = Gateway::start(studio_script);
@@ -393,6 +405,7 @@ fn alert_click_routes_through_peers_focus_thread_and_bell_includes_peers() {
     s2.conn = Conn::Ready;
     let mut peer = Peer::fixture(Computer::remote("studio", "Studio"), PeerConn::Ready);
     peer.notifications = vec![notif("a", "t1"), notif("b", "t2")];
+    peer.unread_count = 2;
     s2.remote.peers.insert_fixture(peer);
     crate::workspace::set_unread(&mut s2, 1);
     assert_eq!(s2.workspace.unread, 3);
@@ -491,5 +504,365 @@ fn notifications_page_lists_peer_items_tagged_and_opening_focuses_peer() {
             .get("studio")
             .map(String::as_str),
         Some("t-studio")
+    );
+}
+
+#[test]
+fn picking_a_computer_preserves_destinations_saved_draft_and_retires_source() {
+    let (mut s, _pump, _mac_gw, _studio_gw) = two_gateways(&[("default", "Default")], vec![]);
+
+    // Leave an unsent new-thread draft saved on studio.
+    peers::focus(&mut s, "studio");
+    crate::workspace::draft::open(&mut s);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.input.replace_text("Studio existing draft");
+    }
+    crate::workspace::draft::record(&mut s);
+
+    // Move back to mac and write a different draft.
+    peers::focus(&mut s, "mac");
+    crate::workspace::draft::open(&mut s);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.input.replace_text("Mac carried draft");
+        d.staged.push(StagedFile {
+            key: 9,
+            filename: "NOTE.md".into(),
+            mime_type: "text/markdown".into(),
+            size: 42,
+            body: Body::Bytes(vec![4, 5, 6]),
+        });
+    }
+    crate::workspace::draft::record(&mut s);
+
+    // Pick studio in "Runs on": studio's existing draft must not be destroyed.
+    pick(&mut s, "studio".into());
+
+    assert_eq!(s.onboarding.computer.key(), "studio");
+    assert_eq!(s.page, Page::Draft);
+    let d = s.workspace.draft.as_ref().expect("draft open on studio");
+    assert!(
+        d.input.text.contains("Studio existing draft"),
+        "destination's saved draft must be preserved: {:?}",
+        d.input.text
+    );
+    assert!(
+        d.input.text.contains("Mac carried draft"),
+        "carried draft must be present: {:?}",
+        d.input.text
+    );
+    assert_eq!(d.staged.len(), 1);
+    assert_eq!(d.staged[0].filename, "NOTE.md");
+
+    // Moving back to mac must NOT resurrect mac's retired draft.
+    peers::focus(&mut s, "mac");
+    assert!(
+        !crate::drafts::has(&s, crate::drafts::NEW_THREAD),
+        "source computer's saved draft must be retired after move lands"
+    );
+}
+
+#[test]
+fn failed_or_superseded_cold_switch_keeps_source_draft_and_does_not_leak_carry() {
+    let (mut s, mut pump, _mac_gw, _studio_gw) = two_gateways(&[("default", "Default")], vec![]);
+
+    // Add a third saved computer that refuses connections (closed loopback port).
+    let dead_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let dead_addr = dead_listener.local_addr().expect("addr");
+    drop(dead_listener);
+    let dead_url = format!("http://{dead_addr}");
+    s.remote
+        .registry
+        .environments
+        .push(saved_env("mini", "Mac mini", &dead_url));
+    let _ = s.remote.tokens.set("mini", "tok-mini");
+
+    crate::workspace::draft::open(&mut s);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.input.replace_text("Keep me on mac");
+    }
+    crate::workspace::draft::record(&mut s);
+
+    // 1. Cold switch to unreachable mini fails: draft stays intact on mac.
+    pick(&mut s, "mini".into());
+    assert!(pump.until(&mut s, Duration::from_secs(5), |s| {
+        s.remote.switching.is_none()
+    }));
+    assert_eq!(s.onboarding.computer.key(), "mac");
+    assert_eq!(
+        s.workspace.draft.as_ref().map(|d| d.input.text.as_str()),
+        Some("Keep me on mac")
+    );
+    assert_eq!(
+        crate::drafts::restore(&s, crate::drafts::NEW_THREAD)
+            .map(|d| d.text)
+            .as_deref(),
+        Some("Keep me on mac")
+    );
+
+    // 2. Start a cold switch to mini, then supersede it by focusing studio.
+    pick(&mut s, "mini".into());
+    peers::focus(&mut s, "studio");
+
+    assert_eq!(s.onboarding.computer.key(), "studio");
+    assert_eq!(
+        s.page,
+        Page::Chat,
+        "superseding switch to studio must not consume mini's carried draft"
+    );
+    assert_eq!(crate::workspace::active_id(&s), Some("t-studio"));
+    assert!(s.workspace.draft.is_none());
+    assert!(
+        !crate::drafts::has(&s, crate::drafts::NEW_THREAD),
+        "studio must not have mini's carried draft written to its disk store"
+    );
+    assert!(s.workspace.carried_draft.is_none());
+
+    // Source draft on mac is still intact.
+    peers::focus(&mut s, "mac");
+    assert_eq!(
+        crate::drafts::restore(&s, crate::drafts::NEW_THREAD)
+            .map(|d| d.text)
+            .as_deref(),
+        Some("Keep me on mac")
+    );
+}
+
+#[test]
+fn peer_unread_total_uses_server_count_and_mark_all_read_reaches_peer() {
+    // 20 newer READ notifications on studio, plus 5 older UNREAD ones reported
+    // only in the server's `unread_count`.
+    let read_items: Vec<serde_json::Value> = (0..20)
+        .map(|i| {
+            serde_json::json!({
+                "id": format!("r{i}"),
+                "kind": "run_completed",
+                "severity": "success",
+                "action": { "kind": "open_thread", "thread_id": "t-studio" },
+                "thread_id": "t-studio",
+                "turn_run_id": null,
+                "created_at": "2026-11-26T00:00:00Z",
+                "updated_at": "2026-11-26T00:00:00Z",
+                "read_at": "2026-11-26T00:01:00Z",
+                "resolved_at": null
+            })
+        })
+        .collect();
+    let studio_notifs = serde_json::json!({
+        "notifications": read_items,
+        "unread_count": 5
+    })
+    .to_string();
+
+    let (mut s, mut pump, _mac_gw, studio_gw) = two_gateways_full(
+        &[("default", "Default")],
+        studio_notifs,
+        vec![
+            Answer::ok(r#"{"updated":5}"#),
+            Answer::ok(inbox_json(
+                "t-studio",
+                "Studio thread",
+                &[("default", "Default")],
+            )),
+            Answer::ok(r#"{"notifications":[],"unread_count":0}"#),
+        ],
+    );
+
+    crate::workspace::set_unread(&mut s, 0);
+    assert_eq!(
+        s.workspace.unread, 5,
+        "bell count must use server unread_count, not count of latest 20 items"
+    );
+
+    s.page = Page::Notifications;
+    s.pages.notifications.loaded = true;
+    let mut rt = Runtime::new(s, crate::view, (1280., 820.), Env::new(true, 1.));
+    rt.frame(0.);
+    assert!(
+        rt.elements()
+            .into_iter()
+            .any(|e| !e.exiting && e.key.as_deref() == Some("mark-all-read")),
+        "Mark all read button must show when a peer has server unread_count > 0"
+    );
+
+    click_key(&mut rt, "mark-all-read");
+    assert!(
+        pump.until(&mut rt.state, Duration::from_secs(3), |_| {
+            studio_gw
+                .paths()
+                .iter()
+                .any(|p| p == "/api/webchat/v2/notifications/read-all")
+        }),
+        "studio gateway must receive mark-all-read: {:?}",
+        studio_gw.paths()
+    );
+}
+
+#[test]
+fn failed_peer_mark_all_read_rolls_back_optimistic_read_flag() {
+    let studio_notifs = serde_json::json!({
+        "notifications": [notif("p1", "t-studio")],
+        "unread_count": 1
+    })
+    .to_string();
+    let (mut s, mut pump, _mac_gw, _studio_gw) = two_gateways_full(
+        &[("default", "Default")],
+        studio_notifs,
+        vec![Answer::fail()],
+    );
+
+    s.page = Page::Notifications;
+    s.pages.notifications.loaded = true;
+    let mut rt = Runtime::new(s, crate::view, (1280., 820.), Env::new(true, 1.));
+    rt.frame(0.);
+
+    let has_peer_unread_dot = |rt: &Runtime<State>| {
+        rt.elements().into_iter().any(|e| {
+            !e.exiting
+                && e.key.as_deref() == Some("unread")
+                && e.path.contains("notification-studio-p1")
+        })
+    };
+    assert!(has_peer_unread_dot(&rt));
+
+    click_key(&mut rt, "mark-all-read");
+    assert!(
+        !has_peer_unread_dot(&rt),
+        "unread dot hides optimistically on click"
+    );
+
+    assert!(pump.until(&mut rt.state, Duration::from_secs(3), |s| {
+        s.pages.notifications.error.is_some()
+    }));
+    rt.update(|_, _| {});
+    rt.frame(1. / 60.);
+    assert!(
+        has_peer_unread_dot(&rt),
+        "failed peer mark-all-read must roll back the optimistic read flag"
+    );
+}
+
+#[test]
+fn side_chat_and_local_search_or_sent_state_do_not_cross_computers() {
+    let (mut s, _pump, _mac_gw, _studio_gw) = two_gateways(&[("default", "Default")], vec![]);
+
+    // Put the same thread id on both mac and studio.
+    s.workspace.inbox.list = parsed_inbox("shared-1", "Mac shared", &[("default", "Default")]);
+    let studio_inbox = parsed_inbox("shared-1", "Studio shared", &[("default", "Default")]);
+    peers::apply_inbox(&mut s, "studio", studio_inbox, &mut rune::Tx::default());
+
+    // Record "shared-1" as a side chat on mac.
+    s.update_prefs(|p| {
+        p.side_chats
+            .entry("mac~parent-mac".into())
+            .or_default()
+            .push("shared-1".into());
+    });
+
+    // Populate focused message search and optimistic sent state on mac.
+    s.workspace.message_search.fixture(
+        "deploy",
+        vec![zlo_client::history::HistoryThreadResult {
+            thread_id: "shared-1".into(),
+            title: Some("Mac shared".into()),
+            updated_at: None,
+            origin: zlo_client::history::HistoryThreadOrigin::Own,
+            lineage_root_thread_id: None,
+            related_thread_ids: Vec::new(),
+            hits: vec![zlo_client::history::HistoryHit {
+                thread_id: "shared-1".into(),
+                message_id: "m1".into(),
+                sequence: 1,
+                role: zlo_client::history::HistorySearchRole::User,
+                created_at: None,
+                snippet: "mac deploy snippet".into(),
+                highlights: Vec::new(),
+            }],
+        }],
+    );
+    crate::workspace::prompt_sent(&mut s, "shared-1");
+
+    // Switch focus to studio.
+    peers::focus(&mut s, "studio");
+    assert_eq!(s.onboarding.computer.key(), "studio");
+
+    // 1. Studio's ordinary row "shared-1" must NOT be hidden by mac's side chat.
+    let sh = crate::workspace::inbox::shelves(&s);
+    assert!(
+        sh.main
+            .iter()
+            .any(|e| e.id == crate::workspace::RowId::new("studio", "shared-1")),
+        "studio's row with the same id must not be hidden by mac's side chat"
+    );
+
+    // 2. Mac's cached message-search hit must be cleared on switch.
+    assert!(
+        s.workspace
+            .message_search
+            .hit("deploy", "shared-1")
+            .is_none(),
+        "focused message search results must clear on computer switch"
+    );
+
+    // 3. Mac's optimistic sent state must be cleared on switch.
+    let studio_row = s
+        .workspace
+        .inbox
+        .row("shared-1")
+        .expect("studio row present");
+    assert_eq!(
+        s.workspace.inbox.shown_status(studio_row),
+        None,
+        "optimistic sent state must clear on computer switch"
+    );
+}
+
+#[test]
+fn clicking_peer_notification_with_live_gateways_opens_thread_and_marks_read_on_peer() {
+    let studio_notifs = serde_json::json!({
+        "notifications": [notif("p1", "t-studio")],
+        "unread_count": 1
+    })
+    .to_string();
+    let (mut s, mut pump, mac_gw, studio_gw) = two_gateways_full(
+        &[("default", "Default")],
+        studio_notifs,
+        vec![
+            Answer::ok(r#"{"updated":1}"#),
+            Answer::ok(r#"{"notifications":[],"unread_count":0}"#),
+        ],
+    );
+    let mac_before = mac_gw.paths().len();
+
+    s.page = Page::Notifications;
+    s.pages.notifications.loaded = true;
+    let mut rt = Runtime::new(s, crate::view, (1280., 820.), Env::new(true, 1.));
+    rt.frame(0.);
+
+    click_key(&mut rt, "notification-studio-p1");
+
+    assert_eq!(rt.state.onboarding.computer.key(), "studio");
+    assert_eq!(
+        crate::workspace::active_id(&rt.state),
+        Some("t-studio"),
+        "clicking a peer notification must open that thread on the peer"
+    );
+    assert!(
+        pump.until(&mut rt.state, Duration::from_secs(3), |_| {
+            studio_gw
+                .paths()
+                .iter()
+                .any(|p| p == "/api/webchat/v2/notifications/p1/read")
+        }),
+        "studio gateway must receive exact mark-read path: {:?}",
+        studio_gw.paths()
+    );
+    assert!(
+        !mac_gw
+            .paths()
+            .iter()
+            .skip(mac_before)
+            .any(|p| p.contains("/notifications/p1/read")),
+        "mac gateway must not receive studio's mark-read: {:?}",
+        mac_gw.paths()
     );
 }
