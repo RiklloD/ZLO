@@ -85,6 +85,18 @@ Headless renders (`cargo run -p ironclaw_rune -- --snap …`; Rune keeps `--snap
 software Vulkan (`mesa-vulkan-drivers`), so an agent on a Linux box can look
 at the UI it changes.
 
+## Second backend for testing
+
+`sh dev/second-backend.sh` runs an isolated second `zlo` backend on loopback (default port `3310`, data in `${TMPDIR:-/tmp}/zlo-second-backend` or `ZLO_SECOND_HOME`, never touching `~/.zlo` or the Keychain) so multi-computer support can be tested end to end:
+
+```sh
+sh dev/second-backend.sh start            # native (--linux runs it in Docker via colima; --port N overrides port)
+sh dev/second-backend.sh pair             # print a one-time pairing link to paste into Settings -> Computers
+sh dev/second-backend.sh status           # running state, URL, environment id and label
+sh dev/second-backend.sh smoke            # curl descriptor (200), unauth inbox (401), auth inbox (200)
+sh dev/second-backend.sh stop && sh dev/second-backend.sh clean
+```
+
 ## Manual checks (cannot run headless)
 
 Run these in the installed app after a change to the area they name.
