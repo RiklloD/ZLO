@@ -31,8 +31,8 @@ pub use computer_use::{
     computer_use_state,
 };
 pub use profiles::{
-    profile_create, profile_delete, profile_get, profile_thread_create, profile_update,
-    profiles_import_hermes, profiles_list,
+    profile_create, profile_create_fresh, profile_delete, profile_get, profile_thread_create,
+    profile_update, profiles_import_hermes, profiles_list,
 };
 mod thread_repo;
 pub use thread_repo::{thread_console, thread_console_control, thread_git, thread_git_change};

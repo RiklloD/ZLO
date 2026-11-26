@@ -396,8 +396,13 @@ fn an_explicit_profile_pick_stays_on_its_computer() {
     assert_eq!(s.onboarding.computer.key(), "mac", "no handover");
     assert_eq!(s.workspace.draft.as_ref().expect("draft").profile, "work");
 
+    // Shift (⇧⌘N): the current profile, here.
     s.workspace.draft = None;
     crate::workspace::inbox::picker::new_thread(&mut s, true);
+    assert_eq!(s.onboarding.computer.key(), "mac", "⇧⌘N stays");
+
+    s.workspace.draft = None;
+    crate::workspace::inbox::picker::new_thread(&mut s, false);
     assert_eq!(
         s.onboarding.computer.key(),
         "studio",

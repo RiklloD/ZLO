@@ -1772,7 +1772,13 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `project_public_lifecycle_states`, so the setup route's wire type
         // matches what it sends (ZLO could not decode `setup_needed` rows).
         // A pure projection on the type's own shape; no behavior.
-        ("ironclaw_product_contracts", 17_889),
+        // 17_889 -> 17_899 (2026-11-26, t3code-style profile picker): the
+        // tree measures 18_049; the pin is the minimum that passes. +10
+        // lines, two wire fields: `InboxProfile::folder` (where a profile
+        // works, for the new-thread picker's rows) and
+        // `ProfileWriteRequest::fresh` (create-only: an archived id answers
+        // `profile_exists` instead of coming back). No behavior.
+        ("ironclaw_product_contracts", 17_899),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

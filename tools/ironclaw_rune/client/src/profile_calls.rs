@@ -57,7 +57,9 @@ impl Client {
     }
 
     /// Create a profile under an id no profile has had: an archived one
-    /// answers `profile_exists` instead of coming back.
+    /// answers `profile_exists` instead of coming back. Its own route, so
+    /// a gateway from before it refuses (`engine_outdated`) rather than
+    /// reviving an archived profile through the plain create.
     pub async fn create_new_profile(
         &self,
         profile_id: &str,
@@ -68,7 +70,14 @@ impl Client {
             settings,
             fresh: true,
         };
-        document(self.post(&format!("{V2}/profiles"), &body).await?)
+        match self.post(&format!("{V2}/profiles/create/fresh"), &body).await {
+            Ok(value) => document(value),
+            Err(ClientError::Api { status: 404 | 405, .. }) => Err(ClientError::Refused {
+                code: "engine_outdated".into(),
+                message: "This computer's ZLO engine is too old to add a profile from a folder; update it first.".into(),
+            }),
+            Err(e) => Err(e),
+        }
     }
 
     pub async fn update_profile(

@@ -201,6 +201,7 @@ fn enter(s: &mut State, mode: Mode) {
         menu.mode = mode;
         menu.selected = 0;
         menu.input.replace_text("");
+        menu.input.focused = true;
         menu.order = order;
     }
 }
@@ -637,6 +638,9 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
     let mut card = col()
         .w(600.)
         .clip_rounded(12.)
+        // A press on a row (or a profile's pin) leaves the keys with the
+        // search field: typing, arrows and Enter go on working.
+        .preserve_focus_on_press(true)
         .child(
             row()
                 .h(52.)
@@ -843,6 +847,8 @@ mod tests {
 
     fn state() -> State {
         let mut s = crate::chat::fixtures::test_state();
+        // A fixture's backend counts as This Mac's (Add profile offered).
+        s.fixture = true;
         let profile = |id: &str, used: Option<i64>, folder: Option<&str>| InboxProfile {
             profile_id: id.into(),
             display_name: id.to_uppercase(),
@@ -907,6 +913,36 @@ mod tests {
         assert_eq!(titles(&s), ["B"]);
         run_selected(&mut s, &mut Tx::default());
         assert_eq!(s.workspace.draft.as_ref().expect("draft").profile, "b");
+    }
+
+    /// Clicking "New thread in…" keeps the keys in the search field, so
+    /// typing filters the profiles at once.
+    #[test]
+    fn clicking_into_new_thread_in_keeps_the_search_focused() {
+        use rune::{Env, Runtime};
+        let mut s = crate::chat::fixtures::test_state();
+        crate::workspace::fixtures::fixture_shell(&mut s);
+        toggle(&mut s);
+        let mut rt = Runtime::new(s, crate::view, (1200., 800.), Env::new(true, 1.));
+        let mut t = 0.;
+        let mut frames = |rt: &mut Runtime<State>, n: usize| {
+            for _ in 0..n {
+                t += 1. / 60.;
+                rt.frame(t);
+            }
+        };
+        frames(&mut rt, 30);
+        let (r, _) = rt
+            .presented("cmdk-row-new-thread-in")
+            .expect("the row is drawn");
+        let (x, y) = (r[0] + r[2] / 2., r[1] + r[3] / 2.);
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        frames(&mut rt, 10);
+        assert!(is_new_thread_in(&rt.state));
+        let menu = rt.state.workspace.command.as_ref().expect("open");
+        assert!(menu.input.focused, "the search field keeps the keys");
     }
 
     /// Opened straight on the profiles, Escape closes; reached from the

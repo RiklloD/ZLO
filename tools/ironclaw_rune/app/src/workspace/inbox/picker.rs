@@ -241,8 +241,9 @@ pub(in crate::workspace) fn short_folder(path: &str) -> String {
 /// single profile), else ⌘K opens on "New thread in…".
 pub(in crate::workspace) fn new_thread(s: &mut State, here: bool) {
     // New threads start on another computer: go there first; its draft
-    // screen offers that computer's profiles.
-    if draft::runs_on::default_elsewhere(s) {
+    // screen offers that computer's profiles. Not for Shift (⇧⌘N): "the
+    // current profile" is this computer's.
+    if !here && draft::runs_on::default_elsewhere(s) {
         close(s);
         draft::open(s);
         return;
@@ -264,11 +265,13 @@ pub(in crate::workspace) fn new_thread(s: &mut State, here: bool) {
 }
 
 /// "Add profile" picks a folder with this Mac's dialog, so it is offered
-/// only while This Mac's backend is the one in focus: a remote computer
-/// would get a path that exists only here (its profiles are made in
-/// Settings → Profiles there).
+/// only while the backend in focus runs on this Mac (focused and on
+/// loopback: an `IRONCLAW_DESKTOP_URL` elsewhere is labelled This Mac too).
+/// A remote computer would get a path that exists only here; its profiles
+/// are made in Settings → Profiles there.
 pub(in crate::workspace) fn can_add_profile(s: &State) -> bool {
     s.onboarding.computer.key() == zlo_client::environments::THIS_MAC
+        && crate::cli_install::backend_on_this_mac(s)
 }
 
 /// Pick a folder, then make a profile working in it (named after the
@@ -867,6 +870,8 @@ mod tests {
 
     fn state() -> State {
         let mut s = crate::chat::fixtures::test_state();
+        // A fixture's backend counts as This Mac's (Add profile offered).
+        s.fixture = true;
         s.workspace.inbox.list.profiles = many();
         s.workspace.inbox.list.last_used_profile_id = Some("default".into());
         s
@@ -1046,6 +1051,7 @@ mod tests {
             Answer::ok(inbox),
         ]);
         let mut s = state();
+        s.fixture = false;
         s.rt.backend = Some(gateway.backend());
         let mut pump = Pump::install(&mut s);
 
@@ -1056,7 +1062,12 @@ mod tests {
                 .as_ref()
                 .is_some_and(|d| d.profile == "site-2")
         }));
-        assert_eq!(gateway.requests_to("/profiles"), 2, "{:?}", gateway.paths());
+        assert_eq!(
+            gateway.requests_to("/profiles/create/fresh"),
+            2,
+            "{:?}",
+            gateway.paths()
+        );
         assert!(
             s.workspace
                 .draft
@@ -1067,6 +1078,54 @@ mod tests {
 
     /// A pin belongs to its computer: another computer's `work` is not
     /// pinned by this one's, and unpinning there leaves this one's pin.
+    /// A gateway from before the create-only route answers 404: Add profile
+    /// says the engine needs updating and never falls back to the plain
+    /// create, which would revive an archived profile of that id.
+    #[test]
+    fn add_profile_never_falls_back_on_an_old_gateway() {
+        use crate::jobs::harness::Pump;
+        use crate::test_gateway::{Answer, Gateway};
+
+        let gateway = Gateway::start(vec![Answer {
+            status: 404,
+            body: "Not Found".into(),
+            delay: std::time::Duration::ZERO,
+            drop_conn: false,
+        }]);
+        let mut s = state();
+        s.fixture = false;
+        s.rt.backend = Some(gateway.backend());
+        let mut pump = Pump::install(&mut s);
+
+        create_for_folder(&mut s, Path::new("/tmp/zlo-picker-test/site"));
+        assert!(pump.until(&mut s, std::time::Duration::from_secs(10), |s| {
+            s.workspace
+                .draft
+                .as_ref()
+                .is_some_and(|d| d.error.is_some())
+        }));
+        let error = s.workspace.draft.as_ref().and_then(|d| d.error.clone());
+        assert!(
+            error.as_deref().is_some_and(|e| e.contains("too old")),
+            "{error:?}"
+        );
+        assert_eq!(gateway.paths().len(), 1, "one try: {:?}", gateway.paths());
+    }
+
+    /// Add profile names a folder on this Mac: only offered while the
+    /// backend in focus is this Mac's own (a loopback address), never a
+    /// remote gateway that happens to be labelled This Mac.
+    #[test]
+    fn add_profile_is_only_offered_for_this_macs_backend() {
+        let mut s = state();
+        assert!(can_add_profile(&s), "a fixture is This Mac's");
+        s.fixture = false;
+        assert!(!can_add_profile(&s), "no local backend in focus");
+        s.fixture = true;
+        s.onboarding.computer = crate::onboarding::gateway::Computer::remote("studio", "Studio");
+        assert!(!can_add_profile(&s), "another computer");
+    }
+
     #[test]
     fn pins_belong_to_their_computer() {
         let mut s = state();

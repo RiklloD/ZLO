@@ -337,11 +337,15 @@ fn start(s: &mut State, profile: String, default_computer: bool) {
     let catalog = catalog_thread(s);
     crate::chat::model_picker::draft_set_profile(s, profile.clone(), catalog);
     if let Some(draft) = s.workspace.draft.as_mut() {
+        // Another profile: the Local / New worktree switch follows its
+        // folder again. The same one (⇧⌘N on its own draft) keeps the
+        // choice made for it.
+        if draft.profile != profile {
+            draft.worktree = None;
+        }
         draft.profile = profile;
         draft.menu_open = false;
         draft.worktree_open = false;
-        // The switch follows the new profile's folder again.
-        draft.worktree = None;
     }
     record(s);
 }
@@ -1090,7 +1094,8 @@ mod tests {
     /// New threads work in place by default. With the Worktrees setting
     /// on, a git profile starts each one in its own worktree (from `main`)
     /// unless switched to Local; a profile without a git folder works in
-    /// place; switching profile follows the new one again.
+    /// place; switching profile follows the new one again, picking the
+    /// same one keeps the choice.
     #[test]
     fn a_git_profile_starts_new_threads_in_their_own_worktree() {
         let mut s = crate::chat::fixtures::test_state();
@@ -1108,6 +1113,11 @@ mod tests {
         let plain = empty_draft("default");
         assert!(!in_worktree(&s, &plain), "no git folder, nothing to branch");
         s.workspace.draft = Some(draft);
+        // ⇧⌘N on its own draft: the same profile keeps the choice.
+        start_in_profile(&mut s, "work".into());
+        let draft = s.workspace.draft.as_ref().unwrap();
+        assert!(!in_worktree(&s, draft), "the same profile keeps Local");
+        start_in_profile(&mut s, "default".into());
         start_in_profile(&mut s, "work".into());
         let draft = s.workspace.draft.as_ref().unwrap();
         assert!(in_worktree(&s, draft), "a new profile resets the switch");
