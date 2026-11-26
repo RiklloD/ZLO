@@ -296,15 +296,22 @@ pub struct ChannelConfigField {
     pub provided: bool,
 }
 
+/// A lifecycle action's typed result.
+///
+/// `S` is the state vocabulary its extension rows carry: the host checkpoint
+/// ([`InstallationState`], the default, what the lifecycle service produces)
+/// or the public one ([`LifecyclePublicState`], what product surfaces send —
+/// see [`LifecycleProductPayload::into_public`]). Typing the public form keeps
+/// a decoded wire response and its type in agreement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum LifecycleProductPayload {
+pub enum LifecycleProductPayload<S = InstallationState> {
     ExtensionSearch {
-        extensions: Vec<LifecycleSearchExtensionSummary>,
+        extensions: Vec<LifecycleSearchExtensionSummary<S>>,
         count: usize,
     },
     ExtensionList {
-        extensions: Vec<LifecycleInstalledExtensionSummary>,
+        extensions: Vec<LifecycleInstalledExtensionSummary<S>>,
         count: usize,
     },
     ExtensionInstall {
@@ -375,11 +382,12 @@ pub struct LifecycleExtensionSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LifecycleSearchExtensionSummary {
+#[serde(bound(deserialize = "S: Deserialize<'de>"))]
+pub struct LifecycleSearchExtensionSummary<S = InstallationState> {
     #[serde(flatten)]
     pub summary: LifecycleExtensionSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub installation_phase: Option<InstallationState>,
+    pub installation_phase: Option<S>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -390,9 +398,9 @@ pub enum LifecycleInstallScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LifecycleInstalledExtensionSummary {
+pub struct LifecycleInstalledExtensionSummary<S = InstallationState> {
     pub summary: LifecycleExtensionSummary,
-    pub phase: InstallationState,
+    pub phase: S,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_scope: Option<LifecycleInstallScope>,
 }
@@ -551,6 +559,82 @@ fn public_lifecycle_state(state: &str) -> Option<&'static str> {
         .map(|state| LifecyclePublicState::from_host_checkpoint(state).as_str())
 }
 
+impl LifecycleProductPayload {
+    /// Project every extension row's host checkpoint to the public lifecycle
+    /// state ([`LifecyclePublicState::from_host_checkpoint`]), the typed twin
+    /// of [`project_public_lifecycle_states`].
+    pub fn into_public(self) -> LifecycleProductPayload<LifecyclePublicState> {
+        match self {
+            Self::ExtensionSearch { extensions, count } => {
+                LifecycleProductPayload::ExtensionSearch {
+                    extensions: extensions
+                        .into_iter()
+                        .map(|row| LifecycleSearchExtensionSummary {
+                            summary: row.summary,
+                            installation_phase: row
+                                .installation_phase
+                                .map(LifecyclePublicState::from_host_checkpoint),
+                        })
+                        .collect(),
+                    count,
+                }
+            }
+            Self::ExtensionList { extensions, count } => LifecycleProductPayload::ExtensionList {
+                extensions: extensions
+                    .into_iter()
+                    .map(|row| LifecycleInstalledExtensionSummary {
+                        summary: row.summary,
+                        phase: LifecyclePublicState::from_host_checkpoint(row.phase),
+                        install_scope: row.install_scope,
+                    })
+                    .collect(),
+                count,
+            },
+            Self::ExtensionInstall {
+                installed,
+                visible_capability_ids,
+                next_step,
+            } => LifecycleProductPayload::ExtensionInstall {
+                installed,
+                visible_capability_ids,
+                next_step,
+            },
+            Self::ExtensionActivate {
+                activated,
+                visible_capability_ids,
+                connection_required,
+            } => LifecycleProductPayload::ExtensionActivate {
+                activated,
+                visible_capability_ids,
+                connection_required,
+            },
+            Self::ExtensionRemove { removed } => {
+                LifecycleProductPayload::ExtensionRemove { removed }
+            }
+            Self::ExtensionGrantConsent { granted } => {
+                LifecycleProductPayload::ExtensionGrantConsent { granted }
+            }
+            Self::SkillSearch {
+                skills,
+                count,
+                limit,
+                truncated,
+            } => LifecycleProductPayload::SkillSearch {
+                skills,
+                count,
+                limit,
+                truncated,
+            },
+            Self::SkillInstall { installed, name } => {
+                LifecycleProductPayload::SkillInstall { installed, name }
+            }
+            Self::SkillRemove { removed, name } => {
+                LifecycleProductPayload::SkillRemove { removed, name }
+            }
+        }
+    }
+}
+
 impl LifecycleProductResponse {
     pub fn projection(
         package_ref: Option<LifecyclePackageRef>,
@@ -595,6 +679,74 @@ mod tests {
     }
 
     use super::*;
+
+    fn summary(id: &str) -> LifecycleExtensionSummary {
+        serde_json::from_value(serde_json::json!({
+            "package_ref": { "id": id, "kind": "extension" },
+            "name": id,
+            "description": "d",
+            "runtime_kind": "first_party",
+            "source": "host_bundled",
+            "surface_kinds": ["tool", "auth"],
+            "version": "0.1.0",
+            "visible_read_only_capability_ids": []
+        }))
+        .expect("summary")
+    }
+
+    /// `into_public` is the typed twin of the JSON re-projection: for every
+    /// checkpoint, both must put the same public state on the wire, or a
+    /// typed surface and a re-projected one would disagree.
+    #[test]
+    fn into_public_matches_the_json_projection_for_every_checkpoint() {
+        let all = [
+            InstallationState::Installed,
+            InstallationState::Configured,
+            InstallationState::Active,
+            InstallationState::Disabled,
+            InstallationState::Failed,
+            InstallationState::Unsupported,
+            InstallationState::Removed,
+            InstallationState::ConsentRequired,
+            InstallationState::Tampered,
+        ];
+        let list = LifecycleProductPayload::ExtensionList {
+            extensions: all
+                .iter()
+                .map(|&phase| LifecycleInstalledExtensionSummary {
+                    summary: summary("notion"),
+                    phase,
+                    install_scope: Some(LifecycleInstallScope::Private),
+                })
+                .collect(),
+            count: all.len(),
+        };
+        let search = LifecycleProductPayload::ExtensionSearch {
+            extensions: all
+                .iter()
+                .map(|&phase| Some(phase))
+                .chain([None])
+                .map(|installation_phase| LifecycleSearchExtensionSummary {
+                    summary: summary("gmail"),
+                    installation_phase,
+                })
+                .collect(),
+            count: all.len() + 1,
+        };
+        for payload in [list, search] {
+            let mut projected = serde_json::to_value(&payload).expect("serialize");
+            project_public_lifecycle_states(&mut projected);
+            let typed = serde_json::to_value(payload.into_public()).expect("serialize");
+            assert_eq!(typed, projected);
+            let decoded: LifecycleProductPayload<LifecyclePublicState> =
+                serde_json::from_value(typed).expect("public payload decodes");
+            assert!(matches!(
+                decoded,
+                LifecycleProductPayload::ExtensionList { .. }
+                    | LifecycleProductPayload::ExtensionSearch { .. }
+            ));
+        }
+    }
 
     #[test]
     fn lifecycle_package_ref_rejects_empty_id() {

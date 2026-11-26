@@ -1765,7 +1765,14 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `ServiceKeyImportSource`) and the `memory.wiki.*` descriptors in
         // `memory_page.rs`. Shared by the Supermemory domain, the assistant
         // decorator, the WebUI routes and the desktop client; no behavior.
-        ("ironclaw_product_contracts", 17_803),
+        // 17_803 -> 17_887 (2026-11-26, typed public setup payload): the
+        // tree measures 18_037; the pin is the minimum that passes. +84
+        // lines: `LifecycleProductPayload` became generic over its state
+        // vocabulary and gained `into_public`, the typed twin of
+        // `project_public_lifecycle_states`, so the setup route's wire type
+        // matches what it sends (ZLO could not decode `setup_needed` rows).
+        // A pure projection on the type's own shape; no behavior.
+        ("ironclaw_product_contracts", 17_887),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

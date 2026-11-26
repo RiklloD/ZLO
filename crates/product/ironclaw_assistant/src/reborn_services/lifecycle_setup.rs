@@ -3,6 +3,7 @@ use ironclaw_product_contracts::lifecycle_service::{
     LifecycleProductContext, LifecycleProductService, LifecycleProductSurfaceContext,
 };
 use ironclaw_product_contracts::package_lifecycle::ChannelConfigField as RebornChannelConfigField;
+use ironclaw_product_contracts::package_lifecycle::LifecycleProductPayload;
 use ironclaw_product_contracts::views::RebornViewDescriptor;
 use std::collections::BTreeSet;
 
@@ -328,7 +329,7 @@ async fn setup_extension_response(
         blockers: lifecycle.blockers,
         message: lifecycle.message,
         onboarding,
-        payload: lifecycle.payload,
+        payload: lifecycle.payload.map(LifecycleProductPayload::into_public),
         secrets,
         fields,
     })

@@ -160,9 +160,7 @@ use ironclaw_product_contracts::operator_llm::{
     USER_MODEL_CATALOG_VIEW, USER_MODEL_PREFERENCE_VIEW,
 };
 use ironclaw_product_contracts::outbound::{ProductOutboundEnvelope, ProjectionCursor};
-use ironclaw_product_contracts::package_lifecycle::{
-    LifecyclePackageKind, LifecyclePackageRef, project_public_lifecycle_states,
-};
+use ironclaw_product_contracts::package_lifecycle::{LifecyclePackageKind, LifecyclePackageRef};
 use ironclaw_product_contracts::product_wire::{
     RebornAccountLoginLinkResponse, RebornAccountTracesResponse, RebornAttachmentRequest,
     RebornAutomationMutationResponse, RebornAutomationRequest, RebornCancelRunResponse,
@@ -3131,7 +3129,7 @@ pub async fn get_extension_setup(
     State(state): State<WebUiV2State>,
     Extension(caller): Extension<ProductSurfaceCaller>,
     Path(ExtensionPackagePath { package_id }): Path<ExtensionPackagePath>,
-) -> Result<Json<serde_json::Value>, WebUiV2HttpError> {
+) -> Result<Json<RebornSetupExtensionResponse>, WebUiV2HttpError> {
     let package_ref = extension_package_ref_for_request(
         LifecyclePackageRef::new(LifecyclePackageKind::Extension, package_id),
         "package_id",
@@ -3148,7 +3146,7 @@ pub async fn get_extension_setup(
     .await?;
     let response: RebornSetupExtensionResponse =
         serde_json::from_value(page.payload).map_err(ProductSurfaceError::internal_from)?;
-    Ok(Json(public_lifecycle_json(response)?))
+    Ok(Json(response))
 }
 
 /// `POST /api/webchat/v2/extensions/{package_id}/setup`
@@ -3166,7 +3164,7 @@ pub async fn setup_extension(
     Extension(caller): Extension<ProductSurfaceCaller>,
     Path(ExtensionPackagePath { package_id }): Path<ExtensionPackagePath>,
     Json(body): Json<ProductSetupExtensionRequest>,
-) -> Result<Json<serde_json::Value>, WebUiV2HttpError> {
+) -> Result<Json<RebornSetupExtensionResponse>, WebUiV2HttpError> {
     let package_ref = extension_package_ref_for_request(
         LifecyclePackageRef::new(LifecyclePackageKind::Extension, package_id),
         "package_id",
@@ -3200,13 +3198,7 @@ pub async fn setup_extension(
     .await?;
     let response: RebornSetupExtensionResponse =
         serde_json::from_value(page.payload).map_err(ProductSurfaceError::internal_from)?;
-    Ok(Json(public_lifecycle_json(response)?))
-}
-
-fn public_lifecycle_json<T: Serialize>(value: T) -> Result<serde_json::Value, ProductSurfaceError> {
-    let mut value = serde_json::to_value(value).map_err(ProductSurfaceError::internal_from)?;
-    project_public_lifecycle_states(&mut value);
-    Ok(value)
+    Ok(Json(response))
 }
 
 fn require_operator_webui_config(

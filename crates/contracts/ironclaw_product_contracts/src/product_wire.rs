@@ -1515,8 +1515,10 @@ pub struct RebornSetupExtensionResponse {
     pub blockers: Vec<LifecycleReadinessBlocker>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The lifecycle result, its extension rows in the public vocabulary too
+    /// (built with [`LifecycleProductPayload::into_public`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<LifecycleProductPayload>,
+    pub payload: Option<LifecycleProductPayload<LifecyclePublicState>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<RebornExtensionSetupSecret>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2046,6 +2048,53 @@ pub enum SettingsToolPermissionState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Regression (2026-11-26): `Set up` on an installed plugin failed in ZLO
+    /// with "unknown variant `setup_needed`" because the payload's rows were
+    /// typed as host checkpoints while the gateway sent public states. This
+    /// is the reply the live gateway sent for Notion awaiting OAuth
+    /// (runtime kind swapped; the taxonomy guard bans its literal).
+    #[test]
+    fn setup_response_decodes_the_public_payload_the_gateway_sends() {
+        let wire = json!({
+            "package_ref": { "id": "notion", "kind": "extension" },
+            "phase": "setup_needed",
+            "payload": {
+                "kind": "extension_list",
+                "count": 1,
+                "extensions": [{
+                    "install_scope": "private",
+                    "phase": "setup_needed",
+                    "summary": {
+                        "package_ref": { "id": "notion", "kind": "extension" },
+                        "name": "Notion",
+                        "description": "Notion MCP tools.",
+                        "runtime_kind": "first_party",
+                        "source": "host_bundled",
+                        "surface_kinds": ["tool", "auth"],
+                        "version": "0.1.0",
+                        "visible_read_only_capability_ids": []
+                    }
+                }]
+            },
+            "secrets": [{
+                "name": "mcp_notion_access_token",
+                "optional": false,
+                "prompt": "notion credential",
+                "provided": false,
+                "provider": "notion",
+                "setup": { "kind": "oauth", "scopes": [], "invocation_id": "cd98", "account_label": "notion notion" }
+            }]
+        });
+        let response: RebornSetupExtensionResponse =
+            serde_json::from_value(wire.clone()).expect("setup response decodes");
+        let Some(LifecycleProductPayload::ExtensionList { extensions, .. }) = &response.payload
+        else {
+            panic!("extension list payload: {response:?}");
+        };
+        assert_eq!(extensions[0].phase, LifecyclePublicState::SetupNeeded);
+        assert_eq!(serde_json::to_value(&response).expect("serialize"), wire);
+    }
 
     /// The outbound-delivery display newtypes are the only fence between an
     /// operator-supplied target label and the browser that renders it, and the
