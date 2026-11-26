@@ -229,7 +229,8 @@ pub fn refresh_button(k: &Kit, on_press: impl Fn(&mut State) + 'static) -> El {
 /// reloading after the press) and takes no press meanwhile, instead of
 /// sitting still until the rows land. Key it as [`controls::keyed_refresh`]
 /// is keyed. The breath runs at 15 fps only while loading and holds still
-/// under Reduce Motion.
+/// under Reduce Motion. It stands 24 pt tall, the height of the header
+/// controls it sits beside (segmented switches, push buttons).
 pub fn refresh_busy(
     k: &Kit,
     key: &str,
@@ -244,10 +245,11 @@ pub fn refresh_busy(
         16.,
         ink,
     );
-    crate::design::kit::glyph_button(
+    crate::design::kit::glyph_button_sized(
         k,
         key,
         IconButtonVariant::Ghost,
+        ControlSize::Regular,
         "Refresh",
         glyph,
         move |s: &mut State, _: &mut Tx| {

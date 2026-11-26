@@ -146,9 +146,23 @@ pub fn glyph_button(
     glyph: El,
     on_press: impl Fn(&mut State, &mut Tx) + 'static,
 ) -> El {
+    glyph_button_sized(k, key, variant, ControlSize::Small, tip, glyph, on_press)
+}
+
+/// [`glyph_button`] at another control size (`Regular` is 24 pt, the
+/// height of a page header's segmented controls and push buttons).
+pub fn glyph_button_sized(
+    k: &Kit,
+    key: &str,
+    variant: IconButtonVariant,
+    size: ControlSize,
+    tip: &str,
+    glyph: El,
+    on_press: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
     IconButton::new(&BLANK)
         .variant(variant)
-        .control_size(ControlSize::Small)
+        .control_size(size)
         .label(tip)
         .help(tip)
         .on_press_tx(on_press)

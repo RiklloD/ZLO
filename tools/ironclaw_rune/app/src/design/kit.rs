@@ -76,7 +76,7 @@ mod motion_tests;
 mod segmented;
 
 pub use editor::mono_editor;
-pub use glyphs::{Turn, busy_glyph, chevron, copied, copy_glyph, glyph_button, icon_ink};
+pub use glyphs::{Turn, busy_glyph, chevron, copied, copy_glyph, glyph_button, glyph_button_sized, icon_ink};
 pub use segmented::segmented;
 
 pub use loops::{Spinner, claw_mark, gradient_spinner, pulse_dots, shimmer_text, status_dot};
