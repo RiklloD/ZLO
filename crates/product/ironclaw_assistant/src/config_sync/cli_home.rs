@@ -150,33 +150,61 @@ fn plain(name: &str) -> bool {
         && !name.ends_with(['.', ' '])
 }
 
-/// A name that is hidden, or looks like where a CLI keeps a sign-in or
-/// its settings: never read and never written, wherever it sits.
+/// A name that is hidden, or is where a sign-in, a key or a CLI's settings
+/// are kept: never read and never written, wherever it sits.
+///
+/// Judged on the name's stem (up to its first dot) and its extensions, so
+/// `settings.json.bak` and `api_token.txt` are held back while
+/// `tokenizer.md` and `oauth.md` are ordinary files.
 fn withheld(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.starts_with('.')
-        || matches!(
-            lower.as_str(),
-            "settings.json"
-                | "settings.local.json"
-                | "auth.json"
-                | "credentials.json"
-                | "oauth_creds.json"
-                | "config.toml"
-        )
-        || [
-            "token",
-            "secret",
-            "credential",
-            "password",
-            "settings",
-            "auth.",
-        ]
-        .iter()
-        .any(|word| lower.contains(word))
-        || [".pem", ".key", ".p12", ".env"]
-            .iter()
-            .any(|ext| lower.ends_with(ext))
+    if lower.starts_with('.') {
+        return true;
+    }
+    let (stem, extensions) = lower.split_once('.').unwrap_or((lower.as_str(), ""));
+    const STEMS: [&str; 14] = [
+        "settings",
+        "auth",
+        "credentials",
+        "credential",
+        "secrets",
+        "secret",
+        "token",
+        "tokens",
+        "password",
+        "passwords",
+        "oauth_creds",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+    ];
+    const ENDINGS: [&str; 8] = [
+        "token",
+        "tokens",
+        "secret",
+        "secrets",
+        "credentials",
+        "password",
+        "passwords",
+        "key",
+    ];
+    const EXTENSIONS: [&str; 12] = [
+        "pem", "key", "p12", "pfx", "jks", "keystore", "kdbx", "env", "ppk", "gpg", "asc", "netrc",
+    ];
+    STEMS.contains(&stem)
+        || stem.starts_with("id_ed25519")
+        || ENDINGS.iter().any(|end| {
+            stem.strip_suffix(end)
+                .is_some_and(|rest| rest.ends_with(['_', '-']))
+        })
+        || extensions.split('.').any(|ext| EXTENSIONS.contains(&ext))
+        || lower == "config.toml"
+}
+
+/// Bytes that are a private key, whatever the file is called.
+fn is_private_key(bytes: &[u8]) -> bool {
+    const MARK: &[u8] = b"PRIVATE KEY-----";
+    bytes.windows(MARK.len()).any(|window| window == MARK)
 }
 
 /// The root folder, opened without following a link at its last name,
@@ -184,6 +212,10 @@ fn withheld(name: &str) -> bool {
 /// follow one). `create`: make that one folder when it is missing; its
 /// parent is the person's own and must be there already.
 fn open_root(dir: &std::path::Path, create: bool) -> io::Result<OwnedFd> {
+    // A relative root has no place of its own to be found from.
+    if !dir.is_absolute() {
+        return Err(io::Error::other("the root is not an absolute path"));
+    }
     let dir: PathBuf = dir.components().collect();
     let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
         return Err(io::Error::other("the root has no name"));
@@ -209,7 +241,14 @@ fn open_root(dir: &std::path::Path, create: bool) -> io::Result<OwnedFd> {
 /// is refused.
 fn held_exactly(dir: &OwnedFd, name: &str) -> io::Result<bool> {
     let mut found = false;
+    let mut read = 0usize;
     for entry in rustix::fs::Dir::read_from(dir).map_err(rx)?.flatten() {
+        read += 1;
+        if read > MAX_FOLDER_NAMES + 2 {
+            return Err(io::Error::other(
+                "the folder has too many entries to check a name against",
+            ));
+        }
         let held = entry.file_name().to_string_lossy();
         if held == name {
             found = true;
@@ -218,6 +257,14 @@ fn held_exactly(dir: &OwnedFd, name: &str) -> io::Result<bool> {
                 "`{held}` is there, with a name that differs only in case"
             )));
         }
+    }
+    // Not listed under this spelling, and still there when asked for by
+    // it: the volume takes another spelling (a letter it folds, a
+    // different Unicode form) for the same entry.
+    if !found && rustix::fs::statat(dir.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW).is_ok() {
+        return Err(io::Error::other(
+            "an entry is there under another spelling of this name",
+        ));
     }
     Ok(found)
 }
@@ -405,7 +452,8 @@ impl CliHomeDomainHandler {
                 rustix::fs::openat(dir.as_fd(), *name, DIR_FLAGS, Mode::empty()).map_err(rx)?
             };
         }
-        if held_exactly(&dir, last)? {
+        let replaces = held_exactly(&dir, last)?;
+        if replaces {
             let stat =
                 rustix::fs::statat(dir.as_fd(), *last, AtFlags::SYMLINK_NOFOLLOW).map_err(rx)?;
             if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
@@ -437,7 +485,20 @@ impl CliHomeDomainHandler {
             let mut file = std::fs::File::from(fd);
             file.write_all(bytes)?;
             file.sync_all()?;
-            rustix::fs::renameat(dir.as_fd(), temporary.as_str(), dir.as_fd(), *last).map_err(rx)
+            if replaces {
+                rustix::fs::renameat(dir.as_fd(), temporary.as_str(), dir.as_fd(), *last)
+                    .map_err(rx)
+            } else {
+                // Nothing was there: published only if nothing still is.
+                rustix::fs::renameat_with(
+                    dir.as_fd(),
+                    temporary.as_str(),
+                    dir.as_fd(),
+                    *last,
+                    rustix::fs::RenameFlags::NOREPLACE,
+                )
+                .map_err(rx)
+            }
         })();
         if written.is_err()
             && let Err(error) =
@@ -496,6 +557,10 @@ fn walk(
             let hash = match known.get(&key) {
                 Some((held, hash)) if *held == stamp => hash.clone(),
                 _ => match read_all(fd, items::ITEM_CONTENT_BYTES) {
+                    Ok(bytes) if is_private_key(&bytes) => {
+                        out.note(format!("{key} (holds a private key)"));
+                        return;
+                    }
                     Ok(bytes) => file_hash(&bytes, is_executable(&stat)),
                     Err(error) => {
                         tracing::debug!(%error, %key, "config sync: file not read");
@@ -517,8 +582,12 @@ fn walk(
                 if child == "." || child == ".." {
                     continue;
                 }
-                // Every name read counts, carried or not.
+                // Every name read counts, carried or not, here and overall.
                 read += 1;
+                out.visited += 1;
+                if out.visited > MAX_VISITED {
+                    break;
+                }
                 if read > MAX_FOLDER_NAMES {
                     out.note(format!(
                         "{key} (more than {MAX_FOLDER_NAMES} entries; the rest were left)"
@@ -661,7 +730,15 @@ impl ConfigSyncDomainHandler for CliHomeDomainHandler {
                 skipped += 1;
                 continue;
             }
-            match self.write(root, &names, &bytes, exec) {
+            if is_private_key(&bytes) {
+                warnings.push(format!(
+                    "{} holds a private key and was not written",
+                    item.key
+                ));
+                skipped += 1;
+                continue;
+            }
+            match off_the_reactor(|| self.write(root, &names, &bytes, exec)) {
                 Ok(()) => applied += 1,
                 Err(error) => {
                     tracing::debug!(key = %item.key, %error, "config sync: file not written");
@@ -786,6 +863,15 @@ mod tests {
         // folder, by its name.
         mac.put(".alpha/skills/deploy/settings.json", "{}");
         mac.put(".alpha/skills/deploy/api_token.txt", "secret");
+        mac.put(".alpha/skills/deploy/id_ed25519", "key");
+        mac.put(".alpha/skills/deploy/cert.pfx", "bundle");
+        mac.put(
+            ".alpha/skills/deploy/notes.txt",
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n",
+        );
+        // Ordinary files whose names merely contain such a word travel.
+        mac.put(".alpha/skills/deploy/tokenizer.md", "# Tokenizer\n");
+        mac.put(".alpha/skills/deploy/oauth.md", "# OAuth notes\n");
         // Never carried: a settings file beside the rules, a login, a
         // hidden file inside a carried folder.
         mac.put(".alpha/settings.json", "{\"token\":\"secret\"}");
@@ -797,7 +883,16 @@ mod tests {
         boxed.put(".alpha/settings.json", "{\"box\":true}");
 
         let result = carry(&mac, &boxed).await;
-        assert_eq!(result.outcome.applied_count, 4, "{:?}", result.outcome);
+        assert_eq!(result.outcome.applied_count, 6, "{:?}", result.outcome);
+        for kept_back in ["id_ed25519", "cert.pfx", "notes.txt"] {
+            assert_eq!(
+                boxed.get(&format!(".alpha/skills/deploy/{kept_back}")),
+                None,
+                "{kept_back}"
+            );
+        }
+        assert!(boxed.get(".alpha/skills/deploy/tokenizer.md").is_some());
+        assert!(boxed.get(".alpha/skills/deploy/oauth.md").is_some());
         assert_eq!(boxed.get(".alpha/RULES.md").as_deref(), Some("Be brief.\n"));
         assert_eq!(
             boxed.get(".alpha/skills/deploy/SKILL.md").as_deref(),
@@ -835,6 +930,7 @@ mod tests {
             key: key.into(),
             hash: file_hash(text.as_bytes(), false),
             files: Some(files),
+            base: None,
         }
     }
 
@@ -1010,6 +1106,64 @@ mod tests {
             "{:?}",
             page.items
         );
+    }
+
+    #[tokio::test]
+    async fn a_receivers_file_under_another_spelling_is_not_replaced() {
+        let (mac, boxed) = (Host::new(), Host::new());
+        // A Kelvin sign for the K: the same entry as `Kitchen.md` where
+        // the volume folds it, another file where it does not.
+        boxed.put(".alpha/skills/\u{212a}itchen.md", "the box's own\n");
+        mac.put(".alpha/skills/Kitchen.md", "from the mac\n");
+        carry(&mac, &boxed).await;
+        assert_eq!(
+            boxed.get(".alpha/skills/\u{212a}itchen.md").as_deref(),
+            Some("the box's own\n")
+        );
+        // A relative root is not looked for anywhere.
+        let relative = CliHomeDomainHandler::new(vec![CliHomeRoot {
+            id: "alpha".into(),
+            dir: PathBuf::from("relative-root"),
+            entries: vec![entry("skills", true)],
+        }]);
+        let payload = mac.handler.export(&ctx()).await.expect("export");
+        let result = relative.apply(&ctx(), &payload).await.expect("apply");
+        assert_eq!(result.outcome.applied_count, 0);
+        assert!(!Path::new("relative-root").exists());
+    }
+
+    #[test]
+    fn names_that_keep_a_sign_in_are_withheld_and_ordinary_ones_are_not() {
+        for name in [
+            "settings.json",
+            "Settings.JSON.bak",
+            "auth.json",
+            "api_token.txt",
+            "API-KEY.md",
+            "id_rsa",
+            "id_ed25519.pub",
+            "cert.pfx",
+            "server.key",
+            "prod.env",
+            "secrets.yaml",
+            ".hidden",
+            "config.toml",
+            "db_password",
+        ] {
+            assert!(withheld(name), "{name}");
+        }
+        for name in [
+            "tokenizer.md",
+            "oauth.md",
+            "SKILL.md",
+            "authoring-guide.md",
+            "keyboard.md",
+            "settings-explained",
+            "run.sh",
+            "environment.md",
+        ] {
+            assert!(!withheld(name), "{name}");
+        }
     }
 
     #[test]

@@ -297,6 +297,7 @@ impl ConfigSyncService {
             have: request.have,
             after: request.after,
             until: request.until,
+            peer: request.peer,
         };
         let selected: BTreeSet<ConfigSyncDomain> = if request.domains.is_empty() {
             self.handlers
@@ -593,7 +594,7 @@ fn parse_raw_export_request(raw: Value) -> Result<ConfigSyncExportRequest, (Stri
     for key in obj.keys() {
         if !matches!(
             key.as_str(),
-            "domains" | "index_only" | "have" | "after" | "until"
+            "domains" | "index_only" | "have" | "after" | "until" | "peer"
         ) {
             return Err((
                 key.clone(),

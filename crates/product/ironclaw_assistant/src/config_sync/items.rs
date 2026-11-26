@@ -34,6 +34,8 @@ pub struct PageRequest {
     pub after: Option<String>,
     /// `have` says nothing about keys after this one: the page ends here.
     pub until: Option<String>,
+    /// The installation the page is for.
+    pub peer: Option<String>,
 }
 
 /// `sha256:<hex>` of bytes.
@@ -174,6 +176,8 @@ where
     };
     let sent =
         |item: &ConfigSyncItem| serde_json::to_vec(item).map_or(usize::MAX / 2, |b| b.len() + 1);
+    // The last key dealt with, carried or not: where the next page starts.
+    let mut consumed: Option<String> = None;
     for (key, hash) in all {
         if request.after.as_ref().is_some_and(|after| key <= after) {
             continue;
@@ -188,9 +192,10 @@ where
             key: key.clone(),
             hash: hash.clone(),
             files: None,
+            base: None,
         };
         if out.items.len() >= PAGE_ITEMS || weight + sent(&item) > PAGE_ENCODED_BYTES {
-            out.next = out.items.last().map(|item| item.key.clone());
+            out.next = consumed.clone();
             break;
         }
         if !(request.index_only || request.have.get(key) == Some(hash)) {
@@ -202,12 +207,14 @@ where
                     &mut weight,
                     format!("{key} (changed while syncing)"),
                 );
+                consumed = Some(key.clone());
                 continue;
             };
             let bytes: usize = files.iter().map(|(_, b)| b.len()).sum();
             if bytes > ITEM_CONTENT_BYTES {
                 let line = format!("{key} (too large, {} KiB)", bytes.div_ceil(1024));
                 say(&mut out, &mut weight, line);
+                consumed = Some(key.clone());
                 continue;
             }
             item.files = Some(encode(files));
@@ -220,14 +227,18 @@ where
                     &mut weight,
                     format!("{key} (too large once encoded)"),
                 );
+                consumed = Some(key.clone());
                 continue;
             }
-            if weight + cost > PAGE_ENCODED_BYTES {
-                out.next = out.items.last().map(|item| item.key.clone());
+            // The first item of a page always goes: the notes ahead of it
+            // are few and short, and a page must move the cursor on.
+            if !out.items.is_empty() && weight + cost > PAGE_ENCODED_BYTES {
+                out.next = consumed.clone();
                 break;
             }
         }
         weight += sent(&item);
+        consumed = Some(key.clone());
         out.items.push(item);
     }
     if unsaid > 0 {
@@ -370,12 +381,36 @@ mod tests {
         assert!(validate(ConfigSyncDomain::Memory, &page).is_ok());
     }
 
+    #[tokio::test]
+    async fn a_page_that_skips_its_first_items_still_moves_the_cursor_on() {
+        // Two items go away, then two that each fill most of a page.
+        let all = index(&["a-gone", "b-gone", "c", "d"]);
+        let load = |key: String| async move {
+            Ok((!key.ends_with("gone")).then(|| vec![(String::new(), vec![7u8; 1_500_000])]))
+        };
+        let first = super::page(&all, &PageRequest::default(), load)
+            .await
+            .expect("page");
+        assert_eq!(keys(&first), ["c"]);
+        assert_eq!(first.next.as_deref(), Some("c"));
+        // And when nothing at all could be carried before the cut.
+        let none: BTreeMap<String, String> = (0..PAGE_ITEMS + 5)
+            .map(|n| (format!("{n:05}-gone"), "h".to_string()))
+            .collect();
+        let page = super::page(&none, &PageRequest::default(), load)
+            .await
+            .expect("page");
+        assert!(page.items.is_empty());
+        assert_eq!(page.next, None, "every key was dealt with");
+    }
+
     #[test]
     fn a_page_with_a_key_twice_or_out_of_order_is_refused() {
         let item = |key: &str| ConfigSyncItem {
             key: key.into(),
             hash: "h".into(),
             files: None,
+            base: None,
         };
         let page = |keys: &[&str]| ItemizedDomainPayload {
             hash: String::new(),

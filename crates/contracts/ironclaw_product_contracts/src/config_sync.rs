@@ -174,6 +174,11 @@ pub struct ConfigSyncExportRequest {
     /// the page stops there (its `next` is then this key).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
+    /// Itemized two-way domains: the installation the page is for, so each
+    /// item can say what the sender last agreed on with it
+    /// ([`ConfigSyncItem::base`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
 }
 
 /// Portable `config.toml` sections (paths normalized with `$HOME`/`$ZLO_HOME`).
@@ -293,6 +298,11 @@ pub struct ConfigSyncItem {
     /// was asked for).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<ConfigSyncItemFile>>,
+    /// Two-way domains: the hash the sender last agreed on with the
+    /// receiver for this item. A receiver still holding exactly that knows
+    /// the sender's content came from its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 /// A page of an itemized domain (`skills`, `memory`).

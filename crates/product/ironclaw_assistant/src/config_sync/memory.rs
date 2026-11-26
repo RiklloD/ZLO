@@ -281,16 +281,42 @@ enum Step {
     Compare,
 }
 
-fn step(incoming: &str, held: Option<&String>, base: Option<&String>, has_content: bool) -> Step {
-    match held {
-        Some(held) if held == incoming => Step::Agree,
-        _ if !has_content => Step::Keep,
-        // Agreed on before and gone here since: it was removed here.
-        None if base.is_some_and(|b| b == incoming) => Step::Keep,
-        None => Step::Create,
-        Some(held) if base == Some(held) => Step::Replace,
-        Some(_) if base.is_some_and(|b| b == incoming) => Step::Keep,
-        Some(_) => Step::Compare,
+/// `base`: what this side last agreed on with the sender. `theirs`: what
+/// the sender says it last agreed on with this side.
+fn step(
+    incoming: &str,
+    held: Option<&String>,
+    base: Option<&String>,
+    theirs: Option<&String>,
+    has_content: bool,
+) -> Step {
+    let Some(held) = held else {
+        return match base {
+            _ if !has_content => Step::Keep,
+            // Agreed on before and gone here since: it was removed here.
+            Some(base) if base == incoming => Step::Keep,
+            _ => Step::Create,
+        };
+    };
+    if held == incoming {
+        return Step::Agree;
+    }
+    if !has_content {
+        return Step::Keep;
+    }
+    if base == Some(held) {
+        return Step::Replace;
+    }
+    // Each side's record of the last agreement speaks for the other's
+    // text: this side changed since (the incoming text is the old
+    // agreement), or the sender did (what is held here is). One of them
+    // may be missing after an interrupted pass; the other still tells.
+    let changed_here = base.is_some_and(|base| base == incoming);
+    let changed_there = theirs == Some(held);
+    match (changed_here, changed_there) {
+        (true, false) => Step::Keep,
+        (false, true) => Step::Replace,
+        _ => Step::Compare,
     }
 }
 
@@ -341,6 +367,15 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
             }
         })
         .await?;
+        let mut page = page;
+        // What this side last agreed on with the computer the page is
+        // for, item by item.
+        if let Some(peer) = ctx.page.peer.as_deref() {
+            let base = self.base.load(&ctx.caller, peer).await?;
+            for item in &mut page.items {
+                item.base = base.get(&item.key).cloned();
+            }
+        }
         Ok(ConfigSyncDomainPayload::Memory(page))
     }
 
@@ -432,6 +467,7 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
                 &item.hash,
                 mine.map(|held| &held.hash),
                 base.get(path),
+                item.base.as_ref(),
                 content.is_some(),
             );
             if todo == Step::Agree {
@@ -445,9 +481,10 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
                 skipped += 1;
                 continue;
             };
-            // Never agreed on, and archived here: it was removed on this
-            // computer (whatever its text was by then) and stays removed.
-            if todo == Step::Create && !base.contains_key(path) && archived_here(&held, path) {
+            // Archived here: it was removed on this computer (whatever its
+            // text was by then, and whatever was agreed before) and stays
+            // removed, even when the other side has edited it since.
+            if todo == Step::Create && archived_here(&held, path) {
                 agree(path, &item.hash);
                 skipped += 1;
                 continue;
@@ -546,23 +583,32 @@ mod tests {
     #[test]
     fn each_case_of_the_three_way_rule() {
         let (a, b) = ("a".to_string(), "b".to_string());
+        let rule = |incoming, held, base| step(incoming, held, base, None, true);
         // Same on both sides.
-        assert_eq!(step("a", Some(&a), None, true), Step::Agree);
+        assert_eq!(rule("a", Some(&a), None), Step::Agree);
         // New to this side.
-        assert_eq!(step("a", None, None, true), Step::Create);
+        assert_eq!(rule("a", None, None), Step::Create);
         // Agreed on, then removed here: stays removed.
-        assert_eq!(step("a", None, Some(&a), true), Step::Keep);
-        // Removed here, changed there since: it comes back.
-        assert_eq!(step("b", None, Some(&a), true), Step::Create);
+        assert_eq!(rule("a", None, Some(&a)), Step::Keep);
+        // Removed here, changed there since: for the caller to decide.
+        assert_eq!(rule("b", None, Some(&a)), Step::Create);
         // Only the other side changed.
-        assert_eq!(step("b", Some(&a), Some(&a), true), Step::Replace);
+        assert_eq!(rule("b", Some(&a), Some(&a)), Step::Replace);
         // Only this side changed.
-        assert_eq!(step("a", Some(&b), Some(&a), true), Step::Keep);
+        assert_eq!(rule("a", Some(&b), Some(&a)), Step::Keep);
         // Both changed, or never agreed on.
-        assert_eq!(step("c", Some(&b), Some(&a), true), Step::Compare);
-        assert_eq!(step("c", Some(&b), None, true), Step::Compare);
+        assert_eq!(rule("c", Some(&b), Some(&a)), Step::Compare);
+        assert_eq!(rule("c", Some(&b), None), Step::Compare);
         // The sender believed this side held it already.
-        assert_eq!(step("c", Some(&b), Some(&a), false), Step::Keep);
+        assert_eq!(step("c", Some(&b), Some(&a), None, false), Step::Keep);
+
+        // This side never recorded the last agreement (the pass was cut
+        // short), and the sender did: what is held here is what the
+        // sender started from, so its text replaces it.
+        assert_eq!(step("c", Some(&b), Some(&a), Some(&b), true), Step::Replace);
+        assert_eq!(step("c", Some(&b), None, Some(&b), true), Step::Replace);
+        // Each record points at the other's text: no telling.
+        assert_eq!(step("a", Some(&b), Some(&a), Some(&b), true), Step::Compare);
     }
 
     #[test]

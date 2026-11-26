@@ -261,6 +261,37 @@ pub(crate) async fn replace_skill_bundle(
             ),
         ));
     }
+    // The same, asked of the store itself: a folder with nothing in it is
+    // not in the capture above, and is as much in the way.
+    for (relative_path, file_path, _) in &incoming {
+        let in_the_way = || {
+            SkillManagementError::with_reason(
+                SkillManagementErrorKind::Conflict,
+                format!(
+                    "`{relative_path}` crosses a file and a folder; remove the skill here to take the new one"
+                ),
+            )
+        };
+        if stat_optional(context, file_path)
+            .await?
+            .is_some_and(|stat| stat.file_type != FileType::File)
+        {
+            return Err(in_the_way());
+        }
+        let mut above = scoped_parent(file_path)?;
+        while let Some(folder) = above {
+            if folder.as_str() == skill_dir.as_str() {
+                break;
+            }
+            if stat_optional(context, &folder)
+                .await?
+                .is_some_and(|stat| stat.file_type != FileType::Directory)
+            {
+                return Err(in_the_way());
+            }
+            above = scoped_parent(&folder)?;
+        }
+    }
     for (_, file_path, contents) in &incoming {
         if let Some(parent) = scoped_parent(file_path)? {
             create_dir_all(context, skill_name, "replace_create_parent", &parent).await?;

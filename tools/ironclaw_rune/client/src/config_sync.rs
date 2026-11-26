@@ -326,6 +326,12 @@ fn have_window(
     (window, None)
 }
 
+/// The receiving end of a leg: its connection and its installation id.
+struct End<'a> {
+    client: &'a Client,
+    id: &'a str,
+}
+
 /// What a leg carries.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Leg {
@@ -340,14 +346,14 @@ enum Leg {
 /// (in pages), then the sender's pages until there is no next one, each
 /// told what the receiver holds in the range it covers.
 async fn carry_items(
-    from: &Client,
-    to: &Client,
+    (from, to): (&Client, &End<'_>),
     domain: ConfigSyncDomain,
     merge_back: bool,
     leg: Leg,
     stop: &AtomicBool,
     tally: &mut Tally,
 ) -> Result<(), ClientError> {
+    let (to, to_id) = (to.client, to.id);
     let mut have: BTreeMap<String, String> = BTreeMap::new();
     let mut after: Option<String> = None;
     loop {
@@ -367,7 +373,9 @@ async fn carry_items(
     loop {
         live(stop)?;
         let (window, until) = have_window(&have, after.as_ref());
-        let mut request = json!({ "domains": [domain], "have": window });
+        // The sender is told whom the page is for, so each item can say
+        // what the two last agreed on.
+        let mut request = json!({ "domains": [domain], "have": window, "peer": to_id });
         if leg == Leg::Confirm {
             request["index_only"] = Value::Bool(true);
         }
@@ -460,33 +468,24 @@ pub async fn sync_once(
             );
         }
     }
+    let mac = End {
+        client: source,
+        id: &ours.environment_id,
+    };
+    let other = End {
+        client: target,
+        id: &theirs.environment_id,
+    };
     for domain in paged {
-        carry_items(
-            source,
-            target,
-            domain,
-            false,
-            Leg::Content,
-            stop,
-            &mut tally,
-        )
-        .await?;
+        let tally = &mut tally;
+        carry_items((source, &other), domain, false, Leg::Content, stop, tally).await?;
         if domain.two_way() {
-            carry_items(target, source, domain, true, Leg::Content, stop, &mut tally).await?;
+            carry_items((target, &mac), domain, true, Leg::Content, stop, tally).await?;
             // Something moved: one more round, of keys and hashes only,
             // lets each side record what both now hold.
             if tally.wrote.contains(&domain) {
-                carry_items(
-                    source,
-                    target,
-                    domain,
-                    false,
-                    Leg::Confirm,
-                    stop,
-                    &mut tally,
-                )
-                .await?;
-                carry_items(target, source, domain, true, Leg::Confirm, stop, &mut tally).await?;
+                carry_items((source, &other), domain, false, Leg::Confirm, stop, tally).await?;
+                carry_items((target, &mac), domain, true, Leg::Confirm, stop, tally).await?;
             }
         }
     }

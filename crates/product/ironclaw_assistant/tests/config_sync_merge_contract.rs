@@ -369,6 +369,7 @@ async fn leg(
                     have: have.clone(),
                     after: after.clone(),
                     until: None,
+                    peer: Some(to.id.to_string()),
                 },
             )
             .await
@@ -941,4 +942,43 @@ async fn a_skill_file_that_would_become_a_folder_is_refused_and_the_skill_stays(
         names.sort();
         assert_eq!(names, ["SKILL.md", "scripts/tool"], "untouched");
     }
+}
+
+#[tokio::test]
+async fn a_pass_cut_short_does_not_strand_the_next_edit() {
+    let (mac, boxed) = (host(MAC), host(BOX));
+    mac.documents.set("notes/a.md", "v0\n");
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    // The Mac's v1 reaches the box, and the pass ends there: the Mac never
+    // records that the box took it.
+    mac.documents.set("notes/a.md", "v1\n");
+    leg(&mac, &boxed, MEMORY, false).await;
+    assert_eq!(boxed.documents.get("notes/a.md").as_deref(), Some("v1\n"));
+    // The box then rewrites it (not an append).
+    boxed.documents.set("notes/a.md", "rewritten on the box\n");
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    for host in [&mac, &boxed] {
+        assert_eq!(
+            host.documents.get("notes/a.md").as_deref(),
+            Some("rewritten on the box\n"),
+            "{}",
+            host.id
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_document_archived_after_it_was_agreed_stays_archived_when_the_other_side_edits_it() {
+    let (mac, boxed) = (host(MAC), host(BOX));
+    mac.documents.set("notes/a.md", "v0\n");
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    // Archived on the box, then edited on the Mac.
+    boxed.documents.remove("notes/a.md");
+    boxed
+        .documents
+        .set("archive/20261126T120000Z/notes/a.md", "v0\n");
+    mac.documents.set("notes/a.md", "v1\n");
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    assert_eq!(boxed.documents.get("notes/a.md"), None, "resurrected");
+    assert_eq!(mac.documents.get("notes/a.md").as_deref(), Some("v1\n"));
 }

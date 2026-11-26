@@ -605,5 +605,24 @@ Phases 1, 2 and 5 are in. What differs from the sketch above:
     passes that take a path away and back between this pass's read and
     its write are not noticed.
 
+- **After the fourth review (2026-11-26).**
+  - Memory: each page item says what the sender last agreed on with the
+    receiver (`ConfigSyncItem::base`, asked for with `peer`). A receiver
+    still holding exactly that takes the sender's text even when its own
+    record of the agreement is missing (a pass cut short). A document
+    archived on a computer stays removed there whatever was agreed
+    before and whatever the other side has done since.
+  - Pages: the cursor is the last key dealt with, carried or not, and the
+    first item of a page always goes.
+  - Skills: file and folder types are also asked of the store before the
+    first write (an empty folder is in the way too).
+  - `cli_home`: names are judged by stem and extension (`tokenizer.md`
+    travels, `api_token.txt` and `settings.json.bak` do not); key and
+    certificate files by name, and any file whose bytes hold a private
+    key, are held back; an entry reachable under another spelling of an
+    incoming name is not replaced and a new file is published without
+    replacing; a relative root is not used; every name read counts
+    toward the scan limit and writes run off the async workers.
+
 Left: phase 3 (provider catalog and keys), phase 4 (extensions, hooks,
 automations).
