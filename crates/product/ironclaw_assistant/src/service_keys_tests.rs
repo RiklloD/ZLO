@@ -197,12 +197,15 @@ async fn a_rejected_key_is_never_stored() {
 }
 
 #[tokio::test]
-async fn an_unreachable_service_stores_the_key_marked_unverified() {
+async fn an_unreachable_service_stores_nothing_and_asks_to_retry() {
+    // A stored key switches Supermemory on in place of local memory, so an
+    // unproven key must not be stored.
     let fx = fixture(None);
-    let response = fx.set(OFFLINE).await.unwrap();
-    assert_eq!(response.check, ServiceKeyCheck::Unverified);
-    assert!(response.stored);
-    assert_eq!(fx.stored().await.as_deref(), Some(OFFLINE));
+    let error = fx.set(OFFLINE).await.unwrap_err();
+    assert!(error.retryable, "the person can try again");
+    no_key_in(&error);
+    assert!(fx.stored().await.is_none());
+    assert_eq!(fx.verifier.changed.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

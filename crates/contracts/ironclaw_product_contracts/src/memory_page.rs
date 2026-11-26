@@ -465,7 +465,7 @@ pub struct MemoryWikiStatusRequest {}
 pub struct MemoryWikiStatus {
     /// Local memory is document-shaped, so a wiki can live there.
     pub available: bool,
-    /// `wiki/SCHEMA.md` exists.
+    /// `wiki/SCHEMA.md`, `wiki/index.md` and `wiki/log.md` all exist.
     pub initialized: bool,
     /// Documents under `wiki/`.
     pub pages: usize,

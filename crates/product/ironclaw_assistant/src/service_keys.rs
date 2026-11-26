@@ -152,8 +152,11 @@ impl ServiceKeysSurface {
                     ));
                 }
                 Err(ServiceKeyVerifyError::Unreachable { reason }) => {
-                    tracing::debug!(%reason, id = %key.descriptor.id, "service keys: could not verify; storing unverified");
-                    ServiceKeyCheck::Unverified
+                    // A stored key switches the service on (Supermemory then
+                    // replaces local memory), so an unproven key is not
+                    // stored: the person tries again once it answers.
+                    tracing::debug!(%reason, id = %key.descriptor.id, "service keys: could not verify; not stored");
+                    return Err(ProductSurfaceError::unavailable(true));
                 }
             },
         };

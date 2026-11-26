@@ -646,3 +646,33 @@ async fn wiki_without_document_memory_reports_unavailable() {
         .unwrap_err();
     assert_eq!(error.kind, ProductSurfaceErrorKind::ServiceUnavailable);
 }
+
+#[tokio::test]
+async fn a_half_built_wiki_is_not_built_so_the_build_comes_back() {
+    let (surface, _docs) = local_surface();
+    let alice = bound(&surface, "alice");
+    // An earlier build stopped after the schema.
+    MEMORY_WRITE_COMMAND
+        .invoke_on(
+            &alice,
+            MemoryWriteRequest {
+                path: "wiki/SCHEMA.md".to_string(),
+                content: "# schema".to_string(),
+                expected_content_hash: None,
+            },
+            ActivityId::new(),
+        )
+        .await
+        .unwrap();
+    let status = MEMORY_WIKI_STATUS_VIEW
+        .query_on(&alice, MemoryWikiStatusRequest {}, None)
+        .await
+        .unwrap();
+    assert!(!status.initialized);
+    let done = MEMORY_WIKI_INIT_COMMAND
+        .invoke_on(&alice, MemoryWikiInitRequest {}, ActivityId::new())
+        .await
+        .unwrap();
+    assert_eq!(done.created, vec!["wiki/index.md", "wiki/log.md"]);
+    assert!(done.status.initialized);
+}

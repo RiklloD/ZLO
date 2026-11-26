@@ -115,6 +115,10 @@ pub fn describe_error(error: &ClientError, label: &str) -> String {
                 _ => format!("{label} refused this key. Check it and paste it again."),
             }
         }
+        ClientError::Api { status: 503, .. } => format!(
+            "{label} could not be reached to test the key, so it was not saved. \
+             Try again in a moment."
+        ),
         ClientError::Api { status: 403, .. } => {
             "Only this computer's operator can change keys.".to_string()
         }
@@ -582,6 +586,22 @@ mod tests {
             describe_error(&api(Some("value"), Some("blank")), "X"),
             "Paste a key first."
         );
+    }
+
+    #[test]
+    fn an_unreachable_service_says_nothing_was_saved() {
+        let error = ClientError::Api {
+            status: 503,
+            message: "unavailable".into(),
+            body: Box::new(zlo_client::ApiErrorBody {
+                error: None,
+                kind: None,
+                retryable: true,
+                field: None,
+                validation_code: None,
+            }),
+        };
+        assert!(describe_error(&error, "Supermemory").contains("not saved"));
     }
 
     #[test]

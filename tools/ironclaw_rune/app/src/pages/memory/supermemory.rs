@@ -289,7 +289,14 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
         return empty_state(p, "Supermemory is not part of this build.");
     }
     let mut profile_picker = row().key("sm-profiles").w_full().gap(8.0).flex_wrap();
-    let choices = std::iter::once((None, "Default".to_string())).chain(
+    // A `default` profile with its own container is listed too: the
+    // no-profile choice then names itself apart.
+    let default_label = if m.profiles.iter().any(|(id, _)| id == "default") {
+        "Deployment default"
+    } else {
+        "Default"
+    };
+    let choices = std::iter::once((None, default_label.to_string())).chain(
         m.profiles
             .iter()
             .map(|(id, name)| (Some(id.clone()), name.clone())),

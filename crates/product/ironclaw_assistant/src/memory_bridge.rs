@@ -138,7 +138,7 @@ impl MemoryBridgeTools {
                     .documents
                     .into_iter()
                     .map(|entry| entry.path)
-                    .filter(|path| path.starts_with(prefix.trim()) && !path.starts_with("archive/"))
+                    .filter(|path| path.starts_with(prefix.trim()) && !is_archived(path))
                     .collect();
                 let truncated = paths.len() > MAX_TREE_PATHS;
                 ok(json!({
@@ -151,6 +151,11 @@ impl MemoryBridgeTools {
     }
 
     async fn read(&self, surface: &BoundProductSurface, args: ReadArgs) -> Value {
+        // Archived documents are the person's to see on the Memory page;
+        // agents never read them (as the native memory read refuses them).
+        if is_archived(&args.path) {
+            return result(format!("{READ}: no such document"), true);
+        }
         match MEMORY_DOCUMENT_VIEW
             .query_on(surface, MemoryDocumentRequest { path: args.path }, None)
             .await
@@ -176,7 +181,11 @@ impl MemoryBridgeTools {
             )
             .await
         {
-            Ok(response) => ok(response.hits),
+            Ok(response) => ok(response
+                .hits
+                .into_iter()
+                .filter(|hit| !is_archived(&hit.path))
+                .collect::<Vec<_>>()),
             Err(error) => failure(SEARCH, &error),
         }
     }
@@ -214,6 +223,11 @@ impl MemoryBridgeTools {
             Err(error) => failure(WRITE, &error),
         }
     }
+}
+
+fn is_archived(path: &str) -> bool {
+    let path = path.trim().trim_start_matches('/');
+    path == "archive" || path.starts_with("archive/")
 }
 
 fn schema(properties: Value, required: &[&str]) -> Value {

@@ -819,3 +819,101 @@ async fn delete_document_refuses_a_document_shared_with_another_container() {
         "nothing is deleted"
     );
 }
+
+/// A refusal whose body is over the response limit: the network layer keeps
+/// the status on the partial response.
+struct OversizedRefusal;
+
+#[async_trait]
+impl NetworkHttpEgress for OversizedRefusal {
+    async fn execute(
+        &self,
+        _request: NetworkHttpRequest,
+    ) -> Result<NetworkHttpResponse, NetworkHttpError> {
+        Err(NetworkHttpError::ResponseBodyLimit {
+            limit: 8,
+            request_bytes: 0,
+            response_bytes: 9,
+            partial_response: Some(NetworkHttpResponse {
+                status: 401,
+                headers: Vec::new(),
+                body: b"unauthor".to_vec(),
+                usage: Default::default(),
+            }),
+        })
+    }
+}
+
+fn product_caller() -> ironclaw_product_contracts::surface::ProductSurfaceCaller {
+    ironclaw_product_contracts::surface::ProductSurfaceCaller::new(
+        TenantId::new("tenant-1").unwrap(),
+        UserId::new("user-1").unwrap(),
+        None,
+        None,
+    )
+}
+
+#[tokio::test]
+async fn the_key_verifier_tells_refused_from_unreachable_and_accepted() {
+    use ironclaw_product_contracts::service_keys::{ServiceKeyVerifier, ServiceKeyVerifyError};
+    let key = SecretString::from("sm_candidate".to_string());
+
+    let (supermemory, egress) = build(Arc::new(MemoryKeys::default()), "");
+    egress.respond("/v3/documents/list", 200, json!({"memories": []}));
+    egress.respond("/v3/documents/list", 401, json!({"error": "bad key"}));
+    egress.respond("/v3/documents/list", 503, json!({"error": "down"}));
+    let verifier = SupermemoryKeyVerifier::new(supermemory);
+    assert_eq!(verifier.verify(&product_caller(), &key).await, Ok(()));
+    let sent = egress.requests_to("/v3/documents/list");
+    assert!(
+        sent[0]
+            .headers
+            .iter()
+            .any(|(name, value)| name == "authorization" && value == "Bearer sm_candidate"),
+        "verifies the candidate, not the stored key"
+    );
+    assert_eq!(
+        verifier.verify(&product_caller(), &key).await,
+        Err(ServiceKeyVerifyError::Rejected)
+    );
+    assert!(matches!(
+        verifier.verify(&product_caller(), &key).await,
+        Err(ServiceKeyVerifyError::Unreachable { .. })
+    ));
+
+    // An oversized 401 is still a refusal, never "unreachable".
+    let client = SupermemoryClient::new(
+        &config(),
+        Arc::new(OversizedRefusal),
+        Arc::new(MemoryKeys::default()),
+    )
+    .unwrap();
+    let bindings = StaticSupermemoryBindingSource::from_values(Some("ironclaw"), Some("")).unwrap();
+    let verifier = SupermemoryKeyVerifier::new(Arc::new(Supermemory::new(
+        client,
+        Arc::new(bindings),
+        config(),
+    )));
+    assert_eq!(
+        verifier.verify(&product_caller(), &key).await,
+        Err(ServiceKeyVerifyError::Rejected)
+    );
+}
+
+#[tokio::test]
+async fn a_key_change_is_seen_at_once_not_after_the_cache_window() {
+    let keys = Arc::new(MemoryKeys::default());
+    let (supermemory, _egress) = build(Arc::clone(&keys), "");
+    assert!(supermemory.client().api_key().await.unwrap().is_none());
+    keys.put(
+        &SecretHandle::new(SUPERMEMORY_API_KEY_SECRET).unwrap(),
+        SecretString::from(FAKE_KEY.to_string()),
+    )
+    .await
+    .unwrap();
+    use ironclaw_product_contracts::service_keys::ServiceKeyVerifier;
+    SupermemoryKeyVerifier::new(Arc::clone(&supermemory))
+        .key_changed()
+        .await;
+    assert!(supermemory.client().api_key().await.unwrap().is_some());
+}

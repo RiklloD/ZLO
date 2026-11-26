@@ -105,7 +105,9 @@ async fn an_agent_creates_reads_then_replaces_a_wiki_page_only_with_its_hash() {
     let listed: Value = serde_json::from_str(text(&tree).0).unwrap();
     assert_eq!(listed["paths"], json!(["wiki/concepts/tea.md"]));
 
-    let hits = tools.call(&alice, SEARCH, &json!({"query": "oolong"})).await;
+    let hits = tools
+        .call(&alice, SEARCH, &json!({"query": "oolong"}))
+        .await;
     assert!(text(&hits).0.contains("wiki/concepts/tea.md"));
 }
 
@@ -152,6 +154,60 @@ async fn bad_paths_and_arguments_are_model_visible_errors_without_echoing_conten
         )
         .await;
     let (body, is_error) = text(&outcome);
-    assert!(is_error && body.starts_with("arguments are invalid"), "{body}");
+    assert!(
+        is_error && body.starts_with("arguments are invalid"),
+        "{body}"
+    );
     assert!(!body.contains("TOP-SECRET-CONTENT"));
+}
+
+#[tokio::test]
+async fn archived_documents_are_never_shown_to_cli_agents() {
+    let docs = Arc::new(FakeDocuments::default());
+    let page = MemoryPageSurface::new(
+        Arc::new(Inner),
+        Some(Arc::clone(&docs) as Arc<dyn MemoryDocumentsSource>),
+        None,
+        None,
+    );
+    // The person archived a page; the store still holds it under archive/.
+    docs.write(
+        &ProductSurfaceCaller::new(
+            TenantId::new("t1").unwrap(),
+            UserId::new("alice").unwrap(),
+            None,
+            None,
+        ),
+        MemoryWriteRequest {
+            path: "archive/20261126T000000Z/old.md".into(),
+            content: "retired secret plan".into(),
+            expected_content_hash: None,
+        },
+    )
+    .await
+    .unwrap();
+    let tools = MemoryBridgeTools {
+        memory: Arc::new(page),
+    };
+    let alice = thread_of("alice");
+    for path in [
+        "archive/20261126T000000Z/old.md",
+        "/archive/20261126T000000Z/old.md",
+    ] {
+        let read = tools.call(&alice, READ, &json!({"path": path})).await;
+        let (body, is_error) = text(&read);
+        assert!(is_error && !body.contains("retired"), "{path}: {body}");
+    }
+    let hits = tools
+        .call(&alice, SEARCH, &json!({"query": "retired"}))
+        .await;
+    assert_eq!(
+        serde_json::from_str::<Value>(text(&hits).0).unwrap(),
+        json!([])
+    );
+    let tree = tools.call(&alice, TREE, &json!({})).await;
+    assert_eq!(
+        serde_json::from_str::<Value>(text(&tree).0).unwrap()["paths"],
+        json!([])
+    );
 }

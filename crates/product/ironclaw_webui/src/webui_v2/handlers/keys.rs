@@ -4,14 +4,27 @@
 //! a key value.
 
 use axum::Json;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Extension, State};
 use ironclaw_product_contracts::service_keys::*;
-use ironclaw_product_contracts::surface::ProductSurfaceCaller;
+use ironclaw_product_contracts::surface::{
+    ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceValidationCode,
+};
 use serde_json::Value;
 
 use super::{invoke_product_command, query_product_view};
 use crate::webui_v2::error::WebUiV2HttpError;
 use crate::webui_v2::router::WebUiV2State;
+
+/// The body, or a fixed validation error: axum's own rejection text can
+/// quote the request (a pasted key), so it never reaches the response.
+fn body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, WebUiV2HttpError> {
+    body.map(|Json(body)| body).map_err(|rejection| {
+        tracing::debug!(status = %rejection.status(), "keys: request body rejected");
+        ProductSurfaceError::validation("request", ProductSurfaceValidationCode::InvalidValue)
+            .into()
+    })
+}
 
 /// `GET /api/webchat/v2/keys`
 pub async fn service_keys_list(
@@ -34,8 +47,9 @@ pub async fn service_keys_list(
 pub async fn service_key_set(
     State(state): State<WebUiV2State>,
     Extension(caller): Extension<ProductSurfaceCaller>,
-    Json(body): Json<ServiceKeySetRequest>,
+    request: Result<Json<ServiceKeySetRequest>, JsonRejection>,
 ) -> Result<Json<ServiceKeySetResponse>, WebUiV2HttpError> {
+    let body = body(request)?;
     Ok(Json(
         invoke_product_command(state.services(), caller, SERVICE_KEY_SET_COMMAND, body).await?,
     ))
@@ -45,8 +59,9 @@ pub async fn service_key_set(
 pub async fn service_key_import(
     State(state): State<WebUiV2State>,
     Extension(caller): Extension<ProductSurfaceCaller>,
-    Json(body): Json<ServiceKeyIdRequest>,
+    request: Result<Json<ServiceKeyIdRequest>, JsonRejection>,
 ) -> Result<Json<ServiceKeySetResponse>, WebUiV2HttpError> {
+    let body = body(request)?;
     Ok(Json(
         invoke_product_command(state.services(), caller, SERVICE_KEY_IMPORT_COMMAND, body).await?,
     ))
@@ -56,8 +71,9 @@ pub async fn service_key_import(
 pub async fn service_key_remove(
     State(state): State<WebUiV2State>,
     Extension(caller): Extension<ProductSurfaceCaller>,
-    Json(body): Json<ServiceKeyIdRequest>,
+    request: Result<Json<ServiceKeyIdRequest>, JsonRejection>,
 ) -> Result<Json<ServiceKeyRemoveResponse>, WebUiV2HttpError> {
+    let body = body(request)?;
     Ok(Json(
         invoke_product_command(state.services(), caller, SERVICE_KEY_REMOVE_COMMAND, body).await?,
     ))

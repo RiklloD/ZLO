@@ -291,13 +291,26 @@ impl SupermemoryClient {
         };
         let mut attempt = 0;
         loop {
-            let response = self
+            let response = match self
                 .egress
                 .execute(self.request(caller, key, method, path, body.clone()))
                 .await
-                .map_err(|error| SupermemoryError::Transport {
-                    reason: error.to_string(),
-                })?;
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    let reason = error.to_string();
+                    // An oversized 401/403 body still carries its status:
+                    // a refused key must stay refused, never "unreachable".
+                    return Err(match error.into_partial_response() {
+                        Some(partial) if matches!(partial.status, 401 | 403) => {
+                            SupermemoryError::Unauthorized {
+                                status: partial.status,
+                            }
+                        }
+                        _ => SupermemoryError::Transport { reason },
+                    });
+                }
+            };
             match response.status {
                 // A delete may answer 204 with no body.
                 200..=299 if response.body.is_empty() => return Ok(Value::Null),

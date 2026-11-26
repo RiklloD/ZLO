@@ -39,12 +39,16 @@ pub(crate) async fn status(
         });
     };
     let prefix = format!("{MEMORY_WIKI_ROOT}/");
-    let schema = format!("{MEMORY_WIKI_ROOT}/SCHEMA.md");
     let tree = documents.tree(caller).await?;
     let pages = tree.iter().filter(|e| e.path.starts_with(&prefix)).count();
+    // Built means every scaffold page is there: an interrupted build stays
+    // "not built", so the Build action comes back and finishes it.
+    let initialized = scaffold("")
+        .iter()
+        .all(|(path, _)| tree.iter().any(|e| &e.path == path));
     Ok(MemoryWikiStatus {
         available: true,
-        initialized: tree.iter().any(|e| e.path == schema),
+        initialized,
         pages,
     })
 }
