@@ -908,7 +908,7 @@ async fn a_change_back_to_an_earlier_text_still_moves() {
 }
 
 #[tokio::test]
-async fn a_skill_file_that_becomes_a_folder_is_replaced() {
+async fn a_skill_file_that_would_become_a_folder_is_refused_and_the_skill_stays() {
     let boxed = host(BOX);
     let bundle = |extra: &str| {
         vec![
@@ -921,24 +921,24 @@ async fn a_skill_file_that_becomes_a_folder_is_replaced() {
         .replace_bundle_for_scope(scope(), "deploy", bundle("scripts/tool"))
         .await
         .expect("file");
-    boxed
-        .skills
-        .replace_bundle_for_scope(scope(), "deploy", bundle("scripts/tool/run.sh"))
-        .await
-        .expect("file to folder");
-    boxed
-        .skills
-        .replace_bundle_for_scope(scope(), "deploy", bundle("scripts/tool"))
-        .await
-        .expect("folder to file");
-    let mut names: Vec<String> = boxed
-        .skills
-        .export_bundle_for_scope(scope(), "deploy")
-        .await
-        .expect("bundle")
-        .into_iter()
-        .map(|(path, _)| path)
-        .collect();
-    names.sort();
-    assert_eq!(names, ["SKILL.md", "scripts/tool"]);
+    for swapped in ["scripts/tool/run.sh", "scripts"] {
+        assert!(
+            boxed
+                .skills
+                .replace_bundle_for_scope(scope(), "deploy", bundle(swapped))
+                .await
+                .is_err(),
+            "{swapped}"
+        );
+        let mut names: Vec<String> = boxed
+            .skills
+            .export_bundle_for_scope(scope(), "deploy")
+            .await
+            .expect("bundle")
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["SKILL.md", "scripts/tool"], "untouched");
+    }
 }

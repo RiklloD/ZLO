@@ -201,7 +201,7 @@ async fn capture_unlocked(
 /// Put `snapshot` in place of the skill of that name, or create it.
 ///
 /// Nothing is removed before the new bundle is whole: every path is checked
-/// first, the new files are written over the old ones (`SKILL.md` last), and
+/// first (a file changing into a folder, or back, is refused), the new files are written over the old ones (`SKILL.md` last), and
 /// only then are files the new bundle no longer has deleted. An interrupted
 /// replacement therefore leaves a skill that still loads, and running it
 /// again finishes it.
@@ -239,29 +239,27 @@ pub(crate) async fn replace_skill_bundle(
     };
     let skill_dir = skill_root_scoped_path(USER_SKILLS_ROOT, skill_name)?;
     create_dir_all(context, skill_name, "replace_create_dir_all", &skill_dir).await?;
-    // Where a file becomes a folder or a folder a file, the old one has
-    // to go first or the new one cannot be written. Nothing else is
-    // removed before the new bundle is in place.
+    // A file that would become a folder, or a folder a file, cannot be
+    // replaced in place on every store (a folder's own record outlives its
+    // files), and removing first would leave no skill if the write then
+    // failed. Refused before anything is touched; the skill in place stays.
     let nested = |outer: &str, inner: &str| {
         inner
             .strip_prefix(outer)
             .is_some_and(|rest| rest.starts_with('/'))
     };
-    let in_the_way = |old: &str| {
-        incoming
-            .iter()
-            .any(|(path, _, _)| nested(old, path) || nested(path, old))
-    };
-    for old in &previous {
-        if in_the_way(&old.relative_path) {
-            let file_path = skill_bundle_file_scoped_path(skill_name, &old.relative_path)?;
-            log_skill_filesystem_phase("replace_delete_in_the_way", skill_name, &file_path);
-            context
-                .filesystem
-                .delete(&context.scope, &file_path)
-                .await
-                .map_err(filesystem_error)?;
-        }
+    if let Some(old) = previous.iter().find(|old| {
+        incoming.iter().any(|(path, _, _)| {
+            nested(&old.relative_path, path) || nested(path, &old.relative_path)
+        })
+    }) {
+        return Err(SkillManagementError::with_reason(
+            SkillManagementErrorKind::Conflict,
+            format!(
+                "`{}` is a file on one side and a folder on the other; remove the skill here to take the new one",
+                old.relative_path
+            ),
+        ));
     }
     for (_, file_path, contents) in &incoming {
         if let Some(parent) = scoped_parent(file_path)? {
@@ -275,11 +273,9 @@ pub(crate) async fn replace_skill_bundle(
             .map_err(filesystem_error)?;
     }
     for old in &previous {
-        // Kept by the new bundle, or already removed above.
-        if in_the_way(&old.relative_path)
-            || incoming
-                .iter()
-                .any(|(path, _, _)| *path == old.relative_path)
+        if incoming
+            .iter()
+            .any(|(path, _, _)| *path == old.relative_path)
         {
             continue;
         }

@@ -17,14 +17,46 @@ pub struct UserRulesRoot {
     /// folder is called there.
     pub id: &'static str,
     pub dir: PathBuf,
-    pub entries: &'static [&'static str],
+    pub entries: &'static [UserRulesEntry],
 }
+
+/// One entry of a root: exactly one file, or a folder and what is in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserRulesEntry {
+    File(&'static str),
+    Folder(&'static str),
+}
+
+impl UserRulesEntry {
+    pub fn path(self) -> &'static str {
+        match self {
+            Self::File(path) | Self::Folder(path) => path,
+        }
+    }
+}
+
+use UserRulesEntry::{File, Folder};
 
 /// The Claude CLI's default folder: global instructions, skills, custom
 /// commands, subagent definitions and output styles.
-const CLAUDE_ENTRIES: [&str; 5] = ["CLAUDE.md", "skills", "commands", "agents", "output-styles"];
+const CLAUDE_ENTRIES: [UserRulesEntry; 5] = [
+    File("CLAUDE.md"),
+    Folder("skills"),
+    Folder("commands"),
+    Folder("agents"),
+    Folder("output-styles"),
+];
 /// The Codex CLI's folder: global instructions, skills and saved prompts.
-const CODEX_ENTRIES: [&str; 3] = ["AGENTS.md", "skills", "prompts"];
+const CODEX_ENTRIES: [UserRulesEntry; 3] = [File("AGENTS.md"), Folder("skills"), Folder("prompts")];
+/// What the Antigravity agent reads from the person's own Gemini folder
+/// (the entries its private profile links to, `antigravity::launch`).
+const GEMINI_ENTRIES: [UserRulesEntry; 5] = [
+    Folder("config/skills"),
+    Folder("antigravity-cli/skills"),
+    File("config/skills.json"),
+    File("AGENTS.md"),
+    File("GEMINI.md"),
+];
 
 /// Every root for the person whose home is `home`.
 pub fn roots(home: &Path) -> Vec<UserRulesRoot> {
@@ -42,7 +74,7 @@ pub fn roots(home: &Path) -> Vec<UserRulesRoot> {
         UserRulesRoot {
             id: "gemini",
             dir: home.join(".gemini"),
-            entries: &crate::antigravity::launch::USER_CONFIG_ENTRIES,
+            entries: &GEMINI_ENTRIES,
         },
     ]
 }
@@ -67,16 +99,25 @@ mod tests {
             "mcp",
         ];
         for root in roots(Path::new("/home/a")) {
-            for entry in root.entries {
+            for entry in root.entries.iter().map(|entry| entry.path()) {
                 let lower = entry.to_ascii_lowercase();
                 for word in forbidden {
                     // The one listed JSON file is the skills index.
-                    if *entry == "config/skills.json" {
+                    if entry == "config/skills.json" {
                         continue;
                     }
                     assert!(!lower.contains(word), "{}: {entry}", root.id);
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_gemini_entries_are_the_ones_the_agents_profile_links() {
+        let mut listed: Vec<&str> = GEMINI_ENTRIES.iter().map(|entry| entry.path()).collect();
+        let mut linked = crate::antigravity::launch::USER_CONFIG_ENTRIES.to_vec();
+        listed.sort_unstable();
+        linked.sort_unstable();
+        assert_eq!(listed, linked);
     }
 }

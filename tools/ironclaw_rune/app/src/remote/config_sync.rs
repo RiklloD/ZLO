@@ -235,11 +235,27 @@ fn finished(
     if s.fixture {
         return false;
     }
+    // The connections there are now, as a pass on them would be named.
+    let live = connections(s);
+    let generation = |wanted: &str| {
+        live.iter()
+            .find(|(key, _, _)| key == wanted)
+            .map(|(_, generation, _)| *generation)
+    };
+    let now = generation(THIS_MAC).zip(generation(key));
     let Some(row) = s.remote.config_sync.rows.get_mut(key) else {
         return false;
     };
     if row.running != Some(run) {
         return false;
+    }
+    // A reply that arrives after either connection was replaced, before
+    // the poll has seen it: not taken, and the computer is checked again.
+    if row.on != now {
+        row.running = None;
+        row.due = true;
+        row.memo.clear();
+        return true;
     }
     row.running = None;
     row.checked_at = Some(Instant::now());
@@ -259,6 +275,9 @@ fn finished(
         }
         Ok(SyncOutcome::Unsupported(side)) => Phase::NeedsUpdate(side),
         Err(e) => {
+            // What an interrupted pass left behind is unknown: nothing is
+            // taken for settled until a whole pass says so.
+            row.memo.clear();
             tracing::debug!(computer = %key, error = %e, "configuration sync failed");
             Phase::Failed(super::first_line(&e.to_string()))
         }

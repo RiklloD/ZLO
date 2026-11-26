@@ -414,7 +414,7 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
         let mut warnings: Vec<String> = page
             .not_carried
             .iter()
-            .map(|item| format!("memory document {item} is too large to sync"))
+            .map(|item| format!("memory document {item} was not carried"))
             .collect();
 
         for item in &page.items {

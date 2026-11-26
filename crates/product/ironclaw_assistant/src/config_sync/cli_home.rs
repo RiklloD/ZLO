@@ -45,6 +45,10 @@ const MAX_DEPTH: usize = 8;
 const MAX_FILES: usize = 4_000;
 /// Names read from one folder.
 const MAX_FOLDER_NAMES: usize = 2_000;
+/// Names looked at across every root, carried or not.
+const MAX_VISITED: usize = 20_000;
+/// Lines saying what was left out; the rest are counted.
+const MAX_NOTES: usize = 40;
 
 const DIR_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
@@ -62,8 +66,15 @@ pub struct CliHomeRoot {
     /// Stable name of the root, the first segment of every item key.
     pub id: String,
     pub dir: PathBuf,
-    /// Files or folders inside `dir`, by relative path.
-    pub entries: Vec<String>,
+    pub entries: Vec<CliHomeEntry>,
+}
+
+/// An entry of a root, by its path inside the root: exactly one file, or a
+/// folder and everything carried below it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliHomeEntry {
+    pub path: String,
+    pub folder: bool,
 }
 
 /// What a file's digest was computed from: any change to the bytes, the
@@ -95,6 +106,10 @@ impl Stamp {
 struct Listing {
     files: BTreeMap<String, String>,
     not_carried: Vec<String>,
+    /// Left out beyond the first [`MAX_NOTES`].
+    more_not_carried: usize,
+    /// Names looked at so far.
+    visited: usize,
     /// The digests of this listing, to answer the next one.
     seen: BTreeMap<String, (Stamp, String)>,
 }
@@ -111,6 +126,30 @@ fn rx(error: rustix::io::Errno) -> io::Error {
     io::Error::from(error)
 }
 
+impl Listing {
+    fn note(&mut self, line: String) {
+        if self.not_carried.len() < MAX_NOTES {
+            self.not_carried.push(line);
+        } else {
+            self.more_not_carried += 1;
+        }
+    }
+}
+
+/// A name that can be carried at all: printable ASCII, so that no other
+/// spelling of it names the same file on a volume that folds case or
+/// Unicode; no path separators; and not ending in a dot or a space, which
+/// some volumes drop.
+fn plain(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|b| (b.is_ascii_graphic() || b == b' ') && b != b'/' && b != b'\\')
+        && !name.ends_with(['.', ' '])
+}
+
 /// A name that is hidden, or looks like where a CLI keeps a sign-in or
 /// its settings: never read and never written, wherever it sits.
 fn withheld(name: &str) -> bool {
@@ -125,12 +164,72 @@ fn withheld(name: &str) -> bool {
                 | "oauth_creds.json"
                 | "config.toml"
         )
-        || ["token", "secret", "credential", "password"]
-            .iter()
-            .any(|word| lower.contains(word))
+        || [
+            "token",
+            "secret",
+            "credential",
+            "password",
+            "settings",
+            "auth.",
+        ]
+        .iter()
+        .any(|word| lower.contains(word))
         || [".pem", ".key", ".p12", ".env"]
             .iter()
             .any(|ext| lower.ends_with(ext))
+}
+
+/// The root folder, opened without following a link at its last name,
+/// however the path was spelled (a trailing `/` or `/.` would otherwise
+/// follow one). `create`: make that one folder when it is missing; its
+/// parent is the person's own and must be there already.
+fn open_root(dir: &std::path::Path, create: bool) -> io::Result<OwnedFd> {
+    let dir: PathBuf = dir.components().collect();
+    let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return Err(io::Error::other("the root has no name"));
+    };
+    let parent = rustix::fs::open(
+        parent,
+        DIR_FLAGS.difference(OFlags::NOFOLLOW),
+        Mode::empty(),
+    )
+    .map_err(rx)?;
+    match rustix::fs::openat(parent.as_fd(), name, DIR_FLAGS, Mode::empty()) {
+        Err(rustix::io::Errno::NOENT) if create => {
+            rustix::fs::mkdirat(parent.as_fd(), name, Mode::RWXU).map_err(rx)?;
+            rustix::fs::openat(parent.as_fd(), name, DIR_FLAGS, Mode::empty()).map_err(rx)
+        }
+        opened => opened.map_err(rx),
+    }
+}
+
+/// Whether `name` is in `dir` under exactly that spelling. A name there
+/// that differs only in case is, on a volume that ignores case, the same
+/// entry: it is the receiver's own, and going through it or replacing it
+/// is refused.
+fn held_exactly(dir: &OwnedFd, name: &str) -> io::Result<bool> {
+    let mut found = false;
+    for entry in rustix::fs::Dir::read_from(dir).map_err(rx)?.flatten() {
+        let held = entry.file_name().to_string_lossy();
+        if held == name {
+            found = true;
+        } else if held.eq_ignore_ascii_case(name) {
+            return Err(io::Error::other(format!(
+                "`{held}` is there, with a name that differs only in case"
+            )));
+        }
+    }
+    Ok(found)
+}
+
+/// Run a walk of the disk off the async workers where the runtime allows.
+fn off_the_reactor<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
 }
 
 fn file_hash(bytes: &[u8], exec: bool) -> String {
@@ -170,13 +269,27 @@ impl CliHomeDomainHandler {
             .map(|root| CliHomeRoot {
                 id: root.id.to_string(),
                 dir: root.dir,
-                entries: root.entries.iter().map(|e| (*e).to_string()).collect(),
+                entries: root
+                    .entries
+                    .iter()
+                    .map(|entry| CliHomeEntry {
+                        path: entry.path().to_string(),
+                        folder: matches!(
+                            entry,
+                            ironclaw_cli_providers::user_rules::UserRulesEntry::Folder(_)
+                        ),
+                    })
+                    .collect(),
             })
             .collect();
         Self::new(roots)
     }
 
     fn list(&self) -> Listing {
+        off_the_reactor(|| self.list_now())
+    }
+
+    fn list_now(&self) -> Listing {
         let known = self
             .seen
             .lock()
@@ -185,11 +298,11 @@ impl CliHomeDomainHandler {
         let mut out = Listing::default();
         for root in &self.roots {
             // A root that is missing, or is itself a link, has nothing.
-            let Ok(top) = rustix::fs::open(&root.dir, DIR_FLAGS, Mode::empty()) else {
+            let Ok(top) = open_root(&root.dir, false) else {
                 continue;
             };
             for entry in &root.entries {
-                let names: Vec<&str> = entry.split('/').collect();
+                let names: Vec<&str> = entry.path.split('/').collect();
                 let Some((last, folders)) = names.split_last() else {
                     continue;
                 };
@@ -206,38 +319,48 @@ impl CliHomeDomainHandler {
                     }
                 });
                 if reached {
-                    let key = format!("{}/{entry}", root.id);
-                    walk(&dir, last, key, 0, &known, &mut out);
+                    let key = format!("{}/{}", root.id, entry.path);
+                    // A file entry is that file only; a folder entry, that
+                    // folder only.
+                    let depth = if entry.folder { Some(0) } else { None };
+                    walk(&dir, last, key, depth, &known, &mut out);
                 }
             }
+        }
+        if out.more_not_carried > 0 {
+            out.not_carried
+                .push(format!("{} more files", out.more_not_carried));
         }
         *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = out.seen.clone();
         out
     }
 
     /// Where an incoming item belongs here: its root and the names below
-    /// it. `None` when the key names no root and entry of this host, is
-    /// not a plain relative path, is too deep, or has a withheld name.
+    /// it. `None` when the key names no root and entry of this host (a
+    /// file entry is itself and nothing below it), is deeper than a
+    /// listing goes, or has a name that is not plain or is withheld.
     fn target<'a>(&self, key: &'a str) -> Option<(&CliHomeRoot, Vec<&'a str>)> {
         let (id, rel) = key.split_once('/')?;
         let root = self.roots.iter().find(|root| root.id == id)?;
         let entry = root.entries.iter().find(|entry| {
-            rel == entry.as_str()
-                || rel
-                    .strip_prefix(entry.as_str())
-                    .is_some_and(|rest| rest.starts_with('/'))
+            rel == entry.path
+                || (entry.folder
+                    && rel
+                        .strip_prefix(entry.path.as_str())
+                        .is_some_and(|rest| rest.starts_with('/')))
         })?;
         let names: Vec<&str> = rel.split('/').collect();
-        let below = names.len() - entry.split('/').count();
-        let plain = names.iter().all(|name| {
-            !name.is_empty() && *name != "." && *name != ".." && !name.contains(['\\', '\0'])
-        });
-        // The entry's own names are the host's; what lies below must not
-        // be a withheld name.
+        let below = names.len() - entry.path.split('/').count();
+        // A folder entry is not itself a file.
+        if entry.folder && below == 0 {
+            return None;
+        }
+        // The entry's own names are the host's; what lies below must be a
+        // plain name that is not withheld.
         let allowed = names[names.len() - below..]
             .iter()
-            .all(|name| !withheld(name));
-        (plain && allowed && below <= MAX_DEPTH + 1).then_some((root, names))
+            .all(|name| plain(name) && !withheld(name));
+        (allowed && below <= MAX_DEPTH).then_some((root, names))
     }
 
     /// One listed file's bytes and mode, read the way it was listed.
@@ -245,7 +368,7 @@ impl CliHomeDomainHandler {
         let (root, names) = self
             .target(key)
             .ok_or_else(|| io::Error::other("not a carried file"))?;
-        let mut fd = rustix::fs::open(&root.dir, DIR_FLAGS, Mode::empty()).map_err(rx)?;
+        let mut fd = open_root(&root.dir, false)?;
         let last = names.len() - 1;
         for (at, name) in names.iter().enumerate() {
             let flags = if at == last { ANY_FLAGS } else { DIR_FLAGS };
@@ -272,38 +395,27 @@ impl CliHomeDomainHandler {
         let Some((last, folders)) = names.split_last() else {
             return Err(io::Error::other("the file has no name"));
         };
-        std::fs::create_dir_all(&root.dir)?;
-        let mut dir = rustix::fs::open(&root.dir, DIR_FLAGS, Mode::empty()).map_err(rx)?;
+        let mut dir = open_root(&root.dir, true)?;
         for name in folders {
-            dir = match rustix::fs::openat(dir.as_fd(), *name, DIR_FLAGS, Mode::empty()) {
-                Ok(next) => next,
-                Err(rustix::io::Errno::NOENT) => {
-                    rustix::fs::mkdirat(dir.as_fd(), *name, Mode::RWXU).map_err(rx)?;
-                    rustix::fs::openat(dir.as_fd(), *name, DIR_FLAGS, Mode::empty()).map_err(rx)?
-                }
-                Err(_) => {
-                    return Err(io::Error::other(
-                        "a link or a file is where a folder belongs",
-                    ));
-                }
+            dir = if held_exactly(&dir, name)? {
+                rustix::fs::openat(dir.as_fd(), *name, DIR_FLAGS, Mode::empty())
+                    .map_err(|_| io::Error::other("a link or a file is where a folder belongs"))?
+            } else {
+                rustix::fs::mkdirat(dir.as_fd(), *name, Mode::RWXU).map_err(rx)?;
+                rustix::fs::openat(dir.as_fd(), *name, DIR_FLAGS, Mode::empty()).map_err(rx)?
             };
         }
-        // On a volume that ignores case, a name that differs only in case
-        // is the same file: it is the receiver's own and is not replaced.
-        for entry in rustix::fs::Dir::read_from(&dir).map_err(rx)?.flatten() {
-            let held = entry.file_name().to_string_lossy();
-            if held != *last && held.eq_ignore_ascii_case(last) {
-                return Err(io::Error::other(format!(
-                    "`{held}` is there, with a name that differs only in case"
-                )));
-            }
-        }
-        match rustix::fs::statat(dir.as_fd(), *last, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(stat) if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile => {
+        if held_exactly(&dir, last)? {
+            let stat =
+                rustix::fs::statat(dir.as_fd(), *last, AtFlags::SYMLINK_NOFOLLOW).map_err(rx)?;
+            if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
                 return Err(io::Error::other("a link or a folder is in its place"));
             }
-            Ok(_) | Err(rustix::io::Errno::NOENT) => {}
-            Err(error) => return Err(rx(error)),
+            // Another name for a file elsewhere: replacing it here would
+            // leave that one behind, and it is not ours to judge.
+            if stat.st_nlink > 1 {
+                return Err(io::Error::other("a hard link is in its place"));
+            }
         }
         let temporary = format!(".zlo-sync-{}.tmp", Uuid::new_v4());
         let mode = if exec {
@@ -311,14 +423,15 @@ impl CliHomeDomainHandler {
         } else {
             Mode::RUSR | Mode::WUSR
         };
+        let fd = rustix::fs::openat(
+            dir.as_fd(),
+            temporary.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            mode,
+        )
+        .map_err(rx)?;
+        // From here the temporary file is this write's own to remove.
         let written = (|| {
-            let fd = rustix::fs::openat(
-                dir.as_fd(),
-                temporary.as_str(),
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                mode,
-            )
-            .map_err(rx)?;
             // The mode asked for, whatever the process's mask took away.
             rustix::fs::fchmod(&fd, mode).map_err(rx)?;
             let mut file = std::fs::File::from(fd);
@@ -336,15 +449,26 @@ impl CliHomeDomainHandler {
     }
 }
 
-/// List `name` inside `dir`: a file, or a folder and what is below it.
+/// List `name` inside `dir`. `depth` is `None` for a file entry (that
+/// file and nothing else), or how far below a folder entry `name` is (the
+/// entry itself is 0 and must be a folder).
 fn walk(
     dir: &OwnedFd,
     name: &str,
     key: String,
-    depth: usize,
+    depth: Option<usize>,
     known: &BTreeMap<String, (Stamp, String)>,
     out: &mut Listing,
 ) {
+    out.visited += 1;
+    if out.visited > MAX_VISITED {
+        if out.visited == MAX_VISITED + 1 {
+            out.note(format!(
+                "everything past the first {MAX_VISITED} names (too many to look at)"
+            ));
+        }
+        return;
+    }
     // A link fails to open; so does anything that went away.
     let Ok(fd) = rustix::fs::openat(dir.as_fd(), name, ANY_FLAGS, Mode::empty()) else {
         return;
@@ -352,23 +476,20 @@ fn walk(
     let Ok(stat) = rustix::fs::fstat(&fd) else {
         return;
     };
-    match FileType::from_raw_mode(stat.st_mode) {
-        FileType::RegularFile => {
+    match (FileType::from_raw_mode(stat.st_mode), depth) {
+        // A file: as a file entry, or below a folder entry.
+        (FileType::RegularFile, None | Some(1..)) => {
             if stat.st_nlink > 1 {
-                out.not_carried.push(format!("{key} (a hard link)"));
+                out.note(format!("{key} (a hard link)"));
                 return;
             }
             if out.files.len() >= MAX_FILES {
-                let note = format!("files past the first {MAX_FILES} (too many to list)");
-                if !out.not_carried.contains(&note) {
-                    out.not_carried.push(note);
-                }
+                out.note(format!("{key} (more than {MAX_FILES} files)"));
                 return;
             }
             let size = usize::try_from(stat.st_size).unwrap_or(usize::MAX);
             if size > items::ITEM_CONTENT_BYTES {
-                out.not_carried
-                    .push(format!("{key} (too large, {} KiB)", size.div_ceil(1024)));
+                out.note(format!("{key} (too large, {} KiB)", size.div_ceil(1024)));
                 return;
             }
             let stamp = Stamp::of(&stat);
@@ -385,39 +506,44 @@ fn walk(
             out.seen.insert(key.clone(), (stamp, hash.clone()));
             out.files.insert(key, hash);
         }
-        FileType::Directory if depth < MAX_DEPTH => {
+        (FileType::Directory, Some(depth)) if depth < MAX_DEPTH => {
             let Ok(entries) = rustix::fs::Dir::read_from(&fd) else {
                 return;
             };
             let mut names: Vec<String> = Vec::new();
+            let mut read = 0usize;
             for entry in entries.flatten() {
-                let Ok(child) = entry.file_name().to_str() else {
-                    continue;
-                };
+                let child = entry.file_name().to_string_lossy();
                 if child == "." || child == ".." {
                     continue;
                 }
-                if withheld(child) {
-                    // Hidden names are everywhere and say nothing; a
-                    // visible one that was held back is worth a line.
-                    if !child.starts_with('.') {
-                        out.not_carried.push(format!(
-                            "{key}/{child} (looks like a sign-in or settings file)"
-                        ));
-                    }
-                    continue;
-                }
-                if names.len() >= MAX_FOLDER_NAMES {
-                    out.not_carried.push(format!(
+                // Every name read counts, carried or not.
+                read += 1;
+                if read > MAX_FOLDER_NAMES {
+                    out.note(format!(
                         "{key} (more than {MAX_FOLDER_NAMES} entries; the rest were left)"
                     ));
                     break;
                 }
-                names.push(child.to_string());
+                // Hidden names are everywhere and say nothing; any other
+                // name held back is worth a line.
+                if child.starts_with('.') {
+                    continue;
+                }
+                if !plain(&child) {
+                    out.note(format!("{key}/{child} (its name is not plain ASCII)"));
+                } else if withheld(&child) {
+                    out.note(format!(
+                        "{key}/{child} (looks like a sign-in or settings file)"
+                    ));
+                } else {
+                    names.push(child.into_owned());
+                }
             }
             names.sort();
             for child in names {
-                walk(&fd, &child, format!("{key}/{child}"), depth + 1, known, out);
+                let key = format!("{key}/{child}");
+                walk(&fd, &child, key, Some(depth + 1), known, out);
             }
         }
         _ => {}
@@ -474,7 +600,13 @@ impl ConfigSyncDomainHandler for CliHomeDomainHandler {
         .await?;
         // Said once, with the first page.
         if ctx.page.after.is_none() {
-            page.not_carried.extend(listing.not_carried);
+            let room = items::PAGE_NOTES.saturating_sub(page.not_carried.len());
+            let left = listing.not_carried.len().saturating_sub(room);
+            page.not_carried
+                .extend(listing.not_carried.into_iter().take(room));
+            if left > 0 {
+                page.not_carried.push(format!("{left} more files"));
+            }
         }
         Ok(ConfigSyncDomainPayload::CliHome(page))
     }
@@ -574,12 +706,14 @@ mod tests {
                 CliHomeRoot {
                     id: "alpha".into(),
                     dir: home.join(".alpha"),
-                    entries: vec!["RULES.md".into(), "skills".into()],
+                    entries: vec![entry("RULES.md", false), entry("skills", true)],
                 },
                 CliHomeRoot {
                     id: "beta".into(),
-                    dir: home.join(".beta"),
-                    entries: vec!["config/skills".into()],
+                    // Spelled as an environment variable might: a trailing
+                    // `/.` must not make the open follow a link.
+                    dir: home.join(".beta").join("."),
+                    entries: vec![entry("config/skills", true)],
                 },
             ];
             let handler = CliHomeDomainHandler::new(roots);
@@ -598,6 +732,13 @@ mod tests {
         }
         async fn hash(&self) -> String {
             self.handler.manifest(&ctx()).await.expect("manifest").hash
+        }
+    }
+
+    fn entry(path: &str, folder: bool) -> CliHomeEntry {
+        CliHomeEntry {
+            path: path.into(),
+            folder,
         }
     }
 
@@ -711,6 +852,15 @@ mod tests {
                 item("gamma/RULES.md", "x"),
                 item("alpha", "x"),
                 item("alpha/skills/auth.json", "x"),
+                // A name that a case- or Unicode-folding volume takes for
+                // the settings file, a backup of it, odd endings, and a
+                // path below a file entry or at a folder entry itself.
+                item("alpha/skills/\u{17f}ettings.json", "x"),
+                item("alpha/skills/Settings.JSON.bak", "x"),
+                item("alpha/skills/notes.md.", "x"),
+                item("alpha/skills/caf\u{e9}.md", "x"),
+                item("alpha/RULES.md/inner.md", "x"),
+                item("alpha/skills", "x"),
                 item("alpha/skills/a/b/c/d/e/f/g/h/i/j/k.md", "x"),
             ],
             next: None,
@@ -812,6 +962,53 @@ mod tests {
                 .any(|w| w.contains("differs only in case")),
             "{:?}",
             result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn a_linked_root_spelled_with_a_trailing_dot_is_still_refused() {
+        let (mac, boxed) = (Host::new(), Host::new());
+        let elsewhere = boxed.path("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("elsewhere");
+        std::os::unix::fs::symlink(&elsewhere, boxed.path(".beta")).expect("link");
+        mac.put(".beta/config/skills/review/SKILL.md", "# Review\n");
+        let result = carry(&mac, &boxed).await;
+        assert_eq!(result.outcome.applied_count, 0, "{:?}", result.outcome);
+        assert!(!elsewhere.join("config").exists());
+        // A missing root is made, but never its parents.
+        let orphan = CliHomeDomainHandler::new(vec![CliHomeRoot {
+            id: "beta".into(),
+            dir: boxed.path("no/such/parent/.beta"),
+            entries: vec![entry("config/skills", true)],
+        }]);
+        let payload = mac.handler.export(&ctx()).await.expect("export");
+        let result = orphan.apply(&ctx(), &payload).await.expect("apply");
+        assert_eq!(result.outcome.applied_count, 0);
+        assert!(!boxed.path("no").exists());
+    }
+
+    #[tokio::test]
+    async fn a_folder_whose_name_differs_only_in_case_is_not_written_into() {
+        let (mac, boxed) = (Host::new(), Host::new());
+        mac.put(".alpha/skills/Deploy/run.sh", "from the mac\n");
+        boxed.put(".alpha/skills/deploy/run.sh", "the box's own\n");
+        let result = carry(&mac, &boxed).await;
+        assert_eq!(result.outcome.applied_count, 0, "{:?}", result.outcome);
+        assert_eq!(
+            boxed.get(".alpha/skills/deploy/run.sh").as_deref(),
+            Some("the box's own\n")
+        );
+        // And a folder standing where a file entry belongs is not walked.
+        mac.put(".alpha/RULES.md/secret-plans.md", "x");
+        let ConfigSyncDomainPayload::CliHome(page) =
+            mac.handler.export(&ctx()).await.expect("export")
+        else {
+            panic!("payload");
+        };
+        assert!(
+            page.items.iter().all(|item| !item.key.contains("RULES.md")),
+            "{:?}",
+            page.items
         );
     }
 

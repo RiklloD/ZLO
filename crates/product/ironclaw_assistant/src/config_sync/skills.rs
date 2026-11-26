@@ -134,7 +134,7 @@ impl ConfigSyncDomainHandler for SkillsDomainHandler {
         let mut warnings: Vec<String> = page
             .not_carried
             .iter()
-            .map(|item| format!("skill {item} is too large to sync"))
+            .map(|item| format!("skill {item} was not carried"))
             .collect();
         for item in &page.items {
             let Some(files) = items::decode(DOMAIN, item)? else {

@@ -18,8 +18,8 @@ pub const PAGE_ENCODED_BYTES: usize = 3 * 1024 * 1024;
 /// An item larger than this (before base64) is not carried at all: alone
 /// in a page it still fits.
 pub const ITEM_CONTENT_BYTES: usize = 2 * 1024 * 1024;
-/// JSON around one item or file (field names, quotes, separators).
-const ITEM_OVERHEAD_BYTES: usize = 64;
+/// Lines a page carries about what it left out; the rest are counted.
+pub const PAGE_NOTES: usize = 60;
 /// Items listed in one page, with or without content.
 pub const PAGE_ITEMS: usize = 2_000;
 
@@ -111,6 +111,20 @@ pub fn validate(
             format!("more than {PAGE_ITEMS} items in one page"),
         ));
     }
+    // In key order, each once: a page is cut that way, and a key twice
+    // would be judged twice against one reading of what is held.
+    if page.items.windows(2).any(|pair| pair[0].key >= pair[1].key) {
+        return Err(ConfigSyncError::validation(
+            format!("{domain}.items"),
+            "items are not in key order, or a key appears twice",
+        ));
+    }
+    if page.not_carried.len() > PAGE_NOTES + 2 {
+        return Err(ConfigSyncError::validation(
+            format!("{domain}.not_carried"),
+            format!("more than {PAGE_NOTES} notes in one page"),
+        ));
+    }
     for item in &page.items {
         if let Some(files) = decode(domain, item)? {
             let bytes: usize = files.iter().map(|(_, b)| b.len()).sum();
@@ -146,9 +160,20 @@ where
         next: None,
         not_carried: Vec::new(),
     };
-    // Estimated encoded weight of the page so far. A key is counted
-    // twice over: JSON may escape it.
+    // The page's weight as it will be sent: each item is measured in its
+    // JSON form, so a key the encoding inflates counts for what it costs.
     let mut weight = 0usize;
+    let mut unsaid = 0usize;
+    let mut say = |out: &mut ItemizedDomainPayload, weight: &mut usize, line: String| {
+        if out.not_carried.len() < PAGE_NOTES {
+            *weight += 2 * line.len() + 4;
+            out.not_carried.push(line);
+        } else {
+            unsaid += 1;
+        }
+    };
+    let sent =
+        |item: &ConfigSyncItem| serde_json::to_vec(item).map_or(usize::MAX / 2, |b| b.len() + 1);
     for (key, hash) in all {
         if request.after.as_ref().is_some_and(|after| key <= after) {
             continue;
@@ -159,45 +184,54 @@ where
             out.next = Some(until.clone());
             break;
         }
-        let listed = 2 * key.len() + hash.len() + ITEM_OVERHEAD_BYTES;
-        if out.items.len() >= PAGE_ITEMS || weight + listed > PAGE_ENCODED_BYTES {
+        let mut item = ConfigSyncItem {
+            key: key.clone(),
+            hash: hash.clone(),
+            files: None,
+        };
+        if out.items.len() >= PAGE_ITEMS || weight + sent(&item) > PAGE_ENCODED_BYTES {
             out.next = out.items.last().map(|item| item.key.clone());
             break;
         }
-        let known = request.index_only || request.have.get(key) == Some(hash);
-        let files = if known {
-            None
-        } else {
+        if !(request.index_only || request.have.get(key) == Some(hash)) {
             let Some(files) = load(key.clone()).await? else {
                 // Gone or changed since it was listed: said, so the pass
                 // is not taken for a clean one.
-                out.not_carried
-                    .push(format!("{key} (changed while syncing)"));
+                say(
+                    &mut out,
+                    &mut weight,
+                    format!("{key} (changed while syncing)"),
+                );
                 continue;
             };
             let bytes: usize = files.iter().map(|(_, b)| b.len()).sum();
             if bytes > ITEM_CONTENT_BYTES {
-                out.not_carried
-                    .push(format!("{key} (too large, {} KiB)", bytes.div_ceil(1024)));
+                let line = format!("{key} (too large, {} KiB)", bytes.div_ceil(1024));
+                say(&mut out, &mut weight, line);
                 continue;
             }
-            let encoded: usize = files
-                .iter()
-                .map(|(path, b)| 2 * path.len() + b.len().div_ceil(3) * 4 + ITEM_OVERHEAD_BYTES)
-                .sum();
-            if !out.items.is_empty() && weight + listed + encoded > PAGE_ENCODED_BYTES {
+            item.files = Some(encode(files));
+            let cost = sent(&item);
+            // Alone it does not fit a request at all (its key and paths
+            // inflate too far): said, and the page moves on past it.
+            if cost > PAGE_ENCODED_BYTES {
+                say(
+                    &mut out,
+                    &mut weight,
+                    format!("{key} (too large once encoded)"),
+                );
+                continue;
+            }
+            if weight + cost > PAGE_ENCODED_BYTES {
                 out.next = out.items.last().map(|item| item.key.clone());
                 break;
             }
-            weight += encoded;
-            Some(encode(files))
-        };
-        weight += listed;
-        out.items.push(ConfigSyncItem {
-            key: key.clone(),
-            hash: hash.clone(),
-            files,
-        });
+        }
+        weight += sent(&item);
+        out.items.push(item);
+    }
+    if unsaid > 0 {
+        out.not_carried.push(format!("{unsaid} more items"));
     }
     Ok(out)
 }
@@ -314,5 +348,43 @@ mod tests {
         assert!(first.next.is_some(), "the page was cut");
         let encoded = serde_json::to_vec(&first).expect("json").len();
         assert!(encoded < 4 * 1024 * 1024 - 64 * 1024, "{encoded}");
+
+        // Keys JSON inflates sixfold, and more notes than a page says.
+        let odd: BTreeMap<String, String> = (0..1_000)
+            .map(|n| {
+                (
+                    format!("{n:04}{}", "\u{1}".repeat(700)),
+                    "sha256:h".to_string(),
+                )
+            })
+            .collect();
+        let page = super::page(&odd, &PageRequest::default(), |key| async move {
+            Ok((!key.starts_with("00")).then(|| vec![(String::new(), vec![7u8; 64])]))
+        })
+        .await
+        .expect("page");
+        let encoded = serde_json::to_vec(&page).expect("json").len();
+        assert!(encoded < 4 * 1024 * 1024 - 64 * 1024, "{encoded}");
+        assert_eq!(page.not_carried.len(), PAGE_NOTES + 1);
+        assert!(page.not_carried[PAGE_NOTES].ends_with("more items"));
+        assert!(validate(ConfigSyncDomain::Memory, &page).is_ok());
+    }
+
+    #[test]
+    fn a_page_with_a_key_twice_or_out_of_order_is_refused() {
+        let item = |key: &str| ConfigSyncItem {
+            key: key.into(),
+            hash: "h".into(),
+            files: None,
+        };
+        let page = |keys: &[&str]| ItemizedDomainPayload {
+            hash: String::new(),
+            items: keys.iter().map(|key| item(key)).collect(),
+            next: None,
+            not_carried: Vec::new(),
+        };
+        assert!(validate(ConfigSyncDomain::Memory, &page(&["a", "b"])).is_ok());
+        assert!(validate(ConfigSyncDomain::Memory, &page(&["a", "a"])).is_err());
+        assert!(validate(ConfigSyncDomain::Memory, &page(&["b", "a"])).is_err());
     }
 }

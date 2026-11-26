@@ -200,12 +200,14 @@ pub fn apply_portable_config_file(
 /// What stands in for a sign-in removed from an address.
 const REDACTED_USERINFO: &str = "redacted";
 
-/// The `user[:password]` part of an address, when it has one.
+/// The `user[:password]` part of an address, when it has one. `raw` has
+/// no whitespace or control characters (see [`as_a_client_reads`]).
 ///
 /// Read as a browser or an HTTP client would: after the scheme any run of
 /// slashes or backslashes leads to the authority (`https:/u:p@host`,
-/// `https:///u:p@host` and `https:\\u:p@host` all sign in to `host`), and
-/// the authority ends at the next slash, backslash, `?` or `#`.
+/// `https:///u:p@host` and `https:\\u:p@host` all sign in to `host`), a web
+/// scheme needs no slash at all (`https:u:p@host`), and the authority ends
+/// at the next slash, backslash, `?` or `#`.
 fn url_userinfo(raw: &str) -> Option<std::ops::Range<usize>> {
     let (scheme, rest) = raw.split_once(':')?;
     let colon = scheme.len();
@@ -216,23 +218,37 @@ fn url_userinfo(raw: &str) -> Option<std::ops::Range<usize>> {
         && scheme
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    let web = ["http", "https", "ws", "wss", "ftp"]
+        .iter()
+        .any(|known| scheme.eq_ignore_ascii_case(known));
     let slashes = rest.len() - rest.trim_start_matches(['/', '\\']).len();
-    if !is_scheme || slashes == 0 {
+    if !is_scheme || (slashes == 0 && !web) {
         return None;
     }
     let start = colon + 1 + slashes;
-    let authority_len = raw[start..]
+    let authority = rest.get(slashes..)?;
+    let authority_len = authority
         .find(['/', '\\', '?', '#'])
-        .unwrap_or(raw.len() - start);
-    let at = raw[start..start + authority_len].rfind('@')?;
+        .unwrap_or(authority.len());
+    let at = authority.get(..authority_len)?.rfind('@')?;
     Some(start..start + at)
+}
+
+/// `text` as a client reads an address: whitespace and control characters
+/// anywhere in it are dropped before it is parsed.
+fn as_a_client_reads(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .collect()
 }
 
 fn redact_url_credentials(value: &mut toml::Value) {
     match value {
         toml::Value::String(text) => {
-            if let Some(userinfo) = url_userinfo(text) {
-                text.replace_range(userinfo, REDACTED_USERINFO);
+            let mut read = as_a_client_reads(text);
+            if let Some(userinfo) = url_userinfo(&read) {
+                read.replace_range(userinfo, REDACTED_USERINFO);
+                *text = read;
             }
         }
         toml::Value::Array(items) => items.iter_mut().for_each(redact_url_credentials),
@@ -245,7 +261,7 @@ fn redact_url_credentials(value: &mut toml::Value) {
 
 fn carries_url_credentials(value: &toml::Value) -> bool {
     match value {
-        toml::Value::String(text) => url_userinfo(text).is_some(),
+        toml::Value::String(text) => url_userinfo(&as_a_client_reads(text)).is_some(),
         toml::Value::Array(items) => items.iter().any(carries_url_credentials),
         toml::Value::Table(table) => table.values().any(carries_url_credentials),
         _ => false,
@@ -449,6 +465,10 @@ worker_count = 4
             "https:/alice:hunter2@embed.example.com/v1",
             "https:\\\\alice:hunter2@embed.example.com/v1",
             "HTTPS://alice:hunter2@embed.example.com",
+            " https://alice:hunter2@embed.example.com/v1",
+            "\thttps://alice:hunter2@embed.example.com/v1",
+            "ht\ntps://alice:hunter2@embed.example.com/v1",
+            "https:alice:hunter2@embed.example.com/v1",
         ] {
             let mut value = toml::Value::String(odd.to_string());
             redact_url_credentials(&mut value);

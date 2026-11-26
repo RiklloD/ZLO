@@ -581,5 +581,29 @@ Phases 1, 2 and 5 are in. What differs from the sketch above:
     walk runs on the request's task (bounded: 4,000 files, 2,000 names a
     folder, depth 8, 2 MiB a file).
 
+- **After the third review (2026-11-26).**
+  - Skills: a bundle in which a file would become a folder (or back) is
+    refused before anything is touched; remove the skill on the receiver
+    to take the new one.
+  - `cli_home`: entries are typed (one file, or a folder tree); only
+    names in printable ASCII that do not end in a dot or space are
+    carried, so no other spelling can name a withheld file on a folding
+    volume; the stored spelling is checked at every folder on the way to
+    a write; the root is opened by its own name whatever the path's
+    spelling and only that one folder is ever created; scans count every
+    name looked at and run off the async workers; notes are capped.
+  - Config: an address is read as a client reads it (whitespace and
+    control characters dropped, a web scheme without slashes) before it
+    is checked for a sign-in.
+  - Pages are measured in their real encoded form; a page must list its
+    keys in order, each once.
+  - The carrier's confirming round sends keys and hashes only; a cursor
+    is checked before its page is applied; nothing is remembered as
+    settled after a failed pass; a reply that arrives after a connection
+    was replaced is dropped even before the poll has seen the change.
+  - Known and left: the base's per-path guard is by value, so two other
+    passes that take a path away and back between this pass's read and
+    its write are not noticed.
+
 Left: phase 3 (provider catalog and keys), phase 4 (extensions, hooks,
 automations).

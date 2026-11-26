@@ -145,7 +145,13 @@ pub fn differing(
             // A domain both sides write is gone over once per session even
             // when it matches: each side then records what they agree on,
             // which is what later tells an edit from a removal.
-            let unrecorded = domain.two_way() && domain.itemized() && !memo.contains_key(domain);
+            // "Gone over" means this very pair of hashes was: a pair seen
+            // only before an interrupted pass does not count.
+            let unrecorded = domain.two_way()
+                && domain.itemized()
+                && memo
+                    .get(domain)
+                    .is_none_or(|(a, b)| a != ours || b != theirs);
             ((ours != theirs && !settled) || unrecorded).then_some(*domain)
         })
         .collect()
@@ -238,12 +244,11 @@ impl Tally {
             if outcome.status == "skipped_with_reason" || !outcome.warnings.is_empty() {
                 self.unfinished.insert(domain);
             }
-            if outcome.status == "skipped_with_reason"
-                && !self.report.skipped.iter().any(|(d, _)| *d == domain)
-            {
-                self.report
-                    .skipped
-                    .push((domain, outcome.reason.unwrap_or_default()));
+            if outcome.status == "skipped_with_reason" {
+                let said = (domain, outcome.reason.unwrap_or_default());
+                if !self.report.skipped.contains(&said) {
+                    self.report.skipped.push(said);
+                }
             }
             for warning in outcome.warnings {
                 if !self.report.warnings.contains(&warning) {
@@ -285,11 +290,16 @@ fn listed(snapshot: &Value, domain: ConfigSyncDomain) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-fn next_of(snapshot: &Value, domain: ConfigSyncDomain) -> Option<String> {
-    page(snapshot, domain)?
-        .get("next")?
-        .as_str()
-        .map(str::to_string)
+/// The page's cursor: `None` at the end. A cursor that is there and is
+/// not text cannot be followed, and is not taken for the end.
+fn next_of(snapshot: &Value, domain: ConfigSyncDomain) -> Result<Option<String>, ClientError> {
+    match page(snapshot, domain).and_then(|p| p.get("next")) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(next)) => Ok(Some(next.clone())),
+        Some(_) => Err(ClientError::Config(
+            "configuration sync: a page cursor was not text".into(),
+        )),
+    }
 }
 
 /// The part of `have` after `after` that fits one request, and the key it
@@ -316,6 +326,16 @@ fn have_window(
     (window, None)
 }
 
+/// What a leg carries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Leg {
+    /// Content for what the receiver lacks.
+    Content,
+    /// Keys and hashes only: nothing can be written, and each item both
+    /// sides hold alike is recorded by the receiver as agreed.
+    Confirm,
+}
+
 /// One itemized domain from `from` to `to`: the receiver's whole index
 /// (in pages), then the sender's pages until there is no next one, each
 /// told what the receiver holds in the range it covers.
@@ -324,6 +344,7 @@ async fn carry_items(
     to: &Client,
     domain: ConfigSyncDomain,
     merge_back: bool,
+    leg: Leg,
     stop: &AtomicBool,
     tally: &mut Tally,
 ) -> Result<(), ClientError> {
@@ -337,7 +358,7 @@ async fn carry_items(
         }
         let index = to.config_sync_export(&request).await?;
         have.extend(listed(&index, domain));
-        match advanced(next_of(&index, domain), &after)? {
+        match advanced(next_of(&index, domain)?, &after)? {
             Some(next) => after = Some(next),
             None => break,
         }
@@ -347,6 +368,9 @@ async fn carry_items(
         live(stop)?;
         let (window, until) = have_window(&have, after.as_ref());
         let mut request = json!({ "domains": [domain], "have": window });
+        if leg == Leg::Confirm {
+            request["index_only"] = Value::Bool(true);
+        }
         if let Some(after) = &after {
             request["after"] = Value::String(after.clone());
         }
@@ -354,14 +378,16 @@ async fn carry_items(
             request["until"] = Value::String(until.clone());
         }
         let snapshot = from.config_sync_export(&request).await?;
-        let next = next_of(&snapshot, domain);
+        // Checked before the page is applied: a page whose cursor cannot
+        // be followed is not half of a pass.
+        let next = advanced(next_of(&snapshot, domain)?, &after)?;
         live(stop)?;
         tally.add(
             to.config_sync_apply(&snapshot, &[domain], merge_back)
                 .await?,
             !merge_back,
         );
-        match advanced(next, &after)? {
+        match next {
             Some(next) => after = Some(next),
             None => return Ok(()),
         }
@@ -435,14 +461,32 @@ pub async fn sync_once(
         }
     }
     for domain in paged {
-        carry_items(source, target, domain, false, stop, &mut tally).await?;
+        carry_items(
+            source,
+            target,
+            domain,
+            false,
+            Leg::Content,
+            stop,
+            &mut tally,
+        )
+        .await?;
         if domain.two_way() {
-            carry_items(target, source, domain, true, stop, &mut tally).await?;
-            // Something moved: one more round, which carries no content
-            // and lets each side record what both now hold.
+            carry_items(target, source, domain, true, Leg::Content, stop, &mut tally).await?;
+            // Something moved: one more round, of keys and hashes only,
+            // lets each side record what both now hold.
             if tally.wrote.contains(&domain) {
-                carry_items(source, target, domain, false, stop, &mut tally).await?;
-                carry_items(target, source, domain, true, stop, &mut tally).await?;
+                carry_items(
+                    source,
+                    target,
+                    domain,
+                    false,
+                    Leg::Confirm,
+                    stop,
+                    &mut tally,
+                )
+                .await?;
+                carry_items(target, source, domain, true, Leg::Confirm, stop, &mut tally).await?;
             }
         }
     }
@@ -522,6 +566,21 @@ mod tests {
         let gone_over =
             SyncMemo::from([(ConfigSyncDomain::Memory, ("m".to_string(), "m".to_string()))]);
         assert!(differing(&ours_m, &theirs_m, &BTreeSet::new(), &gone_over).is_empty());
+        // A memo from before an interrupted pass names other hashes: the
+        // pair there is now has not been gone over.
+        let before = SyncMemo::from([(
+            ConfigSyncDomain::Memory,
+            ("old".to_string(), "old".to_string()),
+        )]);
+        assert_eq!(
+            differing(&ours_m, &theirs_m, &BTreeSet::new(), &before),
+            vec![ConfigSyncDomain::Memory]
+        );
+        // A cursor that is not text is an error, not the end.
+        let odd = json!({"domains": {"memory": {"next": 7}}});
+        assert!(next_of(&odd, ConfigSyncDomain::Memory).is_err());
+        let end = json!({"domains": {"memory": {"items": []}}});
+        assert_eq!(next_of(&end, ConfigSyncDomain::Memory).expect("end"), None);
         let stale = SyncMemo::from([(Profiles, ("1".to_string(), "8".to_string()))]);
         assert_eq!(
             differing(&ours, &theirs, &BTreeSet::new(), &stale),
