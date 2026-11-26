@@ -4,23 +4,24 @@ use chrono::{Datelike, Duration as Span, Local, TimeZone};
 use rune::{PopupItem, PopupMenu, Tx};
 use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 
-use super::{mark, settle, title_of};
+use super::merged::{self, RowId};
+use super::{mark_row, open_row, settle_row, title_of};
 use crate::state::State;
 
 /// The right-click menu of an inbox row (a native menu). Every mark goes
 /// through the same calls as the hover buttons; "unread" is the local set.
 pub(in crate::workspace) fn open_row_menu(
     s: &State,
-    thread_id: &str,
+    id: &RowId,
     at: rune::PointerPress,
     tx: &mut Tx,
 ) {
-    let Some(row) = s.workspace.inbox.row(thread_id) else {
+    let Some(row) = merged::find_row(s, id) else {
         return;
     };
     let state = row.state;
     let blocker = settle_blocker(row);
-    let unread = s.workspace.inbox.unread.contains(thread_id);
+    let unread = s.workspace.inbox.unread.contains(id);
     let mut menu = PopupMenu::new().item(PopupItem::new("open", "Open"));
     menu = match state {
         InboxState::Snoozed => menu.item(PopupItem::new("wake", "Wake now")),
@@ -55,33 +56,33 @@ pub(in crate::workspace) fn open_row_menu(
         .item(PopupItem::new("copy-id", "Copy thread ID"))
         .separator()
         .item(PopupItem::new("delete", "Delete").enabled(state != InboxState::Working));
-    let id = thread_id.to_string();
+    let row_id = id.clone();
     let title = title_of(row).to_string();
     tx.popup_menu(menu, at, move |s: &mut State, picked, tx| {
         let Some(picked) = picked else { return };
-        let id = id.clone();
+        let row_id = row_id.clone();
         match picked {
-            "open" => crate::workspace::open_thread(s, id),
-            "wake" => mark(s, id, InboxAction::Wake, None),
-            "unsettle" => mark(s, id, InboxAction::Unsettle, None),
-            "pin" => mark(s, id, InboxAction::Pin, None),
-            "unpin" => mark(s, id, InboxAction::Unpin, None),
-            "settle" => settle(s, id),
+            "open" => open_row(s, &row_id),
+            "wake" => mark_row(s, row_id, InboxAction::Wake, None),
+            "unsettle" => mark_row(s, row_id, InboxAction::Unsettle, None),
+            "pin" => mark_row(s, row_id, InboxAction::Pin, None),
+            "unpin" => mark_row(s, row_id, InboxAction::Unpin, None),
+            "settle" => settle_row(s, row_id),
             "unread" => {
                 let set = &mut s.workspace.inbox.unread;
-                if !set.remove(&id) {
-                    set.insert(id);
+                if !set.remove(&row_id) {
+                    set.insert(row_id);
                 }
             }
             "copy-title" => tx.copy(title.clone()),
-            "copy-id" => tx.copy(id),
-            "delete" => s.workspace.confirm_delete = Some(id),
+            "copy-id" => tx.copy(row_id.thread_id),
+            "delete" => s.workspace.confirm_delete = Some(row_id),
             other => {
                 if let Some(until) = other
                     .strip_prefix("snooze:")
                     .and_then(|u| u.parse::<i64>().ok())
                 {
-                    mark(s, id, InboxAction::Snooze, Some(until));
+                    mark_row(s, row_id, InboxAction::Snooze, Some(until));
                 }
             }
         }

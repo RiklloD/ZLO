@@ -79,6 +79,7 @@ pub(super) fn sidebar(
         } else {
             inbox_view::view(s, cx, k, layer).transition(swap(-NAV_DRIFT))
         })
+        .children((!settings).then(|| peer_status(s, p)).flatten())
         .children((!settings).then(|| footer(s, p)));
     // Over the frame's titlebar band: the window's name past the cluster;
     // the band's empty space drags the window.
@@ -135,6 +136,32 @@ pub(super) fn sidebar(
             } else {
                 p.border
             }),
+    )
+}
+
+/// Quiet one-line status at the sidebar's foot for any peer that is
+/// connecting, asleep or failed; opens Settings → Computers.
+fn peer_status(s: &State, p: &Palette) -> Option<El> {
+    let label = super::super::inbox::merged::peer_status_line(s)?;
+    Some(
+        row()
+            .key("sidebar-peer-status")
+            .role("button")
+            .label(label.clone())
+            .w_full()
+            .px(12.)
+            .py(5.)
+            .center_y()
+            .cursor(Cursor::Pointer)
+            .hover(ui::hover_wash(p))
+            .hover_group()
+            .hover_motion(design::motion::HOVER, design::motion::HOVER)
+            .on_press(|s: &mut State| super::super::show(s, Page::Computers))
+            .child(
+                ui::side_t(label, design::SIDEBAR_META_SIZE, p.text_muted)
+                    .group_color(p.text)
+                    .truncate(),
+            ),
     )
 }
 

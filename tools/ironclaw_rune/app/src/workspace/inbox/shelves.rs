@@ -1,8 +1,11 @@
 //! The sidebar's grouping of the visible rows into shelves, and the
 //! ⌘1..⌘9 jump order.
 
-use zlo_client::inbox::{InboxRow, InboxState};
+use std::cmp::Reverse;
 
+use zlo_client::inbox::InboxState;
+
+use super::merged::{self, Entry, RowId};
 use super::subagents;
 use crate::state::State;
 
@@ -10,21 +13,23 @@ use crate::state::State;
 /// jump order. Shared by the view and the ⌘N shortcut.
 pub(in crate::workspace) struct Shelves<'a> {
     pub(in crate::workspace) tree: subagents::Tree,
-    pub(in crate::workspace) pinned: Vec<&'a InboxRow>,
-    pub(in crate::workspace) main: Vec<&'a InboxRow>,
-    pub(in crate::workspace) working: Vec<&'a InboxRow>,
-    pub(in crate::workspace) snoozed: Vec<&'a InboxRow>,
-    pub(in crate::workspace) settled: Vec<&'a InboxRow>,
+    pub(in crate::workspace) pinned: Vec<Entry<'a>>,
+    pub(in crate::workspace) main: Vec<Entry<'a>>,
+    pub(in crate::workspace) working: Vec<Entry<'a>>,
+    pub(in crate::workspace) snoozed: Vec<Entry<'a>>,
+    pub(in crate::workspace) settled: Vec<Entry<'a>>,
     /// Searching or filtering on a parked state unfolds it.
     pub(in crate::workspace) unfold: bool,
     pub(in crate::workspace) working_open: bool,
-    /// Thread ids ⌘1..⌘9 open, in the order the cards show.
-    pub(in crate::workspace) jump: Vec<String>,
+    /// Rows ⌘1..⌘9 open, in the order the cards show.
+    pub(in crate::workspace) jump: Vec<RowId>,
 }
 
 pub(in crate::workspace) fn shelves(s: &State) -> Shelves<'_> {
     let inbox = &s.workspace.inbox;
     let query = inbox.query();
+    let multi = merged::multi_connected(s);
+    let merge_sort = merged::has_peer_rows(s);
     let side_chats: std::collections::HashSet<&str> = s
         .prefs
         .side_chats
@@ -33,32 +38,46 @@ pub(in crate::workspace) fn shelves(s: &State) -> Shelves<'_> {
         .map(String::as_str)
         .collect();
     let search = &s.workspace.message_search;
-    let rows: Vec<&InboxRow> = inbox
-        .list
-        .rows
-        .iter()
-        .filter(|r| {
-            inbox.matches(r, &query)
-                // A message in the thread matches: the filters still apply.
-                || (search.hit(&query, &r.thread_id).is_some() && inbox.matches(r, ""))
-        })
-        // Side chats live under their parent; a search still finds them.
-        .filter(|r| !query.is_empty() || !side_chats.contains(r.thread_id.as_str()))
-        .collect();
-    // Subagents fold under their parent; the rest of the list is the
-    // top-level threads only.
-    let tree = subagents::Tree::new(rows.iter().copied());
-    let rows: Vec<&InboxRow> = rows
+    let entries: Vec<Entry<'_>> = merged::entries(s)
         .into_iter()
-        .filter(|r| !tree.is_nested(&r.thread_id))
+        .filter(|e| {
+            merged::matches_entry(s, e, &query, multi)
+                // A message in the thread matches (focused computer's index):
+                // the filters still apply.
+                || (e.focused
+                    && search.hit(&query, &e.row.thread_id).is_some()
+                    && merged::matches_entry(s, e, "", multi))
+        })
+        // Side chats live under their parent on the focused computer; a search
+        // still finds them.
+        .filter(|e| {
+            !e.focused || !query.is_empty() || !side_chats.contains(e.row.thread_id.as_str())
+        })
+        .collect();
+    // Subagents fold under their parent on the same computer; the rest of the
+    // list is the top-level threads only.
+    let tree = subagents::Tree::new(entries.iter().map(|e| (&e.id, e.focused, e.row)));
+    let entries: Vec<Entry<'_>> = entries
+        .into_iter()
+        .filter(|e| !tree.is_nested(&e.id))
         .collect();
     // Working threads sit on the Working shelf (folded by default), as in
-    // t3code; `shown_state` moves a just-sent one there before the backend.
-    let in_state = |st: InboxState| -> Vec<&InboxRow> {
-        rows.iter()
-            .copied()
-            .filter(|r| inbox.shown_state(r) == st)
-            .collect()
+    // t3code; `shown_state` moves a just-sent focused one there before the
+    // backend confirms it. Working rows from every computer go into it.
+    let in_state = |st: InboxState| -> Vec<Entry<'_>> {
+        let mut out: Vec<Entry<'_>> = entries
+            .iter()
+            .filter(|e| e.shown_state(inbox) == st)
+            .cloned()
+            .collect();
+        if merge_sort {
+            if st == InboxState::Settled {
+                out.sort_by_key(|e| Reverse(e.row.settled_at.unwrap_or(e.row.last_activity_at)));
+            } else {
+                out.sort_by_key(|e| Reverse(e.row.last_activity_at));
+            }
+        }
+        out
     };
     let unfold = !query.is_empty() || inbox.state.is_some();
     let working_open = inbox.show_working || unfold;
@@ -74,7 +93,7 @@ pub(in crate::workspace) fn shelves(s: &State) -> Shelves<'_> {
         .chain(main.iter())
         .chain(working.iter().filter(|_| working_open))
         .take(9)
-        .map(|r| r.thread_id.clone())
+        .map(|e| e.id.clone())
         .collect();
     Shelves {
         tree,
@@ -89,7 +108,7 @@ pub(in crate::workspace) fn shelves(s: &State) -> Shelves<'_> {
     }
 }
 
-/// The thread ⌘N (1-based `n`) opens.
-pub(in crate::workspace) fn jump_target(s: &State, n: usize) -> Option<String> {
+/// The row ⌘N (1-based `n`) opens.
+pub(in crate::workspace) fn jump_target(s: &State, n: usize) -> Option<RowId> {
     shelves(s).jump.get(n.checked_sub(1)?).cloned()
 }

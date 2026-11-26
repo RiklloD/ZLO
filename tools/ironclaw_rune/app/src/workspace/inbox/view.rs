@@ -131,10 +131,8 @@ fn filters(s: &State, k: &Kit) -> El {
             .gap(4.)
             .children(chips)
     };
-    let profiles: Vec<El> = i
-        .list
-        .profiles
-        .iter()
+    let profiles: Vec<El> = super::merged::filter_profiles(s)
+        .into_iter()
         .enumerate()
         .map(|(ix, profile)| {
             let id = profile.profile_id.clone();
@@ -152,8 +150,7 @@ fn filters(s: &State, k: &Kit) -> El {
             )
         })
         .collect();
-    let models: Vec<El> = i
-        .models()
+    let models: Vec<El> = super::merged::filter_models(s)
         .into_iter()
         .enumerate()
         .map(|(ix, model)| {
@@ -183,7 +180,7 @@ fn filters(s: &State, k: &Kit) -> El {
         })
     })
     .collect();
-    let any_imported = i.list.rows.iter().any(|r| r.imported.is_some());
+    let any_imported = super::merged::any_imported(s);
     let mut body = col()
         .w_full()
         .min_w(0.0)

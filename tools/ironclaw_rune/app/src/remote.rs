@@ -292,7 +292,7 @@ pub fn sync_local_backend(s: &State) {
 
 /// Write the registry (small; on the UI thread, so writes stay ordered).
 pub fn save_registry(s: &mut State) -> Result<(), String> {
-    if s.fixture {
+    if s.fixture || cfg!(test) {
         return Ok(());
     }
     let path = registry_path().ok_or("No settings folder on this Mac.")?;
@@ -479,6 +479,14 @@ pub fn state_of(s: &State, key: &str) -> EnvState {
             Conn::Connecting => return EnvState::Connecting,
             Conn::Failed { .. } => {}
         }
+    }
+    if let Some(peer) = peers::get(s, key) {
+        return match &peer.conn {
+            peers::PeerConn::Ready => EnvState::Connected,
+            peers::PeerConn::Connecting => EnvState::Connecting,
+            peers::PeerConn::Asleep => EnvState::Asleep,
+            peers::PeerConn::Failed(why) => EnvState::Blocked(why.clone()),
+        };
     }
     if asleep(s, key) {
         return EnvState::Asleep;

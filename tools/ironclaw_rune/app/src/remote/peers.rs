@@ -88,7 +88,6 @@ impl Peer {
     }
 
     /// A peer with no live backend, for headless scenes and fixtures.
-    #[allow(dead_code)] // Stage 2a/2b fixture scenes
     pub fn fixture(computer: Computer, conn: PeerConn) -> Self {
         Self::new(computer, conn)
     }
@@ -121,13 +120,11 @@ impl Peers {
         self.entries.is_empty()
     }
 
-    #[allow(dead_code)] // Stage 2a/2b
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Insert or replace a peer directly (for headless scenes and fixtures).
-    #[allow(dead_code)] // Stage 2a/2b fixture scenes
     pub fn insert_fixture(&mut self, peer: Peer) {
         let key = peer.key();
         if let Some(slot) = self.entries.iter_mut().find(|p| p.key() == key) {
@@ -247,6 +244,41 @@ pub fn refresh(s: &mut State) {
     }
 }
 
+/// Re-read one ready peer's inbox and notifications now.
+pub fn refresh_one(s: &mut State, key: &str) {
+    if s.fixture {
+        return;
+    }
+    io::refresh_peer(s, key);
+}
+
+/// Apply an updated inbox list returned by a mark on `key` and re-arm its
+/// working-row poll when needed.
+pub fn apply_inbox(s: &mut State, key: &str, list: InboxListResponse, tx: &mut Tx) {
+    let arm_poll = s.workspace.window_active && !crate::design::look::saving(s);
+    let Some(peer) = s.remote.peers.get_mut(key) else {
+        return;
+    };
+    peer.inbox = Some(list);
+    if arm_poll && peer_needs_poll(peer) {
+        if peer.poll_at.is_none() {
+            peer.poll_at = Some(Instant::now() + POLL);
+            tx.wake_after(POLL);
+        }
+    } else {
+        peer.poll_at = None;
+    }
+}
+
+/// Remove a deleted thread from `key`'s cached inbox list.
+pub fn remove_row(s: &mut State, key: &str, thread_id: &str) {
+    if let Some(peer) = s.remote.peers.get_mut(key)
+        && let Some(inbox) = peer.inbox.as_mut()
+    {
+        inbox.rows.retain(|r| r.thread_id != thread_id);
+    }
+}
+
 /// The module's share of the app poll: retries and the working-row poll.
 /// Returns `true` when peer state changed.
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
@@ -323,20 +355,17 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
 }
 
 /// Peers in registry order.
-#[allow(dead_code)] // Stage 2a/2b
 pub fn list(s: &State) -> Vec<&Peer> {
     s.remote.peers.entries.iter().collect()
 }
 
 /// One peer by computer key (`this-mac` or an `environment_id`).
-#[allow(dead_code)] // Stage 2a/2b
 pub fn get<'a>(s: &'a State, key: &str) -> Option<&'a Peer> {
     s.remote.peers.get(key)
 }
 
 /// Run a gateway request on a peer's client (`jobs::run` for a peer).
 /// `done` is dropped if that peer's connection has changed since (generation).
-#[allow(dead_code)] // Stage 2a/2b
 pub fn run<F, Fut, T>(
     s: &State,
     key: &str,
@@ -421,7 +450,6 @@ pub fn run<F, Fut, T>(
 
 /// Move the focus to `key`. Ready peer: instant handover on the UI thread
 /// with no network requests. Otherwise the existing `connect::switch_to`.
-#[allow(dead_code)] // Stage 2a/2b
 pub fn focus(s: &mut State, key: &str) {
     if is_ready_focused(s, key) {
         return;
@@ -435,7 +463,6 @@ pub fn focus(s: &mut State, key: &str) {
 
 /// Focus `key`, then open `thread_id` once the focus has landed (immediately
 /// on a handover or if `key` is already focused).
-#[allow(dead_code)] // Stage 2a/2b
 pub fn focus_thread(s: &mut State, key: &str, thread_id: String) {
     if is_ready_focused(s, key) {
         crate::workspace::open_thread(s, thread_id);

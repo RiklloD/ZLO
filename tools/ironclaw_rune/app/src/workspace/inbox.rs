@@ -27,6 +27,7 @@ use crate::jobs;
 use crate::state::{Page, State};
 
 mod labels;
+pub(in crate::workspace) mod merged;
 pub(super) mod picker;
 mod row_menu;
 mod shelves;
@@ -34,6 +35,8 @@ pub(super) mod subagents;
 pub(super) mod view;
 
 pub(super) use labels::{branch_tail, short_age, wake_label};
+pub use merged::RowId;
+pub(in crate::workspace) use merged::{delete_row, mark_row, open_row, settle_row};
 pub(super) use row_menu::{open_row_menu, settle_blocker, snooze_presets};
 pub(super) use shelves::{jump_target, shelves};
 
@@ -69,10 +72,10 @@ pub struct Inbox {
     pub show_snoozed: bool,
     pub show_settled: bool,
     pub settled_limit: usize,
-    pub snooze_menu: Option<String>,
+    pub snooze_menu: Option<RowId>,
     /// Rows marked unread from the context menu. Local to this app run:
     /// the backend has no read flag; opening the thread clears it.
-    pub unread: BTreeSet<String>,
+    pub unread: BTreeSet<RowId>,
     /// Keep polling until then (Unix ms) after a run ends: the backend
     /// writes the thread's generated title a few seconds later.
     settle_poll_until: i64,
@@ -85,9 +88,9 @@ pub struct Inbox {
     /// its answer moves the rows instead of landing them.
     shown: bool,
     /// Parents whose subagent list is unfolded (closed by default).
-    pub expanded: BTreeSet<String>,
+    pub expanded: BTreeSet<RowId>,
     /// The thread whose parents were last unfolded to show it.
-    revealed: Option<String>,
+    revealed: Option<RowId>,
     /// ⌘ alone is held: cards show their `⌘N` jump badge.
     pub cmd_held: bool,
     /// The spacer that seats the shelves at the sidebar's bottom.
@@ -215,7 +218,7 @@ impl Inbox {
         self.list.profiles.iter().find(|p| p.profile_id == id)
     }
 
-    fn any_working(&self) -> bool {
+    pub(super) fn any_working(&self) -> bool {
         self.list
             .rows
             .iter()
@@ -254,6 +257,7 @@ impl Inbox {
         self.search.text.trim().to_lowercase()
     }
 
+    #[cfg(test)]
     pub fn matches(&self, row: &InboxRow, query: &str) -> bool {
         if self.profile.as_ref().is_some_and(|p| *p != row.profile_id)
             || self.state.is_some_and(|s| s != row.state)
@@ -278,16 +282,6 @@ impl Inbox {
                     .as_deref()
                     .is_some_and(|m| m.to_lowercase().contains(query))
             })
-    }
-
-    pub fn models(&self) -> Vec<String> {
-        let set: BTreeSet<String> = self
-            .list
-            .rows
-            .iter()
-            .flat_map(|r| r.engines.iter().filter_map(|e| e.model.clone()))
-            .collect();
-        set.into_iter().collect()
     }
 
     pub fn filtered(&self) -> bool {
@@ -334,8 +328,9 @@ fn first_shown(s: &State, except: Option<&str>) -> Option<String> {
         .iter()
         .chain(sh.main.iter())
         .chain(sh.working.iter())
-        .find(|r| Some(r.thread_id.as_str()) != except)
-        .map(|r| r.thread_id.clone())
+        .filter(|e| e.focused)
+        .find(|e| Some(e.row.thread_id.as_str()) != except)
+        .map(|e| e.row.thread_id.clone())
 }
 
 pub fn title_of(row: &InboxRow) -> &str {
@@ -413,7 +408,7 @@ pub(super) fn apply(s: &mut State, list: InboxListResponse) {
 }
 
 fn ensure_tick(s: &mut State) {
-    if !s.workspace.inbox.any_working() {
+    if !merged::any_working(s) {
         s.workspace.timers.tick = None;
         return;
     }
@@ -426,7 +421,7 @@ fn ensure_tick(s: &mut State) {
 /// with the window in front. Activation refreshes the inbox, which starts
 /// the tick again.
 pub(super) fn tick_due(s: &mut State) -> bool {
-    if !s.workspace.window_active || !s.workspace.inbox.any_working() {
+    if !s.workspace.window_active || !merged::any_working(s) {
         return false;
     }
     s.workspace.timers.tick = Some(Instant::now() + Duration::from_secs(1));
@@ -689,7 +684,8 @@ fn settled(s: &mut State, thread_id: &str, list: InboxListResponse, tx: &mut Tx)
 
 /// Opening a row with an unseen result clears its Done / Woke badge.
 pub(super) fn visit(s: &mut State, thread_id: &str) {
-    s.workspace.inbox.unread.remove(thread_id);
+    let row_id = RowId::focused(s, thread_id);
+    s.workspace.inbox.unread.remove(&row_id);
     let unseen = s
         .workspace
         .inbox
@@ -748,22 +744,20 @@ pub(super) fn new_profile(s: &mut State) {
 /// Open the subagent lists above the thread on screen, once per thread
 /// opened, so the selection is visible and can still be folded.
 pub(super) fn reveal_active_subagent(s: &mut State) {
-    let active = (s.page == Page::Chat)
-        .then(|| active_id(s).map(str::to_string))
-        .flatten();
+    let active = merged::active_row(s);
     if s.workspace.inbox.revealed == active {
         return;
     }
     s.workspace.inbox.revealed = active.clone();
     if let Some(id) = active {
-        let tree = subagents::Tree::new(&s.workspace.inbox.list.rows);
+        let tree = subagents::Tree::for_computer(&id.computer, &s.workspace.inbox.list.rows);
         let above = tree.ancestors(&id);
         // A thread opened on the folded Working shelf unfolds it, so the
         // selection is never hidden.
         let inbox = &s.workspace.inbox;
         let on_shelf = above.iter().chain(std::iter::once(&id)).any(|t| {
             inbox
-                .row(t)
+                .row(&t.thread_id)
                 .is_some_and(|r| !tree.is_nested(t) && inbox.shown_state(r) == InboxState::Working)
         });
         s.workspace.inbox.expanded.extend(above);
@@ -773,10 +767,10 @@ pub(super) fn reveal_active_subagent(s: &mut State) {
     }
 }
 
-pub(super) fn toggle_subagents(s: &mut State, root: &str) {
+pub(super) fn toggle_subagents(s: &mut State, root: &RowId) {
     let expanded = &mut s.workspace.inbox.expanded;
     if !expanded.remove(root) {
-        expanded.insert(root.to_string());
+        expanded.insert(root.clone());
     }
 }
 
@@ -793,11 +787,11 @@ mod tests {
 
     fn shelf_of(s: &State, id: &str) -> &'static str {
         let sh = shelves(s);
-        if sh.pinned.iter().any(|r| r.thread_id == id) {
+        if sh.pinned.iter().any(|r| r.row.thread_id == id) {
             "pinned"
-        } else if sh.main.iter().any(|r| r.thread_id == id) {
+        } else if sh.main.iter().any(|r| r.row.thread_id == id) {
             "main"
-        } else if sh.working.iter().any(|r| r.thread_id == id) {
+        } else if sh.working.iter().any(|r| r.row.thread_id == id) {
             "working"
         } else {
             "elsewhere"
@@ -1084,7 +1078,10 @@ mod tests {
         assert_eq!(shelf_of(&s, "p"), "pinned", "a pinned card stays pinned");
         let sh = shelves(&s);
         assert!(!sh.working_open, "the shelf starts folded");
-        assert!(sh.jump.iter().all(|id| id != "a"), "folded rows take no ⌘N");
+        assert!(
+            sh.jump.iter().all(|id| id.thread_id != "a"),
+            "folded rows take no ⌘N"
+        );
         // The run ends: back in the list.
         apply(&mut s, list(vec![row("a", InboxState::Inbox, None)]));
         assert_eq!(shelf_of(&s, "a"), "main");

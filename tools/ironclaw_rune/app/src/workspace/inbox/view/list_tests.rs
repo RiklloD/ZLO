@@ -42,7 +42,7 @@ fn a_long_history_builds_only_the_rows_on_screen() {
         .filter(|e| {
             e.key
                 .as_deref()
-                .is_some_and(|k| k.starts_with("row-t-long") || k.starts_with("slim-row-"))
+                .is_some_and(|k| k.contains(":t-long") || k.starts_with("slim-row-"))
         })
         .count();
     assert!(built > 0, "rows show");
@@ -53,7 +53,7 @@ fn a_long_history_builds_only_the_rows_on_screen() {
 fn a_pinned_row_glides_to_the_top() {
     let mut rt = runtime(crate::workspace::fixtures::fixture_shell);
     rt.frame(1. / 60.);
-    let from = top(&rt, "row-t-plain").expect("the row shows");
+    let from = top(&rt, "row-this-mac:t-plain").expect("the row shows");
     rt.update(|s, _| {
         let rows = &mut s.workspace.inbox.list.rows;
         if let Some(r) = rows.iter_mut().find(|r| r.thread_id == "t-plain") {
@@ -63,7 +63,7 @@ fn a_pinned_row_glides_to_the_top() {
     let mut seen = Vec::new();
     for _ in 0..60 {
         rt.frame(1. / 60.);
-        seen.extend(top(&rt, "row-t-plain"));
+        seen.extend(top(&rt, "row-this-mac:t-plain"));
     }
     let to = *seen.last().expect("still shown");
     assert!(to < from, "pinned rows sit on top: {from} → {to}");
@@ -80,7 +80,7 @@ fn a_short_list_seats_its_shelves_at_the_bottom() {
     for _ in 0..10 {
         rt.frame(1. / 60.);
     }
-    let card = top(&rt, "row-t-short-2").expect("the last card shows");
+    let card = top(&rt, "row-this-mac:t-short-2").expect("the last card shows");
     let fold = top(&rt, "fold-settled").expect("the Settled fold shows");
     let footer = top(&rt, "sidebar-footer").expect("the footer shows");
     assert!(

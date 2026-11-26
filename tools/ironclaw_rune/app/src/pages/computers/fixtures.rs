@@ -195,3 +195,25 @@ pub fn light_paired(s: &mut State) {
         studio.routes = vec![Route::ssh(&target, 3000)];
     }
 }
+
+/// This Mac focused and Studio connected as a ready peer, Mac mini asleep,
+/// Old laptop blocked.
+pub fn both_connected(s: &mut State) {
+    use crate::remote::peers::{Peer, PeerConn};
+    computers(s);
+    s.remote.peers.insert_fixture(Peer::fixture(
+        Computer::remote(STUDIO, "Studio"),
+        PeerConn::Ready,
+    ));
+    s.remote.peers.insert_fixture(Peer::fixture(
+        Computer::remote(MINI, "Mac mini"),
+        PeerConn::Asleep,
+    ));
+    s.remote.peers.insert_fixture(Peer::fixture(
+        Computer::remote(OLD, "Old laptop"),
+        PeerConn::Failed(
+            "Old laptop turned this Mac's token down (it may have been revoked). Pair it again in Settings → Computers."
+                .into(),
+        ),
+    ));
+}

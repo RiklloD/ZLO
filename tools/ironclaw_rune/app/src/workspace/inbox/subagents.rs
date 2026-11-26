@@ -1,8 +1,8 @@
-//! Subagent threads fold under the thread that delegated them. A parent
-//! card shows one quiet line ("3 subagents · 1 working") and opens, on a
-//! click, into a nested list of its subagents to look in on or steer; the
-//! list is closed by default. A subagent whose parent is not on the list
-//! (filtered out, or past the first page) stays a row of its own.
+//! Subagent threads fold under the thread that delegated them (on the same
+//! computer). A parent card shows one quiet line ("3 subagents · 1 working")
+//! and opens, on a click, into a nested list of its subagents to look in on or
+//! steer; the list is closed by default. A subagent whose parent is not on the
+//! list (filtered out, or past the first page) stays a row of its own.
 //!
 //! Settling a parent settles its subagents with it (the backend carries the
 //! delegation tree); each subagent row settles or comes back on its own. A
@@ -14,7 +14,8 @@ use rune::{Color, El, col, el, icon, row, text};
 use rune_kit::Kit;
 use zlo_client::inbox::{InboxAction, InboxRow, InboxState, InboxStatus};
 
-use super::{settle_blocker, title_of, view};
+use super::merged::{self, Entry, RowId};
+use super::{mark_row, open_row, settle_blocker, settle_row, title_of, view};
 use crate::design;
 use crate::icons;
 use crate::state::State;
@@ -23,13 +24,22 @@ use crate::state::State;
 const MAX_INDENT: usize = 3;
 const INDENT: f32 = 12.;
 
-/// The visible rows' delegation tree, rebuilt every render.
+/// One subagent row stored in [`Tree`].
+#[derive(Clone)]
+pub(in crate::workspace) struct Kid {
+    pub id: RowId,
+    pub focused: bool,
+    pub row: InboxRow,
+}
+
+/// The visible rows' delegation tree, keyed by `(computer, thread_id)` so
+/// subagents only fold under parents on the same computer.
 #[derive(Default)]
 pub(in crate::workspace) struct Tree {
     /// Parent id → its subagents on the list, the ones needing you first.
-    children: HashMap<String, Vec<InboxRow>>,
+    children: HashMap<RowId, Vec<Kid>>,
     /// Rows drawn under their parent instead of on their own.
-    nested: HashSet<String>,
+    nested: HashSet<RowId>,
 }
 
 /// What a parent's folded line says about its subagents.
@@ -61,7 +71,8 @@ fn parked(row: &InboxRow) -> bool {
 }
 
 /// Needs you, then working, then the rest; latest activity first in each.
-fn rank(row: &InboxRow) -> (u8, i64) {
+fn rank(kid: &Kid) -> (u8, i64) {
+    let row = &kid.row;
     let group = match row.status {
         Some(InboxStatus::NeedsInput) => 0,
         _ if live(row) => 1,
@@ -72,16 +83,21 @@ fn rank(row: &InboxRow) -> (u8, i64) {
 }
 
 impl Tree {
-    pub(in crate::workspace) fn new<'r>(rows: impl IntoIterator<Item = &'r InboxRow>) -> Self {
-        let rows: Vec<&InboxRow> = rows.into_iter().collect();
-        let by_id: HashMap<&str, &InboxRow> =
-            rows.iter().map(|&r| (r.thread_id.as_str(), r)).collect();
+    pub(in crate::workspace) fn new<'r>(
+        rows: impl IntoIterator<Item = (&'r RowId, bool, &'r InboxRow)>,
+    ) -> Self {
+        let rows: Vec<(&RowId, bool, &InboxRow)> = rows.into_iter().collect();
+        let by_id: HashMap<&RowId, &InboxRow> = rows.iter().map(|&(id, _, r)| (id, r)).collect();
         let mut tree = Self::default();
-        for &row in &rows {
-            let Some(parent) = row.parent_thread_id.as_deref() else {
+        for &(id, focused, row) in &rows {
+            let Some(parent_tid) = row.parent_thread_id.as_deref() else {
                 continue;
             };
-            let Some(parent_row) = by_id.get(parent).filter(|_| parent != row.thread_id) else {
+            if parent_tid == row.thread_id {
+                continue;
+            }
+            let parent_id = RowId::new(&id.computer, parent_tid);
+            let Some(parent_row) = by_id.get(&parent_id) else {
                 continue;
             };
             // A subagent still open (un-settled by hand, working, waiting on
@@ -89,18 +105,19 @@ impl Tree {
             if parked(parent_row) && !parked(row) {
                 continue;
             }
-            tree.nested.insert(row.thread_id.clone());
-            tree.children
-                .entry(parent.to_string())
-                .or_default()
-                .push(row.clone());
+            tree.nested.insert(id.clone());
+            tree.children.entry(parent_id).or_default().push(Kid {
+                id: id.clone(),
+                focused,
+                row: row.clone(),
+            });
         }
         for kids in tree.children.values_mut() {
             kids.sort_by_key(rank);
         }
         // A delegation cycle would leave every member nested with no top
         // row to hang from; such rows stand on their own instead.
-        let orphaned: Vec<String> = tree
+        let orphaned: Vec<RowId> = tree
             .nested
             .iter()
             .filter(|id| tree.root_of(id).is_none())
@@ -112,12 +129,21 @@ impl Tree {
         tree
     }
 
+    /// Convenience builder for one computer's rows (used by `reveal_active_subagent`).
+    pub(in crate::workspace) fn for_computer(computer: &str, rows: &[InboxRow]) -> Self {
+        let owned: Vec<(RowId, &InboxRow)> = rows
+            .iter()
+            .map(|r| (RowId::new(computer, &r.thread_id), r))
+            .collect();
+        Self::new(owned.iter().map(|(id, r)| (id, true, *r)))
+    }
+
     /// The top row a nested row hangs from, `None` inside a cycle.
-    fn root_of(&self, id: &str) -> Option<String> {
-        let parent_of: HashMap<&str, &str> = self
+    fn root_of(&self, id: &RowId) -> Option<RowId> {
+        let parent_of: HashMap<&RowId, &RowId> = self
             .children
             .iter()
-            .flat_map(|(p, kids)| kids.iter().map(move |k| (k.thread_id.as_str(), p.as_str())))
+            .flat_map(|(p, kids)| kids.iter().map(move |k| (&k.id, p)))
             .collect();
         let mut at = id;
         let mut seen = HashSet::new();
@@ -127,41 +153,42 @@ impl Tree {
             }
             at = parent;
         }
-        (at != id).then(|| at.to_string())
+        (at != id).then(|| at.clone())
     }
 
-    pub(in crate::workspace) fn is_nested(&self, id: &str) -> bool {
+    pub(in crate::workspace) fn is_nested(&self, id: &RowId) -> bool {
         self.nested.contains(id)
     }
 
     /// Every subagent under `root`, depth first, with its depth (1 = direct).
-    pub(in crate::workspace) fn descendants(&self, root: &str) -> Vec<(usize, &InboxRow)> {
+    pub(in crate::workspace) fn descendants(&self, root: &RowId) -> Vec<(usize, &Kid)> {
         let mut out = Vec::new();
-        let mut seen = HashSet::from([root.to_string()]);
-        let mut stack: Vec<(usize, &InboxRow)> = self
+        let mut seen = HashSet::from([root.clone()]);
+        let mut stack: Vec<(usize, &Kid)> = self
             .children
             .get(root)
             .into_iter()
             .flatten()
             .rev()
-            .map(|r| (1, r))
+            .map(|k| (1, k))
             .collect();
-        while let Some((depth, row)) = stack.pop() {
-            if !seen.insert(row.thread_id.clone()) {
+        while let Some((depth, kid)) = stack.pop() {
+            if !seen.insert(kid.id.clone()) {
                 continue;
             }
-            out.push((depth, row));
-            if let Some(kids) = self.children.get(&row.thread_id) {
+            out.push((depth, kid));
+            if let Some(kids) = self.children.get(&kid.id) {
                 stack.extend(kids.iter().rev().map(|k| (depth + 1, k)));
             }
         }
         out
     }
 
-    pub(in crate::workspace) fn summary(&self, root: &str) -> Summary {
+    pub(in crate::workspace) fn summary(&self, root: &RowId) -> Summary {
         self.descendants(root)
             .into_iter()
-            .fold(Summary::default(), |mut s, (_, row)| {
+            .fold(Summary::default(), |mut s, (_, kid)| {
+                let row = &kid.row;
                 s.total += 1;
                 if row.status == Some(InboxStatus::NeedsInput) {
                     s.needs_you += 1;
@@ -174,20 +201,20 @@ impl Tree {
             })
     }
 
-    /// The thread ids above `id`, nearest first.
-    pub(in crate::workspace) fn ancestors(&self, id: &str) -> Vec<String> {
-        let parent_of: HashMap<&str, &str> = self
+    /// The row ids above `id`, nearest first.
+    pub(in crate::workspace) fn ancestors(&self, id: &RowId) -> Vec<RowId> {
+        let parent_of: HashMap<&RowId, &RowId> = self
             .children
             .iter()
-            .flat_map(|(p, kids)| kids.iter().map(move |k| (k.thread_id.as_str(), p.as_str())))
+            .flat_map(|(p, kids)| kids.iter().map(move |k| (&k.id, p)))
             .collect();
         let mut out = Vec::new();
         let mut at = id;
         while let Some(parent) = parent_of.get(at) {
-            if out.iter().any(|o: &String| o == parent) {
+            if out.iter().any(|o: &RowId| o == *parent) {
                 break;
             }
-            out.push(parent.to_string());
+            out.push((*parent).clone());
             at = parent;
         }
         out
@@ -196,14 +223,15 @@ impl Tree {
 
 /// The folded line under a parent's title: count, then what needs a look.
 /// `None` for a thread that delegated nothing.
-pub(super) fn line(s: &State, tree: &Tree, row_data: &InboxRow, compact: bool) -> Option<El> {
-    let sum = tree.summary(&row_data.thread_id);
+pub(super) fn line(s: &State, tree: &Tree, entry: &Entry<'_>, compact: bool) -> Option<El> {
+    let sum = tree.summary(&entry.id);
     if sum.total == 0 {
         return None;
     }
     let p = &s.palette;
-    let open = open(s, &row_data.thread_id);
-    let root = row_data.thread_id.clone();
+    let open = open(s, &entry.id);
+    let root = entry.id.clone();
+    let root_key = root.key();
     let noun = if sum.total == 1 {
         "subagent"
     } else {
@@ -225,7 +253,7 @@ pub(super) fn line(s: &State, tree: &Tree, row_data: &InboxRow, compact: bool) -
     let label = format!("{} {noun}", sum.total);
     let size = design::SIDEBAR_META_SIZE - 1.;
     let mut line = row()
-        .key(format!("subagents-{root}"))
+        .key(format!("subagents-{root_key}"))
         .role("button")
         .label(if open {
             format!("Hide {label}")
@@ -239,7 +267,7 @@ pub(super) fn line(s: &State, tree: &Tree, row_data: &InboxRow, compact: bool) -
         .cursor(rune::Cursor::Pointer)
         .hover_group()
         .child(design::kit::chevron(
-            &format!("subagents-{root}-chevron"),
+            &format!("subagents-{root_key}-chevron"),
             open,
             design::kit::Turn::Disclose,
             12.,
@@ -274,34 +302,34 @@ pub(super) fn line(s: &State, tree: &Tree, row_data: &InboxRow, compact: bool) -
     Some(line.on_press(move |s: &mut State| super::toggle_subagents(s, &root)))
 }
 
-fn open(s: &State, root: &str) -> bool {
+fn open(s: &State, root: &RowId) -> bool {
     // A search is on: every subagent list is unfolded.
     !s.workspace.inbox.query().is_empty() || s.workspace.inbox.expanded.contains(root)
 }
 
 /// The unfolded list under a parent: one slim row per subagent, indented by
 /// depth, each with its own settle.
-pub(super) fn list(s: &State, tree: &Tree, row_data: &InboxRow, now: i64, k: &Kit) -> Option<El> {
-    if !open(s, &row_data.thread_id) {
+pub(super) fn list(s: &State, tree: &Tree, entry: &Entry<'_>, now: i64, k: &Kit) -> Option<El> {
+    if !open(s, &entry.id) {
         return None;
     }
-    let rows = tree.descendants(&row_data.thread_id);
+    let rows = tree.descendants(&entry.id);
     if rows.is_empty() {
         return None;
     }
     let p = &s.palette;
-    let active = crate::workspace::active_id(s);
+    let active = merged::active_row(s);
     let items: Vec<El> = rows
         .iter()
         .map(|(depth, kid)| {
-            let is_active = active == Some(kid.thread_id.as_str());
+            let is_active = active.as_ref() == Some(&kid.id);
             subagent_row(s, kid, *depth, is_active, now, k)
         })
         .collect();
     Some(
         // Unfolds from the parent's edge and folds back into it.
         row()
-            .key(format!("subagent-list-{}", row_data.thread_id))
+            .key(format!("subagent-list-{}", entry.id.key()))
             .transition(rune::Transition::reveal(rune::Edge::Top))
             .ml(18.)
             .mr(4.)
@@ -311,16 +339,11 @@ pub(super) fn list(s: &State, tree: &Tree, row_data: &InboxRow, now: i64, k: &Ki
     )
 }
 
-fn subagent_row(
-    s: &State,
-    row_data: &InboxRow,
-    depth: usize,
-    active: bool,
-    now: i64,
-    k: &Kit,
-) -> El {
+fn subagent_row(s: &State, kid: &Kid, depth: usize, active: bool, now: i64, k: &Kit) -> El {
     let p = &s.palette;
-    let id = row_data.thread_id.clone();
+    let row_data = &kid.row;
+    let id = kid.id.clone();
+    let row_key = id.key();
     let settled = row_data.state == InboxState::Settled;
     let blocker = settle_blocker(row_data);
     let dot = match row_data.status {
@@ -331,14 +354,15 @@ fn subagent_row(
         _ => p.success,
     };
     let (open_id, mark_id, menu_id) = (id.clone(), id.clone(), id.clone());
-    let warm_id = id.clone();
+    let warm_id = row_data.thread_id.clone();
+    let focused = kid.focused;
     let action = if settled {
         crate::workspace::ui::ghost_icon(
             k,
             &icons::UNDO_2,
             "Un-settle subagent",
             rune_kit::ControlSize::Mini,
-            move |s| super::mark(s, mark_id.clone(), InboxAction::Unsettle, None),
+            move |s| mark_row(s, mark_id.clone(), InboxAction::Unsettle, None),
         )
     } else {
         rune_kit::IconButton::new(&icons::CHECK)
@@ -350,7 +374,7 @@ fn subagent_row(
                 Some(why) => format!("Can't settle: it {why}"),
                 None => "Settle subagent".into(),
             })
-            .on_press(move |s: &mut State| super::settle(s, mark_id.clone()))
+            .on_press(move |s: &mut State| settle_row(s, mark_id.clone()))
             .build(k)
     };
     let end = if settled {
@@ -364,10 +388,10 @@ fn subagent_row(
                     .color(p.text_faint),
             )
     } else {
-        view::status_label(s, row_data, active, now)
+        view::status_label(s, &id, focused, row_data, active, now)
     };
     row()
-        .key(format!("subagent-row-{id}"))
+        .key(format!("subagent-row-{row_key}"))
         // A subagent that moves in its parent's list glides there, as the
         // inbox's rows do.
         .motion(crate::design::motion::ROW_RESORT)
@@ -390,11 +414,13 @@ fn subagent_row(
         .hover_group()
         .hover_motion(crate::design::motion::HOVER, crate::design::motion::HOVER)
         .press_scale(crate::design::motion::PRESS_CARD)
-        .on_press(move |s: &mut State| crate::workspace::open_thread(s, open_id.clone()))
+        .on_press(move |s: &mut State| open_row(s, &open_id))
         .on_secondary_press(move |s: &mut State, at, tx| super::open_row_menu(s, &menu_id, at, tx))
-        // Resting on it warms the thread for the click (`chat::prewarm`).
+        // Resting on it warms the thread for the click (`chat::prewarm`, focused only).
         .on_hover_change(move |s: &mut State, inside, tx| {
-            crate::chat::prewarm::hover(s, &warm_id, inside, tx)
+            if focused {
+                crate::chat::prewarm::hover(s, &warm_id, inside, tx);
+            }
         })
         .child(el().size(6., 6.).radius(3.).fill(dot))
         .child(
@@ -423,6 +449,10 @@ fn subagent_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rid(id: &str) -> RowId {
+        RowId::new("this-mac", id)
+    }
 
     fn row(id: &str, parent: Option<&str>, status: Option<InboxStatus>) -> InboxRow {
         InboxRow {
@@ -454,17 +484,19 @@ mod tests {
             row("a1", Some("a"), Some(InboxStatus::Failed)),
             row("stray", Some("gone"), None),
         ];
-        let tree = Tree::new(&rows);
-        assert!(tree.is_nested("a") && tree.is_nested("b") && tree.is_nested("a1"));
-        assert!(!tree.is_nested("root"));
+        let tree = Tree::for_computer("this-mac", &rows);
         assert!(
-            !tree.is_nested("stray"),
+            tree.is_nested(&rid("a")) && tree.is_nested(&rid("b")) && tree.is_nested(&rid("a1"))
+        );
+        assert!(!tree.is_nested(&rid("root")));
+        assert!(
+            !tree.is_nested(&rid("stray")),
             "a subagent whose parent is not listed stands alone"
         );
         let order: Vec<(usize, &str)> = tree
-            .descendants("root")
+            .descendants(&rid("root"))
             .into_iter()
-            .map(|(d, r)| (d, r.thread_id.as_str()))
+            .map(|(d, k)| (d, k.row.thread_id.as_str()))
             .collect();
         assert_eq!(
             order,
@@ -472,7 +504,7 @@ mod tests {
             "needs-you first, nested depth first"
         );
         assert_eq!(
-            tree.summary("root"),
+            tree.summary(&rid("root")),
             Summary {
                 total: 3,
                 needs_you: 1,
@@ -480,8 +512,8 @@ mod tests {
                 failed: 1
             }
         );
-        assert_eq!(tree.ancestors("a1"), ["a", "root"]);
-        assert_eq!(tree.summary("stray").total, 0);
+        assert_eq!(tree.ancestors(&rid("a1")), [rid("a"), rid("root")]);
+        assert_eq!(tree.summary(&rid("stray")).total, 0);
     }
 
     #[test]
@@ -504,28 +536,32 @@ mod tests {
             parked_as("open", None, InboxState::Inbox),
             parked_as("finished", Some("open"), InboxState::Settled),
         ];
-        let tree = Tree::new(&rows);
+        let tree = Tree::for_computer("this-mac", &rows);
         assert!(
-            tree.is_nested("done"),
+            tree.is_nested(&rid("done")),
             "settled stays with its settled parent"
         );
         assert!(
-            !tree.is_nested("back"),
+            !tree.is_nested(&rid("back")),
             "un-settled by hand: a row of its own"
         );
         assert!(
-            !tree.is_nested("busy"),
+            !tree.is_nested(&rid("busy")),
             "working under a snoozed parent stays visible"
         );
-        assert!(tree.is_nested("finished"));
-        assert_eq!(tree.summary("root").total, 1);
+        assert!(tree.is_nested(&rid("finished")));
+        assert_eq!(tree.summary(&rid("root")).total, 1);
     }
 
     #[test]
     fn a_delegation_cycle_never_hides_its_rows() {
         let rows = vec![row("x", Some("y"), None), row("y", Some("x"), None)];
-        let tree = Tree::new(&rows);
-        assert!(!tree.is_nested("x") && !tree.is_nested("y"));
-        assert_eq!(tree.descendants("x").len(), 1, "the walk ends at the cycle");
+        let tree = Tree::for_computer("this-mac", &rows);
+        assert!(!tree.is_nested(&rid("x")) && !tree.is_nested(&rid("y")));
+        assert_eq!(
+            tree.descendants(&rid("x")).len(),
+            1,
+            "the walk ends at the cycle"
+        );
     }
 }

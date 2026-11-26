@@ -387,6 +387,20 @@ pub const SCENES: &[Scene] = &[
     ("voice-hud", voice_hud),
     ("voice-settings", voice_settings),
     ("voice-talk", voice_talk),
+    // Stage 2a: one sidebar across computers.
+    ("computers-both-connected", |s| {
+        page_with(
+            s,
+            Page::Computers,
+            crate::pages::computers::fixtures::both_connected,
+        )
+    }),
+    ("inbox-peer-asleep", ws::fixture_inbox_peer_asleep),
+    ("inbox-two-computers", ws::fixture_inbox_two_computers),
+    ("inbox-two-computers-light", |s| {
+        ws::fixture_inbox_two_computers(s);
+        light_theme(s);
+    }),
 ];
 
 /// The launch intro at `t` seconds, still connecting.
