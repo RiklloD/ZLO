@@ -271,6 +271,8 @@ pub const WEBUI_V2_ROUTE_SUPERMEMORY_SEARCH: &str = "webui.v2.memory.supermemory
 pub const WEBUI_V2_ROUTE_SUPERMEMORY_DELETE_DOCUMENT: &str =
     "webui.v2.memory.supermemory.delete_document";
 pub const WEBUI_V2_ROUTE_SUPERMEMORY_FORGET: &str = "webui.v2.memory.supermemory.forget";
+pub const WEBUI_V2_ROUTE_MEMORY_WIKI_STATUS: &str = "webui.v2.memory.wiki.status";
+pub const WEBUI_V2_ROUTE_MEMORY_WIKI_INIT: &str = "webui.v2.memory.wiki.init";
 pub const WEBUI_V2_ROUTE_HOOKS_CATALOG: &str = "webui.v2.hooks.catalog";
 pub const WEBUI_V2_ROUTE_EXTENSION_SETTINGS_LIST: &str = "webui.v2.extensions.settings.list";
 pub const WEBUI_V2_ROUTE_EXTENSION_SETTING_SET: &str = "webui.v2.extensions.settings.set";
@@ -286,7 +288,18 @@ pub const WEBUI_V2_PATTERN_SUPERMEMORY_DELETE_DOCUMENT: &str =
     "/api/webchat/v2/memory/supermemory/documents/delete";
 pub const WEBUI_V2_PATTERN_SUPERMEMORY_FORGET: &str =
     "/api/webchat/v2/memory/supermemory/memories/forget";
+pub const WEBUI_V2_PATTERN_MEMORY_WIKI: &str = "/api/webchat/v2/memory/wiki";
+pub const WEBUI_V2_PATTERN_MEMORY_WIKI_INIT: &str = "/api/webchat/v2/memory/wiki/init";
 pub const WEBUI_V2_PATTERN_HOOKS: &str = "/api/webchat/v2/hooks";
+
+// Settings → Keys (operator-only: deployment-wide service API keys).
+pub const WEBUI_V2_ROUTE_SERVICE_KEYS_LIST: &str = "webui.v2.service_keys.list";
+pub const WEBUI_V2_ROUTE_SERVICE_KEY_SET: &str = "webui.v2.service_keys.set";
+pub const WEBUI_V2_ROUTE_SERVICE_KEY_IMPORT: &str = "webui.v2.service_keys.import";
+pub const WEBUI_V2_ROUTE_SERVICE_KEY_REMOVE: &str = "webui.v2.service_keys.remove";
+pub const WEBUI_V2_PATTERN_SERVICE_KEYS: &str = "/api/webchat/v2/keys";
+pub const WEBUI_V2_PATTERN_SERVICE_KEY_IMPORT: &str = "/api/webchat/v2/keys/import";
+pub const WEBUI_V2_PATTERN_SERVICE_KEY_REMOVE: &str = "/api/webchat/v2/keys/remove";
 pub const WEBUI_V2_PATTERN_EXTENSION_SETTINGS: &str =
     "/api/webchat/v2/extensions/{extension_id}/settings";
 pub const WEBUI_V2_PATTERN_EXTENSION_SETTING: &str =
@@ -675,6 +688,39 @@ pub fn webui_v2_routes_with_artifact_flags(
             WEBUI_V2_PATTERN_SUPERMEMORY_FORGET,
         ),
         memory_route_descriptor(
+            WEBUI_V2_ROUTE_MEMORY_WIKI_STATUS,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_MEMORY_WIKI,
+        ),
+        memory_route_descriptor(
+            WEBUI_V2_ROUTE_MEMORY_WIKI_INIT,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_MEMORY_WIKI_INIT,
+        ),
+        projection_read_route(
+            WEBUI_V2_ROUTE_SERVICE_KEYS_LIST,
+            NetworkMethod::Get,
+            WEBUI_V2_PATTERN_SERVICE_KEYS,
+        ),
+        mutation_route(
+            WEBUI_V2_ROUTE_SERVICE_KEY_SET,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_SERVICE_KEYS,
+            16,
+        ),
+        mutation_route(
+            WEBUI_V2_ROUTE_SERVICE_KEY_IMPORT,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_SERVICE_KEY_IMPORT,
+            4,
+        ),
+        mutation_route(
+            WEBUI_V2_ROUTE_SERVICE_KEY_REMOVE,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_SERVICE_KEY_REMOVE,
+            4,
+        ),
+        memory_route_descriptor(
             WEBUI_V2_ROUTE_HOOKS_CATALOG,
             NetworkMethod::Get,
             WEBUI_V2_PATTERN_HOOKS,
@@ -908,6 +954,11 @@ pub fn is_webui_v2_operator_webui_config_route_id(route_id: &str) -> bool {
             | WEBUI_V2_ROUTE_OPERATOR_GET_CONFIG_KEY
             | WEBUI_V2_ROUTE_OPERATOR_SET_CONFIG_KEY
             | WEBUI_V2_ROUTE_OPERATOR_VALIDATE_CONFIG
+            // Settings → Keys: deployment-wide service API keys.
+            | WEBUI_V2_ROUTE_SERVICE_KEYS_LIST
+            | WEBUI_V2_ROUTE_SERVICE_KEY_SET
+            | WEBUI_V2_ROUTE_SERVICE_KEY_IMPORT
+            | WEBUI_V2_ROUTE_SERVICE_KEY_REMOVE
             | WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_MANIFEST
             | WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_EXPORT
             | WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_APPLY

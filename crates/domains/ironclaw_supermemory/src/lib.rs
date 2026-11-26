@@ -27,6 +27,7 @@ mod config;
 mod error;
 mod recall;
 mod service;
+mod service_key;
 mod tools;
 mod wire;
 
@@ -44,6 +45,7 @@ pub use config::{SUPERMEMORY_API_KEY_SECRET, SupermemoryConfig};
 pub use error::SupermemoryError;
 pub use recall::{RecallItem, RecallKind};
 pub use service::{Recall, SearchHit, Supermemory, WriteEvidence};
+pub use service_key::{SUPERMEMORY_API_KEY_ENV, SupermemoryKeyVerifier, supermemory_service_key};
 pub use tools::{
     SUPERMEMORY_SEARCH_CAPABILITY_ID, SUPERMEMORY_SEARCH_DESCRIPTION, SUPERMEMORY_SEARCH_TOOL_NAME,
     SUPERMEMORY_WRITE_CAPABILITY_ID, SUPERMEMORY_WRITE_DESCRIPTION, SUPERMEMORY_WRITE_TOOL_NAME,

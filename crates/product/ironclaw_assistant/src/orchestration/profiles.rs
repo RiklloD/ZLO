@@ -81,7 +81,11 @@ impl ProfileHome {
     }
 
     fn hermes_profiles(&self) -> PathBuf {
-        self.user_home.join(".hermes/profiles")
+        self.hermes_root().join("profiles")
+    }
+
+    pub(crate) fn hermes_root(&self) -> PathBuf {
+        self.user_home.join(".hermes")
     }
 }
 

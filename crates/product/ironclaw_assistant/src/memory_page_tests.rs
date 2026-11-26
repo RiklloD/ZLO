@@ -568,3 +568,81 @@ async fn supermemory_status_resolves_the_named_profile_binding_and_never_returns
         .unwrap_err();
     assert_eq!(missing.kind, ProductSurfaceErrorKind::NotFound);
 }
+
+#[tokio::test]
+async fn wiki_init_scaffolds_once_never_overwrites_and_reads_back() {
+    let (surface, _docs) = local_surface();
+    let alice = bound(&surface, "alice");
+
+    let before = MEMORY_WIKI_STATUS_VIEW
+        .query_on(&alice, MemoryWikiStatusRequest {}, None)
+        .await
+        .unwrap();
+    assert!(before.available && !before.initialized);
+    assert_eq!(before.pages, 0);
+
+    // The user already wrote their own index: setup must keep it.
+    MEMORY_WRITE_COMMAND
+        .invoke_on(
+            &alice,
+            MemoryWriteRequest {
+                path: "wiki/index.md".to_string(),
+                content: "# my own index".to_string(),
+                expected_content_hash: None,
+            },
+            ActivityId::new(),
+        )
+        .await
+        .unwrap();
+
+    let first = MEMORY_WIKI_INIT_COMMAND
+        .invoke_on(&alice, MemoryWikiInitRequest {}, ActivityId::new())
+        .await
+        .unwrap();
+    assert_eq!(first.created, vec!["wiki/SCHEMA.md", "wiki/log.md"]);
+    assert_eq!(first.kept, vec!["wiki/index.md"]);
+    assert!(first.status.initialized);
+    assert_eq!(first.status.pages, 3);
+
+    let index = MEMORY_DOCUMENT_VIEW
+        .query_on(
+            &alice,
+            MemoryDocumentRequest {
+                path: "wiki/index.md".to_string(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(index.content, "# my own index");
+
+    let again = MEMORY_WIKI_INIT_COMMAND
+        .invoke_on(&alice, MemoryWikiInitRequest {}, ActivityId::new())
+        .await
+        .unwrap();
+    assert!(again.created.is_empty(), "a second init writes nothing");
+    assert_eq!(again.kept.len(), 3);
+
+    // Scoped to the caller: bob has no wiki.
+    let bob = MEMORY_WIKI_STATUS_VIEW
+        .query_on(&bound(&surface, "bob"), MemoryWikiStatusRequest {}, None)
+        .await
+        .unwrap();
+    assert!(!bob.initialized);
+}
+
+#[tokio::test]
+async fn wiki_without_document_memory_reports_unavailable() {
+    let surface = Arc::new(MemoryPageSurface::new(Arc::new(Inner), None, None, None));
+    let alice = bound(&surface, "alice");
+    let status = MEMORY_WIKI_STATUS_VIEW
+        .query_on(&alice, MemoryWikiStatusRequest {}, None)
+        .await
+        .unwrap();
+    assert!(!status.available);
+    let error = MEMORY_WIKI_INIT_COMMAND
+        .invoke_on(&alice, MemoryWikiInitRequest {}, ActivityId::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ProductSurfaceErrorKind::ServiceUnavailable);
+}

@@ -120,6 +120,13 @@ impl MemoryPageSurface {
                 Ok(params) => self.search(caller, params).await.and_then(to_value),
                 Err(error) => Err(error),
             }
+        } else if id == MEMORY_WIKI_STATUS_VIEW.id {
+            match parse::<MemoryWikiStatusRequest>(input) {
+                Ok(_) => crate::memory_wiki::status(self.documents.as_deref(), caller)
+                    .await
+                    .and_then(to_value),
+                Err(error) => Err(error),
+            }
         } else if id == SUPERMEMORY_STATUS_VIEW.id {
             match parse::<SupermemoryStatusRequest>(input) {
                 Ok(params) => self.sm_status(caller, params).await.and_then(to_value),
@@ -155,6 +162,13 @@ impl MemoryPageSurface {
         } else if id == MEMORY_ARCHIVE_COMMAND_ID {
             match parse::<MemoryArchiveRequest>(input) {
                 Ok(body) => self.archive(caller, body).await.and_then(to_value),
+                Err(error) => Err(error),
+            }
+        } else if id == MEMORY_WIKI_INIT_COMMAND_ID {
+            match parse::<MemoryWikiInitRequest>(input) {
+                Ok(_) => crate::memory_wiki::init(self.documents.as_deref(), caller)
+                    .await
+                    .and_then(to_value),
                 Err(error) => Err(error),
             }
         } else if id == SUPERMEMORY_DELETE_DOCUMENT_COMMAND_ID {

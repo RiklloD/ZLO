@@ -141,6 +141,33 @@ impl SupermemoryClient {
         Ok(key)
     }
 
+    /// Drop the cached key so the next use reads the store again (after
+    /// the stored key was set or removed).
+    pub fn forget_cached_key(&self) {
+        *self
+            .key_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// One cheap authenticated call with `key` (list one document): proves
+    /// the key before it is stored.
+    pub async fn verify_key(
+        &self,
+        caller: &SupermemoryCaller,
+        key: &SecretString,
+    ) -> Result<(), SupermemoryError> {
+        self.call(
+            caller,
+            key,
+            NetworkMethod::Post,
+            "/v3/documents/list",
+            Some(&serde_json::json!({ "limit": 1, "page": 1 })),
+        )
+        .await
+        .map(|_| ())
+    }
+
     pub(crate) async fn add_document(
         &self,
         caller: &SupermemoryCaller,

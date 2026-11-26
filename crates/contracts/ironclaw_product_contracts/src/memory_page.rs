@@ -452,6 +452,50 @@ pub const SUPERMEMORY_FORGET_COMMAND: ProductSurfaceCommandDescriptor<
     SupermemoryForgetResponse,
 > = ProductSurfaceCommandDescriptor::new(SUPERMEMORY_FORGET_COMMAND_ID);
 
+// --- local knowledge wiki ---
+
+/// Where the knowledge wiki lives inside local memory.
+pub const MEMORY_WIKI_ROOT: &str = "wiki";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryWikiStatusRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryWikiStatus {
+    /// Local memory is document-shaped, so a wiki can live there.
+    pub available: bool,
+    /// `wiki/SCHEMA.md` exists.
+    pub initialized: bool,
+    /// Documents under `wiki/`.
+    pub pages: usize,
+}
+
+/// `GET /api/webchat/v2/memory/wiki`.
+pub const MEMORY_WIKI_STATUS_VIEW: ProductView<MemoryWikiStatusRequest, MemoryWikiStatus> =
+    ProductView::unpaginated("memory.wiki.status");
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryWikiInitRequest {}
+
+/// Evidence for an init: what was written, what was already there, and the
+/// status read back afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryWikiInitResponse {
+    pub created: Vec<String>,
+    /// Present before; left untouched.
+    pub kept: Vec<String>,
+    pub status: MemoryWikiStatus,
+}
+
+pub const MEMORY_WIKI_INIT_COMMAND_ID: &str = "memory.wiki.init";
+/// `POST /api/webchat/v2/memory/wiki`: scaffold the wiki; never overwrites.
+pub const MEMORY_WIKI_INIT_COMMAND: ProductSurfaceCommandDescriptor<
+    MemoryWikiInitRequest,
+    MemoryWikiInitResponse,
+> = ProductSurfaceCommandDescriptor::new(MEMORY_WIKI_INIT_COMMAND_ID);
+
 #[cfg(test)]
 mod tests {
     use super::*;

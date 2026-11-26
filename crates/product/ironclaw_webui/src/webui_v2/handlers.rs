@@ -44,10 +44,12 @@ pub use schedules::{
 pub use usage::{usage_history, usage_report};
 mod memory;
 pub use memory::{
-    hooks_catalog, memory_archive, memory_document, memory_search, memory_tree, memory_write,
-    supermemory_delete_document, supermemory_documents, supermemory_forget, supermemory_search,
-    supermemory_status,
+    hooks_catalog, memory_archive, memory_document, memory_search, memory_tree, memory_wiki_init,
+    memory_wiki_status, memory_write, supermemory_delete_document, supermemory_documents,
+    supermemory_forget, supermemory_search, supermemory_status,
 };
+mod keys;
+pub use keys::{service_key_import, service_key_remove, service_key_set, service_keys_list};
 mod extension_settings;
 pub use extension_settings::{extension_setting_set, extension_settings_list};
 mod history;

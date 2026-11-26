@@ -7,6 +7,7 @@ mod cli_attachments;
 mod external;
 #[cfg(test)]
 mod external_tests;
+mod hermes_keys;
 mod history;
 mod history_ingest;
 #[cfg(test)]
@@ -32,6 +33,7 @@ mod telemetry;
 mod tools;
 mod workspace;
 
+pub use hermes_keys::HermesKeySource;
 pub use history::{
     HISTORY_SEARCH_CAPABILITY_ID, HISTORY_SEARCH_TOOL_NAME, HistorySearchSurface,
     history_search_capability, history_search_input_schema, register_history_bridge_tool,

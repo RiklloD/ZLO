@@ -106,6 +106,31 @@ pub async fn memory_archive(
     ))
 }
 
+/// `GET /api/webchat/v2/memory/wiki`
+pub async fn memory_wiki_status(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    view(
+        &state,
+        caller,
+        MEMORY_WIKI_STATUS_VIEW.descriptor(),
+        serde_json::json!({}),
+    )
+    .await
+}
+
+/// `POST /api/webchat/v2/memory/wiki/init` — body: [`MemoryWikiInitRequest`].
+pub async fn memory_wiki_init(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Json(body): Json<MemoryWikiInitRequest>,
+) -> Result<Json<MemoryWikiInitResponse>, WebUiV2HttpError> {
+    Ok(Json(
+        invoke_product_command(state.services(), caller, MEMORY_WIKI_INIT_COMMAND, body).await?,
+    ))
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SupermemoryQuery {
