@@ -320,3 +320,28 @@ fn memory_goes_there_and_comes_back_and_a_settled_difference_is_not_carried_agai
     settle(&mut s, &mut pump);
     assert_eq!(gw_b.requests_to("/config-sync/apply"), 2);
 }
+
+#[test]
+fn a_pass_on_a_replaced_connection_is_stopped_and_its_reply_dropped() {
+    let (mut s, mut pump, gw_a, gw_b) = two_computers(Computer::ThisMac);
+    gw_a.route("/config-sync/manifest", manifest("mac", "c1", "p1"));
+    gw_b.route(
+        "/config-sync/manifest",
+        manifest("env-b", "c1", "p1").after(Duration::from_millis(250)),
+    );
+    config_sync::sync(&mut s);
+    let first = s.remote.config_sync.rows["env-b"].running;
+    assert!(first.is_some());
+    // This Mac's connection is replaced under the same name while the
+    // pass is in flight.
+    s.remote.tag.generation = crate::jobs::Generation::unique();
+    config_sync::sync(&mut s);
+    let row = &s.remote.config_sync.rows["env-b"];
+    assert_ne!(row.running, first, "a new pass on the new connection");
+    assert!(row.running.is_some());
+    settle(&mut s, &mut pump);
+    pump.run_for(&mut s, Duration::from_millis(400));
+    // Only the new pass's reply was taken.
+    assert_eq!(text(&s), "Settings match This Mac");
+    assert!(s.remote.config_sync.rows["env-b"].running.is_none());
+}

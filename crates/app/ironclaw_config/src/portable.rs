@@ -201,10 +201,28 @@ pub fn apply_portable_config_file(
 const REDACTED_USERINFO: &str = "redacted";
 
 /// The `user[:password]` part of an address, when it has one.
+///
+/// Read as a browser or an HTTP client would: after the scheme any run of
+/// slashes or backslashes leads to the authority (`https:/u:p@host`,
+/// `https:///u:p@host` and `https:\\u:p@host` all sign in to `host`), and
+/// the authority ends at the next slash, backslash, `?` or `#`.
 fn url_userinfo(raw: &str) -> Option<std::ops::Range<usize>> {
-    let start = raw.find("://")? + 3;
+    let (scheme, rest) = raw.split_once(':')?;
+    let colon = scheme.len();
+    let is_scheme = scheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    let slashes = rest.len() - rest.trim_start_matches(['/', '\\']).len();
+    if !is_scheme || slashes == 0 {
+        return None;
+    }
+    let start = colon + 1 + slashes;
     let authority_len = raw[start..]
-        .find(['/', '?', '#'])
+        .find(['/', '\\', '?', '#'])
         .unwrap_or(raw.len() - start);
     let at = raw[start..start + authority_len].rfind('@')?;
     Some(start..start + at)
@@ -426,7 +444,21 @@ worker_count = 4
         assert!(kept.contains("https://embed.internal/v1"), "{kept}");
         assert!(!kept.contains("redacted"), "{kept}");
 
+        for odd in [
+            "https:///alice:hunter2@embed.example.com/v1",
+            "https:/alice:hunter2@embed.example.com/v1",
+            "https:\\\\alice:hunter2@embed.example.com/v1",
+            "HTTPS://alice:hunter2@embed.example.com",
+        ] {
+            let mut value = toml::Value::String(odd.to_string());
+            redact_url_credentials(&mut value);
+            let shown = value.as_str().unwrap_or_default().to_string();
+            assert!(!shown.contains("hunter2"), "{odd} -> {shown}");
+            assert!(carries_url_credentials(&value), "{odd}");
+        }
         assert_eq!(url_userinfo("https://host/path@x"), None);
+        assert_eq!(url_userinfo("mailto:someone@example.com"), None);
+        assert_eq!(url_userinfo("note: write to a@b.c"), None);
         assert_eq!(url_userinfo("plain text with @ sign"), None);
     }
 

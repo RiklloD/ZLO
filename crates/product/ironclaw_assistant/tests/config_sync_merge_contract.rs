@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ironclaw_assistant::config_sync::ConfigSyncService;
-use ironclaw_assistant::config_sync::memory::{MemoryDomainHandler, MemorySyncBaseStore};
+use ironclaw_assistant::config_sync::memory::{
+    BaseChange, MemoryDomainHandler, MemorySyncBaseStore,
+};
 use ironclaw_assistant::config_sync::skill_usage::SkillUsageDomainHandler;
 use ironclaw_assistant::config_sync::skills::SkillsDomainHandler;
 use ironclaw_assistant::config_sync::{ConfigSyncError, items};
@@ -201,14 +203,15 @@ impl MemorySyncBaseStore for Bases {
         &self,
         _: &ProductSurfaceCaller,
         peer: &str,
-        changes: &BTreeMap<String, String>,
+        changes: &BTreeMap<String, BaseChange>,
     ) -> Result<(), ConfigSyncError> {
-        self.0
-            .lock()
-            .expect("bases")
-            .entry(peer.into())
-            .or_default()
-            .extend(changes.clone());
+        let mut bases = self.0.lock().expect("bases");
+        let base = bases.entry(peer.into()).or_default();
+        for (path, change) in changes {
+            if base.get(path) == change.seen.as_ref() {
+                base.insert(path.clone(), change.agreed.clone());
+            }
+        }
         Ok(())
     }
 }
@@ -400,6 +403,16 @@ async fn sync(mac: &Host, boxed: &Host, domain: ConfigSyncDomain) -> Vec<String>
     let mut reports = leg(mac, boxed, domain, false).await;
     if domain.two_way() {
         reports.extend(leg(boxed, mac, domain, true).await);
+        // Something moved: one more round, which carries nothing and lets
+        // each side record what both now hold.
+        if domain.itemized()
+            && reports
+                .iter()
+                .any(|r| r.domains.values().any(|o| o.applied_count > 0))
+        {
+            reports.extend(leg(mac, boxed, domain, false).await);
+            reports.extend(leg(boxed, mac, domain, true).await);
+        }
     }
     reports
         .into_iter()
@@ -791,8 +804,30 @@ async fn a_document_archived_before_the_computers_ever_synced_stays_archived() {
         .documents
         .set("archive/20261126T100000Z/notes/old.md", "old\n");
 
+    // Another was edited on the box and then archived there: its archived
+    // text is not the Mac's, and it is a removal all the same.
+    mac.documents.set("notes/draft.md", "first draft\n");
+    boxed
+        .documents
+        .set("archive/20261126T110000Z/notes/draft.md", "second draft\n");
+    // A document elsewhere that merely ends the same way is not confused
+    // with it.
+    mac.documents.set("old.md", "another document\n");
+
     assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
     assert_eq!(boxed.documents.get("notes/old.md"), None, "resurrected");
+    assert_eq!(boxed.documents.get("notes/draft.md"), None, "resurrected");
+    assert_eq!(
+        boxed.documents.get("old.md").as_deref(),
+        Some("another document\n")
+    );
+    // The archive is the box's own: it is not carried to the Mac.
+    assert!(
+        mac.documents
+            .paths()
+            .iter()
+            .all(|path| !path.starts_with("archive/"))
+    );
     // And it stays that way on the next pass.
     assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
     assert_eq!(boxed.documents.get("notes/old.md"), None);
@@ -853,4 +888,57 @@ async fn a_replaced_skill_loses_its_stale_files_and_keeps_loading() {
             .len(),
         2
     );
+}
+
+#[tokio::test]
+async fn a_change_back_to_an_earlier_text_still_moves() {
+    let (mac, boxed) = (host(MAC), host(BOX));
+    mac.documents.set("notes/a.md", "X\n");
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    // The box moves to Y, which reaches the Mac.
+    boxed.documents.set("notes/a.md", "Y\n");
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    assert_eq!(mac.documents.get("notes/a.md").as_deref(), Some("Y\n"));
+    // The Mac goes back to X: a real edit since both agreed on Y, so it
+    // moves, although X is also what they agreed on before.
+    mac.documents.set("notes/a.md", "X\n");
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    assert_eq!(boxed.documents.get("notes/a.md").as_deref(), Some("X\n"));
+    assert_eq!(hash(&mac, MEMORY).await, hash(&boxed, MEMORY).await);
+}
+
+#[tokio::test]
+async fn a_skill_file_that_becomes_a_folder_is_replaced() {
+    let boxed = host(BOX);
+    let bundle = |extra: &str| {
+        vec![
+            ("SKILL.md".to_string(), DEPLOY.as_bytes().to_vec()),
+            (extra.to_string(), b"x\n".to_vec()),
+        ]
+    };
+    boxed
+        .skills
+        .replace_bundle_for_scope(scope(), "deploy", bundle("scripts/tool"))
+        .await
+        .expect("file");
+    boxed
+        .skills
+        .replace_bundle_for_scope(scope(), "deploy", bundle("scripts/tool/run.sh"))
+        .await
+        .expect("file to folder");
+    boxed
+        .skills
+        .replace_bundle_for_scope(scope(), "deploy", bundle("scripts/tool"))
+        .await
+        .expect("folder to file");
+    let mut names: Vec<String> = boxed
+        .skills
+        .export_bundle_for_scope(scope(), "deploy")
+        .await
+        .expect("bundle")
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    names.sort();
+    assert_eq!(names, ["SKILL.md", "scripts/tool"]);
 }

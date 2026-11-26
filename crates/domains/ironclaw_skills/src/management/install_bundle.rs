@@ -239,6 +239,30 @@ pub(crate) async fn replace_skill_bundle(
     };
     let skill_dir = skill_root_scoped_path(USER_SKILLS_ROOT, skill_name)?;
     create_dir_all(context, skill_name, "replace_create_dir_all", &skill_dir).await?;
+    // Where a file becomes a folder or a folder a file, the old one has
+    // to go first or the new one cannot be written. Nothing else is
+    // removed before the new bundle is in place.
+    let nested = |outer: &str, inner: &str| {
+        inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    let in_the_way = |old: &str| {
+        incoming
+            .iter()
+            .any(|(path, _, _)| nested(old, path) || nested(path, old))
+    };
+    for old in &previous {
+        if in_the_way(&old.relative_path) {
+            let file_path = skill_bundle_file_scoped_path(skill_name, &old.relative_path)?;
+            log_skill_filesystem_phase("replace_delete_in_the_way", skill_name, &file_path);
+            context
+                .filesystem
+                .delete(&context.scope, &file_path)
+                .await
+                .map_err(filesystem_error)?;
+        }
+    }
     for (_, file_path, contents) in &incoming {
         if let Some(parent) = scoped_parent(file_path)? {
             create_dir_all(context, skill_name, "replace_create_parent", &parent).await?;
@@ -250,10 +274,12 @@ pub(crate) async fn replace_skill_bundle(
             .await
             .map_err(filesystem_error)?;
     }
-    for old in previous {
-        if incoming
-            .iter()
-            .any(|(path, _, _)| *path == old.relative_path)
+    for old in &previous {
+        // Kept by the new bundle, or already removed above.
+        if in_the_way(&old.relative_path)
+            || incoming
+                .iter()
+                .any(|(path, _, _)| *path == old.relative_path)
         {
             continue;
         }

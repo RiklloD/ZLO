@@ -132,7 +132,7 @@ impl ConfigSyncDomainHandler for SkillsDomainHandler {
         let held = self.index(&scope).await?;
         let (mut applied, mut skipped) = (0u64, 0u64);
         let mut warnings: Vec<String> = page
-            .too_large
+            .not_carried
             .iter()
             .map(|item| format!("skill {item} is too large to sync"))
             .collect();

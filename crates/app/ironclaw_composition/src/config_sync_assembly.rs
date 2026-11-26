@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use ironclaw_assistant::config_sync::approvals::ApprovalsDomainHandler;
+#[cfg(unix)]
 use ironclaw_assistant::config_sync::cli_home::CliHomeDomainHandler;
 use ironclaw_assistant::config_sync::config::ConfigDomainHandler;
 use ironclaw_assistant::config_sync::memory::MemoryDomainHandler;
@@ -54,6 +55,7 @@ pub(crate) fn wrap(
         runtime.skill_usage.clone(),
     )));
     // The coding-agent CLIs' own rules and skills files.
+    #[cfg(unix)]
     if !user_home.is_empty() {
         service = service.with_handler(Arc::new(CliHomeDomainHandler::for_home(user_home.into())));
     }

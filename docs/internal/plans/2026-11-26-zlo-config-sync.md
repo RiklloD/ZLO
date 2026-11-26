@@ -557,5 +557,29 @@ Phases 1, 2 and 5 are in. What differs from the sketch above:
   Not done: tolerating fields a newer backend adds to a payload (a
   mismatch is reported as a failed pass; update the older side).
 
+- **After the second review (2026-11-26).**
+  - `cli_home` walks down from a descriptor of each root, one name at a
+    time and never through a link, for reads and writes alike; hard-linked
+    files and names that look like a sign-in or settings file are held
+    back and said so; files arrive readable by the person only; a name
+    that differs only in case from one already there is not replaced; the
+    digest cache is keyed on size, times, mode and inode.
+  - Memory: the archive tree is each computer's own (not carried) and a
+    document archived there, whatever its last text, stays removed; an
+    existing conflict copy is re-read before it is trusted; a base entry
+    is only moved from the value the pass saw; after a pass that wrote,
+    one more round carries no content and lets both sides record what they
+    hold; memory is gone over once per app session even when it matches.
+  - Pages are cut by encoded weight; an item that changed while the page
+    was cut is named (`not_carried`), so the pass is not taken for clean;
+    a cursor that does not advance fails the pass; `until` must follow
+    `after`.
+  - A pass is bound to the two connections it started on and stopped when
+    either is replaced. Skip reasons from both legs are shown.
+  - Known and left: an older backend rejects a field it does not know
+    (the pass fails and says so; update the older side); the `cli_home`
+    walk runs on the request's task (bounded: 4,000 files, 2,000 names a
+    folder, depth 8, 2 MiB a file).
+
 Left: phase 3 (provider catalog and keys), phase 4 (extensions, hooks,
 automations).

@@ -9,20 +9,26 @@
 //! called there.
 //!
 //! One-way, the source wins; a file only the receiver has is kept, and
-//! nothing is deleted. Hidden files and folders are left out. Links are
-//! followed only while they stay inside the root or the person's home, on
-//! read and on write.
+//! nothing is deleted.
+//!
+//! Every read and write goes down from a descriptor of the root, one name
+//! at a time, never through a link: a root, folder or file that is a
+//! symbolic link is not read and not written through, and swapping one in
+//! while a pass runs changes nothing, because nothing is looked up by path
+//! again. Hidden names, hard-linked files and names that look like a
+//! sign-in or settings file are left where they are.
 
 use std::collections::BTreeMap;
-use std::io::{self, Write as _};
-use std::path::{Component, Path, PathBuf};
+use std::io::{self, Read as _, Write as _};
+use std::os::fd::{AsFd, OwnedFd};
+use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use ironclaw_product_contracts::config_sync::{
-    ConfigSyncDomain, ConfigSyncDomainDigest, ConfigSyncDomainPayload,
+    ConfigSyncDomain, ConfigSyncDomainDigest, ConfigSyncDomainPayload, ItemizedDomainPayload,
 };
+use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use uuid::Uuid;
 
 use super::{
@@ -32,10 +38,23 @@ use super::{
 const DOMAIN: ConfigSyncDomain = ConfigSyncDomain::CliHome;
 /// The mode note of an executable file (`ConfigSyncItemFile::path`).
 const EXECUTABLE: &str = "executable";
-/// Folders below an entry that are walked.
+/// Folders below an entry that are walked, and names an item key may have
+/// below its entry.
 const MAX_DEPTH: usize = 8;
 /// Files listed across every root.
 const MAX_FILES: usize = 4_000;
+/// Names read from one folder.
+const MAX_FOLDER_NAMES: usize = 2_000;
+
+const DIR_FLAGS: OFlags = OFlags::RDONLY
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+/// Non-blocking, so a FIFO put in a file's place cannot hang the open.
+const ANY_FLAGS: OFlags = OFlags::RDONLY
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC)
+    .union(OFlags::NONBLOCK);
 
 /// One folder of the person's and the entries in it that are carried.
 #[derive(Debug, Clone)]
@@ -43,28 +62,101 @@ pub struct CliHomeRoot {
     /// Stable name of the root, the first segment of every item key.
     pub id: String,
     pub dir: PathBuf,
-    /// Files or folders directly inside `dir`, by relative path.
+    /// Files or folders inside `dir`, by relative path.
     pub entries: Vec<String>,
 }
 
-/// A listed file: where it is and what was read of it.
-struct Listed {
-    path: PathBuf,
-    hash: String,
+/// What a file's digest was computed from: any change to the bytes, the
+/// mode or the file itself changes one of these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stamp {
+    size: i128,
+    modified: (i128, i128),
+    changed: (i128, i128),
+    mode: u32,
+    inode: u128,
+}
+
+impl Stamp {
+    fn of(stat: &rustix::fs::Stat) -> Self {
+        Self {
+            size: stat.st_size as i128,
+            modified: (stat.st_mtime as i128, stat.st_mtime_nsec as i128),
+            changed: (stat.st_ctime as i128, stat.st_ctime_nsec as i128),
+            mode: stat.st_mode as u32,
+            inode: stat.st_ino as u128,
+        }
+    }
+}
+
+/// Everything carried here: item key to digest, and what was left out
+/// and why.
+#[derive(Default)]
+struct Listing {
+    files: BTreeMap<String, String>,
+    not_carried: Vec<String>,
+    /// The digests of this listing, to answer the next one.
+    seen: BTreeMap<String, (Stamp, String)>,
 }
 
 pub struct CliHomeDomainHandler {
-    home: PathBuf,
     roots: Vec<CliHomeRoot>,
-    /// Digests by path, valid while size and modification time hold, so a
-    /// manifest does not read every file again.
-    seen: Mutex<BTreeMap<PathBuf, (u64, SystemTime, String)>>,
+    /// Digests by item key, valid while the file's stamp holds, so a
+    /// manifest does not read every file again. Replaced by each listing,
+    /// so it never holds more than one listing's files.
+    seen: Mutex<BTreeMap<String, (Stamp, String)>>,
+}
+
+fn rx(error: rustix::io::Errno) -> io::Error {
+    io::Error::from(error)
+}
+
+/// A name that is hidden, or looks like where a CLI keeps a sign-in or
+/// its settings: never read and never written, wherever it sits.
+fn withheld(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with('.')
+        || matches!(
+            lower.as_str(),
+            "settings.json"
+                | "settings.local.json"
+                | "auth.json"
+                | "credentials.json"
+                | "oauth_creds.json"
+                | "config.toml"
+        )
+        || ["token", "secret", "credential", "password"]
+            .iter()
+            .any(|word| lower.contains(word))
+        || [".pem", ".key", ".p12", ".env"]
+            .iter()
+            .any(|ext| lower.ends_with(ext))
+}
+
+fn file_hash(bytes: &[u8], exec: bool) -> String {
+    let mode = if exec { EXECUTABLE } else { "" };
+    items::files_hash(&[(mode.to_string(), bytes.to_vec())])
+}
+
+fn is_executable(stat: &rustix::fs::Stat) -> bool {
+    stat.st_mode as u32 & 0o111 != 0
+}
+
+/// The whole of an open regular file, which is at most `limit` bytes.
+fn read_all(fd: OwnedFd, limit: usize) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    std::fs::File::from(fd)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(io::Error::other("the file grew past the limit"));
+    }
+    Ok(bytes)
 }
 
 impl CliHomeDomainHandler {
-    pub fn new(home: PathBuf, roots: Vec<CliHomeRoot>) -> Self {
+    pub fn new(roots: Vec<CliHomeRoot>) -> Self {
         Self {
-            home,
             roots,
             seen: Mutex::new(BTreeMap::new()),
         }
@@ -81,159 +173,162 @@ impl CliHomeDomainHandler {
                 entries: root.entries.iter().map(|e| (*e).to_string()).collect(),
             })
             .collect();
-        Self::new(home, roots)
+        Self::new(roots)
     }
 
-    /// `path` resolved, when it stays inside its root or the home.
-    fn contained(&self, root: &CliHomeRoot, path: &Path) -> Option<PathBuf> {
-        let real = path.canonicalize().ok()?;
-        let inside = |base: &Path| base.canonicalize().is_ok_and(|base| real.starts_with(base));
-        (inside(&root.dir) || inside(&self.home)).then_some(real)
-    }
-
-    fn digest(&self, path: &Path, meta: &std::fs::Metadata) -> io::Result<String> {
-        let stamp = (meta.len(), meta.modified()?);
-        if let Some((len, modified, hash)) = self
+    fn list(&self) -> Listing {
+        let known = self
             .seen
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .get(path)
-            && (*len, *modified) == stamp
-        {
-            return Ok(hash.clone());
-        }
-        let hash = file_hash(&std::fs::read(path)?, executable(meta));
-        self.seen
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(path.to_path_buf(), (stamp.0, stamp.1, hash.clone()));
-        Ok(hash)
-    }
-
-    /// Every carried file here: item key to where it is and its digest.
-    fn list(&self) -> BTreeMap<String, Listed> {
-        let mut out = BTreeMap::new();
+            .clone();
+        let mut out = Listing::default();
         for root in &self.roots {
+            // A root that is missing, or is itself a link, has nothing.
+            let Ok(top) = rustix::fs::open(&root.dir, DIR_FLAGS, Mode::empty()) else {
+                continue;
+            };
             for entry in &root.entries {
-                let key = format!("{}/{entry}", root.id);
-                self.walk(root, &root.dir.join(entry), key, 0, &mut out);
+                let names: Vec<&str> = entry.split('/').collect();
+                let Some((last, folders)) = names.split_last() else {
+                    continue;
+                };
+                let Ok(mut dir) = top.try_clone() else {
+                    continue;
+                };
+                let reached = folders.iter().all(|name| {
+                    match rustix::fs::openat(dir.as_fd(), *name, DIR_FLAGS, Mode::empty()) {
+                        Ok(next) => {
+                            dir = next;
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                });
+                if reached {
+                    let key = format!("{}/{entry}", root.id);
+                    walk(&dir, last, key, 0, &known, &mut out);
+                }
             }
         }
+        *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = out.seen.clone();
         out
     }
 
-    fn walk(
-        &self,
-        root: &CliHomeRoot,
-        path: &Path,
-        key: String,
-        depth: usize,
-        out: &mut BTreeMap<String, Listed>,
-    ) {
-        if out.len() >= MAX_FILES {
-            return;
-        }
-        let Some(real) = self.contained(root, path) else {
-            return;
-        };
-        let Ok(meta) = std::fs::metadata(&real) else {
-            return;
-        };
-        if meta.is_file() {
-            match self.digest(&real, &meta) {
-                Ok(hash) => {
-                    out.insert(key, Listed { path: real, hash });
-                }
-                Err(error) => tracing::debug!(%error, %key, "config sync: file not read"),
-            }
-            return;
-        }
-        if !meta.is_dir() || depth >= MAX_DEPTH {
-            return;
-        }
-        let Ok(children) = std::fs::read_dir(&real) else {
-            return;
-        };
-        let mut names: Vec<String> = children
-            .flatten()
-            .filter_map(|child| child.file_name().into_string().ok())
-            .filter(|name| !name.starts_with('.'))
-            .collect();
-        names.sort();
-        for name in names {
-            self.walk(
-                root,
-                &path.join(&name),
-                format!("{key}/{name}"),
-                depth + 1,
-                out,
-            );
-        }
-    }
-
-    /// Where an incoming item belongs here; `None` when its key names no
-    /// root and entry of this host, or is not a plain relative path.
-    fn target(&self, key: &str) -> Option<(&CliHomeRoot, PathBuf)> {
+    /// Where an incoming item belongs here: its root and the names below
+    /// it. `None` when the key names no root and entry of this host, is
+    /// not a plain relative path, is too deep, or has a withheld name.
+    fn target<'a>(&self, key: &'a str) -> Option<(&CliHomeRoot, Vec<&'a str>)> {
         let (id, rel) = key.split_once('/')?;
         let root = self.roots.iter().find(|root| root.id == id)?;
-        let plain = Path::new(rel).components().all(|part| match part {
-            Component::Normal(name) => name.to_str().is_some_and(|name| !name.starts_with('.')),
-            _ => false,
-        });
-        let listed = root.entries.iter().any(|entry| {
-            rel == entry
+        let entry = root.entries.iter().find(|entry| {
+            rel == entry.as_str()
                 || rel
                     .strip_prefix(entry.as_str())
                     .is_some_and(|rest| rest.starts_with('/'))
+        })?;
+        let names: Vec<&str> = rel.split('/').collect();
+        let below = names.len() - entry.split('/').count();
+        let plain = names.iter().all(|name| {
+            !name.is_empty() && *name != "." && *name != ".." && !name.contains(['\\', '\0'])
         });
-        (plain && listed && !rel.is_empty()).then(|| (root, root.dir.join(rel)))
+        // The entry's own names are the host's; what lies below must not
+        // be a withheld name.
+        let allowed = names[names.len() - below..]
+            .iter()
+            .all(|name| !withheld(name));
+        (plain && allowed && below <= MAX_DEPTH + 1).then_some((root, names))
     }
 
-    /// Write one file in place of what is there, through a temporary file
-    /// beside it.
-    fn write(&self, root: &CliHomeRoot, path: &Path, bytes: &[u8], exec: bool) -> io::Result<()> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| io::Error::other("the file has no folder"))?;
-        // A link on the way must not lead out of the root and the home:
-        // checked on what exists before any folder is made through it, and
-        // again on the folder itself.
-        let existing = parent
-            .ancestors()
-            .find(|dir| dir.exists())
-            .ok_or_else(|| io::Error::other("the file has no folder"))?;
-        if self.contained(root, existing).is_none() {
-            return Err(io::Error::other(
-                "its folder leads outside the person's home",
-            ));
+    /// One listed file's bytes and mode, read the way it was listed.
+    fn read(&self, key: &str) -> io::Result<(Vec<u8>, bool)> {
+        let (root, names) = self
+            .target(key)
+            .ok_or_else(|| io::Error::other("not a carried file"))?;
+        let mut fd = rustix::fs::open(&root.dir, DIR_FLAGS, Mode::empty()).map_err(rx)?;
+        let last = names.len() - 1;
+        for (at, name) in names.iter().enumerate() {
+            let flags = if at == last { ANY_FLAGS } else { DIR_FLAGS };
+            fd = rustix::fs::openat(fd.as_fd(), *name, flags, Mode::empty()).map_err(rx)?;
         }
-        std::fs::create_dir_all(parent)?;
-        if self.contained(root, parent).is_none() {
-            return Err(io::Error::other(
-                "its folder leads outside the person's home",
-            ));
+        let stat = rustix::fs::fstat(&fd).map_err(rx)?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile || stat.st_nlink > 1 {
+            return Err(io::Error::other("not a plain file"));
         }
-        if let Ok(meta) = path.symlink_metadata()
-            && !meta.is_file()
-            && self.contained(root, path).is_none()
-        {
-            return Err(io::Error::other(
-                "a link outside the person's home is in its place",
-            ));
+        let exec = is_executable(&stat);
+        Ok((read_all(fd, items::ITEM_CONTENT_BYTES)?, exec))
+    }
+
+    /// Write one file in place of what is there: down from the root's
+    /// descriptor, making missing folders on the way, through a temporary
+    /// file beside it. Readable by the person only.
+    fn write(
+        &self,
+        root: &CliHomeRoot,
+        names: &[&str],
+        bytes: &[u8],
+        exec: bool,
+    ) -> io::Result<()> {
+        let Some((last, folders)) = names.split_last() else {
+            return Err(io::Error::other("the file has no name"));
+        };
+        std::fs::create_dir_all(&root.dir)?;
+        let mut dir = rustix::fs::open(&root.dir, DIR_FLAGS, Mode::empty()).map_err(rx)?;
+        for name in folders {
+            dir = match rustix::fs::openat(dir.as_fd(), *name, DIR_FLAGS, Mode::empty()) {
+                Ok(next) => next,
+                Err(rustix::io::Errno::NOENT) => {
+                    rustix::fs::mkdirat(dir.as_fd(), *name, Mode::RWXU).map_err(rx)?;
+                    rustix::fs::openat(dir.as_fd(), *name, DIR_FLAGS, Mode::empty()).map_err(rx)?
+                }
+                Err(_) => {
+                    return Err(io::Error::other(
+                        "a link or a file is where a folder belongs",
+                    ));
+                }
+            };
         }
-        let temporary = parent.join(format!(".zlo-sync-{}.tmp", Uuid::new_v4()));
+        // On a volume that ignores case, a name that differs only in case
+        // is the same file: it is the receiver's own and is not replaced.
+        for entry in rustix::fs::Dir::read_from(&dir).map_err(rx)?.flatten() {
+            let held = entry.file_name().to_string_lossy();
+            if held != *last && held.eq_ignore_ascii_case(last) {
+                return Err(io::Error::other(format!(
+                    "`{held}` is there, with a name that differs only in case"
+                )));
+            }
+        }
+        match rustix::fs::statat(dir.as_fd(), *last, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile => {
+                return Err(io::Error::other("a link or a folder is in its place"));
+            }
+            Ok(_) | Err(rustix::io::Errno::NOENT) => {}
+            Err(error) => return Err(rx(error)),
+        }
+        let temporary = format!(".zlo-sync-{}.tmp", Uuid::new_v4());
+        let mode = if exec {
+            Mode::RWXU
+        } else {
+            Mode::RUSR | Mode::WUSR
+        };
         let written = (|| {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?;
+            let fd = rustix::fs::openat(
+                dir.as_fd(),
+                temporary.as_str(),
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                mode,
+            )
+            .map_err(rx)?;
+            // The mode asked for, whatever the process's mask took away.
+            rustix::fs::fchmod(&fd, mode).map_err(rx)?;
+            let mut file = std::fs::File::from(fd);
             file.write_all(bytes)?;
             file.sync_all()?;
-            set_executable(&temporary, exec)?;
-            std::fs::rename(&temporary, path)
+            rustix::fs::renameat(dir.as_fd(), temporary.as_str(), dir.as_fd(), *last).map_err(rx)
         })();
         if written.is_err()
-            && let Err(error) = std::fs::remove_file(&temporary)
+            && let Err(error) =
+                rustix::fs::unlinkat(dir.as_fd(), temporary.as_str(), AtFlags::empty())
         {
             tracing::debug!(%error, "config sync: temporary file not removed");
         }
@@ -241,37 +336,95 @@ impl CliHomeDomainHandler {
     }
 }
 
-fn file_hash(bytes: &[u8], exec: bool) -> String {
-    let mode = if exec { EXECUTABLE } else { "" };
-    items::files_hash(&[(mode.to_string(), bytes.to_vec())])
+/// List `name` inside `dir`: a file, or a folder and what is below it.
+fn walk(
+    dir: &OwnedFd,
+    name: &str,
+    key: String,
+    depth: usize,
+    known: &BTreeMap<String, (Stamp, String)>,
+    out: &mut Listing,
+) {
+    // A link fails to open; so does anything that went away.
+    let Ok(fd) = rustix::fs::openat(dir.as_fd(), name, ANY_FLAGS, Mode::empty()) else {
+        return;
+    };
+    let Ok(stat) = rustix::fs::fstat(&fd) else {
+        return;
+    };
+    match FileType::from_raw_mode(stat.st_mode) {
+        FileType::RegularFile => {
+            if stat.st_nlink > 1 {
+                out.not_carried.push(format!("{key} (a hard link)"));
+                return;
+            }
+            if out.files.len() >= MAX_FILES {
+                let note = format!("files past the first {MAX_FILES} (too many to list)");
+                if !out.not_carried.contains(&note) {
+                    out.not_carried.push(note);
+                }
+                return;
+            }
+            let size = usize::try_from(stat.st_size).unwrap_or(usize::MAX);
+            if size > items::ITEM_CONTENT_BYTES {
+                out.not_carried
+                    .push(format!("{key} (too large, {} KiB)", size.div_ceil(1024)));
+                return;
+            }
+            let stamp = Stamp::of(&stat);
+            let hash = match known.get(&key) {
+                Some((held, hash)) if *held == stamp => hash.clone(),
+                _ => match read_all(fd, items::ITEM_CONTENT_BYTES) {
+                    Ok(bytes) => file_hash(&bytes, is_executable(&stat)),
+                    Err(error) => {
+                        tracing::debug!(%error, %key, "config sync: file not read");
+                        return;
+                    }
+                },
+            };
+            out.seen.insert(key.clone(), (stamp, hash.clone()));
+            out.files.insert(key, hash);
+        }
+        FileType::Directory if depth < MAX_DEPTH => {
+            let Ok(entries) = rustix::fs::Dir::read_from(&fd) else {
+                return;
+            };
+            let mut names: Vec<String> = Vec::new();
+            for entry in entries.flatten() {
+                let Ok(child) = entry.file_name().to_str() else {
+                    continue;
+                };
+                if child == "." || child == ".." {
+                    continue;
+                }
+                if withheld(child) {
+                    // Hidden names are everywhere and say nothing; a
+                    // visible one that was held back is worth a line.
+                    if !child.starts_with('.') {
+                        out.not_carried.push(format!(
+                            "{key}/{child} (looks like a sign-in or settings file)"
+                        ));
+                    }
+                    continue;
+                }
+                if names.len() >= MAX_FOLDER_NAMES {
+                    out.not_carried.push(format!(
+                        "{key} (more than {MAX_FOLDER_NAMES} entries; the rest were left)"
+                    ));
+                    break;
+                }
+                names.push(child.to_string());
+            }
+            names.sort();
+            for child in names {
+                walk(&fd, &child, format!("{key}/{child}"), depth + 1, known, out);
+            }
+        }
+        _ => {}
+    }
 }
 
-#[cfg(unix)]
-fn executable(meta: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    meta.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn executable(_: &std::fs::Metadata) -> bool {
-    false
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path, exec: bool) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mode = if exec { 0o755 } else { 0o644 };
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-}
-
-#[cfg(not(unix))]
-fn set_executable(_: &Path, _: bool) -> io::Result<()> {
-    Ok(())
-}
-
-fn page_of(
-    payload: &ConfigSyncDomainPayload,
-) -> Result<&ironclaw_product_contracts::config_sync::ItemizedDomainPayload, ConfigSyncError> {
+fn page_of(payload: &ConfigSyncDomainPayload) -> Result<&ItemizedDomainPayload, ConfigSyncError> {
     match payload {
         ConfigSyncDomainPayload::CliHome(page) => Ok(page),
         _ => Err(ConfigSyncError::validation(
@@ -291,15 +444,11 @@ impl ConfigSyncDomainHandler for CliHomeDomainHandler {
         &self,
         _ctx: &ConfigSyncContext,
     ) -> Result<ConfigSyncDomainDigest, ConfigSyncError> {
-        let index: BTreeMap<String, String> = self
-            .list()
-            .into_iter()
-            .map(|(key, listed)| (key, listed.hash))
-            .collect();
+        let listing = self.list();
         Ok(ConfigSyncDomainDigest {
-            hash: items::domain_hash(&index),
+            hash: items::domain_hash(&listing.files),
             updated_at: None,
-            item_count: index.len() as u64,
+            item_count: listing.files.len() as u64,
         })
     }
 
@@ -307,28 +456,26 @@ impl ConfigSyncDomainHandler for CliHomeDomainHandler {
         &self,
         ctx: &ConfigSyncContext,
     ) -> Result<ConfigSyncDomainPayload, ConfigSyncError> {
-        let listed = self.list();
-        let index: BTreeMap<String, String> = listed
-            .iter()
-            .map(|(key, file)| (key.clone(), file.hash.clone()))
-            .collect();
-        let page = items::page(&index, &ctx.page, |key| {
-            let path = listed.get(&key).map(|file| file.path.clone());
+        let listing = self.list();
+        let mut page = items::page(&listing.files, &ctx.page, |key| {
+            let listed = listing.files.get(&key).cloned();
+            let read = self.read(&key);
             async move {
-                let Some(path) = path else { return Ok(None) };
-                let read = std::fs::metadata(&path)
-                    .and_then(|meta| Ok((std::fs::read(&path)?, executable(&meta))));
                 Ok(match read {
-                    Ok((bytes, exec)) => {
+                    // The bytes carried are the bytes that were hashed.
+                    Ok((bytes, exec)) if listed.as_deref() == Some(&file_hash(&bytes, exec)) => {
                         let mode = if exec { EXECUTABLE } else { "" };
                         Some(vec![(mode.to_string(), bytes)])
                     }
-                    // Gone since it was listed.
-                    Err(_) => None,
+                    _ => None,
                 })
             }
         })
         .await?;
+        // Said once, with the first page.
+        if ctx.page.after.is_none() {
+            page.not_carried.extend(listing.not_carried);
+        }
         Ok(ConfigSyncDomainPayload::CliHome(page))
     }
 
@@ -359,12 +506,12 @@ impl ConfigSyncDomainHandler for CliHomeDomainHandler {
         if ctx.merge_back {
             return Ok(DomainApplyResult::unchanged(page.items.len() as u64));
         }
-        let held = self.list();
+        let held = self.list().files;
         let (mut applied, mut skipped) = (0u64, 0u64);
         let mut warnings: Vec<String> = page
-            .too_large
+            .not_carried
             .iter()
-            .map(|item| format!("{item} is too large to sync"))
+            .map(|item| format!("{item} was not carried"))
             .collect();
         for item in &page.items {
             let Some((mode, bytes)) = items::decode(DOMAIN, item)?.and_then(|mut f| f.pop()) else {
@@ -374,16 +521,15 @@ impl ConfigSyncDomainHandler for CliHomeDomainHandler {
             let exec = mode == EXECUTABLE;
             // A key this host has no place for (a CLI it does not list) is
             // not an error: the other computer simply has more.
-            let Some((root, path)) = self.target(&item.key) else {
+            let Some((root, names)) = self.target(&item.key) else {
                 skipped += 1;
                 continue;
             };
-            if held.get(&item.key).map(|file| file.hash.as_str()) == Some(&file_hash(&bytes, exec))
-            {
+            if held.get(&item.key).map(String::as_str) == Some(&file_hash(&bytes, exec)) {
                 skipped += 1;
                 continue;
             }
-            match self.write(root, &path, &bytes, exec) {
+            match self.write(root, &names, &bytes, exec) {
                 Ok(()) => applied += 1,
                 Err(error) => {
                     tracing::debug!(key = %item.key, %error, "config sync: file not written");
@@ -410,6 +556,8 @@ mod tests {
     };
     use ironclaw_product_contracts::surface::ProductSurfaceCaller;
 
+    use std::path::Path;
+
     use super::*;
 
     struct Host {
@@ -434,7 +582,7 @@ mod tests {
                     entries: vec!["config/skills".into()],
                 },
             ];
-            let handler = CliHomeDomainHandler::new(home, roots);
+            let handler = CliHomeDomainHandler::new(roots);
             Self { dir, handler }
         }
         fn path(&self, rel: &str) -> PathBuf {
@@ -475,7 +623,11 @@ mod tests {
         to.handler.apply(&ctx(), &payload).await.expect("apply")
     }
 
-    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).expect("meta").permissions().mode() & 0o777
+    }
+
     fn make_executable(path: &Path) {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -488,8 +640,11 @@ mod tests {
         mac.put(".alpha/skills/deploy/SKILL.md", "# Deploy\n");
         mac.put(".alpha/skills/deploy/run.sh", "#!/bin/sh\necho hi\n");
         mac.put(".beta/config/skills/review/SKILL.md", "# Review\n");
-        #[cfg(unix)]
         make_executable(&mac.path(".alpha/skills/deploy/run.sh"));
+        // Never carried either: a settings or sign-in file inside a carried
+        // folder, by its name.
+        mac.put(".alpha/skills/deploy/settings.json", "{}");
+        mac.put(".alpha/skills/deploy/api_token.txt", "secret");
         // Never carried: a settings file beside the rules, a login, a
         // hidden file inside a carried folder.
         mac.put(".alpha/settings.json", "{\"token\":\"secret\"}");
@@ -511,11 +666,11 @@ mod tests {
             boxed.get(".beta/config/skills/review/SKILL.md").as_deref(),
             Some("# Review\n")
         );
-        #[cfg(unix)]
-        {
-            let meta = std::fs::metadata(boxed.path(".alpha/skills/deploy/run.sh")).expect("meta");
-            assert!(executable(&meta), "the script stays runnable");
-        }
+        // The script stays runnable; everything is the person's alone.
+        assert_eq!(mode(&boxed.path(".alpha/skills/deploy/run.sh")), 0o700);
+        assert_eq!(mode(&boxed.path(".alpha/RULES.md")), 0o600);
+        assert_eq!(boxed.get(".alpha/skills/deploy/settings.json"), None);
+        assert_eq!(boxed.get(".alpha/skills/deploy/api_token.txt"), None);
         assert_eq!(
             boxed.get(".alpha/settings.json").as_deref(),
             Some("{\"box\":true}")
@@ -555,9 +710,11 @@ mod tests {
                 item("alpha//etc/passwd", "x"),
                 item("gamma/RULES.md", "x"),
                 item("alpha", "x"),
+                item("alpha/skills/auth.json", "x"),
+                item("alpha/skills/a/b/c/d/e/f/g/h/i/j/k.md", "x"),
             ],
             next: None,
-            too_large: Vec::new(),
+            not_carried: Vec::new(),
         };
         let result = boxed
             .handler
@@ -568,28 +725,94 @@ mod tests {
         assert!(!boxed.path(".alpha").exists(), "nothing was created");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
-    async fn a_link_out_of_the_home_is_neither_read_nor_written_through() {
+    async fn nothing_is_read_or_written_through_a_link() {
         let (mac, boxed) = (Host::new(), Host::new());
-        let outside = boxed.dir.path().join("outside");
-        std::fs::create_dir_all(&outside).expect("outside");
+        // On the receiver: a carried folder that is a link, even to a
+        // folder inside the home.
+        let elsewhere = boxed.path("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("elsewhere");
         std::fs::create_dir_all(boxed.path(".alpha")).expect("root");
-        std::os::unix::fs::symlink(&outside, boxed.path(".alpha/skills")).expect("link");
+        std::os::unix::fs::symlink(&elsewhere, boxed.path(".alpha/skills")).expect("link");
         mac.put(".alpha/skills/deploy/SKILL.md", "# Deploy\n");
         let result = carry(&mac, &boxed).await;
         assert_eq!(result.outcome.applied_count, 0);
         assert_eq!(result.outcome.warnings.len(), 1, "{:?}", result.outcome);
-        assert!(!outside.join("deploy").exists());
+        assert!(!elsewhere.join("deploy").exists());
 
-        // And a file reached through such a link is not exported.
-        std::fs::write(outside.join("leak.md"), "private").expect("write");
+        // On the sender: a listed file that is a link to a sign-in file,
+        // a linked file inside a carried folder, and a hard link.
+        mac.put(".alpha/auth.json", "{\"login\":true}");
+        std::fs::remove_file(mac.path(".alpha/skills/deploy/SKILL.md")).expect("remove");
+        std::os::unix::fs::symlink(mac.path(".alpha/auth.json"), mac.path(".alpha/RULES.md"))
+            .expect("link");
+        std::os::unix::fs::symlink(
+            mac.path(".alpha/auth.json"),
+            mac.path(".alpha/skills/deploy/notes.md"),
+        )
+        .expect("link");
+        std::fs::hard_link(
+            mac.path(".alpha/auth.json"),
+            mac.path(".alpha/skills/deploy/copy.md"),
+        )
+        .expect("hard link");
         let ConfigSyncDomainPayload::CliHome(page) =
-            boxed.handler.export(&ctx()).await.expect("export")
+            mac.handler.export(&ctx()).await.expect("export")
         else {
             panic!("payload");
         };
         assert!(page.items.is_empty(), "{:?}", page.items);
+        assert!(
+            page.not_carried
+                .iter()
+                .any(|note| note.contains("hard link")),
+            "{:?}",
+            page.not_carried
+        );
+
+        // A whole root that is a link has nothing and takes nothing.
+        let linked = Host::new();
+        std::os::unix::fs::symlink(&elsewhere, linked.path(".alpha")).expect("link");
+        let page = ItemizedDomainPayload {
+            hash: String::new(),
+            items: vec![item("alpha/RULES.md", "x")],
+            next: None,
+            not_carried: Vec::new(),
+        };
+        let result = linked
+            .handler
+            .apply(&ctx(), &ConfigSyncDomainPayload::CliHome(page))
+            .await
+            .expect("apply");
+        assert_eq!(result.outcome.applied_count, 0);
+        assert!(!elsewhere.join("RULES.md").exists());
+    }
+
+    #[tokio::test]
+    async fn a_mode_change_shows_and_a_name_differing_only_in_case_is_not_replaced() {
+        let (mac, boxed) = (Host::new(), Host::new());
+        mac.put(".alpha/skills/run.sh", "echo hi\n");
+        let before = mac.hash().await;
+        // Same bytes, same size, same modification time: only the mode.
+        make_executable(&mac.path(".alpha/skills/run.sh"));
+        assert_ne!(mac.hash().await, before);
+
+        mac.put(".alpha/skills/Review.md", "from the mac\n");
+        boxed.put(".alpha/skills/review.md", "the box's own\n");
+        let result = carry(&mac, &boxed).await;
+        assert_eq!(
+            boxed.get(".alpha/skills/review.md").as_deref(),
+            Some("the box's own\n")
+        );
+        assert!(
+            result
+                .outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("differs only in case")),
+            "{:?}",
+            result.outcome
+        );
     }
 
     #[test]
@@ -604,7 +827,7 @@ mod tests {
             hash: String::new(),
             items: vec![bad],
             next: None,
-            too_large: Vec::new(),
+            not_carried: Vec::new(),
         };
         assert!(
             handler

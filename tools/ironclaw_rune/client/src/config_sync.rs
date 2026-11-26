@@ -124,8 +124,9 @@ struct RawReport {
     restart_required: Vec<String>,
 }
 
-/// The domains both backends list whose content differs, minus `excluded`
-/// and those `memo` says are settled as they are.
+/// The domains both backends list that need carrying: those whose content
+/// differs (minus `excluded` and those `memo` says are settled as they
+/// are), and a two-way itemized domain not yet gone over this session.
 pub fn differing(
     source: &Manifest,
     target: &Manifest,
@@ -141,7 +142,11 @@ pub fn differing(
             let settled = memo
                 .get(domain)
                 .is_some_and(|(a, b)| a == ours && b == theirs);
-            (ours != theirs && !settled).then_some(*domain)
+            // A domain both sides write is gone over once per session even
+            // when it matches: each side then records what they agree on,
+            // which is what later tells an edit from a removal.
+            let unrecorded = domain.two_way() && domain.itemized() && !memo.contains_key(domain);
+            ((ours != theirs && !settled) || unrecorded).then_some(*domain)
         })
         .collect()
 }
@@ -233,8 +238,7 @@ impl Tally {
             if outcome.status == "skipped_with_reason" || !outcome.warnings.is_empty() {
                 self.unfinished.insert(domain);
             }
-            if to_target
-                && outcome.status == "skipped_with_reason"
+            if outcome.status == "skipped_with_reason"
                 && !self.report.skipped.iter().any(|(d, _)| *d == domain)
             {
                 self.report
@@ -298,7 +302,11 @@ fn have_window(
     let mut window = BTreeMap::new();
     let mut bytes = 0usize;
     for (key, hash) in have.range::<String, _>((from, Bound::Unbounded)) {
-        bytes += key.len() + hash.len() + 8;
+        // As it will be sent: JSON may escape a key to several times its
+        // length.
+        bytes += serde_json::to_string(key).map_or(6 * key.len(), |s| s.len())
+            + serde_json::to_string(hash).map_or(6 * hash.len(), |s| s.len())
+            + 2;
         if bytes > HAVE_WINDOW_BYTES && !window.is_empty() {
             let until = window.keys().next_back().cloned();
             return (window, until);
@@ -329,12 +337,10 @@ async fn carry_items(
         }
         let index = to.config_sync_export(&request).await?;
         have.extend(listed(&index, domain));
-        let next = next_of(&index, domain);
-        // A cursor that does not move would loop forever.
-        if next.is_none() || next <= after {
-            break;
+        match advanced(next_of(&index, domain), &after)? {
+            Some(next) => after = Some(next),
+            None => break,
         }
-        after = next;
     }
     let mut after: Option<String> = None;
     loop {
@@ -355,10 +361,22 @@ async fn carry_items(
                 .await?,
             !merge_back,
         );
-        if next.is_none() || next <= after {
-            return Ok(());
+        match advanced(next, &after)? {
+            Some(next) => after = Some(next),
+            None => return Ok(()),
         }
-        after = next;
+    }
+}
+
+/// The cursor to continue from, `None` at the end. A cursor that is there
+/// and does not move forward would loop forever or skip pages: the pass
+/// fails instead of passing for complete.
+fn advanced(next: Option<String>, after: &Option<String>) -> Result<Option<String>, ClientError> {
+    match next {
+        Some(next) if after.as_ref().is_some_and(|after| next <= *after) => Err(
+            ClientError::Config("configuration sync: a page cursor did not advance".into()),
+        ),
+        next => Ok(next),
     }
 }
 
@@ -409,6 +427,7 @@ pub async fn sync_once(
             let back = target
                 .config_sync_export(&json!({ "domains": [domain] }))
                 .await?;
+            live(stop)?;
             tally.add(
                 source.config_sync_apply(&back, &[domain], true).await?,
                 false,
@@ -419,6 +438,12 @@ pub async fn sync_once(
         carry_items(source, target, domain, false, stop, &mut tally).await?;
         if domain.two_way() {
             carry_items(target, source, domain, true, stop, &mut tally).await?;
+            // Something moved: one more round, which carries no content
+            // and lets each side record what both now hold.
+            if tally.wrote.contains(&domain) {
+                carry_items(source, target, domain, false, stop, &mut tally).await?;
+                carry_items(target, source, domain, true, stop, &mut tally).await?;
+            }
         }
     }
     for domain in &domains {
@@ -484,6 +509,19 @@ mod tests {
             differing(&ours, &theirs, &BTreeSet::new(), &memo),
             vec![Config]
         );
+        // Memory matches, and is still gone over once: until it has an
+        // entry in the memo.
+        let (ours_m, theirs_m) = (
+            manifest("a", &[(ConfigSyncDomain::Memory, "m")]),
+            manifest("b", &[(ConfigSyncDomain::Memory, "m")]),
+        );
+        assert_eq!(
+            differing(&ours_m, &theirs_m, &BTreeSet::new(), &none),
+            vec![ConfigSyncDomain::Memory]
+        );
+        let gone_over =
+            SyncMemo::from([(ConfigSyncDomain::Memory, ("m".to_string(), "m".to_string()))]);
+        assert!(differing(&ours_m, &theirs_m, &BTreeSet::new(), &gone_over).is_empty());
         let stale = SyncMemo::from([(Profiles, ("1".to_string(), "8".to_string()))]);
         assert_eq!(
             differing(&ours, &theirs, &BTreeSet::new(), &stale),
@@ -565,8 +603,8 @@ mod tests {
         let mut windows = 0;
         loop {
             let (window, until) = have_window(&have, after.as_ref());
-            let bytes: usize = window.iter().map(|(k, h)| k.len() + h.len() + 8).sum();
-            assert!(bytes <= HAVE_WINDOW_BYTES, "{bytes}");
+            let bytes = serde_json::to_string(&window).expect("json").len();
+            assert!(bytes <= HAVE_WINDOW_BYTES + 1024, "{bytes}");
             assert!(!window.is_empty());
             seen += window.len();
             windows += 1;
@@ -589,6 +627,28 @@ mod tests {
             have_window(&small, Some(&"a".to_string())),
             (BTreeMap::new(), None)
         );
+    }
+
+    #[test]
+    fn a_cursor_that_does_not_advance_fails_the_pass() {
+        let at = |key: &str| Some(key.to_string());
+        assert_eq!(advanced(None, &at("b")).expect("end"), None);
+        assert_eq!(advanced(at("c"), &at("b")).expect("on"), at("c"));
+        assert_eq!(advanced(at("a"), &None).expect("first"), at("a"));
+        assert!(advanced(at("b"), &at("b")).is_err());
+        assert!(advanced(at("a"), &at("b")).is_err());
+    }
+
+    #[test]
+    fn keys_that_json_escapes_are_weighed_as_sent() {
+        // Each control character is six bytes on the wire.
+        let have: BTreeMap<String, String> = (0..2_000)
+            .map(|n| (format!("{n:05}{}", "\u{1}".repeat(300)), "h".to_string()))
+            .collect();
+        let (window, until) = have_window(&have, None);
+        assert!(until.is_some(), "the window was cut");
+        let sent = serde_json::to_string(&window).expect("json").len();
+        assert!(sent <= HAVE_WINDOW_BYTES + 4096, "{sent}");
     }
 
     #[test]

@@ -507,11 +507,12 @@ observed_date = "2026-11-17"
 # zero hidden headroom: `config_sync_assembly.rs` registers three more domain
 # handlers (skills, skill usage, memory). Wiring only; the handlers and the
 # memory base store live in `ironclaw_assistant::config_sync`.
-# ✎ 2026-11-26 (config sync, CLI rules files): 34714 -> 34719, observed
-# 34864 -> 34869, zero hidden headroom: one more handler registered in
+# ✎ 2026-11-26 (config sync, CLI rules files): 34714 -> 34721, observed
+# 34864 -> 34871, zero hidden headroom: one more handler registered (on
+# Unix only, hence two `#[cfg(unix)]` lines) in
 # `config_sync_assembly.rs`; the handler and its root list live in
 # `ironclaw_assistant::config_sync::cli_home` and `ironclaw_cli_providers`.
-loc_ceiling = 34719
+loc_ceiling = 34721
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to

@@ -13,7 +13,7 @@ use ironclaw_product_contracts::config_sync::ConfigSyncDomain;
 use ironclaw_product_contracts::surface::ProductSurfaceCaller;
 
 use super::ConfigSyncError;
-use super::memory::MemorySyncBaseStore;
+use super::memory::{BaseChange, MemorySyncBaseStore};
 
 const MEMORY_BASE_ROOT: &str = "/system/settings/config-sync/memory-base";
 /// Tries at writing over an unchanged version before giving up.
@@ -87,7 +87,7 @@ impl<F: RootFilesystem> MemorySyncBaseStore for SettingsMemorySyncBase<F> {
         &self,
         caller: &ProductSurfaceCaller,
         peer_environment_id: &str,
-        changes: &BTreeMap<String, String>,
+        changes: &BTreeMap<String, BaseChange>,
     ) -> Result<(), ConfigSyncError> {
         let path = base_path(caller, peer_environment_id)?;
         // Read, add this pass's entries, write only over the version read:
@@ -105,7 +105,13 @@ impl<F: RootFilesystem> MemorySyncBaseStore for SettingsMemorySyncBase<F> {
                 ),
                 None => (BTreeMap::new(), CasExpectation::Absent),
             };
-            base.extend(changes.iter().map(|(k, v)| (k.clone(), v.clone())));
+            // A path another pass moved on since this one read it keeps
+            // that pass's value: this one decided on older ground.
+            for (path, change) in changes {
+                if base.get(path) == change.seen.as_ref() {
+                    base.insert(path.clone(), change.agreed.clone());
+                }
+            }
             let body =
                 serde_json::to_vec(&base).map_err(|source| ConfigSyncError::Serialization {
                     domain: ConfigSyncDomain::Memory,
@@ -149,13 +155,28 @@ mod tests {
         let store = SettingsMemorySyncBase::new(Arc::new(InMemoryBackend::new()));
         let alice = caller("alice");
         assert!(store.load(&alice, "box").await.expect("load").is_empty());
-        let base = BTreeMap::from([("MEMORY.md".to_string(), "sha256:1".to_string())]);
-        store.record(&alice, "box", &base).await.expect("record");
+        let step = |seen: Option<&str>, agreed: &str| BaseChange {
+            seen: seen.map(str::to_string),
+            agreed: agreed.to_string(),
+        };
+        let first = BTreeMap::from([("MEMORY.md".to_string(), step(None, "sha256:1"))]);
+        store.record(&alice, "box", &first).await.expect("record");
         // A later pass adds to what an earlier one recorded.
-        let more = BTreeMap::from([("notes/a.md".to_string(), "sha256:2".to_string())]);
+        let more = BTreeMap::from([("notes/a.md".to_string(), step(None, "sha256:2"))]);
         store.record(&alice, "box", &more).await.expect("record");
-        let both: BTreeMap<_, _> = base.clone().into_iter().chain(more).collect();
-        assert_eq!(store.load(&alice, "box").await.expect("load"), both);
+        // A pass that decided before another moved the path on does not
+        // put its older value back.
+        let late = BTreeMap::from([("MEMORY.md".to_string(), step(None, "sha256:0"))]);
+        store.record(&alice, "box", &late).await.expect("record");
+        let next = BTreeMap::from([("MEMORY.md".to_string(), step(Some("sha256:1"), "sha256:3"))]);
+        store.record(&alice, "box", &next).await.expect("record");
+        assert_eq!(
+            store.load(&alice, "box").await.expect("load"),
+            BTreeMap::from([
+                ("MEMORY.md".to_string(), "sha256:3".to_string()),
+                ("notes/a.md".to_string(), "sha256:2".to_string()),
+            ])
+        );
         assert!(store.load(&alice, "studio").await.expect("load").is_empty());
         assert!(
             store

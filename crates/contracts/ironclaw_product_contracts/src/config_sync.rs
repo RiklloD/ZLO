@@ -306,10 +306,11 @@ pub struct ItemizedDomainPayload {
     /// More items follow: export again with `after` set to this key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
-    /// Items too large to carry in one request, as "key (size)". They stay
-    /// where they are; the receiver reports them.
+    /// Items that could not be carried, each with why ("key (too large,
+    /// 3000 KiB)", "key (changed while syncing)"). They stay where they
+    /// are; the receiver reports them and the pass counts as unfinished.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub too_large: Vec<String>,
+    pub not_carried: Vec<String>,
 }
 
 /// Payload for the `skill_usage` domain: the usage document's pins and

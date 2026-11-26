@@ -49,6 +49,9 @@ struct Row {
     phase: Phase,
     /// The pass in flight; a reply from any other pass is dropped.
     running: Option<u64>,
+    /// The connections the pass in flight runs on: This Mac's generation
+    /// and this computer's.
+    on: Option<(u64, u64)>,
     /// Tells the pass in flight to send nothing further (set when this
     /// row goes: sync switched off, or the computer disconnected).
     stop: Arc<AtomicBool>,
@@ -133,16 +136,18 @@ fn mark_due(s: &mut State, gap: Duration) {
     }
 }
 
-/// Every ready connection: the focused computer, then the peers.
-fn connections(s: &State) -> Vec<(String, Backend)> {
+/// Every ready connection, with the generation that names it: the focused
+/// computer, then the peers.
+fn connections(s: &State) -> Vec<(String, u64, Backend)> {
     let mut out = Vec::new();
     if matches!(s.conn, Conn::Ready)
         && let Some(backend) = s.rt.backend.as_ref()
     {
-        out.push((s.onboarding.computer.key(), backend.clone()));
+        let generation = s.remote.tag.generation.0;
+        out.push((s.onboarding.computer.key(), generation, backend.clone()));
     }
-    for (key, _, backend) in super::peers::stream_targets(s) {
-        out.push((key, backend));
+    for (key, generation, backend) in super::peers::stream_targets(s) {
+        out.push((key, generation.0, backend));
     }
     out
 }
@@ -160,9 +165,11 @@ pub fn sync(s: &mut State) {
     let mut connections = connections(s);
     let source = connections
         .iter()
-        .position(|(key, _)| key == THIS_MAC)
-        .map(|at| connections.swap_remove(at).1);
-    let connected: HashSet<&str> = connections.iter().map(|(key, _)| key.as_str()).collect();
+        .position(|(key, _, _)| key == THIS_MAC)
+        .map(|at| connections.swap_remove(at));
+    let source_generation = source.as_ref().map(|(_, generation, _)| *generation);
+    let source = source.map(|(_, _, backend)| backend);
+    let connected: HashSet<&str> = connections.iter().map(|(key, _, _)| key.as_str()).collect();
     // A computer whose connection went is checked afresh when it is back,
     // and by then it has restarted or not: the note goes with it.
     s.remote.config_sync.rows.retain(|key, row| {
@@ -172,10 +179,24 @@ pub fn sync(s: &mut State) {
         }
         stays
     });
-    let Some(source) = source else {
+    // A pass belongs to the two connections it was started on. When
+    // either is replaced (even under the same computer's name) or This Mac
+    // goes, it is stopped, its reply will find no pass waiting, and the
+    // computer is checked again on the connections there are now.
+    for (key, generation, _) in &connections {
+        if let Some(row) = s.remote.config_sync.rows.get_mut(key)
+            && row.running.is_some()
+            && row.on != source_generation.map(|source| (source, *generation))
+        {
+            row.stop.store(true, Ordering::Relaxed);
+            row.running = None;
+            row.due = true;
+        }
+    }
+    let (Some(source), Some(source_generation)) = (source, source_generation) else {
         return;
     };
-    for (key, target) in &connections {
+    for (key, generation, target) in &connections {
         if !enabled(s, key) {
             continue;
         }
@@ -188,6 +209,7 @@ pub fn sync(s: &mut State) {
         state.next_run += 1;
         let run = state.next_run;
         row.running = Some(run);
+        row.on = Some((source_generation, *generation));
         row.due = false;
         let memo = row.memo.clone();
         row.stop = Arc::new(AtomicBool::new(false));

@@ -50,15 +50,28 @@ pub trait MemorySyncBaseStore: Send + Sync {
         peer_environment_id: &str,
     ) -> Result<BTreeMap<String, String>, ConfigSyncError>;
 
-    /// Add `changes` to what is recorded for that computer, keeping every
-    /// entry another pass recorded meanwhile.
+    /// Record what a pass agreed on for that computer. Each change names
+    /// the value the pass saw before (`None`: no entry); a path another
+    /// pass has moved on meanwhile is left as that pass recorded it.
     async fn record(
         &self,
         caller: &ProductSurfaceCaller,
         peer_environment_id: &str,
-        changes: &BTreeMap<String, String>,
+        changes: &BTreeMap<String, BaseChange>,
     ) -> Result<(), ConfigSyncError>;
 }
+
+/// One path's step in the base: from what the pass saw to what it agreed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseChange {
+    pub seen: Option<String>,
+    pub agreed: String,
+}
+
+/// The provider's archive tree: a removed document's text is kept there
+/// (`archive/<when>/<path>`). It is evidence of a removal on this computer
+/// and is not itself carried (the provider does not take writes there).
+const ARCHIVE_ROOT: &str = "archive/";
 
 /// One document here: its content digest (the item hash) and the
 /// provider's own token for that content, which a conditional write names.
@@ -70,9 +83,11 @@ struct Held {
 
 type Index = BTreeMap<String, Held>;
 
+/// What travels: every document outside the archive tree, by digest.
 fn hashes(index: &Index) -> BTreeMap<String, String> {
     index
         .iter()
+        .filter(|(path, _)| !path.starts_with(ARCHIVE_ROOT))
         .map(|(path, held)| (path.clone(), held.hash.clone()))
         .collect()
 }
@@ -192,7 +207,14 @@ impl MemoryDomainHandler {
         for attempt in 0..CONFLICT_SLOTS {
             let aside = conflict_path(path, hash, attempt)?;
             match held.get(&aside) {
-                Some(existing) if existing.hash == hash => return Some(aside),
+                // Listed with this text: confirmed by reading it now, since
+                // it may have been edited after the listing.
+                Some(existing) if existing.hash == hash => {
+                    match self.documents.read(caller, &aside).await {
+                        Ok(document) if document.content == text => return Some(aside),
+                        _ => continue,
+                    }
+                }
                 // Someone changed an earlier copy: it is theirs now.
                 Some(_) => continue,
                 None => match self.put(caller, &aside, text, None).await {
@@ -235,13 +257,14 @@ fn conflict_path(path: &str, held_hash: &str, slot: usize) -> Option<String> {
     (out.len() <= MAX_MEMORY_PATH_BYTES).then_some(out)
 }
 
-/// A removal here leaves the text in the provider's archive tree
-/// (`archive/<when>/<path>`): the same text there means the document was
-/// archived on this computer, not that it never arrived.
-fn archived_here(held: &Index, path: &str, hash: &str) -> bool {
-    let tail = format!("/{path}");
-    held.iter().any(|(at, document)| {
-        at.starts_with("archive/") && at.ends_with(&tail) && document.hash == hash
+/// Whether `path` was archived on this computer: the provider keeps a
+/// removed document at `archive/<when>/<path>`, whatever its text was by
+/// then.
+fn archived_here(held: &Index, path: &str) -> bool {
+    held.keys().any(|at| {
+        at.strip_prefix(ARCHIVE_ROOT)
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(_, archived)| archived == path)
     })
 }
 
@@ -377,16 +400,30 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
         let held = self.index(caller, true).await?;
         let base = self.base.load(caller, peer).await?;
         // What this pass and the other computer now agree on.
-        let mut agreed: BTreeMap<String, String> = BTreeMap::new();
+        let mut agreed: BTreeMap<String, BaseChange> = BTreeMap::new();
+        let mut agree = |path: &str, hash: &str| {
+            agreed.insert(
+                path.to_string(),
+                BaseChange {
+                    seen: base.get(path).cloned(),
+                    agreed: hash.to_string(),
+                },
+            );
+        };
         let (mut applied, mut skipped) = (0u64, 0u64);
         let mut warnings: Vec<String> = page
-            .too_large
+            .not_carried
             .iter()
             .map(|item| format!("memory document {item} is too large to sync"))
             .collect();
 
         for item in &page.items {
             let path = item.key.as_str();
+            // The archive tree is each computer's own.
+            if path.starts_with(ARCHIVE_ROOT) {
+                skipped += 1;
+                continue;
+            }
             let content = items::decode(DOMAIN, item)?
                 .and_then(|mut files| files.pop())
                 .and_then(|(_, bytes)| String::from_utf8(bytes).ok());
@@ -399,7 +436,7 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
             );
             if todo == Step::Agree {
                 if base.get(path) != Some(&item.hash) {
-                    agreed.insert(path.to_string(), item.hash.clone());
+                    agree(path, &item.hash);
                 }
                 skipped += 1;
                 continue;
@@ -408,10 +445,10 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
                 skipped += 1;
                 continue;
             };
-            // Never agreed on and archived here with this very text: it was
-            // removed on this computer, and stays removed.
-            if todo == Step::Create && archived_here(&held, path, &item.hash) {
-                agreed.insert(path.to_string(), item.hash.clone());
+            // Never agreed on, and archived here: it was removed on this
+            // computer (whatever its text was by then) and stays removed.
+            if todo == Step::Create && !base.contains_key(path) && archived_here(&held, path) {
+                agree(path, &item.hash);
                 skipped += 1;
                 continue;
             }
@@ -469,7 +506,7 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
             let over = if todo == Step::Replace { mine } else { None };
             match self.put(caller, path, &content, over).await {
                 Ok(true) => {
-                    agreed.insert(path.to_string(), item.hash.clone());
+                    agree(path, &item.hash);
                     applied += 1;
                 }
                 Ok(false) => {

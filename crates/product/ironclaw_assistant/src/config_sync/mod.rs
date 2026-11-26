@@ -19,6 +19,7 @@
 //!   touched.
 
 pub mod approvals;
+#[cfg(unix)]
 pub mod cli_home;
 pub mod config;
 pub mod items;
@@ -614,6 +615,17 @@ fn parse_raw_export_request(raw: Value) -> Result<ConfigSyncExportRequest, (Stri
         .iter()
         .filter(|name| ConfigSyncDomain::from_wire(name).is_some_and(ConfigSyncDomain::itemized))
         .count();
+    // A window that ends at or before where the page starts is no window.
+    if let (Some(after), Some(until)) = (
+        obj.get("after").and_then(Value::as_str),
+        obj.get("until").and_then(Value::as_str),
+    ) && until <= after
+    {
+        return Err((
+            "until".to_string(),
+            "`until` must come after `after`".to_string(),
+        ));
+    }
     if (paged || itemized > 0) && (names.len() != 1 || itemized != 1) {
         return Err((
             "domains".to_string(),

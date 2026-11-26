@@ -11,11 +11,15 @@ use sha2::{Digest as _, Sha256};
 
 use super::{ConfigSyncError, hex_lower};
 
-/// Content carried in one page before it is cut (before base64). A page and
-/// its envelope stay under the snapshot limit.
-pub const PAGE_CONTENT_BYTES: usize = 2 * 1024 * 1024;
-/// An item larger than this is not carried at all.
-pub const ITEM_CONTENT_BYTES: usize = PAGE_CONTENT_BYTES;
+/// What one page may weigh once encoded (keys, hashes, base64 content and
+/// their JSON), leaving room for the snapshot and apply envelopes under the
+/// snapshot limit.
+pub const PAGE_ENCODED_BYTES: usize = 3 * 1024 * 1024;
+/// An item larger than this (before base64) is not carried at all: alone
+/// in a page it still fits.
+pub const ITEM_CONTENT_BYTES: usize = 2 * 1024 * 1024;
+/// JSON around one item or file (field names, quotes, separators).
+const ITEM_OVERHEAD_BYTES: usize = 64;
 /// Items listed in one page, with or without content.
 pub const PAGE_ITEMS: usize = 2_000;
 
@@ -140,9 +144,11 @@ where
         hash: domain_hash(all),
         items: Vec::new(),
         next: None,
-        too_large: Vec::new(),
+        not_carried: Vec::new(),
     };
-    let mut carried = 0usize;
+    // Estimated encoded weight of the page so far. A key is counted
+    // twice over: JSON may escape it.
+    let mut weight = 0usize;
     for (key, hash) in all {
         if request.after.as_ref().is_some_and(|after| key <= after) {
             continue;
@@ -153,7 +159,8 @@ where
             out.next = Some(until.clone());
             break;
         }
-        if out.items.len() >= PAGE_ITEMS || carried >= PAGE_CONTENT_BYTES {
+        let listed = 2 * key.len() + hash.len() + ITEM_OVERHEAD_BYTES;
+        if out.items.len() >= PAGE_ITEMS || weight + listed > PAGE_ENCODED_BYTES {
             out.next = out.items.last().map(|item| item.key.clone());
             break;
         }
@@ -162,21 +169,30 @@ where
             None
         } else {
             let Some(files) = load(key.clone()).await? else {
+                // Gone or changed since it was listed: said, so the pass
+                // is not taken for a clean one.
+                out.not_carried
+                    .push(format!("{key} (changed while syncing)"));
                 continue;
             };
             let bytes: usize = files.iter().map(|(_, b)| b.len()).sum();
             if bytes > ITEM_CONTENT_BYTES {
-                out.too_large
-                    .push(format!("{key} ({} KiB)", bytes.div_ceil(1024)));
+                out.not_carried
+                    .push(format!("{key} (too large, {} KiB)", bytes.div_ceil(1024)));
                 continue;
             }
-            if carried > 0 && carried + bytes > PAGE_CONTENT_BYTES {
+            let encoded: usize = files
+                .iter()
+                .map(|(path, b)| 2 * path.len() + b.len().div_ceil(3) * 4 + ITEM_OVERHEAD_BYTES)
+                .sum();
+            if !out.items.is_empty() && weight + listed + encoded > PAGE_ENCODED_BYTES {
                 out.next = out.items.last().map(|item| item.key.clone());
                 break;
             }
-            carried += bytes;
+            weight += encoded;
             Some(encode(files))
         };
+        weight += listed;
         out.items.push(ConfigSyncItem {
             key: key.clone(),
             hash: hash.clone(),
@@ -198,7 +214,7 @@ mod tests {
 
     async fn cut(all: &BTreeMap<String, String>, request: PageRequest) -> ItemizedDomainPayload {
         page(all, &request, |key| async move {
-            Ok(Some(vec![(String::new(), key.into_bytes())]))
+            Ok((key != "gone").then(|| vec![(String::new(), key.into_bytes())]))
         })
         .await
         .expect("page")
@@ -271,5 +287,32 @@ mod tests {
         .await;
         assert!(page.items.iter().all(|item| item.files.is_none()));
         assert_eq!(page.hash, domain_hash(&all));
+    }
+
+    #[tokio::test]
+    async fn an_item_that_went_away_is_named_and_long_keys_cut_the_page() {
+        let all = index(&["a", "gone"]);
+        let page = cut(&all, PageRequest::default()).await;
+        assert_eq!(keys(&page), ["a"]);
+        assert_eq!(page.not_carried, ["gone (changed while syncing)"]);
+
+        // Two thousand items with long keys and a kilobyte each stay under
+        // the item count and the content size, and would not fit a request.
+        let many: BTreeMap<String, String> = (0..2_000)
+            .map(|n| {
+                (
+                    format!("{n:05}-{}", "k".repeat(740)),
+                    "sha256:h".to_string(),
+                )
+            })
+            .collect();
+        let first = super::page(&many, &PageRequest::default(), |_| async {
+            Ok(Some(vec![(String::new(), vec![7u8; 1_048])]))
+        })
+        .await
+        .expect("page");
+        assert!(first.next.is_some(), "the page was cut");
+        let encoded = serde_json::to_vec(&first).expect("json").len();
+        assert!(encoded < 4 * 1024 * 1024 - 64 * 1024, "{encoded}");
     }
 }
