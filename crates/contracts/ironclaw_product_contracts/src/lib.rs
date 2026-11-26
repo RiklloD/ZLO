@@ -42,6 +42,7 @@ pub mod channel_config;
 pub mod channel_workflow;
 pub mod command;
 pub mod computer_use;
+pub mod config_sync;
 pub mod delivery;
 pub mod descriptors;
 pub mod environment_access;

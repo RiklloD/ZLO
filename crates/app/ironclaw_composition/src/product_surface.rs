@@ -337,6 +337,8 @@ pub(crate) fn build_product_surface_with_channel_connection(
         ),
         None => Arc::new(api) as _,
     };
+    // Configuration sync between this user's computers (operator routes).
+    let surface = crate::config_sync_assembly::wrap(surface, runtime);
     // History search over CLI threads too: indexes their runtime
     // transcripts after each turn and on first search.
     let surface = ironclaw_assistant::orchestration::wrap_history_search(

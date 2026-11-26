@@ -122,6 +122,10 @@ use ironclaw_product_contracts::admin_users::{
     RebornAdminUserListResponse, RebornAdminUserRequest, RebornAdminUserResponse,
     RebornAdminUserSecretsListResponse,
 };
+use ironclaw_product_contracts::config_sync::{
+    CONFIG_SYNC_APPLY_COMMAND, CONFIG_SYNC_EXPORT_VIEW_ID, CONFIG_SYNC_MANIFEST_VIEW_ID,
+    ConfigSyncApplyOutcome, ConfigSyncExportOutcome, ConfigSyncManifest,
+};
 use ironclaw_product_contracts::descriptors::{
     EmptyProductCommandInput, ProductCapabilityDescriptor, ProductSurfaceCommandDescriptor,
 };
@@ -4024,6 +4028,69 @@ pub async fn validate_operator_config(
     let response: RebornOperatorConfigValidateResponse =
         serde_json::from_value(page.payload).map_err(ProductSurfaceError::internal_from)?;
     Ok(Json(response))
+}
+
+/// `GET /api/webchat/v2/operator/config-sync/manifest`: per-domain content
+/// hashes of this backend's configuration, so a carrier moves only what
+/// differs.
+pub async fn config_sync_manifest(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Extension(capabilities): Extension<WebUiV2Capabilities>,
+) -> Result<Json<ConfigSyncManifest>, WebUiV2HttpError> {
+    require_operator_webui_config(capabilities)?;
+    let page = query_product_page(
+        state.services(),
+        caller,
+        RebornViewQuery {
+            view_id: CONFIG_SYNC_MANIFEST_VIEW_ID.to_string(),
+            params: serde_json::Value::Object(Default::default()),
+            cursor: None,
+        },
+    )
+    .await?;
+    let manifest: ConfigSyncManifest =
+        serde_json::from_value(page.payload).map_err(ProductSurfaceError::internal_from)?;
+    Ok(Json(manifest))
+}
+
+/// `POST /api/webchat/v2/operator/config-sync/export`: the named domains as
+/// a snapshot. The body stays raw JSON so an unknown domain is answered
+/// with a reason, not a decode error.
+pub async fn config_sync_export(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Extension(capabilities): Extension<WebUiV2Capabilities>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<ConfigSyncExportOutcome>, WebUiV2HttpError> {
+    require_operator_webui_config(capabilities)?;
+    let page = query_product_page(
+        state.services(),
+        caller,
+        RebornViewQuery {
+            view_id: CONFIG_SYNC_EXPORT_VIEW_ID.to_string(),
+            params: body,
+            cursor: None,
+        },
+    )
+    .await?;
+    let outcome: ConfigSyncExportOutcome =
+        serde_json::from_value(page.payload).map_err(ProductSurfaceError::internal_from)?;
+    Ok(Json(outcome))
+}
+
+/// `POST /api/webchat/v2/operator/config-sync/apply`: validate, then apply a
+/// snapshot subset. Raw JSON for the same reason as `export`.
+pub async fn config_sync_apply(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Extension(capabilities): Extension<WebUiV2Capabilities>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<ConfigSyncApplyOutcome>, WebUiV2HttpError> {
+    require_operator_webui_config(capabilities)?;
+    let outcome =
+        invoke_product_command(state.services(), caller, CONFIG_SYNC_APPLY_COMMAND, body).await?;
+    Ok(Json(outcome))
 }
 
 /// `GET /api/webchat/v2/operator/diagnostics`

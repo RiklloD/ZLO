@@ -1751,7 +1751,14 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // the top of its working slack (17_196); +29 lines for the
         // `InboxChangedEvent` hint DTO and its stream id, a wire shape the
         // desktop client shares with the gateway. No behavior.
-        ("ironclaw_product_contracts", 17_225),
+        // 17_225 -> 17_587 (2026-11-26, configuration sync phase 1): +362
+        // lines, all wire DTOs and descriptors in `config_sync.rs` (the
+        // versioned snapshot, the manifest, per-domain payloads, the apply
+        // report) shared by the gateway routes, the product service and the
+        // desktop client that carries a snapshot between two backends. The
+        // orchestrator settings travel as an opaque document, so no mirror
+        // of another crate's types lives here.
+        ("ironclaw_product_contracts", 17_587),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

@@ -31,6 +31,8 @@ mod config_seed;
 mod doctor;
 mod home;
 mod home_migration;
+mod path_rewrite;
+mod portable;
 mod profile;
 mod remote;
 mod retired_sections;
@@ -70,6 +72,12 @@ pub use home::{
 };
 pub use home_migration::{
     HomeMigration, MIGRATION_PENDING_MARKER, legacy_home_path, migrate_legacy_home,
+};
+pub use path_rewrite::{HomePathRewrite, USER_HOME_TOKEN, ZLO_HOME_TOKEN};
+pub use portable::{
+    PortableConfigApplyResult, PortableConfigSections, apply_portable_config_file,
+    extract_portable_sections, is_loopback_base_url, merge_portable_sections,
+    validate_portable_sections,
 };
 pub use profile::{
     LEGACY_REBORN_PROFILE_ENV, REBORN_PROFILE_ENV, RebornProfile, profile_env_value,

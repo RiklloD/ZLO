@@ -111,6 +111,10 @@ pub const WEBUI_V2_ROUTE_OPERATOR_LIST_CONFIG: &str = "webui.v2.operator.list_co
 pub const WEBUI_V2_ROUTE_OPERATOR_GET_CONFIG_KEY: &str = "webui.v2.operator.get_config_key";
 pub const WEBUI_V2_ROUTE_OPERATOR_SET_CONFIG_KEY: &str = "webui.v2.operator.set_config_key";
 pub const WEBUI_V2_ROUTE_OPERATOR_VALIDATE_CONFIG: &str = "webui.v2.operator.validate_config";
+pub const WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_MANIFEST: &str =
+    "webui.v2.operator.config_sync_manifest";
+pub const WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_EXPORT: &str = "webui.v2.operator.config_sync_export";
+pub const WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_APPLY: &str = "webui.v2.operator.config_sync_apply";
 pub const WEBUI_V2_ROUTE_OPERATOR_DIAGNOSTICS: &str = "webui.v2.operator.diagnostics";
 pub const WEBUI_V2_ROUTE_OPERATOR_STATUS: &str = "webui.v2.operator.status";
 pub const WEBUI_V2_ROUTE_OPERATOR_LOGS: &str = "webui.v2.operator.logs";
@@ -441,6 +445,12 @@ pub const WEBUI_V2_PATTERN_START_CODEX_LOGIN: &str = "/api/webchat/v2/llm/codex/
 pub const WEBUI_V2_PATTERN_OPERATOR_SETUP: &str = "/api/webchat/v2/operator/setup";
 pub const WEBUI_V2_PATTERN_OPERATOR_CONFIG: &str = "/api/webchat/v2/operator/config";
 pub const WEBUI_V2_PATTERN_OPERATOR_CONFIG_KEY: &str = "/api/webchat/v2/operator/config/{key}";
+pub const WEBUI_V2_PATTERN_OPERATOR_CONFIG_SYNC_MANIFEST: &str =
+    "/api/webchat/v2/operator/config-sync/manifest";
+pub const WEBUI_V2_PATTERN_OPERATOR_CONFIG_SYNC_EXPORT: &str =
+    "/api/webchat/v2/operator/config-sync/export";
+pub const WEBUI_V2_PATTERN_OPERATOR_CONFIG_SYNC_APPLY: &str =
+    "/api/webchat/v2/operator/config-sync/apply";
 pub const WEBUI_V2_PATTERN_OPERATOR_CONFIG_VALIDATE: &str =
     "/api/webchat/v2/operator/config/validate";
 pub const WEBUI_V2_PATTERN_OPERATOR_DIAGNOSTICS: &str = "/api/webchat/v2/operator/diagnostics";
@@ -823,6 +833,9 @@ pub fn webui_v2_routes_with_artifact_flags(
         operator_get_config_key_descriptor(),
         operator_set_config_key_descriptor(),
         operator_validate_config_descriptor(),
+        operator_config_sync_manifest_descriptor(),
+        operator_config_sync_export_descriptor(),
+        operator_config_sync_apply_descriptor(),
         operator_diagnostics_descriptor(),
         operator_status_descriptor(),
         operator_logs_descriptor(),
@@ -895,6 +908,9 @@ pub fn is_webui_v2_operator_webui_config_route_id(route_id: &str) -> bool {
             | WEBUI_V2_ROUTE_OPERATOR_GET_CONFIG_KEY
             | WEBUI_V2_ROUTE_OPERATOR_SET_CONFIG_KEY
             | WEBUI_V2_ROUTE_OPERATOR_VALIDATE_CONFIG
+            | WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_MANIFEST
+            | WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_EXPORT
+            | WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_APPLY
             | WEBUI_V2_ROUTE_OPERATOR_DIAGNOSTICS
             | WEBUI_V2_ROUTE_OPERATOR_STATUS
             | WEBUI_V2_ROUTE_OPERATOR_LOGS
@@ -2192,6 +2208,34 @@ fn operator_validate_config_descriptor() -> IngressRouteDescriptor {
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_OPERATOR_CONFIG_VALIDATE,
         16,
+    )
+}
+
+fn operator_config_sync_manifest_descriptor() -> IngressRouteDescriptor {
+    projection_read_route(
+        WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_MANIFEST,
+        NetworkMethod::Get,
+        WEBUI_V2_PATTERN_OPERATOR_CONFIG_SYNC_MANIFEST,
+    )
+}
+
+fn operator_config_sync_export_descriptor() -> IngressRouteDescriptor {
+    mutation_route(
+        WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_EXPORT,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_OPERATOR_CONFIG_SYNC_EXPORT,
+        16,
+    )
+}
+
+/// A snapshot subset is the whole body: bounded at the contract's
+/// `CONFIG_SYNC_MAX_SNAPSHOT_BYTES` (4 MiB).
+fn operator_config_sync_apply_descriptor() -> IngressRouteDescriptor {
+    mutation_route(
+        WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_APPLY,
+        NetworkMethod::Post,
+        WEBUI_V2_PATTERN_OPERATOR_CONFIG_SYNC_APPLY,
+        4096,
     )
 }
 

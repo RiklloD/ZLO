@@ -32,6 +32,7 @@ mod cli_bridge_serve;
 #[cfg(test)]
 #[path = "extension_lifecycle_capabilities_auth_tests.rs"]
 mod composition_extension_lifecycle_auth_tests;
+mod config_sync_assembly;
 pub mod deployment;
 mod embeddings;
 mod error;

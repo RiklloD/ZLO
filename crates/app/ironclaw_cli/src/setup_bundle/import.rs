@@ -14,11 +14,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use ironclaw_composition::setup_transfer::{self, DatabaseSummary};
+use ironclaw_config::HomePathRewrite;
 use secrecy::SecretString;
 use sha2::Digest as _;
 
 use super::format::{BundleReader, FORMAT_VERSION, TAG_END, TAG_FILE, TAG_MANIFEST, TAG_SYMLINK};
-use super::paths::HomePathRewrite;
 use super::{
     BundleError, ItemKind, MAX_ITEM_BYTES, MAX_ITEMS, MAX_MANIFEST_BYTES, MAX_MASTER_KEY_BYTES,
     MAX_TOTAL_BYTES, Manifest, ManifestItem, SourceInfo, entry_path, sha256_hex,

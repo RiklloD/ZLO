@@ -39,7 +39,10 @@ const SETTINGS_FAMILIES: &[&str] = &[
 ];
 
 /// Operator sub-paths that change configuration rather than run maintenance.
-const OPERATOR_SETTINGS: &[&str] = &["config", "extension-configuration", "setup"];
+/// `config-sync` reads and writes configuration (and, when asked, provider
+/// keys): its `export` and `apply` are POSTs, so both need
+/// `settings:manage`; only the hash manifest is a read.
+const OPERATOR_SETTINGS: &[&str] = &["config", "config-sync", "extension-configuration", "setup"];
 
 /// The scope a device needs for `method path`, or `None` when the route
 /// checks access itself (the peer routes).
