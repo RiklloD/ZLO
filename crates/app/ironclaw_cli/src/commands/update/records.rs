@@ -5,6 +5,9 @@
 //! - `update.log` — the job's output, truncated when a job starts.
 //! - `update.lock` — held (an OS file lock) by the running job for its
 //!   whole life, so it is released even when the job dies.
+//! - `staged.json` + `staged/` — a downloaded build waiting to be
+//!   installed (`zlo update` download/install jobs): the record names the
+//!   commit; the folder holds the built `ZLO.app` or `zlo` binary.
 //! - `zlo-updater` — the copy of the binary the detached job runs
 //!   from, so replacing the installed binary or app never touches it.
 //!
@@ -20,7 +23,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use ironclaw_product_contracts::self_update::{
-    AvailableUpdate, MAX_UPDATE_LOG_TAIL_LINES, UpdateRun, UpdateRunState,
+    AvailableUpdate, MAX_UPDATE_LOG_TAIL_LINES, StagedUpdate, UpdateJob, UpdateRun, UpdateRunState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -76,12 +79,24 @@ impl UpdatePaths {
     pub(crate) fn updater_binary(&self) -> PathBuf {
         self.dir.join("zlo-updater")
     }
+
+    fn staged_file(&self) -> PathBuf {
+        self.dir.join("staged.json")
+    }
+
+    /// The folder a download job leaves its build in.
+    pub(crate) fn staged_dir(&self) -> PathBuf {
+        self.dir.join("staged")
+    }
 }
 
 /// `run.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RunRecord {
     pub state: UpdateRunState,
+    /// Absent from records older jobs wrote: those were full updates.
+    #[serde(default)]
+    pub job: UpdateJob,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub message: Option<String>,
@@ -91,10 +106,16 @@ impl RunRecord {
     pub(crate) fn running(message: &str) -> Self {
         Self {
             state: UpdateRunState::Running,
+            job: UpdateJob::Update,
             started_at: Some(Utc::now()),
             finished_at: None,
             message: Some(message.to_string()),
         }
+    }
+
+    pub(crate) fn for_job(mut self, job: UpdateJob) -> Self {
+        self.job = job;
+        self
     }
 
     pub(crate) fn finish(mut self, state: UpdateRunState, message: String) -> Self {
@@ -178,6 +199,61 @@ pub(crate) fn write_check(paths: &UpdatePaths, check: &CheckRecord) -> anyhow::R
     write_json(paths, &paths.check_file(), check)
 }
 
+/// `staged.json`: the downloaded build, and the build it was downloaded
+/// over.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StagedRecord {
+    /// The commit the staged build was built from.
+    pub commit: String,
+    pub staged_at: DateTime<Utc>,
+    /// The commit of the build that was running when it was downloaded.
+    /// The staged build is an update only over that build: once something
+    /// else got installed (a newer `zlo update`, `bundle.sh`), installing
+    /// it could go backwards.
+    pub base: Option<String>,
+}
+
+impl StagedRecord {
+    /// What the wire offers while `running` runs: the staged build, when
+    /// it was downloaded over exactly this build and is not this build.
+    pub(crate) fn offer(&self, running: Option<&str>) -> Option<StagedUpdate> {
+        // A build that does not know its commit cannot tell an older
+        // download from a newer one: nothing is offered over it.
+        let running = running?;
+        (self.base.as_deref() == Some(running) && running != self.commit).then(|| StagedUpdate {
+            commit: self.commit.clone(),
+            staged_at: self.staged_at,
+        })
+    }
+}
+
+/// The downloaded build, when its record and its folder are both there.
+pub(crate) fn read_staged(paths: &UpdatePaths) -> anyhow::Result<Option<StagedRecord>> {
+    let staged: Option<StagedRecord> = read_json(&paths.staged_file())?;
+    Ok(staged.filter(|_| paths.staged_dir().is_dir()))
+}
+
+pub(crate) fn write_staged(paths: &UpdatePaths, staged: &StagedRecord) -> anyhow::Result<()> {
+    write_json(paths, &paths.staged_file(), staged)
+}
+
+/// Forget the downloaded build: the record first (so a reader never sees a
+/// record for a half-removed folder), then the folder.
+pub(crate) fn clear_staged(paths: &UpdatePaths) -> anyhow::Result<()> {
+    let file = paths.staged_file();
+    match std::fs::remove_file(&file) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("remove {}", file.display())),
+    }
+    let dir = paths.staged_dir();
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("remove {}", dir.display())),
+    }
+}
+
 /// The OS lock a job holds for its whole life. Dropped (or the process
 /// gone): released.
 pub(crate) struct UpdateLock {
@@ -237,14 +313,14 @@ pub(crate) enum Reservation {
 /// The lock is released on return so the started job can take it; the
 /// record keeps a second starter out until then ([`RunRecord::just_started`]).
 /// Every start path (the CLI's hand-off, the app's button) goes through here.
-pub(crate) fn reserve(paths: &UpdatePaths) -> anyhow::Result<Reservation> {
+pub(crate) fn reserve(paths: &UpdatePaths, job: UpdateJob) -> anyhow::Result<Reservation> {
     let Some(_lock) = lock_for_job(paths)? else {
         return Ok(Reservation::AlreadyRunning);
     };
     if read_run(paths)?.is_some_and(|run| run.just_started(Utc::now())) {
         return Ok(Reservation::AlreadyRunning);
     }
-    write_run(paths, &RunRecord::running(STARTING))?;
+    write_run(paths, &RunRecord::running(STARTING).for_job(job))?;
     Ok(Reservation::Reserved)
 }
 
@@ -253,9 +329,12 @@ pub(crate) const STARTING: &str = "Starting the update";
 
 /// Mark a reservation whose job could not be started as failed.
 pub(crate) fn reservation_failed(paths: &UpdatePaths, message: &str) -> anyhow::Result<()> {
+    let job = read_run(paths)?.map(|run| run.job).unwrap_or_default();
     write_run(
         paths,
-        &RunRecord::running(STARTING).finish(UpdateRunState::Failed, message.to_string()),
+        &RunRecord::running(STARTING)
+            .for_job(job)
+            .finish(UpdateRunState::Failed, message.to_string()),
     )
 }
 
@@ -325,6 +404,7 @@ pub(crate) fn last_run(
     };
     let mut run = UpdateRun {
         state: record.state,
+        job: record.job,
         started_at: record.started_at,
         finished_at: record.finished_at,
         message: record.message.clone(),
@@ -359,6 +439,63 @@ mod tests {
     }
 
     #[test]
+    fn a_staged_build_needs_its_record_and_its_folder_and_clears_whole() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let paths = UpdatePaths::new(home.path());
+        assert_eq!(read_staged(&paths).expect("read"), None);
+        let staged = StagedRecord {
+            commit: "b".repeat(40),
+            staged_at: Utc::now(),
+            base: Some("a".repeat(40)),
+        };
+        write_staged(&paths, &staged).expect("write");
+        assert_eq!(
+            read_staged(&paths).expect("read"),
+            None,
+            "a record without its build is nothing to install"
+        );
+        std::fs::create_dir_all(paths.staged_dir().join("ZLO.app")).expect("build");
+        assert_eq!(read_staged(&paths).expect("read"), Some(staged.clone()));
+        // Offered only over the build it was downloaded over.
+        let (a, b, c) = ("a".repeat(40), "b".repeat(40), "c".repeat(40));
+        assert_eq!(staged.offer(Some(&a)).map(|o| o.commit), Some(b.clone()));
+        assert_eq!(staged.offer(Some(&b)), None, "already running it");
+        assert_eq!(
+            staged.offer(Some(&c)),
+            None,
+            "something else was installed since: installing it could go backwards"
+        );
+        assert_eq!(staged.offer(None), None, "a build without a commit");
+        let unstamped = StagedRecord {
+            base: None,
+            ..staged.clone()
+        };
+        assert_eq!(unstamped.offer(None), None);
+        clear_staged(&paths).expect("clear");
+        assert_eq!(read_staged(&paths).expect("read"), None);
+        assert!(!paths.staged_dir().exists());
+        clear_staged(&paths).expect("clearing nothing is fine");
+
+        // The job kind rides the reservation and a failed start; a record
+        // from before the field reads as a full update.
+        assert_eq!(
+            reserve(&paths, UpdateJob::Download).expect("reserve"),
+            Reservation::Reserved
+        );
+        reservation_failed(&paths, "did not start").expect("fail");
+        let run = last_run(&paths, false, Utc::now()).expect("view");
+        assert_eq!(
+            (run.job, run.state),
+            (UpdateJob::Download, UpdateRunState::Failed)
+        );
+        let old: RunRecord = serde_json::from_str(
+            r#"{"state":"succeeded","started_at":null,"finished_at":null,"message":"Updated"}"#,
+        )
+        .expect("old record");
+        assert_eq!(old.job, UpdateJob::Update);
+    }
+
+    #[test]
     fn the_lock_is_exclusive_and_released_on_drop() {
         let home = tempfile::tempdir().expect("tempdir");
         let paths = UpdatePaths::new(home.path());
@@ -373,7 +510,10 @@ mod tests {
     fn one_reservation_at_a_time_and_none_while_a_job_runs() {
         let home = tempfile::tempdir().expect("tempdir");
         let paths = UpdatePaths::new(home.path());
-        assert_eq!(reserve(&paths).expect("reserve"), Reservation::Reserved);
+        assert_eq!(
+            reserve(&paths, UpdateJob::Update).expect("reserve"),
+            Reservation::Reserved
+        );
         let run = read_run(&paths).expect("read").expect("record");
         assert_eq!(
             run.state,
@@ -382,19 +522,22 @@ mod tests {
         );
         assert!(!is_locked(&paths).expect("probe"), "released for the job");
         assert_eq!(
-            reserve(&paths).expect("reserve"),
+            reserve(&paths, UpdateJob::Update).expect("reserve"),
             Reservation::AlreadyRunning,
             "a fresh reservation keeps a second starter out"
         );
         reservation_failed(&paths, "did not start").expect("fail");
         let _job = try_lock(&paths).expect("lock").expect("free");
         assert_eq!(
-            reserve(&paths).expect("reserve"),
+            reserve(&paths, UpdateJob::Update).expect("reserve"),
             Reservation::AlreadyRunning,
             "a running job keeps starters out"
         );
         drop(_job);
-        assert_eq!(reserve(&paths).expect("reserve"), Reservation::Reserved);
+        assert_eq!(
+            reserve(&paths, UpdateJob::Update).expect("reserve"),
+            Reservation::Reserved
+        );
     }
 
     #[test]

@@ -776,7 +776,7 @@ fn devices(s: &State, k: &Kit) -> El {
 fn updates_card(s: &State, k: &Kit) -> El {
     let p = &s.palette;
     let u = &s.remote.updates;
-    let busy = u.checking || u.updating;
+    let busy = u.busy();
     let note = if u.updating {
         "Updating… This Mac goes last; ZLO reopens when it is done."
     } else {
@@ -825,9 +825,12 @@ fn update_line(s: &State, k: &Kit, key: &str) -> Option<El> {
     let state = s.remote.updates.rows.get(key)?;
     let ink = match state {
         RowState::UpToDate | RowState::Updated(_) => p.success,
-        RowState::Behind(_) => p.warning,
+        RowState::Behind(_) | RowState::Downloaded(_) => p.warning,
         RowState::Failed(_) => p.danger,
-        RowState::Checking | RowState::NotSetUp { .. } | RowState::Updating(_) => p.text_muted,
+        RowState::Checking
+        | RowState::NotSetUp { .. }
+        | RowState::Downloading(_)
+        | RowState::Updating(_) => p.text_muted,
     };
     let mut line = row()
         .w_full()

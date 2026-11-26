@@ -9,11 +9,17 @@
 //! - `POST /api/operator/update` — start the update as a detached job;
 //!   `202` with the status, `409 update_running` while one runs.
 //!
+//! - `POST /api/operator/update/download` — start a download job: fetch
+//!   and build the new version into a staging folder, install nothing;
+//!   `202`, `409 update_running`.
+//! - `POST /api/operator/update/install` — start an install job: swap the
+//!   downloaded build in and restart; `202`, `409 nothing_staged` when
+//!   nothing is downloaded.
 //! - `POST /api/operator/update/enable` — turn self-update on from the
 //!   checkout this backend was built from; `409 no_checkout` when there is
 //!   none.
 //!
-//! All four are bearer-authenticated and operator-only, and none takes a
+//! All of them are bearer-authenticated and operator-only, and none takes a
 //! body (`BodyLimitPolicy::NoBody`, so a body is refused before the
 //! handler): the repository, branch and build steps come only from the
 //! host's local `[update]` config, behind [`SelfUpdateService`]. The binary
@@ -36,8 +42,9 @@ use ironclaw_host_api::ingress::{
 };
 use ironclaw_host_ingress::ProtectedRouteMount;
 use ironclaw_product_contracts::self_update::{
-    OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_DISABLE_PATH, OPERATOR_UPDATE_ENABLE_PATH,
-    OPERATOR_UPDATE_PATH, UpdateErrorCode, UpdateStatus,
+    OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_DISABLE_PATH, OPERATOR_UPDATE_DOWNLOAD_PATH,
+    OPERATOR_UPDATE_ENABLE_PATH, OPERATOR_UPDATE_INSTALL_PATH, OPERATOR_UPDATE_PATH,
+    UpdateErrorCode, UpdateStatus,
 };
 use serde::Serialize;
 
@@ -71,6 +78,12 @@ pub enum SelfUpdateError {
     /// is operator-facing and holds no secret.
     #[error("self-update cannot be turned on: {0}")]
     NoCheckout(String),
+    /// An install was asked for, but nothing is downloaded.
+    #[error("no downloaded update to install")]
+    NothingStaged,
+    /// This build cannot download now and install later.
+    #[error("this build updates in one go")]
+    DownloadUnsupported,
     /// The update records or the job could not be read or started; the
     /// implementor logged the cause.
     #[error("self-update is unavailable")]
@@ -90,6 +103,13 @@ pub trait SelfUpdateService: Send + Sync {
     /// Start the update job, detached from this process, and answer the
     /// status with `last_run.state = running`.
     async fn start(&self) -> Result<UpdateStatus, SelfUpdateError>;
+    /// Start a download job (fetch and build into the staging folder,
+    /// install nothing), detached like [`Self::start`].
+    async fn download(&self) -> Result<UpdateStatus, SelfUpdateError>;
+    /// Start an install job for the downloaded build, detached like
+    /// [`Self::start`]; [`SelfUpdateError::NothingStaged`] when nothing is
+    /// downloaded.
+    async fn install(&self) -> Result<UpdateStatus, SelfUpdateError>;
     /// Turn self-update on from the checkout this backend was built from
     /// (already on: a no-op) and answer the status.
     async fn enable(&self) -> Result<UpdateStatus, SelfUpdateError>;
@@ -98,11 +118,13 @@ pub trait SelfUpdateService: Send + Sync {
     async fn disable(&self) -> Result<UpdateStatus, SelfUpdateError>;
 }
 
-/// Bearer-authed mount of the five routes over `service`.
+/// Bearer-authed mount of the seven routes over `service`.
 pub fn self_update_route_mount(service: Arc<dyn SelfUpdateService>) -> ProtectedRouteMount {
     let router = Router::new()
         .route(OPERATOR_UPDATE_PATH, get(get_status).post(start_update))
         .route(OPERATOR_UPDATE_CHECK_PATH, post(check_update))
+        .route(OPERATOR_UPDATE_DOWNLOAD_PATH, post(download_update))
+        .route(OPERATOR_UPDATE_INSTALL_PATH, post(install_update))
         .route(OPERATOR_UPDATE_ENABLE_PATH, post(enable_update))
         .route(OPERATOR_UPDATE_DISABLE_PATH, post(disable_update))
         .with_state(service);
@@ -137,6 +159,16 @@ fn service_error(error: SelfUpdateError) -> Response {
             StatusCode::CONFLICT,
             UpdateErrorCode::UpdateRunning.as_str(),
             "An update is already running on this machine.".into(),
+        ),
+        SelfUpdateError::NothingStaged => error_response(
+            StatusCode::CONFLICT,
+            UpdateErrorCode::NothingStaged.as_str(),
+            "No update is downloaded on this machine. Download it first.".into(),
+        ),
+        SelfUpdateError::DownloadUnsupported => error_response(
+            StatusCode::CONFLICT,
+            UpdateErrorCode::DownloadUnsupported.as_str(),
+            "This build does not know its commit, so it updates in one go.".into(),
         ),
         SelfUpdateError::CheckFailed(message) => error_response(
             StatusCode::BAD_GATEWAY,
@@ -202,6 +234,32 @@ async fn start_update(
     }
 }
 
+async fn download_update(
+    State(service): State<Arc<dyn SelfUpdateService>>,
+    capabilities: Option<Extension<WebUiV2Capabilities>>,
+) -> Response {
+    if !is_operator(capabilities) {
+        return operator_required();
+    }
+    match service.download().await {
+        Ok(status) => (StatusCode::ACCEPTED, Json(status)).into_response(),
+        Err(error) => service_error(error),
+    }
+}
+
+async fn install_update(
+    State(service): State<Arc<dyn SelfUpdateService>>,
+    capabilities: Option<Extension<WebUiV2Capabilities>>,
+) -> Response {
+    if !is_operator(capabilities) {
+        return operator_required();
+    }
+    match service.install().await {
+        Ok(status) => (StatusCode::ACCEPTED, Json(status)).into_response(),
+        Err(error) => service_error(error),
+    }
+}
+
 async fn enable_update(
     State(service): State<Arc<dyn SelfUpdateService>>,
     capabilities: Option<Extension<WebUiV2Capabilities>>,
@@ -246,6 +304,18 @@ fn route_descriptors() -> Vec<IngressRouteDescriptor> {
             "webui.operator.update_start",
             NetworkMethod::Post,
             OPERATOR_UPDATE_PATH,
+            START_MAX_REQUESTS,
+        ),
+        descriptor(
+            "webui.operator.update_download",
+            NetworkMethod::Post,
+            OPERATOR_UPDATE_DOWNLOAD_PATH,
+            START_MAX_REQUESTS,
+        ),
+        descriptor(
+            "webui.operator.update_install",
+            NetworkMethod::Post,
+            OPERATOR_UPDATE_INSTALL_PATH,
             START_MAX_REQUESTS,
         ),
         descriptor(

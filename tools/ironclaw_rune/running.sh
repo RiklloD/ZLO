@@ -9,13 +9,19 @@ zlo_exe_of() {
   lsof -a -p "$1" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
 }
 
-# This shell and its ancestors, space-separated: never ours to wait on.
+# This shell and its ancestors, space-separated: never ours to wait on (a
+# bundle.sh run from a shell ZLO started must not quit its own parents).
+# `zlo update`'s detached job sets ZLO_UPDATER_PID to its own pid: it runs
+# in a process group of its own and outlives ZLO, so the walk stops there.
+# The ZLO above it (the backend that started it, the window) is exactly
+# what must quit.
 zlo_self_and_ancestors() {
   p=$$
   out=
   n=0
   while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null && [ $n -lt 64 ]; do
     out="$out $p"
+    [ "$p" = "${ZLO_UPDATER_PID:-}" ] && break
     p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
     n=$((n + 1))
   done

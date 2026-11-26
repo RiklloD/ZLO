@@ -7,7 +7,14 @@
 //! and the ZLO desktop client that calls them. Everything the update runs
 //! (repository, branch, build and install steps) comes from the backend's
 //! local `[update]` config; no request field names a command, path or
-//! branch, so the start and check routes take no body at all.
+//! branch, so no route takes a body at all.
+//!
+//! An update runs in one go ([`OPERATOR_UPDATE_PATH`]) or in two steps, the
+//! way a desktop app downloads an update and installs it on restart:
+//! [`OPERATOR_UPDATE_DOWNLOAD_PATH`] fetches and builds the new version into
+//! a staging folder while the running one keeps going, and
+//! [`OPERATOR_UPDATE_INSTALL_PATH`] later swaps the staged build in and
+//! restarts. [`UpdateStatus::staged`] says what is downloaded.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,6 +32,13 @@ pub const OPERATOR_UPDATE_ENABLE_PATH: &str = "/api/operator/update/enable";
 /// the refreshed [`UpdateStatus`]. The checkout stays recorded, so enable
 /// turns the same one back on.
 pub const OPERATOR_UPDATE_DISABLE_PATH: &str = "/api/operator/update/disable";
+/// `POST` starts a download job: fetch, fast-forward and build the new
+/// version into the backend's staging folder; nothing running changes
+/// (`202`).
+pub const OPERATOR_UPDATE_DOWNLOAD_PATH: &str = "/api/operator/update/download";
+/// `POST` starts an install job: swap the downloaded build in and restart
+/// (`202`; `409 nothing_staged` when nothing is downloaded).
+pub const OPERATOR_UPDATE_INSTALL_PATH: &str = "/api/operator/update/install";
 /// Most commit subjects an [`AvailableUpdate`] carries.
 pub const MAX_UPDATE_SUBJECTS: usize = 20;
 /// Most characters of one commit subject.
@@ -74,11 +88,37 @@ pub enum UpdateRunState {
     Failed,
 }
 
+/// What an update job does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateJob {
+    /// Fetch, build, install and restart in one go. Older backends only
+    /// run this, so a record without the field reads as it.
+    #[default]
+    Update,
+    /// Fetch and build into the staging folder; install nothing.
+    Download,
+    /// Install the downloaded build and restart.
+    Install,
+}
+
+/// A build that is downloaded and waits to be installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedUpdate {
+    /// Full hash of the commit the staged build was built from.
+    pub commit: String,
+    pub staged_at: DateTime<Utc>,
+}
+
 /// The last (or current) update job. Kept on disk by the backend, so it
 /// reads the same after the backend restarted itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateRun {
     pub state: UpdateRunState,
+    /// What the job does. Absent from older backends (reads as
+    /// [`UpdateJob::Update`]).
+    #[serde(default)]
+    pub job: UpdateJob,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     /// One line: the step in progress, or the outcome.
@@ -101,6 +141,10 @@ pub struct UpdateStatus {
     /// from older backends (reads as `false`).
     #[serde(default)]
     pub can_enable: bool,
+    /// A downloaded build waiting for [`OPERATOR_UPDATE_INSTALL_PATH`].
+    /// Absent from older backends, which cannot download.
+    #[serde(default)]
+    pub staged: Option<StagedUpdate>,
 }
 
 /// The `error` code of a refused update call.
@@ -116,6 +160,11 @@ pub enum UpdateErrorCode {
     /// Self-update could not be turned on from here: this backend was not
     /// built from a checkout that is still there; `message` says what to do.
     NoCheckout,
+    /// An install was asked for, but nothing is downloaded.
+    NothingStaged,
+    /// This build cannot download and install later (it does not know its
+    /// own commit); it updates in one go ([`OPERATOR_UPDATE_PATH`]).
+    DownloadUnsupported,
 }
 
 impl UpdateErrorCode {
@@ -125,6 +174,8 @@ impl UpdateErrorCode {
             Self::UpdateRunning => "update_running",
             Self::CheckFailed => "check_failed",
             Self::NoCheckout => "no_checkout",
+            Self::NothingStaged => "nothing_staged",
+            Self::DownloadUnsupported => "download_unsupported",
         }
     }
 }
@@ -154,15 +205,22 @@ mod tests {
             },
             "last_run": {
                 "state": "failed",
+                "job": "download",
                 "started_at": "2026-11-08T21:01:00Z",
                 "finished_at": "2026-11-08T21:02:00Z",
                 "message": "The checkout has local changes.",
                 "log_tail": "git status\n M a.rs"
             },
-            "can_enable": false
+            "can_enable": false,
+            "staged": { "commit": "bbbb", "staged_at": "2026-11-08T21:02:00Z" }
         });
         let parsed: UpdateStatus = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(parsed.last_run.state, UpdateRunState::Failed);
+        assert_eq!(parsed.last_run.job, UpdateJob::Download);
+        assert_eq!(
+            parsed.staged.as_ref().map(|s| s.commit.as_str()),
+            Some("bbbb")
+        );
         assert_eq!(serde_json::to_value(&parsed).unwrap(), json);
         assert_eq!(UpdateErrorCode::UpdateRunning.as_str(), "update_running");
         assert_eq!(
@@ -172,8 +230,13 @@ mod tests {
         // An older backend's status has no `can_enable`.
         let mut older = json;
         older.as_object_mut().unwrap().remove("can_enable");
+        older.as_object_mut().unwrap().remove("staged");
+        older["last_run"].as_object_mut().unwrap().remove("job");
         let parsed: UpdateStatus = serde_json::from_value(older).unwrap();
         assert!(!parsed.can_enable);
+        assert_eq!(parsed.staged, None, "an older backend downloads nothing");
+        assert_eq!(parsed.last_run.job, UpdateJob::Update);
+        assert_eq!(UpdateErrorCode::NothingStaged.as_str(), "nothing_staged");
         assert_eq!(
             serde_json::to_value(UpdateErrorCode::NotConfigured).unwrap(),
             UpdateErrorCode::NotConfigured.as_str()

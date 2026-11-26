@@ -5,8 +5,9 @@
 use std::time::Duration;
 
 use ironclaw_product_contracts::self_update::{
-    OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_DISABLE_PATH, OPERATOR_UPDATE_ENABLE_PATH,
-    OPERATOR_UPDATE_PATH, UpdateErrorCode, UpdateStatus,
+    OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_DISABLE_PATH, OPERATOR_UPDATE_DOWNLOAD_PATH,
+    OPERATOR_UPDATE_ENABLE_PATH, OPERATOR_UPDATE_INSTALL_PATH, OPERATOR_UPDATE_PATH,
+    UpdateErrorCode, UpdateStatus,
 };
 use reqwest::Method;
 use serde::Deserialize;
@@ -56,13 +57,19 @@ fn classify(status: u16, text: &str) -> UpdateCallError {
     match (status, code) {
         (401, _) => UpdateCallError::Unauthorized,
         (404 | 405, _) => UpdateCallError::TooOld,
+        // Can update, just not in two steps: the same path as a backend
+        // from before the download route.
+        (_, Some(c)) if c == UpdateErrorCode::DownloadUnsupported.as_str() => {
+            UpdateCallError::TooOld
+        }
         (_, Some(c)) if c == UpdateErrorCode::NotConfigured.as_str() => {
             UpdateCallError::NotSetUp(message)
         }
         (_, Some(c)) if c == UpdateErrorCode::UpdateRunning.as_str() => UpdateCallError::Running,
         (_, Some(c))
             if c == UpdateErrorCode::CheckFailed.as_str()
-                || c == UpdateErrorCode::NoCheckout.as_str() =>
+                || c == UpdateErrorCode::NoCheckout.as_str()
+                || c == UpdateErrorCode::NothingStaged.as_str() =>
         {
             UpdateCallError::Refused(message)
         }
@@ -124,6 +131,21 @@ impl Client {
             .await
     }
 
+    /// `POST /api/operator/update/download`: build the new version into
+    /// the backend's staging folder without installing it (`202`). A
+    /// backend that predates the route answers [`UpdateCallError::TooOld`].
+    pub async fn download_update(&self) -> Result<UpdateStatus, UpdateCallError> {
+        self.update_call(Method::POST, OPERATOR_UPDATE_DOWNLOAD_PATH, CALL_TIMEOUT)
+            .await
+    }
+
+    /// `POST /api/operator/update/install`: install the downloaded build
+    /// and restart (`202`).
+    pub async fn install_update(&self) -> Result<UpdateStatus, UpdateCallError> {
+        self.update_call(Method::POST, OPERATOR_UPDATE_INSTALL_PATH, CALL_TIMEOUT)
+            .await
+    }
+
     /// `POST /api/operator/update`: start the update (`202`).
     pub async fn start_update(&self) -> Result<UpdateStatus, UpdateCallError> {
         self.update_call(Method::POST, OPERATOR_UPDATE_PATH, CALL_TIMEOUT)
@@ -159,7 +181,11 @@ mod tests {
         c.start_update().await.unwrap();
         c.enable_update().await.unwrap();
         c.disable_update().await.unwrap();
+        c.download_update().await.unwrap();
+        c.install_update().await.unwrap();
         let seen = seen.lock().unwrap();
+        assert_eq!(seen[5].line, "POST /api/operator/update/download HTTP/1.1");
+        assert_eq!(seen[6].line, "POST /api/operator/update/install HTTP/1.1");
         assert_eq!(seen[4].line, "POST /api/operator/update/disable HTTP/1.1");
         assert_eq!(seen[0].line, "GET /api/operator/update HTTP/1.1");
         assert_eq!(seen[1].line, "POST /api/operator/update/check HTTP/1.1");
@@ -194,7 +220,17 @@ mod tests {
                 r#"{"error":"no_checkout","message":"Run zlo update enable --repo"}"#,
                 UpdateCallError::Refused("Run zlo update enable --repo".into()),
             ),
+            (
+                409,
+                r#"{"error":"nothing_staged","message":"Download it first."}"#,
+                UpdateCallError::Refused("Download it first.".into()),
+            ),
             (404, "", UpdateCallError::TooOld),
+            (
+                409,
+                r#"{"error":"download_unsupported","message":"one go"}"#,
+                UpdateCallError::TooOld,
+            ),
             (401, "", UpdateCallError::Unauthorized),
         ] {
             let (url, _) = serve(status, body).await;

@@ -1784,7 +1784,14 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `ProfileIcon` DTO (MIME, base64 bytes, revision) and the
         // `PROFILE_ICON_VIEW` descriptor. The lookup lives in
         // `ironclaw_assistant::orchestration::profile_icon`. No behavior.
-        ("ironclaw_product_contracts", 17_919),
+        // 17_919 -> 17_971 (2026-11-26, download then restart to install):
+        // the tree measures 18_121; the pin is the minimum that passes. +52
+        // lines in `self_update.rs`: the download and install route paths,
+        // `UpdateJob` (which half a job runs), `StagedUpdate` (the
+        // downloaded build `UpdateStatus::staged` names) and the
+        // `nothing_staged` / `download_unsupported` error codes. Shared by
+        // the backend's routes and the desktop client; no behavior.
+        ("ironclaw_product_contracts", 17_971),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

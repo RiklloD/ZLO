@@ -382,6 +382,21 @@ pub const SCENES: &[Scene] = &[
     ("update-available", |s| {
         crate::workspace::fixtures::fixture_update(s, "available")
     }),
+    ("update-preview", |s| {
+        crate::workspace::fixtures::fixture_update(s, "preview")
+    }),
+    ("update-downloading", |s| {
+        crate::workspace::fixtures::fixture_update(s, "downloading")
+    }),
+    ("update-downloaded", |s| {
+        crate::workspace::fixtures::fixture_update(s, "downloaded")
+    }),
+    ("update-downloaded-preview", |s| {
+        crate::workspace::fixtures::fixture_update(s, "downloaded-preview")
+    }),
+    ("update-toast", |s| {
+        crate::workspace::fixtures::fixture_update(s, "toast")
+    }),
     ("update-confirm", |s| {
         crate::workspace::fixtures::fixture_update(s, "confirm")
     }),

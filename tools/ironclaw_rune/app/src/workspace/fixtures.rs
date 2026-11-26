@@ -644,20 +644,34 @@ pub fn fixture_update(s: &mut State, which: &str) {
                 RowState::Failed("The checkout has local changes".into()),
             );
         }
-        _ => {
+        "downloading" => {
+            u.downloading = true;
+            u.rows.insert(
+                THIS_MAC.into(),
+                RowState::Downloading("Building a4f19b3d2".into()),
+            );
+        }
+        "available" | "preview" => {
             u.rows.insert(THIS_MAC.into(), RowState::Behind(pending(7)));
         }
+        // downloaded, downloaded-preview, toast, confirm, confirm-many
+        _ => {
+            u.rows
+                .insert(THIS_MAC.into(), RowState::Downloaded(pending(7)));
+        }
     }
+    s.remote.updates.downloaded_toast = which == "toast";
+    s.workspace.update_preview.open = which.ends_with("preview");
     if which == "confirm-many" {
         base(s);
         s.remote
             .updates
             .rows
-            .insert(STUDIO.into(), RowState::Behind(pending(3)));
+            .insert(STUDIO.into(), RowState::Downloaded(pending(3)));
     }
     s.workspace.confirm_update = which
         .starts_with("confirm")
-        .then(|| crate::remote::updates::waiting_keys(&s.remote.updates));
+        .then(|| crate::remote::updates::installable_keys(&s.remote.updates));
 }
 
 /// New-thread screen with two connected computers ("Runs on" next to worktree).
