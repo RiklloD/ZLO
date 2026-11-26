@@ -24,6 +24,7 @@ use zlo_client::environments::{SavedEnvironment, THIS_MAC};
 
 pub(crate) mod default_computer;
 pub mod fixtures;
+mod sync;
 
 pub fn opened(s: &mut State) {
     pairing::opened(s);
@@ -337,6 +338,7 @@ fn saved_row(s: &State, k: &Kit, env: &SavedEnvironment) -> El {
         actions,
     ));
     out = out.children(update_line(s, k, &id));
+    out = out.children(sync::line(s, k, &id, &env.label));
     if s.remote.page.confirm_remove.as_deref() == Some(id.as_str()) {
         out = out.child(
             muted(p, "Removes it and its token from this Mac only. Its conversations stay on that computer.")

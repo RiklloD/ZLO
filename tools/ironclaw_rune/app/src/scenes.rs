@@ -400,6 +400,16 @@ pub const SCENES: &[Scene] = &[
             crate::pages::computers::fixtures::both_connected,
         )
     }),
+    ("computers-sync", |s| {
+        page_with(s, Page::Computers, |s| {
+            crate::pages::computers::fixtures::synced(s, false)
+        })
+    }),
+    ("computers-sync-restart", |s| {
+        page_with(s, Page::Computers, |s| {
+            crate::pages::computers::fixtures::synced(s, true)
+        })
+    }),
     ("inbox-peer-asleep", ws::fixture_inbox_peer_asleep),
     ("inbox-two-computers", ws::fixture_inbox_two_computers),
     ("inbox-two-computers-light", |s| {

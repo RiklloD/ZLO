@@ -66,6 +66,8 @@ struct Shared {
     /// backend without the route does; `Some` holds the open connections.
     /// Never takes a scripted answer.
     inbox_events: Mutex<Option<Vec<std::sync::mpsc::Sender<String>>>>,
+    /// Fixed answers by path suffix ([`Gateway::route`]).
+    routes: Mutex<Vec<(String, Answer)>>,
 }
 
 /// One `/inbox/events` connection: 404 when the route is off, else an open
@@ -139,7 +141,23 @@ impl Gateway {
                     }
                     let now = shared.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                     shared.max_in_flight.fetch_max(now, Ordering::SeqCst);
-                    let answer = {
+                    let routed = shared
+                        .routes
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .iter()
+                        .find(|(suffix, _)| path.ends_with(suffix.as_str()))
+                        .map(|(_, answer)| answer.clone());
+                    let answer = if routed.is_some() {
+                        routed
+                    } else if path.contains("/config-sync/") {
+                        // Never a scripted answer: a backend without the
+                        // routes, unless a test serves them.
+                        Some(Answer {
+                            status: 404,
+                            ..Answer::ok("")
+                        })
+                    } else {
                         let mut script =
                             shared.script.lock().unwrap_or_else(PoisonError::into_inner);
                         if script.len() > 1 {
@@ -217,6 +235,18 @@ impl Gateway {
             }
             std::thread::sleep(Duration::from_millis(80));
         }
+    }
+
+    /// Answer every request whose path ends with `suffix` with `answer`,
+    /// from now on and without touching the script.
+    pub fn route(&self, suffix: &str, answer: Answer) {
+        let mut routes = self
+            .shared
+            .routes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        routes.retain(|(s, _)| s != suffix);
+        routes.push((suffix.to_string(), answer));
     }
 
     /// Replace what the next requests get.
