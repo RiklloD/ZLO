@@ -47,10 +47,33 @@ pub struct ApprovalsDomainHandler {
 /// record that holds it was last written, as read back after the pass.
 /// `at` is `None` between the note of an intent and the pass's end.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "MadeEntryWire")]
 struct MadeEntry {
     state: ToolApprovalSyncState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     at: Option<DateTime<Utc>>,
+}
+
+/// A record as it may be found: as written now, or the bare state an
+/// earlier build wrote (read as an entry that was never stamped).
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum MadeEntryWire {
+    Stamped {
+        state: ToolApprovalSyncState,
+        #[serde(default)]
+        at: Option<DateTime<Utc>>,
+    },
+    Bare(ToolApprovalSyncState),
+}
+
+impl From<MadeEntryWire> for MadeEntry {
+    fn from(wire: MadeEntryWire) -> Self {
+        match wire {
+            MadeEntryWire::Stamped { state, at } => Self { state, at },
+            MadeEntryWire::Bare(state) => Self { state, at: None },
+        }
+    }
 }
 
 /// What sync made here for one other computer, by tool.
@@ -544,6 +567,11 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
                 continue;
             }
             let was = &entry.state;
+            // Looked at again the moment before it is taken back: a change
+            // made on this computer while the pass ran is this computer's.
+            if entry.at.is_some() && self.stamps(ctx).await?.get(cap_id) != entry.at.as_ref() {
+                continue;
+            }
             let Ok(capability_id) = CapabilityId::new(cap_id.as_str()) else {
                 continue;
             };
@@ -616,5 +644,26 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
             },
             restart_required: Vec::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_record_from_an_earlier_build_is_read_as_unstamped() {
+        let made: Made = serde_json::from_str(
+            r#"{"demo.old":"always_allow","demo.new":{"state":"disabled","at":"2026-11-26T10:00:00Z"},"demo.pending":{"state":"ask_each_time"}}"#,
+        )
+        .expect("record");
+        assert_eq!(made["demo.old"].state, ToolApprovalSyncState::AlwaysAllow);
+        assert_eq!(made["demo.old"].at, None);
+        assert!(made["demo.new"].at.is_some());
+        assert_eq!(made["demo.pending"].at, None);
+        // And it is written back in the current form.
+        let again: Made =
+            serde_json::from_str(&serde_json::to_string(&made).expect("json")).expect("round trip");
+        assert_eq!(again, made);
     }
 }

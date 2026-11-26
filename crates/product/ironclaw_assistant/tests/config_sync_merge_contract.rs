@@ -1018,7 +1018,7 @@ async fn a_document_archived_after_it_was_agreed_stays_archived_when_the_other_s
 #[tokio::test]
 async fn a_skill_that_holds_a_key_is_carried_neither_out_nor_over() {
     let (mac, boxed) = (host(MAC), host(BOX));
-    let key = b"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n-----END PRIVATE KEY-----\n".to_vec();
+    let key = b"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n-----END PRIVATE KEY-----\n".to_vec();
     let bundle_of = |name: &str, extra: (&str, Vec<u8>)| {
         let manifest = format!("---\nname: {name}\ndescription: test\n---\n# {name}\n");
         vec![

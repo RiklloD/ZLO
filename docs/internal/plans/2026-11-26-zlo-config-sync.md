@@ -679,5 +679,14 @@ Phases 1, 2 and 5 are in. What differs from the sketch above:
     written since, so a restriction set again on the receiver is its own.
   - An encrypted PEM key (header lines before its body) is recognised.
 
+- **After the eighth review (2026-11-26; "ship after fixes").** A key
+  block counts only when a full line of base64 follows its header (after
+  any `Name: value` lines), so a document that quotes the header is
+  ordinary. An approvals record is read in the form an earlier build
+  wrote. A record is looked at again the moment before it is taken back.
+  Known and left: that last look and the clear are two steps, not one
+  conditional write, so a change made on the receiver in the instant
+  between them can be cleared.
+
 Left: phase 3 (provider catalog and keys), phase 4 (extensions, hooks,
 automations).

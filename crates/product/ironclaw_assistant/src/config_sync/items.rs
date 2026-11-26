@@ -115,6 +115,33 @@ fn looks_real(value: &[u8]) -> bool {
         })
 }
 
+/// Whether what follows a key block's header line is a key's body: after
+/// any blank lines and `Name: value` lines (an encrypted key has
+/// `Proc-Type` and `DEK-Info`), a full line of base64. A heading rule, a
+/// sentence or a short hash after a quoted header is not one.
+fn key_body_follows(after: &[u8]) -> bool {
+    let stretch = after.get(..after.len().min(2048)).unwrap_or_default();
+    // A key inside JSON has its line ends written out as `\n`.
+    let text = String::from_utf8_lossy(stretch).replace("\\n", "\n");
+    for line in text.lines().skip(1).map(str::trim) {
+        if line.is_empty() {
+            continue;
+        }
+        let header = line
+            .split_once(": ")
+            .is_some_and(|(name, _)| name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+        if header {
+            continue;
+        }
+        let base64 = line
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b));
+        let letters = line.bytes().filter(u8::is_ascii_alphanumeric).count();
+        return base64 && line.len() >= 60 && letters >= 40;
+    }
+    false
+}
+
 /// Where each occurrence of `mark` in `bytes` ends.
 fn found<'a>(bytes: &'a [u8], mark: &'a [u8]) -> impl Iterator<Item = usize> + 'a {
     bytes
@@ -145,16 +172,8 @@ pub fn secret_bytes(bytes: &[u8]) -> bool {
         b"_SECRET",
         b"api_key",
     ];
-    // A key block: the header, then key material. An encrypted key has
-    // header lines (`Proc-Type`, `DEK-Info`) before it, so the material is
-    // looked for anywhere in the stretch that follows.
-    let block = found(bytes, BLOCK).any(|after| {
-        let stretch = bytes.get(after..).unwrap_or_default();
-        let stretch = stretch.get(..stretch.len().min(4096)).unwrap_or_default();
-        stretch
-            .split(|b| !(b.is_ascii_alphanumeric() || b"+/=".contains(b)))
-            .any(|run| run.len() >= 40)
-    });
+    let block =
+        found(bytes, BLOCK).any(|after| key_body_follows(bytes.get(after..).unwrap_or_default()));
     block
         || FIELDS
             .iter()
@@ -563,6 +582,8 @@ mod tests {
             "OPENAI_API_KEY=your-key-here\n",
             "OPENAI_API_KEY=\n",
             "Paste the block that starts with -----BEGIN PRIVATE KEY----- into the field.",
+            "Paste the block that starts with -----BEGIN PRIVATE KEY-----\n\nNext section\n========================================================================\n",
+            "It begins with -----BEGIN PRIVATE KEY-----\ncommit 3f2a9c0b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70\n",
             "set API_KEY to the value from the dashboard",
         ] {
             assert!(!secret_bytes(ordinary.as_bytes()), "{ordinary}");
