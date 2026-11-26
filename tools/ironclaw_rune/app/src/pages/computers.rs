@@ -57,7 +57,9 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El 
             .child(group_header(
                 p,
                 "This Mac",
-                Some("ZLO works on one computer at a time."),
+                Some(
+                    "ZLO stays connected to every computer; a thread opens on the one it lives on.",
+                ),
             ))
             .child(this_mac(s, k));
     }
@@ -297,7 +299,12 @@ fn saved_row(s: &State, k: &Kit, env: &SavedEnvironment) -> El {
             actions.push(press_button(
                 k,
                 &format!("connect-{id}"),
-                "Connect",
+                // Already connected in the background: this only moves the focus.
+                if matches!(st, EnvState::Connected) {
+                    "Switch to"
+                } else {
+                    "Connect"
+                },
                 Btn::Secondary,
                 None,
                 false,
