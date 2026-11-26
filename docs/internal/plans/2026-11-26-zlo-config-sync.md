@@ -474,3 +474,32 @@ coverage:
    `[embeddings]`, `[memory]`, `[runner]`) require a backend restart on the box
    vs. hot-reload, and should Rune offer a one-click "Restart Linux backend"
    banner when those sections change?
+
+## 6. Decisions (2026-11-26)
+
+The open questions above, settled:
+
+1. **Secret scope.** `DeviceScope::SettingsManage` plus the per-computer
+   sync switch; no new scope. Provider and extension keys sync by default
+   when sync is on ("Providers & keys" can be unticked per computer).
+2. **Direction.** This Mac is the source for config, settings, profiles,
+   skills, prompts, providers, approvals, extensions and hooks. Items that
+   exist only on the other computer (a skill an agent wrote there, a profile
+   made there) are kept, never deleted by sync; on a conflict the Mac's
+   version wins. Memory and the skill-usage ledger merge both ways.
+3. **Channels and automations** arrive paused on the other computer. A
+   "primary runner" selector is a later change.
+4. **CLI-home rules.** A sixth phase adds an optional `cli_home` domain: the
+   person's own rules and skills outside ZLO's stores (`~/.claude/CLAUDE.md`,
+   `~/.claude/skills/`, `~/.codex/AGENTS.md`, `~/.gemini/AGENTS.md` and the
+   Antigravity equivalents), files only, never logins, tokens or settings
+   files that can hold them.
+5. **Loopback endpoints** (`127.0.0.1`, `localhost`) in the provider catalog
+   or `[embeddings]` are skipped, and the sync status says which.
+6. **Restart.** `apply` reports `restart_required` with the sections that
+   need it; the app shows one action, "Restart IronClaw on <computer>", and
+   never restarts a backend by itself.
+7. **Default.** Sync is on for a paired computer unless the person turns it
+   off (Settings → Computers), because the box is meant to mirror the Mac.
+8. **Never synced**, as listed in 3.4: identity, devices, peer links, CLI
+   logins, macOS-only state, threads, runs, events and history.
