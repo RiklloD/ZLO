@@ -66,8 +66,10 @@ run_ci_env() {
 
 check_merge_to_base_clean "${1:-origin}"
 
-# Default: baseline quality gate
-"$SCRIPT_DIR/quality_gate.sh"
+# Default: fmt + clippy. The full workspace test suite (~19k tests, needs
+# Docker for the Postgres cases) runs only when asked for:
+#   IRONCLAW_PREPUSH_TEST=1 git push
+IRONCLAW_PREPUSH_TEST="${IRONCLAW_PREPUSH_TEST:-0}" "$SCRIPT_DIR/quality_gate.sh"
 
 # Fast static checks (no compile) — catch deterministic breakers that a
 # host-only build misses. See issue #6018.
