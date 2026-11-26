@@ -935,11 +935,20 @@ fn a_cli_recall_note_names_the_bridge_tools_and_fences_the_memories() {
         }],
         degraded: false,
     };
-    let note = cli_recall_note(&recall);
+    let (guidance, recalled) = cli_recall_parts(&recall);
+    let recalled = recalled.expect("lines were recalled");
+    assert!(
+        !guidance.contains("Works at Siemens."),
+        "recalled text is not guidance"
+    );
+    let note = format!("{guidance}\n\n{recalled}");
     assert!(note.contains("Primary container: career"), "{note}");
     assert!(note.contains("thesis, hermes"));
     assert!(note.contains("supermemory_search") && note.contains("supermemory_write"));
-    assert!(!note.contains("native guidance"), "the loop's tool names are not offered");
+    assert!(
+        !note.contains("native guidance"),
+        "the loop's tool names are not offered"
+    );
     assert!(note.contains("Store career facts in 'career'."));
     assert!(note.contains("Works at Siemens."));
     assert!(!note.contains('\u{7}'), "control characters are cleaned");
@@ -954,7 +963,90 @@ fn a_cli_recall_note_names_the_bridge_tools_and_fences_the_memories() {
         instructions: None,
         ..recall
     };
-    let note = cli_recall_note(&empty);
-    assert!(note.contains("Primary container: career"));
-    assert!(!note.contains("Works at Siemens."));
+    let (guidance, recalled) = cli_recall_parts(&empty);
+    assert!(guidance.contains("Primary container: career"));
+    assert!(recalled.is_none());
+}
+
+#[tokio::test]
+async fn a_failed_capture_is_retried_only_for_its_own_account_and_container() {
+    let (supermemory, egress) = build(MemoryKeys::with_key(), "");
+    let alice = SupermemoryCaller::from_turn_scope(&scope(), UserId::new("alice").unwrap());
+    let bob = SupermemoryCaller::from_turn_scope(&scope(), UserId::new("bob").unwrap());
+    egress.respond("/v3/documents", 500, json!({}));
+    assert!(
+        !supermemory
+            .capture(&alice, "thread-a", "alice private note", "ok")
+            .await
+            .unwrap()
+    );
+    assert_eq!(supermemory.pending_len(), 1);
+
+    // Bob's capture must not carry Alice's pending turn.
+    egress.respond(
+        "/v3/documents",
+        200,
+        json!({"id": "d-b", "status": "queued"}),
+    );
+    assert!(
+        supermemory
+            .capture(&bob, "thread-b", "bob note", "ok")
+            .await
+            .unwrap()
+    );
+    let writes = egress.requests_to("/v3/documents");
+    assert!(
+        !writes[1].body.to_string().contains("alice private note"),
+        "{}",
+        writes[1].body
+    );
+    assert_eq!(supermemory.pending_len(), 1, "alice's turn still waits");
+
+    // Alice's next capture retries hers.
+    egress.respond(
+        "/v3/documents",
+        200,
+        json!({"id": "d-a", "status": "queued"}),
+    );
+    egress.respond(
+        "/v3/documents",
+        200,
+        json!({"id": "d-a2", "status": "queued"}),
+    );
+    supermemory
+        .capture(&alice, "thread-a", "second", "ok")
+        .await
+        .unwrap();
+    let writes = egress.requests_to("/v3/documents");
+    assert!(
+        writes[2..]
+            .iter()
+            .any(|w| w.body.to_string().contains("alice private note"))
+    );
+    assert_eq!(supermemory.pending_len(), 0);
+}
+
+#[tokio::test]
+async fn credentials_are_redacted_from_recall_queries_and_captures() {
+    let secret = "ghp_012345678901234567890123456789012345";
+    let (supermemory, egress) = build(MemoryKeys::with_key(), "");
+    egress.respond(
+        "/v4/profile",
+        200,
+        json!({"profile": {"static": [], "dynamic": []}}),
+    );
+    supermemory
+        .recall(&caller(), &format!("my key is {secret} keep it"))
+        .await
+        .unwrap();
+    let query = egress.requests_to("/v4/profile")[0].body.to_string();
+    assert!(!query.contains(secret), "{query}");
+
+    egress.respond("/v3/documents", 200, json!({"id": "d", "status": "queued"}));
+    supermemory
+        .capture(&caller(), "t", &format!("store {secret}"), "done")
+        .await
+        .unwrap();
+    let body = egress.requests_to("/v3/documents")[0].body.to_string();
+    assert!(!body.contains(secret), "{body}");
 }

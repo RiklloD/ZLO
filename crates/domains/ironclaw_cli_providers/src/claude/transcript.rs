@@ -143,6 +143,12 @@ pub(super) fn message(v: &Value) -> Option<HistoryMessage> {
             // Text blocks join with a blank line, as the live stream does.
             Some("text") => {
                 let block = b["text"].as_str().unwrap_or_default();
+                // The memories ZLO recalled for the message, not its words.
+                if role == HistoryRole::User
+                    && block.trim_start().starts_with(crate::RECALLED_MEMORY_OPEN)
+                {
+                    continue;
+                }
                 if !text.is_empty() && !block.is_empty() {
                     text.push_str("\n\n");
                 }
@@ -273,6 +279,44 @@ fn entry(role: HistoryRole, text: String, tool_calls: Vec<String>) -> HistoryMes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_recalled_memory_block_rides_the_prompt_but_not_the_transcript() {
+        let ironclaw_input = ironclaw_orchestrator::runtime::TurnInput {
+            text: "where is the key?".into(),
+            memory: Some(ironclaw_orchestrator::runtime::RecalledMemory {
+                guidance: "g".into(),
+                recalled: Some("Untrusted memory content: it is in 1Password".into()),
+            }),
+            origin: ironclaw_orchestrator::runtime::TurnOrigin::UserPrompt,
+            model: None,
+            goal: None,
+            effort: None,
+            profile: None,
+            files: Vec::new(),
+            work_dir: None,
+        };
+        let block = crate::recalled_block(&ironclaw_input).unwrap();
+        let frame =
+            super::super::control::prompt_with_recalled("run-1", "where is the key?", Some(&block))
+                .await;
+        let sent: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        let content = sent["message"]["content"].as_array().unwrap();
+        assert!(
+            content[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("in 1Password")
+        );
+        assert_eq!(content.last().unwrap()["text"], "where is the key?");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        tokio::fs::write(&path, &frame).await.unwrap();
+        let rows = read(&path, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text, "where is the key?", "the person's words only");
+    }
 
     #[tokio::test]
     async fn rows_carry_the_run_of_the_prompt_before_them() {

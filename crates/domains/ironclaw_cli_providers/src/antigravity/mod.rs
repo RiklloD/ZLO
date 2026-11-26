@@ -1180,9 +1180,21 @@ impl Turn {
     /// for a native command (`/goal ...`), which must lead the prompt.
     fn prompt_text(&self, agent: AgentTraits, recap: Option<&str>) -> String {
         if !self.carries_inline(agent) {
-            return self.text.clone();
+            // Recalled memory is user-channel data even for an agent that
+            // takes the notes in its system prompt; a native command keeps
+            // the lead.
+            return match self.context.recalled.as_deref() {
+                Some(recalled) if !self.text.trim_start().starts_with('/') => {
+                    crate::with_context(&self.text, Some(recalled))
+                }
+                _ => self.text.clone(),
+            };
         }
-        let context = crate::join_notes([recap.map(str::to_string), self.context.inline.clone()]);
+        let context = crate::join_notes([
+            recap.map(str::to_string),
+            self.context.inline.clone(),
+            self.context.recalled.clone(),
+        ]);
         crate::with_context(&self.text, context.as_deref())
     }
 
@@ -1787,7 +1799,7 @@ impl TurnRuntime for AntigravityRuntime {
         };
         let mut thread = thread.clone();
         if input.model.is_some() {
-            thread.model = input.model;
+            thread.model = input.model.clone();
         }
         let listed = self
             .skills
@@ -1798,8 +1810,10 @@ impl TurnRuntime for AntigravityRuntime {
             &thread.thread_id,
             listed.profile.as_ref(),
             listed.requested.as_deref(),
-            (input.goal.as_deref(), input.memory.as_deref()),
+            (input.goal.as_deref(), crate::memory_guidance(&input)),
         );
+        let mut context = context;
+        context.recalled = crate::recalled_block(&input);
         // Typed by the person, or their own queued message going out.
         let attended = matches!(
             input.origin,

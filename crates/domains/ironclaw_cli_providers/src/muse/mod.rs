@@ -1308,11 +1308,7 @@ impl TurnRuntime for MuseRuntime {
         let turn = crate::context_meter::Notes::default()
             .instructions(listed.requested)
             .then(crate::input_notes(&input));
-        let context = session
-            .clone()
-            .unwrap_or_default()
-            .then(turn.clone())
-            .text();
+        let context = crate::prompt_context(session.as_ref(), &turn, &input);
         // Recorded once Muse took the prompt: a failed launch keeps the
         // thread's earlier record.
         let delivery = self

@@ -233,7 +233,10 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
         // The second turn carries the thread's goal and recalled memory.
         let mut turn = input();
         turn.goal = (n == 2).then(|| "Ship stage 5".to_string());
-        turn.memory = (n == 2).then(|| "Recalled: the deploy key is in 1Password".to_string());
+        turn.memory = (n == 2).then(|| RecalledMemory {
+            guidance: "Supermemory guidance".into(),
+            recalled: Some("Recalled: the deploy key is in 1Password".into()),
+        });
         let admission = rt.start_turn(&thread, turn).await.unwrap();
         assert!(matches!(
             admission,
@@ -267,10 +270,12 @@ async fn turns_start_then_resume_fail_closed_and_report_telemetry() {
     assert!(
         lines[1].contains("--append-system-prompt")
             && lines[1].contains("Ship stage 5")
-            && lines[1].contains("Recalled: the deploy key is in 1Password"),
+            && lines[1].contains("Supermemory guidance"),
         "{}",
         lines[1]
     );
+    // Recalled memories are data: never in the system prompt.
+    assert!(!lines[1].contains("deploy key"), "{}", lines[1]);
     for line in &lines {
         assert!(line.starts_with("entrypoint=ironclaw "), "{line}");
         assert!(line.contains("--tools  --strict-mcp-config"), "{line}");

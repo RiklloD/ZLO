@@ -43,7 +43,7 @@ pub(crate) struct FakeRuntime {
     /// The runtime's session lock, held through every steer.
     pub(crate) session: Arc<tokio::sync::Mutex<()>>,
     /// Each started turn's recalled memory (`TurnInput::memory`).
-    pub(crate) memories: Mutex<Vec<Option<String>>>,
+    pub(crate) memories: Mutex<Vec<Option<RecalledMemory>>>,
 }
 
 impl FakeRuntime {
@@ -2131,9 +2131,12 @@ async fn cli_turns_get_recalled_memory_and_their_exchange_is_captured() {
     }
     #[async_trait]
     impl TurnMemory for Memory {
-        async fn recall(&self, _thread: &ThreadRecord, text: &str) -> Option<String> {
+        async fn recall(&self, _thread: &ThreadRecord, text: &str) -> Option<RecalledMemory> {
             self.recalled.lock().unwrap().push(text.to_string());
-            Some(format!("recalled for: {text}"))
+            Some(RecalledMemory {
+                guidance: "guidance".into(),
+                recalled: Some(format!("recalled for: {text}")),
+            })
         }
         async fn capture(&self, thread: &ThreadRecord, asked: &str, answer: &str) {
             self.captured.lock().unwrap().push((
@@ -2168,8 +2171,8 @@ async fn cli_turns_get_recalled_memory_and_their_exchange_is_captured() {
             .last()
             .cloned()
             .flatten()
-            .as_deref(),
-        Some("recalled for: where is the deploy key?")
+            .and_then(|memory| memory.recalled),
+        Some("recalled for: where is the deploy key?".to_string())
     );
     finish(
         &h.engine,
@@ -2215,7 +2218,12 @@ async fn cli_turns_get_recalled_memory_and_their_exchange_is_captured() {
         .deliver(&t, "try again".into(), TurnOrigin::UserPrompt, false)
         .await
         .unwrap();
-    finish(&h.engine, &t, TurnOutcome::ended(TurnEndStatus::Failed, None)).await;
+    finish(
+        &h.engine,
+        &t,
+        TurnOutcome::ended(TurnEndStatus::Failed, None),
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(memory.captured.lock().unwrap().len(), 1);
 }

@@ -16,14 +16,17 @@ use async_trait::async_trait;
 use ironclaw_host_api::ids::ThreadId;
 
 use crate::model::ThreadRecord;
-use crate::runtime::TurnOrigin;
+use crate::runtime::{RecalledMemory, TurnOrigin};
+
+/// Longest a recall may hold up a turn's start.
+const RECALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The host's memory for CLI turns.
 #[async_trait]
 pub trait TurnMemory: Send + Sync {
-    /// Context for a turn about to start on `thread` with `text`, ready to
-    /// put in front of the agent; `None` when there is nothing to add.
-    async fn recall(&self, thread: &ThreadRecord, text: &str) -> Option<String>;
+    /// Memory for a turn about to start on `thread` with the person's
+    /// `text`; `None` when there is nothing to add.
+    async fn recall(&self, thread: &ThreadRecord, text: &str) -> Option<RecalledMemory>;
 
     /// A completed turn: what was asked and what the agent answered.
     async fn capture(&self, thread: &ThreadRecord, asked: &str, answer: &str);
@@ -37,14 +40,17 @@ pub(crate) struct TurnMemoryHooks {
     asked: Mutex<HashMap<ThreadId, (Option<String>, String)>>,
 }
 
-/// Turns whose text is the person's (or a delegating agent's brief): the
-/// engine's own scaffolding (result deliveries, handoffs, auto-continue) is
-/// neither recalled for nor remembered.
-fn remembered(origin: TurnOrigin) -> bool {
-    matches!(
-        origin,
-        TurnOrigin::UserPrompt | TurnOrigin::QueueDrain | TurnOrigin::DelegatedBrief
-    )
+/// The person's own words in a turn's text, when the turn is theirs: a
+/// typed or queued message, without a context handoff another thread's
+/// transcript was prepended as. The engine's own text (delegation briefs,
+/// result deliveries, handoffs, auto-continue) is neither recalled for nor
+/// remembered.
+fn own_words(text: &str, origin: TurnOrigin) -> Option<&str> {
+    if !matches!(origin, TurnOrigin::UserPrompt | TurnOrigin::QueueDrain) {
+        return None;
+    }
+    let words = crate::handoff::strip_context(text).unwrap_or(text).trim();
+    (!words.is_empty()).then_some(words)
 }
 
 impl TurnMemoryHooks {
@@ -57,16 +63,22 @@ impl TurnMemoryHooks {
         let _ = self.source.set(source);
     }
 
+    /// Bounded by [`RECALL_TIMEOUT`]: a slow memory never holds a turn.
     pub(crate) async fn recall(
         &self,
         thread: &ThreadRecord,
         text: &str,
         origin: TurnOrigin,
-    ) -> Option<String> {
-        if !remembered(origin) {
-            return None;
+    ) -> Option<RecalledMemory> {
+        let words = own_words(text, origin)?;
+        let source = self.source.get()?;
+        match tokio::time::timeout(RECALL_TIMEOUT, source.recall(thread, words)).await {
+            Ok(memory) => memory,
+            Err(_elapsed) => {
+                tracing::debug!(thread = %thread.thread_id, "memory recall timed out; turn runs without it");
+                None // silent-ok: recall is additive context, the turn still runs
+            }
         }
-        self.source.get()?.recall(thread, text).await
     }
 
     /// `run_id` started with `text`: capture it when it completes.
@@ -77,13 +89,16 @@ impl TurnMemoryHooks {
         text: &str,
         origin: TurnOrigin,
     ) {
-        if self.source.get().is_none() || !remembered(origin) {
+        if self.source.get().is_none() {
             return;
         }
+        let Some(words) = own_words(text, origin) else {
+            return;
+        };
         if let Ok(mut asked) = self.asked.lock() {
             asked.insert(
                 thread.clone(),
-                (run_id.map(str::to_string), text.to_string()),
+                (run_id.map(str::to_string), words.to_string()),
             );
         }
     }
@@ -122,8 +137,8 @@ mod tests {
 
     #[async_trait]
     impl TurnMemory for Nothing {
-        async fn recall(&self, _: &ThreadRecord, _: &str) -> Option<String> {
-            Some("recalled".into())
+        async fn recall(&self, _: &ThreadRecord, _: &str) -> Option<RecalledMemory> {
+            None
         }
         async fn capture(&self, _: &ThreadRecord, _: &str, _: &str) {}
     }
@@ -147,5 +162,14 @@ mod tests {
             hooks.take(&thread, Some("r3")).is_none(),
             "scaffolding is not remembered"
         );
+        hooks.started(&thread, Some("r4"), "brief", TurnOrigin::DelegatedBrief);
+        assert!(
+            hooks.take(&thread, Some("r4")).is_none(),
+            "a brief is the engine's text"
+        );
+        let handed =
+            "Context handoff (a). their transcript\n\n[End of context handoff]\n\n---\n\nmy words";
+        hooks.started(&thread, Some("r5"), handed, TurnOrigin::UserPrompt);
+        assert_eq!(hooks.take(&thread, Some("r5")).as_deref(), Some("my words"));
     }
 }

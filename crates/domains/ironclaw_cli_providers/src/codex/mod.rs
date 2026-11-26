@@ -318,6 +318,7 @@ impl CodexRuntime {
             kind,
             skills: Arc::clone(&self.skills),
             skill_reads: std::sync::Mutex::new(self.skills.watch(&thread.thread_id)),
+            route_granted: AtomicBool::new(false),
         };
         let idle = compact::IdleArm::new(self, thread);
         let bridge = self.bridge.clone();
@@ -572,6 +573,9 @@ struct Turn {
     skills: Arc<crate::skill_listing::CliSkills>,
     /// Which shown skills' SKILL.md this turn read.
     skill_reads: std::sync::Mutex<crate::skill_listing::SkillReadWatch>,
+    /// This turn registered ZLO's route with Codex (a token was minted and
+    /// sent): only then is a tool-call ask from `ironclaw` ZLO's own.
+    route_granted: AtomicBool,
 }
 
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
@@ -681,6 +685,7 @@ impl Turn {
         // The bridge's tools (orchestrator, history, memory, computer use)
         // for this turn only: revoked when `drive` returns.
         let mcp = TurnMcpToken::mint(self.bridge.as_ref(), &self.thread_id, &self.run_id);
+        self.route_granted.store(mcp.is_some(), Ordering::SeqCst);
         let codex_thread = match self.open(&client, &mut fold, mcp.as_ref()).await {
             Ok(id) => id,
             Err(error) => return (open_failed(&error), None),
@@ -934,7 +939,7 @@ impl Turn {
     /// Server requests: approvals go through the shared seam; everything a
     /// person would have to answer mid-turn is declined.
     fn answer_request(&self, client: &RpcClient, id: Value, method: &str, params: &Value) {
-        if own_tool_call(method, params) {
+        if self.route_granted.load(Ordering::SeqCst) && own_tool_call(method, params) {
             let sent = client.respond(&id, json!({"action": "accept", "content": {}}));
             if let Err(error) = sent {
                 tracing::debug!(error = %error.label(), "codex: tool-call approval not sent");
@@ -1287,11 +1292,7 @@ impl TurnRuntime for CodexRuntime {
         let turn = crate::context_meter::Notes::default()
             .instructions(listed.requested)
             .then(crate::input_notes(&input));
-        let context = session
-            .clone()
-            .unwrap_or_default()
-            .then(turn.clone())
-            .text();
+        let context = crate::prompt_context(session.as_ref(), &turn, &input);
         // Recorded once Codex took the prompt: a failed launch keeps the
         // thread's earlier record.
         let delivery = self

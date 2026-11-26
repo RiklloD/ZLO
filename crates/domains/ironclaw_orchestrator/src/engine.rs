@@ -526,6 +526,10 @@ impl Engine {
         respect_hold: bool,
         files: Vec<std::path::PathBuf>,
     ) -> Result<bool> {
+        // Recall before the engine-wide lock: a slow memory never holds up
+        // another thread's start or Stop. Skipped for a thread that is busy
+        // now (the queue retries it every tick).
+        let memory = self.recall_for(thread_id, &text, origin).await;
         let _guard = self.dispatch.lock().await;
         if respect_hold && self.store.hold(thread_id).await?.is_some() {
             return Ok(false);
@@ -566,11 +570,7 @@ impl Engine {
             .await?
             .filter(|g| g.status == ironclaw_product_contracts::inbox::GoalStatus::Active)
             .map(|g| g.objective);
-        let memory = if maintenance {
-            None
-        } else {
-            self.turn_memory.recall(&thread, &text, origin).await
-        };
+        let memory = memory.filter(|_| !maintenance);
         let asked = text.clone();
         let admission = runtime
             .start_turn(
@@ -612,6 +612,28 @@ impl Engine {
             TurnAdmission::Steered { .. } => Ok(true),
             TurnAdmission::Busy => Ok(false),
         }
+    }
+
+    /// [`crate::turn_memory::TurnMemoryHooks::recall`] for a thread that
+    /// could start a turn now.
+    async fn recall_for(
+        &self,
+        thread_id: &ThreadId,
+        text: &str,
+        origin: TurnOrigin,
+    ) -> Option<crate::runtime::RecalledMemory> {
+        if is_maintenance_prompt(text) {
+            return None;
+        }
+        let thread = match self.store.thread(thread_id).await {
+            Ok(Some(thread)) if !thread.is_running() => thread,
+            Ok(_) => return None,
+            Err(error) => {
+                tracing::debug!(%error, "memory recall skipped: thread unreadable");
+                return None; // silent-ok: the turn's own admission reads the thread again
+            }
+        };
+        self.turn_memory.recall(&thread, text, origin).await
     }
 
     async fn mark_running(

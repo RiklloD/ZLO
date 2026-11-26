@@ -292,10 +292,26 @@ impl Supermemory {
         let Some(active) = self.active(caller).await? else {
             return Ok(false);
         };
-        let Some(turn) = CapturedTurn::new(thread_key, user, assistant) else {
+        let Some(mut turn) = CapturedTurn::new(thread_key, user, assistant) else {
             return Ok(false);
         };
-        let mut turns = std::mem::take(&mut *self.pending_lock());
+        // Retries go only to the account and container they were captured
+        // for: another caller's pending turns stay pending for it.
+        let owner = format!(
+            "{}/{}/{}",
+            caller.tenant_id.as_str(),
+            caller.user_id.as_str(),
+            active.primary.as_str()
+        );
+        turn.owner = owner.clone();
+        let mut turns = {
+            let mut pending = self.pending_lock();
+            let (mine, others): (Vec<_>, Vec<_>) = std::mem::take(&mut *pending)
+                .into_iter()
+                .partition(|turn| turn.owner == owner);
+            *pending = others;
+            mine
+        };
         turns.push(turn);
         let mut threads: Vec<String> = Vec::new();
         for turn in &turns {

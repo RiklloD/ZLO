@@ -534,7 +534,10 @@ async fn a_turn_gets_the_bridge_route_and_only_its_tool_calls_are_allowed() {
     let mut rx = bridge.subscribe();
 
     let mut turn = input();
-    turn.memory = Some("Recalled: the deploy key is in 1Password".into());
+    turn.memory = Some(RecalledMemory {
+        guidance: "Supermemory guidance".into(),
+        recalled: Some("Recalled: the deploy key is in 1Password".into()),
+    });
     rt.start_turn(&thread, turn).await.unwrap();
     events_until_end(&mut rx).await;
 
@@ -571,4 +574,34 @@ async fn a_turn_gets_the_bridge_route_and_only_its_tool_calls_are_allowed() {
     // Another server's ask is not waved through: it stays the person's
     // question (unanswered here, so not accepted).
     assert!(!answer("el-2").contains(r#""action":"accept""#));
+}
+
+#[tokio::test]
+async fn without_a_route_this_turn_an_ironclaw_named_server_is_not_waved_through() {
+    // The bridge has no URL yet: no token, no override. A server the person
+    // configured under the same name must not get an automatic yes.
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let rt = runtime(dir.path(), &recorder, Arc::clone(&bridge));
+    let body = CODEX_MCP.replace(
+        "__LOG__",
+        &dir.path().join("codex.log").display().to_string(),
+    );
+    std::fs::write(dir.path().join("codex"), body).unwrap();
+    let thread = thread(&rt).await;
+    let mut rx = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    events_until_end(&mut rx).await;
+
+    let log = log(dir.path());
+    assert!(
+        !log.contains("mcp_servers.ironclaw"),
+        "no override without a route"
+    );
+    let el1 = log
+        .lines()
+        .find(|l| l.contains(r#""id":"el-1""#) && !l.contains("method"))
+        .unwrap_or_else(|| panic!("el-1 answered: {log}"));
+    assert!(!el1.contains(r#""action":"accept""#), "{el1}");
 }

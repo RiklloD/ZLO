@@ -102,13 +102,49 @@ pub(crate) fn goal_notes(goal: Option<&str>) -> Notes {
     Notes::default().instructions(goal.map(goal_note))
 }
 
-/// [`turn_notes`] for a turn's input.
+/// [`turn_notes`] for a turn's input: the goal and the memory's guidance.
 pub(crate) fn input_notes(input: &ironclaw_orchestrator::runtime::TurnInput) -> Notes {
-    turn_notes(input.goal.as_deref(), input.memory.as_deref())
+    turn_notes(input.goal.as_deref(), memory_guidance(input))
+}
+
+/// The host-authored half of a turn's memory (a note beside the goal).
+pub(crate) fn memory_guidance(input: &ironclaw_orchestrator::runtime::TurnInput) -> Option<&str> {
+    input.memory.as_ref().map(|memory| memory.guidance.as_str())
+}
+
+/// What an agent without a system prompt gets ahead of its prompt: the
+/// session notes (first turn), this turn's notes, then the recalled memory.
+pub(crate) fn prompt_context(
+    session: Option<&Notes>,
+    turn: &Notes,
+    input: &ironclaw_orchestrator::runtime::TurnInput,
+) -> Option<String> {
+    join_notes([
+        session
+            .cloned()
+            .unwrap_or_default()
+            .then(turn.clone())
+            .text(),
+        recalled_block(input),
+    ])
+}
+
+/// Opens the block of recalled memories a prompt carries; transcripts drop
+/// it, so the person's message reads as they typed it.
+pub(crate) const RECALLED_MEMORY_OPEN: &str = "<zlo-recalled-memory>";
+const RECALLED_MEMORY_CLOSE: &str = "</zlo-recalled-memory>";
+
+/// The recalled half of a turn's memory, fenced, for the user channel only
+/// (it is retrieved data: never a system prompt).
+pub(crate) fn recalled_block(input: &ironclaw_orchestrator::runtime::TurnInput) -> Option<String> {
+    let recalled = input.memory.as_ref()?.recalled.as_deref()?.trim();
+    (!recalled.is_empty())
+        .then(|| format!("{RECALLED_MEMORY_OPEN}\n{recalled}\n{RECALLED_MEMORY_CLOSE}"))
 }
 
 /// What every turn carries beside its prompt: the goal, then the long-term
-/// memory recalled for this message (`TurnInput::memory`).
+/// memory's guidance (`TurnInput::memory`; the recalled text itself rides
+/// the prompt, [`recalled_block`]).
 pub(crate) fn turn_notes(goal: Option<&str>, memory: Option<&str>) -> Notes {
     goal_notes(goal).instructions(
         memory

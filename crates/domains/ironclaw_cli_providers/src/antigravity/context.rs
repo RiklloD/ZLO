@@ -75,6 +75,9 @@ pub(super) struct TurnContext {
     /// them (the agent holds the session notes either way).
     pub(super) session: Notes,
     pub(super) turn: Notes,
+    /// The recalled memories, fenced: ahead of the prompt text only, never
+    /// in the system prompt.
+    pub(super) recalled: Option<String>,
 }
 
 impl TurnContext {
@@ -110,6 +113,7 @@ impl TurnContext {
             ticket,
             session: notes,
             turn,
+            recalled: None,
         }
     }
 

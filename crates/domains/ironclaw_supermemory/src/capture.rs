@@ -28,6 +28,9 @@ pub struct CapturedTurn {
     pub thread_key: String,
     pub user: String,
     pub assistant: String,
+    /// Whose account and container the turn belongs to (tenant, user,
+    /// primary container): a retry is only ever written there.
+    pub(crate) owner: String,
 }
 
 impl CapturedTurn {
@@ -39,6 +42,7 @@ impl CapturedTurn {
             thread_key: thread_key.into(),
             user,
             assistant,
+            owner: String::new(),
         })
     }
 
@@ -57,11 +61,16 @@ impl CapturedTurn {
     }
 }
 
-/// Remove `<supermemory-context>` / `<supermemory-containers>` blocks and
-/// replace `data:<mime>;base64,...` runs with `[image]`.
+/// Remove `<supermemory-context>` / `<supermemory-containers>` blocks,
+/// replace `data:<mime>;base64,...` runs with `[image]`, and redact
+/// credentials: a key typed into a conversation is never stored remotely.
 pub(crate) fn clean_for_capture(text: &str) -> String {
     let without_blocks = strip_injected_blocks(text);
-    replace_data_uris(&without_blocks).trim().to_string()
+    let without_images = replace_data_uris(&without_blocks);
+    ironclaw_safety::redact_model_input_text(without_images.trim())
+        .into_text()
+        .trim()
+        .to_string()
 }
 
 fn strip_injected_blocks(text: &str) -> String {

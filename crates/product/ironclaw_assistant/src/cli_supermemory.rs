@@ -1,7 +1,7 @@
 //! Supermemory for CLI-agent threads (Claude Code, Codex, Antigravity,
 //! Muse), as IronClaw's own loop has it: recall before each of the person's
 //! turns ([`TurnMemory::recall`], rendered by
-//! [`ironclaw_supermemory::cli_recall_note`]), capture of each completed
+//! [`ironclaw_supermemory::cli_recall_parts`]), capture of each completed
 //! exchange, and the `supermemory_search` / `supermemory_write` tools on the
 //! bridge's MCP route (`memory_bridge.rs`).
 //!
@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ironclaw_orchestrator::model::ThreadRecord;
+use ironclaw_orchestrator::runtime::RecalledMemory;
 use ironclaw_orchestrator::turn_memory::TurnMemory;
 use ironclaw_supermemory::{Supermemory, SupermemoryCaller};
 
@@ -49,12 +50,15 @@ fn native(thread: &ThreadRecord) -> bool {
 
 #[async_trait]
 impl TurnMemory for CliSupermemory {
-    async fn recall(&self, thread: &ThreadRecord, text: &str) -> Option<String> {
+    async fn recall(&self, thread: &ThreadRecord, text: &str) -> Option<RecalledMemory> {
         if native(thread) {
             return None;
         }
         match self.supermemory.recall(&thread_caller(thread), text).await {
-            Ok(Some(recall)) => Some(ironclaw_supermemory::cli_recall_note(&recall)),
+            Ok(Some(recall)) => {
+                let (guidance, recalled) = ironclaw_supermemory::cli_recall_parts(&recall);
+                Some(RecalledMemory { guidance, recalled })
+            }
             Ok(None) => None,
             Err(error) => {
                 tracing::debug!(

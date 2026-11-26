@@ -246,6 +246,7 @@ impl IdleArm {
             goal: self.goal.as_deref(),
             // A compaction is not the person's message: nothing is recalled.
             memory: None,
+            recalled: None,
             effort: self.effort.as_deref(),
             profile: self.profile.as_ref(),
             settings: self.settings.as_deref(),
