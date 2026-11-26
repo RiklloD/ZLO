@@ -138,7 +138,7 @@ fn pump(
 /// Start `command` under a login shell in its own process group, so Stop
 /// ends whatever it spawned too.
 fn spawn(command: &str, dir: &Path) -> Result<(u32, mpsc::Receiver<Msg>), String> {
-    let mut child = Command::new("/bin/zsh")
+    let mut child = Command::new(crate::system::script_shell().program)
         .arg("-lc")
         .arg(command)
         .current_dir(dir)

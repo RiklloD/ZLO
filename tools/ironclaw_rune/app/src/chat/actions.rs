@@ -228,11 +228,11 @@ pub(crate) fn open_fetched<Fut>(
     );
 }
 
-/// Hand `path` to macOS, which opens it in its default app. Only for files
-/// on this Mac (downloads, this Mac's backend); a path the backend names
-/// goes through [`open_backend_file`].
+/// Hand `path` to the system, which opens it in its default app. Only for
+/// files on this computer (downloads, this computer's backend); a path the
+/// backend names goes through [`open_backend_file`].
 pub fn open_with_system(path: &Path) {
-    if let Err(e) = std::process::Command::new("open").arg(path).spawn() {
+    if let Err(e) = crate::system::open(path) {
         tracing::warn!(error = %e, path = %path.display(), "couldn't open the file");
     }
 }
@@ -248,7 +248,7 @@ pub fn open_backend_file(s: &State, path: &Path) {
         tracing::debug!(path = %path.display(), "remote file has no editor route");
         return;
     };
-    if let Err(e) = std::process::Command::new("open").arg(&url).spawn() {
+    if let Err(e) = crate::system::open(&url) {
         tracing::warn!(error = %e, "couldn't open the editor over SSH");
     }
 }

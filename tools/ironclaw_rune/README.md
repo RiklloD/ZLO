@@ -1,10 +1,11 @@
 # ZLO desktop app (Rune)
 
-The native macOS window onto the IronClaw gateway: `app/` is the binary `zlo`
-(package `ironclaw_rune`), `client/` the UI-free gateway client
-(`zlo_client`). It is its own cargo workspace; `Cargo.toml` says how it is
-built against a pinned rev of upstream Rune and `bundle.sh` builds `ZLO.app`.
-Feature notes live in `docs/`.
+The native window onto the IronClaw gateway, for macOS and Linux: `app/` is
+the binary `zlo` (package `ironclaw_rune`), `client/` the UI-free gateway
+client (`zlo_client`). It is its own cargo workspace; `Cargo.toml` says how
+it is built against a pinned rev of upstream Rune. `bundle.sh` builds
+`ZLO.app` on macOS and `install-linux.sh` installs it on Linux. Feature notes
+live in `docs/`.
 
 ## How the app is put together
 
@@ -47,6 +48,42 @@ handler and every async landing, and handlers mutate the root `State`
    `zlo --snap out.png --scene NAME --size 1280x820` (add `--tree` for the
    element tree) and look at the PNG. Interactions that matter get a unit
    test over `rune::Runtime` (`app/src/workspace/shell.rs` has the pattern).
+
+8. **Two platforms.** Every change compiles and passes its tests on macOS
+   and Linux: `sh linux-check.sh` runs the Linux side (natively on Linux, in
+   a Docker container elsewhere). Platform differences live behind small
+   seams, never scattered `cfg`s: `app/src/system.rs` (opening files and
+   links, the shell, the computer's name, programs on the PATH, the
+   shortcut key), `native_view` (`mac.rs` / `none.rs`), and macOS-only
+   modules gated whole (voice, SnapShots, permissions, notifications'
+   AppKit side). Shortcuts are written `mod+…` (⌘ on macOS, Ctrl on Linux),
+   never `cmd+…`, which Rune reads as the Super key on Linux.
+
+## Linux
+
+`sh install-linux.sh` builds the backend and the app and installs them for
+this user (`~/.local/share/zlo/app`, an app-menu entry, `zlo-desktop` on the
+PATH); `--light` installs the window only, for a backend on another
+computer. The header of `install-linux.sh` lists the packages it needs.
+
+What differs from macOS:
+
+| Feature | On Linux |
+|---|---|
+| Chats, settings, remote computers, files, git, console | Same |
+| Shortcuts | Ctrl where macOS uses ⌘ |
+| Device tokens of paired computers | `~/.config/ZLO/device-tokens.json`, mode 0600 (no Keychain) |
+| Notifications | `notify-send` (libnotify); clicking one does not open the thread |
+| Open at login | `~/.config/autostart/zlo.desktop` |
+| Open in | the editors' commands (`code`, `cursor`, `zed`, …), the file manager, a terminal |
+| Browser tab | pages open in the system browser |
+| File previews (PDF, Office, media) | not drawn in the window; open them in their app |
+| Voice, SnapShots, computer use | not available (macOS frameworks) |
+| Window | the window manager draws the title bar; no traffic-light gap |
+
+Headless renders (`cargo run -p ironclaw_rune -- --snap …`; Rune keeps `--snap` out of release builds) work without a display through Mesa's
+software Vulkan (`mesa-vulkan-drivers`), so an agent on a Linux box can look
+at the UI it changes.
 
 ## Manual checks (cannot run headless)
 

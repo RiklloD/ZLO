@@ -166,6 +166,11 @@ fn refresh_servers(
     folder: std::path::PathBuf,
     generation: jobs::Generation,
 ) {
+    // Fixtures (tests, headless scenes) own their server rows; a real scan
+    // of this machine's listeners would replace them mid-run.
+    if cfg!(test) || s.fixture {
+        return;
+    }
     jobs::blocking(
         s,
         move || servers::discover(&folder),

@@ -327,10 +327,7 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// stopped, with its group, and counts as not found.
 fn binary_on_login_path(binary: &str) -> bool {
     use std::os::unix::process::CommandExt as _;
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|s| s.starts_with('/'))
-        .unwrap_or_else(|| "/bin/zsh".to_string());
+    let shell = crate::system::login_shell();
     let Ok(mut child) = Command::new(&shell)
         .args(["-lc", &format!("command -v {binary}")])
         .stdin(Stdio::null())
@@ -413,7 +410,7 @@ enum Exit {
 /// The shell line run: fail when any stage of the `curl … | bash` pipe
 /// fails (a download error must not read as a clean install).
 fn shell_line(command: &str) -> String {
-    format!("setopt pipefail; {command}")
+    format!("{}{command}", crate::system::script_shell().pipefail)
 }
 
 fn run_installer(
@@ -439,7 +436,7 @@ fn run_installer(
     if live.quitting {
         return Exit::Stopped;
     }
-    let spawned = Command::new("/bin/zsh")
+    let spawned = Command::new(crate::system::script_shell().program)
         .args(["-lc", &shell_line(command)])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1504,7 +1501,7 @@ mod tests {
     fn a_failed_download_fails_the_pipe() {
         // `curl | bash` with curl failing: bash reads nothing and exits 0,
         // and only pipefail makes the line fail.
-        let status = Command::new("/bin/zsh")
+        let status = Command::new(crate::system::script_shell().program)
             .args(["-fc", &shell_line("false | cat")])
             .status()
             .unwrap();

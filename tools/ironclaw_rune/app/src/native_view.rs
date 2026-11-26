@@ -43,18 +43,28 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use objc2::msg_send;
-use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject};
-use raw_window_handle::RawWindowHandle;
 use rune::{El, Spring, Tx, el};
 
 use crate::state::State;
 
+// The views themselves: AppKit on macOS; elsewhere none is ever made, so the
+// pane shows its fallbacks (`shows_natively` is false, the Browser tab opens
+// pages in the system browser).
+#[cfg(target_os = "macos")]
 mod appkit;
+#[cfg(target_os = "macos")]
 mod input;
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(not(target_os = "macos"))]
+mod none;
+#[cfg(target_os = "macos")]
 mod observe;
-use appkit::{CGPoint, CGRect, CGSize, file_url, new_look_view, new_web_view, ns_string, string};
+#[cfg(target_os = "macos")]
+use mac as platform;
+#[cfg(not(target_os = "macos"))]
+use none as platform;
+use platform::Surface;
 
 /// Added to a timed wake so it lands after its deadline, never a hair
 /// before (the poll it runs would find nothing due and ask for no other).
@@ -205,8 +215,20 @@ fn is_web_file(path: &Path) -> bool {
     matches!(ext(path).as_str(), "html" | "htm" | "xhtml")
 }
 
-/// Files the pane shows natively instead of as text or an image.
+/// Whether native views exist on this system (AppKit on macOS). Without
+/// them the Browser tab hands pages to the system browser.
+pub fn available() -> bool {
+    platform::AVAILABLE
+}
+
+/// Files the pane shows natively instead of as text or an image. None
+/// where there are no native views (`platform::AVAILABLE`).
 pub fn shows_natively(path: &Path) -> bool {
+    platform::AVAILABLE && has_native_engine(path)
+}
+
+/// Files a native view (QuickLook or WebKit) can show.
+fn has_native_engine(path: &Path) -> bool {
     is_web_file(path)
         || matches!(
             ext(path).as_str(),
@@ -252,19 +274,13 @@ pub fn surface(slot: Slot) -> El {
 /// Keep the window's content view; called on every native window creation
 /// (`App::on_window`). A new window drops views made for the old one.
 pub fn on_window(window: &rune::WindowHandle) {
-    let view = window.with_raw_handle(|handle| match handle.as_raw() {
-        RawWindowHandle::AppKit(h) => unsafe {
-            Retained::retain(h.ns_view.as_ptr().cast::<AnyObject>())
-        },
-        _ => None,
-    });
-    match view {
+    match platform::host_of(window) {
         Ok(Some(view)) => {
             for slot in Slot::ALL {
                 close_view(slot);
             }
             HOST.with(|h| *h.borrow_mut() = Some(view));
-            input::install_monitor();
+            platform::install_input_monitor();
         }
         Ok(None) => {}
         Err(e) => tracing::debug!(error = %e, "no native window handle for previews"),
@@ -275,7 +291,7 @@ pub fn on_window(window: &rune::WindowHandle) {
 /// ask for the one wake time alone calls for; call before every frame from
 /// the app's `poll`.
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
-    observe::keep_waker(&s.rt.handle);
+    platform::keep_waker(&s.rt.handle);
     reconcile(s);
     if let Some(at) = unasked_wake(s) {
         tx.wake_after(at.saturating_duration_since(Instant::now()) + WAKE_PAD);
@@ -317,22 +333,7 @@ fn reconcile(s: &State) {
 /// Whether a view coming into sight fades in: not under reduced motion
 /// (Settings, the battery saver, or the system's setting).
 fn fades(s: &State) -> bool {
-    !crate::design::battery::reduced(&s.prefs, &s.look.battery, system_reduced_motion())
-}
-
-/// macOS's Reduce motion setting.
-fn system_reduced_motion() -> bool {
-    let Some(cls) = AnyClass::get(c"NSWorkspace") else {
-        return false;
-    };
-    // SAFETY: a class method and a BOOL property read on the main thread.
-    unsafe {
-        let ws: *mut AnyObject = msg_send![cls, sharedWorkspace];
-        if ws.is_null() {
-            return false;
-        }
-        msg_send![ws, accessibilityDisplayShouldReduceMotion]
-    }
+    !crate::design::battery::reduced(&s.prefs, &s.look.battery, platform::system_reduced_motion())
 }
 
 /// The next moment the plan changes with no state change behind it, so no
@@ -345,7 +346,7 @@ fn next_change(s: &State) -> Option<Instant> {
     }
     let hidden = SURFACES.with(|cell| {
         let all = cell.borrow();
-        Slot::ALL.map(|slot| all[slot as usize].as_ref().and_then(|s| s.hidden))
+        Slot::ALL.map(|slot| all[slot as usize].as_ref().and_then(Surface::hidden_since))
     });
     [
         idle_end(hidden),
@@ -375,7 +376,7 @@ fn unasked_wake(s: &State) -> Option<Instant> {
 /// for (the person pressed Enter on it again).
 pub fn load(slot: Slot, source: &Source) {
     with(slot, |s| {
-        if let Some(s) = s.filter(|s| s.engine == source.engine()) {
+        if let Some(s) = s.filter(|s| s.engine() == source.engine()) {
             s.load(source);
         }
     });
@@ -419,7 +420,7 @@ pub enum PageChange {
 /// observer noticed), and so whether to read it now or after a moment:
 /// reads are capped at four a second (`observe.rs`). Call from the poll.
 pub fn take_page_change(now: Instant) -> PageChange {
-    observe::take(now)
+    platform::take_page_change(now)
 }
 
 /// Reload `source` if it is showing (its file was rewritten).
@@ -429,18 +430,9 @@ pub fn refresh(source: &Source) {
             .borrow()
             .iter()
             .flatten()
-            .filter(|s| s.source == *source)
+            .filter(|s| s.source() == source)
         {
-            unsafe {
-                match s.engine {
-                    Engine::Look => {
-                        let _: () = msg_send![&*s.view, refreshPreviewItem];
-                    }
-                    Engine::Web => {
-                        let _: *mut AnyObject = msg_send![&*s.view, reload];
-                    }
-                }
-            }
+            s.refresh();
         }
     });
 }
@@ -460,31 +452,9 @@ pub struct WebState {
 /// The Browser's page.
 pub fn web_state() -> Option<WebState> {
     with(Slot::Browser, |s| {
-        let s = s.filter(|s| s.engine == Engine::Web)?;
-        let v = &*s.view;
-        unsafe {
-            let title: *mut AnyObject = msg_send![v, title];
-            Some(WebState {
-                title: string(title),
-                url: current_url(v),
-                loading: msg_send![v, isLoading],
-                progress: msg_send![v, estimatedProgress],
-                back: msg_send![v, canGoBack],
-                forward: msg_send![v, canGoForward],
-            })
-        }
+        s.filter(|s| s.engine() == Engine::Web)
+            .map(|s| s.web_state())
     })
-}
-
-unsafe fn current_url(view: &AnyObject) -> String {
-    unsafe {
-        let url: *mut AnyObject = msg_send![view, URL];
-        if url.is_null() {
-            return String::new();
-        }
-        let abs: *mut AnyObject = msg_send![url, absoluteString];
-        string(abs)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -498,32 +468,15 @@ pub enum WebCommand {
 /// Drive the Browser's page.
 pub fn web(command: WebCommand) {
     with(Slot::Browser, |s| {
-        let Some(s) = s.filter(|s| s.engine == Engine::Web) else {
-            return;
-        };
-        let v = &*s.view;
-        unsafe {
-            match command {
-                WebCommand::Back => {
-                    let _: *mut AnyObject = msg_send![v, goBack];
-                }
-                WebCommand::Forward => {
-                    let _: *mut AnyObject = msg_send![v, goForward];
-                }
-                WebCommand::Reload => {
-                    let _: *mut AnyObject = msg_send![v, reload];
-                }
-                WebCommand::Stop => {
-                    let _: () = msg_send![v, stopLoading];
-                }
-            }
+        if let Some(s) = s.filter(|s| s.engine() == Engine::Web) {
+            s.web(command);
         }
     });
 }
 
 thread_local! {
     /// The window's content view (winit's), from [`on_window`].
-    static HOST: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+    static HOST: RefCell<Option<platform::Host>> = const { RefCell::new(None) };
     static SURFACES: RefCell<[Option<Surface>; 2]> = const { RefCell::new([None, None]) };
     /// The Browser's asked-for address and the page it had reached when its
     /// view was destroyed; a new view for the same address opens that page.
@@ -567,7 +520,7 @@ pub(crate) fn cover_hold_ends(s: &State) -> Option<Instant> {
 /// (a test has no app to wake): whether it would wake.
 #[cfg(test)]
 pub(crate) fn note_page_change() -> bool {
-    observe::note_for_tests()
+    platform::note_page_change_for_tests()
 }
 
 #[cfg(test)]
@@ -579,204 +532,8 @@ pub(crate) fn probe(s: &State) -> Probe {
     }
 }
 
-struct Surface {
-    slot: Slot,
-    /// Rune's view; the native view is its sibling, ordered above it.
-    rune: Retained<AnyObject>,
-    view: Retained<AnyObject>,
-    engine: Engine,
-    source: Source,
-    frame: Option<CGRect>,
-    /// Hidden since then, awaiting its idle end.
-    hidden: Option<Instant>,
-    /// The Browser page's key-value observer (`observe.rs`), removed in
-    /// [`Surface::destroy`] before the view goes.
-    observer: Option<Retained<AnyObject>>,
-}
-
-impl Surface {
-    fn create(slot: Slot, rune: Retained<AnyObject>, source: &Source) -> Option<Self> {
-        let engine = source.engine();
-        let view = unsafe {
-            let host: *mut AnyObject = msg_send![&*rune, superview];
-            if host.is_null() {
-                return None;
-            }
-            let view = match engine {
-                Engine::Look => new_look_view()?,
-                Engine::Web => new_web_view()?,
-            };
-            // Hidden until `show` places it and fades it in; layer-backed
-            // so the fade is Core Animation's.
-            let _: () = msg_send![&*view, setWantsLayer: true];
-            let _: () = msg_send![&*view, setHidden: true];
-            // NSWindowAbove = 1.
-            let _: () = msg_send![host, addSubview: &*view, positioned: 1isize, relativeTo: &*rune];
-            view
-        };
-        let mut surface = Self {
-            slot,
-            rune,
-            view,
-            engine,
-            source: source.clone(),
-            frame: None,
-            hidden: Some(Instant::now()),
-            observer: None,
-        };
-        if slot == Slot::Browser && engine == Engine::Web {
-            surface.observer = observe::attach(&surface.view);
-        }
-        let resume = RESUME.with(|r| {
-            r.borrow()
-                .as_ref()
-                .filter(|(asked, page)| asked == source && !page.is_empty())
-                .map(|(_, page)| page.clone())
-        });
-        match resume.filter(|_| slot == Slot::Browser) {
-            Some(page) => {
-                surface.load(&Source::Url(page));
-                surface.source = source.clone();
-            }
-            None => surface.load(source),
-        }
-        Some(surface)
-    }
-
-    fn load(&mut self, source: &Source) {
-        self.source = source.clone();
-        let v = &*self.view;
-        unsafe {
-            match source {
-                Source::File(path) => {
-                    let Some(url) = file_url(path) else { return };
-                    match self.engine {
-                        Engine::Look => {
-                            let _: () = msg_send![v, setPreviewItem: &*url];
-                        }
-                        Engine::Web => {
-                            // Read access stops at the file's own folder.
-                            let dir = path
-                                .parent()
-                                .and_then(|d| file_url(d))
-                                .unwrap_or(url.clone());
-                            let _: *mut AnyObject =
-                                msg_send![v, loadFileURL: &*url, allowingReadAccessToURL: &*dir];
-                        }
-                    }
-                }
-                Source::Url(text) => {
-                    let Some(cls) = AnyClass::get(c"NSURL") else {
-                        return;
-                    };
-                    let Some(s) = ns_string(text) else { return };
-                    let url: Option<Retained<AnyObject>> = msg_send![cls, URLWithString: &*s];
-                    let Some(url) = url else { return };
-                    let Some(req) = AnyClass::get(c"NSURLRequest") else {
-                        return;
-                    };
-                    let req: Option<Retained<AnyObject>> = msg_send![req, requestWithURL: &*url];
-                    if let Some(req) = req {
-                        let _: *mut AnyObject = msg_send![v, loadRequest: &*req];
-                    }
-                }
-            }
-        }
-    }
-
-    /// Match Rune's drawn rect (window points, y down) in the host's
-    /// coordinates, whichever way the content view counts y.
-    fn place(&mut self, rect: [f32; 4]) {
-        unsafe {
-            let host: *mut AnyObject = msg_send![&*self.rune, superview];
-            if host.is_null() {
-                return;
-            }
-            let flipped: bool = msg_send![&*self.rune, isFlipped];
-            let bounds: CGRect = msg_send![&*self.rune, bounds];
-            let [x, top, w, h] = rect.map(f64::from);
-            let local = CGRect {
-                origin: CGPoint {
-                    x,
-                    y: if flipped {
-                        top
-                    } else {
-                        bounds.size.height - top - h
-                    },
-                },
-                size: CGSize {
-                    width: w.max(0.),
-                    height: h.max(0.),
-                },
-            };
-            let frame: CGRect = msg_send![&*self.rune, convertRect: local, toView: host];
-            if self.frame != Some(frame) {
-                let _: () = msg_send![&*self.view, setFrame: frame];
-                self.frame = Some(frame);
-            }
-        }
-    }
-
-    /// Hide at once, or show: faded in over [`REVEAL_FADE`] when `fade`
-    /// says so (asked only when the view comes into sight).
-    fn set_hidden(&mut self, hidden: bool, fade: impl FnOnce() -> bool) {
-        if self.hidden.is_some() == hidden {
-            return;
-        }
-        self.hidden = hidden.then(Instant::now);
-        let v = &*self.view;
-        // SAFETY: AppKit calls on a live view, on the main thread.
-        unsafe {
-            if hidden {
-                let _: () = msg_send![v, setHidden: true];
-                return;
-            }
-            let ctx = AnyClass::get(c"NSAnimationContext").filter(|_| fade());
-            let Some(ctx) = ctx else {
-                let _: () = msg_send![v, setAlphaValue: 1.0f64];
-                let _: () = msg_send![v, setHidden: false];
-                return;
-            };
-            let _: () = msg_send![v, setAlphaValue: 0.0f64];
-            let _: () = msg_send![v, setHidden: false];
-            let _: () = msg_send![ctx, beginGrouping];
-            let current: *mut AnyObject = msg_send![ctx, currentContext];
-            if !current.is_null() {
-                let _: () = msg_send![current, setDuration: REVEAL_FADE];
-            }
-            let animator: *mut AnyObject = msg_send![v, animator];
-            if animator.is_null() {
-                let _: () = msg_send![v, setAlphaValue: 1.0f64];
-            } else {
-                let _: () = msg_send![animator, setAlphaValue: 1.0f64];
-            }
-            let _: () = msg_send![ctx, endGrouping];
-        }
-    }
-
-    fn destroy(self) {
-        if let Some(observer) = &self.observer {
-            observe::detach(&self.view, observer);
-        }
-        unsafe {
-            if self.slot == Slot::Browser && self.engine == Engine::Web {
-                let page = current_url(&self.view);
-                let asked = self.source.clone();
-                RESUME.with(|r| *r.borrow_mut() = Some((asked, page)));
-            }
-            match self.engine {
-                Engine::Look => {
-                    let _: () = msg_send![&*self.view, close];
-                }
-                Engine::Web => {
-                    let _: () = msg_send![&*self.view, stopLoading];
-                }
-            }
-            let _: () = msg_send![&*self.view, removeFromSuperview];
-        }
-    }
-}
-
+// `Host` is uninhabited (and so `Copy`) where there are no native views.
+#[cfg_attr(not(target_os = "macos"), allow(clippy::clone_on_copy))]
 fn show(slot: Slot, source: &Source, rect: [f32; 4], fade: impl FnOnce() -> bool) {
     let Some(rune) = HOST.with(|h| h.borrow().clone()) else {
         return;
@@ -784,9 +541,9 @@ fn show(slot: Slot, source: &Source, rect: [f32; 4], fade: impl FnOnce() -> bool
     SURFACES.with(|cell| {
         let mut all = cell.borrow_mut();
         let entry = &mut all[slot as usize];
-        let reuse = entry.as_ref().is_some_and(|s| {
-            Retained::as_ptr(&s.rune) == Retained::as_ptr(&rune) && s.engine == source.engine()
-        });
+        let reuse = entry
+            .as_ref()
+            .is_some_and(|s| platform::same_host(s.host(), &rune) && s.engine() == source.engine());
         if !reuse {
             if let Some(old) = entry.take() {
                 old.destroy();
@@ -796,7 +553,7 @@ fn show(slot: Slot, source: &Source, rect: [f32; 4], fade: impl FnOnce() -> bool
         let Some(s) = entry.as_mut() else {
             return;
         };
-        if s.source != *source {
+        if s.source() != source {
             s.load(source);
         }
         s.place(rect);
@@ -809,7 +566,7 @@ fn hide(slot: Slot) {
     let expired = with(slot, |s| match s {
         Some(s) => {
             s.set_hidden(true, || false);
-            s.hidden.is_some_and(|t| t.elapsed() >= slot.idle())
+            s.hidden_since().is_some_and(|t| t.elapsed() >= slot.idle())
         }
         None => false,
     });
@@ -829,8 +586,13 @@ mod tests {
         assert!(file("report.PDF").engine() == Engine::Look);
         assert!(file("site/index.html").engine() == Engine::Web);
         assert!(Source::Url("http://localhost:3000".into()).engine() == Engine::Web);
-        assert!(shows_natively(Path::new("memo.docx")));
-        assert!(!shows_natively(Path::new("main.rs")));
+        assert!(has_native_engine(Path::new("memo.docx")));
+        assert!(!has_native_engine(Path::new("main.rs")));
+        assert_eq!(
+            shows_natively(Path::new("memo.docx")),
+            platform::AVAILABLE,
+            "only where native views exist"
+        );
     }
 
     /// The anchored popover (the model picker) fades on a 0.25 s spring:

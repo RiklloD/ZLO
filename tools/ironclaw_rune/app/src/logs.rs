@@ -77,15 +77,25 @@ pub fn open_files(s: &crate::state::State) {
         tracing::warn!("no log files to open");
         return;
     }
-    let opened = Command::new("/usr/bin/open")
-        .args(["-a", "Console"])
-        .args(&files)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    if let Err(e) = opened {
+    if let Err(e) = open_in_viewer(&files) {
         tracing::warn!(error = %e, "could not open the log files");
+    }
+}
+
+/// Console on macOS opens them all in one window; elsewhere each goes to
+/// the system's default app for text files.
+fn open_in_viewer(files: &[PathBuf]) -> std::io::Result<()> {
+    if cfg!(target_os = "macos") {
+        Command::new("/usr/bin/open")
+            .args(["-a", "Console"])
+            .args(files)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(drop)
+    } else {
+        files.iter().try_for_each(crate::system::open)
     }
 }
 

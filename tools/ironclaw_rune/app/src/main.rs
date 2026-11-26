@@ -10,6 +10,11 @@
 //! gateway and its token on its own; see
 //! `zlo_client::Connection::discover`.
 
+// Off macOS, the macOS-only features (voice, SnapShots, native previews,
+// computer-use permissions) are compiled out, which leaves their shared
+// state and helpers unused there; macOS builds keep the full check.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, unreachable_code))]
+
 mod alerts;
 mod backdrop;
 mod bench;
@@ -37,6 +42,7 @@ mod scenes;
 mod service;
 mod snapshot;
 mod state;
+mod system;
 mod terminal;
 #[cfg(test)]
 mod test_gateway;
@@ -111,12 +117,30 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     workspace::on_key(s, ev, tx)
 }
 
+/// This install's single-instance name: the full app and ZLO Light run side
+/// by side (bundle ids `com.numoh.desktop` and `.light`, as in `bundle.sh`).
+fn instance_id() -> &'static str {
+    if service::light_bundle() {
+        "com.numoh.desktop.light"
+    } else {
+        "com.numoh.desktop"
+    }
+}
+
 fn main() {
     logs::init();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "ZLO (Rune) started");
     // ZLO owns the local backend's lifetime: started at launch, stopped on
     // quit (`service.rs`). Headless scenes and scripts leave it be.
     let headless = rune::is_headless();
+    // One process per install. macOS reopens the running app itself; Linux
+    // starts a new process for every launch (the app menu, autostart), and a
+    // second one would take the first's backend for a stale one and stop
+    // it. A later launch hands over to the first (its window comes forward)
+    // and ends here, before it starts anything.
+    if !headless && !rune::single_instance(instance_id()) {
+        return;
+    }
     // The computers list decides whether this Mac runs a backend at all
     // (Settings → Computers); it is read before anything starts.
     let launch = (!headless).then(remote::Launch::read);

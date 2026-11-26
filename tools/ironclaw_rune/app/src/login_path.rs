@@ -20,10 +20,7 @@ const MARK: &str = "__ZLO_LOGIN_PATH__";
 pub fn path() -> &'static str {
     static PATH: OnceLock<String> = OnceLock::new();
     PATH.get_or_init(|| {
-        let shell = std::env::var("SHELL")
-            .ok()
-            .filter(|s| s.starts_with('/'))
-            .unwrap_or_else(|| "/bin/zsh".to_string());
+        let shell = crate::system::login_shell();
         let own = std::env::var("PATH").unwrap_or_default(); // silent-ok: no PATH merges the shell's alone
         backend_path(&shell, &own, SHELL_TIMEOUT)
     })

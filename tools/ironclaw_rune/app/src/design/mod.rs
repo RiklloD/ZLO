@@ -29,8 +29,10 @@ pub const SIDEBAR_WIDTH: f32 = 296.;
 pub const SIDEBAR_MIN_WIDTH: f32 = 220.;
 pub const SIDEBAR_MAX_WIDTH: f32 = 520.;
 pub const TITLEBAR_HEIGHT: f32 = rune_kit::shell::TOOLBAR_HEIGHT;
-/// Room the macOS traffic lights take at the sidebar's top left.
-pub const TRAFFIC_LIGHTS_WIDTH: f32 = 86.;
+/// Room the macOS traffic lights take at the sidebar's top left. Linux
+/// window managers draw their own title bar and buttons above the window,
+/// so there only a margin is kept.
+pub const TRAFFIC_LIGHTS_WIDTH: f32 = if cfg!(target_os = "macos") { 86. } else { 10. };
 pub const STATUS_BAR_HEIGHT: f32 = 24.;
 pub const SIDEBAR_CARD_MIN_HEIGHT: f32 = 72.;
 pub const SIDEBAR_SLIM_HEIGHT: f32 = 42.;

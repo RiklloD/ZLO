@@ -160,8 +160,8 @@ fn the_intro_stage_swallows_shortcuts_until_its_reveal() {
     let toggle_bar = rune::KeyEvent {
         key: rune::Key::Command('s'),
         mods: rune::Mods {
+            // The primary modifier alone: ⌘ on macOS, Ctrl on Linux.
             cmd: true,
-            logo: true,
             shift: true,
             ..rune::Mods::default()
         },

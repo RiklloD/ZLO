@@ -491,7 +491,9 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Tab if !(ev.mods.cmd || ev.mods.ctrl || ev.mods.alt) => {
             return accept_ghost(s);
         }
-        Key::Command(c) if !(ev.mods.ctrl || ev.mods.alt || ev.mods.shift) => {
+        Key::Command(c)
+            if !(crate::system::extra_ctrl(ev.mods) || ev.mods.alt || ev.mods.shift) =>
+        {
             let Some(n) = c.to_digit(10).filter(|n| (1..=9).contains(n)) else {
                 return false;
             };

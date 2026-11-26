@@ -53,7 +53,7 @@ use crate::state::State;
 use crate::voice::Composer;
 use crate::voice::ui::{Controls, OnPress, Press};
 
-pub const SHORTCUT: &str = "cmd+shift+space";
+pub const SHORTCUT: &str = "mod+shift+space";
 const WIDTH: f32 = 640.;
 const HEIGHT: f32 = 132.;
 const PLACEHOLDER: &str = "Ask IronClaw anything…";

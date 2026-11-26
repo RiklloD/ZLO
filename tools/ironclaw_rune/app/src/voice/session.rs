@@ -602,6 +602,8 @@ pub(super) fn deliver(s: &mut State, answer: Answer) {
 }
 
 /// (Re)arm the push-to-talk watcher to match the preferences.
+// Off macOS the watcher below is compiled out, leaving the early return last.
+#[cfg_attr(not(target_os = "macos"), allow(clippy::needless_return))]
 pub(super) fn arm_hotkey(s: &mut State) {
     let prefs = s.voice.prefs.clone();
     #[cfg(target_os = "macos")]
@@ -654,7 +656,6 @@ pub(super) fn arm_hotkey(s: &mut State) {
     }
 }
 
-#[cfg(target_os = "macos")]
 /// Run `f`, a voice change the person caused (their push-to-talk key, the
 /// reply they are waiting for), and let its commit move if the status did:
 /// the pill pops in or out and its label rolls. Queued commits land at

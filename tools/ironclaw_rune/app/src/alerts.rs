@@ -89,7 +89,33 @@ fn notify(tag: &str, title: &str, body: &str) {
     #[cfg(target_os = "macos")]
     macos::post(tag, title, body);
     #[cfg(not(target_os = "macos"))]
-    let _ = (tag, title, body);
+    post_with_notify_send(tag, title, body);
+}
+
+/// Linux desktops show notifications through libnotify's `notify-send`
+/// (Rune's notifications are macOS and Windows only). Posting only: a
+/// click raises nothing here. No `notify-send` on the login PATH: skipped.
+#[cfg(not(target_os = "macos"))]
+fn post_with_notify_send(tag: &str, title: &str, body: &str) {
+    let Some(program) = crate::system::find_on_path("notify-send", &crate::system::search_path())
+    else {
+        tracing::debug!(tag, "no notify-send; notification skipped");
+        return;
+    };
+    let spawned = std::process::Command::new(program)
+        .args(["--app-name=ZLO", "--"])
+        .arg(title)
+        .arg(body)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match spawned {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+        }
+        Err(e) => tracing::debug!(error = %e, tag, "notification not posted"),
+    }
 }
 
 /// The thread a notification opens.
