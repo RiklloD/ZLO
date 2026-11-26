@@ -114,10 +114,20 @@ pub static CIRCLE_X: Icon = Icon {
     view: 24.0,
     body: r##"<circle fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" cx="12" cy="12" r="10" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m15 9-6 6" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m9 9 6 6" />"##,
 };
+pub static CLOUD: Icon = Icon {
+    name: "cloud",
+    view: 24.0,
+    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />"##,
+};
 pub static CORNER_UP_RIGHT: Icon = Icon {
     name: "corner-up-right",
     view: 24.0,
     body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="m15 14 5-5-5-5" /> <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M4 20v-7a4 4 0 0 1 4-4h12" />"##,
+};
+pub static KEY_ROUND: Icon = Icon {
+    name: "key-round",
+    view: 24.0,
+    body: r##"<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" /> <circle fill="currentColor" stroke="currentColor" stroke-width="1.75" cx="16.5" cy="7.5" r=".5" />"##,
 };
 pub static LIST_PLUS: Icon = Icon {
     name: "list-plus",

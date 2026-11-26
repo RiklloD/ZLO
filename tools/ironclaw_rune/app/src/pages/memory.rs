@@ -25,8 +25,8 @@ use rune::{Cursor, Cx, El, TextEdit, col, el, row};
 use rune_kit::{Kit, Markdown, TextInput};
 use zlo_client::memory_page::{
     MemoryArchiveOutcome, MemoryDocument, MemoryDocumentEntry, MemoryDocumentKind,
-    MemoryPageWriteOutcome, MemorySearchHit, SupermemoryDocumentPage, SupermemoryMemoryHit,
-    SupermemoryStatus,
+    MemoryPageWriteOutcome, MemorySearchHit, MemoryWikiStatus, SupermemoryDocumentPage,
+    SupermemoryMemoryHit, SupermemoryStatus,
 };
 
 use self::draft::{Effect, SaveReply, apply_archived, apply_save};
@@ -61,6 +61,8 @@ pub struct MemoryState {
     search: TextEdit,
     hits: Option<Vec<MemorySearchHit>>,
     new_path: TextEdit,
+    /// The knowledge wiki under `wiki/`; `None` until read (or unreadable).
+    wiki: Option<MemoryWikiStatus>,
     // Supermemory
     profiles: Vec<(String, String)>,
     profile: Option<String>,
@@ -70,6 +72,8 @@ pub struct MemoryState {
     sm_search: TextEdit,
     sm_hits: Option<Vec<SupermemoryMemoryHit>>,
     confirm_remote: Option<String>,
+    /// Where a Supermemory key was found (Hermes) when none is stored here.
+    sm_import: Option<String>,
     /// Takes an edit that arrives after the editor closed (`on_edit` must
     /// hand Rune some `TextEdit`).
     scratch: TextEdit,
@@ -91,6 +95,7 @@ impl Default for MemoryState {
             search: TextEdit::new(""),
             hits: None,
             new_path: TextEdit::new(""),
+            wiki: None,
             profiles: Vec::new(),
             profile: None,
             status: None,
@@ -99,6 +104,7 @@ impl Default for MemoryState {
             sm_search: TextEdit::new(""),
             sm_hits: None,
             confirm_remote: None,
+            sm_import: None,
             scratch: TextEdit::new(""),
         }
     }
@@ -139,20 +145,115 @@ fn load_tree(s: &mut State) {
     jobs::run(
         s,
         "memory",
-        |c| async move { c.memory_tree().await },
+        |c| async move {
+            let tree = c.memory_tree().await?;
+            // silent-ok: an older gateway has no wiki route; the card then stays hidden.
+            let wiki = c.memory_wiki_status().await.ok();
+            Ok((tree, wiki))
+        },
         |s, result, _tx| {
             let m = &mut s.pages.memory;
             m.loaded = true;
             match result {
-                Ok(tree) => {
+                Ok((tree, wiki)) => {
                     m.available = tree.available;
                     m.documents = tree.documents;
+                    m.wiki = wiki;
                     m.error = None;
                 }
                 Err(e) => m.error = Some(e.to_string()),
             }
         },
     );
+}
+
+/// Scaffold the knowledge wiki (`wiki/SCHEMA.md`, `index.md`, `log.md`);
+/// the gateway never overwrites a page that is there.
+fn build_wiki(s: &mut State) {
+    s.pages.memory.busy = true;
+    jobs::run(
+        s,
+        "memory",
+        |c| async move { c.memory_wiki_init().await },
+        |s, result, tx| {
+            tx.animated();
+            let m = &mut s.pages.memory;
+            m.busy = false;
+            match result {
+                Ok(done) if done.status.initialized => {
+                    m.wiki = Some(done.status);
+                    m.notice = Some(if done.created.is_empty() {
+                        "The wiki was already there; nothing changed.".into()
+                    } else {
+                        "Wiki ready: agents keep it under wiki/ (start with wiki/SCHEMA.md).".into()
+                    });
+                    m.error = None;
+                    load_tree(s);
+                }
+                Ok(_) => fail(s, "The wiki could not be read back; try again."),
+                Err(e) => fail(s, e),
+            }
+        },
+    );
+}
+
+/// A Supermemory key was set or removed (Settings → Keys): read the
+/// Supermemory tab again if it was loaded.
+pub fn key_changed(s: &mut State) {
+    if s.pages.memory.status.is_some() {
+        supermemory::load(s);
+    }
+}
+
+fn wiki_card(s: &State, k: &Kit) -> Option<El> {
+    let p = &s.palette;
+    let m = &s.pages.memory;
+    let wiki = m.wiki.as_ref().filter(|wiki| wiki.available)?;
+    let (title, line) = if wiki.initialized {
+        (
+            "Knowledge wiki",
+            format!(
+                "{} page{} under wiki/. Agents keep it current (Karpathy's LLM wiki):                  they file sources, update entity and concept pages, and log every change.",
+                wiki.pages,
+                if wiki.pages == 1 { "" } else { "s" }
+            ),
+        )
+    } else {
+        (
+            "Knowledge wiki (not built yet)",
+            "Build a wiki in local memory that your agents maintain: sources, people,              projects and ideas as linked pages, with an index and a log."
+                .to_string(),
+        )
+    };
+    let mut row_el = row().w_full().gap(12.0).center_y().child(
+        col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(2.0)
+            .child(styled(title, sm_medium(), p.text))
+            .child(styled(line, xs(), p.text_muted).wrap()),
+    );
+    if !wiki.initialized {
+        row_el = row_el.child(press_button(
+            k,
+            "memory-wiki-build",
+            "Build the wiki",
+            Look::Primary,
+            None,
+            m.busy,
+            build_wiki,
+        ));
+    }
+    Some(
+        col()
+            .key("memory-wiki")
+            .transition(crate::design::motion::reveal())
+            .w_full()
+            .padding(12.0)
+            .radius(12.0)
+            .fill(block_fill(p))
+            .child(row_el),
+    )
 }
 
 impl MemoryState {
@@ -501,7 +602,11 @@ fn render_local(s: &State, k: &Kit) -> El {
             run_search,
         ),
     );
-    let mut c = col().w_full().gap(12.0).child(search);
+    let mut c = col().w_full().gap(12.0);
+    if let Some(card) = wiki_card(s, k) {
+        c = c.child(card);
+    }
+    c = c.child(search);
     if let Some(hits) = &m.hits {
         if hits.is_empty() {
             c = c.child(empty_state(p, "Nothing matches.").key("memory-hits-none"));

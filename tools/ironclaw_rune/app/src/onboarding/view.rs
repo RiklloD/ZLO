@@ -93,6 +93,7 @@ pub fn wizard(s: &State, k: &Kit, layer: &mut Vec<El>) {
     let step = match o.step {
         Step::Connect => connect_step(s, k),
         Step::Agents => super::agents::view(s, k),
+        Step::Memory => super::memory::view(s, k),
         Step::Projects => super::projects::view(s, k),
     };
     let body = col()

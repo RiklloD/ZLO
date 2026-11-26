@@ -198,6 +198,7 @@ pub const SCENES: &[Scene] = &[
     }),
     ("goals", crate::chat::goals::scene),
     ("hooks", crate::pages::hooks::fixture_hooks),
+    ("keys", crate::pages::keys::fixture_keys),
     ("inbox", ws::fixture_inbox),
     ("inbox-long", ws::fixture_inbox_long),
     ("inbox-short", ws::fixture_inbox_short),
@@ -272,6 +273,7 @@ pub const SCENES: &[Scene] = &[
         page_with(s, Page::Projects, crate::pages::projects::fixture)
     }),
     ("onboarding-agents", crate::onboarding::fixtures::agents),
+    ("onboarding-memory", crate::onboarding::fixtures::memory),
     (
         "onboarding-agents-long",
         crate::onboarding::fixtures::agents_long,
