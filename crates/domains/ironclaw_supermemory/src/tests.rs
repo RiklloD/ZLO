@@ -917,3 +917,44 @@ async fn a_key_change_is_seen_at_once_not_after_the_cache_window() {
         .await;
     assert!(supermemory.client().api_key().await.unwrap().is_some());
 }
+
+#[test]
+fn a_cli_recall_note_names_the_bridge_tools_and_fences_the_memories() {
+    let tag = |raw: &str| ContainerTag::new(raw).unwrap();
+    let recall = Recall {
+        guidance: "native guidance".into(),
+        primary: tag("career"),
+        readable: vec![tag("thesis"), tag("hermes")],
+        instructions: Some("Store career facts in 'career'.".into()),
+        items: vec![RecallItem {
+            kind: RecallKind::ProfileFact,
+            container: tag("career"),
+            text: "Works at Siemens.\u{7}".into(),
+            similarity: None,
+            updated_at: None,
+        }],
+        degraded: false,
+    };
+    let note = cli_recall_note(&recall);
+    assert!(note.contains("Primary container: career"), "{note}");
+    assert!(note.contains("thesis, hermes"));
+    assert!(note.contains("supermemory_search") && note.contains("supermemory_write"));
+    assert!(!note.contains("native guidance"), "the loop's tool names are not offered");
+    assert!(note.contains("Store career facts in 'career'."));
+    assert!(note.contains("Works at Siemens."));
+    assert!(!note.contains('\u{7}'), "control characters are cleaned");
+    let fenced = note.find("Works at Siemens.").unwrap();
+    assert!(
+        note[..fenced].contains("Untrusted memory content"),
+        "recalled text sits inside the untrusted envelope: {note}"
+    );
+
+    let empty = Recall {
+        items: Vec::new(),
+        instructions: None,
+        ..recall
+    };
+    let note = cli_recall_note(&empty);
+    assert!(note.contains("Primary container: career"));
+    assert!(!note.contains("Works at Siemens."));
+}

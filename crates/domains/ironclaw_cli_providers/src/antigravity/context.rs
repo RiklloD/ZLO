@@ -87,7 +87,7 @@ impl TurnContext {
         thread: &ThreadId,
         profile: Option<&TurnProfile>,
         requested: Option<&str>,
-        goal: Option<&str>,
+        (goal, memory): (Option<&str>, Option<&str>),
     ) -> Self {
         let notes = crate::session_context(profile)
             .instructions(Some(ANTIGRAVITY_TOOLS_PROMPT.trim().to_string()));
@@ -103,7 +103,7 @@ impl TurnContext {
         // (not inside) the stamped session notes.
         let turn = Notes::default()
             .instructions(requested.map(str::to_string))
-            .then(crate::goal_notes(goal));
+            .then(crate::turn_notes(goal, memory));
         Self {
             system: notes.clone().then(turn.clone()).text(),
             inline: inline_notes.then(turn.clone()).text(),
@@ -192,13 +192,13 @@ mod tests {
     #[test]
     fn inline_notes_repeat_until_a_prompt_carried_them() {
         let primed = Arc::new(InlinePrimed::default());
-        let first = TurnContext::new(&primed, &thread(), None, None, None);
+        let first = TurnContext::new(&primed, &thread(), None, None, (None, None));
         assert!(first.inline.is_some());
         // The launch failed before the prompt went out: the retry carries them.
-        let retry = TurnContext::new(&primed, &thread(), None, None, None);
+        let retry = TurnContext::new(&primed, &thread(), None, None, (None, None));
         assert_eq!(retry.inline, first.inline);
         retry.inline_delivered();
-        let next = TurnContext::new(&primed, &thread(), None, None, Some("ship it"));
+        let next = TurnContext::new(&primed, &thread(), None, None, (Some("ship it"), None));
         assert_eq!(
             next.inline.as_deref().map(|i| i.contains("ship it")),
             Some(true)
@@ -215,12 +215,12 @@ mod tests {
     #[test]
     fn a_profile_picked_later_still_reaches_the_agent() {
         let primed = Arc::new(InlinePrimed::default());
-        TurnContext::new(&primed, &thread(), None, None, None).inline_delivered();
+        TurnContext::new(&primed, &thread(), None, None, (None, None)).inline_delivered();
         let profile = TurnProfile {
             soul: "You are the release captain.".into(),
             ..TurnProfile::default()
         };
-        let with_profile = TurnContext::new(&primed, &thread(), Some(&profile), None, None);
+        let with_profile = TurnContext::new(&primed, &thread(), Some(&profile), None, (None, None));
         assert!(
             with_profile
                 .inline

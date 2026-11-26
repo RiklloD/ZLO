@@ -158,6 +158,7 @@ async fn thread(rt: &CodexRuntime) -> ThreadRecord {
 fn input() -> TurnInput {
     TurnInput {
         text: "fix the tests".into(),
+        memory: None,
         origin: TurnOrigin::UserPrompt,
         model: None,
         goal: None,
@@ -532,10 +533,20 @@ async fn a_turn_gets_the_bridge_route_and_only_its_tool_calls_are_allowed() {
     let thread = thread(&rt).await;
     let mut rx = bridge.subscribe();
 
-    rt.start_turn(&thread, input()).await.unwrap();
+    let mut turn = input();
+    turn.memory = Some("Recalled: the deploy key is in 1Password".into());
+    rt.start_turn(&thread, turn).await.unwrap();
     events_until_end(&mut rx).await;
 
     let log = log(dir.path());
+    let turn_start = log
+        .lines()
+        .find(|l| l.contains(r#""method":"turn/start""#))
+        .expect("turn/start sent");
+    assert!(
+        turn_start.contains("Recalled: the deploy key is in 1Password"),
+        "the recalled memory rides the turn: {turn_start}"
+    );
     let start = log
         .lines()
         .find(|l| l.contains(r#""method":"thread/start""#))

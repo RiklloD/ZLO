@@ -448,6 +448,7 @@ pub fn wrap(
     secrets: Arc<dyn ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore>,
     bridge: Option<&ironclaw_cli_providers::bridge::CliBridge>,
 ) -> Arc<dyn ProductSurface> {
+    let profiles_engine = profiles.clone();
     let page: Arc<dyn ProductSurface> = Arc::new(MemoryPageSurface::new(
         inner,
         documents,
@@ -455,7 +456,14 @@ pub fn wrap(
         profiles,
     ));
     if let Some(bridge) = bridge {
-        crate::memory_bridge::register(bridge, Arc::clone(&page));
+        crate::memory_bridge::register(bridge, Arc::clone(&page), Some(Arc::clone(&supermemory)));
+    }
+    // CLI-agent threads recall from and capture to Supermemory like the
+    // loop's own turns do.
+    if let Some(engine) = profiles_engine {
+        engine.set_turn_memory(Arc::new(crate::cli_supermemory::CliSupermemory::new(
+            Arc::clone(&supermemory),
+        )));
     }
     crate::service_keys::ServiceKeysSurface::for_host(page, supermemory, secrets)
 }

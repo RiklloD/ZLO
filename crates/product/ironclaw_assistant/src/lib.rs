@@ -47,6 +47,7 @@ mod extension_account_setup;
 mod fakes;
 // Durable filesystem-backed idempotency ledger. The filesystem contract is a
 // base dependency; concrete libSQL/Postgres implementations remain gated.
+mod cli_supermemory;
 mod delivery_coordinator;
 pub mod extension_settings_page;
 mod filesystem_ledger;

@@ -153,6 +153,7 @@ async fn thread(rt: &dyn TurnRuntime) -> ThreadRecord {
 fn input() -> TurnInput {
     TurnInput {
         text: "hi".into(),
+        memory: None,
         origin: TurnOrigin::DelegatedBrief,
         model: None,
         goal: None,

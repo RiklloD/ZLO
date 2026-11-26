@@ -70,11 +70,15 @@ pub fn is_builtin_subagent_tool(tool: &str) -> bool {
 
 /// What a CLI agent with a system prompt flag gets there: the profile's
 /// SOUL.md, the delegation and visuals notes, then the thread goal.
-pub(crate) fn system_note(profile: Option<&TurnProfile>, goal: Option<&str>) -> Notes {
+pub(crate) fn system_note(
+    profile: Option<&TurnProfile>,
+    goal: Option<&str>,
+    memory: Option<&str>,
+) -> Notes {
     Notes::default()
         .system_prompt(soul(profile))
         .then(common_notes())
-        .then(goal_notes(goal))
+        .then(turn_notes(goal, memory))
 }
 
 /// The profile's SOUL.md, when it has one.
@@ -96,6 +100,22 @@ fn common_notes() -> Notes {
 /// The thread goal's note, when the thread has an active goal.
 pub(crate) fn goal_notes(goal: Option<&str>) -> Notes {
     Notes::default().instructions(goal.map(goal_note))
+}
+
+/// [`turn_notes`] for a turn's input.
+pub(crate) fn input_notes(input: &ironclaw_orchestrator::runtime::TurnInput) -> Notes {
+    turn_notes(input.goal.as_deref(), input.memory.as_deref())
+}
+
+/// What every turn carries beside its prompt: the goal, then the long-term
+/// memory recalled for this message (`TurnInput::memory`).
+pub(crate) fn turn_notes(goal: Option<&str>, memory: Option<&str>) -> Notes {
+    goal_notes(goal).instructions(
+        memory
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string),
+    )
 }
 
 /// The profile context for agents without a system prompt or a skill

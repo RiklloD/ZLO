@@ -182,6 +182,8 @@ struct TurnPlan<'a> {
     /// The session's working directory; `--resume` finds it only there.
     dir: PathBuf,
     goal: Option<&'a str>,
+    /// Long-term memory recalled for this message.
+    memory: Option<&'a str>,
     effort: Option<&'a str>,
     profile: Option<&'a TurnProfile>,
     /// `--settings` JSON (the skill listing); `None` passes none.
@@ -192,7 +194,7 @@ impl TurnPlan<'_> {
     /// `--append-system-prompt`: SOUL.md, the delegation and visuals notes
     /// and the goal.
     fn system_note(&self) -> crate::context_meter::Notes {
-        crate::system_note(self.profile, self.goal)
+        crate::system_note(self.profile, self.goal, self.memory)
     }
 }
 
@@ -568,7 +570,7 @@ impl ClaudeCliRuntime {
         &self,
         thread: &ThreadRecord,
         text: &str,
-        goal: Option<&str>,
+        (goal, memory): (Option<&str>, Option<&str>),
         effort: Option<&str>,
         profile: Option<&TurnProfile>,
     ) -> Result<String, RuntimeError> {
@@ -584,6 +586,7 @@ impl ClaudeCliRuntime {
                 .session_dir(&thread.thread_id, &session_id, profile)
                 .await?,
             goal,
+            memory,
             effort,
             profile,
             settings: launch.settings.as_deref(),
@@ -1073,7 +1076,10 @@ impl TurnRuntime for ClaudeCliRuntime {
         self.sent.sample(thread, || {
             let listing = skills::unmanaged_listing(profile.and_then(|p| p.skills.as_ref()));
             let mcp = self.bridge.as_ref().is_some_and(|b| b.mcp_url().is_some());
-            (crate::system_note(profile, goal).instructions(listing), mcp)
+            (
+                crate::system_note(profile, goal, None).instructions(listing),
+                mcp,
+            )
         })
     }
 
@@ -1136,7 +1142,7 @@ impl TurnRuntime for ClaudeCliRuntime {
             .spawn_turn(
                 &thread,
                 &input.text,
-                input.goal.as_deref(),
+                (input.goal.as_deref(), input.memory.as_deref()),
                 input.effort.as_deref(),
                 input.profile.as_ref(),
             )
@@ -1192,7 +1198,7 @@ impl TurnRuntime for ClaudeCliRuntime {
             .lock()
             .ok()
             .and_then(|p| p.get(&thread.thread_id).cloned()); // silent-ok: a poisoned map only follows a panic elsewhere
-        self.spawn_turn(thread, text, None, None, profile.as_ref())
+        self.spawn_turn(thread, text, (None, None), None, profile.as_ref())
             .await?;
         Ok(SteerOutcome::Restarted)
     }

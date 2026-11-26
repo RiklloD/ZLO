@@ -17,6 +17,7 @@ fn tools() -> MemoryBridgeTools {
             None,
             None,
         )),
+        supermemory: None,
     }
 }
 
@@ -188,6 +189,7 @@ async fn archived_documents_are_never_shown_to_cli_agents() {
     .unwrap();
     let tools = MemoryBridgeTools {
         memory: Arc::new(page),
+        supermemory: None,
     };
     let alice = thread_of("alice");
     for path in [
@@ -210,4 +212,73 @@ async fn archived_documents_are_never_shown_to_cli_agents() {
         serde_json::from_str::<Value>(text(&tree).0).unwrap()["paths"],
         json!([])
     );
+}
+
+fn keyless_supermemory() -> Arc<Supermemory> {
+    use ironclaw_supermemory::{
+        StaticSupermemoryBindingSource, SupermemoryBinding, SupermemoryClient, SupermemoryConfig,
+    };
+    let config = SupermemoryConfig::default();
+    // No key is stored: nothing is ever sent.
+    let client = SupermemoryClient::production(
+        &config,
+        Arc::new(
+            ironclaw_product_contracts::test_support::fakes::FakeOperatorSecretValueStore::new(),
+        ),
+    )
+    .unwrap();
+    let binding = StaticSupermemoryBindingSource::new(Some(SupermemoryBinding {
+        primary_container: "ironclaw".into(),
+        read_containers: Vec::new(),
+        instructions: None,
+    }));
+    Arc::new(Supermemory::new(client, Arc::new(binding), config))
+}
+
+#[tokio::test]
+async fn supermemory_tools_are_listed_and_say_when_supermemory_is_off() {
+    let mut tools = tools();
+    assert!(
+        !tools.handles(SUPERMEMORY_SEARCH_TOOL_NAME),
+        "absent without Supermemory"
+    );
+    tools.supermemory = Some(keyless_supermemory());
+    let names: Vec<String> = tools
+        .tools()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&SUPERMEMORY_SEARCH_TOOL_NAME.to_string()));
+    assert!(names.contains(&SUPERMEMORY_WRITE_TOOL_NAME.to_string()));
+    let alice = thread_of("alice");
+    for (name, args) in [
+        (SUPERMEMORY_SEARCH_TOOL_NAME, json!({"query": "deploy key"})),
+        (SUPERMEMORY_WRITE_TOOL_NAME, json!({"content": "likes tea"})),
+    ] {
+        let outcome = tools.call(&alice, name, &args).await;
+        let (body, is_error) = text(&outcome);
+        assert!(
+            is_error && body.contains("Supermemory is off"),
+            "{name}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cli_supermemory_stays_out_of_the_native_loop_and_is_quiet_when_off() {
+    use ironclaw_orchestrator::turn_memory::TurnMemory;
+    let memory = crate::cli_supermemory::CliSupermemory::new(keyless_supermemory());
+    let cli = thread_of("alice");
+    assert_eq!(
+        memory.recall(&cli, "anything").await,
+        None,
+        "no key: nothing"
+    );
+    let native = ThreadRecord::new(
+        ThreadId::new("t-native").unwrap(),
+        cli.scope.clone(),
+        RuntimeId::new(crate::orchestration::IRONCLAW_RUNTIME_ID).unwrap(),
+    );
+    assert_eq!(memory.recall(&native, "anything").await, None);
+    memory.capture(&native, "q", "a").await;
 }

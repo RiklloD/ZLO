@@ -62,6 +62,10 @@ pub struct Recall {
     /// Host-authored guidance naming the containers and tools.
     pub guidance: String,
     pub primary: ContainerTag,
+    /// Searchable, never written.
+    pub readable: Vec<ContainerTag>,
+    /// The binding's own instructions (a profile's notes on its containers).
+    pub instructions: Option<String>,
     pub items: Vec<RecallItem>,
     /// Recall was attempted and failed; `items` is empty.
     pub degraded: bool,
@@ -222,6 +226,8 @@ impl Supermemory {
         let empty = |degraded| Recall {
             guidance: guidance.clone(),
             primary: active.primary.clone(),
+            readable: active.readable.clone(),
+            instructions: active.instructions.clone(),
             items: Vec::new(),
             degraded,
         };

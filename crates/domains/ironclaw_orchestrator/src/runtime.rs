@@ -202,6 +202,9 @@ impl TurnOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnInput {
     pub text: String,
+    /// Long-term memory recalled for this turn (`crate::turn_memory`),
+    /// rendered for the agent; runtimes put it beside the goal.
+    pub memory: Option<String>,
     /// Why the engine starts this turn. User-typed turns reach a runtime here
     /// only on threads that do not run on IronClaw's loop.
     pub origin: TurnOrigin,

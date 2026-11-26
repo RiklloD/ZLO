@@ -65,6 +65,8 @@ pub struct Engine {
     pub(crate) webhook_base: OnceLock<String>,
     /// SOUL.md, folder and skills of a thread's profile for CLI turns.
     pub(crate) profile_context: OnceLock<Arc<dyn ProfileContextSource>>,
+    /// Long-term memory for CLI turns (recall in, capture out).
+    pub(crate) turn_memory: crate::turn_memory::TurnMemoryHooks,
     /// Told after every completed turn (thread titles), plugged in by the host.
     turn_listener: OnceLock<Arc<dyn TurnCompletedListener>>,
     /// Runs goal checks (`crate::goal_checks`), plugged in by the host.
@@ -160,6 +162,7 @@ impl Engine {
             schedule_planner: OnceLock::new(),
             webhook_base: OnceLock::new(),
             profile_context: OnceLock::new(),
+            turn_memory: Default::default(),
             turn_listener: OnceLock::new(),
             goal_check_runner: OnceLock::new(),
             goal_check_tasks: StdMutex::new(HashMap::new()),
@@ -195,6 +198,12 @@ impl Engine {
             reason = "first call wins by contract; a later wiring is ignored"
         )]
         let _ = self.profile_context.set(source);
+    }
+
+    /// Give CLI turns long-term memory: recalled context in, the completed
+    /// exchange out (first call wins).
+    pub fn set_turn_memory(&self, memory: Arc<dyn crate::turn_memory::TurnMemory>) {
+        self.turn_memory.set(memory);
     }
 
     /// Hear about every completed turn (first call wins).
@@ -557,11 +566,18 @@ impl Engine {
             .await?
             .filter(|g| g.status == ironclaw_product_contracts::inbox::GoalStatus::Active)
             .map(|g| g.objective);
+        let memory = if maintenance {
+            None
+        } else {
+            self.turn_memory.recall(&thread, &text, origin).await
+        };
+        let asked = text.clone();
         let admission = runtime
             .start_turn(
                 &thread,
                 TurnInput {
                     text,
+                    memory,
                     origin,
                     model: thread.model.clone(),
                     goal,
@@ -576,6 +592,10 @@ impl Engine {
             TurnAdmission::Started { run_id } => {
                 self.mark_running(&thread, run_id.as_deref(), now_ms(), maintenance)
                     .await?;
+                if !maintenance {
+                    self.turn_memory
+                        .started(thread_id, run_id.as_deref(), &asked, origin);
+                }
                 // Provenance for history search: this run's prompt is the
                 // engine's text, not the person's.
                 if origin.is_engine_scaffolding()
@@ -1279,8 +1299,13 @@ impl TurnEventSink for Engine {
             Ok(Some(thread))
         }
         .await;
+        let asked = self.turn_memory.take(thread_id, run_id.as_deref());
         match result {
             Ok(Some(thread)) if completed => {
+                if let Some(asked) = asked {
+                    let answer = self.final_text(&thread, &outcome).await;
+                    self.turn_memory.capture(thread.clone(), asked, answer);
+                }
                 if let Some(listener) = self.turn_listener.get() {
                     listener.turn_completed(&thread);
                 }

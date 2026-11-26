@@ -160,6 +160,67 @@ fn recall_load(recall: &Recall, max_snippets: usize) -> MemoryPromptContextLoad 
 }
 
 /// Control characters stripped, credentials redacted; `None` when empty.
+const CLI_GUIDANCE: &str = include_str!("../prompts/cli_guidance.md");
+/// Largest recalled block a CLI turn carries.
+const MAX_CLI_RECALL_BYTES: usize = 6 * 1024;
+
+/// A recall for a CLI agent (Claude Code, Codex, Antigravity), which has no
+/// memory-snippet seam: the guidance naming its bridge tools, the binding's
+/// own instructions, then the recalled lines in one untrusted envelope.
+pub fn cli_recall_note(recall: &Recall) -> String {
+    let readable = if recall.readable.is_empty() {
+        "none".to_string()
+    } else {
+        recall
+            .readable
+            .iter()
+            .map(|tag| tag.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut note = CLI_GUIDANCE
+        .trim()
+        .replace("{primary}", recall.primary.as_str())
+        .replace("{readable}", &readable);
+    if let Some(instructions) = recall
+        .instructions
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        note.push_str("\n\n");
+        note.push_str(instructions);
+    }
+    let now = Utc::now();
+    let budget = MAX_CLI_RECALL_BYTES.saturating_sub(256);
+    let mut body = String::new();
+    for line in recall
+        .items
+        .iter()
+        .filter_map(|item| clean_line(&item.render(&recall.primary, now)))
+    {
+        if body.len() + line.len() + 1 > budget {
+            break;
+        }
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&line);
+    }
+    if !body.is_empty()
+        && let Ok(envelope) = wrap_untrusted_with_limit(
+            EnvelopeSource::Memory,
+            EnvelopeTrust::Untrusted,
+            &body,
+            MAX_CLI_RECALL_BYTES,
+        )
+    {
+        note.push_str("\n\n");
+        note.push_str(&envelope.into_string());
+    }
+    note
+}
+
 fn clean_line(raw: &str) -> Option<String> {
     let cleaned: String = raw.chars().filter(|ch| !ch.is_control()).collect();
     let cleaned = cleaned.trim();

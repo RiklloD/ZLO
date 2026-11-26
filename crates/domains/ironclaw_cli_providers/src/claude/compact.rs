@@ -244,6 +244,8 @@ impl IdleArm {
         let plan = TurnPlan {
             dir: self.dir.clone(),
             goal: self.goal.as_deref(),
+            // A compaction is not the person's message: nothing is recalled.
+            memory: None,
             effort: self.effort.as_deref(),
             profile: self.profile.as_ref(),
             settings: self.settings.as_deref(),

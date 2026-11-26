@@ -1748,7 +1748,7 @@ impl TurnRuntime for AntigravityRuntime {
         goal: Option<&str>,
     ) -> ironclaw_orchestrator::context_report::ContextSample {
         self.sent.sample(thread, || {
-            let context = TurnContext::new(&Arc::default(), thread, profile, None, goal);
+            let context = TurnContext::new(&Arc::default(), thread, profile, None, (goal, None));
             let mcp = McpToken::available(&self.config.launch, self.bridge.as_ref());
             (context.session.then(context.turn), mcp)
         })
@@ -1798,7 +1798,7 @@ impl TurnRuntime for AntigravityRuntime {
             &thread.thread_id,
             listed.profile.as_ref(),
             listed.requested.as_deref(),
-            input.goal.as_deref(),
+            (input.goal.as_deref(), input.memory.as_deref()),
         );
         // Typed by the person, or their own queued message going out.
         let attended = matches!(
@@ -1853,7 +1853,7 @@ impl TurnRuntime for AntigravityRuntime {
             return Ok(SteerOutcome::Rejected);
         };
         // The restarted turn is a new agent process: it needs the notes too.
-        let context = TurnContext::new(&self.primed, &thread.thread_id, None, None, None);
+        let context = TurnContext::new(&self.primed, &thread.thread_id, None, None, (None, None));
         // A steer is the person's own message.
         self.spawn_turn(claim, thread, text, None, context, true)
             .await?;
