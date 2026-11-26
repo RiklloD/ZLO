@@ -119,6 +119,10 @@ pub struct Prefs {
     /// Use the 2D Signal Matrix model picker (with Pareto frontier over
     /// connected providers) instead of the list (Settings → General).
     pub signal_matrix_picker: bool,
+    /// Where new threads start (Settings → Computers): `None` means the
+    /// computer last used; `Some(key)` names a computer (`this-mac` or an
+    /// `environment_id`).
+    pub default_computer: Option<String>,
 }
 
 impl Default for Prefs {
@@ -158,6 +162,7 @@ impl Default for Prefs {
             open_in_editor: String::new(),
             thread_worktrees: false,
             signal_matrix_picker: false,
+            default_computer: None,
         }
     }
 }

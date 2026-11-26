@@ -621,3 +621,34 @@ pub fn fixture_update(s: &mut State, which: &str) {
         .starts_with("confirm")
         .then(|| crate::remote::updates::waiting_keys(&s.remote.updates));
 }
+
+/// New-thread screen with two connected computers ("Runs on" next to worktree).
+pub fn fixture_draft_runs_on(s: &mut State) {
+    use crate::onboarding::gateway::Computer;
+    use crate::pages::computers::fixtures::{MINI, STUDIO};
+    use crate::remote::peers::{Peer, PeerConn};
+    fixture_draft(s);
+    s.remote.peers.insert_fixture(Peer::fixture(
+        Computer::remote(STUDIO, "Studio"),
+        PeerConn::Ready,
+    ));
+    s.remote.peers.insert_fixture(Peer::fixture(
+        Computer::remote(MINI, "Mac mini"),
+        PeerConn::Asleep,
+    ));
+}
+
+/// New-thread screen with the "Runs on" computer menu open.
+pub fn fixture_draft_runs_on_menu(s: &mut State) {
+    fixture_draft_runs_on(s);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.runs_on_open = true;
+    }
+}
+
+/// Settings → Computers with "New threads start on" set to a named computer.
+pub fn fixture_computers_default_pref(s: &mut State) {
+    use crate::pages::computers::fixtures::STUDIO;
+    crate::pages::computers::fixtures::computers(s);
+    s.prefs.default_computer = Some(STUDIO.into());
+}

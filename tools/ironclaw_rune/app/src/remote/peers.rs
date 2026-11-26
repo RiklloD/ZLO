@@ -16,6 +16,7 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use rune::Tx;
+use zlo_client::computer_use::ComputerUseReadiness;
 use zlo_client::environment_access::EnvironmentDescriptor;
 use zlo_client::environments::{Active, THIS_MAC};
 use zlo_client::inbox::{InboxListResponse, InboxStatus};
@@ -50,6 +51,9 @@ pub struct Peer {
     pub session: Option<SessionInfo>,
     pub inbox: Option<InboxListResponse>,
     pub notifications: Vec<ProductNotification>,
+    /// Cached computer-use readiness, probed on demand (never on a timer).
+    pub computer_readiness: Option<ComputerUseReadiness>,
+    computer_readiness_probed: bool,
     backend: Option<Backend>,
     /// Held on the UI thread while initial session/inbox read is in flight,
     /// so its runtime is never dropped on one of its own worker threads.
@@ -73,6 +77,8 @@ impl Peer {
             session: None,
             inbox: None,
             notifications: Vec::new(),
+            computer_readiness: None,
+            computer_readiness_probed: false,
             backend: None,
             pending_backend: None,
             descriptor: None,
@@ -88,7 +94,6 @@ impl Peer {
     }
 
     /// A peer with no live backend, for headless scenes and fixtures.
-    #[allow(dead_code)] // Stage 2a/2b fixture scenes
     pub fn fixture(computer: Computer, conn: PeerConn) -> Self {
         Self::new(computer, conn)
     }
@@ -99,7 +104,6 @@ impl Peer {
 }
 
 /// A computer option for menus (the focused computer first, then each peer).
-#[allow(dead_code)] // Stage 2a/2b menus
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComputerChoice {
     pub key: String,
@@ -121,13 +125,11 @@ impl Peers {
         self.entries.is_empty()
     }
 
-    #[allow(dead_code)] // Stage 2a/2b
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Insert or replace a peer directly (for headless scenes and fixtures).
-    #[allow(dead_code)] // Stage 2a/2b fixture scenes
     pub fn insert_fixture(&mut self, peer: Peer) {
         let key = peer.key();
         if let Some(slot) = self.entries.iter_mut().find(|p| p.key() == key) {
@@ -220,6 +222,7 @@ pub fn sync(s: &mut State) {
     if dropped_any {
         super::retain_tunnels(s);
     }
+    crate::workspace::sync_unread(s);
 
     if s.fixture {
         return;
@@ -323,20 +326,39 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
 }
 
 /// Peers in registry order.
-#[allow(dead_code)] // Stage 2a/2b
 pub fn list(s: &State) -> Vec<&Peer> {
     s.remote.peers.entries.iter().collect()
 }
 
 /// One peer by computer key (`this-mac` or an `environment_id`).
-#[allow(dead_code)] // Stage 2a/2b
 pub fn get<'a>(s: &'a State, key: &str) -> Option<&'a Peer> {
     s.remote.peers.get(key)
 }
 
+/// Mark `key` as having had its computer-use readiness probed for the current
+/// connection. Returns `true` the first time for a ready peer so callers probe
+/// at most once per peer connection.
+pub fn claim_computer_readiness_probe(s: &mut State, key: &str) -> bool {
+    let Some(peer) = s.remote.peers.get_mut(key) else {
+        return false;
+    };
+    if peer.conn != PeerConn::Ready || peer.computer_readiness_probed {
+        return false;
+    }
+    peer.computer_readiness_probed = true;
+    true
+}
+
+/// Record a peer's cached computer-use readiness.
+pub fn set_computer_readiness(s: &mut State, key: &str, readiness: ComputerUseReadiness) {
+    if let Some(peer) = s.remote.peers.get_mut(key) {
+        peer.computer_readiness = Some(readiness);
+        peer.computer_readiness_probed = true;
+    }
+}
+
 /// Run a gateway request on a peer's client (`jobs::run` for a peer).
 /// `done` is dropped if that peer's connection has changed since (generation).
-#[allow(dead_code)] // Stage 2a/2b
 pub fn run<F, Fut, T>(
     s: &State,
     key: &str,
@@ -421,7 +443,6 @@ pub fn run<F, Fut, T>(
 
 /// Move the focus to `key`. Ready peer: instant handover on the UI thread
 /// with no network requests. Otherwise the existing `connect::switch_to`.
-#[allow(dead_code)] // Stage 2a/2b
 pub fn focus(s: &mut State, key: &str) {
     if is_ready_focused(s, key) {
         return;
@@ -435,7 +456,6 @@ pub fn focus(s: &mut State, key: &str) {
 
 /// Focus `key`, then open `thread_id` once the focus has landed (immediately
 /// on a handover or if `key` is already focused).
-#[allow(dead_code)] // Stage 2a/2b
 pub fn focus_thread(s: &mut State, key: &str, thread_id: String) {
     if is_ready_focused(s, key) {
         crate::workspace::open_thread(s, thread_id);
@@ -455,7 +475,6 @@ pub fn focus_thread(s: &mut State, key: &str, thread_id: String) {
 }
 
 /// The focused computer first, then every peer in registry order. For menus.
-#[allow(dead_code)] // Stage 2a/2b
 pub fn usable(s: &State) -> Vec<ComputerChoice> {
     let focused_conn = match &s.conn {
         Conn::Ready => PeerConn::Ready,
@@ -526,6 +545,8 @@ fn handover(s: &mut State, key: &str) {
     let old_descriptor = s.remote.descriptor.take();
     let old_tunnel = s.remote.tunnel.take();
     let old_route_rank = s.remote.route_rank;
+    let old_readiness = s.remote.focused_computer_readiness.take();
+    let peer_readiness = peer.computer_readiness.take();
     if matches!(s.conn, Conn::Ready)
         && let (Some(b), Some(sess)) = (old_backend, old_session)
     {
@@ -533,6 +554,8 @@ fn handover(s: &mut State, key: &str) {
         demoted.backend = Some(b);
         demoted.session = Some(sess);
         demoted.inbox = Some(old_inbox);
+        demoted.computer_readiness = old_readiness;
+        demoted.computer_readiness_probed = demoted.computer_readiness.is_some();
         demoted.descriptor = old_descriptor;
         demoted.tunnel = old_tunnel;
         demoted.route_rank = old_route_rank;
@@ -562,6 +585,7 @@ fn handover(s: &mut State, key: &str) {
         peer_inbox,
         &mut tx,
     );
+    s.remote.focused_computer_readiness = peer_readiness;
     // 4. `connect::switched` runs `peers::sync(s)` and reopens `last_thread`.
 }
 

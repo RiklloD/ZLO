@@ -122,6 +122,10 @@ pub struct ModelPickerState {
     profile_req: Option<String>,
     /// The user picked on the new-thread screen.
     touched: bool,
+    /// A model + effort pick carried across a computer switch on the draft
+    /// screen: validated against the new computer's catalog when `route_loaded`
+    /// lands, and dropped (falling back to that computer's default) if absent.
+    carried_pick: Option<((String, String), Option<String>)>,
     pub(crate) search: TextEdit,
     /// ⌘ is held while the popover is open: the first nine rows show ⌘N.
     pub(crate) cmd_held: bool,
@@ -513,8 +517,26 @@ fn route_loaded(
         p.rail = Rail::Favorites;
     }
     p.route = Some(route);
-    // A draft re-picks once the catalog is in: the profile may have loaded first.
-    if p.current.is_none() || (!own && !p.touched) {
+    // A draft switched to another computer keeps its explicit pick only if
+    // the new computer's catalog offers that provider and model; otherwise it
+    // falls back cleanly to the new computer's own default.
+    if !own && let Some(((provider, model), effort)) = p.carried_pick.take() {
+        let offered = !p.prefs.provider_hidden(&provider)
+            && p.providers()
+                .iter()
+                .any(|rp| rp.provider == provider && rp.models.iter().any(|m| m == &model));
+        if offered {
+            let effort = effort.filter(|e| p.efforts_of(&provider, &model).contains(e));
+            p.current = Some((provider, model));
+            p.effort = effort;
+            p.touched = true;
+        } else {
+            p.touched = false;
+            p.effort = None;
+            p.current = p.default_pick(&recent);
+        }
+    } else if p.current.is_none() || (!own && !p.touched) {
+        // A draft re-picks once the catalog is in: the profile may have loaded first.
         p.current = p.default_pick(&recent);
     }
     if hidden && p.shows_pill() {
@@ -1023,6 +1045,15 @@ pub fn draft_set_profile(s: &mut State, profile: String, catalog_thread: Option<
     set_profile(s, DRAFT, profile);
     if unloaded {
         load(s, DRAFT);
+    }
+}
+
+/// Carry an explicit model/effort pick across a computer switch on the draft
+/// screen. It is validated once the new computer's catalog loads (`route_loaded`)
+/// so a stale model id is never sent to a backend that does not offer it.
+pub fn draft_carry_pick(s: &mut State, pick: Option<(String, String)>, effort: Option<String>) {
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.picker.carried_pick = pick.map(|pm| (pm, effort));
     }
 }
 

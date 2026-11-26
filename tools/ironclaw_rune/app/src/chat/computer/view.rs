@@ -452,12 +452,20 @@ pub fn view(
     }
     // A remote backend: its own readiness, in the same place. "Ready" shows
     // until the agent starts driving apps (or Hide); a gap shows until Hide.
+    // On an existing thread we only explain when another computer can do it.
     if let Some(remote) = &cu.remote
         && cu.enabled
         && !cu.permissions_hidden
         && (!remote.readiness.ready() || cu.session.is_none())
     {
-        let line = super::remote::line(&crate::remote::computer_label(s), &remote.readiness);
+        let mut line = super::remote::line(&crate::remote::computer_label(s), &remote.readiness);
+        if !remote.readiness.ready()
+            && let Some((_, peer_label)) = super::remote::capable_peer(s)
+        {
+            line.push_str(&format!(
+                ". Start a new thread on {peer_label} to use computer use."
+            ));
+        }
         return Some(remote_line_card(p, id, line, remote.readiness.ready(), k));
     }
     let session = cu.session.as_ref().filter(|_| !cu.hidden)?;

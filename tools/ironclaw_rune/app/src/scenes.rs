@@ -163,6 +163,11 @@ pub const SCENES: &[Scene] = &[
     }),
     ("draft-files", ws::fixture_draft_files),
     ("draft-mention", ws::fixture_draft_mention),
+    ("draft-runs-on", ws::fixture_draft_runs_on),
+    ("draft-runs-on-menu", ws::fixture_draft_runs_on_menu),
+    ("computers-default-pref", |s| {
+        page_with(s, Page::Computers, ws::fixture_computers_default_pref)
+    }),
     ("extensions", crate::pages::extensions::fixtures::extensions),
     // Plugins: consent, a plugin's settings page, its side tab and badges.
     ("plugin-consent", |s| {

@@ -689,11 +689,13 @@ pub(crate) fn reset_for_switch(s: &mut State) {
     s.workspace.agents.reset_for_switch();
     s.workspace.run_clock = Default::default();
     s.workspace.confirm_delete = None;
+    s.workspace.focused_unread = 0;
     s.workspace.unread = 0;
     // Warm threads belong to the computer they were fetched from; the same
     // thread id on another computer is another thread.
     s.prewarm = Default::default();
     s.remote.descriptor = None;
+    s.remote.focused_computer_readiness = None;
     s.remote.page.devices = None;
     s.remote.page.issued = None;
     crate::onboarding::computer_switched(s);
@@ -715,6 +717,7 @@ fn failed(s: &mut State, mode: Mode, problem: Problem) {
         // The old computer stays on screen, and active.
         let key = active_key(&sw.target);
         s.remote.registry.active = sw.previous;
+        s.workspace.carried_draft = None;
         let line = match &problem {
             Problem::Unreachable(m) | Problem::Blocked(m) => m.clone(),
         };

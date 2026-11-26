@@ -22,6 +22,7 @@ use crate::remote::{self, EnvState};
 use crate::state::State;
 use zlo_client::environments::{Active, SavedEnvironment, THIS_MAC};
 
+pub(crate) mod default_computer;
 pub mod fixtures;
 
 pub fn opened(s: &mut State) {
@@ -38,7 +39,7 @@ fn refresh(s: &mut State) {
     }
 }
 
-pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
+pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let page = &s.remote.page;
     let mut body = col()
@@ -68,6 +69,7 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
                 remote::saved(s).iter().map(|env| saved_row(s, k, env)),
             ));
     }
+    body = body.children(default_computer::section(s, k, layer));
     body = body
         .child(group_header(
             p,
