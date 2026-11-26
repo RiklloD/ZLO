@@ -11,9 +11,8 @@
 //!
 //! Nothing starts or restarts unless the app said it may
 //! ([`set_allowed`], from `remote::sync_local_backend`): never while
-//! another computer is active, "Run IronClaw on this Mac" is off, the
-//! computers list is unreadable, or `IRONCLAW_DESKTOP_URL` points the app
-//! at another gateway.
+//! "Run IronClaw on this Mac" is off, the computers list is unreadable,
+//! or `IRONCLAW_DESKTOP_URL` points the app at another gateway.
 
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};

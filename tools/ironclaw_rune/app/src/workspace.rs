@@ -406,6 +406,7 @@ pub fn send_failed(s: &mut State, thread_id: &str) {
 
 pub fn refresh_inbox(s: &mut State) {
     inbox::refresh(s);
+    crate::remote::peers::refresh(s);
 }
 
 /// The connection screen's "Try again": also brings this Mac's gateway
@@ -783,6 +784,7 @@ pub fn delete_thread(s: &mut State, thread_id: String) {
 pub fn thread_updated(s: &mut State) {
     inbox::refresh(s);
     refresh_unread(s);
+    crate::remote::peers::refresh(s);
 }
 
 /// A run of `thread_id` ended; the chat calls this.
@@ -799,6 +801,7 @@ pub fn run_ended(s: &mut State, thread_id: String, failed: bool) {
     } else {
         inbox::refresh(s);
     }
+    crate::remote::peers::refresh(s);
     if !s.workspace.window_active {
         let title = crate::titles::get(s, &thread_id);
         s.workspace
@@ -997,6 +1000,7 @@ pub fn window_focus(s: &mut State, focused: bool, tx: &mut Tx) {
     // Back in front: catch up on whatever finished meanwhile.
     if focused {
         inbox::refresh(s);
+        crate::remote::peers::refresh(s);
         restore_composer(s);
     }
 }

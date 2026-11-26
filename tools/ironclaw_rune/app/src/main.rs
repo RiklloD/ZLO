@@ -4,8 +4,7 @@
 //! window are in `../../README.md`.
 //!
 //! Opening the app starts this Mac's gateway and quitting (⌘Q) stops it
-//! (`service.rs`), unless another computer is in use or "Run IronClaw on
-//! this Mac" is off (`remote.rs`). Closing the window keeps the app and the gateway
+//! (`service.rs`), unless "Run IronClaw on this Mac" is off (`remote.rs`). Closing the window keeps the app and the gateway
 //! running; clicking the Dock icon brings the window back. The app finds the
 //! gateway and its token on its own; see
 //! `zlo_client::Connection::discover`.
@@ -75,6 +74,7 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     // The launch intro steps from the frame clock while it plays.
     changed |= workspace::intro::poll(s, clock, tx);
     changed |= polled(C::PollWorkspace, workspace::poll(s, tx));
+    changed |= polled(C::PollPeers, remote::peers::poll(s, tx));
     // The quick composer's voice controls live in its own window.
     changed |= polled(C::PollQuick, workspace::quick::poll(s));
     // The chat counts its own sources (pacer, clock, copy check, computer).

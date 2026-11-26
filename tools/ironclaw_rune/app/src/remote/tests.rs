@@ -38,7 +38,7 @@ fn switch_follows_the_active_computer() {
 }
 
 #[test]
-fn the_local_backend_runs_only_for_this_mac_with_the_switch_on() {
+fn the_local_backend_follows_the_switch_even_while_a_remote_has_the_focus() {
     let on = Registry::default();
     assert!(local_backend_allowed(Ok(on.clone()), false, false));
     // IRONCLAW_DESKTOP_URL, a gateway.json computer in use, an unreadable
@@ -52,28 +52,37 @@ fn the_local_backend_runs_only_for_this_mac_with_the_switch_on() {
         ..Registry::default()
     };
     assert!(!local_backend_allowed(Ok(off), false, false));
+    // Another computer focused with the switch on: This Mac's backend still runs.
     let mut remote = Registry::default();
     remote.upsert(studio());
     remote.active = Active::Environment("env-studio".into());
-    assert!(!local_backend_allowed(Ok(remote), false, false));
+    assert!(local_backend_allowed(Ok(remote), false, false));
 }
 
 #[test]
-fn retrying_against_a_remote_never_lets_the_service_start() {
+fn retrying_against_a_remote_respects_the_local_backend_switch() {
     let _guard = crate::service::TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let mut s = state();
     s.remote.registry.upsert(studio());
     s.remote.registry.active = Active::Environment("env-studio".into());
-    crate::service::set_allowed(true);
-    // The connect path decides before anything else (no token is saved,
-    // so it stops there without a request).
+    crate::service::set_allowed(false);
+    // Switch is on: This Mac's backend is allowed while Studio has the focus.
     crate::workspace::retry_connect(&mut s);
-    assert!(!crate::service::allowed(), "service allowed while remote");
+    assert!(crate::service::allowed(), "service allowed with switch on");
     assert!(!crate::service::is_running());
     assert_eq!(s.onboarding.computer.key(), "env-studio");
     assert!(matches!(s.conn, Conn::Connecting));
+
+    // Switch off while remote is focused: not allowed.
+    let mut s = state();
+    s.remote.registry.upsert(studio());
+    s.remote.registry.active = Active::Environment("env-studio".into());
+    s.remote.registry.run_local_backend = false;
+    crate::service::set_allowed(true);
+    crate::workspace::retry_connect(&mut s);
+    assert!(!crate::service::allowed());
 
     // This Mac with the switch off: not allowed either.
     let mut s = state();

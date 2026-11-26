@@ -114,17 +114,17 @@ fn stop(open: &Open) {
 
 /// Stop every tunnel (quitting). Never waits.
 pub fn close() {
-    retain(None);
+    retain_many(&[]);
 }
 
-/// Keep only the tunnel `keep` names (the one the connection in use goes
-/// through); `None` closes all. Called once a switch or pairing settles.
-pub fn retain(keep: Option<&str>) {
+/// Keep every tunnel whose key is in `keep` (the focused computer's and
+/// each peer's) and close all others.
+pub fn retain_many(keep: &[&str]) {
     let gone: Vec<Open> = {
         let mut tunnels = TUNNELS.lock().unwrap_or_else(|e| e.into_inner());
         let (kept, gone) = std::mem::take(&mut *tunnels)
             .into_iter()
-            .partition(|o| Some(o.key.as_str()) == keep);
+            .partition(|o| keep.contains(&o.key.as_str()));
         *tunnels = kept;
         gone
     };
@@ -224,7 +224,7 @@ mod tests {
             open(&target, 3000),
             Err(SshError::TunnelFailed("box".into()))
         );
-        retain(None);
+        retain_many(&[]);
         close();
         assert_eq!(key(&target, 3005), "ssh://me@box:22 -> 3005");
     }
@@ -248,11 +248,30 @@ mod tests {
             .extend([fake("a", 40001), fake("b", 40002)]);
         assert_eq!(current_port("a"), Some(40001));
         // B failed: the switch path keeps A's tunnel, and only A's.
-        retain(Some("a"));
+        retain_many(&["a"]);
         assert_eq!(current_port("a"), Some(40001));
         assert_eq!(current_port("b"), None);
         // Quitting closes everything.
         close();
         assert_eq!(current_port("a"), None);
+    }
+
+    #[test]
+    fn retain_many_keeps_focused_and_peer_tunnels_together() {
+        let _serial = OPENING.lock().unwrap_or_else(|e| e.into_inner());
+        TUNNELS.lock().unwrap_or_else(|e| e.into_inner()).extend([
+            fake("a", 40001),
+            fake("b", 40002),
+            fake("c", 40003),
+        ]);
+        retain_many(&["a", "b"]);
+        assert_eq!(current_port("a"), Some(40001));
+        assert_eq!(current_port("b"), Some(40002));
+        assert_eq!(current_port("c"), None);
+        retain_many(&["b"]);
+        assert_eq!(current_port("a"), None);
+        assert_eq!(current_port("b"), Some(40002));
+        close();
+        assert_eq!(current_port("b"), None);
     }
 }

@@ -46,6 +46,7 @@ counters! {
     ViewRun => "view_run",
     PollCall => "poll_call",
     PollWorkspace => "poll_changed_workspace",
+    PollPeers => "poll_changed_peers",
     PollQuick => "poll_changed_quick",
     PollChatPace => "poll_changed_chat_pace",
     // Stream bursts folded into rows at the frame's poll.
