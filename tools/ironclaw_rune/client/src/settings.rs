@@ -18,7 +18,7 @@ use ironclaw_product_contracts::product_wire::{
     RebornTraceCreditsResponse, RebornTraceHoldAuthorizeResponse, SettingsToolPermissionState,
 };
 use reqwest::Method;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::api::{Client, V2, client_action_id, seg};
 use crate::error::ClientError;
@@ -206,8 +206,10 @@ impl Client {
             action: None,
             payload: None,
         };
-        self.post(&format!("{V2}/extensions/{}/setup", seg(id)), &body)
-            .await
+        let raw: Value = self
+            .post(&format!("{V2}/extensions/{}/setup", seg(id)), &body)
+            .await?;
+        decode_setup(raw)
     }
 
     pub async fn submit_extension_setup(
@@ -221,8 +223,10 @@ impl Client {
             action: Some("submit".to_string()),
             payload: Some(json!({ "secrets": secrets, "fields": fields })),
         };
-        self.post(&format!("{V2}/extensions/{}/setup", seg(id)), &body)
-            .await
+        let raw: Value = self
+            .post(&format!("{V2}/extensions/{}/setup", seg(id)), &body)
+            .await?;
+        decode_setup(raw)
     }
 
     /// Channel pairing: a short code the user sends to the bot, plus a deep
@@ -379,5 +383,69 @@ impl Client {
     ) -> Result<RebornAccountLoginLinkResponse, ClientError> {
         self.post(&format!("{V2}/traces/account-login-link"), &json!({}))
             .await
+    }
+}
+
+/// Decode a setup response. The gateway re-projects every nested lifecycle
+/// state to the public vocabulary (`setup_needed`, ...), but the shared type
+/// declares `payload`'s states as host checkpoints (`InstallationState`), so a
+/// payload carrying any installed extension fails the whole decode. Nothing
+/// here reads `payload` — the setup page uses the top-level `phase`, secrets
+/// and fields — so it is dropped before decoding.
+fn decode_setup(mut raw: Value) -> Result<RebornSetupExtensionResponse, ClientError> {
+    if let Some(obj) = raw.as_object_mut() {
+        obj.remove("payload");
+    }
+    serde_json::from_value(raw).map_err(|e| ClientError::Decode(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exact shape the live gateway sends for an installed Notion that
+    /// still needs OAuth (2026-11-26): `payload.extensions[].phase` is the
+    /// public `setup_needed`, which `InstallationState` cannot hold.
+    #[test]
+    fn setup_response_with_public_payload_phase_decodes() {
+        let raw = json!({
+            "package_ref": { "id": "notion", "kind": "extension" },
+            "phase": "setup_needed",
+            "payload": {
+                "kind": "extension_list",
+                "count": 1,
+                "extensions": [{
+                    "install_scope": "private",
+                    "phase": "setup_needed",
+                    "summary": {
+                        "package_ref": { "id": "notion", "kind": "extension" },
+                        "name": "Notion",
+                        "description": "Notion MCP tools.",
+                        "runtime_kind": "mcp_server",
+                        "source": "host_bundled",
+                        "surface_kinds": ["tool", "auth"],
+                        "version": "0.1.0",
+                        "visible_read_only_capability_ids": []
+                    }
+                }]
+            },
+            "secrets": [{
+                "name": "mcp_notion_access_token",
+                "optional": false,
+                "prompt": "notion credential",
+                "provided": false,
+                "provider": "notion",
+                "setup": { "kind": "oauth", "scopes": [], "invocation_id": "cd98", "account_label": "notion notion" }
+            }]
+        });
+        assert!(
+            serde_json::from_value::<RebornSetupExtensionResponse>(raw.clone()).is_err(),
+            "the shared type still rejects the projected payload; if this \
+             passes, the contract was fixed and decode_setup can go"
+        );
+        let view = decode_setup(raw).unwrap();
+        assert_eq!(view.package_ref.id.as_str(), "notion");
+        assert_eq!(view.secrets.len(), 1);
+        assert!(view.payload.is_none());
     }
 }
