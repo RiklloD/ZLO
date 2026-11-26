@@ -10,12 +10,22 @@ impl RebornRuntime {
     /// The thread is materialized inside the session thread service so
     /// `accept_inbound_message` does not error on the first send.
     pub async fn new_conversation(&self) -> Result<ConversationId, RebornRuntimeError> {
-        let thread_id =
-            ThreadId::new(format!("reborn-conv-{}", Uuid::new_v4())).map_err(|reason| {
-                RebornRuntimeError::InvalidArgument {
-                    reason: reason.to_string(),
-                }
-            })?;
+        self.open_conversation(&format!("reborn-conv-{}", Uuid::new_v4()))
+            .await
+    }
+
+    /// Open the conversation `thread_id`, creating it when it does not exist
+    /// yet (idempotent). Continuing an earlier `zlo run --thread <id>`
+    /// sends the next message into that same thread and its history.
+    pub async fn open_conversation(
+        &self,
+        thread_id: &str,
+    ) -> Result<ConversationId, RebornRuntimeError> {
+        let thread_id = ThreadId::new(thread_id.trim()).map_err(|reason| {
+            RebornRuntimeError::InvalidArgument {
+                reason: reason.to_string(),
+            }
+        })?;
         self.thread_service
             .ensure_thread(EnsureThreadRequest {
                 scope: self.thread_scope.clone(),

@@ -40,6 +40,7 @@ pub mod inbox;
 mod migrate;
 pub mod model;
 pub mod peer;
+pub(crate) mod peer_workspace;
 pub mod profile_runtime;
 pub mod profiles;
 mod recovery;

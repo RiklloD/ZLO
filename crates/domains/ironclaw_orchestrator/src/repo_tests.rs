@@ -710,3 +710,77 @@ async fn shutdown_stops_running_console_commands() {
     let stopped = console_until(&f, |v| !v.running).await;
     assert_eq!(stopped.lines.last().unwrap().text, "Stopped.");
 }
+
+/// A remote delegation's `workspace`: pushed base, and a patch with the
+/// unpushed commit, the edit and the new file, never the `.env`, and the
+/// person's index untouched.
+#[tokio::test]
+async fn peer_workspace_carries_what_is_only_here() {
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    sh(root, "git init -q --bare origin.git");
+    sh(
+        root,
+        &format!(
+            "git clone -q origin.git work 2>/dev/null; cd work && echo one > a.txt && {GIT} add a.txt && {GIT} commit -qm one && git push -q origin HEAD"
+        ),
+    );
+    let work = root.join("work");
+    let pushed = sh(&work, "git rev-parse HEAD");
+    sh(
+        &work,
+        &format!("echo two > b.txt && {GIT} add b.txt && {GIT} commit -qm two"),
+    );
+    sh(
+        &work,
+        "echo edited > a.txt && echo new > c.txt && echo SECRET=1 > .env && mkdir -p sub && echo k > sub/x.pem",
+    );
+    let before = sh(&work, "git status --porcelain; git diff --cached --stat");
+    let runner = ShellRunner;
+    let view = crate::peer_workspace::workspace_of(
+        crate::worktree::git::Git::new(&runner),
+        &work.join("sub"),
+    )
+    .await
+    .expect("a git folder");
+    assert_eq!(
+        sh(&work, "git status --porcelain; git diff --cached --stat"),
+        before
+    );
+    assert_eq!(view["base_commit"], Value::String(pushed));
+    assert!(view["origin"].as_str().unwrap().ends_with("origin.git"));
+    assert!(view["omitted"].is_null());
+    let patch = base64::engine::general_purpose::STANDARD
+        .decode(view["patch"].as_str().unwrap())
+        .unwrap();
+    let patch = String::from_utf8(patch).unwrap();
+    for file in ["a.txt", "b.txt", "c.txt"] {
+        assert!(
+            patch.contains(&format!("b/{file}")),
+            "{file} missing:\n{patch}"
+        );
+    }
+    assert!(
+        !patch.contains(".env") && !patch.contains("x.pem"),
+        "{patch}"
+    );
+    assert_eq!(view["files"], 3);
+}
+
+/// Nothing pushed: no base, no patch.
+#[tokio::test]
+async fn peer_workspace_without_a_pushed_base() {
+    let dir = tempfile::tempdir().unwrap();
+    sh(
+        dir.path(),
+        &format!("git init -q && echo x > f && {GIT} add f && {GIT} commit -qm x"),
+    );
+    let runner = ShellRunner;
+    let view =
+        crate::peer_workspace::workspace_of(crate::worktree::git::Git::new(&runner), dir.path())
+            .await
+            .unwrap();
+    assert_eq!(view["omitted"], "no_pushed_base");
+    assert!(view["patch"].is_null());
+}

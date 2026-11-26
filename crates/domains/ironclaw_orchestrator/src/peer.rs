@@ -504,12 +504,15 @@ impl Engine {
         if text.is_empty() {
             return Err(OrchestratorError::invalid("task is required"));
         }
-        if req.context.as_deref() == Some("inherit") {
-            return Err(OrchestratorError::invalid(
-                "context='inherit' cannot cross machines: the child there gets only the brief. \
-                 Use context='brief' and put every fact it needs in the task.",
-            ));
-        }
+        let inherit = match req.context.as_deref().map(str::trim) {
+            None | Some("") | Some("brief") => false,
+            Some("inherit") => true,
+            Some(_) => {
+                return Err(OrchestratorError::invalid(
+                    "context must be inherit or brief",
+                ));
+            }
+        };
         if link.access == PeerLinkAccess::ReadOnly {
             return Err(OrchestratorError::request(
                 "peer_refused",
@@ -613,9 +616,30 @@ impl Engine {
             "context": "brief",
             "mode": "async",
             "client_request_id": key,
+            "parent": {
+                "runtime": parent.runtime_id.as_str(),
+                "provider": parent.provider,
+                "model": parent.model,
+            },
         });
+        // The conversation so far travels as text: the other machine has no
+        // copy of this thread.
+        if inherit && let Some(context) = self.inherited_context(&parent, &settings).await? {
+            launch["context"] = json!("inherit");
+            launch["handoff_context"] = json!(context);
+        }
         if req.target.is_some() {
             launch["target"] = serde_json::to_value(&target)?;
+        } else if inherit {
+            // Same route as this thread, as a local inherit would keep.
+            launch["target"] = json!({
+                "provider": parent.provider.clone().unwrap_or_else(|| parent.runtime_id.as_str().to_string()),
+                "model": parent.model,
+            });
+        }
+        // This thread's folder: its pushed base and what is only here.
+        if let Some(workspace) = self.peer_workspace(&parent).await {
+            launch["workspace"] = workspace;
         }
         if let Some(isolation) = &req.isolation {
             launch["isolation"] = json!(isolation);
@@ -1071,6 +1095,14 @@ impl PeerReceiver {
                 }
                 let mut req: DelegateRequest = serde_json::from_value(input.clone())
                     .map_err(|e| OrchestratorError::invalid(format!("invalid arguments: {e}")))?;
+                // The sender's conversation rides in the brief (`handoff_context`).
+                if let Some(context) = input["handoff_context"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|c| !c.is_empty())
+                {
+                    req.task = format!("{context}\n\nTask:\n{}", req.task);
+                }
                 req.context = Some("brief".into());
                 req.peer_origin = Some(origin.clone());
                 engine.delegate(&ctx, req).await

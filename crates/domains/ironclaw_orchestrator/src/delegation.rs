@@ -594,7 +594,7 @@ impl Engine {
 
     /// The parent's conversation as a portable handoff, for a subagent that
     /// inherits it. `None` when the parent has no messages yet.
-    async fn inherited_context(
+    pub(crate) async fn inherited_context(
         &self,
         parent: &ThreadRecord,
         settings: &Settings,

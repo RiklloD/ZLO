@@ -517,7 +517,11 @@ observed_date = "2026-11-17"
 # one `SettingsNotes` and hands it to the approvals and skills handlers
 # (what sync made and what it replaced on this host). The store is
 # `ironclaw_assistant::config_sync::notes`.
-loc_ceiling = 34728
+# ✎ 2026-11-26 (zlo/verpin-delegate-context): 34728 -> 34738, observed
+# 34878 -> 34888, zero hidden headroom: +10 is
+# `RebornRuntime::open_conversation` (`zlo run --thread`), which
+# `new_conversation` now delegates to.
+loc_ceiling = 34738
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to

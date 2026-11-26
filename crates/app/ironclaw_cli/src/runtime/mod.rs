@@ -202,6 +202,7 @@ pub(crate) struct RuntimeInputOptions {
 pub(crate) fn execute(
     context: RebornCliContext,
     message: Option<String>,
+    thread: Option<String>,
     options: RuntimeInputOptions,
 ) -> anyhow::Result<()> {
     let runtime_input =
@@ -220,7 +221,11 @@ pub(crate) fn execute(
         let runtime = build_reborn_runtime(runtime_input).await?;
         print_runtime_banner(&boot_config);
 
-        let conversation = runtime.new_conversation().await?;
+        let conversation = match thread.as_deref().filter(|t| !t.trim().is_empty()) {
+            Some(id) => runtime.open_conversation(id).await?,
+            None => runtime.new_conversation().await?,
+        };
+        eprintln!("zlo thread: {}", conversation.0.as_str());
         let cancellation = install_ctrl_c_cancellation();
 
         let outcome = if let Some(text) = message {
